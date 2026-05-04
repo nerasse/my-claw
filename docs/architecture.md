@@ -4,9 +4,21 @@
 
 ### Channels
 
-- Telegram: classic bot (Bot API) -- priority
+- Telegram: classic bot (Bot API), grammy, long polling + webhook -- priority
 - Matrix: classic bot -- priority
 - Discord: classic bot (bot token) -- on hold until further notice
+
+#### Telegram specifics
+
+- Library: grammy + @grammyjs/runner + @grammyjs/transformer-throttler
+- Connection: long polling (dev) and webhook (prod), configurable
+- Format: HTML parse mode with plain text fallback
+- Message split: 4000 chars, HTML-tag-aware
+- Text batching: 1s debounce for split messages
+- Native commands: /new, /model, /status, /clear, /help
+- Inline buttons: accept/deny for blacklisted actions
+- Media: photo, voice, audio, video, document (in/out)
+- No dependency injection, no plugin SDK, no multi-account
 
 ### Scope & permissions
 
