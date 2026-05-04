@@ -4,7 +4,7 @@
 
 Implement the Telegram channel adapter for my-claw using grammy, with support for
 both long polling and webhook modes. Based on patterns from OpenClaw's Telegram
-extension (232 files, 74k lines), stripped down to what we actually need.
+extension, stripped down to what we actually need.
 
 ## Library
 
@@ -21,7 +21,7 @@ extension (232 files, 74k lines), stripped down to what we actually need.
 ### Webhook (production)
 - Telegram pushes updates to an HTTPS endpoint
 - Requires: domain, SSL cert (or reverse proxy like nginx/caddy)
-- Config: `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_SECRET`
+- Config: webhook url, secret, port
 - Bun native HTTP server to receive updates
 - grammy's `webhookCallback()` to process updates
 
@@ -42,144 +42,217 @@ extension (232 files, 74k lines), stripped down to what we actually need.
 }
 ```
 
-## Files to create/modify
+## Feature Set
 
-### `src/channels/telegram.ts` (~400 lines)
-Main adapter. Responsibilities:
-- Create grammy Bot instance with throttler
-- Register message handlers (text, media, commands, callback queries)
-- Normalize incoming messages to UnifiedMessage
-- Send responses (text, media, buttons)
-- Start in polling or webhook mode based on config
-- Text batching (debounce split messages from Telegram)
+### Phase 1 — Core
 
-### `src/channels/telegram-format.ts` (~150 lines)
-Markdown to Telegram HTML conversion. Adapted from OpenClaw's format.ts:
-- Bold `**text**` → `<b>text</b>`
-- Italic `*text*` → `<i>text</i>`
-- Strikethrough `~~text~~` → `<s>text</s>`
-- Inline code `` `code` `` → `<code>code</code>`
-- Code blocks ` ```code``` ` → `<pre><code>code</code></pre>`
-- Links `[text](url)` → `<a href="url">text</a>`
-- Spoilers `||text||` → `<tg-spoiler>text</tg-spoiler>`
-- Headers `## Title` → `<b>Title</b>`
-- HTML entity escaping (`<`, `>`, `&`)
-- Fallback to plain text on parse error
+| Feature | Description | Source |
+|---|---|---|
+| Text messages | Receive and send text | grammy basics |
+| Auth (whitelist) | Only authorized users | our auth.ts |
+| Markdown → HTML | Convert agent markdown to Telegram HTML | adapted from OpenClaw format.ts |
+| Message splitting | Split > 4000 chars, HTML-tag-aware | adapted from OpenClaw send.ts |
+| Text batching | Debounce 1s for split messages from Telegram | adapted from OpenClaw |
+| Long polling | `bot.start()` | grammy |
+| Webhook | Bun HTTP server + `webhookCallback()` | grammy |
+| Typing indicator | `sendChatAction("typing")` while processing | grammy |
+| Media in | photo, voice, audio, video, document → download, pass as attachment | grammy |
+| Media out | MEDIA:/path → route by extension (sendPhoto/Voice/Video/Document) | adapted from OpenClaw |
+| Forwarded messages | Treat as normal message from authorized user | grammy |
+| Native commands | /new, /model, /status, /clear, /help via setMyCommands() | grammy |
+| Inline buttons | Accept/deny for blacklisted actions via InlineKeyboard | adapted from OpenClaw |
+| Rate limiting | apiThrottler() + retry_after handling | @grammyjs/transformer-throttler |
+| Reply-to threading | Agent reply is threaded to user's message | grammy reply_parameters |
+| Link preview control | Disable link previews in agent responses | grammy link_preview_options |
 
-### `src/channels/telegram-split.ts` (~80 lines)
-Message splitting for the 4096 char limit. Adapted from OpenClaw:
-- Split at 4000 chars (room for overhead)
-- Prefer splitting at newlines, then spaces
-- HTML-tag-aware: close/reopen tags at chunk boundaries
-- Code block aware: close ``` and reopen at next chunk
+### Phase 2 — UX
 
-### `src/channels/telegram-commands.ts` (~100 lines)
-Native Telegram slash commands:
-- `/new` — start a new session
-- `/model` — show/change current model
-- `/status` — show agent status (model, session, uptime)
-- `/clear` — clear session history
-- `/help` — list available commands
-- Register commands via `bot.api.setMyCommands()`
-- Handle via `bot.command("new", ...)`
+| Feature | Description | Source |
+|---|---|---|
+| Streaming edit-in-place | Send initial msg, edit as tokens arrive, throttle 250ms-1s | adapted from OpenClaw draft-stream.ts |
+| Reactions (ACK lifecycle) | Emoji on received msg: queued → thinking → tool use → done/error | adapted from OpenClaw |
+| Model picker | Browse providers → models via inline keyboard, persist choice | adapted from OpenClaw |
+| Message pinning | Agent can pin messages in chat | grammy pinChatMessage |
+| Agent-initiated actions | Agent can: send, edit, delete messages, react, create polls, pin | new tools in tools/ |
+| Error policy | Configurable: always, once (cooldown), silent | new |
+| Media groups (albums) | Buffer and coalesce multi-photo/video sends | adapted from OpenClaw |
 
-### `src/channels/types.ts` (modify)
-Add webhook config types, telegram-specific config.
+### Phase 3 — Later
 
-### `src/config.ts` (modify)
-Add telegram webhook config to MyClawConfig.
+| Feature | Description | Source |
+|---|---|---|
+| Voice transcription | Transcribe inbound voice messages to text | external STT service |
+| Forum/topic support | Per-topic sessions and config | adapted from OpenClaw |
+| Per-group config | Different system prompt, tools, settings per group | config extension |
+| Group history ingestion | Silent ingest of non-mentioned messages for context | adapted from OpenClaw |
+| Heartbeat / proactive | Agent does periodic checks and notifies | cron + agent |
+
+## Files
+
+### Phase 1 files
+
+| File | Lines est. | Role |
+|---|---|---|
+| `src/channels/telegram.ts` | ~500 | Main adapter: bot init, handlers, send, polling+webhook, reactions, reply threading |
+| `src/channels/telegram-format.ts` | ~150 | Markdown → Telegram HTML conversion |
+| `src/channels/telegram-split.ts` | ~80 | Message splitting (4000 chars, HTML-aware) |
+| `src/channels/telegram-commands.ts` | ~120 | Native /commands + registration via setMyCommands() |
+
+### Phase 2 files
+
+| File | Lines est. | Role |
+|---|---|---|
+| `src/channels/telegram-stream.ts` | ~150 | Edit-in-place streaming with throttle |
+| `src/channels/telegram-reactions.ts` | ~80 | ACK lifecycle reactions (queued→thinking→done→error) |
+| `src/channels/telegram-model-picker.ts` | ~120 | Inline keyboard model browser |
+| `src/channels/telegram-agent-actions.ts` | ~150 | Agent-initiated send/edit/delete/react/poll/pin |
+| `src/channels/telegram-errors.ts` | ~60 | Error policy (always/once/silent) |
+
+### Phase 3 files
+
+| File | Lines est. | Role |
+|---|---|---|
+| `src/channels/telegram-voice.ts` | ~100 | Voice transcription (STT integration) |
+| `src/channels/telegram-forum.ts` | ~150 | Forum/topic support |
 
 ## What we take from OpenClaw
 
-### Copy (self-contained, no core deps)
-- `inline-keyboard.ts` logic → InlineKeyboardMarkup builder for accept/deny buttons
-- Network error classification (retryable codes list)
+### Copy (self-contained)
+- InlineKeyboard builder logic
+- Network error codes list (retryable, rate limit, safe-to-retry)
+- Reaction emoji sets (with fallbacks)
 
-### Adapt (take the logic, rewrite simple)
-- Markdown → HTML conversion (format.ts) — drop the IR parser, write direct regex
-- Message splitting (send.ts) — drop retry/activity tracking, keep split logic
-- Text batching — simple setTimeout debounce, not their multi-lane system
-- Media detection — simple type checks on message object
-- Forward handling — treat as normal message from authorized user
-- Typing indicator — `sendChatAction("typing")` before processing
+### Adapt (rewrite simpler)
+- format.ts → telegram-format.ts (regex instead of IR parser)
+- send.ts split logic → telegram-split.ts
+- draft-stream.ts → telegram-stream.ts (no state machine, simple edit loop)
+- bot-handlers.runtime.ts debounce → simple setTimeout in telegram.ts
+- model-buttons.ts → telegram-model-picker.ts (no session store, just config)
+- Reaction lifecycle → telegram-reactions.ts (no scoping, just per-message state)
 
-### Skip (not needed)
+### Skip
 - Plugin SDK / dependency injection (40+ modules)
 - Multi-account support
-- DM pairing / group policy system (we have simple whitelist)
+- DM pairing (whitelist is enough)
 - Thread bindings / conversation runtime
-- Model picker buttons
-- Reply history tracking
-- Channel activity recording
 - SSRF protection
 - Sticker vision analysis
 - 401 circuit breaker
-- Draft stream state machine (maybe later for streaming)
+- Reply history tracking
+- Channel activity recording
+- Auto topic labeling
+- Plugin interactive handlers
 
-## Message flow
+## Message Flow
 
+### Inbound
 ```
 Telegram Update
   → grammy handler (bot.on("message"))
     → text batching debounce (1s)
       → normalize to UnifiedMessage
-        → adapter.onMessage(handler) callback
-          → (router handles auth + session from here)
-
-Response from agent
-  → format markdown to HTML (telegram-format.ts)
-    → split if > 4000 chars (telegram-split.ts)
-      → send each chunk via bot.api.sendMessage(chatId, html, { parse_mode: "HTML" })
-        → on parse error: retry as plain text
-          → extract MEDIA:/path refs → send as photo/document/voice
+        → set ACK reaction (emoji: received)
+          → adapter.onMessage(handler) callback
+            → router handles auth + session
+              → update reaction (emoji: thinking)
+                → agent processes
+                  → update reaction (emoji: done or error)
 ```
 
-## Inline buttons (for blacklist confirmation)
+### Outbound (normal)
+```
+Agent response text
+  → format markdown to HTML (telegram-format.ts)
+    → split if > 4000 chars (telegram-split.ts)
+      → send each chunk via sendMessage(chatId, html, { parse_mode: "HTML", reply_parameters })
+        → on parse error: retry as plain text
+          → extract MEDIA:/path refs → send as photo/document/voice
+            → disable link preview
+```
 
+### Outbound (streaming)
+```
+Agent starts streaming tokens
+  → sendChatAction("typing")
+    → after 30+ chars: send initial message
+      → every 250ms-1s: editMessageText with new content
+        → if > 4000 chars: stop editing, send overflow as new message
+          → on finish: final edit with complete text
+```
+
+### Agent-initiated actions
+```
+Agent calls tool: telegram_send / telegram_edit / telegram_delete / telegram_react / telegram_poll / telegram_pin
+  → tool validates args
+    → execute via bot.api.*
+      → return result to agent
+```
+
+## Inline buttons
+
+### Blacklist confirmation
 ```
 Agent wants to execute blacklisted action
   → send message with InlineKeyboard: [Accept] [Deny]
-    → bot.on("callback_query") fires
+    → bot.on("callback_query")
       → check user is authorized
-        → resolve: execute or skip action
+        → resolve: execute or skip
           → edit message to show decision
 ```
 
-## Error handling
+### Model picker
+```
+User sends /model
+  → send InlineKeyboard: list of providers
+    → user clicks provider
+      → edit message: paginated model list (current marked with checkmark)
+        → user clicks model
+          → persist to session config
+            → edit message: "Model changed to X"
+```
+
+## Error Policy
+
+| Mode | Behavior |
+|---|---|
+| `always` | Show every error to user |
+| `once` | Show error once per scope, suppress duplicates for N minutes |
+| `silent` | Never show errors to user (log only) |
+
+Default: `always`. Configurable in config.json.
+
+## Error Handling
 
 - Send failures: 1 retry on network error, skip on bad request
 - Parse failures: fallback to plain text (strip HTML)
 - Rate limit (429): wait retry_after seconds, then retry
-- Connection loss (polling): grammy handles reconnection automatically
+- Connection loss (polling): grammy handles reconnection
 - Connection loss (webhook): Telegram retries delivery
+- Agent errors: displayed according to error policy
 
-## Media handling
+## Reactions Lifecycle
 
-### Inbound
-- `message.photo` → download largest, pass as attachment
-- `message.document` → download, pass as attachment
-- `message.voice` → download .ogg, pass as attachment
-- `message.video` → download, pass as attachment
-- `message.audio` → download, pass as attachment
+| State | Emoji | When |
+|---|---|---|
+| Received | eyes | Message accepted |
+| Thinking | brain | Agent processing |
+| Tool use | gear | Running a tool |
+| Done | checkmark | Response sent |
+| Error | warning | Something went wrong |
 
-### Outbound
-- Detect MEDIA:/path in agent response
-- Route by extension: .png/.jpg/.webp → sendPhoto, .ogg → sendVoice, .mp4 → sendVideo, other → sendDocument
-- Strip MEDIA: refs from text, send text + media separately
+Configurable emojis. Reaction removed or changed at each state transition.
 
-## Native commands
+## Native Commands
 
 | Command | Action |
-|---------|--------|
+|---|---|
 | `/new` | Clear session, start fresh |
-| `/model` | Show current model, optionally switch |
+| `/model` | Show current model / open model picker |
 | `/status` | Show: model, provider, session age, message count |
 | `/clear` | Clear session history (keep session) |
 | `/help` | List all commands |
 
-Commands are registered on bot start via `setMyCommands()` so they appear in Telegram's command menu.
-
-## Config example
+## Config Example
 
 ```json
 {
@@ -191,7 +264,22 @@ Commands are registered on bot start via `setMyCommands()` so they appear in Tel
         "url": "https://my-server.com/telegram/webhook",
         "secret": "a-random-secret-string",
         "port": 8443
-      }
+      },
+      "reactions": {
+        "enabled": true,
+        "received": "eyes",
+        "thinking": "brain",
+        "toolUse": "gear",
+        "done": "white_check_mark",
+        "error": "warning"
+      },
+      "streaming": {
+        "enabled": true,
+        "minChars": 30,
+        "throttleMs": 1000
+      },
+      "errorPolicy": "always",
+      "linkPreview": false
     }
   },
   "whitelist": ["123456789", "987654321"],
