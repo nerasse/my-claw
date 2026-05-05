@@ -1,5 +1,8 @@
 # Telegram Implementation Plan
 
+> **Phase 1: COMPLETE** — See `docs/telegram-phase1.md` for implementation reference.
+> **Phase 2: PLANNED** — See `docs/plan/telegram-phase2.md` for detailed plan.
+
 ## Overview
 
 Implement the Telegram channel adapter for my-claw using grammy, with support for

@@ -1,10 +1,30 @@
 import type { UnifiedMessage } from "../channels/types.ts";
-import { loadSession, saveSession, type SessionData } from "./store.ts";
+import { loadSession, saveSession, deleteSession, type SessionData } from "./store.ts";
 
 export class SessionManager {
   private sessions = new Map<string, SessionData>();
 
+  private createSession(sessionId: string, platform: string, chatType: string): SessionData {
+    return {
+      id: sessionId,
+      platform,
+      chatType,
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      messages: [],
+    };
+  }
+
+  static resolveSessionId(platform: string, chatType: "dm" | "group", chatId: string, userId: string): string {
+    if (chatType === "dm") return `${platform}/dm/${userId}`;
+    return `${platform}/group/${chatId}`;
+  }
+
   async getOrCreate(sessionId: string, message: UnifiedMessage): Promise<SessionData> {
+    return this.getOrCreateWithMeta(sessionId, message.platform, message.chatType);
+  }
+
+  async getOrCreateWithMeta(sessionId: string, platform: string, chatType: string): Promise<SessionData> {
     let session = this.sessions.get(sessionId);
     if (session) {
       session.lastActiveAt = new Date().toISOString();
@@ -18,16 +38,43 @@ export class SessionManager {
       return session;
     }
 
-    session = {
-      id: sessionId,
-      platform: message.platform,
-      chatType: message.chatType,
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString(),
-      messages: [],
-    };
+    session = this.createSession(sessionId, platform, chatType);
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  async peek(sessionId: string): Promise<SessionData | null> {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+
+    const loaded = await loadSession(sessionId);
+    if (!loaded) return null;
+    this.sessions.set(sessionId, loaded);
+    return loaded;
+  }
+
+  async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
+    this.sessions.delete(sessionId);
+    await deleteSession(sessionId);
+    this.sessions.set(sessionId, this.createSession(sessionId, platform, chatType));
+  }
+
+  clearHistory(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.messages = [];
+      session.lastActiveAt = new Date().toISOString();
+    }
+  }
+
+  getInfo(sessionId: string): { messageCount: number; createdAt: string; lastActiveAt: string } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return {
+      messageCount: session.messages.length,
+      createdAt: session.createdAt,
+      lastActiveAt: session.lastActiveAt,
+    };
   }
 
   async persist(sessionId: string): Promise<void> {

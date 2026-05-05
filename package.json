@@ -12,6 +12,13 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/markdown-it": "^14.1.2",
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@grammyjs/runner": "^2.0.3",
+    "@grammyjs/transformer-throttler": "^1.2.1",
+    "grammy": "^1.42.0",
+    "markdown-it": "^14.1.1"
   }
 }

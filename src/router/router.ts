@@ -1,6 +1,12 @@
 import type { UnifiedMessage } from "../channels/types.ts";
-import type { SessionManager } from "../sessions/manager.ts";
+import { SessionManager } from "../sessions/manager.ts";
+import type { AgentBridge } from "../agent/bridge.ts";
 import { AuthGuard } from "./auth.ts";
+
+interface RouteOptions {
+  onToken?: (token: string) => Promise<void>;
+  onToolUse?: () => Promise<void>;
+}
 
 export class MessageRouter {
   private authGuard: AuthGuard;
@@ -8,26 +14,25 @@ export class MessageRouter {
   constructor(
     whitelist: string[],
     private sessionManager: SessionManager,
+    private agent: AgentBridge,
   ) {
     this.authGuard = new AuthGuard(whitelist);
   }
 
-  async route(message: UnifiedMessage): Promise<void> {
-    if (!this.authGuard.isAuthorized(message.userId)) {
-      return;
-    }
+  async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<string | undefined> {
+    if (!this.authGuard.isAuthorized(message.userId)) return;
 
-    const sessionId = this.resolveSessionId(message);
+    const sessionId = SessionManager.resolveSessionId(
+      message.platform,
+      message.chatType,
+      message.chatId,
+      message.userId,
+    );
     const session = await this.sessionManager.getOrCreate(sessionId, message);
-
-    // TODO: forward to agent bridge
-  }
-
-  private resolveSessionId(message: UnifiedMessage): string {
-    const { platform, chatType, chatId, userId } = message;
-    if (chatType === "dm") {
-      return `${platform}/dm/${userId}`;
-    }
-    return `${platform}/group/${chatId}`;
+    const response = options.onToken
+      ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse)
+      : await this.agent.handleMessage(message, session);
+    await this.sessionManager.persist(sessionId);
+    return response;
   }
 }

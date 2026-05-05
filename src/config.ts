@@ -2,11 +2,36 @@ import { readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+export interface TelegramChannelConfig {
+  token: string;
+  mode?: "polling" | "webhook";
+  webhook?: {
+    url: string;
+    secret: string;
+    port: number;
+  };
+  linkPreview?: boolean;
+  streaming?: {
+    enabled?: boolean;
+    minChars?: number;
+    throttleMs?: number;
+  };
+  reactions?: {
+    enabled?: boolean;
+    received?: string;
+    thinking?: string;
+    toolUse?: string;
+    done?: string;
+    error?: string;
+  };
+  errorPolicy?: "always" | "once" | "silent";
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
   channels: {
-    telegram?: { token: string };
+    telegram?: TelegramChannelConfig;
     matrix?: { homeserver: string; accessToken: string; userId: string };
   };
   llm: {
@@ -14,6 +39,10 @@ export interface MyClawConfig {
     baseUrl: string;
     model: string;
     apiKey?: string;
+    models?: Array<{
+      id: string;
+      label: string;
+    }>;
   };
   agents: {
     general?: { llm?: MyClawConfig["llm"] };
