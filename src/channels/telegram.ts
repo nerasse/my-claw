@@ -164,8 +164,9 @@ export class TelegramAdapter implements ChannelAdapter {
   constructor(
     private config: TelegramChannelConfig,
     private whitelist: Set<string>,
+    bot?: Bot,
   ) {
-    this.bot = new Bot(config.token);
+    this.bot = bot ?? new Bot(config.token);
     this.reactions = new ReactionManager(this.bot, {
       enabled: config.reactions?.enabled ?? false,
       emojis: {

@@ -1,5 +1,9 @@
 # Telegram Phase 2 — Detailed Implementation Plan
 
+## Status
+
+Implemented and covered by local tests in `tests/`.
+
 ## Overview
 
 4 features that improve UX during and after LLM generation.

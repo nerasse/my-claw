@@ -5,12 +5,12 @@
 | Component | Status |
 |---|---|
 | Telegram adapter (Phase 1) | Complete — see `docs/telegram-phase1.md` |
-| Telegram UX (Phase 2) | Planned — see `docs/plan/telegram-phase2.md` |
+| Telegram UX (Phase 2) | Complete — see `docs/plan/telegram-phase2.md` |
 | Matrix adapter | Stub only (`src/channels/matrix.ts`) |
 | Router + auth | Complete |
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, max 10 iterations, typed session messages |
-| LLM provider | Complete (sync), streaming needed for Phase 2 |
+| LLM provider | Complete — sync + streaming |
 | Tools (8) | Complete: bash, read, write, fetch, find, grep, ls, memory |
 | System prompt builder | Complete (7-layer architecture) |
 | Sub-agents | Scaffolded, not wired |

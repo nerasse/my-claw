@@ -2,6 +2,10 @@ import { unlink } from "node:fs/promises";
 import { loadConfig } from "./config.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import { ModelPicker } from "./channels/telegram-model-picker.ts";
+import {
+  createTelegramCommandHandler,
+  createTelegramCallbackHandler,
+} from "./channels/telegram-session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter } from "./router/router.ts";
 import { AgentBridge } from "./agent/bridge.ts";
@@ -34,6 +38,16 @@ async function main() {
   if (config.channels.telegram) {
     const whitelist = new Set(config.whitelist);
     const telegram = new TelegramAdapter(config.channels.telegram, whitelist);
+    const commandHandler = createTelegramCommandHandler({
+      config,
+      sessionManager,
+      modelPicker,
+    });
+    const callbackHandler = createTelegramCallbackHandler({
+      config,
+      sessionManager,
+      modelPicker,
+    });
 
     telegram.onMessage(async (msg) => {
       try {
@@ -65,81 +79,8 @@ async function main() {
       }
     });
 
-    telegram.onCommand(async (chatId, userId, chatType, command, args) => {
-      const sessionId = SessionManager.resolveSessionId("telegram", chatType, chatId, userId);
-
-      switch (command) {
-        case "new":
-          await sessionManager.resetSession(sessionId, "telegram", chatType);
-          return "New session started.";
-
-        case "clear":
-          await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-          sessionManager.clearHistory(sessionId);
-          await sessionManager.persist(sessionId);
-          return "History cleared.";
-
-        case "model": {
-          const existingSession = await sessionManager.peek(sessionId);
-          const currentModel = existingSession?.modelOverride ?? config.llm.model;
-
-          if (args) {
-            const match = modelPicker.find(args);
-            if (!match) {
-              return `Unknown model: ${args}`;
-            }
-
-            const session = existingSession ?? await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-            session.modelOverride = match.id === config.llm.model ? undefined : match.id;
-            session.lastActiveAt = new Date().toISOString();
-            await sessionManager.persist(sessionId);
-            return `Model changed to ${modelPicker.labelFor(match.id)}`;
-          }
-
-          if (!modelPicker.hasModels()) {
-            return `Current model: ${currentModel}`;
-          }
-
-          return {
-            text: `Current model: ${modelPicker.labelFor(currentModel)}`,
-            buttons: modelPicker.buildButtons(currentModel),
-          };
-        }
-
-        case "status": {
-          const session = await sessionManager.peek(sessionId);
-          const currentModel = session?.modelOverride ?? config.llm.model;
-          if (!session) return `Model: ${currentModel}\nSession: none active`;
-          return [
-            `Model: ${currentModel}`,
-            `Session: ${sessionId}`,
-            `Messages: ${session.messages.length}`,
-            `Created: ${session.createdAt}`,
-            `Last active: ${session.lastActiveAt}`,
-          ].join("\n");
-        }
-
-        default:
-          return undefined;
-      }
-    });
-
-    telegram.onCallbackQuery(async ({ chatId, userId, chatType, data }) => {
-      const modelId = modelPicker.parseCallback(data);
-      if (!modelId) return undefined;
-
-      const sessionId = SessionManager.resolveSessionId("telegram", chatType, chatId, userId);
-      const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-      session.modelOverride = modelId === config.llm.model ? undefined : modelId;
-      session.lastActiveAt = new Date().toISOString();
-      await sessionManager.persist(sessionId);
-
-      return {
-        text: `Model changed to ${modelPicker.labelFor(modelId)}`,
-        buttons: modelPicker.hasModels() ? modelPicker.buildButtons(modelId) : undefined,
-        answerText: "Model updated",
-      };
-    });
+    telegram.onCommand(commandHandler);
+    telegram.onCallbackQuery(callbackHandler);
 
     await telegram.start();
     adapters.push(telegram);
