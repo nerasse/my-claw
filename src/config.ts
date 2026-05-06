@@ -27,12 +27,68 @@ export interface TelegramChannelConfig {
   errorPolicy?: "always" | "once" | "silent";
 }
 
+export interface MatrixChannelConfig {
+  enabled?: boolean;
+  homeserver: string;
+  accessToken: string;
+  userId?: string;
+  deviceId?: string;
+  displayName?: string;
+  initialSyncLimit?: number;
+  autoJoin?: "off" | "always" | "allowlist";
+  autoJoinAllowlist?: string[];
+  dm?: {
+    enabled?: boolean;
+    policy?: "open" | "allowlist" | "disabled";
+    allowFrom?: string[];
+    sessionScope?: "per-user" | "per-room";
+    threadReplies?: "off" | "inbound" | "always";
+    historyLimit?: number;
+  };
+  groupPolicy?: "open" | "allowlist" | "disabled";
+  groupAllowFrom?: string[];
+  botUserIds?: string[];
+  allowBots?: boolean | "mentions";
+  groups?: Record<
+    string,
+    {
+      enabled?: boolean;
+      requireMention?: boolean;
+      users?: string[];
+      autoReply?: boolean;
+      allowBots?: boolean | "mentions";
+    }
+  >;
+  threadReplies?: "off" | "inbound" | "always";
+  replyToMode?: "off" | "first" | "all" | "batched";
+  historyLimit?: number;
+  textChunkLimit?: number;
+  chunkMode?: "length" | "newline";
+  contextVisibility?: "all" | "allowlist" | "allowlist_quote";
+  streaming?: {
+    enabled?: boolean;
+    mode?: "partial" | "quiet";
+    minChars?: number;
+    throttleMs?: number;
+  };
+  reactions?: {
+    enabled?: boolean;
+    received?: string;
+    thinking?: string;
+    toolUse?: string;
+    done?: string;
+    error?: string;
+  };
+  errorPolicy?: "always" | "once" | "silent";
+  mediaMaxMb?: number;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
   channels: {
     telegram?: TelegramChannelConfig;
-    matrix?: { homeserver: string; accessToken: string; userId: string };
+    matrix?: MatrixChannelConfig;
   };
   llm: {
     provider: string;

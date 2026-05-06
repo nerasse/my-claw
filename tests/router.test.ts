@@ -65,3 +65,34 @@ test("MessageRouter forwards streaming callbacks", async () => {
   assert.equal(response, "streamed");
   assert.deepEqual(events, ["a", "tool"]);
 });
+
+test("MessageRouter uses room-scoped Matrix DM sessions when requested", async () => {
+  const sessionManager = new SessionManager();
+  let capturedSessionId = "";
+  const router = new MessageRouter(["@u1:example.org"], sessionManager, {
+    async handleMessage(_message: UnifiedMessage, session: SessionData) {
+      capturedSessionId = session.id;
+      session.modelOverride = "alt-model";
+      return "ok";
+    },
+    async handleMessageStreaming() {
+      throw new Error("should not run");
+    },
+  } as never);
+
+  const response = await router.route({
+    id: "$evt1",
+    platform: "matrix",
+    userId: "@u1:example.org",
+    chatId: "!dm-room:test",
+    chatType: "dm",
+    text: "hello",
+    attachments: [],
+    isForwarded: false,
+    sessionScope: "per-room",
+    raw: {},
+  });
+
+  assert.equal(response, "ok");
+  assert.equal(capturedSessionId, "matrix/dm-room/!dm-room:test");
+});

@@ -1,11 +1,16 @@
 import { unlink } from "node:fs/promises";
 import { loadConfig } from "./config.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
-import { ModelPicker } from "./channels/telegram-model-picker.ts";
+import { MatrixAdapter } from "./channels/matrix.ts";
+import { ModelPicker } from "./channels/model-picker.ts";
 import {
   createTelegramCommandHandler,
   createTelegramCallbackHandler,
 } from "./channels/telegram-session-handlers.ts";
+import {
+  createMatrixActionHandler,
+  createMatrixCommandHandler,
+} from "./channels/matrix-session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter } from "./router/router.ts";
 import { AgentBridge } from "./agent/bridge.ts";
@@ -60,7 +65,7 @@ async function main() {
               onToken: (token) => streamer.push(token),
               onToolUse: () => streamer.splitForToolUse(),
             });
-            await streamer.finish();
+            await streamer.finish(response);
           } catch (err) {
             await streamer.abort();
             throw err;
@@ -84,6 +89,58 @@ async function main() {
 
     await telegram.start();
     adapters.push(telegram);
+  }
+
+  if (config.channels.matrix?.enabled !== false && config.channels.matrix) {
+    const whitelist = new Set(config.whitelist);
+    const matrix = new MatrixAdapter(config.channels.matrix, whitelist);
+    const commandHandler = createMatrixCommandHandler({
+      config,
+      sessionManager,
+      modelPicker,
+    });
+    const actionHandler = createMatrixActionHandler({
+      config,
+      sessionManager,
+      modelPicker,
+    });
+
+    matrix.onMessage(async (msg) => {
+      try {
+        let response: string | undefined;
+
+        if (matrix.streamingEnabled()) {
+          const streamer = matrix.createStreamer(msg);
+          try {
+            response = await router.route(msg, {
+              onToken: (token) => streamer.push(token),
+              onToolUse: () => streamer.splitForToolUse(),
+            });
+            await streamer.finish(response);
+          } catch (err) {
+            await streamer.abort();
+            throw err;
+          }
+        } else {
+          response = await router.route(msg);
+        }
+
+        if (response && !matrix.streamingEnabled()) {
+          await matrix.send(msg.chatId, {
+            text: response,
+            replyToId: msg.id,
+            threadId: msg.threadId,
+          });
+        }
+      } finally {
+        await cleanupAttachments(msg.attachments);
+      }
+    });
+
+    matrix.onCommand(commandHandler);
+    matrix.onAction(actionHandler);
+    await matrix.start();
+    adapters.push(matrix);
   }
 
   log("info", "my-claw started", { channels: Object.keys(config.channels) });

@@ -122,15 +122,39 @@ export class AgentBridge {
   }
 
   private buildUserContent(message: UnifiedMessage): string {
+    const parts: string[] = [];
+
+    if (message.replyToText) {
+      const sender = message.replyToSender ? ` from ${message.replyToSender}` : "";
+      parts.push(`[Reply${sender}]\n${message.replyToText}`);
+    }
+
+    if (message.threadRootText) {
+      parts.push(`[Thread Root]\n${message.threadRootText}`);
+    }
+
+    if (message.roomContext) {
+      parts.push(message.roomContext);
+    }
+
     let content = message.text;
     if (message.attachments.length > 0) {
       const lines = message.attachments.map((a) => {
         const source = a.path ?? a.url ?? "unknown";
-        return `- ${a.type}: ${source}${a.mimeType ? ` (${a.mimeType})` : ""}`;
+        const details = [
+          a.mimeType,
+          typeof a.sizeBytes === "number" ? `${a.sizeBytes} bytes` : undefined,
+          a.filename,
+          typeof a.width === "number" && typeof a.height === "number" ? `${a.width}x${a.height}` : undefined,
+          typeof a.durationMs === "number" ? `${a.durationMs} ms` : undefined,
+        ].filter(Boolean);
+        return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
       });
       content += `\n\n[Attachments]\n${lines.join("\n")}`;
     }
-    return content;
+
+    parts.push(content);
+    return parts.filter((part) => part.trim()).join("\n\n");
   }
 
   private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {

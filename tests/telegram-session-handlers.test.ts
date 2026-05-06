@@ -5,7 +5,7 @@ import {
   createTelegramCommandHandler,
 } from "../src/channels/telegram-session-handlers.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { ModelPicker } from "../src/channels/telegram-model-picker.ts";
+import { ModelPicker } from "../src/channels/model-picker.ts";
 import type { MyClawConfig } from "../src/config.ts";
 
 const config: MyClawConfig = {

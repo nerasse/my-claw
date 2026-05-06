@@ -27,6 +27,11 @@ export class MessageRouter {
       message.chatType,
       message.chatId,
       message.userId,
+      {
+        roomId: message.platform === "matrix" ? message.chatId : undefined,
+        threadId: message.threadId,
+        sessionScope: message.sessionScope,
+      },
     );
     const session = await this.sessionManager.getOrCreate(sessionId, message);
     const response = options.onToken

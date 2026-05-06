@@ -7,6 +7,14 @@ export interface UnifiedMessage {
   text: string;
   attachments: Attachment[];
   isForwarded: boolean;
+  replyToId?: string;
+  replyToText?: string;
+  replyToSender?: string;
+  threadId?: string;
+  threadRootText?: string;
+  roomContext?: string;
+  mentionsBot?: boolean;
+  sessionScope?: "per-user" | "per-room";
   raw: unknown;
 }
 
@@ -15,12 +23,20 @@ export interface Attachment {
   url?: string;
   path?: string;
   mimeType?: string;
+  summaryText?: string;
+  filename?: string;
+  sizeBytes?: number;
+  width?: number;
+  height?: number;
+  durationMs?: number;
 }
 
 export interface OutgoingMessage {
   text: string;
   attachments?: Attachment[];
   replyToId?: string;
+  threadId?: string;
+  notice?: boolean;
   buttons?: ConfirmationButton[];
 }
 

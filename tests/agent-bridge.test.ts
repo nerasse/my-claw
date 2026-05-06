@@ -119,3 +119,57 @@ test("AgentBridge executes tool calls and supports model override", async () => 
     fetchMock.mock.restore();
   }
 });
+
+test("AgentBridge includes reply thread and attachment context in user content", async () => {
+  const registry = new ToolRegistry();
+  const bridge = new AgentBridge(config, registry);
+  let capturedBody = "";
+
+  const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+    capturedBody = String(init?.body ?? "");
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    const session = createSession();
+    await bridge.handleMessage(
+      {
+        ...createMessage(),
+        platform: "matrix",
+        replyToId: "$reply",
+        replyToSender: "@alice:example.org",
+        replyToText: "quoted text",
+        threadId: "$thread-root",
+        threadRootText: "Matrix thread root from @alice:example.org:\nthread start",
+        roomContext: "[Recent Room Context]\n@bob:example.org: earlier line",
+        attachments: [
+          {
+            type: "image",
+            path: "/tmp/test.png",
+            mimeType: "image/png",
+            filename: "test.png",
+            sizeBytes: 123,
+            width: 50,
+            height: 40,
+          },
+        ],
+      },
+      session,
+    );
+
+    const parsed = JSON.parse(capturedBody) as { messages: Array<{ role: string; content: string }> };
+    const userMessage = parsed.messages.find((message) => message.role === "user");
+    assert.ok(userMessage?.content.includes("[Reply from @alice:example.org]"));
+    assert.ok(userMessage?.content.includes("[Thread Root]"));
+    assert.ok(userMessage?.content.includes("[Recent Room Context]"));
+    assert.ok(userMessage?.content.includes("[Attachments]"));
+    assert.ok(userMessage?.content.includes("123 bytes"));
+  } finally {
+    fetchMock.mock.restore();
+  }
+});

@@ -15,6 +15,8 @@ export interface SessionData {
   lastActiveAt: string;
   messages: SessionMessage[];
   modelOverride?: string;
+  roomId?: string;
+  threadId?: string;
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

@@ -6,7 +6,7 @@
 |---|---|
 | Telegram adapter (Phase 1) | Complete — see `docs/telegram-phase1.md` |
 | Telegram UX (Phase 2) | Complete — see `docs/plan/telegram-phase2.md` |
-| Matrix adapter | Stub only (`src/channels/matrix.ts`) |
+| Matrix adapter | Complete — see `docs/matrix.md` |
 | Router + auth | Complete |
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, max 10 iterations, typed session messages |

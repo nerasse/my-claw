@@ -15,7 +15,28 @@ export class SessionManager {
     };
   }
 
-  static resolveSessionId(platform: string, chatType: "dm" | "group", chatId: string, userId: string): string {
+  static resolveSessionId(
+    platform: string,
+    chatType: "dm" | "group",
+    chatId: string,
+    userId: string,
+    meta?: { roomId?: string; threadId?: string; sessionScope?: "per-user" | "per-room" },
+  ): string {
+    if (platform === "matrix") {
+      const roomId = meta?.roomId ?? chatId;
+      const threadId = meta?.threadId?.trim();
+      if (threadId) {
+        return `matrix/thread/${roomId}/${threadId}`;
+      }
+      if (chatType === "dm") {
+        if (meta?.sessionScope === "per-room") {
+          return `matrix/dm-room/${roomId}`;
+        }
+        return `matrix/dm/${userId}`;
+      }
+      return `matrix/room/${roomId}`;
+    }
+
     if (chatType === "dm") return `${platform}/dm/${userId}`;
     return `${platform}/group/${chatId}`;
   }

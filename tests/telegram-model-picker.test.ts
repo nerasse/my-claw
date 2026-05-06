@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ModelPicker } from "../src/channels/telegram-model-picker.ts";
+import { ModelPicker } from "../src/channels/model-picker.ts";
 
 const picker = new ModelPicker([
   { id: "accounts/fireworks/models/kimi-k2p5-turbo", label: "Kimi K2.5 Turbo" },

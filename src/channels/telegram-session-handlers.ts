@@ -1,7 +1,7 @@
 import type { MyClawConfig } from "../config.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { OutgoingMessage } from "./types.ts";
-import { ModelPicker } from "./telegram-model-picker.ts";
+import { ModelPicker } from "./model-picker.ts";
 
 type TelegramChatType = "dm" | "group";
 
