@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { MatrixAdapter } from "../src/channels/matrix.ts";
 import type { MatrixChannelConfig } from "../src/config.ts";
 
@@ -28,6 +29,7 @@ type MatrixRelationsResponseMock = {
 function createRuntimeMock() {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const timelineHandlers: Array<(payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean }) => void | Promise<void>> = [];
+  let encryptedRooms = new Set<string>();
   const sdk: {
     on: () => void;
     off: () => void;
@@ -116,12 +118,34 @@ function createRuntimeMock() {
     calls,
     runtime: {
       sdk,
+      mediaCrypto: {
+        async decryptMedia(file: { url: string }) {
+          return Buffer.from(`decrypted:${file.url}`);
+        },
+        async encryptMedia(buffer: Buffer) {
+          return {
+            buffer: Buffer.from(`encrypted:${buffer.toString("utf8")}`),
+            file: {
+              key: { kty: "oct" },
+              iv: "iv",
+              hashes: { sha256: "hash" },
+              v: "v2",
+            },
+          };
+        },
+        async isRoomEncrypted(roomId: string) {
+          return encryptedRooms.has(roomId);
+        },
+      },
       onTimeline(handler: (payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean }) => void | Promise<void>) {
         timelineHandlers.push(handler);
         return () => {};
       },
       async start() {},
       async stop() {},
+      setEncryptedRooms(roomIds: string[]) {
+        encryptedRooms = new Set(roomIds);
+      },
       async emitTimeline(payload: { room: unknown; event: unknown; toStartOfTimeline?: boolean; removed?: boolean }) {
         for (const handler of timelineHandlers) {
           await handler({
@@ -653,6 +677,33 @@ test("MatrixAdapter decrypts encrypted media attachments when crypto is availabl
 
   assert.equal(received[0]?.attachments.length, 1);
   assert.equal(typeof received[0]?.attachments[0]?.path, "string");
+});
+
+test("MatrixAdapter uploads encrypted media in encrypted rooms", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  runtime.setEncryptedRooms(["!room:test"]);
+  const adapter = new MatrixAdapter(
+    createConfig({ encryption: true }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+
+  const tempPath = "/tmp/opencode/matrix-encrypted-upload.txt";
+  await writeFile(tempPath, "hello encrypted world");
+
+  await adapter.send("!room:test", {
+    text: "",
+    attachments: [{ type: "file", path: tempPath, filename: "matrix-encrypted-upload.txt" }],
+  });
+
+  const uploadCall = calls.find((call) => call.method === "uploadContent");
+  assert.ok(uploadCall);
+  const uploadBody = uploadCall?.args[0] as Buffer;
+  assert.match(uploadBody.toString("utf8"), /^encrypted:/);
+  const sendCall = calls.filter((call) => call.method === "sendMessage").at(-1);
+  const content = sendCall?.args[1] as Record<string, unknown>;
+  assert.equal(typeof content.file, "object");
+  assert.equal(content.url, undefined);
 });
 
 test("MatrixAdapter includes recent room history when configured", async () => {

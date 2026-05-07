@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 export interface TelegramChannelConfig {
+  enabled?: boolean;
   token: string;
   mode?: "polling" | "webhook";
   webhook?: {
@@ -31,7 +32,9 @@ export interface MatrixChannelConfig {
   enabled?: boolean;
   homeserver: string;
   accessToken: string;
+  encryption?: boolean;
   userId?: string;
+  password?: string;
   deviceId?: string;
   displayName?: string;
   initialSyncLimit?: number;
@@ -107,6 +110,14 @@ export interface MyClawConfig {
 }
 
 export const MY_CLAW_DIR = join(homedir(), ".my-claw");
+
+export function isTelegramChannelEnabled(config: MyClawConfig): boolean {
+  return config.channels.telegram?.enabled !== false && Boolean(config.channels.telegram);
+}
+
+export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
+  return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
+}
 
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });

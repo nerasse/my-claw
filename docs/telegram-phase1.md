@@ -5,6 +5,14 @@
 All Phase 1 features are implemented, type-checked, and production-polished.
 Patterns ported from OpenClaw's production Telegram extension, simplified for single-bot use.
 
+## Toggle
+
+- `channels.telegram.enabled: false` disables Telegram startup
+
+## Logs
+
+- `~/.my-claw/logs/telegram-YYYY-MM-DD(.N).log`
+
 ## File Map
 
 | File | Lines | Role |

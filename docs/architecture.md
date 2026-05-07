@@ -24,6 +24,7 @@
 - Telegram: classic bot (Bot API), grammy, long polling + webhook -- priority
 - Matrix: classic bot -- priority
 - Discord: classic bot (bot token) -- on hold until further notice
+- Startup toggle: `channels.<name>.enabled: false`
 
 #### Telegram specifics
 
@@ -87,6 +88,8 @@
 │           └── <room_id>.json
 └── logs/
 ```
+
+- Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`
 
 - Config format: JSON (jq-compatible)
 

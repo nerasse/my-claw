@@ -13,7 +13,7 @@ import { ReactionManager } from "./telegram-reactions.ts";
 import { ErrorReporter } from "./telegram-errors.ts";
 import { MessageStreamer } from "./telegram-stream.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
-import { log } from "../utils/logger.ts";
+import { telegramLog } from "../utils/logger.ts";
 
 // Error detection (from OpenClaw)
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
@@ -187,7 +187,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async start(): Promise<void> {
     this.bot.api.config.use(apiThrottler());
-    this.bot.catch((err) => log("error", "grammy unhandled error", { error: String(err) }));
+    this.bot.catch((err) => telegramLog("error", "grammy unhandled error", { error: String(err) }));
 
     this.setupHandlers();
 
@@ -196,10 +196,10 @@ export class TelegramAdapter implements ChannelAdapter {
     } else {
       await this.bot.init();
       await registerCommands(this.bot);
-      this.bot.start({ onStart: () => log("info", "telegram polling started") });
+      this.bot.start({ onStart: () => telegramLog("info", "telegram polling started") });
     }
 
-    log("info", "telegram adapter started", { mode: this.config.mode ?? "polling" });
+    await telegramLog("info", "telegram adapter started", { mode: this.config.mode ?? "polling" });
   }
 
   async stop(): Promise<void> {
@@ -218,7 +218,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     await this.bot.stop();
     this.webhookServer?.stop();
-    log("info", "telegram adapter stopped");
+    await telegramLog("info", "telegram adapter stopped");
   }
 
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
@@ -371,12 +371,12 @@ export class TelegramAdapter implements ChannelAdapter {
       return msg.message_id;
     } catch (err) {
       if (isParseError(err)) {
-        log("warn", "HTML parse failed, falling back to plain text", { chatId });
+        await telegramLog("warn", "HTML parse failed, falling back to plain text", { chatId });
         const msg = await this.withRetry(() => this.bot.api.sendMessage(chatId, plain, params));
         return msg.message_id;
       }
       if (isThreadNotFoundError(err) && params.message_thread_id) {
-        log("warn", "thread not found, retrying without thread_id", { chatId });
+        await telegramLog("warn", "thread not found, retrying without thread_id", { chatId });
         delete params.message_thread_id;
         try {
           const msg = await this.withRetry(() =>
@@ -591,7 +591,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
         if (isRateLimitError(err)) {
           const seconds = getRetryAfter(err);
-          log("warn", `rate limited, waiting ${seconds}s`);
+          await telegramLog("warn", `rate limited, waiting ${seconds}s`);
           await sleep(seconds * 1000);
           continue;
         }
@@ -602,7 +602,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const clamped = Math.min(base, RETRY_MAX_DELAY_MS);
         const jittered = clamped * (1 + (Math.random() * 2 - 1) * RETRY_JITTER);
         const delay = Math.max(RETRY_MIN_DELAY_MS, Math.min(jittered, RETRY_MAX_DELAY_MS));
-        log("warn", `pre-connect error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
+        await telegramLog("warn", `pre-connect error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
         await sleep(delay);
       }
     }
@@ -658,7 +658,7 @@ export class TelegramAdapter implements ChannelAdapter {
           replyToId: response.replyToId ?? replyToId,
         });
       } catch (err) {
-        log("error", "telegram command failed", { command, chatId, error: String(err) });
+        await telegramLog("error", "telegram command failed", { command, chatId, error: String(err) });
         await this.reportProcessingError(chatId, messageId ? String(messageId) : undefined, err);
       }
     }
@@ -707,7 +707,7 @@ export class TelegramAdapter implements ChannelAdapter {
         await ctx.answerCallbackQuery(response.answerText ? { text: response.answerText } : undefined);
       } catch (err) {
         const chatId = String(message.chat.id);
-        log("error", "telegram callback failed", { chatId, data, error: String(err) });
+        await telegramLog("error", "telegram callback failed", { chatId, data, error: String(err) });
         await this.reportProcessingError(chatId, String(message.message_id), err);
         await ctx.answerCallbackQuery({ text: "Error" }).catch(() => {});
       }
@@ -786,7 +786,7 @@ export class TelegramAdapter implements ChannelAdapter {
       await this.reactions.set(chatId, messageId, "done");
     } catch (err) {
       await this.reactions.set(chatId, messageId, "error");
-      log("error", "telegram message handling failed", { chatId, error: String(err) });
+      await telegramLog("error", "telegram message handling failed", { chatId, error: String(err) });
       await this.reportProcessingError(chatId, String(messageId), err);
     } finally {
       this.stopTyping(chatId);
@@ -805,7 +805,7 @@ export class TelegramAdapter implements ChannelAdapter {
       text: "An error occurred while processing your message.",
       replyToId,
     }).catch((sendErr) => {
-      log("error", "telegram error reporting failed", { chatId, error: String(sendErr) });
+      void telegramLog("error", "telegram error reporting failed", { chatId, error: String(sendErr) });
     });
   }
 
@@ -900,7 +900,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
       return { path: localPath, mimeType: res.headers.get("content-type") ?? undefined };
     } catch (err) {
-      log("error", "failed to download telegram file", { fileId, error: String(err) });
+      await telegramLog("error", "failed to download telegram file", { fileId, error: String(err) });
       return null;
     }
   }
@@ -952,7 +952,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const combined = batch.messages.map((m) => m.text).join("");
     this.processMessage(batch.firstMsg, combined).catch((err) =>
-      log("error", "failed to process batched message", { error: String(err) }),
+      telegramLog("error", "failed to process batched message", { error: String(err) }),
     );
   }
 
@@ -982,7 +982,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const others = group.messages.filter((m) => m !== primary);
 
     this.processMessage(primary, undefined, others).catch((err) =>
-      log("error", "failed to process media group", { error: String(err) }),
+      telegramLog("error", "failed to process media group", { error: String(err) }),
     );
   }
 
@@ -1052,13 +1052,13 @@ export class TelegramAdapter implements ChannelAdapter {
 
         // ACK immediately, process in background (prevents Telegram re-delivery)
         void this.bot.handleUpdate(update).catch((err) => {
-          log("error", "webhook update processing error", { error: String(err) });
+          void telegramLog("error", "webhook update processing error", { error: String(err) });
         });
 
         return new Response("OK", { status: 200 });
       },
     });
 
-    log("info", "telegram webhook started", { port: wh.port, url: wh.url });
+    await telegramLog("info", "telegram webhook started", { port: wh.port, url: wh.url });
   }
 }

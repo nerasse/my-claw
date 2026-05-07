@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { loadConfig } from "./config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig } from "./config.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import { MatrixAdapter } from "./channels/matrix.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
@@ -40,9 +40,9 @@ async function main() {
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
 
-  if (config.channels.telegram) {
+  if (isTelegramChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist);
-    const telegram = new TelegramAdapter(config.channels.telegram, whitelist);
+    const telegram = new TelegramAdapter(config.channels.telegram!, whitelist);
     const commandHandler = createTelegramCommandHandler({
       config,
       sessionManager,
@@ -91,9 +91,9 @@ async function main() {
     adapters.push(telegram);
   }
 
-  if (config.channels.matrix?.enabled !== false && config.channels.matrix) {
+  if (isMatrixChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist);
-    const matrix = new MatrixAdapter(config.channels.matrix, whitelist);
+    const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
     const commandHandler = createMatrixCommandHandler({
       config,
       sessionManager,

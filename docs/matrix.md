@@ -4,6 +4,10 @@
 
 Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
 
+## Toggle
+
+- `channels.matrix.enabled: false` disables Matrix startup
+
 ## Behavior
 
 - inbound DM and room messages
@@ -14,6 +18,17 @@ Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
 - reactions for status and `/model` selection
 - streaming previews via `m.replace`
 - encrypted media download when Matrix crypto is available
+- rust-crypto startup when `channels.matrix.encryption` is enabled
+- decrypted `m.room.encrypted` handling after Matrix SDK decryption completes
+- encrypted media upload in encrypted rooms
+- local Matrix sync cache and crypto snapshot persisted under `~/.my-claw/matrix/accounts/...`
+
+## Encryption
+
+- enable with `channels.matrix.encryption: true`
+- requires the real Matrix `userId` and `deviceId` that match the access token
+- on first encrypted startup, `my-claw` will seed its own crypto snapshot from the matching OpenClaw snapshot when available, then continue with its own local store
+- `my-claw` keeps its own crypto DB prefix and snapshot file; it does not share a live IndexedDB store with OpenClaw
 
 ## Policy
 
@@ -51,3 +66,8 @@ Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
 
 - `./node_modules/.bin/tsc --noEmit`
 - `npm test`
+
+## Logs
+
+- app: `~/.my-claw/logs/matrix-YYYY-MM-DD(.N).log`
+- sdk: `~/.my-claw/logs/matrix-sdk-YYYY-MM-DD(.N).log`

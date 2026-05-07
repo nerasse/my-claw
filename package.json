@@ -21,6 +21,8 @@
   "dependencies": {
     "@grammyjs/runner": "^2.0.3",
     "@grammyjs/transformer-throttler": "^1.2.1",
+    "@matrix-org/matrix-sdk-crypto-wasm": "^18.2.0",
+    "fake-indexeddb": "^5.0.2",
     "grammy": "^1.42.0",
     "markdown-it": "^14.1.1",
     "matrix-js-sdk": "^41.4.0"

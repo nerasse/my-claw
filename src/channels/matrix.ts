@@ -5,7 +5,7 @@ import { EventType, MsgType, RelationType, RoomEvent } from "matrix-js-sdk";
 import { MY_CLAW_DIR } from "../config.ts";
 import type { MatrixChannelConfig } from "../config.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
-import { log } from "../utils/logger.ts";
+import { matrixLog } from "../utils/logger.ts";
 import { MatrixClientRuntime } from "./matrix-client.ts";
 import { shouldIncludeSupplementalContext } from "./context-visibility.ts";
 import { getMatrixHelpText, parseMatrixCommand } from "./matrix-commands.ts";
@@ -102,10 +102,17 @@ type MatrixEncryptedFile = {
 };
 
 type MatrixCryptoFacade = {
+  encryptMedia?: (
+    buffer: Buffer,
+  ) => Promise<{
+    buffer: Buffer;
+    file: Omit<MatrixEncryptedFile, "url">;
+  }>;
   decryptMedia?: (
     file: MatrixEncryptedFile,
     opts?: { maxBytes?: number; readIdleTimeoutMs?: number },
   ) => Promise<Buffer>;
+  isRoomEncrypted?: (roomId: string) => Promise<boolean>;
 };
 
 function trimString(value: unknown): string | undefined {
@@ -302,7 +309,9 @@ export class MatrixAdapter implements ChannelAdapter {
       new MatrixClientRuntime({
         homeserver: config.homeserver,
         accessToken: config.accessToken,
+        encryption: config.encryption,
         userId: config.userId,
+        password: config.password,
         deviceId: config.deviceId,
         initialSyncLimit: config.initialSyncLimit,
       });
@@ -327,7 +336,7 @@ export class MatrixAdapter implements ChannelAdapter {
     this.runtime.sdk.on(RoomEvent.MyMembership, this.handleMembershipChange);
     await this.runtime.start();
     this.selfUserId = this.runtime.sdk.getUserId() ?? this.config.userId;
-    log("info", "matrix adapter started", { homeserver: this.config.homeserver });
+    await matrixLog("info", "matrix adapter started", { homeserver: this.config.homeserver });
   }
 
   async stop(): Promise<void> {
@@ -338,7 +347,7 @@ export class MatrixAdapter implements ChannelAdapter {
     this.typingRefs.clear();
     this.pendingActions.clear();
     await this.runtime.stop();
-    log("info", "matrix adapter stopped");
+    await matrixLog("info", "matrix adapter stopped");
   }
 
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
@@ -447,6 +456,9 @@ export class MatrixAdapter implements ChannelAdapter {
   ): Promise<void> {
     if (toStartOfTimeline || removed) return;
     const eventType = event.getType();
+    if (eventType === EventType.RoomMessageEncrypted && event.isDecryptionFailure()) {
+      return;
+    }
     if (eventType === EventType.Reaction) {
       await this.handleReaction(room, event);
       return;
@@ -757,7 +769,7 @@ export class MatrixAdapter implements ChannelAdapter {
       threadId,
       notice: true,
     }).catch((sendErr) => {
-      log("error", "matrix error reporting failed", { roomId, error: String(sendErr) });
+      void matrixLog("error", "matrix error reporting failed", { roomId, error: String(sendErr) });
     });
   }
 
@@ -1017,7 +1029,7 @@ export class MatrixAdapter implements ChannelAdapter {
         },
       ];
     } catch (err) {
-      log("warn", "matrix attachment resolution failed", {
+      await matrixLog("warn", "matrix attachment resolution failed", {
         error: String(err),
         filename,
       });
@@ -1162,7 +1174,7 @@ export class MatrixAdapter implements ChannelAdapter {
         content: content as MatrixEventContent,
       };
     } catch (err) {
-      log("warn", "matrix event context fetch failed", { roomId, eventId, error: String(err) });
+      await matrixLog("warn", "matrix event context fetch failed", { roomId, eventId, error: String(err) });
       return undefined;
     }
   }
@@ -1235,7 +1247,7 @@ export class MatrixAdapter implements ChannelAdapter {
     const buffer = Buffer.from(await readFile(filePath));
     const name = basename(filePath);
     const mimeType = this.mimeFromExt(extname(filePath));
-    const upload = await this.runtime.sdk.uploadContent(buffer, {
+    const upload = await this.uploadMedia(roomId, buffer, {
       name,
       type: mimeType,
     });
@@ -1243,7 +1255,8 @@ export class MatrixAdapter implements ChannelAdapter {
       body: name,
       filename: name,
       msgtype: this.msgTypeFromMime(mimeType),
-      url: upload.content_uri,
+      url: upload.url,
+      file: upload.file,
       mimeType,
       size: buffer.byteLength,
       replyToId,
@@ -1274,7 +1287,7 @@ export class MatrixAdapter implements ChannelAdapter {
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = attachment.mimeType ?? response.headers.get("content-type") ?? "application/octet-stream";
     const name = source.split("/").pop() ?? `file${this.extFromMime(mimeType)}`;
-    const upload = await this.runtime.sdk.uploadContent(buffer, {
+    const upload = await this.uploadMedia(roomId, buffer, {
       name,
       type: mimeType,
     });
@@ -1282,7 +1295,8 @@ export class MatrixAdapter implements ChannelAdapter {
       body: name,
       filename: name,
       msgtype: this.msgTypeFromMime(mimeType),
-      url: upload.content_uri,
+      url: upload.url,
+      file: upload.file,
       mimeType,
       size: buffer.byteLength,
       replyToId,
@@ -1291,11 +1305,40 @@ export class MatrixAdapter implements ChannelAdapter {
     await this.runtime.sdk.sendMessage(roomId, content as never);
   }
 
+  private async uploadMedia(
+    roomId: string,
+    buffer: Buffer,
+    opts: { name?: string; type?: string },
+  ): Promise<{ url: string; file?: MatrixEncryptedFile }> {
+    const crypto = this.resolveMatrixCrypto();
+    const shouldEncrypt = (await crypto?.isRoomEncrypted?.(roomId)) === true && typeof crypto?.encryptMedia === "function";
+    if (shouldEncrypt && crypto?.encryptMedia) {
+      const encrypted = await crypto.encryptMedia(buffer);
+      const upload = await this.runtime.sdk.uploadContent(encrypted.buffer, {
+        ...opts,
+        includeFilename: false,
+      });
+      return {
+        url: upload.content_uri,
+        file: {
+          url: upload.content_uri,
+          key: encrypted.file.key,
+          iv: encrypted.file.iv,
+          hashes: encrypted.file.hashes,
+          v: encrypted.file.v,
+        },
+      };
+    }
+    const upload = await this.runtime.sdk.uploadContent(buffer, opts);
+    return { url: upload.content_uri };
+  }
+
   private buildMediaContent(params: {
     body: string;
     filename?: string;
     msgtype: string;
     url: string;
+    file?: MatrixEncryptedFile;
     mimeType?: string;
     size: number;
     replyToId?: string;
@@ -1316,9 +1359,13 @@ export class MatrixAdapter implements ChannelAdapter {
       msgtype: params.msgtype,
       body: params.body,
       filename: params.filename,
-      url: params.url,
       info,
     };
+    if (params.file) {
+      content["file"] = params.file;
+    } else {
+      content["url"] = params.url;
+    }
     if (relation) {
       content["m.relates_to"] = relation;
     }
@@ -1492,7 +1539,7 @@ export class MatrixAdapter implements ChannelAdapter {
     }
 
     await this.runtime.sdk.joinRoom(room.roomId).catch((err) => {
-      log("warn", "matrix auto-join failed", { roomId: room.roomId, error: String(err) });
+      void matrixLog("warn", "matrix auto-join failed", { roomId: room.roomId, error: String(err) });
     });
   };
 
@@ -1593,12 +1640,7 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private resolveMatrixCrypto(): MatrixCryptoFacade | undefined {
-    const sdk = this.runtime.sdk as unknown as { getCrypto?: () => unknown; crypto?: unknown };
-    const cryptoApi = sdk.getCrypto?.() ?? sdk.crypto;
-    if (!cryptoApi || typeof cryptoApi !== "object") return undefined;
-    const decryptMedia = (cryptoApi as MatrixCryptoFacade).decryptMedia;
-    if (typeof decryptMedia !== "function") return undefined;
-    return { decryptMedia };
+    return this.runtime.mediaCrypto;
   }
 
   private mediaMaxBytes(): number {
