@@ -20,6 +20,32 @@ type MatrixIngressQueue = {
 
 const DEFAULT_COALESCE_WINDOW_MS = 1500;
 const DEFAULT_MAX_ITEMS = 6;
+const DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS = 280;
+
+function sameIngressContext(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressItem, coalesceWindowMs: number): boolean {
+  return (
+    a.senderId === b.senderId &&
+    a.chatType === b.chatType &&
+    a.threadId === b.threadId &&
+    a.replyToId === b.replyToId &&
+    b.timestampMs - a.timestampMs <= coalesceWindowMs
+  );
+}
+
+function canMergeModes(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressItem): boolean {
+  if (a.mode === b.mode) {
+    return true;
+  }
+
+  const textItem = a.mode === "text" ? a : b.mode === "text" ? b : undefined;
+  const mediaItem = a.mode === "media" ? a : b.mode === "media" ? b : undefined;
+  if (!textItem || !mediaItem) {
+    return false;
+  }
+
+  const trimmed = textItem.text.trim();
+  return trimmed.length > 0 && trimmed.length <= DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS;
+}
 
 export function createMatrixInboundBuffer(params?: {
   coalesceWindowMs?: number;
@@ -44,16 +70,7 @@ export function createMatrixInboundBuffer(params?: {
     } {
       const queue = getQueue(roomId);
       const last = queue.items.at(-1);
-      if (
-        last &&
-        last.senderId === item.senderId &&
-        last.chatType === item.chatType &&
-        last.threadId === item.threadId &&
-        last.replyToId === item.replyToId &&
-        last.mode === item.mode &&
-        item.timestampMs - last.timestampMs <= coalesceWindowMs &&
-        queue.items.length < maxItems
-      ) {
+      if (last && sameIngressContext(last, item, coalesceWindowMs) && canMergeModes(last, item)) {
         const merged: MatrixBufferedIngressItem = {
           eventId: item.eventId,
           senderId: item.senderId,
@@ -63,7 +80,7 @@ export function createMatrixInboundBuffer(params?: {
           attachments: [...(last.attachments ?? []), ...(item.attachments ?? [])],
           threadId: item.threadId,
           replyToId: item.replyToId,
-          mode: item.mode,
+          mode: last.mode === "media" || item.mode === "media" ? "media" : item.mode,
           timestampMs: item.timestampMs,
         };
         queue.items[queue.items.length - 1] = merged;
@@ -77,6 +94,12 @@ export function createMatrixInboundBuffer(params?: {
         queue.items.shift();
       }
       return { item };
+    },
+
+    canCoalesce(roomId: string, item: MatrixBufferedIngressItem): boolean {
+      const queue = rooms.get(roomId);
+      const last = queue?.items.at(-1);
+      return Boolean(last && sameIngressContext(last, item, coalesceWindowMs) && canMergeModes(last, item));
     },
 
     clear(roomId: string, eventId: string): void {

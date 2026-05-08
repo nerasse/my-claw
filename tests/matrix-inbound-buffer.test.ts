@@ -117,3 +117,31 @@ test("matrix inbound buffer does not coalesce different reply contexts", () => {
 
   assert.equal(second.mergedIntoEventId, undefined);
 });
+
+test("matrix inbound buffer coalesces media with a short trailing text caption", () => {
+  const buffer = createMatrixInboundBuffer({ coalesceWindowMs: 1000, maxItems: 4 });
+  buffer.coalesce("!room:test", {
+    eventId: "$a",
+    senderId: "@u1:example.org",
+    chatType: "group",
+    text: "[matrix image attachment]",
+    content: {},
+    attachments: [{ type: "image", filename: "photo.jpg" }],
+    mode: "media",
+    timestampMs: 1000,
+  });
+  const second = buffer.coalesce("!room:test", {
+    eventId: "$b",
+    senderId: "@u1:example.org",
+    chatType: "group",
+    text: "caption",
+    content: {},
+    mode: "text",
+    timestampMs: 1200,
+  });
+
+  assert.equal(second.mergedIntoEventId, "$a");
+  assert.equal(second.item.mode, "media");
+  assert.match(second.item.text, /caption/);
+  assert.equal(second.item.attachments?.length, 1);
+});

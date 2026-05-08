@@ -1,4 +1,5 @@
 import { EventType, type MatrixClient } from "matrix-js-sdk";
+import { MATRIX_REACTION_BUTTON_EMOJIS } from "./matrix/adapter-actions.ts";
 
 export type MatrixReactionState = "received" | "thinking" | "tool_use" | "done" | "error";
 
@@ -52,6 +53,22 @@ export class MatrixReactionManager {
       this.ownReactionIds.set(key, result.event_id);
     } catch {
       // cosmetic only
+    }
+  }
+
+  async seedChoices(roomId: string, eventId: string, count: number): Promise<void> {
+    if (!this.config.enabled) return;
+
+    for (const emoji of MATRIX_REACTION_BUTTON_EMOJIS.slice(0, Math.max(0, count))) {
+      try {
+        await this.client.sendEvent(
+          roomId,
+          EventType.Reaction,
+          buildReactionContent(eventId, emoji) as never,
+        );
+      } catch {
+        return;
+      }
     }
   }
 }

@@ -56,6 +56,7 @@ export interface OutgoingMessage {
   threadId?: string;
   notice?: boolean;
   buttons?: ConfirmationButton[];
+  stateKey?: string;
 }
 
 export interface ConfirmationButton {

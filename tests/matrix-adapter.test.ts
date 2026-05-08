@@ -10,9 +10,13 @@ import { SessionManager } from "../src/sessions/manager.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import {
+  createMatrixActionHandler,
+  createMatrixApprovalHandler,
   type MatrixApprovalHandler,
 } from "../src/channels/matrix-session-handlers.ts";
+import { ModelPicker } from "../src/channels/model-picker.ts";
 import { resolveMatrixRuntimeStoragePaths } from "../src/channels/matrix/storage.ts";
+import type { MyClawConfig } from "../src/config.ts";
 
 type MatrixEventContentMock = Record<string, unknown>;
 type MatrixFetchedEventMock = {
@@ -47,7 +51,7 @@ test.after(async () => {
   );
 });
 
-function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootDir?: string } = {}) {
+function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootDir?: string; encryptionReady?: boolean } = {}) {
   const storageRootDir =
     options.storageRootDir ??
     join(
@@ -64,6 +68,7 @@ function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootD
     on: () => void;
     off: () => void;
     sendMessage: (...args: unknown[]) => Promise<{ event_id: string }>;
+    sendEvent: (...args: unknown[]) => Promise<{ event_id: string }>;
     uploadContent: (...args: unknown[]) => Promise<{ content_uri: string }>;
     redactEvent: (...args: unknown[]) => Promise<{ event_id: string }>;
     sendReadReceipt: (...args: unknown[]) => Promise<Record<string, never>>;
@@ -86,6 +91,10 @@ function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootD
     async sendMessage(...args: unknown[]) {
       calls.push({ method: "sendMessage", args });
       return { event_id: "$evt1" };
+    },
+    async sendEvent(...args: unknown[]) {
+      calls.push({ method: "sendEvent", args });
+      return { event_id: `$react-${calls.length}` };
     },
     async uploadContent(...args: unknown[]) {
       calls.push({ method: "uploadContent", args });
@@ -148,24 +157,29 @@ function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootD
     calls,
     runtime: {
       sdk,
-      mediaCrypto: {
-        async decryptMedia(file: { url: string }) {
-          return Buffer.from(`decrypted:${file.url}`);
-        },
-        async encryptMedia(buffer: Buffer) {
-          return {
-            buffer: Buffer.from(`encrypted:${buffer.toString("utf8")}`),
-            file: {
-              key: { kty: "oct" },
-              iv: "iv",
-              hashes: { sha256: "hash" },
-              v: "v2",
+      mediaCrypto: options.encryptionReady === false
+        ? undefined
+        : {
+            async decryptMedia(file: { url: string }) {
+              return Buffer.from(`decrypted:${file.url}`);
             },
-          };
-        },
-        async isRoomEncrypted(roomId: string) {
-          return encryptedRooms.has(roomId);
-        },
+            async encryptMedia(buffer: Buffer) {
+              return {
+                buffer: Buffer.from(`encrypted:${buffer.toString("utf8")}`),
+                file: {
+                  key: { kty: "oct" },
+                  iv: "iv",
+                  hashes: { sha256: "hash" },
+                  v: "v2",
+                },
+              };
+            },
+            async isRoomEncrypted(roomId: string) {
+              return encryptedRooms.has(roomId);
+            },
+          },
+      encryptionReady() {
+        return options.encryptionReady !== false;
       },
       onTimeline(
         handler: (
@@ -1302,7 +1316,7 @@ test("MatrixAdapter aborts plain media fetches that exceed timeout", async () =>
 });
 
 test("MatrixAdapter drops encrypted events when crypto is unavailable without routing them", async () => {
-  const { runtime } = createRuntimeMock();
+  const { runtime } = createRuntimeMock({ encryptionReady: false });
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
   const received: string[] = [];
 

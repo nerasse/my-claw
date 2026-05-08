@@ -91,6 +91,7 @@ const MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MATRIX_PENDING_ACTION_TTL_MS = 6 * 60 * 60 * 1000;
 const MATRIX_PENDING_ACTION_LIMIT = 128;
 const MATRIX_TEXT_BATCH_THRESHOLD = 160;
+const MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT = 3;
 
 type PendingBufferedMatrixIngress = {
   roomId: string;
@@ -125,6 +126,7 @@ export class MatrixAdapter implements ChannelAdapter {
   private inboundBuffer = createMatrixInboundBuffer();
   private pendingBufferedIngress = new Map<string, PendingBufferedMatrixIngress>();
   private typingRefs = new Map<string, TypingRef>();
+  private encryptedIngressSkips = new Map<string, number>();
   private selfUserId?: string;
   private timelineOff?: () => void;
   private inboundDeduper?: MatrixInboundEventDeduper;
@@ -247,7 +249,8 @@ export class MatrixAdapter implements ChannelAdapter {
     }
 
     if (actionAnchorEventId && message.buttons?.length) {
-      this.rememberPendingAction(chatId, actionAnchorEventId, message.buttons, message.threadId);
+      this.rememberPendingAction(chatId, actionAnchorEventId, message.buttons, message.threadId, message.stateKey);
+      await this.reactions.seedChoices(chatId, actionAnchorEventId, message.buttons.length);
     }
 
     if (!hasMedia) return;
@@ -308,6 +311,7 @@ export class MatrixAdapter implements ChannelAdapter {
         replyToId: request.messageId,
         threadId: request.threadId,
         notice: true,
+        stateKey: "approval",
       });
     } catch (err) {
       approvalHandler.cancelApproval(request.id);
@@ -340,10 +344,7 @@ export class MatrixAdapter implements ChannelAdapter {
     const eventType = event.getType();
     if (eventType === EventType.RoomMessageEncrypted) {
       if (liveEvent && !this.runtime.encryptionReady()) {
-        await matrixLog("warn", "matrix encrypted message skipped: crypto unavailable", {
-          roomId: room.roomId,
-          eventId: event.getId(),
-        });
+        await this.noteEncryptedIngressSkip(room.roomId, event.getId());
       }
       return;
     }
@@ -511,7 +512,7 @@ export class MatrixAdapter implements ChannelAdapter {
         preparedRoomHistory,
         selfDisplayName,
       );
-      if (this.shouldBufferInboundMessage(unified, chatType, rootThreadId)) {
+      if (this.shouldBufferInboundMessage(roomId, unified, chatType, rootThreadId)) {
         const buffered = await this.bufferOrProcessMessage({
           roomId,
           eventId: unified.id,
@@ -690,6 +691,7 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private shouldBufferInboundMessage(
+    roomId: string,
     message: UnifiedMessage,
     chatType: MatrixChatType,
     rootThreadId?: string,
@@ -700,7 +702,21 @@ export class MatrixAdapter implements ChannelAdapter {
     if (message.attachments.length > 0) {
       return true;
     }
-    return message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD;
+    if (message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD) {
+      return true;
+    }
+    return this.inboundBuffer.canCoalesce(roomId, {
+      eventId: message.id,
+      senderId: message.userId,
+      chatType: message.chatType,
+      text: message.text,
+      content: {},
+      attachments: message.attachments,
+      threadId: message.threadId,
+      replyToId: message.replyToId,
+      mode: message.attachments.length > 0 ? "media" : "text",
+      timestampMs: Date.now(),
+    });
   }
 
   private async processMessage(
@@ -903,6 +919,27 @@ export class MatrixAdapter implements ChannelAdapter {
       threadId,
       notice,
     });
+  }
+
+  private async noteEncryptedIngressSkip(roomId: string, eventId?: string | null): Promise<void> {
+    const count = (this.encryptedIngressSkips.get(roomId) ?? 0) + 1;
+    this.encryptedIngressSkips.set(roomId, count);
+
+    if (count === 1) {
+      await matrixLog("warn", "matrix encrypted message skipped: crypto unavailable", {
+        roomId,
+        eventId,
+      });
+      return;
+    }
+
+    if (count === MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT) {
+      await matrixLog("warn", "matrix encrypted messages continue to be skipped: crypto unavailable", {
+        roomId,
+        eventId,
+        skippedCount: count,
+      });
+    }
   }
 
   private async normalizeMessage(
