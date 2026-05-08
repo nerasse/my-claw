@@ -25,7 +25,7 @@ Implemented as a split adapter:
 - reactions for status and `/model` selection
 - streaming previews via `m.replace`
 - retry/backoff for send, edit, upload, stream preview/final, and redact paths
-- coalescing for quick fragmented group text bursts, top-level thread split turns, and compatible attachment bursts
+- coalescing for quick fragmented group text bursts, top-level thread split turns, and compatible attachment bursts with short trailing captions reconstructed ahead of media markers
 - media text normalization strips filename-only bodies and keeps real captions with typed markers
 - encrypted media download when Matrix crypto is available
 - rust-crypto startup when `channels.matrix.encryption` is enabled

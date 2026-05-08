@@ -1149,6 +1149,47 @@ test("MatrixAdapter coalesces quick multi-event attachment bursts into one logic
   assert.match(received[0]?.text ?? "", /matrix image attachment unavailable/);
 });
 
+test("MatrixAdapter rewrites trailing text bursts into media captions", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; attachmentCount: number }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, attachmentCount: message.attachments.length });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$img-caption-base",
+      content: {
+        msgtype: "m.image",
+        body: "photo.jpg",
+        filename: "photo.jpg",
+        info: { mimetype: "image/jpeg", size: 42 },
+        url: "mxc://example.org/photo-caption-base",
+      },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$img-caption-text",
+      content: { msgtype: "m.text", body: "look at this" },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.attachmentCount, 1);
+  assert.equal(received[0]?.text, "look at this\n\n[matrix image attachment unavailable]");
+});
+
 test("MatrixAdapter keeps real media captions but strips filename-only bodies", async () => {
   const { runtime } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);

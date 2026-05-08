@@ -21,6 +21,7 @@ type MatrixIngressQueue = {
 const DEFAULT_COALESCE_WINDOW_MS = 1500;
 const DEFAULT_MAX_ITEMS = 6;
 const DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS = 280;
+const MATRIX_ATTACHMENT_SUMMARY_LINE = /^\[matrix .+ attachment(?: unavailable| too large)?\]$/;
 
 function sameIngressContext(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressItem, coalesceWindowMs: number): boolean {
   return (
@@ -45,6 +46,28 @@ function canMergeModes(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressIte
 
   const trimmed = textItem.text.trim();
   return trimmed.length > 0 && trimmed.length <= DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS;
+}
+
+function isAttachmentSummaryBlock(text: string): boolean {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((line) => MATRIX_ATTACHMENT_SUMMARY_LINE.test(line));
+}
+
+function mergeIngressText(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressItem): string {
+  if (a.mode !== b.mode) {
+    const textItem = a.mode === "text" ? a : b.mode === "text" ? b : undefined;
+    const mediaItem = a.mode === "media" ? a : b.mode === "media" ? b : undefined;
+    const caption = textItem?.text.trim();
+    const mediaText = mediaItem?.text.trim();
+    if (caption && mediaText && isAttachmentSummaryBlock(mediaText)) {
+      return `${caption}\n\n${mediaText}`;
+    }
+  }
+
+  return [a.text, b.text].filter(Boolean).join("\n");
 }
 
 export function createMatrixInboundBuffer(params?: {
@@ -75,7 +98,7 @@ export function createMatrixInboundBuffer(params?: {
           eventId: item.eventId,
           senderId: item.senderId,
           chatType: item.chatType,
-          text: [last.text, item.text].filter(Boolean).join("\n"),
+          text: mergeIngressText(last, item),
           content: item.content,
           attachments: [...(last.attachments ?? []), ...(item.attachments ?? [])],
           threadId: item.threadId,

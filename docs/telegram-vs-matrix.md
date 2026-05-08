@@ -38,7 +38,7 @@ Main sources:
 | Media group / album buffering | Yes | Partial | Telegram can merge grouped media into one normalized message. Matrix can accumulate compatible attachment bursts, but still lacks a broad album-normalization layer. |
 | Explicit retry and rate-limit backoff | Yes | Partial | Telegram has exponential retry, rate-limit wait, and pre-connect retry handling. Matrix now retries send/edit/upload/stream paths with backoff, but transport coverage is still narrower. |
 | HTML parse fallback to plain text | Yes | No | Telegram retries plain text when Telegram HTML parsing fails. Matrix has no comparable HTML-parse fallback path. |
-| First-media caption pipeline | Yes | No | Telegram can attach short text as caption on the first media item. Matrix sends text and media as separate message events. |
+| First-media caption pipeline | Yes | Partial | Telegram can attach short text as caption on the first media item. Matrix can now reconstruct some short trailing text followups as captions on buffered media bursts, but still lacks full grouped-media semantics. |
 | Link preview disable toggle | Yes | No | Telegram supports `linkPreview: false`. Matrix has no equivalent adapter-level toggle. |
 | Thread-not-found send fallback | Yes | No | Telegram can retry without `message_thread_id` when a topic is missing. Matrix has no equivalent because threading works differently. |
 | Forwarded flag normalization | Yes | Partial | Telegram sets `isForwarded` from `forward_origin`. Matrix now sets `isForwarded` with bridge/relay heuristics rather than a native forwarded flag. |
@@ -160,7 +160,7 @@ Main sources:
 | Image/audio/video/file support | Yes | Yes | Both cover the shared attachment types |
 | Voice-specific handling | Yes | Partial | Telegram has native voice handling; Matrix treats audio generically |
 | Album/media-group merge | Yes | No | Telegram only |
-| First-item caption logic | Yes | No | Telegram only |
+| First-item caption logic | Yes | Partial | Matrix can reconstruct some coalesced media-followup captions, but not full Telegram media-group caption semantics |
 | Attachment summary text when content is unavailable | Partial | Yes | Matrix keeps `summaryText`; Telegram generally drops failed downloads |
 | Configurable max media size | No | Yes | Matrix `mediaMaxMb` |
 | Encrypted media download | No | Yes | Matrix only |
@@ -325,7 +325,7 @@ These are already implemented and should be treated as non-regression requiremen
 | P1 | Better interactive action UX | Partially closed. Matrix menus now work by reaction and by plain-text reply to the menu message, and menu prompts seed numbered reactions automatically, but still lack Telegram-grade inline UI. | Biggest user-facing UX weakness vs Telegram | This is now better than reaction-only, but still not true inline interaction |
 | P1 | Outbound retry/backoff and rate-limit handling | Mostly closed. Matrix send/edit/upload paths now go through an explicit retry layer. | Important reliability gap for a main channel | Remaining differences are transport polish, not the core retry gap |
 | P1 | Consecutive-message coalescing | Partially closed. Matrix now coalesces some long fragmented group-message bursts and top-level thread split turns, but not general multimessage turns. | Users often send thought fragments in several quick messages | Current behavior is intentionally narrow to avoid regressions |
-| P1 | Multi-event media set aggregation | Partially closed. Buffered long-message bursts can accumulate attachments, and caption-vs-filename media text normalization is cleaner now, but Matrix still lacks a broad grouped-media normalization layer. | Users may send several media events as one intent | The main parity gap remains open |
+| P1 | Multi-event media set aggregation | Partially closed. Buffered long-message bursts can accumulate attachments, trailing short text can now reconstruct as a media caption, and caption-vs-filename media text normalization is cleaner now, but Matrix still lacks a broad grouped-media normalization layer. | Users may send several media events as one intent | The main parity gap remains open |
 
 ### P2 - Strong follow-up improvements for Matrix
 
@@ -334,7 +334,7 @@ These are already implemented and should be treated as non-regression requiremen
 | P2 | Better command discoverability | Partially closed. Matrix help and menu copy can guide users better, but Matrix still cannot expose native platform command registration. | Main-channel usability issue for `/help`, `/model`, `/archive` | Still mostly a help/menu UX problem |
 | P2 | Better model-selection UX | Partially closed. Model selection now works via reaction or plain-text reply, but still lacks Telegram-style inline clarity. | Matrix is the main channel, so model-switch UX matters more | Functional, but still less obvious than Telegram |
 | P2 | Forwarded / relayed message normalization if detectable | Matrix does not currently expose forwarded-state semantics in normalized messages | Useful context for agent behavior | Depends on what can be detected reliably in Matrix events |
-| P2 | Better multimessage user-intent reconstruction | Partially closed. Matrix now extends compatible buffered text/media bursts, but still avoids broad turn reconstruction. | Improves quality in busy room usage | Separate from strict dedupe/replay behavior |
+| P2 | Better multimessage user-intent reconstruction | Partially closed. Matrix now extends compatible buffered text/media bursts and reconstructs some short trailing media captions, but still avoids broad turn reconstruction. | Improves quality in busy room usage | Separate from strict dedupe/replay behavior |
 | P2 | Delivery-control polish where feasible | Matrix lacks some ergonomic delivery knobs compared to Telegram | Lower impact than reliability and interaction UX | Only worth doing if client behavior is predictable |
 
 ### P3 - Nice-to-have / low-value parity work

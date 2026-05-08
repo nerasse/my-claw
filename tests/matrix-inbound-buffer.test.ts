@@ -142,6 +142,6 @@ test("matrix inbound buffer coalesces media with a short trailing text caption",
 
   assert.equal(second.mergedIntoEventId, "$a");
   assert.equal(second.item.mode, "media");
-  assert.match(second.item.text, /caption/);
+  assert.equal(second.item.text, "caption\n\n[matrix image attachment]");
   assert.equal(second.item.attachments?.length, 1);
 });
