@@ -656,6 +656,8 @@ test("MatrixAdapter confirmTool sends approval prompt and returns approval decis
     },
     cancelApproval: () => false,
     resolveAction: async () => undefined,
+    persistPendingApprovals: async () => {},
+    restorePendingApprovals: async () => {},
   };
 
   await adapter.start();
@@ -1070,6 +1072,72 @@ test("MatrixAdapter marks bridge-style inbound messages as forwarded", async () 
   assert.deepEqual(received, [true]);
 });
 
+test("MatrixAdapter strips Matrix reply fallback from normalized text", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; replyToText?: string }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, replyToText: message.replyToText });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$reply-fallback",
+      content: {
+        msgtype: "m.text",
+        body: "> <@alice:example.org> quoted message\n\nactual reply body",
+      },
+      relation: { "m.in_reply_to": { event_id: "$reply" } },
+    }),
+  });
+
+  assert.deepEqual(received, [{ text: "actual reply body", replyToText: "quoted message" }]);
+});
+
+test("MatrixAdapter does not coalesce fragmented group bursts across different reply targets", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; replyToId?: string }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, replyToId: message.replyToId });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$frag-reply-1",
+      content: { msgtype: "m.text", body: "a".repeat(180) },
+      relation: { "m.in_reply_to": { event_id: "$reply-a" } },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$frag-reply-2",
+      content: { msgtype: "m.text", body: "b".repeat(180) },
+      relation: { "m.in_reply_to": { event_id: "$reply-b" } },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+
+  assert.equal(received.length, 2);
+  assert.equal(received[0]?.replyToId, "$reply-a");
+  assert.equal(received[1]?.replyToId, "$reply-b");
+});
+
 test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flow", async () => {
   const { runtime, calls } = createRuntimeMock();
   const adapter = new MatrixAdapter(
@@ -1136,6 +1204,119 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
   } finally {
     fetchMock.mock.restore();
   }
+});
+
+test("MatrixAdapter restores pending action menus after restart", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const firstRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const firstAdapter = new MatrixAdapter(
+      createConfig({ groups: { "!room:test": { requireMention: false } } }),
+      new Set(["@u1:example.org"]),
+      firstRuntime.runtime as never,
+    );
+
+    firstAdapter.onCommand(async () => ({
+      text: "Current model: Base\nReply with a number/name, react to this message, or send `/model <number|name>`:\n1️⃣ Base [selected]\n2️⃣ Alt",
+      buttons: [
+        { label: "Base [selected]", action: "mdl:0" },
+        { label: "Alt", action: "mdl:1" },
+      ],
+    }));
+    firstAdapter.onAction(async ({ data }) => ({
+      text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
+      buttons: [
+        { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
+        { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
+      ],
+    }));
+
+    await firstAdapter.start();
+    await firstRuntime.runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({ id: "$menu-root-restart", content: { msgtype: "m.text", body: "/model" } }),
+    });
+    await firstAdapter.stop();
+
+    const secondRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const secondAdapter = new MatrixAdapter(
+      createConfig({ groups: { "!room:test": { requireMention: false } } }),
+      new Set(["@u1:example.org"]),
+      secondRuntime.runtime as never,
+    );
+
+    secondAdapter.onAction(async ({ data }) => ({
+      text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
+      buttons: [
+        { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
+        { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
+      ],
+    }));
+
+    await secondAdapter.start();
+    await secondRuntime.runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({
+        id: "$reply-after-restart",
+        content: { msgtype: "m.text", body: "2" },
+        relation: { "m.in_reply_to": { event_id: "$evt1" } },
+      }),
+    });
+
+    const sendCalls = secondRuntime.calls.filter((call) => call.method === "sendMessage");
+    const edited = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+    assert.match(String((edited["m.new_content"] as Record<string, unknown>)?.["body"] ?? ""), /Model changed to Alt/);
+    await secondAdapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter aborts plain media fetches that exceed timeout", async () => {
+  const { runtime } = createRuntimeMock();
+  class TestMatrixAdapter extends MatrixAdapter {
+    protected override mediaDownloadTimeoutMs(): number {
+      return 5;
+    }
+  }
+  const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  const originalFetch = globalThis.fetch;
+  const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+    await new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    });
+    return new Response() as never;
+  });
+
+  try {
+    await assert.rejects(
+      adapter.send("!room:test", {
+        text: "",
+        attachments: [{ type: "file", url: "https://example.com/slow.bin", filename: "slow.bin" }],
+      }),
+    );
+  } finally {
+    fetchMock.mock.restore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("MatrixAdapter drops encrypted events when crypto is unavailable without routing them", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({ id: "$enc1", type: "m.room.encrypted", content: { ciphertext: "abc" } }),
+  });
+
+  assert.deepEqual(received, []);
 });
 
 test("MatrixAdapter decrypts encrypted media attachments when crypto is available", async () => {

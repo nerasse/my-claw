@@ -4,9 +4,13 @@ import type { MatrixEventContent } from "./adapter-types.ts";
 export type MatrixBufferedIngressItem = {
   eventId: string;
   senderId: string;
+  chatType: "dm" | "group";
   text: string;
   content: MatrixEventContent;
   attachments?: Attachment[];
+  threadId?: string;
+  replyToId?: string;
+  mode: "text" | "media";
   timestampMs: number;
 };
 
@@ -43,15 +47,23 @@ export function createMatrixInboundBuffer(params?: {
       if (
         last &&
         last.senderId === item.senderId &&
+        last.chatType === item.chatType &&
+        last.threadId === item.threadId &&
+        last.replyToId === item.replyToId &&
+        last.mode === item.mode &&
         item.timestampMs - last.timestampMs <= coalesceWindowMs &&
         queue.items.length < maxItems
       ) {
         const merged: MatrixBufferedIngressItem = {
           eventId: item.eventId,
           senderId: item.senderId,
+          chatType: item.chatType,
           text: [last.text, item.text].filter(Boolean).join("\n"),
           content: item.content,
           attachments: [...(last.attachments ?? []), ...(item.attachments ?? [])],
+          threadId: item.threadId,
+          replyToId: item.replyToId,
+          mode: item.mode,
           timestampMs: item.timestampMs,
         };
         queue.items[queue.items.length - 1] = merged;

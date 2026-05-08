@@ -23,6 +23,7 @@ import {
   matrixAttachmentTypeFromMsgType,
   messageBody,
   resolveMatrixMessageAttachmentSummary,
+  stripMatrixReplyFallback,
   threadRootId,
   trimString,
 } from "./matrix/adapter-helpers.ts";
@@ -101,6 +102,15 @@ type PendingBufferedMatrixIngress = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type PersistedPendingMatrixAction = {
+  roomId: string;
+  eventId: string;
+  buttons: ConfirmationButton[];
+  threadId?: string;
+  stateKey?: string;
+  expiresAt: number;
+};
+
 export class MatrixAdapter implements ChannelAdapter {
   readonly platform = "matrix" as const;
   private runtime;
@@ -171,6 +181,7 @@ export class MatrixAdapter implements ChannelAdapter {
     this.timelineOff = this.runtime.onTimeline((payload) =>
       this.handleTimeline(payload.room, payload.event, payload.toStartOfTimeline, payload.removed, payload.liveEvent)
     );
+    await this.restorePendingActions().catch(() => undefined);
     this.runtime.sdk.on(RoomEvent.MyMembership, this.handleMembershipChange);
     await this.runtime.start();
     this.selfUserId = this.runtime.sdk.getUserId() ?? this.config.userId;
@@ -189,6 +200,7 @@ export class MatrixAdapter implements ChannelAdapter {
     }
     this.pendingBufferedIngress.clear();
     this.typingRefs.clear();
+    await this.persistPendingActions().catch(() => undefined);
     this.pendingActions.clear();
     await this.inboundDeduper?.stop().catch(() => undefined);
     await this.runtime.stop();
@@ -284,6 +296,10 @@ export class MatrixAdapter implements ChannelAdapter {
     });
   }
 
+  runtimeStoragePaths() {
+    return this.runtime.getStoragePaths();
+  }
+
   async confirmTool(request: ToolApprovalRequest, approvalHandler: MatrixApprovalHandler): Promise<ApprovalDecision> {
     const approvalPromise = approvalHandler.requestApproval(request);
     try {
@@ -323,6 +339,12 @@ export class MatrixAdapter implements ChannelAdapter {
     }
     const eventType = event.getType();
     if (eventType === EventType.RoomMessageEncrypted) {
+      if (liveEvent && !this.runtime.encryptionReady()) {
+        await matrixLog("warn", "matrix encrypted message skipped: crypto unavailable", {
+          roomId: room.roomId,
+          eventId: event.getId(),
+        });
+      }
       return;
     }
     const eventId = event.getId()?.trim() || "";
@@ -353,6 +375,9 @@ export class MatrixAdapter implements ChannelAdapter {
     }
     const sender = event.getSender();
     if (!sender || sender === this.selfUserId) {
+      return;
+    }
+    if (this.isSystemMatrixSender(sender)) {
       return;
     }
 
@@ -464,7 +489,7 @@ export class MatrixAdapter implements ChannelAdapter {
                 threadId: pending.threadId,
               });
               if (response) {
-                await this.applyActionResponse(roomId, replyId, pending.threadId, response);
+                await this.applyActionResponse(roomId, replyId, pending.threadId, response, pending.stateKey);
               }
               await commitInboundEventIfClaimed();
             } catch (err) {
@@ -581,11 +606,15 @@ export class MatrixAdapter implements ChannelAdapter {
     const coalesced = this.inboundBuffer.coalesce(params.roomId, {
       eventId: params.eventId,
       senderId: params.message.userId,
+      chatType: params.message.chatType,
       text: params.message.text,
       content: params.message.raw && typeof params.message.raw === "object"
         ? ((params.message.raw as MatrixEvent).getContent() as MatrixEventContent)
         : {},
       attachments: params.message.attachments,
+      threadId: params.message.threadId,
+      replyToId: params.message.replyToId,
+      mode: params.message.attachments.length > 0 ? "media" : "text",
       timestampMs: Date.now(),
     });
     const bufferedItem = coalesced.item;
@@ -729,7 +758,7 @@ export class MatrixAdapter implements ChannelAdapter {
         reactionKey: reaction.key,
       });
       if (!response) return;
-      await this.applyActionResponse(room.roomId, reaction.eventId, pending.threadId, response);
+      await this.applyActionResponse(room.roomId, reaction.eventId, pending.threadId, response, pending.stateKey);
     } catch (err) {
       await this.reportProcessingError(room.roomId, reaction.eventId, err, pending.threadId);
     }
@@ -773,6 +802,7 @@ export class MatrixAdapter implements ChannelAdapter {
     eventId: string,
     buttons: ConfirmationButton[],
     threadId?: string,
+    stateKey?: string,
   ): void {
     rememberMatrixPendingAction({
       pendingActions: this.pendingActions,
@@ -780,9 +810,11 @@ export class MatrixAdapter implements ChannelAdapter {
       eventId,
       buttons,
       threadId,
+      stateKey,
       ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
       limit: MATRIX_PENDING_ACTION_LIMIT,
     });
+    void this.persistPendingActions().catch(() => undefined);
   }
 
   private resolvePendingAction(roomId: string, eventId: string): PendingMatrixAction | undefined {
@@ -794,19 +826,64 @@ export class MatrixAdapter implements ChannelAdapter {
     eventId: string,
     threadId: string | undefined,
     response: { text?: string; buttons?: ConfirmationButton[]; answerText?: string },
+    stateKey?: string,
   ): Promise<void> {
     await applyMatrixActionResponse({
       pendingActions: this.pendingActions,
       roomId,
       eventId,
       threadId,
+      stateKey,
       response,
       send: (chatId, message) => this.send(chatId, message),
       editPendingActionMessage: (params) =>
-        this.editPendingActionMessage(params.roomId, params.eventId, params.text, params.threadId),
+        this.editPendingActionMessage(params.roomId, params.eventId, params.text, params.threadId, params.notice),
       ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
       limit: MATRIX_PENDING_ACTION_LIMIT,
     });
+    await this.persistPendingActions().catch(() => undefined);
+  }
+
+  private async persistPendingActions(): Promise<void> {
+    const entries: PersistedPendingMatrixAction[] = [];
+    const now = Date.now();
+    for (const pending of this.pendingActions.values()) {
+      if (pending.expiresAt <= now) {
+        continue;
+      }
+      entries.push({
+        roomId: pending.roomId,
+        eventId: pending.eventId,
+        buttons: pending.buttons,
+        threadId: pending.threadId,
+        stateKey: pending.stateKey,
+        expiresAt: pending.expiresAt,
+      });
+    }
+    await mkdir(this.runtime.getStoragePaths().rootDir, { recursive: true });
+    await writeFile(this.runtime.getStoragePaths().pendingActionsPath, JSON.stringify(entries, null, 2));
+  }
+
+  private async restorePendingActions(): Promise<void> {
+    const raw = await readFile(this.runtime.getStoragePaths().pendingActionsPath, "utf-8").catch(() => "[]");
+    const parsed = JSON.parse(raw) as PersistedPendingMatrixAction[];
+    const now = Date.now();
+    this.pendingActions.clear();
+    for (const entry of parsed) {
+      if (!entry || entry.expiresAt <= now) {
+        continue;
+      }
+      rememberMatrixPendingAction({
+        pendingActions: this.pendingActions,
+        roomId: entry.roomId,
+        eventId: entry.eventId,
+        buttons: entry.buttons,
+        threadId: entry.threadId,
+        stateKey: entry.stateKey,
+        ttlMs: Math.max(1, entry.expiresAt - now),
+        limit: MATRIX_PENDING_ACTION_LIMIT,
+      });
+    }
   }
 
   private async editPendingActionMessage(
@@ -814,6 +891,7 @@ export class MatrixAdapter implements ChannelAdapter {
     eventId: string,
     text: string,
     threadId?: string,
+    notice?: boolean,
   ): Promise<void> {
     await editMatrixPendingActionMessage({
       sendMessage: async (targetRoomId, content) => {
@@ -823,6 +901,7 @@ export class MatrixAdapter implements ChannelAdapter {
       eventId,
       text,
       threadId,
+      notice,
     });
   }
 
@@ -859,15 +938,16 @@ export class MatrixAdapter implements ChannelAdapter {
       threadContext = undefined;
     }
     const roomContext = await this.resolveRoomHistoryContext(room.roomId, chatType, preparedRoomHistory, contextVisibility);
+    const strippedText = stripMatrixReplyFallback(text, Boolean(replyToId));
     const mentions = resolveInboundMatrixMentions({
       content,
-      text,
+      text: strippedText,
       userId: this.selfUserId ?? this.config.userId,
       displayName: selfDisplayName,
     });
     const normalizedText = this.resolveNormalizedInboundText({
       content,
-      text,
+      text: strippedText,
       attachments,
     });
 
@@ -1023,7 +1103,7 @@ export class MatrixAdapter implements ChannelAdapter {
           readIdleTimeoutMs: MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS,
         });
       } else {
-        const response = await fetch(httpUrl ?? mxcUrl, {
+        const response = await this.fetchWithTimeout(httpUrl ?? mxcUrl, {
           headers: { Accept: "*/*" },
         });
         if (!response.ok) {
@@ -1200,7 +1280,7 @@ export class MatrixAdapter implements ChannelAdapter {
       return;
     }
 
-    const response = await fetch(source);
+    const response = await this.fetchWithTimeout(source);
     if (!response.ok) {
       throw new Error(`Matrix attachment fetch failed: HTTP ${response.status}`);
     }
@@ -1526,7 +1606,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
   private isForwardedMatrixMessage(event: MatrixEvent, content: MatrixEventContent): boolean {
     const sender = event.getSender();
-    if (this.isBridgeStyleSender(sender)) {
+    if (this.isBridgeRelaySender(sender)) {
       return true;
     }
 
@@ -1537,7 +1617,7 @@ export class MatrixAdapter implements ChannelAdapter {
     );
   }
 
-  private isBridgeStyleSender(userId?: string): boolean {
+  private isBridgeRelaySender(userId?: string): boolean {
     const trimmed = userId?.trim();
     if (!trimmed) {
       return false;
@@ -1548,12 +1628,43 @@ export class MatrixAdapter implements ChannelAdapter {
     return localpart.startsWith("_");
   }
 
+  private isSystemMatrixSender(userId?: string): boolean {
+    const trimmed = userId?.trim();
+    if (!trimmed) {
+      return true;
+    }
+    const withoutAt = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+    const separator = withoutAt.indexOf(":");
+    const localpart = separator >= 0 ? withoutAt.slice(0, separator) : withoutAt;
+    if (!localpart) {
+      return true;
+    }
+    return localpart === "server" || localpart === "appservice";
+  }
+
   private resolveMatrixCrypto(): MatrixCryptoFacade | undefined {
     return this.runtime.mediaCrypto;
   }
 
+  private async fetchWithTimeout(input: string, init?: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.mediaDownloadTimeoutMs());
+    try {
+      return await fetch(input, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private mediaMaxBytes(): number {
     return Math.max(1, this.config.mediaMaxMb ?? 25) * 1024 * 1024;
+  }
+
+  protected mediaDownloadTimeoutMs(): number {
+    return MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS;
   }
 
   private mimeFromExt(ext: string): string {

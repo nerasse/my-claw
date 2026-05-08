@@ -1,8 +1,9 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { MyClawConfig } from "../config.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "./types.ts";
 import { ModelPicker } from "./model-picker.ts";
-import { createMatrixApprovalStore } from "./matrix/approval-store.ts";
+import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./matrix/approval-store.ts";
 
 type MatrixChatType = "dm" | "group";
 const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
@@ -26,6 +27,8 @@ export interface MatrixApprovalHandler {
   requestApproval: (request: ToolApprovalRequest) => Promise<ApprovalDecision>;
   cancelApproval: (id: string) => boolean;
   resolveAction: (ctx: MatrixActionContext) => Promise<MatrixActionResponse | undefined>;
+  persistPendingApprovals: () => Promise<void>;
+  restorePendingApprovals: () => Promise<void>;
 }
 
 interface MatrixSessionHandlerDeps {
@@ -34,8 +37,6 @@ interface MatrixSessionHandlerDeps {
   modelPicker: ModelPicker;
   approvalHandler?: MatrixApprovalHandler;
 }
-
-const matrixApprovalStore = createMatrixApprovalStore();
 
 function resolveMatrixSessionId(params: {
   config: MyClawConfig;
@@ -151,14 +152,33 @@ function parseApprovalAction(data: string): { id: string; decision: ApprovalDeci
   return { id, decision: "deny" };
 }
 
-export function createMatrixApprovalHandler(): MatrixApprovalHandler {
+export function createMatrixApprovalHandler(storagePath?: string): MatrixApprovalHandler {
+  const matrixApprovalStore = createMatrixApprovalStore(undefined, { unrefTimers: true });
+  const persist = async () => {
+    if (!storagePath) return;
+    const snapshot = matrixApprovalStore.snapshot();
+    const dir = storagePath.slice(0, storagePath.lastIndexOf("/"));
+    await mkdir(dir, { recursive: true });
+    await writeFile(storagePath, JSON.stringify(snapshot, null, 2));
+  };
+
+  const restore = async () => {
+    if (!storagePath) return;
+    const raw = await readFile(storagePath, "utf-8").catch(() => "[]");
+    matrixApprovalStore.restore(JSON.parse(raw) as PersistedPendingMatrixApproval[]);
+  };
+
   return {
     async requestApproval(request) {
-      return await matrixApprovalStore.request(request);
+      const resultPromise = matrixApprovalStore.request(request);
+      await persist().catch(() => undefined);
+      return await resultPromise;
     },
 
     cancelApproval(id) {
-      return matrixApprovalStore.cancel(id);
+      const cancelled = matrixApprovalStore.cancel(id);
+      void persist().catch(() => undefined);
+      return cancelled;
     },
 
     async resolveAction({ data }) {
@@ -170,11 +190,20 @@ export function createMatrixApprovalHandler(): MatrixApprovalHandler {
           text: "Approval request expired or already resolved.",
         };
       }
+      await persist().catch(() => undefined);
       return buildMatrixApprovalMenu({
         request: resolved.request,
         expired: resolved.expired,
         decision: resolved.expired ? undefined : parsed.decision,
       });
+    },
+
+    async persistPendingApprovals() {
+      await persist();
+    },
+
+    async restorePendingApprovals() {
+      await restore();
     },
   };
 }

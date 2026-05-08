@@ -133,6 +133,29 @@ export function messageBody(content: MatrixEventContent): string {
   return typeof content.body === "string" ? content.body : "";
 }
 
+export function stripMatrixReplyFallback(text: string, hasReplyTo: boolean): string {
+  if (!hasReplyTo) {
+    return text;
+  }
+
+  const normalized = text.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("> ")) {
+    return text;
+  }
+
+  const splitIndex = normalized.indexOf("\n\n");
+  if (splitIndex === -1) {
+    return text;
+  }
+
+  const fallback = normalized.slice(0, splitIndex);
+  if (!fallback.split("\n").every((line) => line.startsWith("> "))) {
+    return text;
+  }
+
+  return normalized.slice(splitIndex + 2).trimStart();
+}
+
 export function threadRootId(event: MatrixEvent): string | undefined {
   const relation = event.getRelation();
   if (relation?.rel_type === RelationType.Thread && typeof relation.event_id === "string") {

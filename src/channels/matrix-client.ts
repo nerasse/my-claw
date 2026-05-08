@@ -174,6 +174,10 @@ export class MatrixClientRuntime {
     return this.crypto;
   }
 
+  encryptionReady(): boolean {
+    return this.crypto !== undefined;
+  }
+
   getStoragePaths(): MatrixRuntimeStoragePaths {
     return this.storagePaths;
   }

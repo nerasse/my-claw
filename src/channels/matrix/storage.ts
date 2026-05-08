@@ -14,6 +14,8 @@ export interface MatrixRuntimeStoragePaths {
   cryptoSnapshotPath: string;
   cryptoDatabasePrefix: string;
   inboundDedupePath: string;
+  pendingActionsPath: string;
+  pendingApprovalsPath: string;
 }
 
 function sanitizeMatrixPathSegment(value: string): string {
@@ -55,6 +57,8 @@ export function resolveMatrixRuntimeStoragePaths(
     cryptoSnapshotPath: join(rootDir, "crypto-idb-snapshot.json"),
     cryptoDatabasePrefix: `my-claw-matrix-default-${tokenHash}`,
     inboundDedupePath: join(rootDir, "inbound-dedupe.json"),
+    pendingActionsPath: join(rootDir, "pending-actions.json"),
+    pendingApprovalsPath: join(rootDir, "pending-approvals.json"),
   };
 }
 

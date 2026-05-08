@@ -5,6 +5,7 @@ import {
   createMatrixActionHandler,
   createMatrixCommandHandler,
 } from "../src/channels/matrix-session-handlers.ts";
+import { editPendingActionMessage } from "../src/channels/matrix/adapter-actions.ts";
 import { getMatrixHelpText } from "../src/channels/matrix-commands.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
@@ -287,4 +288,24 @@ test("matrix approval menu explains reply and reaction choices", async () => {
 
   assert.match(response?.text ?? "", /approved once/i);
   assert.equal(await pending, "allow-once");
+});
+
+test("matrix approval updates stay as notice edits", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const approvalText = "Tool `bash` approved once.";
+
+  await editPendingActionMessage({
+    sendMessage: async (_roomId, content) => {
+      sent.push(content);
+    },
+    roomId: "!room:test",
+    eventId: "$evt1",
+    text: approvalText,
+    notice: true,
+  });
+
+  const content = sent[0] ?? {};
+  const newContent = content["m.new_content"] as Record<string, unknown>;
+  assert.equal(content["msgtype"], "m.notice");
+  assert.equal(newContent?.["msgtype"], "m.notice");
 });

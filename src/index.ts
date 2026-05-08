@@ -95,12 +95,13 @@ async function main() {
   if (isMatrixChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist);
     const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
+    const matrixStoragePaths = matrix.runtimeStoragePaths();
     const commandHandler = createMatrixCommandHandler({
       config,
       sessionManager,
       modelPicker,
     });
-    const approvalHandler = createMatrixApprovalHandler();
+    const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
       config,
       sessionManager,
@@ -148,6 +149,7 @@ async function main() {
       }
       return await matrix.confirmTool(request, approvalHandler);
     });
+    await approvalHandler.restorePendingApprovals();
     await matrix.start();
     adapters.push(matrix);
   }

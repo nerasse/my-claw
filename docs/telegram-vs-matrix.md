@@ -33,15 +33,15 @@ Main sources:
 | Native webhook mode | Yes | No | Telegram can run in polling or webhook mode. Matrix currently runs via Matrix SDK sync only. |
 | Native platform command registration | Yes | No | Telegram publishes commands via `setMyCommands()`. Matrix only parses `/...` messages locally. |
 | Inline keyboard callbacks | Yes | No | Telegram has true inline buttons with callback queries. Matrix uses reaction-driven actions instead. |
-| Accept / Deny confirmation UI | Partial | No | Telegram adapter has `confirm()` with Accept/Deny and timeout. This is adapter-level and not mirrored in Matrix. |
-| Long text batching across multiple inbound messages | Yes | No | Telegram can merge rapid consecutive long messages from the same user into one logical input. |
-| Media group / album buffering | Yes | No | Telegram can merge grouped media into one normalized message. Matrix has no equivalent album buffer layer. |
-| Explicit retry and rate-limit backoff | Yes | No | Telegram has exponential retry, rate-limit wait, and pre-connect retry handling. Matrix relies on SDK/runtime behavior instead. |
+| Accept / Deny confirmation UI | Partial | Partial | Telegram adapter has generic `confirm()` with Accept/Deny and timeout. Matrix has a native tool-approval prompt flow, but not a general adapter-wide confirm primitive. |
+| Long text batching across multiple inbound messages | Yes | Partial | Telegram can merge rapid consecutive long messages from the same user into one logical input. Matrix now coalesces some rapid fragmented bursts when reply/thread context matches. |
+| Media group / album buffering | Yes | Partial | Telegram can merge grouped media into one normalized message. Matrix can accumulate compatible attachment bursts, but still lacks a broad album-normalization layer. |
+| Explicit retry and rate-limit backoff | Yes | Partial | Telegram has exponential retry, rate-limit wait, and pre-connect retry handling. Matrix now retries send/edit/upload/stream paths with backoff, but transport coverage is still narrower. |
 | HTML parse fallback to plain text | Yes | No | Telegram retries plain text when Telegram HTML parsing fails. Matrix has no comparable HTML-parse fallback path. |
 | First-media caption pipeline | Yes | No | Telegram can attach short text as caption on the first media item. Matrix sends text and media as separate message events. |
 | Link preview disable toggle | Yes | No | Telegram supports `linkPreview: false`. Matrix has no equivalent adapter-level toggle. |
 | Thread-not-found send fallback | Yes | No | Telegram can retry without `message_thread_id` when a topic is missing. Matrix has no equivalent because threading works differently. |
-| Forwarded flag normalization | Yes | No | Telegram sets `isForwarded` from `forward_origin`. Matrix currently normalizes inbound messages with `isForwarded: false`. |
+| Forwarded flag normalization | Yes | Partial | Telegram sets `isForwarded` from `forward_origin`. Matrix now sets `isForwarded` with bridge/relay heuristics rather than a native forwarded flag. |
 
 ### Matrix > Telegram
 
@@ -137,7 +137,7 @@ Main sources:
 | DM inbound messages | Yes | Yes | Both |
 | Group/room inbound messages | Yes | Yes | Both |
 | Ignore self messages | Partial | Yes | Telegram ignores bot messages; Matrix ignores own sender id |
-| Forwarded flag normalization | Yes | No | Matrix currently always normalizes `isForwarded` to `false` |
+| Forwarded flag normalization | Yes | Partial | Matrix sets `isForwarded` via bridge/relay heuristics, not a native Matrix forwarded flag |
 | Reply id normalization | No | Yes | Matrix fills `replyToId` |
 | Reply text normalization | No | Yes | Matrix fetches and summarizes reply context |
 | Reply sender normalization | No | Yes | Matrix fills `replyToSender` |
@@ -146,8 +146,8 @@ Main sources:
 | Recent room context normalization | No | Yes | Matrix fills `roomContext` |
 | Mentioned-bot signal | No | Yes | Matrix fills `mentionsBot` |
 | Poll normalization | No | Yes | Matrix converts poll events to text |
-| Long text inbound batching | Yes | No | Telegram only |
-| Media group inbound buffering | Yes | No | Telegram only |
+| Long text inbound batching | Yes | Partial | Matrix coalesces some rapid fragmented bursts, but not full general turn batching |
+| Media group inbound buffering | Yes | Partial | Matrix can merge compatible attachment bursts, but not full album semantics |
 | Per-room serialized ingress | No | Yes | Matrix protects room history ordering |
 
 ### Attachments and media
@@ -212,9 +212,9 @@ Main sources:
 
 | Feature | Telegram | Matrix | Notes |
 |---|---|---|---|
-| Retry wrapper for sends | Yes | No | Telegram explicit `withRetry()` |
-| Explicit rate-limit wait | Yes | No | Telegram handles 429 + `retry_after` |
-| Pre-connect network retry | Yes | No | Telegram retries DNS/socket pre-connect failures |
+| Retry wrapper for sends | Yes | Yes | Telegram explicit `withRetry()`; Matrix now wraps send/edit/upload/stream delivery paths with `withMatrixRetry()` |
+| Explicit rate-limit wait | Yes | Partial | Telegram handles 429 + `retry_after`; Matrix honors `retry_after_ms` when surfaced on retryable delivery errors |
+| Pre-connect network retry | Yes | Partial | Telegram retries DNS/socket pre-connect failures. Matrix retries many transient connect/reset/closed delivery errors, but not every transport surface |
 | Persisted transport state | No | Yes | Matrix sync store |
 | Clean shutdown marker | No | Yes | Matrix only |
 | Trusted replay after clean shutdown | No | Yes | Matrix only |
@@ -237,7 +237,7 @@ Main sources:
 
 | If you need... | Better today |
 |---|---|
-| Simple bot transport, webhook support, true inline buttons, and stronger send retry behavior | Telegram |
+| Simple bot transport, webhook support, and true inline buttons | Telegram |
 | Rich room policy, real threads, contextual message reconstruction, replay safety, and E2EE | Matrix |
 
 The biggest Telegram-side gaps in Matrix are UI and transport ergonomics.

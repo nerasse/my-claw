@@ -39,6 +39,8 @@ export type TypingRef = {
 export type MatrixEventContent = Record<string, unknown>;
 export type MatrixRoomConfig = NonNullable<MatrixChannelConfig["groups"]>[string];
 export type PendingMatrixAction = {
+  roomId: string;
+  eventId: string;
   buttons: ConfirmationButton[];
   threadId?: string;
   expiresAt: number;

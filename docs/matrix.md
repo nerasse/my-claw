@@ -17,14 +17,18 @@ Implemented as a split adapter:
 
 - inbound DM and room messages
 - Matrix poll events normalized to text for triggers and history
+- reaction and plain-text reply actions for menus and approvals
 - outbound text, replies, thread replies, attachments
 - Markdown to Matrix HTML
 - read receipts and typing
 - reactions for status and `/model` selection
 - streaming previews via `m.replace`
+- retry/backoff for send, edit, upload, stream preview/final, and redact paths
+- coalescing for quick fragmented text bursts and compatible attachment bursts
 - encrypted media download when Matrix crypto is available
 - rust-crypto startup when `channels.matrix.encryption` is enabled
 - decrypted `m.room.encrypted` handling after Matrix SDK decryption completes
+- live encrypted events are skipped with a warning when crypto is unavailable
 - encrypted media upload in encrypted rooms
 - local Matrix sync cache and crypto snapshot persisted under `~/.my-claw/matrix/accounts/...`
 
@@ -47,6 +51,7 @@ Implemented as a split adapter:
 ## Context
 
 - reply context: sender + quoted text
+- Matrix reply fallback quotes are stripped from normalized reply text
 - thread root context
 - pending-only recent room context via `historyLimit`
 - `contextVisibility`: `all | allowlist | allowlist_quote`
@@ -56,7 +61,10 @@ Implemented as a split adapter:
 
 - `replyToMode`: `off | first | all | batched`
 - text chunking via `textChunkLimit` and `chunkMode: length | newline`
+- plain media HTTP fetches use a timeout guard
 - stream fallback redacts the draft before normal final send when needed
+- pending action menus persist across restart
+- pending tool approvals persist across restart and restore as expired prompts
 - cold start drops pre-startup backlog unless a clean shutdown persisted sync state
 - inbound dedupe persists committed events and live claims under the Matrix account storage root
 

@@ -74,6 +74,8 @@ export function rememberPendingAction(params: {
 
   prunePendingActions(params.pendingActions);
   params.pendingActions.set(key, {
+    roomId: params.roomId,
+    eventId: params.eventId,
     buttons: params.buttons,
     threadId: params.threadId,
     stateKey: params.stateKey,
@@ -121,10 +123,12 @@ export async function editPendingActionMessage(params: {
   eventId: string;
   text: string;
   threadId?: string;
+  notice?: boolean;
 }): Promise<void> {
   const formatted = buildMatrixFormattedText(params.text);
+  const msgtype = params.notice ? MsgType.Notice : MsgType.Text;
   const newContent: Record<string, unknown> = {
-    msgtype: MsgType.Text,
+    msgtype,
     body: formatted.body,
   };
   if (formatted.formatted_body) {
@@ -136,7 +140,7 @@ export async function editPendingActionMessage(params: {
   }
 
   const content: Record<string, unknown> = {
-    msgtype: MsgType.Text,
+    msgtype,
     body: `* ${formatted.body}`,
     "m.new_content": newContent,
     "m.relates_to": buildReplaceRelation(params.eventId, params.threadId),
@@ -157,20 +161,27 @@ export async function applyActionResponse(params: {
   roomId: string;
   eventId: string;
   threadId: string | undefined;
-   stateKey?: string;
+  stateKey?: string;
   response: { text?: string; buttons?: ConfirmationButton[]; answerText?: string };
   send: (chatId: string, message: OutgoingMessage) => Promise<void>;
-  editPendingActionMessage: (params: { roomId: string; eventId: string; text: string; threadId?: string }) => Promise<void>;
+  editPendingActionMessage: (params: {
+    roomId: string;
+    eventId: string;
+    text: string;
+    threadId?: string;
+    notice?: boolean;
+  }) => Promise<void>;
   ttlMs: number;
   limit: number;
 }): Promise<void> {
   if (params.response.text?.trim()) {
     await params.editPendingActionMessage({
-      roomId: params.roomId,
-      eventId: params.eventId,
-      text: params.response.text,
-      threadId: params.threadId,
-    });
+        roomId: params.roomId,
+        eventId: params.eventId,
+        text: params.response.text,
+        threadId: params.threadId,
+        notice: params.stateKey === "approval",
+      });
   } else if (params.response.answerText?.trim()) {
     await params.send(params.roomId, {
       text: params.response.answerText,
