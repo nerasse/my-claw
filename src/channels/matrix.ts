@@ -480,7 +480,7 @@ export class MatrixAdapter implements ChannelAdapter {
       const commandText = this.commandText(text, room, selfDisplayName);
       const parsedCommand = commandText ? parseMatrixCommand(commandText) : null;
       if (parsedCommand && this.commandHandler) {
-        if (parsedCommand.command === "help") {
+        if (parsedCommand.command === "help" || parsedCommand.command === "commands") {
           await this.send(roomId, {
             text: getMatrixHelpText(),
             replyToId: event.getId(),
@@ -500,6 +500,12 @@ export class MatrixAdapter implements ChannelAdapter {
             { roomId, threadId: rootThreadId },
           );
           if (!response) {
+            await this.send(roomId, {
+              text: `Unknown command: /${parsedCommand.command}\nUse /commands to list available commands.`,
+              replyToId: event.getId(),
+              threadId: rootThreadId,
+              notice: true,
+            });
             await commitInboundEventIfClaimed();
             return;
           }

@@ -621,6 +621,24 @@ test("MatrixAdapter handles matrix commands inline", async () => {
   assert.equal(calls.some((call) => call.method === "sendMessage"), true);
 });
 
+test("MatrixAdapter reports unknown matrix commands with guidance", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+
+  adapter.onCommand(async () => undefined);
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({ content: { msgtype: "m.text", body: "/unknown" } }),
+  });
+
+  const promptCall = calls.find((call) => call.method === "sendMessage");
+  const prompt = promptCall?.args[1] as Record<string, unknown>;
+  assert.match(String(prompt?.body ?? ""), /Unknown command: \/unknown/);
+  assert.match(String(prompt?.body ?? ""), /Use \/commands to list available commands/);
+});
+
 test("MatrixAdapter handles reaction-driven matrix actions", async () => {
   const { runtime, calls } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
@@ -1547,6 +1565,38 @@ test("MatrixAdapter restores pending action menus after restart", async () => {
     const edited = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
     assert.match(String((edited["m.new_content"] as Record<string, unknown>)?.["body"] ?? ""), /Model changed to Alt/);
     await secondAdapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter restores generic confirms after restart as expired prompts", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-confirm-"));
+  try {
+    const firstRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const firstAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), firstRuntime.runtime as never);
+
+    await firstAdapter.start();
+    void firstAdapter.confirm("!room:test", "Confirm restart?", "$evt1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await firstAdapter.stop();
+
+    const secondRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const secondAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), secondRuntime.runtime as never);
+
+    await secondAdapter.start();
+    await secondRuntime.runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({
+        id: "$confirm-after-restart",
+        type: "m.reaction",
+        content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$evt1", key: "1️⃣" } },
+      }),
+    });
+
+    const sendCalls = secondRuntime.calls.filter((call) => call.method === "sendMessage");
+    const replyPayload = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+    assert.match(String(replyPayload?.body ?? ""), /expired or already resolved/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

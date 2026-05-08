@@ -62,6 +62,23 @@ test("matrix help text includes command discoverability tips", () => {
   assert.match(help, /Matrix commands:/);
   assert.match(help, /Reply with a menu number/i);
   assert.match(help, /Use `\/model` with no args/i);
+  assert.match(help, /Use `\/models` to browse/i);
+  assert.match(help, /Use `\/commands` to list commands explicitly/i);
+});
+
+test("matrix session handlers list models and improve unknown-model guidance", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const commandHandler = createMatrixCommandHandler({ config, sessionManager, modelPicker });
+
+  const models = await commandHandler("!room:test", "@u1:example.org", "dm", "models", "");
+  assert.match(String(models), /Available models:/);
+  assert.match(String(models), /1\. Base/);
+  assert.match(String(models), /2\. Alt/);
+
+  const invalid = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "missing-model");
+  assert.match(String(invalid), /Unknown model: missing-model/);
+  assert.match(String(invalid), /Use `\/models` to browse configured models/i);
 });
 
 test("matrix session handlers honor DM per-room session scope", async () => {

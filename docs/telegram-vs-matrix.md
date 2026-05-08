@@ -206,7 +206,7 @@ Main sources:
 | Native inline buttons | Yes | No | Telegram only |
 | Reaction-driven action menu | No | Yes | Matrix uses reactions on a sent message |
 | Generic callback/action handler | Yes | Yes | Telegram callback queries, Matrix reactions |
-| Accept/Deny confirmation prompt | Partial | No | Telegram adapter-only capability |
+| Accept/Deny confirmation prompt | Partial | Partial | Telegram has inline-button confirms; Matrix now has generic confirm prompts via reactions or plain-text reply |
 
 ### Reliability and recovery
 
@@ -331,7 +331,7 @@ These are already implemented and should be treated as non-regression requiremen
 
 | Priority | Feature | Current gap | Why it matters | Notes |
 |---|---|---|---|---|
-| P2 | Better command discoverability | Partially closed. Matrix help and menu copy can guide users better, but Matrix still cannot expose native platform command registration. | Main-channel usability issue for `/help`, `/model`, `/archive` | Still mostly a help/menu UX problem |
+| P2 | Better command discoverability | Partially closed. Matrix now has `/help`, `/commands`, `/model`, and `/models` guidance, but still cannot expose native platform command registration. | Main-channel usability issue for `/help`, `/model`, `/archive` | Remaining gap is mostly a platform UX limitation |
 | P2 | Better model-selection UX | Partially closed. Model selection now works via reaction or plain-text reply, but still lacks Telegram-style inline clarity. | Matrix is the main channel, so model-switch UX matters more | Functional, but still less obvious than Telegram |
 | P2 | Forwarded / relayed message normalization if detectable | Matrix does not currently expose forwarded-state semantics in normalized messages | Useful context for agent behavior | Depends on what can be detected reliably in Matrix events |
 | P2 | Better multimessage user-intent reconstruction | Partially closed. Matrix now extends compatible buffered text/media bursts and reconstructs some short trailing media captions, but still avoids broad turn reconstruction. | Improves quality in busy room usage | Separate from strict dedupe/replay behavior |
@@ -343,7 +343,7 @@ These are already implemented and should be treated as non-regression requiremen
 |---|---|---|---|
 | P3 | Forwarded-state parity with Telegram | Matrix has no simple `isForwarded` equivalent today | Useful, but not central to Matrix quality |
 | P3 | Additional message-surface polish knobs | Telegram has more send-surface convenience behavior | Nice polish, but not blocking for a strong Matrix channel |
-| P3 | More discoverability sugar around commands | Still open, though basic help/menu copy is better than before | Should not delay higher-priority work |
+| P3 | More discoverability sugar around commands | Mostly closed at the adapter layer; remaining gap is Matrix client/platform UX | Should not delay higher-priority work |
 
 ### Not a primary Matrix goal
 
@@ -361,10 +361,10 @@ These differences exist, but should not drive the Matrix roadmap because they ar
 | Order | Focus |
 |---|---|
 | 1 | Keep current Matrix robustness guarantees green: E2EE, replay, dedupe, sync lifecycle |
-| 2 | Continue evolving Matrix approvals from tool-specific flow toward a broader native action/confirm UX |
+| 2 | Continue evolving Matrix action UX toward better Matrix-native ergonomics |
 | 3 | Keep improving Matrix action UX beyond reactions and simple text replies |
 | 4 | Keep current retry/backoff coverage green and polish remaining delivery ergonomics |
 | 5 | Expand consecutive-message coalescing beyond the current narrow long-burst path |
 | 6 | Add broader multi-event media aggregation |
-| 7 | Improve command and model-selection discoverability further |
+| 7 | Improve command and model-selection discoverability further where Matrix clients allow it |
 | 8 | Add lower-value normalization and polish features |

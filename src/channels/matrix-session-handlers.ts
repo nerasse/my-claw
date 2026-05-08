@@ -141,6 +141,28 @@ export function buildMatrixApprovalMenu(params: {
   };
 }
 
+function buildMatrixModelsList(params: {
+  config: MyClawConfig;
+  modelPicker: ModelPicker;
+  currentModel: string;
+}): string {
+  const models = params.config.llm.models ?? [];
+  if (models.length === 0) {
+    return `Current model: ${params.modelPicker.labelFor(params.currentModel)}`;
+  }
+
+  return [
+    `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
+    "Available models:",
+    ...models.map((model, index) => {
+      const suffix = model.id === params.currentModel ? " [selected]" : "";
+      return `${index + 1}. ${model.label} (${model.id})${suffix}`;
+    }),
+    "",
+    "Use `/model <number|name>` to switch, or `/model` to reopen the interactive menu.",
+  ].join("\n");
+}
+
 function parseApprovalAction(data: string): { id: string; decision: ApprovalDecision } | null {
   const match = /^apr:(once|session|deny):(.+)$/.exec(data.trim());
   if (!match) return null;
@@ -269,7 +291,10 @@ export function createMatrixCommandHandler({
         if (args) {
           const match = resolveMatrixModelSelection(args, config, modelPicker);
           if (!match) {
-            return `Unknown model: ${args}`;
+            return [
+              `Unknown model: ${args}`,
+              "Use `/models` to browse configured models or `/model` to reopen the interactive menu.",
+            ].join("\n");
           }
 
           const session =
@@ -283,6 +308,16 @@ export function createMatrixCommandHandler({
 
         return buildMatrixModelMenu({ config, modelPicker, currentModel });
       }
+
+      case "models": {
+        const existingSession = await sessionManager.peek(sessionId);
+        const currentModel = existingSession?.modelOverride ?? config.llm.model;
+        return buildMatrixModelsList({ config, modelPicker, currentModel });
+      }
+
+      case "help":
+      case "commands":
+        return undefined;
 
       case "status": {
         const session = await sessionManager.peek(sessionId);

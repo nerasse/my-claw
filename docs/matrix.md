@@ -19,6 +19,7 @@ Implemented as a split adapter:
 - Matrix poll events normalized to text for triggers and history
 - reaction and plain-text reply actions for menus and approvals
 - generic confirm prompts via reactions or plain-text reply
+- `/commands` and `/models` discoverability commands
 - outbound text, replies, thread replies, attachments
 - Markdown to Matrix HTML
 - read receipts and typing
@@ -67,6 +68,7 @@ Implemented as a split adapter:
 - plain media HTTP fetches use a timeout guard
 - stream fallback redacts the draft before normal final send when needed
 - pending action menus persist across restart
+- generic confirm prompts restore after restart as expired prompts
 - pending tool approvals persist across restart and restore as expired prompts
 - cold start drops pre-startup backlog unless a clean shutdown persisted sync state
 - inbound dedupe persists committed events and live claims under the Matrix account storage root

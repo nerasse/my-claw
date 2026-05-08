@@ -1,10 +1,12 @@
 export const MATRIX_COMMANDS = [
   { command: "new", description: "Start a fresh session" },
   { command: "model", description: "Show model menu or change current model" },
+  { command: "models", description: "List available models" },
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
   { command: "help", description: "List available commands" },
+  { command: "commands", description: "List available commands" },
 ] as const;
 
 export function getMatrixHelpText(): string {
@@ -16,6 +18,8 @@ export function getMatrixHelpText(): string {
     "- Reply with a menu number when model or approval menus are shown",
     "- React to menu messages if your client makes reactions easier than replies",
     "- Use `/model` with no args to reopen the model menu",
+    "- Use `/models` to browse the configured model list",
+    "- Use `/commands` to list commands explicitly",
   ].join("\n");
 }
 
