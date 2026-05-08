@@ -37,13 +37,50 @@ export function resolveMatrixMessageAttachmentSummary(params: {
         ? `[matrix ${kind} attachment unavailable]`
         : `[matrix ${kind} attachment]`
     : undefined;
-  const body = trimString(params.body);
-  const filename = trimString(params.filename);
+  const { caption, filename } = resolveMatrixCaptionAndFilename({
+    body: params.body,
+    filename: params.filename,
+  });
 
-  if (!marker) return body ?? filename;
-  if (body && filename && body !== filename) return `${body}\n\n${marker}`;
-  if (body && !/\.[A-Za-z0-9]{2,8}$/.test(body)) return `${body}\n\n${marker}`;
+  if (!marker) return caption ?? filename;
+  if (caption) return `${caption}\n\n${marker}`;
   return marker;
+}
+
+function looksLikeMatrixFilename(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.includes("\n") || /\s/.test(trimmed)) {
+    return false
+  }
+  const basename = trimmed.split(/[\\/]/).at(-1) ?? trimmed
+  if (basename !== trimmed) {
+    return false
+  }
+  const dotIndex = trimmed.lastIndexOf(".")
+  return dotIndex > 0 && trimmed.length - dotIndex > 1
+}
+
+export function resolveMatrixCaptionAndFilename(params: {
+  body?: string;
+  filename?: string;
+}): { caption?: string; filename?: string } {
+  const body = trimString(params.body)
+  const filename = trimString(params.filename)
+
+  if (filename) {
+    if (!body || body === filename) {
+      return { filename }
+    }
+    return { caption: body, filename }
+  }
+
+  if (!body) {
+    return {}
+  }
+  if (looksLikeMatrixFilename(body)) {
+    return { filename: body }
+  }
+  return { caption: body }
 }
 
 export function extFromFilename(filename?: string): string {

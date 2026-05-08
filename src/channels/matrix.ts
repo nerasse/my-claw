@@ -22,6 +22,7 @@ import {
   limitRecentItems,
   matrixAttachmentTypeFromMsgType,
   messageBody,
+  resolveMatrixCaptionAndFilename,
   resolveMatrixMessageAttachmentSummary,
   stripMatrixReplyFallback,
   threadRootId,
@@ -1240,7 +1241,12 @@ export class MatrixAdapter implements ChannelAdapter {
       .filter((value): value is string => Boolean(value))
       .join("\n\n");
 
-    return summary || params.text;
+    const caption = resolveMatrixCaptionAndFilename({
+      body: params.text,
+      filename: trimString(params.content.filename),
+    }).caption?.trim();
+
+    return summary || caption || params.text;
   }
 
   private isMediaMsgType(msgtype?: string): boolean {

@@ -1027,6 +1027,47 @@ test("MatrixAdapter coalesces quick multi-event attachment bursts into one logic
   assert.match(received[0]?.text ?? "", /matrix image attachment unavailable/);
 });
 
+test("MatrixAdapter keeps real media captions but strips filename-only bodies", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({
+      id: "$captioned-image",
+      content: {
+        msgtype: "m.image",
+        body: "look at this",
+        filename: "photo.jpg",
+        info: { mimetype: "image/jpeg", size: 42 },
+        url: "mxc://example.org/captioned",
+      },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({
+      id: "$filename-only-image",
+      content: {
+        msgtype: "m.image",
+        body: "photo.jpg",
+        filename: "photo.jpg",
+        info: { mimetype: "image/jpeg", size: 42 },
+        url: "mxc://example.org/filename-only",
+      },
+    }),
+  });
+
+  assert.match(received[0] ?? "", /^look at this\n\n\[matrix image attachment unavailable\]$/);
+  assert.equal(received[1], "[matrix image attachment unavailable]");
+});
+
 test("MatrixAdapter coalesces fragmented group text bursts into one logical inbound message", async () => {
   const { runtime } = createRuntimeMock();
   const adapter = new MatrixAdapter(

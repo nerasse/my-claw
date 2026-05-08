@@ -25,6 +25,7 @@ Implemented as a split adapter:
 - streaming previews via `m.replace`
 - retry/backoff for send, edit, upload, stream preview/final, and redact paths
 - coalescing for quick fragmented text bursts and compatible attachment bursts
+- media text normalization strips filename-only bodies and keeps real captions with typed markers
 - encrypted media download when Matrix crypto is available
 - rust-crypto startup when `channels.matrix.encryption` is enabled
 - decrypted `m.room.encrypted` handling after Matrix SDK decryption completes

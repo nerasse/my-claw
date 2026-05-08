@@ -325,7 +325,7 @@ These are already implemented and should be treated as non-regression requiremen
 | P1 | Better interactive action UX | Partially closed. Matrix menus now work by reaction and by plain-text reply to the menu message, and menu prompts seed numbered reactions automatically, but still lack Telegram-grade inline UI. | Biggest user-facing UX weakness vs Telegram | This is now better than reaction-only, but still not true inline interaction |
 | P1 | Outbound retry/backoff and rate-limit handling | Mostly closed. Matrix send/edit/upload paths now go through an explicit retry layer. | Important reliability gap for a main channel | Remaining differences are transport polish, not the core retry gap |
 | P1 | Consecutive-message coalescing | Partially closed. Matrix now coalesces some long fragmented group-message bursts, but not general multimessage turns. | Users often send thought fragments in several quick messages | Current behavior is intentionally narrow to avoid regressions |
-| P1 | Multi-event media set aggregation | Partially closed at best. Buffered long-message bursts can accumulate attachments, but Matrix still lacks a broad grouped-media normalization layer. | Users may send several media events as one intent | The main parity gap remains open |
+| P1 | Multi-event media set aggregation | Partially closed. Buffered long-message bursts can accumulate attachments, and caption-vs-filename media text normalization is cleaner now, but Matrix still lacks a broad grouped-media normalization layer. | Users may send several media events as one intent | The main parity gap remains open |
 
 ### P2 - Strong follow-up improvements for Matrix
 
