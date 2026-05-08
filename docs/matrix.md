@@ -18,6 +18,7 @@ Implemented as a split adapter:
 - inbound DM and room messages
 - Matrix poll events normalized to text for triggers and history
 - reaction and plain-text reply actions for menus and approvals
+- generic confirm prompts via reactions or plain-text reply
 - outbound text, replies, thread replies, attachments
 - Markdown to Matrix HTML
 - read receipts and typing

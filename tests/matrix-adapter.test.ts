@@ -763,6 +763,65 @@ test("MatrixAdapter confirmTool sends approval prompt and returns approval decis
   assert.equal(await pendingDecision, "allow-session");
 });
 
+test("MatrixAdapter confirm sends prompt and resolves on reply action", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: true } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+
+  await adapter.start();
+  const pendingDecision = adapter.confirm("!room:test", "Confirm deploy?", "$evt1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const promptCall = calls.find((call) => call.method === "sendMessage");
+  assert.ok(promptCall);
+  const prompt = promptCall?.args[1] as Record<string, unknown>;
+  assert.match(String(prompt.body ?? ""), /Confirm deploy\?/);
+
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$confirm-reply",
+      content: { msgtype: "m.text", body: "1" },
+      relation: { "m.in_reply_to": { event_id: "$evt1" } },
+    }),
+  });
+
+  assert.equal(await pendingDecision, true);
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  const editPayload = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+  const newContent = editPayload["m.new_content"] as Record<string, unknown>;
+  assert.match(String(newContent?.body ?? ""), /Accepted\./);
+});
+
+test("MatrixAdapter confirm resolves false on deny reaction", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: true } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+
+  await adapter.start();
+  const pendingDecision = adapter.confirm("!room:test", "Confirm delete?", "$evt1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const promptCall = calls.find((call) => call.method === "sendMessage");
+  assert.ok(promptCall);
+
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$confirm-react",
+      type: "m.reaction",
+      content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$evt1", key: "2️⃣" } },
+    }),
+  });
+
+  assert.equal(await pendingDecision, false);
+});
+
 test("MatrixAdapter requires configured group rooms in allowlist mode", async () => {
   const { runtime } = createRuntimeMock();
   const adapter = new MatrixAdapter(

@@ -33,7 +33,7 @@ Main sources:
 | Native webhook mode | Yes | No | Telegram can run in polling or webhook mode. Matrix currently runs via Matrix SDK sync only. |
 | Native platform command registration | Yes | No | Telegram publishes commands via `setMyCommands()`. Matrix only parses `/...` messages locally. |
 | Inline keyboard callbacks | Yes | No | Telegram has true inline buttons with callback queries. Matrix uses reaction-driven actions instead. |
-| Accept / Deny confirmation UI | Partial | Partial | Telegram adapter has generic `confirm()` with Accept/Deny and timeout. Matrix has a native tool-approval prompt flow, but not a general adapter-wide confirm primitive. |
+| Accept / Deny confirmation UI | Partial | Partial | Telegram adapter has generic `confirm()` with inline buttons and timeout. Matrix now has generic adapter-level confirm prompts via reactions or plain-text reply, but still lacks Telegram-style native inline UI. |
 | Long text batching across multiple inbound messages | Yes | Partial | Telegram can merge rapid consecutive long messages from the same user into one logical input. Matrix now coalesces some rapid fragmented bursts when reply/thread context matches. |
 | Media group / album buffering | Yes | Partial | Telegram can merge grouped media into one normalized message. Matrix can accumulate compatible attachment bursts, but still lacks a broad album-normalization layer. |
 | Explicit retry and rate-limit backoff | Yes | Partial | Telegram has exponential retry, rate-limit wait, and pre-connect retry handling. Matrix now retries send/edit/upload/stream paths with backoff, but transport coverage is still narrower. |
@@ -252,7 +252,7 @@ These are the highest-value Telegram capabilities that Matrix still lacks if the
 | Priority | Feature to port toward Matrix parity | Current gap | User impact | Implementation cost | Why this priority |
 |---|---|---|---|---|---|
 | P1 | Better interactive actions than reaction-only menus | Telegram has true inline buttons and callback flows. Matrix uses reactions as a workaround. | High | High | This is the most visible UX asymmetry today. |
-| P2 | Confirmation flow equivalent to Telegram Accept/Deny | Mostly closed. Matrix now has a native approval prompt flow for tool approvals, but not a general-purpose adapter-wide confirm primitive. | High | Medium | Important for sensitive-action approval UX; still narrower than Telegram's generic `confirm()`. |
+| P2 | Confirmation flow equivalent to Telegram Accept/Deny | Partially closed. Matrix now has a general-purpose adapter-wide confirm primitive plus tool approval prompts, but still lacks Telegram-style native inline UI. | High | Medium | Important for sensitive-action approval UX; the remaining gap is mainly Matrix interaction ergonomics. |
 | P3 | Stronger send retry and transient network recovery | Mostly closed. Matrix now retries send/edit/upload paths, but still has less mature transport ergonomics than Telegram overall. | High | Low | The biggest reliability gap was the missing retry layer; remaining differences are polish. |
 | P4 | Album / grouped media ingestion semantics | Telegram merges media groups into one logical message. Matrix currently handles events individually. | Medium | Medium | Matters for multimodal user input quality. |
 | P5 | Long multi-message batching | Telegram can merge consecutive long messages into one prompt input. Matrix now coalesces some rapid fragmented group and top-level thread bursts, but not general turn reconstruction. | Medium | Medium | Improves UX for users who paste in chunks. |
@@ -321,7 +321,7 @@ These are already implemented and should be treated as non-regression requiremen
 
 | Priority | Feature | Current gap | Why it matters | Notes |
 |---|---|---|---|---|
-| P1 | First-class confirmation / approval flow | Mostly closed. Matrix now has a native approval flow for tool execution prompts. | Required if Matrix is the main channel for sensitive-action approval UX | Remaining gap is mainly generic reusability beyond tool approvals |
+| P1 | First-class confirmation / approval flow | Mostly closed. Matrix now has a native approval flow for tool execution prompts and a generic adapter-level confirm primitive. | Required if Matrix is the main channel for sensitive-action approval UX | Remaining gap is mainly Matrix interaction ergonomics, not missing capability |
 | P1 | Better interactive action UX | Partially closed. Matrix menus now work by reaction and by plain-text reply to the menu message, and menu prompts seed numbered reactions automatically, but still lack Telegram-grade inline UI. | Biggest user-facing UX weakness vs Telegram | This is now better than reaction-only, but still not true inline interaction |
 | P1 | Outbound retry/backoff and rate-limit handling | Mostly closed. Matrix send/edit/upload paths now go through an explicit retry layer. | Important reliability gap for a main channel | Remaining differences are transport polish, not the core retry gap |
 | P1 | Consecutive-message coalescing | Partially closed. Matrix now coalesces some long fragmented group-message bursts and top-level thread split turns, but not general multimessage turns. | Users often send thought fragments in several quick messages | Current behavior is intentionally narrow to avoid regressions |

@@ -97,6 +97,7 @@ const MATRIX_TEXT_BATCH_DELAY_MS = 600;
 const MATRIX_TEXT_BATCH_SPLIT_DELAY_MS = 2_000;
 const MATRIX_TEXT_BATCH_SPLIT_THRESHOLD = 3_900;
 const MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT = 3;
+const MATRIX_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 
 type PendingBufferedMatrixIngress = {
   batchKey: string;
@@ -118,6 +119,11 @@ type PersistedPendingMatrixAction = {
   expiresAt: number;
 };
 
+type PendingMatrixConfirmation = {
+  resolve: (accepted: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
 export class MatrixAdapter implements ChannelAdapter {
   readonly platform = "matrix" as const;
   private runtime;
@@ -127,6 +133,7 @@ export class MatrixAdapter implements ChannelAdapter {
   private reactions: MatrixReactionManager;
   private errorReporter: MatrixErrorReporter;
   private pendingActions = new Map<string, PendingMatrixAction>();
+  private pendingConfirmations = new Map<string, PendingMatrixConfirmation>();
   private roomHistory = createMatrixRoomHistoryTracker();
   private roomIngressTails = new Map<string, IngressTail>();
   private inboundBuffer = createMatrixInboundBuffer();
@@ -206,7 +213,12 @@ export class MatrixAdapter implements ChannelAdapter {
     for (const pending of this.pendingBufferedIngress.values()) {
       clearTimeout(pending.timer);
     }
+    for (const pending of this.pendingConfirmations.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
     this.pendingBufferedIngress.clear();
+    this.pendingConfirmations.clear();
     this.typingRefs.clear();
     await this.persistPendingActions().catch(() => undefined);
     this.pendingActions.clear();
@@ -267,6 +279,42 @@ export class MatrixAdapter implements ChannelAdapter {
     for (const attachment of message.attachments ?? []) {
       await this.sendAttachment(chatId, attachment, message.replyToId, message.threadId);
     }
+  }
+
+  async confirm(chatId: string, text: string, replyToId?: string, threadId?: string): Promise<boolean> {
+    const id = crypto.randomUUID().slice(0, 8);
+    const decisionPromise = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingConfirmations.delete(id);
+        resolve(false);
+      }, MATRIX_CONFIRM_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingConfirmations.set(id, { resolve, timer });
+    });
+
+    try {
+      await this.send(chatId, {
+        text,
+        replyToId,
+        threadId,
+        notice: true,
+        stateKey: "confirm",
+        buttons: [
+          { label: "Accept", action: `cfm:yes:${id}` },
+          { label: "Deny", action: `cfm:no:${id}` },
+        ],
+      });
+    } catch (err) {
+      const pending = this.pendingConfirmations.get(id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pendingConfirmations.delete(id);
+        pending.resolve(false);
+      }
+      throw err;
+    }
+
+    return await decisionPromise;
   }
 
   onMessage(handler: (message: UnifiedMessage) => Promise<void>): void {
@@ -476,18 +524,13 @@ export class MatrixAdapter implements ChannelAdapter {
         return;
       }
 
-      if (!shouldProcess) {
-        await commitInboundEventIfClaimed();
-        return;
-      }
-
       if (replyId) {
         const pending = this.resolvePendingAction(roomId, replyId);
-        if (pending && this.actionHandler) {
+        if (pending) {
           const action = this.resolveActionForTextReply(pending.buttons, text);
           if (action) {
             try {
-              const response = await this.actionHandler({
+              const response = await this.resolvePendingActionResponse({
                 chatId: roomId,
                 userId: sender,
                 chatType,
@@ -505,6 +548,11 @@ export class MatrixAdapter implements ChannelAdapter {
             return;
           }
         }
+      }
+
+      if (!shouldProcess) {
+        await commitInboundEventIfClaimed();
+        return;
       }
 
       const unified = await this.normalizeMessage(
@@ -791,7 +839,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
   private async handleReaction(room: Room, event: MatrixEvent): Promise<void> {
     const sender = event.getSender();
-    if (!sender || sender === this.selfUserId || !this.actionHandler) return;
+    if (!sender || sender === this.selfUserId) return;
 
     const chatType = this.isDirectMessage(room) ? "dm" : "group";
     if (!this.isRoomAllowed(room, chatType)) return;
@@ -807,7 +855,7 @@ export class MatrixAdapter implements ChannelAdapter {
     if (!action) return;
 
     try {
-      const response = await this.actionHandler({
+      const response = await this.resolvePendingActionResponse({
         chatId: room.roomId,
         userId: sender,
         chatType,
@@ -846,6 +894,34 @@ export class MatrixAdapter implements ChannelAdapter {
     content: MatrixEventContent,
   ): { eventId: string; key: string } | undefined {
     return extractMatrixReactionAnnotation(content);
+  }
+
+  private async resolvePendingActionResponse(ctx: Parameters<MatrixActionHandler>[0]) {
+    const confirmation = this.resolveConfirmationAction(ctx.data);
+    if (confirmation) {
+      return confirmation;
+    }
+    if (!this.actionHandler) {
+      return undefined;
+    }
+    return await this.actionHandler(ctx);
+  }
+
+  private resolveConfirmationAction(data: string): { text: string } | undefined {
+    const match = /^cfm:(yes|no):([a-z0-9-]+)$/i.exec(data.trim());
+    if (!match) {
+      return undefined;
+    }
+    const accepted = match[1] === "yes";
+    const id = match[2] ?? "";
+    const pending = this.pendingConfirmations.get(id);
+    if (!pending) {
+      return { text: "Confirmation expired or already resolved." };
+    }
+    clearTimeout(pending.timer);
+    this.pendingConfirmations.delete(id);
+    pending.resolve(accepted);
+    return { text: accepted ? "Accepted." : "Denied." };
   }
 
   private resolveActionForReaction(buttons: ConfirmationButton[], key: string): string | undefined {
@@ -896,7 +972,13 @@ export class MatrixAdapter implements ChannelAdapter {
       response,
       send: (chatId, message) => this.send(chatId, message),
       editPendingActionMessage: (params) =>
-        this.editPendingActionMessage(params.roomId, params.eventId, params.text, params.threadId, params.notice),
+        this.editPendingActionMessage(
+          params.roomId,
+          params.eventId,
+          params.text,
+          params.threadId,
+          params.notice || stateKey === "confirm",
+        ),
       ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
       limit: MATRIX_PENDING_ACTION_LIMIT,
     });

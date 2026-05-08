@@ -69,5 +69,6 @@ export interface ChannelAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
   send(chatId: string, message: OutgoingMessage): Promise<void>;
+  confirm?(chatId: string, text: string, replyToId?: string, threadId?: string): Promise<boolean>;
   onMessage(handler: (message: UnifiedMessage) => Promise<void>): void;
 }
