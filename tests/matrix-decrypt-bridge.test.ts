@@ -8,17 +8,20 @@ class FakeMatrixEvent extends EventEmitter {
   decryptionFailureReason: string | null;
   private roomId: string;
   private eventId: string;
+  private sender: string;
   private failed = false;
 
   constructor(params: {
-    roomId?: string;
-    eventId?: string;
-    decryptionFailureReason?: string | null;
-    failed?: boolean;
-  } = {}) {
+      roomId?: string;
+      eventId?: string;
+      sender?: string;
+      decryptionFailureReason?: string | null;
+      failed?: boolean;
+    } = {}) {
     super();
     this.roomId = params.roomId ?? "!room:test";
     this.eventId = params.eventId ?? "$evt1";
+    this.sender = params.sender ?? "@u1:example.org";
     this.decryptionFailureReason = params.decryptionFailureReason ?? null;
     this.failed = params.failed === true;
   }
@@ -29,6 +32,10 @@ class FakeMatrixEvent extends EventEmitter {
 
   getRoomId(): string {
     return this.roomId;
+  }
+
+  getSender(): string {
+    return this.sender;
   }
 
   isDecryptionFailure(): boolean {
@@ -91,4 +98,50 @@ test("MatrixDecryptBridge retries late decrypt failures and emits once recovered
 
   assert.equal(decryptCalls >= 2, true);
   assert.deepEqual(delivered, ["$late"]);
+});
+
+test("MatrixDecryptBridge emits rich failed decryption metadata once per event", async () => {
+  const failures: Array<{
+    roomId: string;
+    eventId?: string;
+    sender?: string;
+    retryable: boolean;
+    error: string;
+  }> = [];
+  const event = new FakeMatrixEvent({
+    eventId: "$failed",
+    sender: "@alice:example.org",
+    failed: true,
+    decryptionFailureReason: "MEGOLM_UNKNOWN_INBOUND_SESSION_ID",
+  });
+  const bridge = new MatrixDecryptBridge({
+    client: {
+      async decryptEventIfNeeded() {
+        return;
+      },
+    },
+    emitDecryptedEvent: () => {},
+    emitFailedDecryption: (failure) => {
+      failures.push({
+        roomId: failure.roomId,
+        eventId: failure.eventId,
+        sender: failure.sender,
+        retryable: failure.isRetryable,
+        error: String(failure.error),
+      });
+    },
+  });
+
+  bridge.attachEncryptedEvent(event as never, "!room:test");
+  event.emit(MatrixEventEvent.Decrypted, event, new Error("decrypt failed"));
+  event.emit(MatrixEventEvent.Decrypted, event, new Error("decrypt failed again"));
+
+  assert.equal(failures.length, 1);
+  assert.deepEqual(failures[0], {
+    roomId: "!room:test",
+    eventId: "$failed",
+    sender: "@alice:example.org",
+    retryable: true,
+    error: "Error: decrypt failed",
+  });
 });

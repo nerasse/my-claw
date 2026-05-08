@@ -2,6 +2,14 @@ import { MatrixEventEvent, type MatrixEvent } from "matrix-js-sdk";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/CryptoEvent.js";
 import { DecryptionFailureCode } from "matrix-js-sdk/lib/crypto-api/index.js";
 
+export type MatrixDecryptionFailure = {
+  roomId: string;
+  eventId?: string;
+  sender?: string;
+  error: Error;
+  isRetryable: boolean;
+};
+
 type MatrixDecryptIfNeededClient = {
   decryptEventIfNeeded?: (
     event: MatrixEvent,
@@ -78,7 +86,7 @@ export class MatrixDecryptBridge {
     private readonly deps: {
       client: MatrixDecryptIfNeededClient;
       emitDecryptedEvent: (roomId: string, event: MatrixEvent) => void;
-      emitFailedDecryption?: (roomId: string, event: MatrixEvent, error: Error) => void;
+      emitFailedDecryption?: (failure: MatrixDecryptionFailure) => void;
     },
   ) {}
 
@@ -250,7 +258,15 @@ export class MatrixDecryptBridge {
       }
       this.failedDecryptionsNotified.add(retryKey);
     }
-    this.deps.emitFailedDecryption?.(roomId, event, error);
+    this.deps.emitFailedDecryption?.({
+      roomId,
+      eventId: event.getId() || undefined,
+      sender: typeof (event as { getSender?: () => string | undefined }).getSender === "function"
+        ? (event as { getSender: () => string | undefined }).getSender()
+        : undefined,
+      error,
+      isRetryable: shouldRetryDecryptionFailure(event),
+    });
   }
 
   private scheduleDecryptRetry(params: {

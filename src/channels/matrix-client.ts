@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createSdkLogger, installMatrixSdkRootLogger, matrixLog } from "../utils/logger.ts";
 import { copyIdbSnapshotWithPrefix, persistIdbToDisk, restoreIdbFromDisk } from "./matrix-crypto-idb.ts";
-import { MatrixDecryptBridge } from "./matrix/decrypt-bridge.ts";
+import { MatrixDecryptBridge, type MatrixDecryptionFailure } from "./matrix/decrypt-bridge.ts";
 import { FileBackedMatrixSyncStore } from "./matrix/file-sync-store.ts";
 import {
   resolveMatrixRuntimeStoragePaths,
@@ -80,6 +80,8 @@ type MatrixRuntimeCryptoFacade = {
 };
 
 const MATRIX_IDB_PERSIST_INTERVAL_MS = 60_000;
+const MATRIX_DECRYPT_FAILURE_WINDOW_MS = 2 * 60_000;
+const MATRIX_DECRYPT_FAILURE_THRESHOLD = 3;
 
 function ensureIndexedDbRuntime(): void {
   const scope = globalThis as typeof globalThis & {
@@ -123,6 +125,7 @@ export class MatrixClientRuntime {
   private readonly decryptBridge: MatrixDecryptBridge;
   private readonly storagePaths: MatrixRuntimeStoragePaths;
   private readonly syncStore: FileBackedMatrixSyncStore;
+  private readonly decryptFailureCounts = new Map<string, number[]>();
 
   constructor(
     private config: MatrixRuntimeConfig,
@@ -156,12 +159,8 @@ export class MatrixClientRuntime {
           liveEvent: true,
         });
       },
-      emitFailedDecryption: (roomId, event, error) => {
-        void matrixLog("warn", "matrix event decryption failed", {
-          roomId,
-          eventId: event.getId(),
-          error: String(error),
-        });
+      emitFailedDecryption: (failure) => {
+        void this.handleFailedDecryption(failure);
       },
     });
   }
@@ -389,5 +388,37 @@ export class MatrixClientRuntime {
     void Promise.allSettled(
       [...this.timelineHandlers].map((handler) => Promise.resolve(handler(payload))),
     );
+  }
+
+  private async handleFailedDecryption(failure: MatrixDecryptionFailure): Promise<void> {
+    await matrixLog("warn", "matrix event decryption failed", {
+      roomId: failure.roomId,
+      eventId: failure.eventId,
+      sender: failure.sender,
+      retryable: failure.isRetryable,
+      error: String(failure.error),
+    });
+
+    if (failure.sender && failure.sender === (this.client.getUserId() ?? this.config.userId)) {
+      await matrixLog("warn", "matrix event decryption failed for own Matrix user", {
+        roomId: failure.roomId,
+        eventId: failure.eventId,
+        sender: failure.sender,
+      });
+    }
+
+    const now = Date.now();
+    const existing = this.decryptFailureCounts.get(failure.roomId) ?? [];
+    const recent = existing.filter((timestamp) => now - timestamp <= MATRIX_DECRYPT_FAILURE_WINDOW_MS);
+    recent.push(now);
+    this.decryptFailureCounts.set(failure.roomId, recent);
+    if (recent.length === MATRIX_DECRYPT_FAILURE_THRESHOLD) {
+      await matrixLog("warn", "matrix decryption failures are repeating in this room", {
+        roomId: failure.roomId,
+        eventId: failure.eventId,
+        failuresInWindow: recent.length,
+        windowMs: MATRIX_DECRYPT_FAILURE_WINDOW_MS,
+      });
+    }
   }
 }

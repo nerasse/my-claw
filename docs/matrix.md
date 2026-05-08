@@ -29,6 +29,7 @@ Implemented as a split adapter:
 - rust-crypto startup when `channels.matrix.encryption` is enabled
 - decrypted `m.room.encrypted` handling after Matrix SDK decryption completes
 - live encrypted events are skipped with a warning when crypto is unavailable
+- repeated decrypt failures now log room-scoped escalation and same-user hints
 - encrypted media upload in encrypted rooms
 - local Matrix sync cache and crypto snapshot persisted under `~/.my-claw/matrix/accounts/...`
 
