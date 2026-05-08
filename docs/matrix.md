@@ -2,7 +2,12 @@
 
 ## Status
 
-Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
+Implemented as a split adapter:
+
+- `src/channels/matrix.ts`: public Matrix adapter facade
+- `src/channels/matrix-client.ts`: Matrix SDK runtime and storage wiring
+- `src/channels/matrix/`: shared Matrix adapter/runtime modules
+- wired in `src/index.ts`
 
 ## Toggle
 
@@ -52,10 +57,20 @@ Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
 - `replyToMode`: `off | first | all | batched`
 - text chunking via `textChunkLimit` and `chunkMode: length | newline`
 - stream fallback redacts the draft before normal final send when needed
+- cold start drops pre-startup backlog unless a clean shutdown persisted sync state
+- inbound dedupe persists committed events and live claims under the Matrix account storage root
 
 ## Key Files
 
 - `src/channels/matrix.ts`
+- `src/channels/matrix-client.ts`
+- `src/channels/matrix/file-sync-store.ts`
+- `src/channels/matrix/sync-lifecycle.ts`
+- `src/channels/matrix/decrypt-bridge.ts`
+- `src/channels/matrix/inbound-dedupe.ts`
+- `src/channels/matrix/adapter-ingress.ts`
+- `src/channels/matrix/adapter-policy.ts`
+- `src/channels/matrix/adapter-actions.ts`
 - `src/channels/matrix-format.ts`
 - `src/channels/matrix-stream.ts`
 - `src/channels/matrix-history.ts`
@@ -64,8 +79,9 @@ Implemented in `src/channels/matrix.ts` and wired in `src/index.ts`.
 
 ## Validation
 
-- `./node_modules/.bin/tsc --noEmit`
-- `npm test`
+- `bun run check`
+- `bun run check:test`
+- `node --experimental-transform-types --test tests/*.test.ts`
 
 ## Logs
 

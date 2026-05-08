@@ -17,6 +17,14 @@
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Full wiring (index.ts) | Complete — config -> tools -> sessions -> agent -> router -> adapter |
 
+## Channel Structure
+
+- `src/index.ts` wires channel adapters into the router/session stack
+- `src/channels/telegram.ts` remains a mostly self-contained adapter
+- `src/channels/matrix.ts` is the public Matrix adapter facade
+- `src/channels/matrix-client.ts` owns Matrix SDK runtime, crypto bootstrap, sync persistence, and shutdown handling
+- `src/channels/matrix/` holds split Matrix modules for ingress, policy, lifecycle, decrypt retry, sync store, storage paths, and inbound dedupe
+
 ## Decisions
 
 ### Channels

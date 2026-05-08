@@ -49,6 +49,27 @@ export function createTelegramCommandHandler({
         await sessionManager.persist(sessionId);
         return "History cleared.";
 
+      case "archive": {
+        const trimmed = args.trim();
+        if (!trimmed) {
+          return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
+        }
+        if (trimmed === "all") {
+          const removed = await sessionManager.purgeArchives({ all: true });
+          return `Archived sessions deleted: ${removed}`;
+        }
+        if (trimmed.startsWith("before ")) {
+          const rawDate = trimmed.slice("before ".length).trim();
+          const date = new Date(rawDate);
+          if (Number.isNaN(date.getTime())) {
+            return "Invalid date. Example: /archive before 2026-05-01";
+          }
+          const removed = await sessionManager.purgeArchives({ before: date });
+          return `Archived sessions deleted: ${removed}`;
+        }
+        return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
+      }
+
       case "model": {
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.model;

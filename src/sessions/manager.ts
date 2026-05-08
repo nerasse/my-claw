@@ -1,5 +1,5 @@
 import type { UnifiedMessage } from "../channels/types.ts";
-import { loadSession, saveSession, deleteSession, type SessionData } from "./store.ts";
+import { loadSession, saveSession, deleteSession, archiveSession, purgeSessionArchives, type SessionData } from "./store.ts";
 
 export class SessionManager {
   private sessions = new Map<string, SessionData>();
@@ -76,8 +76,15 @@ export class SessionManager {
 
   async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
     this.sessions.delete(sessionId);
-    await deleteSession(sessionId);
+    const archived = await archiveSession(sessionId);
+    if (!archived) {
+      await deleteSession(sessionId);
+    }
     this.sessions.set(sessionId, this.createSession(sessionId, platform, chatType));
+  }
+
+  async purgeArchives(options: { before?: Date; all?: boolean }): Promise<number> {
+    return purgeSessionArchives(options);
   }
 
   clearHistory(sessionId: string): void {

@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  createMatrixApprovalHandler,
   createMatrixActionHandler,
   createMatrixCommandHandler,
 } from "../src/channels/matrix-session-handlers.ts";
+import { getMatrixHelpText } from "../src/channels/matrix-commands.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
 import type { MyClawConfig } from "../src/config.ts";
@@ -33,6 +35,7 @@ test("matrix session handlers manage model and status", async () => {
   const modelMessage = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "");
   assert.equal(typeof modelMessage, "object");
   assert.match(String((modelMessage as { text?: string }).text ?? ""), /Current model/);
+  assert.match(String((modelMessage as { text?: string }).text ?? ""), /Reply with a number\/name/i);
 
   const switched = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "2");
   assert.match(String(switched), /Model changed to Alt/);
@@ -51,6 +54,13 @@ test("matrix session handlers manage model and status", async () => {
 
   const cleared = await commandHandler("!room:test", "@u1:example.org", "dm", "clear", "");
   assert.equal(cleared, "History cleared.");
+});
+
+test("matrix help text includes command discoverability tips", () => {
+  const help = getMatrixHelpText();
+  assert.match(help, /Matrix commands:/);
+  assert.match(help, /Reply with a menu number/i);
+  assert.match(help, /Use `\/model` with no args/i);
 });
 
 test("matrix session handlers honor DM per-room session scope", async () => {
@@ -101,4 +111,180 @@ test("matrix session handlers honor DM per-room session scope", async () => {
   });
   assert.match(String(statusAfterAction), /Session: matrix\/dm-room\/!dm-room:test/);
   assert.match(String(statusAfterAction), /base-model/);
+});
+
+test("matrix /new resets the targeted session", async () => {
+  const scopedConfig: MyClawConfig = {
+    ...config,
+    channels: {
+      matrix: {
+        homeserver: "https://example.com",
+        accessToken: "token",
+        dm: {
+          sessionScope: "per-room",
+        },
+      },
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(scopedConfig.llm.models ?? []);
+  const commandHandler = createMatrixCommandHandler({
+    config: scopedConfig,
+    sessionManager,
+    modelPicker,
+  });
+
+  const sessionId = SessionManager.resolveSessionId("matrix", "dm", "!dm-room:test", "@u1:example.org", {
+    roomId: "!dm-room:test",
+    sessionScope: "per-room",
+  });
+  const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", "dm");
+  session.messages.push({ role: "user", content: "old", timestamp: new Date().toISOString() });
+  await sessionManager.persist(sessionId);
+
+  const response = await commandHandler("!dm-room:test", "@u1:example.org", "dm", "new", "", {
+    roomId: "!dm-room:test",
+  });
+
+  assert.equal(response, "New session started.");
+  const reset = await sessionManager.peek(sessionId);
+  assert.equal(reset?.messages.length, 0);
+});
+
+test("matrix /new in thread only resets the thread session", async () => {
+  const scopedConfig: MyClawConfig = {
+    ...config,
+    channels: {
+      matrix: {
+        homeserver: "https://example.com",
+        accessToken: "token",
+        dm: {
+          sessionScope: "per-room",
+        },
+      },
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(scopedConfig.llm.models ?? []);
+  const commandHandler = createMatrixCommandHandler({
+    config: scopedConfig,
+    sessionManager,
+    modelPicker,
+  });
+
+  const roomSessionId = SessionManager.resolveSessionId("matrix", "dm", "!dm-room:test", "@u1:example.org", {
+    roomId: "!dm-room:test",
+    sessionScope: "per-room",
+  });
+  const threadSessionId = SessionManager.resolveSessionId("matrix", "dm", "!dm-room:test", "@u1:example.org", {
+    roomId: "!dm-room:test",
+    threadId: "$thread",
+    sessionScope: "per-room",
+  });
+
+  const roomSession = await sessionManager.getOrCreateWithMeta(roomSessionId, "matrix", "dm");
+  roomSession.messages.push({ role: "user", content: "room", timestamp: new Date().toISOString() });
+  const threadSession = await sessionManager.getOrCreateWithMeta(threadSessionId, "matrix", "dm");
+  threadSession.messages.push({ role: "user", content: "thread", timestamp: new Date().toISOString() });
+
+  const response = await commandHandler("!dm-room:test", "@u1:example.org", "dm", "new", "", {
+    roomId: "!dm-room:test",
+    threadId: "$thread",
+  });
+
+  assert.equal(response, "New session started.");
+  const roomAfter = await sessionManager.peek(roomSessionId);
+  const threadAfter = await sessionManager.peek(threadSessionId);
+  assert.equal(threadAfter?.messages.length, 0);
+  assert.equal(roomAfter?.messages.length, 1);
+});
+
+test("matrix /archive purge removes archived sessions", async () => {
+  const scopedConfig: MyClawConfig = {
+    ...config,
+    channels: {
+      matrix: {
+        homeserver: "https://example.com",
+        accessToken: "token",
+        dm: {
+          sessionScope: "per-room",
+        },
+      },
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(scopedConfig.llm.models ?? []);
+  const commandHandler = createMatrixCommandHandler({
+    config: scopedConfig,
+    sessionManager,
+    modelPicker,
+  });
+
+  const sessionId = SessionManager.resolveSessionId("matrix", "dm", "!dm-room:test", "@u1:example.org", {
+    roomId: "!dm-room:test",
+    sessionScope: "per-room",
+  });
+  await sessionManager.getOrCreateWithMeta(sessionId, "matrix", "dm");
+  await sessionManager.persist(sessionId);
+  await sessionManager.resetSession(sessionId, "matrix", "dm");
+
+  const response = await commandHandler("!dm-room:test", "@u1:example.org", "dm", "archive", "all", {
+    roomId: "!dm-room:test",
+  });
+
+  assert.match(String(response), /Archived sessions deleted/);
+});
+
+test("matrix approval handler resolves apr reactions", async () => {
+  const approvalHandler = createMatrixApprovalHandler();
+  const request = {
+    id: "apr-1",
+    platform: "matrix" as const,
+    chatId: "!room:test",
+    userId: "@u1:example.org",
+    chatType: "group" as const,
+    messageId: "$evt1",
+    sessionId: "matrix/group/!room:test",
+    toolName: "bash",
+    args: { command: "pwd" },
+  };
+  const pending = approvalHandler.requestApproval(request);
+
+  const response = await approvalHandler.resolveAction({
+    chatId: "!room:test",
+    userId: "@u1:example.org",
+    chatType: "group",
+    data: "apr:session:apr-1",
+    messageId: "$approval",
+  });
+
+  assert.match(response?.text ?? "", /approved for this session/i);
+  assert.equal(await pending, "allow-session");
+});
+
+test("matrix approval menu explains reply and reaction choices", async () => {
+  const approvalHandler = createMatrixApprovalHandler();
+  const request = {
+    id: "apr-2",
+    platform: "matrix" as const,
+    chatId: "!room:test",
+    userId: "@u1:example.org",
+    chatType: "group" as const,
+    messageId: "$evt2",
+    sessionId: "matrix/group/!room:test",
+    toolName: "bash",
+    args: { command: "pwd" },
+  };
+  const pending = approvalHandler.requestApproval(request);
+
+  const response = await approvalHandler.resolveAction({
+    chatId: "!room:test",
+    userId: "@u1:example.org",
+    chatType: "group",
+    data: "apr:once:apr-2",
+    messageId: "$approval",
+  });
+
+  assert.match(response?.text ?? "", /approved once/i);
+  assert.equal(await pending, "allow-once");
 });

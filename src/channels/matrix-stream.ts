@@ -1,5 +1,6 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./matrix-format.ts";
+import { withMatrixRetry } from "./matrix/retry.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
 
@@ -80,7 +81,7 @@ export class MatrixMessageStreamer {
       this.finished = true;
       this.clearTimer();
       if (this.sentEventId) {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
       }
     });
   }
@@ -135,6 +136,25 @@ export class MatrixMessageStreamer {
 
   private useLiveMarker(): boolean {
     return this.opts.mode !== "quiet";
+  }
+
+  private outboundTxnId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${crypto.randomUUID()}`;
+  }
+
+  private async sendMessage(content: Record<string, unknown>, prefix: string): Promise<{ event_id: string }> {
+    const txnId = this.outboundTxnId(prefix);
+    return await withMatrixRetry({
+      task: () => this.client.sendMessage(this.opts.roomId, content as never, txnId),
+    });
+  }
+
+  private async redactEvent(eventId: string): Promise<void> {
+    await withMatrixRetry({
+      task: async () => {
+        await this.client.redactEvent(this.opts.roomId, eventId);
+      },
+    }).catch(() => undefined);
   }
 
   private previewContent(text: string): Record<string, unknown> {
@@ -227,7 +247,7 @@ export class MatrixMessageStreamer {
     const text = finalText.trimEnd();
     if (!text) {
       if (this.sentEventId) {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
       }
       return;
     }
@@ -235,8 +255,7 @@ export class MatrixMessageStreamer {
     if (this.sentEventId && !this.mustFallbackToFinal) {
       const formatted = buildMatrixFormattedText(text);
       try {
-        await this.client.sendMessage(
-          this.opts.roomId,
+        await this.sendMessage(
           this.editContent(
             this.sentEventId,
             {
@@ -245,17 +264,18 @@ export class MatrixMessageStreamer {
               mentions: formatted.mentions as Record<string, unknown> | undefined,
             },
             true,
-          ) as never,
+          ),
+          "stream-final-edit",
         );
         return;
       } catch {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
         this.sentEventId = null;
       }
     }
 
     if (this.sentEventId && this.mustFallbackToFinal) {
-      await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+      await this.redactEvent(this.sentEventId);
       this.sentEventId = null;
     }
 
@@ -267,7 +287,7 @@ export class MatrixMessageStreamer {
     const text = this.previewText.trimEnd();
     if (!text) {
       if (this.sentEventId) {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
       }
       return;
     }
@@ -275,8 +295,7 @@ export class MatrixMessageStreamer {
     if (this.sentEventId && !this.mustFallbackToFinal) {
       const formatted = buildMatrixFormattedText(text);
       try {
-        await this.client.sendMessage(
-          this.opts.roomId,
+        await this.sendMessage(
           this.editContent(
             this.sentEventId,
             {
@@ -285,17 +304,18 @@ export class MatrixMessageStreamer {
               mentions: formatted.mentions as Record<string, unknown> | undefined,
             },
             true,
-          ) as never,
+          ),
+          "stream-block-finalize",
         );
         return;
       } catch {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
         this.sentEventId = null;
       }
     }
 
     if (this.sentEventId && this.mustFallbackToFinal) {
-      await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+      await this.redactEvent(this.sentEventId);
       this.sentEventId = null;
     }
 
@@ -324,7 +344,7 @@ export class MatrixMessageStreamer {
     if (relation) {
       finalContent["m.relates_to"] = relation;
     }
-    await this.client.sendMessage(this.opts.roomId, finalContent as never);
+    await this.sendMessage(finalContent, "stream-final-send");
   }
 
   private async flushPreview(forceSend: boolean): Promise<void> {
@@ -334,13 +354,13 @@ export class MatrixMessageStreamer {
       if (!forceSend && this.previewText.length < this.minCharsBeforeSend()) {
         return;
       }
-      const result = await this.client.sendMessage(
-        this.opts.roomId,
-        this.previewContent(this.previewText) as never,
+      const result = await this.sendMessage(
+        this.previewContent(this.previewText),
+        "stream-preview-create",
       ).catch(async () => {
         this.mustFallbackToFinal = true;
         if (this.sentEventId) {
-          await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+          await this.redactEvent(this.sentEventId);
           this.sentEventId = null;
         }
         this.lastRenderedText = "";
@@ -368,17 +388,17 @@ export class MatrixMessageStreamer {
     }
 
     const formatted = buildMatrixFormattedText(this.previewText);
-    await this.client.sendMessage(
-      this.opts.roomId,
+    await this.sendMessage(
       this.editContent(this.sentEventId, {
         body: formatted.body,
         formatted_body: formatted.formatted_body,
         mentions: this.opts.mode === "quiet" ? undefined : (formatted.mentions as Record<string, unknown> | undefined),
-      }) as never,
+      }),
+      "stream-preview-edit",
     ).catch(async () => {
       this.mustFallbackToFinal = true;
       if (this.sentEventId) {
-        await this.client.redactEvent(this.opts.roomId, this.sentEventId).catch(() => {});
+        await this.redactEvent(this.sentEventId);
         this.sentEventId = null;
       }
       this.lastRenderedText = "";

@@ -1,6 +1,6 @@
 import {
   ClientEvent,
-  MatrixEventEvent,
+  EventType,
   RoomEvent,
   SyncState,
   createClient,
@@ -24,14 +24,17 @@ import {
   IDBVersionChangeEvent,
   indexedDB as fakeIndexedDB,
 } from "fake-indexeddb";
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { MY_CLAW_DIR } from "../config.ts";
 import { createSdkLogger, installMatrixSdkRootLogger, matrixLog } from "../utils/logger.ts";
 import { copyIdbSnapshotWithPrefix, persistIdbToDisk, restoreIdbFromDisk } from "./matrix-crypto-idb.ts";
-import { FileBackedMatrixSyncStore } from "./matrix-sync-store.ts";
+import { MatrixDecryptBridge } from "./matrix/decrypt-bridge.ts";
+import { FileBackedMatrixSyncStore } from "./matrix/file-sync-store.ts";
+import {
+  resolveMatrixRuntimeStoragePaths,
+  resolveOpenClawSnapshotPath,
+  type MatrixRuntimeStoragePaths,
+} from "./matrix/storage.ts";
 
 export interface MatrixRuntimeConfig {
   homeserver: string;
@@ -48,6 +51,7 @@ export interface MatrixTimelineEvent {
   event: MatrixEvent;
   toStartOfTimeline: boolean;
   removed: boolean;
+  liveEvent: boolean;
 }
 
 type MatrixRuntimeCryptoFacade = {
@@ -75,35 +79,7 @@ type MatrixRuntimeCryptoFacade = {
   isRoomEncrypted: (roomId: string) => Promise<boolean>;
 };
 
-type RuntimeStoragePaths = {
-  rootDir: string;
-  syncPath: string;
-  cryptoSnapshotPath: string;
-  cryptoDatabasePrefix: string;
-};
-
 const MATRIX_IDB_PERSIST_INTERVAL_MS = 60_000;
-
-function sanitizeMatrixPathSegment(value: string): string {
-  const cleaned = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-  return cleaned || "unknown";
-}
-
-function resolveMatrixHomeserverKey(homeserver: string): string {
-  try {
-    const url = new URL(homeserver);
-    if (url.host) {
-      return sanitizeMatrixPathSegment(url.host);
-    }
-  } catch {
-    // ignore invalid URL and fall through
-  }
-  return sanitizeMatrixPathSegment(homeserver);
-}
-
-function hashMatrixAccessToken(accessToken: string): string {
-  return createHash("sha256").update(accessToken).digest("hex").slice(0, 16);
-}
 
 function ensureIndexedDbRuntime(): void {
   const scope = globalThis as typeof globalThis & {
@@ -137,30 +113,6 @@ function ensureIndexedDbRuntime(): void {
   scope.IDBVersionChangeEvent = IDBVersionChangeEvent;
 }
 
-function resolveRuntimeStoragePaths(config: MatrixRuntimeConfig): RuntimeStoragePaths {
-  const userKey = sanitizeMatrixPathSegment(config.userId ?? "unknown");
-  const serverKey = resolveMatrixHomeserverKey(config.homeserver);
-  const tokenHash = hashMatrixAccessToken(config.accessToken);
-  const rootDir = join(MY_CLAW_DIR, "matrix", "accounts", "default", `${serverKey}__${userKey}`, tokenHash);
-  return {
-    rootDir,
-    syncPath: join(rootDir, "bot-storage.json"),
-    cryptoSnapshotPath: join(rootDir, "crypto-idb-snapshot.json"),
-    cryptoDatabasePrefix: `my-claw-matrix-default-${tokenHash}`,
-  };
-}
-
-function resolveOpenClawSnapshotPath(config: MatrixRuntimeConfig): { prefix: string; snapshotPath: string } {
-  const userKey = sanitizeMatrixPathSegment(config.userId ?? "unknown");
-  const serverKey = resolveMatrixHomeserverKey(config.homeserver);
-  const tokenHash = hashMatrixAccessToken(config.accessToken);
-  const rootDir = join(MY_CLAW_DIR, "..", ".openclaw", "matrix", "accounts", "default", `${serverKey}__${userKey}`, tokenHash);
-  return {
-    prefix: `openclaw-matrix-default-${tokenHash}`,
-    snapshotPath: join(rootDir, "crypto-idb-snapshot.json"),
-  };
-}
-
 export class MatrixClientRuntime {
   private client: MatrixClient;
   private readyPromise: Promise<void> | null = null;
@@ -168,7 +120,8 @@ export class MatrixClientRuntime {
   private started = false;
   private crypto?: MatrixRuntimeCryptoFacade;
   private cryptoPersistTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly storagePaths: RuntimeStoragePaths;
+  private readonly decryptBridge: MatrixDecryptBridge;
+  private readonly storagePaths: MatrixRuntimeStoragePaths;
   private readonly syncStore: FileBackedMatrixSyncStore;
 
   constructor(
@@ -176,7 +129,7 @@ export class MatrixClientRuntime {
     client?: MatrixClient,
   ) {
     installMatrixSdkRootLogger(matrixSdkRootLogger);
-    this.storagePaths = resolveRuntimeStoragePaths(config);
+    this.storagePaths = resolveMatrixRuntimeStoragePaths(config);
     this.syncStore = new FileBackedMatrixSyncStore(this.storagePaths.syncPath);
     this.client =
       client ??
@@ -188,6 +141,29 @@ export class MatrixClientRuntime {
         store: this.syncStore,
         logger: createSdkLogger("matrix-sdk"),
       });
+    this.decryptBridge = new MatrixDecryptBridge({
+      client: this.client,
+      emitDecryptedEvent: (roomId, event) => {
+        const room = this.client.getRoom(roomId);
+        if (!room) {
+          return;
+        }
+        this.emitTimelineHandlers({
+          room,
+          event,
+          toStartOfTimeline: false,
+          removed: false,
+          liveEvent: true,
+        });
+      },
+      emitFailedDecryption: (roomId, event, error) => {
+        void matrixLog("warn", "matrix event decryption failed", {
+          roomId,
+          eventId: event.getId(),
+          error: String(error),
+        });
+      },
+    });
   }
 
   get sdk(): MatrixClient {
@@ -196,6 +172,14 @@ export class MatrixClientRuntime {
 
   get mediaCrypto(): MatrixRuntimeCryptoFacade | undefined {
     return this.crypto;
+  }
+
+  getStoragePaths(): MatrixRuntimeStoragePaths {
+    return this.storagePaths;
+  }
+
+  hasPersistedSyncState(): boolean {
+    return this.syncStore.hasSavedSyncFromCleanShutdown();
   }
 
   onTimeline(handler: (event: MatrixTimelineEvent) => void | Promise<void>): () => void {
@@ -235,14 +219,18 @@ export class MatrixClientRuntime {
 
   async stop(): Promise<void> {
     this.client.off(RoomEvent.Timeline, this.handleTimeline);
-    this.client.off(ClientEvent.Event, this.handleClientEventForDecryption);
     if (this.cryptoPersistTimer) {
       clearInterval(this.cryptoPersistTimer);
       this.cryptoPersistTimer = null;
     }
-    await this.persistCryptoSnapshot().catch(() => undefined);
-    await this.syncStore.flush().catch(() => undefined);
+    await this.decryptBridge.drainPendingDecryptions("matrix client shutdown").catch(() => undefined);
+    this.decryptBridge.stop();
     this.client.stopClient();
+    this.started = false;
+    this.readyPromise = null;
+    await this.persistCryptoSnapshot().catch(() => undefined);
+    this.syncStore.markCleanShutdown();
+    await this.syncStore.flush().catch(() => undefined);
   }
 
   private async initializeCrypto(): Promise<void> {
@@ -347,7 +335,9 @@ export class MatrixClientRuntime {
       this.cryptoPersistTimer = setInterval(() => {
         void this.persistCryptoSnapshot().catch(() => undefined);
       }, MATRIX_IDB_PERSIST_INTERVAL_MS);
-      this.client.on(ClientEvent.Event, this.handleClientEventForDecryption);
+      this.decryptBridge.bindCryptoRetrySignals(
+        this.client.getCrypto() as { on: (eventName: string, listener: (...args: unknown[]) => void) => void } | undefined,
+      );
     } catch (error) {
       await matrixLog("warn", "matrix rust crypto init failed", { error: String(error) });
     }
@@ -363,43 +353,37 @@ export class MatrixClientRuntime {
     );
   }
 
-  private handleClientEventForDecryption = (event: MatrixEvent): void => {
-    if (event.getType() !== "m.room.encrypted") {
-      return;
-    }
-    const roomId = event.getRoomId();
-    if (!roomId) {
-      return;
-    }
-    event.on(MatrixEventEvent.Decrypted, () => {
-      const room = this.client.getRoom(roomId);
-      if (!room) {
-        return;
-      }
-      void Promise.allSettled(
-        [...this.timelineHandlers].map((handler) =>
-          Promise.resolve(
-            handler({ room, event, toStartOfTimeline: false, removed: false }),
-          ),
-        ),
-      );
-    });
-    void this.client.decryptEventIfNeeded(event).catch(() => undefined);
-  };
-
   private handleTimeline = (
     event: MatrixEvent,
     room: Room | undefined,
     toStartOfTimeline: boolean | undefined,
     removed: boolean,
+    data?: { liveEvent?: boolean },
   ): void => {
     if (!room) return;
-    void Promise.allSettled(
-      [...this.timelineHandlers].map((handler) =>
-        Promise.resolve(
-          handler({ room, event, toStartOfTimeline: toStartOfTimeline === true, removed }),
-        ),
-      ),
-    );
+    const liveEvent = data?.liveEvent === true;
+    if (event.getType() === EventType.RoomMessageEncrypted) {
+      if (liveEvent) {
+        this.decryptBridge.attachEncryptedEvent(event, room.roomId);
+      }
+      return;
+    }
+    const eventId = event.getId() ?? "";
+    if (!this.decryptBridge.shouldEmitUnencryptedMessage(room.roomId, eventId)) {
+      return;
+    }
+    this.emitTimelineHandlers({
+      room,
+      event,
+      toStartOfTimeline: toStartOfTimeline === true,
+      removed,
+      liveEvent,
+    });
   };
+
+  private emitTimelineHandlers(payload: MatrixTimelineEvent): void {
+    void Promise.allSettled(
+      [...this.timelineHandlers].map((handler) => Promise.resolve(handler(payload))),
+    );
+  }
 }

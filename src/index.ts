@@ -8,6 +8,7 @@ import {
   createTelegramCallbackHandler,
 } from "./channels/telegram-session-handlers.ts";
 import {
+  createMatrixApprovalHandler,
   createMatrixActionHandler,
   createMatrixCommandHandler,
 } from "./channels/matrix-session-handlers.ts";
@@ -99,10 +100,12 @@ async function main() {
       sessionManager,
       modelPicker,
     });
+    const approvalHandler = createMatrixApprovalHandler();
     const actionHandler = createMatrixActionHandler({
       config,
       sessionManager,
       modelPicker,
+      approvalHandler,
     });
 
     matrix.onMessage(async (msg) => {
@@ -139,6 +142,12 @@ async function main() {
 
     matrix.onCommand(commandHandler);
     matrix.onAction(actionHandler);
+    router.setApprovalHandler(async (request) => {
+      if (request.platform !== "matrix") {
+        return "deny";
+      }
+      return await matrix.confirmTool(request, approvalHandler);
+    });
     await matrix.start();
     adapters.push(matrix);
   }

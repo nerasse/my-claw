@@ -1,18 +1,52 @@
 import type { MyClawConfig } from "../config.ts";
-import type { UnifiedMessage } from "../channels/types.ts";
+import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { log } from "../utils/logger.ts";
+import { ToolApprovalManager } from "./approvals.ts";
 
 const MAX_TOOL_ITERATIONS = 10;
 
+function runLogData(message: UnifiedMessage, session: SessionData): Record<string, unknown> {
+  return {
+    messageId: message.id,
+    sessionId: session.id,
+    platform: message.platform,
+    userId: message.userId,
+    chatId: message.chatId,
+    chatType: message.chatType,
+    threadId: message.threadId,
+    attachmentCount: message.attachments.length,
+    textChars: message.text.length,
+  };
+}
+
+function errorLogData(err: unknown): unknown {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+    };
+  }
+  return String(err);
+}
+
 export class AgentBridge {
+  private approvalManager: ToolApprovalManager;
+
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
-  ) {}
+  ) {
+    this.approvalManager = new ToolApprovalManager(config.blacklist);
+  }
+
+  setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
+    this.approvalManager.setHandler(handler);
+  }
 
   async handleMessage(
     message: UnifiedMessage,
@@ -39,86 +73,164 @@ export class AgentBridge {
     const tools = this.toolRegistry.getForAgent("main");
     const model = session.modelOverride ?? this.config.llm.model;
     const llmConfig = { ...this.config.llm, model };
+    const startedAt = Date.now();
+    const streaming = Boolean(onToken);
+    let toolExecutions = 0;
 
-    const systemPrompt = await buildSystemPrompt({
-      platform: message.platform,
+    void log("info", "agent run started", {
+      ...runLogData(message, session),
       model,
-      channelId: message.chatId,
-      sessionId: session.id,
-      tools,
+      streaming,
+      toolCount: tools.length,
+      sessionMessageCount: session.messages.length,
     });
 
-    const userContent = this.buildUserContent(message);
-    const now = new Date().toISOString();
-    session.messages.push({ role: "user", content: userContent, timestamp: now });
+    try {
+      const systemPrompt = await buildSystemPrompt({
+        platform: message.platform,
+        model,
+        channelId: message.chatId,
+        sessionId: session.id,
+        tools,
+      });
 
-    const openaiTools = tools.map((t) => ({
-      type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.parameters },
-    }));
+      const userContent = this.buildUserContent(message);
+      const now = new Date().toISOString();
+      session.messages.push({ role: "user", content: userContent, timestamp: now });
 
-    const chatMessages: ChatMessage[] = [
-      { role: "system", content: systemPrompt },
-      ...this.toChatMessages(session.messages),
-    ];
-
-    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      const response = onToken
-        ? await chatCompletionStream(
-            llmConfig,
-            chatMessages,
-            onToken,
-            openaiTools.length > 0 ? openaiTools : undefined,
-          )
-        : await chatCompletion(
-            llmConfig,
-            chatMessages,
-            openaiTools.length > 0 ? openaiTools : undefined,
-          );
-
-      if (!response.toolCalls?.length) {
-        session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
-        return response.content;
-      }
-
-      if (onToolUse) {
-        await onToolUse();
-      }
-
-      const assistantToolCalls = response.toolCalls.map((tc) => ({
-        id: tc.id,
+      const openaiTools = tools.map((t) => ({
         type: "function" as const,
-        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        function: { name: t.name, description: t.description, parameters: t.parameters },
       }));
 
-      chatMessages.push({
-        role: "assistant",
-        content: response.content,
-        tool_calls: assistantToolCalls,
-      });
+      const chatMessages: ChatMessage[] = [
+        { role: "system", content: systemPrompt },
+        ...this.toChatMessages(session.messages),
+      ];
 
-      session.messages.push({
-        role: "assistant",
-        content: response.content,
-        toolCalls: assistantToolCalls.map((tc) => ({
+      for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+        const iteration = i + 1;
+        const response = onToken
+          ? await chatCompletionStream(
+              llmConfig,
+              chatMessages,
+              onToken,
+              openaiTools.length > 0 ? openaiTools : undefined,
+            )
+          : await chatCompletion(
+              llmConfig,
+              chatMessages,
+              openaiTools.length > 0 ? openaiTools : undefined,
+            );
+
+        if (!response.toolCalls?.length) {
+          session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
+          void log("info", "agent run finished", {
+            ...runLogData(message, session),
+            model,
+            streaming,
+            iteration,
+            toolExecutions,
+            responseChars: response.content.length,
+            sessionMessageCount: session.messages.length,
+            durationMs: Date.now() - startedAt,
+          });
+          return response.content;
+        }
+
+        void log("info", "agent requested tool calls", {
+          ...runLogData(message, session),
+          model,
+          iteration,
+          toolCallCount: response.toolCalls.length,
+          tools: response.toolCalls.map((tc) => tc.name),
+        });
+
+        if (onToolUse) {
+          await onToolUse();
+        }
+
+        const assistantToolCalls = response.toolCalls.map((tc) => ({
           id: tc.id,
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        })),
-        timestamp: new Date().toISOString(),
-      });
+          type: "function" as const,
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        }));
 
-      for (const tc of response.toolCalls) {
-        const result = await this.executeTool(tc.name, tc.arguments);
+        chatMessages.push({
+          role: "assistant",
+          content: response.content,
+          tool_calls: assistantToolCalls,
+        });
 
-        chatMessages.push({ role: "tool", tool_call_id: tc.id, content: result });
-        session.messages.push({ role: "tool", toolCallId: tc.id, content: result, timestamp: new Date().toISOString() });
+        session.messages.push({
+          role: "assistant",
+          content: response.content,
+          toolCalls: assistantToolCalls.map((tc) => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          })),
+          timestamp: new Date().toISOString(),
+        });
+
+        for (const tc of response.toolCalls) {
+          const toolStartedAt = Date.now();
+          void log("info", "tool execution started", {
+            ...runLogData(message, session),
+            model,
+            iteration,
+            toolCallId: tc.id,
+            tool: tc.name,
+            argKeys: Object.keys(tc.arguments),
+          });
+
+          const result = await this.executeTool({
+            name: tc.name,
+            args: tc.arguments,
+            message,
+            session,
+            toolCallId: tc.id,
+          });
+          toolExecutions += 1;
+
+          void log(result.success ? "info" : "warn", "tool execution finished", {
+            ...runLogData(message, session),
+            model,
+            iteration,
+            toolCallId: tc.id,
+            tool: tc.name,
+            success: result.success,
+            outputChars: result.content.length,
+            durationMs: Date.now() - toolStartedAt,
+          });
+
+          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: result.content });
+          session.messages.push({ role: "tool", toolCallId: tc.id, content: result.content, timestamp: new Date().toISOString() });
+        }
       }
-    }
 
-    const fallback = "Reached maximum tool call iterations. Stopping here.";
-    session.messages.push({ role: "assistant", content: fallback, timestamp: new Date().toISOString() });
-    return fallback;
+      const fallback = "Reached maximum tool call iterations. Stopping here.";
+      session.messages.push({ role: "assistant", content: fallback, timestamp: new Date().toISOString() });
+      void log("warn", "agent run reached tool iteration limit", {
+        ...runLogData(message, session),
+        model,
+        streaming,
+        toolExecutions,
+        maxToolIterations: MAX_TOOL_ITERATIONS,
+        durationMs: Date.now() - startedAt,
+      });
+      return fallback;
+    } catch (err) {
+      void log("error", "agent run failed", {
+        ...runLogData(message, session),
+        model,
+        streaming,
+        toolExecutions,
+        durationMs: Date.now() - startedAt,
+        error: errorLogData(err),
+      });
+      throw err;
+    }
   }
 
   private buildUserContent(message: UnifiedMessage): string {
@@ -157,17 +269,62 @@ export class AgentBridge {
     return parts.filter((part) => part.trim()).join("\n\n");
   }
 
-  private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-    const tool = this.toolRegistry.get(name);
-    if (!tool) return `Error: unknown tool "${name}"`;
+  private async executeTool(params: {
+    name: string;
+    args: Record<string, unknown>;
+    message: UnifiedMessage;
+    session: SessionData;
+    toolCallId: string;
+  }): Promise<{ content: string; success: boolean }> {
+    const tool = this.toolRegistry.get(params.name);
+    if (!tool) {
+      return {
+        success: false,
+        content: `Error: unknown tool "${params.name}"`,
+      };
+    }
+
+    const approvalDecision = await this.approvalManager.decide({
+      session: params.session,
+      request: {
+        id: params.toolCallId,
+        platform: params.message.platform,
+        chatId: params.message.chatId,
+        userId: params.message.userId,
+        chatType: params.message.chatType,
+        messageId: params.message.id,
+        sessionId: params.session.id,
+        toolName: params.name,
+        args: params.args,
+        replyToId: params.message.replyToId,
+        threadId: params.message.threadId,
+      },
+    });
+    if (approvalDecision === "deny") {
+      return {
+        success: false,
+        content: `Error: tool "${params.name}" was denied by approval policy`,
+      };
+    }
 
     try {
-      const result = await tool.execute(args);
-      if (result.success) return result.output;
-      return `Error: ${result.error ?? result.output}`;
+      const result = await tool.execute(params.args);
+      if (result.success) {
+        return {
+          success: true,
+          content: result.output,
+        };
+      }
+      return {
+        success: false,
+        content: `Error: ${result.error ?? result.output}`,
+      };
     } catch (err) {
-      log("error", "tool execution failed", { tool: name, error: String(err) });
-      return `Error: ${String(err)}`;
+      void log("error", "tool execution failed", { tool: params.name, error: errorLogData(err) });
+      return {
+        success: false,
+        content: `Error: ${String(err)}`,
+      };
     }
   }
 

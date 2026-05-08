@@ -5,6 +5,7 @@ export const COMMANDS = [
   { command: "model", description: "Show or change current model" },
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
+  { command: "archive", description: "Delete archives created by /new" },
   { command: "help", description: "List available commands" },
 ] as const;
 

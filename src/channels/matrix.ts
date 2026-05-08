@@ -1,13 +1,60 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { MatrixEvent, Room } from "matrix-js-sdk";
-import { EventType, MsgType, RelationType, RoomEvent } from "matrix-js-sdk";
+import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
 import { MY_CLAW_DIR } from "../config.ts";
 import type { MatrixChannelConfig } from "../config.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
 import { matrixLog } from "../utils/logger.ts";
 import { MatrixClientRuntime } from "./matrix-client.ts";
-import { shouldIncludeSupplementalContext } from "./context-visibility.ts";
+import {
+  applyActionResponse as applyMatrixActionResponse,
+  editPendingActionMessage as editMatrixPendingActionMessage,
+  extractReactionAnnotation as extractMatrixReactionAnnotation,
+  rememberPendingAction as rememberMatrixPendingAction,
+  resolveActionForReaction as resolveMatrixActionForReaction,
+  resolveActionForTextReply as resolveMatrixActionForTextReply,
+  resolvePendingAction as resolveMatrixPendingAction,
+} from "./matrix/adapter-actions.ts";
+import {
+  buildRelation,
+  extFromFilename,
+  limitRecentItems,
+  matrixAttachmentTypeFromMsgType,
+  messageBody,
+  resolveMatrixMessageAttachmentSummary,
+  threadRootId,
+  trimString,
+} from "./matrix/adapter-helpers.ts";
+import { buildTimelineIngress } from "./matrix/adapter-ingress.ts";
+import {
+  allowBotsModeForRoom as resolveAllowBotsModeForRoom,
+  contextVisibility as resolveContextVisibility,
+  historyLimitForChatType as resolveHistoryLimitForChatType,
+  isAllowedByPolicy as isAllowedByMatrixPolicy,
+  isBotUser as isMatrixBotUser,
+  isDirectMessage as isDirectMatrixMessage,
+  isRoomAllowed as isAllowedMatrixRoom,
+  resolveAutoJoinAllowed,
+  resolveRoomConfig as resolveConfiguredMatrixRoom,
+  selfDisplayNameForRoom as resolveMatrixSelfDisplayNameForRoom,
+  shouldIncludeContextSender as shouldIncludeMatrixContextSender,
+} from "./matrix/adapter-policy.ts";
+import type {
+  IngressTail,
+  MatrixActionHandler,
+  MatrixEventContent,
+  MatrixChatType,
+  MatrixCommandHandler,
+  MatrixCryptoFacade,
+  MatrixEncryptedFile,
+  MatrixMediaInfo,
+  PendingMatrixAction,
+  TypingRef,
+} from "./matrix/adapter-types.ts";
+import { createMatrixInboundBuffer } from "./matrix/inbound-buffer.ts";
+import { createMatrixInboundEventDeduper, type MatrixInboundEventDeduper } from "./matrix/inbound-dedupe.ts";
+import { createMatrixSyncLifecycle, type MatrixSyncLifecycle } from "./matrix/sync-lifecycle.ts";
 import { getMatrixHelpText, parseMatrixCommand } from "./matrix-commands.ts";
 import { MatrixErrorReporter } from "./matrix-errors.ts";
 import {
@@ -16,23 +63,22 @@ import {
 } from "./matrix-history.ts";
 import {
   buildMatrixFormattedText,
-  prefixEditedMatrixFormattedBody,
   resolveInboundMatrixMentions,
   stripMatrixMentionPrefix,
 } from "./matrix-format.ts";
 import { MatrixReactionManager } from "./matrix-reactions.ts";
-import {
-  fetchMatrixPollSnapshot,
-  isMatrixPollEventType,
-  resolveMatrixPollPrecheckText,
-} from "./matrix-polls.ts";
+import { fetchMatrixPollSnapshot } from "./matrix-polls.ts";
 import { MatrixMessageStreamer } from "./matrix-stream.ts";
 import { chunkMatrixText } from "./matrix-text.ts";
+import { buildMatrixApprovalMenu, type MatrixApprovalHandler } from "./matrix-session-handlers.ts";
+import { withMatrixRetry } from "./matrix/retry.ts";
 import type {
+  ApprovalDecision,
   Attachment,
   ChannelAdapter,
   ConfirmationButton,
   OutgoingMessage,
+  ToolApprovalRequest,
   UnifiedMessage,
 } from "./types.ts";
 
@@ -43,247 +89,17 @@ const MATRIX_TMP_DIR = join(MY_CLAW_DIR, "tmp");
 const MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MATRIX_PENDING_ACTION_TTL_MS = 6 * 60 * 60 * 1000;
 const MATRIX_PENDING_ACTION_LIMIT = 128;
-const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+const MATRIX_TEXT_BATCH_THRESHOLD = 160;
 
-type MatrixChatType = "dm" | "group";
-
-type MatrixCommandHandler = (
-  chatId: string,
-  userId: string,
-  chatType: MatrixChatType,
-  command: string,
-  args: string,
-  meta?: { roomId?: string; threadId?: string },
-) => Promise<OutgoingMessage | string | undefined>;
-
-type MatrixActionHandler = (ctx: {
-  chatId: string;
-  userId: string;
-  chatType: MatrixChatType;
-  data: string;
-  messageId: string;
-  threadId?: string;
-  reactionKey?: string;
-}) => Promise<
-  | {
-      text?: string;
-      buttons?: ConfirmationButton[];
-      answerText?: string;
-    }
-  | undefined
->;
-
-type TypingRef = {
-  interval: ReturnType<typeof setInterval>;
-  count: number;
+type PendingBufferedMatrixIngress = {
+  roomId: string;
+  eventId: string;
+  message: UnifiedMessage;
+  histories: PreparedMatrixRoomHistory[];
+  committers: Array<() => Promise<void>>;
+  releasers: Array<() => Promise<void>>;
+  timer: ReturnType<typeof setTimeout>;
 };
-
-type MatrixEventContent = Record<string, unknown>;
-type MatrixRoomConfig = NonNullable<MatrixChannelConfig["groups"]>[string];
-type PendingMatrixAction = {
-  buttons: ConfirmationButton[];
-  threadId?: string;
-  expiresAt: number;
-};
-type IngressTail = Promise<void>;
-type MatrixMediaInfo = {
-  mimetype?: string;
-  size?: number;
-  w?: number;
-  h?: number;
-  duration?: number;
-};
-type MatrixEncryptedFile = {
-  url: string;
-  key?: Record<string, unknown>;
-  iv?: string;
-  hashes?: Record<string, string>;
-  v?: string;
-};
-
-type MatrixCryptoFacade = {
-  encryptMedia?: (
-    buffer: Buffer,
-  ) => Promise<{
-    buffer: Buffer;
-    file: Omit<MatrixEncryptedFile, "url">;
-  }>;
-  decryptMedia?: (
-    file: MatrixEncryptedFile,
-    opts?: { maxBytes?: number; readIdleTimeoutMs?: number },
-  ) => Promise<Buffer>;
-  isRoomEncrypted?: (roomId: string) => Promise<boolean>;
-};
-
-function trimString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function resolveMatrixMessageAttachmentSummary(params: {
-  body?: string;
-  filename?: string;
-  msgtype?: string;
-  unavailable?: boolean;
-  tooLarge?: boolean;
-}): string | undefined {
-  const kind = (() => {
-    switch (params.msgtype) {
-      case MsgType.Image:
-        return "image";
-      case MsgType.Audio:
-        return "audio";
-      case MsgType.Video:
-        return "video";
-      case MsgType.File:
-        return "file";
-      default:
-        return undefined;
-    }
-  })();
-
-  const marker = kind
-    ? params.tooLarge
-      ? `[matrix ${kind} attachment too large]`
-      : params.unavailable
-        ? `[matrix ${kind} attachment unavailable]`
-        : `[matrix ${kind} attachment]`
-    : undefined;
-  const body = trimString(params.body);
-  const filename = trimString(params.filename);
-
-  if (!marker) return body ?? filename;
-  if (body && filename && body !== filename) return `${body}\n\n${marker}`;
-  if (body && !/\.[A-Za-z0-9]{2,8}$/.test(body)) return `${body}\n\n${marker}`;
-  return marker;
-}
-
-function relationRecord(content: MatrixEventContent): Record<string, unknown> | undefined {
-  const relation = content["m.relates_to"];
-  return relation && typeof relation === "object" ? (relation as Record<string, unknown>) : undefined;
-}
-
-function relationEventId(content: MatrixEventContent): string | undefined {
-  const relation = relationRecord(content);
-  const replyTo = relation?.["m.in_reply_to"];
-  if (!replyTo || typeof replyTo !== "object") return undefined;
-  return trimString((replyTo as Record<string, unknown>).event_id);
-}
-
-function threadRelationId(content: MatrixEventContent): string | undefined {
-  const relation = relationRecord(content);
-  return relation?.rel_type === RelationType.Thread ? trimString(relation.event_id) : undefined;
-}
-
-function extFromFilename(filename?: string): string {
-  const ext = filename ? extname(filename) : "";
-  return ext || "";
-}
-
-function normalizeMatrixUserId(value?: string): string {
-  const trimmed = value?.trim();
-  if (!trimmed) return "";
-  if (!trimmed.startsWith("@") || !trimmed.includes(":")) return trimmed.toLowerCase();
-
-  const withoutAt = trimmed.slice(1);
-  const separator = withoutAt.indexOf(":");
-  if (separator === -1) return trimmed.toLowerCase();
-
-  const localpart = withoutAt.slice(0, separator).trim().toLowerCase();
-  const server = withoutAt.slice(separator + 1).trim().toLowerCase();
-  if (!localpart || !server) return trimmed.toLowerCase();
-
-  return `@${localpart}:${server}`;
-}
-
-function matrixUserListIncludes(list: string[] | undefined, userId: string): boolean {
-  const normalizedUserId = normalizeMatrixUserId(userId);
-  if (!normalizedUserId) return false;
-
-  return (list ?? []).some((entry) => normalizeMatrixUserId(entry) === normalizedUserId);
-}
-
-function limitRecentItems<T>(items: T[], limit: number): T[] {
-  if (limit <= 0) return [];
-  return items.slice(Math.max(0, items.length - limit));
-}
-
-function buildReplyRelation(replyToId?: string): Record<string, unknown> | undefined {
-  const eventId = replyToId?.trim();
-  if (!eventId) return undefined;
-  return { "m.in_reply_to": { event_id: eventId } };
-}
-
-function buildThreadRelation(threadId: string, replyToId?: string): Record<string, unknown> {
-  return {
-    rel_type: RelationType.Thread,
-    event_id: threadId,
-    is_falling_back: true,
-    "m.in_reply_to": { event_id: replyToId?.trim() || threadId },
-  };
-}
-
-function buildRelation(threadId?: string, replyToId?: string): Record<string, unknown> | undefined {
-  if (threadId?.trim()) return buildThreadRelation(threadId.trim(), replyToId);
-  return buildReplyRelation(replyToId);
-}
-
-function buildReplaceRelation(eventId: string, threadId?: string): Record<string, unknown> {
-  const relation: Record<string, unknown> = {
-    rel_type: RelationType.Replace,
-    event_id: eventId,
-  };
-  if (threadId?.trim()) {
-    relation["m.in_reply_to"] = { event_id: threadId.trim() };
-  }
-  return relation;
-}
-
-function normalizeRoomKey(value: string): string {
-  return value.trim();
-}
-
-function matrixAttachmentTypeFromMsgType(msgtype?: string): Attachment["type"] {
-  switch (msgtype) {
-    case MsgType.Image:
-      return "image";
-    case MsgType.Audio:
-      return "audio";
-    case MsgType.Video:
-      return "video";
-    default:
-      return "file";
-  }
-}
-
-function messageBody(content: MatrixEventContent): string {
-  return typeof content.body === "string" ? content.body : "";
-}
-
-function threadRootId(event: MatrixEvent): string | undefined {
-  const relation = event.getRelation();
-  if (relation?.rel_type === RelationType.Thread && typeof relation.event_id === "string") {
-    return relation.event_id;
-  }
-  const thread = event.getThread();
-  const rootId = thread?.id;
-  return typeof rootId === "string" && rootId.length > 0 ? rootId : undefined;
-}
-
-function replyToEventId(event: MatrixEvent): string | undefined {
-  const relation = event.getRelation();
-  const replyTo = relation?.["m.in_reply_to"]?.event_id;
-  return typeof replyTo === "string" && replyTo.length > 0 ? replyTo : undefined;
-}
-
-function resolveAutoJoinAllowed(roomId: string, config: MatrixChannelConfig): boolean {
-  const mode = config.autoJoin ?? "off";
-  if (mode === "always") return true;
-  if (mode === "off") return false;
-  const allowlist = config.autoJoinAllowlist ?? [];
-  return allowlist.includes("*") || allowlist.includes(roomId);
-}
 
 export class MatrixAdapter implements ChannelAdapter {
   readonly platform = "matrix" as const;
@@ -296,14 +112,24 @@ export class MatrixAdapter implements ChannelAdapter {
   private pendingActions = new Map<string, PendingMatrixAction>();
   private roomHistory = createMatrixRoomHistoryTracker();
   private roomIngressTails = new Map<string, IngressTail>();
+  private inboundBuffer = createMatrixInboundBuffer();
+  private pendingBufferedIngress = new Map<string, PendingBufferedMatrixIngress>();
   private typingRefs = new Map<string, TypingRef>();
   private selfUserId?: string;
+  private timelineOff?: () => void;
+  private inboundDeduper?: MatrixInboundEventDeduper;
+  private syncLifecycle: MatrixSyncLifecycle;
 
   constructor(
     private config: MatrixChannelConfig,
     private whitelist: Set<string>,
     runtime?: MatrixClientRuntime,
   ) {
+    this.selfUserId = config.userId;
+    this.syncLifecycle = createMatrixSyncLifecycle({
+      dropPreStartupMessages: false,
+      startupGraceMs: 0,
+    });
     this.runtime =
       runtime ??
       new MatrixClientRuntime({
@@ -332,7 +158,19 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
-    this.runtime.onTimeline((payload) => this.handleTimeline(payload.room, payload.event, payload.toStartOfTimeline, payload.removed));
+    if (!this.inboundDeduper) {
+      this.inboundDeduper = await createMatrixInboundEventDeduper({
+        storagePath: this.runtime.getStoragePaths().inboundDedupePath,
+      });
+    }
+    this.syncLifecycle = createMatrixSyncLifecycle({
+      startupMs: Date.now(),
+      startupGraceMs: 0,
+      dropPreStartupMessages: !this.runtime.hasPersistedSyncState(),
+    });
+    this.timelineOff = this.runtime.onTimeline((payload) =>
+      this.handleTimeline(payload.room, payload.event, payload.toStartOfTimeline, payload.removed, payload.liveEvent)
+    );
     this.runtime.sdk.on(RoomEvent.MyMembership, this.handleMembershipChange);
     await this.runtime.start();
     this.selfUserId = this.runtime.sdk.getUserId() ?? this.config.userId;
@@ -340,12 +178,19 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    this.timelineOff?.();
+    this.timelineOff = undefined;
     this.runtime.sdk.off(RoomEvent.MyMembership, this.handleMembershipChange);
     for (const ref of this.typingRefs.values()) {
       clearInterval(ref.interval);
     }
+    for (const pending of this.pendingBufferedIngress.values()) {
+      clearTimeout(pending.timer);
+    }
+    this.pendingBufferedIngress.clear();
     this.typingRefs.clear();
     this.pendingActions.clear();
+    await this.inboundDeduper?.stop().catch(() => undefined);
     await this.runtime.stop();
     await matrixLog("info", "matrix adapter stopped");
   }
@@ -383,7 +228,7 @@ export class MatrixAdapter implements ChannelAdapter {
         content["m.relates_to"] = relation;
       }
 
-      const sent = await this.runtime.sdk.sendMessage(chatId, content as never);
+      const sent = await this.sendMatrixMessage(chatId, content, this.outboundTxnId(`text-${index}`));
       if (index === 0) {
         actionAnchorEventId = sent.event_id;
       }
@@ -439,13 +284,30 @@ export class MatrixAdapter implements ChannelAdapter {
     });
   }
 
+  async confirmTool(request: ToolApprovalRequest, approvalHandler: MatrixApprovalHandler): Promise<ApprovalDecision> {
+    const approvalPromise = approvalHandler.requestApproval(request);
+    try {
+      await this.send(request.chatId, {
+        ...buildMatrixApprovalMenu({ request }),
+        replyToId: request.messageId,
+        threadId: request.threadId,
+        notice: true,
+      });
+    } catch (err) {
+      approvalHandler.cancelApproval(request.id);
+      throw err;
+    }
+    return await approvalPromise;
+  }
+
   private async handleTimeline(
     room: Room,
     event: MatrixEvent,
     toStartOfTimeline: boolean,
     removed: boolean,
+    liveEvent: boolean,
   ): Promise<void> {
-    await this.handleTimelineEvent(room, event, toStartOfTimeline, removed);
+    await this.handleTimelineEvent(room, event, toStartOfTimeline, removed, liveEvent);
   }
 
   private async handleTimelineEvent(
@@ -453,100 +315,203 @@ export class MatrixAdapter implements ChannelAdapter {
     event: MatrixEvent,
     toStartOfTimeline: boolean,
     removed: boolean,
+    liveEvent: boolean,
   ): Promise<void> {
-    if (toStartOfTimeline || removed) return;
-    const eventType = event.getType();
-    if (eventType === EventType.RoomMessageEncrypted && event.isDecryptionFailure()) {
+    if (!liveEvent || toStartOfTimeline || removed) return;
+    if (this.syncLifecycle.shouldDropEvent(event)) {
       return;
     }
+    const eventType = event.getType();
+    if (eventType === EventType.RoomMessageEncrypted) {
+      return;
+    }
+    const eventId = event.getId()?.trim() || "";
+    let claimedInboundEvent = false;
+    const commitInboundEventIfClaimed = async (): Promise<void> => {
+      if (!claimedInboundEvent || !this.inboundDeduper || !eventId) {
+        return;
+      }
+      await this.inboundDeduper.commitEvent({ roomId: room.roomId, eventId });
+      claimedInboundEvent = false;
+    };
     if (eventType === EventType.Reaction) {
-      await this.handleReaction(room, event);
+      if (eventId && this.inboundDeduper) {
+        claimedInboundEvent = this.inboundDeduper.claimEvent({ roomId: room.roomId, eventId });
+        if (!claimedInboundEvent) {
+          return;
+        }
+      }
+      try {
+        await this.handleReaction(room, event);
+        await commitInboundEventIfClaimed();
+      } finally {
+        if (claimedInboundEvent && this.inboundDeduper && eventId) {
+          this.inboundDeduper.releaseEvent({ roomId: room.roomId, eventId });
+        }
+      }
       return;
     }
     const sender = event.getSender();
-    if (!sender || sender === this.selfUserId) return;
-
-    const chatType = this.isDirectMessage(room) ? "dm" : "group";
-    const historyLimit = this.historyLimitForChatType(chatType);
-    const ingress =
-      chatType === "group" && historyLimit > 0
-        ? await this.runRoomIngress(room.roomId, async () =>
-            this.handleTimelineEventIngress(room, event, eventType, sender, chatType, historyLimit),
-          )
-        : await this.handleTimelineEventIngress(room, event, eventType, sender, chatType, historyLimit);
-    if (!ingress) return;
-
-    const { content, text, rootThreadId, replyId, selfDisplayName, preparedRoomHistory, shouldProcess } = ingress;
-    const roomId = room.roomId;
-    const mentions = resolveInboundMatrixMentions({
-      content,
-      text,
-      userId: this.selfUserId ?? this.config.userId,
-      displayName: selfDisplayName,
-    });
-    if (this.isBotUser(sender)) {
-      const allowBotsMode = this.allowBotsModeForRoom(room);
-      if (allowBotsMode === "off") return;
-      if (allowBotsMode === "mentions" && chatType === "group" && !mentions.mentionedBot) return;
+    if (!sender || sender === this.selfUserId) {
+      return;
     }
 
-    const commandText = this.commandText(text, room, selfDisplayName);
-    const parsedCommand = commandText ? parseMatrixCommand(commandText) : null;
-    if (parsedCommand && this.commandHandler) {
-      if (parsedCommand.command === "help") {
-        await this.send(roomId, {
-          text: getMatrixHelpText(),
-          replyToId: event.getId(),
-          threadId: rootThreadId,
-        });
+    if (eventId && this.inboundDeduper) {
+      claimedInboundEvent = this.inboundDeduper.claimEvent({ roomId: room.roomId, eventId });
+      if (!claimedInboundEvent) {
+        return;
+      }
+    }
+
+    try {
+      const chatType = this.isDirectMessage(room) ? "dm" : "group";
+      const historyLimit = this.historyLimitForChatType(chatType);
+      const ingress =
+        chatType === "group" && historyLimit > 0
+          ? await this.runRoomIngress(room.roomId, async () =>
+              this.handleTimelineEventIngress(room, event, eventType, sender, chatType, historyLimit),
+            )
+          : await this.handleTimelineEventIngress(room, event, eventType, sender, chatType, historyLimit);
+      if (!ingress) {
+        await commitInboundEventIfClaimed();
         return;
       }
 
-      try {
-        const response = await this.commandHandler(
-          roomId,
-          sender,
-          chatType,
-          parsedCommand.command,
-          parsedCommand.args,
-          { roomId, threadId: rootThreadId },
-        );
-        if (!response) return;
-        if (typeof response === "string") {
+      const { content, text, rootThreadId, replyId, selfDisplayName, preparedRoomHistory, shouldProcess } = ingress;
+      const roomId = room.roomId;
+      const mentions = resolveInboundMatrixMentions({
+        content,
+        text,
+        userId: this.selfUserId ?? this.config.userId,
+        displayName: selfDisplayName,
+      });
+      if (this.isBotUser(sender)) {
+        const allowBotsMode = this.allowBotsModeForRoom(room);
+        if (allowBotsMode === "off") {
+          await commitInboundEventIfClaimed();
+          return;
+        }
+        if (allowBotsMode === "mentions" && chatType === "group" && !mentions.mentionedBot) {
+          await commitInboundEventIfClaimed();
+          return;
+        }
+      }
+
+      const commandText = this.commandText(text, room, selfDisplayName);
+      const parsedCommand = commandText ? parseMatrixCommand(commandText) : null;
+      if (parsedCommand && this.commandHandler) {
+        if (parsedCommand.command === "help") {
           await this.send(roomId, {
-            text: response,
+            text: getMatrixHelpText(),
             replyToId: event.getId(),
             threadId: rootThreadId,
           });
+          await commitInboundEventIfClaimed();
           return;
         }
-        await this.send(roomId, {
-          ...response,
-          replyToId: response.replyToId ?? event.getId(),
-          threadId: response.threadId ?? rootThreadId,
-        });
-      } catch (err) {
-        await this.reportProcessingError(roomId, event.getId(), err, rootThreadId);
+
+        try {
+          const response = await this.commandHandler(
+            roomId,
+            sender,
+            chatType,
+            parsedCommand.command,
+            parsedCommand.args,
+            { roomId, threadId: rootThreadId },
+          );
+          if (!response) {
+            await commitInboundEventIfClaimed();
+            return;
+          }
+          if (typeof response === "string") {
+            await this.send(roomId, {
+              text: response,
+              replyToId: event.getId(),
+              threadId: rootThreadId,
+            });
+            await commitInboundEventIfClaimed();
+            return;
+          }
+          await this.send(roomId, {
+            ...response,
+            replyToId: response.replyToId ?? event.getId(),
+            threadId: response.threadId ?? rootThreadId,
+          });
+          await commitInboundEventIfClaimed();
+        } catch (err) {
+          await this.reportProcessingError(roomId, event.getId(), err, rootThreadId);
+        }
+        return;
       }
-      return;
-    }
 
-    if (!shouldProcess) {
-      return;
-    }
+      if (!shouldProcess) {
+        await commitInboundEventIfClaimed();
+        return;
+      }
 
-    const unified = await this.normalizeMessage(
-      room,
-      event,
-      chatType,
-      text,
-      content,
-      rootThreadId,
-      replyId,
-      preparedRoomHistory,
-      selfDisplayName,
-    );
-    await this.processMessage(roomId, unified, preparedRoomHistory);
+      if (replyId) {
+        const pending = this.resolvePendingAction(roomId, replyId);
+        if (pending && this.actionHandler) {
+          const action = this.resolveActionForTextReply(pending.buttons, text);
+          if (action) {
+            try {
+              const response = await this.actionHandler({
+                chatId: roomId,
+                userId: sender,
+                chatType,
+                data: action,
+                messageId: event.getId() ?? "",
+                threadId: pending.threadId,
+              });
+              if (response) {
+                await this.applyActionResponse(roomId, replyId, pending.threadId, response);
+              }
+              await commitInboundEventIfClaimed();
+            } catch (err) {
+              await this.reportProcessingError(roomId, event.getId(), err, pending.threadId);
+            }
+            return;
+          }
+        }
+      }
+
+      const unified = await this.normalizeMessage(
+        room,
+        event,
+        chatType,
+        text,
+        content,
+        rootThreadId,
+        replyId,
+        preparedRoomHistory,
+        selfDisplayName,
+      );
+      if (this.shouldBufferInboundMessage(unified, chatType, rootThreadId)) {
+        const buffered = await this.bufferOrProcessMessage({
+          roomId,
+          eventId: unified.id,
+          message: unified,
+          preparedRoomHistory,
+          commitInboundEventIfClaimed,
+          releaseInboundEventIfClaimed: async () => {
+            if (claimedInboundEvent && this.inboundDeduper && eventId) {
+              this.inboundDeduper.releaseEvent({ roomId: room.roomId, eventId });
+              claimedInboundEvent = false;
+            }
+          },
+        });
+        if (buffered) {
+          claimedInboundEvent = false;
+        }
+      } else {
+        await this.processMessage(roomId, unified, preparedRoomHistory);
+        await commitInboundEventIfClaimed();
+      }
+    } finally {
+      if (claimedInboundEvent && this.inboundDeduper && eventId) {
+        this.inboundDeduper.releaseEvent({ roomId: room.roomId, eventId });
+      }
+    }
   }
 
   private async handleTimelineEventIngress(
@@ -556,87 +521,34 @@ export class MatrixAdapter implements ChannelAdapter {
     sender: string,
     chatType: MatrixChatType,
     historyLimit: number,
-  ): Promise<
-    | {
-        content: MatrixEventContent;
-        text: string;
-        rootThreadId?: string;
-        replyId?: string;
-        selfDisplayName?: string;
-        preparedRoomHistory?: PreparedMatrixRoomHistory;
-        shouldProcess: boolean;
-      }
-    | undefined
-  > {
-    if (!this.isRoomAllowed(room, chatType)) return undefined;
-    if (!this.isAllowedByPolicy(sender, room, chatType)) return undefined;
-
-    const prepared = await this.prepareTimelineEvent(room, event, eventType, sender, chatType);
-    if (!prepared) return undefined;
-
-    const getPollSnapshotText = async (): Promise<string | undefined> => {
-      if (!prepared.isPollEvent) return undefined;
-      return await fetchMatrixPollSnapshot(this.runtime.sdk, room.roomId, {
-        event_id: event.getId() ?? undefined,
-        sender,
-        type: eventType,
-        content: event.getContent() as MatrixEventContent,
-      });
-    };
-
-    const shouldProcess = this.shouldProcessRoomMessage(
+  ) {
+    return await buildTimelineIngress({
+      context: {
+        config: this.config,
+        whitelist: this.whitelist,
+        selfUserId: this.selfUserId,
+        roomHistory: this.roomHistory,
+        resolveRoomConfig: (roomId) => this.resolveRoomConfig(roomId),
+        isDirectMessage: (targetRoom) => this.isDirectMessage(targetRoom),
+        selfDisplayNameForRoom: (targetRoom) => this.selfDisplayNameForRoom(targetRoom),
+        resolveInboundThreadId: (targetChatType, targetEvent) => this.resolveInboundThreadId(targetChatType, targetEvent),
+        resolvePendingRoomHistoryText: (text, content) => this.resolvePendingRoomHistoryText(text, content),
+        shouldProcessRoomMessage: (targetRoom, text, content, selfDisplayName) =>
+          this.shouldProcessRoomMessage(targetRoom, text, content, selfDisplayName),
+        isAllowedByPolicy: (userId, targetRoom, targetChatType) =>
+          this.isAllowedByPolicy(userId, targetRoom, targetChatType),
+        isRoomAllowed: (targetRoom, targetChatType) => this.isRoomAllowed(targetRoom, targetChatType),
+        historyLimitForChatType: (targetChatType) => this.historyLimitForChatType(targetChatType),
+      },
       room,
-      prepared.text,
-      prepared.content,
-      prepared.selfDisplayName,
-    );
-
-    if (!shouldProcess) {
-      if (chatType === "group" && historyLimit > 0) {
-        const pendingText =
-          this.resolvePendingRoomHistoryText(prepared.text, prepared.content) ||
-          (await getPollSnapshotText()) ||
-          "";
-        if (pendingText) {
-          this.roomHistory.recordPending(room.roomId, {
-            messageId: event.getId() ?? "",
-            senderId: sender,
-            text: pendingText,
-          });
-        }
-      }
-      return { ...prepared, shouldProcess: false, preparedRoomHistory: undefined };
-    }
-
-    let content = prepared.content;
-    let text = prepared.text;
-    if (prepared.isPollEvent) {
-      const pollSnapshotText = await getPollSnapshotText();
-      if (!pollSnapshotText) return undefined;
-      content = {
-        ...prepared.content,
-        msgtype: MsgType.Text,
-        body: pollSnapshotText,
-      };
-      text = pollSnapshotText;
-    }
-
-    const preparedRoomHistory =
-      chatType === "group" && historyLimit > 0
-        ? this.roomHistory.prepareTrigger(room.roomId, historyLimit, {
-            messageId: event.getId() ?? "",
-            senderId: sender,
-            text: this.resolvePendingRoomHistoryText(text, content),
-          })
-        : undefined;
-
-    return {
-      ...prepared,
-      content,
-      text,
-      preparedRoomHistory,
-      shouldProcess: true,
-    };
+      event,
+      eventType,
+      sender,
+      chatType,
+      historyLimit,
+      fetchPollSnapshot: fetchMatrixPollSnapshot,
+      sdk: this.runtime.sdk,
+    });
   }
 
   private async runRoomIngress<T>(roomId: string, task: () => Promise<T>): Promise<T> {
@@ -658,40 +570,108 @@ export class MatrixAdapter implements ChannelAdapter {
     }
   }
 
-  private async prepareTimelineEvent(
-    room: Room,
-    event: MatrixEvent,
-    eventType: string,
-    sender: string,
-    chatType: MatrixChatType,
-  ): Promise<
-    | {
-        content: MatrixEventContent;
-        text: string;
-        rootThreadId?: string;
-        replyId?: string;
-        selfDisplayName?: string;
-        isPollEvent: boolean;
+  private async bufferOrProcessMessage(params: {
+    roomId: string;
+    eventId: string;
+    message: UnifiedMessage;
+    preparedRoomHistory?: PreparedMatrixRoomHistory;
+    commitInboundEventIfClaimed: () => Promise<void>;
+    releaseInboundEventIfClaimed: () => Promise<void>;
+  }): Promise<boolean> {
+    const coalesced = this.inboundBuffer.coalesce(params.roomId, {
+      eventId: params.eventId,
+      senderId: params.message.userId,
+      text: params.message.text,
+      content: params.message.raw && typeof params.message.raw === "object"
+        ? ((params.message.raw as MatrixEvent).getContent() as MatrixEventContent)
+        : {},
+      attachments: params.message.attachments,
+      timestampMs: Date.now(),
+    });
+    const bufferedItem = coalesced.item;
+
+    const existing = coalesced.mergedIntoEventId
+      ? this.pendingBufferedIngress.get(coalesced.mergedIntoEventId)
+      : this.pendingBufferedIngress.get(bufferedItem.eventId);
+    if (existing) {
+      if (coalesced.mergedIntoEventId) {
+        this.pendingBufferedIngress.delete(coalesced.mergedIntoEventId);
       }
-    | undefined
-  > {
-    const originalContent = event.getContent() as MatrixEventContent;
-    const isPollEvent = isMatrixPollEventType(eventType);
-    if (eventType !== EventType.RoomMessage && !isPollEvent) return undefined;
-    if (eventType === EventType.RoomMessage && event.isRelation(RelationType.Replace)) return undefined;
+      existing.message = {
+        ...existing.message,
+        id: bufferedItem.eventId,
+        text: bufferedItem.text,
+        attachments: bufferedItem.attachments ?? [],
+      };
+      existing.eventId = bufferedItem.eventId;
+      if (params.preparedRoomHistory) {
+        existing.histories.push(params.preparedRoomHistory);
+      }
+      existing.committers.push(params.commitInboundEventIfClaimed);
+      existing.releasers.push(params.releaseInboundEventIfClaimed);
+      clearTimeout(existing.timer);
+      existing.timer = setTimeout(() => {
+        void this.flushBufferedMessage(existing.roomId, existing.eventId);
+      }, 1500);
+      this.pendingBufferedIngress.set(existing.eventId, existing);
+      return true;
+    }
 
-    const text = isPollEvent
-      ? resolveMatrixPollPrecheckText(eventType, originalContent)
-      : messageBody(originalContent);
-
-    return {
-      content: originalContent,
-      text,
-      rootThreadId: this.resolveInboundThreadId(chatType, event),
-      replyId: replyToEventId(event),
-      selfDisplayName: this.selfDisplayNameForRoom(room),
-      isPollEvent,
+    const pending: PendingBufferedMatrixIngress = {
+      roomId: params.roomId,
+      eventId: bufferedItem.eventId,
+      message: {
+        ...params.message,
+        id: bufferedItem.eventId,
+        text: bufferedItem.text,
+        attachments: bufferedItem.attachments ?? [],
+      },
+      histories: params.preparedRoomHistory ? [params.preparedRoomHistory] : [],
+      committers: [params.commitInboundEventIfClaimed],
+      releasers: [params.releaseInboundEventIfClaimed],
+      timer: setTimeout(() => {
+        void this.flushBufferedMessage(params.roomId, bufferedItem.eventId);
+      }, 1500),
     };
+    this.pendingBufferedIngress.set(bufferedItem.eventId, pending);
+    return true;
+  }
+
+  private async flushBufferedMessage(roomId: string, eventId: string): Promise<void> {
+    const pending = this.pendingBufferedIngress.get(eventId);
+    if (!pending || pending.roomId !== roomId) {
+      return;
+    }
+
+    clearTimeout(pending.timer);
+    this.pendingBufferedIngress.delete(eventId);
+    this.inboundBuffer.clear(roomId, eventId);
+
+    try {
+      await this.processMessage(roomId, pending.message, pending.histories.at(-1));
+      for (const commit of pending.committers) {
+        await commit();
+      }
+    } catch (err) {
+      for (const release of pending.releasers) {
+        await release();
+      }
+      throw err;
+    }
+  }
+
+  private shouldBufferInboundMessage(
+    message: UnifiedMessage,
+    chatType: MatrixChatType,
+    rootThreadId?: string,
+  ): boolean {
+    if (chatType !== "group" || rootThreadId) {
+      return false;
+    }
+    if (message.attachments.length > 0) {
+      return true;
+    }
+    return message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD;
   }
 
   private async processMessage(
@@ -715,6 +695,7 @@ export class MatrixAdapter implements ChannelAdapter {
     } catch (err) {
       await this.reactions.set(roomId, message.id, "error");
       await this.reportProcessingError(roomId, message.id, err, message.threadId);
+      throw err;
     } finally {
       this.stopTyping(roomId);
     }
@@ -776,22 +757,15 @@ export class MatrixAdapter implements ChannelAdapter {
   private extractReactionAnnotation(
     content: MatrixEventContent,
   ): { eventId: string; key: string } | undefined {
-    const relates = content["m.relates_to"];
-    if (!relates || typeof relates !== "object") return undefined;
-    const relation = relates as Record<string, unknown>;
-    if (relation.rel_type !== "m.annotation") return undefined;
-
-    const eventId = trimString(relation.event_id);
-    const key = trimString(relation.key);
-    if (!eventId || !key) return undefined;
-
-    return { eventId, key };
+    return extractMatrixReactionAnnotation(content);
   }
 
   private resolveActionForReaction(buttons: ConfirmationButton[], key: string): string | undefined {
-    const index = MATRIX_REACTION_BUTTON_EMOJIS.findIndex((emoji) => emoji === key);
-    if (index < 0) return undefined;
-    return buttons[index]?.action;
+    return resolveMatrixActionForReaction(buttons, key);
+  }
+
+  private resolveActionForTextReply(buttons: ConfirmationButton[], text: string): string | undefined {
+    return resolveMatrixActionForTextReply(buttons, text);
   }
 
   private rememberPendingAction(
@@ -800,48 +774,19 @@ export class MatrixAdapter implements ChannelAdapter {
     buttons: ConfirmationButton[],
     threadId?: string,
   ): void {
-    const key = this.pendingActionKey(roomId, eventId);
-    if (buttons.length === 0) {
-      this.pendingActions.delete(key);
-      return;
-    }
-
-    this.prunePendingActions();
-    this.pendingActions.set(key, {
+    rememberMatrixPendingAction({
+      pendingActions: this.pendingActions,
+      roomId,
+      eventId,
       buttons,
       threadId,
-      expiresAt: Date.now() + MATRIX_PENDING_ACTION_TTL_MS,
+      ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
+      limit: MATRIX_PENDING_ACTION_LIMIT,
     });
-
-    while (this.pendingActions.size > MATRIX_PENDING_ACTION_LIMIT) {
-      const oldest = this.pendingActions.keys().next().value;
-      if (typeof oldest !== "string") break;
-      this.pendingActions.delete(oldest);
-    }
   }
 
   private resolvePendingAction(roomId: string, eventId: string): PendingMatrixAction | undefined {
-    const key = this.pendingActionKey(roomId, eventId);
-    const pending = this.pendingActions.get(key);
-    if (!pending) return undefined;
-    if (pending.expiresAt < Date.now()) {
-      this.pendingActions.delete(key);
-      return undefined;
-    }
-    return pending;
-  }
-
-  private pendingActionKey(roomId: string, eventId: string): string {
-    return `${roomId}:${eventId}`;
-  }
-
-  private prunePendingActions(): void {
-    const now = Date.now();
-    for (const [key, pending] of this.pendingActions.entries()) {
-      if (pending.expiresAt < now) {
-        this.pendingActions.delete(key);
-      }
-    }
+    return resolveMatrixPendingAction(this.pendingActions, roomId, eventId);
   }
 
   private async applyActionResponse(
@@ -850,23 +795,18 @@ export class MatrixAdapter implements ChannelAdapter {
     threadId: string | undefined,
     response: { text?: string; buttons?: ConfirmationButton[]; answerText?: string },
   ): Promise<void> {
-    if (response.text?.trim()) {
-      await this.editPendingActionMessage(roomId, eventId, response.text, threadId);
-    } else if (response.answerText?.trim()) {
-      await this.send(roomId, {
-        text: response.answerText,
-        replyToId: eventId,
-        threadId,
-        notice: true,
-      });
-    }
-
-    if (response.buttons?.length) {
-      this.rememberPendingAction(roomId, eventId, response.buttons, threadId);
-      return;
-    }
-
-    this.pendingActions.delete(this.pendingActionKey(roomId, eventId));
+    await applyMatrixActionResponse({
+      pendingActions: this.pendingActions,
+      roomId,
+      eventId,
+      threadId,
+      response,
+      send: (chatId, message) => this.send(chatId, message),
+      editPendingActionMessage: (params) =>
+        this.editPendingActionMessage(params.roomId, params.eventId, params.text, params.threadId),
+      ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
+      limit: MATRIX_PENDING_ACTION_LIMIT,
+    });
   }
 
   private async editPendingActionMessage(
@@ -875,34 +815,15 @@ export class MatrixAdapter implements ChannelAdapter {
     text: string,
     threadId?: string,
   ): Promise<void> {
-    const formatted = buildMatrixFormattedText(text);
-    const newContent: Record<string, unknown> = {
-      msgtype: MsgType.Text,
-      body: formatted.body,
-    };
-    if (formatted.formatted_body) {
-      newContent["format"] = "org.matrix.custom.html";
-      newContent["formatted_body"] = formatted.formatted_body;
-    }
-    if (formatted.mentions) {
-      newContent["m.mentions"] = formatted.mentions;
-    }
-
-    const content: Record<string, unknown> = {
-      msgtype: MsgType.Text,
-      body: `* ${formatted.body}`,
-      "m.new_content": newContent,
-      "m.relates_to": buildReplaceRelation(eventId, threadId),
-    };
-    if (formatted.formatted_body) {
-      content["format"] = "org.matrix.custom.html";
-      content["formatted_body"] = prefixEditedMatrixFormattedBody(formatted.formatted_body);
-    }
-    if (formatted.mentions) {
-      content["m.mentions"] = formatted.mentions;
-    }
-
-    await this.runtime.sdk.sendMessage(roomId, content as never);
+    await editMatrixPendingActionMessage({
+      sendMessage: async (targetRoomId, content) => {
+        await this.sendMatrixMessage(targetRoomId, content, this.outboundTxnId(`edit-${eventId}`));
+      },
+      roomId,
+      eventId,
+      text,
+      threadId,
+    });
   }
 
   private async normalizeMessage(
@@ -958,7 +879,7 @@ export class MatrixAdapter implements ChannelAdapter {
       chatType,
       text: normalizedText,
       attachments,
-      isForwarded: false,
+      isForwarded: this.isForwardedMatrixMessage(event, content),
       replyToId,
       replyToText: replyContext?.body,
       replyToSender: replyContext?.sender,
@@ -1262,7 +1183,7 @@ export class MatrixAdapter implements ChannelAdapter {
       replyToId,
       threadId,
     });
-    await this.runtime.sdk.sendMessage(roomId, content as never);
+    await this.sendMatrixMessage(roomId, content, this.outboundTxnId(`media-${name}`));
   }
 
   private async sendAttachment(
@@ -1302,7 +1223,7 @@ export class MatrixAdapter implements ChannelAdapter {
       replyToId,
       threadId,
     });
-    await this.runtime.sdk.sendMessage(roomId, content as never);
+    await this.sendMatrixMessage(roomId, content, this.outboundTxnId(`attachment-${name}`));
   }
 
   private async uploadMedia(
@@ -1314,9 +1235,12 @@ export class MatrixAdapter implements ChannelAdapter {
     const shouldEncrypt = (await crypto?.isRoomEncrypted?.(roomId)) === true && typeof crypto?.encryptMedia === "function";
     if (shouldEncrypt && crypto?.encryptMedia) {
       const encrypted = await crypto.encryptMedia(buffer);
-      const upload = await this.runtime.sdk.uploadContent(encrypted.buffer, {
-        ...opts,
-        includeFilename: false,
+      const upload = await withMatrixRetry({
+        task: () =>
+          this.runtime.sdk.uploadContent(encrypted.buffer, {
+            ...opts,
+            includeFilename: false,
+          }),
       });
       return {
         url: upload.content_uri,
@@ -1329,8 +1253,24 @@ export class MatrixAdapter implements ChannelAdapter {
         },
       };
     }
-    const upload = await this.runtime.sdk.uploadContent(buffer, opts);
+    const upload = await withMatrixRetry({
+      task: () => this.runtime.sdk.uploadContent(buffer, opts),
+    });
     return { url: upload.content_uri };
+  }
+
+  private async sendMatrixMessage(
+    roomId: string,
+    content: Record<string, unknown>,
+    txnId = this.outboundTxnId("message"),
+  ): Promise<{ event_id: string }> {
+    return await withMatrixRetry({
+      task: () => this.runtime.sdk.sendMessage(roomId, content as never, txnId),
+    });
+  }
+
+  private outboundTxnId(prefix: string): string {
+    return `${prefix}-${Date.now()}-${crypto.randomUUID()}`;
   }
 
   private buildMediaContent(params: {
@@ -1417,67 +1357,23 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private isAllowedByPolicy(userId: string, room: Room, chatType: MatrixChatType): boolean {
-    if (this.whitelist.has(userId)) return true;
-
-    if (chatType === "dm") {
-      const dmPolicy = this.config.dm?.policy ?? "allowlist";
-      if (dmPolicy === "open") return true;
-      if (dmPolicy === "disabled") return false;
-      return matrixUserListIncludes(this.config.dm?.allowFrom, userId);
-    }
-
-    const groupPolicy = this.config.groupPolicy ?? "allowlist";
-    if (groupPolicy === "open") return true;
-    if (groupPolicy === "disabled") return false;
-
-    const roomConfig = this.resolveRoomConfig(room.roomId);
-    if (!roomConfig) return false;
-    if (matrixUserListIncludes(roomConfig.users, userId)) return true;
-    return matrixUserListIncludes(this.config.groupAllowFrom, userId);
+    return isAllowedByMatrixPolicy(this.config, this.whitelist, this.resolveRoomConfig(room.roomId), userId, chatType);
   }
 
   private isRoomAllowed(room: Room, chatType: MatrixChatType): boolean {
-    if (chatType === "dm") {
-      if (this.config.dm?.enabled === false) return false;
-      return (this.config.dm?.policy ?? "allowlist") !== "disabled";
-    }
-
-    const groupPolicy = this.config.groupPolicy ?? "allowlist";
-    if (groupPolicy === "disabled") return false;
-    if (groupPolicy === "open") return true;
-    if (!this.hasConfiguredGroupRooms()) return false;
-
-    const roomConfig = this.resolveRoomConfig(room.roomId);
-    if (!roomConfig) return false;
-    return roomConfig.enabled !== false;
+    return isAllowedMatrixRoom(this.config, this.resolveRoomConfig(room.roomId), chatType);
   }
 
-  private hasConfiguredGroupRooms(): boolean {
-    return Object.keys(this.config.groups ?? {}).length > 0;
-  }
-
-  private resolveRoomConfig(roomId: string): MatrixRoomConfig | null {
-    const entries = Object.entries(this.config.groups ?? {});
-    const direct = entries.find(
-      ([key]) => key !== "*" && normalizeRoomKey(key) === normalizeRoomKey(roomId),
-    );
-    if (direct) return direct[1];
-
-    return this.config.groups?.["*"] ?? null;
+  private resolveRoomConfig(roomId: string) {
+    return resolveConfiguredMatrixRoom(this.config, roomId);
   }
 
   private isDirectMessage(room: Room): boolean {
-    const joined = room.getJoinedMembers().map((member) => member.userId);
-    const inviter = room.getDMInviter();
-    if (inviter) return true;
-    const self = this.selfUserId ?? this.config.userId;
-    return Boolean(self && joined.length <= 2 && joined.includes(self));
+    return isDirectMatrixMessage(room, this.selfUserId, this.config.userId);
   }
 
   private selfDisplayNameForRoom(room: Room): string | undefined {
-    const self = this.selfUserId ?? this.config.userId;
-    const liveName = self ? trimString(room.getMember(self)?.name) : undefined;
-    return liveName ?? this.config.displayName;
+    return resolveMatrixSelfDisplayNameForRoom(room, this.selfUserId, this.config.userId, this.config.displayName);
   }
 
   private startTyping(roomId: string): void {
@@ -1588,7 +1484,7 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private contextVisibility(): "all" | "allowlist" | "allowlist_quote" {
-    return this.config.contextVisibility ?? "all";
+    return resolveContextVisibility(this.config);
   }
 
   private shouldIncludeContextSender(
@@ -1598,45 +1494,58 @@ export class MatrixAdapter implements ChannelAdapter {
     senderId: string,
     visibility: ReturnType<MatrixAdapter["contextVisibility"]>,
   ): boolean {
-    if (chatType !== "group") return true;
-    if (this.whitelist.has(senderId)) return true;
-
-    const roomConfig = this.resolveRoomConfig(roomId);
-    const senderAllowed = roomConfig?.users?.length
-      ? matrixUserListIncludes(roomConfig.users, senderId)
-      : this.config.groupPolicy === "allowlist" && (this.config.groupAllowFrom?.length ?? 0) > 0
-        ? matrixUserListIncludes(this.config.groupAllowFrom, senderId)
-        : true;
-
-    return shouldIncludeSupplementalContext({
-      mode: visibility,
+    return shouldIncludeMatrixContextSender({
+      config: this.config,
+      whitelist: this.whitelist,
+      roomConfig: this.resolveRoomConfig(roomId),
+      roomId,
+      chatType,
       kind,
-      senderAllowed,
+      senderId,
+      visibility,
     });
   }
 
   private allowBotsModeForRoom(room: Room): "off" | "mentions" | "all" {
-    const roomConfig = this.resolveRoomConfig(room.roomId);
-    const configured = roomConfig?.allowBots ?? this.config.allowBots ?? false;
-    if (configured === true) return "all";
-    if (configured === "mentions") return "mentions";
-    return "off";
+    return resolveAllowBotsModeForRoom(this.config, this.resolveRoomConfig(room.roomId));
   }
 
   private isBotUser(userId: string): boolean {
-    return userId !== this.selfUserId && matrixUserListIncludes(this.config.botUserIds, userId);
+    return isMatrixBotUser(this.config, this.selfUserId, userId);
   }
 
   private historyLimitForChatType(chatType: MatrixChatType): number {
-    return chatType === "dm"
-      ? Math.max(0, this.config.dm?.historyLimit ?? this.config.historyLimit ?? 0)
-      : Math.max(0, this.config.historyLimit ?? 0);
+    return resolveHistoryLimitForChatType(this.config, chatType);
   }
 
   private resolvePendingRoomHistoryText(text: string, content: MatrixEventContent): string {
     const trimmed = text.trim();
     if (trimmed) return trimmed;
     return this.summarizeEventContent(content) ?? "";
+  }
+
+  private isForwardedMatrixMessage(event: MatrixEvent, content: MatrixEventContent): boolean {
+    const sender = event.getSender();
+    if (this.isBridgeStyleSender(sender)) {
+      return true;
+    }
+
+    return Object.keys(content).some((key) =>
+      key.includes("double_puppet") ||
+      key === "uk.half-shot.bridge" ||
+      key.endsWith(".bridge")
+    );
+  }
+
+  private isBridgeStyleSender(userId?: string): boolean {
+    const trimmed = userId?.trim();
+    if (!trimmed) {
+      return false;
+    }
+    const withoutAt = trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+    const separator = withoutAt.indexOf(":");
+    const localpart = separator >= 0 ? withoutAt.slice(0, separator) : withoutAt;
+    return localpart.startsWith("_");
   }
 
   private resolveMatrixCrypto(): MatrixCryptoFacade | undefined {

@@ -50,6 +50,52 @@ function createFailingClientMock(params: { failSendAt?: number; failEditAt?: num
   };
 }
 
+function createRetryingClientMock(params: {
+  failCreateAttempts?: number;
+  failEditAttempts?: number;
+  failFinalEditAttempts?: number;
+  failRedactAttempts?: number;
+}) {
+  let nextId = 1;
+  let createFailures = 0;
+  let editFailures = 0;
+  let finalEditFailures = 0;
+  let redactFailures = 0;
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  return {
+    calls,
+    client: {
+      async sendMessage(...args: unknown[]) {
+        calls.push({ method: "sendMessage", args });
+        const content = args[1] as Record<string, unknown>;
+        const isEdit = Boolean(content["m.new_content"]);
+        const isFinalEdit = isEdit && content["org.matrix.msc4357.live"] === undefined;
+        if (!isEdit && createFailures < (params.failCreateAttempts ?? 0)) {
+          createFailures += 1;
+          throw new Error("network timeout");
+        }
+        if (isFinalEdit && finalEditFailures < (params.failFinalEditAttempts ?? 0)) {
+          finalEditFailures += 1;
+          throw new Error("network timeout");
+        }
+        if (isEdit && !isFinalEdit && editFailures < (params.failEditAttempts ?? 0)) {
+          editFailures += 1;
+          throw new Error("network timeout");
+        }
+        return { event_id: `$evt${nextId++}` };
+      },
+      async redactEvent(...args: unknown[]) {
+        calls.push({ method: "redactEvent", args });
+        if (redactFailures < (params.failRedactAttempts ?? 0)) {
+          redactFailures += 1;
+          throw new Error("network timeout");
+        }
+        return { event_id: `$redact${nextId++}` };
+      },
+    },
+  };
+}
+
 test("MatrixMessageStreamer waits for threshold before preview send", async () => {
   const { client, calls } = createClientMock();
   const streamer = new MatrixMessageStreamer(client as never, {
@@ -333,6 +379,42 @@ test("MatrixMessageStreamer falls back to final send when preview edit fails", a
 
   assert.equal(deliveredFinal, "hello world final");
   assert.equal(calls.some((call) => call.method === "redactEvent"), true);
+});
+
+test("MatrixMessageStreamer retries preview create edit final edit and redact paths", async () => {
+  const { client, calls } = createRetryingClientMock({
+    failCreateAttempts: 2,
+    failEditAttempts: 2,
+    failFinalEditAttempts: 2,
+    failRedactAttempts: 2,
+  });
+  const streamer = new MatrixMessageStreamer(client as never, {
+    roomId: "!room:test",
+    minCharsBeforeSend: 1,
+    editThrottleMs: 0,
+  });
+
+  await streamer.push("hello");
+  await streamer.push(" world");
+  await streamer.finish("hello world");
+  await streamer.abort();
+
+  assert.equal(calls.filter((call) => call.method === "sendMessage").length, 9);
+  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 3);
+
+  const createCalls = calls.filter(
+    (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-preview-create-"),
+  );
+  const editCalls = calls.filter(
+    (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-preview-edit-"),
+  );
+  const finalEditCalls = calls.filter(
+    (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-final-edit-"),
+  );
+
+  assert.equal(createCalls.length, 3);
+  assert.equal(editCalls.length, 3);
+  assert.equal(finalEditCalls.length, 3);
 });
 
 test("MatrixMessageStreamer quiet mode omits live marker", async () => {

@@ -18,6 +18,24 @@ export interface UnifiedMessage {
   raw: unknown;
 }
 
+export type ApprovalDecision = "allow-once" | "allow-session" | "deny";
+
+export interface ToolApprovalRequest {
+  id: string;
+  platform: UnifiedMessage["platform"];
+  chatId: string;
+  userId: string;
+  chatType: UnifiedMessage["chatType"];
+  messageId: string;
+  sessionId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  replyToId?: string;
+  threadId?: string;
+}
+
+export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<ApprovalDecision>;
+
 export interface Attachment {
   type: "image" | "audio" | "video" | "file";
   url?: string;

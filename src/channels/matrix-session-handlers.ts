@@ -1,7 +1,8 @@
 import type { MyClawConfig } from "../config.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import type { ConfirmationButton, OutgoingMessage } from "./types.ts";
+import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "./types.ts";
 import { ModelPicker } from "./model-picker.ts";
+import { createMatrixApprovalStore } from "./matrix/approval-store.ts";
 
 type MatrixChatType = "dm" | "group";
 const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
@@ -21,11 +22,20 @@ interface MatrixActionResponse {
   answerText?: string;
 }
 
+export interface MatrixApprovalHandler {
+  requestApproval: (request: ToolApprovalRequest) => Promise<ApprovalDecision>;
+  cancelApproval: (id: string) => boolean;
+  resolveAction: (ctx: MatrixActionContext) => Promise<MatrixActionResponse | undefined>;
+}
+
 interface MatrixSessionHandlerDeps {
   config: MyClawConfig;
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
+  approvalHandler?: MatrixApprovalHandler;
 }
+
+const matrixApprovalStore = createMatrixApprovalStore();
 
 function resolveMatrixSessionId(params: {
   config: MyClawConfig;
@@ -76,7 +86,7 @@ function buildMatrixModelMenu(params: {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
       `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
-      "React to this message or send `/model <number|name>`:",
+      "Reply with a number/name, react to this message, or send `/model <number|name>`:",
       ...models.map((model, index) => {
         const prefix = MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`;
         const suffix = model.id === params.currentModel ? " [selected]" : "";
@@ -84,6 +94,88 @@ function buildMatrixModelMenu(params: {
       }),
     ].join("\n"),
     buttons: params.modelPicker.buildButtons(params.currentModel),
+  };
+}
+
+export function buildMatrixApprovalMenu(params: {
+  request: ToolApprovalRequest;
+  expired?: boolean;
+  decision?: ApprovalDecision;
+}): OutgoingMessage {
+  const args = JSON.stringify(params.request.args, null, 2);
+  const heading = params.expired
+    ? `Approval expired for tool \`${params.request.toolName}\`.`
+    : params.decision === "deny"
+      ? `Tool \`${params.request.toolName}\` denied.`
+      : params.decision === "allow-session"
+        ? `Tool \`${params.request.toolName}\` approved for this session.`
+        : params.decision === "allow-once"
+          ? `Tool \`${params.request.toolName}\` approved once.`
+          : `Approval required for tool \`${params.request.toolName}\`.`;
+  const text = [
+    heading,
+    "",
+    `Tool: ${params.request.toolName}`,
+    `Session: ${params.request.sessionId}`,
+    `Requested by: ${params.request.userId}`,
+    `Message: ${params.request.messageId}`,
+    "",
+    "Arguments:",
+    "```json",
+    args,
+    "```",
+    params.expired || params.decision
+      ? ""
+      : "Reply with `1`, `2`, `3`, or the action name. You can also react: 1️⃣ allow once, 2️⃣ allow for this session, 3️⃣ deny.",
+  ].join("\n");
+  return {
+    text,
+    buttons: params.expired || params.decision
+      ? undefined
+      : [
+          { label: "Allow once", action: `apr:once:${params.request.id}` },
+          { label: "Allow session", action: `apr:session:${params.request.id}` },
+          { label: "Deny", action: `apr:deny:${params.request.id}` },
+        ],
+  };
+}
+
+function parseApprovalAction(data: string): { id: string; decision: ApprovalDecision } | null {
+  const match = /^apr:(once|session|deny):(.+)$/.exec(data.trim());
+  if (!match) return null;
+  const mode = match[1];
+  const id = match[2];
+  if (!id) return null;
+  if (mode === "once") return { id, decision: "allow-once" };
+  if (mode === "session") return { id, decision: "allow-session" };
+  return { id, decision: "deny" };
+}
+
+export function createMatrixApprovalHandler(): MatrixApprovalHandler {
+  return {
+    async requestApproval(request) {
+      return await matrixApprovalStore.request(request);
+    },
+
+    cancelApproval(id) {
+      return matrixApprovalStore.cancel(id);
+    },
+
+    async resolveAction({ data }) {
+      const parsed = parseApprovalAction(data);
+      if (!parsed) return undefined;
+      const resolved = matrixApprovalStore.resolve(parsed.id, parsed.decision);
+      if (!resolved) {
+        return {
+          text: "Approval request expired or already resolved.",
+        };
+      }
+      return buildMatrixApprovalMenu({
+        request: resolved.request,
+        expired: resolved.expired,
+        decision: resolved.expired ? undefined : parsed.decision,
+      });
+    },
   };
 }
 
@@ -119,6 +211,27 @@ export function createMatrixCommandHandler({
         sessionManager.clearHistory(sessionId);
         await sessionManager.persist(sessionId);
         return "History cleared.";
+
+      case "archive": {
+        const trimmed = args.trim();
+        if (!trimmed) {
+          return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
+        }
+        if (trimmed === "all") {
+          const removed = await sessionManager.purgeArchives({ all: true });
+          return `Archived sessions deleted: ${removed}`;
+        }
+        if (trimmed.startsWith("before ")) {
+          const rawDate = trimmed.slice("before ".length).trim();
+          const date = new Date(rawDate);
+          if (Number.isNaN(date.getTime())) {
+            return "Invalid date. Example: /archive before 2026-05-01";
+          }
+          const removed = await sessionManager.purgeArchives({ before: date });
+          return `Archived sessions deleted: ${removed}`;
+        }
+        return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
+      }
 
       case "model": {
         const existingSession = await sessionManager.peek(sessionId);
@@ -165,10 +278,23 @@ export function createMatrixActionHandler({
   config,
   sessionManager,
   modelPicker,
-  }: MatrixSessionHandlerDeps): (
+  approvalHandler = createMatrixApprovalHandler(),
+}: MatrixSessionHandlerDeps): (
   ctx: MatrixActionContext,
 ) => Promise<MatrixActionResponse | undefined> {
   return async ({ chatId, userId, chatType, data, threadId }) => {
+    const approval = await approvalHandler.resolveAction({
+      chatId,
+      userId,
+      chatType,
+      data,
+      messageId: "",
+      threadId,
+    });
+    if (approval) {
+      return approval;
+    }
+
     const modelId = modelPicker.parseCallback(data);
     if (!modelId) return undefined;
 

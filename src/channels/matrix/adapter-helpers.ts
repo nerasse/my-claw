@@ -1,0 +1,150 @@
+import type { Attachment } from "../types.ts";
+import type { MatrixEventContent } from "./adapter-types.ts";
+import { MsgType, RelationType, type MatrixEvent } from "matrix-js-sdk";
+
+export function trimString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+export function resolveMatrixMessageAttachmentSummary(params: {
+  body?: string;
+  filename?: string;
+  msgtype?: string;
+  unavailable?: boolean;
+  tooLarge?: boolean;
+}): string | undefined {
+  const kind = (() => {
+    switch (params.msgtype) {
+      case MsgType.Image:
+        return "image";
+      case MsgType.Audio:
+        return "audio";
+      case MsgType.Video:
+        return "video";
+      case MsgType.File:
+        return "file";
+      default:
+        return undefined;
+    }
+  })();
+
+  const marker = kind
+    ? params.tooLarge
+      ? `[matrix ${kind} attachment too large]`
+      : params.unavailable
+        ? `[matrix ${kind} attachment unavailable]`
+        : `[matrix ${kind} attachment]`
+    : undefined;
+  const body = trimString(params.body);
+  const filename = trimString(params.filename);
+
+  if (!marker) return body ?? filename;
+  if (body && filename && body !== filename) return `${body}\n\n${marker}`;
+  if (body && !/\.[A-Za-z0-9]{2,8}$/.test(body)) return `${body}\n\n${marker}`;
+  return marker;
+}
+
+export function extFromFilename(filename?: string): string {
+  if (!filename) return "";
+  const dotIndex = filename.lastIndexOf(".");
+  if (dotIndex <= 0) return "";
+  return filename.slice(dotIndex);
+}
+
+export function normalizeMatrixUserId(value?: string): string {
+  const trimmed = value?.trim();
+  if (!trimmed) return "";
+  if (!trimmed.startsWith("@") || !trimmed.includes(":")) return trimmed.toLowerCase();
+
+  const withoutAt = trimmed.slice(1);
+  const separator = withoutAt.indexOf(":");
+  if (separator === -1) return trimmed.toLowerCase();
+
+  const localpart = withoutAt.slice(0, separator).trim().toLowerCase();
+  const server = withoutAt.slice(separator + 1).trim().toLowerCase();
+  if (!localpart || !server) return trimmed.toLowerCase();
+
+  return `@${localpart}:${server}`;
+}
+
+export function matrixUserListIncludes(list: string[] | undefined, userId: string): boolean {
+  const normalizedUserId = normalizeMatrixUserId(userId);
+  if (!normalizedUserId) return false;
+
+  return (list ?? []).some((entry) => normalizeMatrixUserId(entry) === normalizedUserId);
+}
+
+export function limitRecentItems<T>(items: T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  return items.slice(Math.max(0, items.length - limit));
+}
+
+function buildReplyRelation(replyToId?: string): Record<string, unknown> | undefined {
+  const eventId = replyToId?.trim();
+  if (!eventId) return undefined;
+  return { "m.in_reply_to": { event_id: eventId } };
+}
+
+function buildThreadRelation(threadId: string, replyToId?: string): Record<string, unknown> {
+  return {
+    rel_type: RelationType.Thread,
+    event_id: threadId,
+    is_falling_back: true,
+    "m.in_reply_to": { event_id: replyToId?.trim() || threadId },
+  };
+}
+
+export function buildRelation(threadId?: string, replyToId?: string): Record<string, unknown> | undefined {
+  if (threadId?.trim()) return buildThreadRelation(threadId.trim(), replyToId);
+  return buildReplyRelation(replyToId);
+}
+
+export function buildReplaceRelation(eventId: string, threadId?: string): Record<string, unknown> {
+  const relation: Record<string, unknown> = {
+    rel_type: RelationType.Replace,
+    event_id: eventId,
+  };
+  if (threadId?.trim()) {
+    relation["m.in_reply_to"] = { event_id: threadId.trim() };
+  }
+  return relation;
+}
+
+export function normalizeRoomKey(value: string): string {
+  return value.trim();
+}
+
+export function matrixAttachmentTypeFromMsgType(msgtype?: string): Attachment["type"] {
+  switch (msgtype) {
+    case MsgType.Image:
+      return "image";
+    case MsgType.Audio:
+      return "audio";
+    case MsgType.Video:
+      return "video";
+    default:
+      return "file";
+  }
+}
+
+export function messageBody(content: MatrixEventContent): string {
+  return typeof content.body === "string" ? content.body : "";
+}
+
+export function threadRootId(event: MatrixEvent): string | undefined {
+  const relation = event.getRelation();
+  if (relation?.rel_type === RelationType.Thread && typeof relation.event_id === "string") {
+    return relation.event_id;
+  }
+  const thread = event.getThread();
+  const rootId = thread?.id;
+  return typeof rootId === "string" && rootId.length > 0 ? rootId : undefined;
+}
+
+export function replyToEventId(event: MatrixEvent): string | undefined {
+  const relation = event.getRelation();
+  const replyTo = relation?.["m.in_reply_to"]?.event_id;
+  return typeof replyTo === "string" && replyTo.length > 0 ? replyTo : undefined;
+}

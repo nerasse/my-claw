@@ -45,3 +45,34 @@ test("telegram session handlers manage model and status", async () => {
   const cleared = await commandHandler("c1", "u1", "dm", "clear", "");
   assert.equal(cleared, "History cleared.");
 });
+
+test("telegram /new resets the DM session", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const commandHandler = createTelegramCommandHandler({ config, sessionManager, modelPicker });
+
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", "dm");
+  session.messages.push({ role: "user", content: "old", timestamp: new Date().toISOString() });
+  await sessionManager.persist(sessionId);
+
+  const response = await commandHandler("c1", "u1", "dm", "new", "");
+  assert.equal(response, "New session started.");
+
+  const reset = await sessionManager.peek(sessionId);
+  assert.equal(reset?.messages.length, 0);
+});
+
+test("telegram /archive purge removes archived sessions", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const commandHandler = createTelegramCommandHandler({ config, sessionManager, modelPicker });
+
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  await sessionManager.getOrCreateWithMeta(sessionId, "telegram", "dm");
+  await sessionManager.persist(sessionId);
+  await sessionManager.resetSession(sessionId, "telegram", "dm");
+
+  const response = await commandHandler("c1", "u1", "dm", "archive", "all");
+  assert.match(String(response), /Archived sessions deleted/);
+});

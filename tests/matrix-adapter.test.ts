@@ -1,8 +1,18 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { MatrixAdapter } from "../src/channels/matrix.ts";
 import type { MatrixChannelConfig } from "../src/config.ts";
+import { MessageRouter } from "../src/router/router.ts";
+import { SessionManager } from "../src/sessions/manager.ts";
+import { AgentBridge } from "../src/agent/bridge.ts";
+import { ToolRegistry } from "../src/tools/registry.ts";
+import {
+  type MatrixApprovalHandler,
+} from "../src/channels/matrix-session-handlers.ts";
+import { resolveMatrixRuntimeStoragePaths } from "../src/channels/matrix/storage.ts";
 
 type MatrixEventContentMock = Record<string, unknown>;
 type MatrixFetchedEventMock = {
@@ -26,9 +36,29 @@ type MatrixRelationsResponseMock = {
   next_batch?: string;
 };
 
-function createRuntimeMock() {
+const runtimeTempDirs = new Set<string>();
+
+test.after(async () => {
+  await Promise.allSettled(
+    [...runtimeTempDirs].map(async (dir) => {
+      runtimeTempDirs.delete(dir);
+      await rm(dir, { recursive: true, force: true });
+    }),
+  );
+});
+
+function createRuntimeMock(options: { persistedSyncState?: boolean; storageRootDir?: string } = {}) {
+  const storageRootDir =
+    options.storageRootDir ??
+    join(
+      tmpdir(),
+      `my-claw-matrix-adapter-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+  runtimeTempDirs.add(storageRootDir);
   const calls: Array<{ method: string; args: unknown[] }> = [];
-  const timelineHandlers: Array<(payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean }) => void | Promise<void>> = [];
+  const timelineHandlers: Array<(
+    payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean; liveEvent: boolean },
+  ) => void | Promise<void>> = [];
   let encryptedRooms = new Set<string>();
   const sdk: {
     on: () => void;
@@ -137,23 +167,54 @@ function createRuntimeMock() {
           return encryptedRooms.has(roomId);
         },
       },
-      onTimeline(handler: (payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean }) => void | Promise<void>) {
+      onTimeline(
+        handler: (
+          payload: { room: unknown; event: unknown; toStartOfTimeline: boolean; removed: boolean; liveEvent: boolean },
+        ) => void | Promise<void>,
+      ) {
         timelineHandlers.push(handler);
-        return () => {};
+        return () => {
+          const index = timelineHandlers.indexOf(handler);
+          if (index >= 0) {
+            timelineHandlers.splice(index, 1);
+          }
+        };
       },
       async start() {},
       async stop() {},
+      hasPersistedSyncState() {
+        return options.persistedSyncState === true;
+      },
+      getStoragePaths() {
+        return resolveMatrixRuntimeStoragePaths(
+          {
+            homeserver: "https://matrix.example.org",
+            accessToken: "token",
+            userId: "@bot:example.org",
+          },
+          storageRootDir,
+        );
+      },
       setEncryptedRooms(roomIds: string[]) {
         encryptedRooms = new Set(roomIds);
       },
-      async emitTimeline(payload: { room: unknown; event: unknown; toStartOfTimeline?: boolean; removed?: boolean }) {
+      async emitTimeline(payload: {
+        room: unknown;
+        event: unknown;
+        toStartOfTimeline?: boolean;
+        removed?: boolean;
+        liveEvent?: boolean;
+      }) {
         for (const handler of timelineHandlers) {
-          await handler({
-            room: payload.room,
-            event: payload.event,
-            toStartOfTimeline: payload.toStartOfTimeline ?? false,
-            removed: payload.removed ?? false,
-          });
+          await Promise.resolve(
+            handler({
+              room: payload.room,
+              event: payload.event,
+              toStartOfTimeline: payload.toStartOfTimeline ?? false,
+              removed: payload.removed ?? false,
+              liveEvent: payload.liveEvent ?? true,
+            }),
+          ).catch(() => undefined);
         }
       },
     },
@@ -243,6 +304,15 @@ function createEvent(overrides: Partial<Record<string, unknown>> = {}) {
     getId() {
       return overrides.id ?? "$evt1";
     },
+    getTs() {
+      return (overrides.ts as number | undefined) ?? Date.now();
+    },
+    getUnsigned() {
+      return (overrides.unsigned as Record<string, unknown> | undefined) ?? {};
+    },
+    isDecryptionFailure() {
+      return overrides.isDecryptionFailure === true;
+    },
   };
 }
 
@@ -273,6 +343,168 @@ test("MatrixAdapter processes authorized inbound message", async () => {
 
   assert.deepEqual(received, ["hello"]);
   assert.equal(calls.some((call) => call.method === "sendTyping"), true);
+});
+
+test("MatrixAdapter ignores non-live timeline replays", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({ id: "$replayed" }),
+    liveEvent: false,
+  });
+
+  assert.deepEqual(received, []);
+});
+
+test("MatrixAdapter ignores duplicate live event ids", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const { runtime } = createRuntimeMock({ storageRootDir: tempDir });
+    const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+    const received: string[] = [];
+
+    adapter.onMessage(async (message) => {
+      received.push(message.text);
+    });
+
+    await adapter.start();
+    await runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$dup-live" }) });
+    await runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$dup-live" }) });
+
+    assert.deepEqual(received, ["hello"]);
+    await adapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter drops cold-start backlog older than startup", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const { runtime } = createRuntimeMock({ storageRootDir: tempDir, persistedSyncState: false });
+    const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+    const received: string[] = [];
+
+    adapter.onMessage(async (message) => {
+      received.push(message.text);
+    });
+
+    const oldTs = Date.now() - 60_000;
+    await adapter.start();
+    await runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$cold-old", ts: oldTs }) });
+    await runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$cold-fresh" }) });
+
+    assert.deepEqual(received, ["hello"]);
+    await adapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter keeps replay after clean shutdown persisted sync", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const firstRuntime = createRuntimeMock({ storageRootDir: tempDir, persistedSyncState: false });
+    const firstAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), firstRuntime.runtime as never);
+    await firstAdapter.start();
+    await firstAdapter.stop();
+
+    const secondRuntime = createRuntimeMock({ storageRootDir: tempDir, persistedSyncState: true });
+    const secondAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), secondRuntime.runtime as never);
+    const received: string[] = [];
+
+    secondAdapter.onMessage(async (message) => {
+      received.push(message.text);
+    });
+
+    await secondAdapter.start();
+    await secondRuntime.runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({ id: "$restart-backlog", ts: Date.now() - 60_000 }),
+    });
+
+    assert.deepEqual(received, ["hello"]);
+    await secondAdapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter retries failed inbound events on restart before commit", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const firstRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const firstAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), firstRuntime.runtime as never);
+    const firstReceived: string[] = [];
+
+    firstAdapter.onMessage(async (message) => {
+      firstReceived.push(message.text);
+      throw new Error("boom");
+    });
+
+    await firstAdapter.start();
+    await firstRuntime.runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$retry-me" }) });
+    assert.deepEqual(firstReceived, ["hello"]);
+    await firstAdapter.stop();
+
+    const secondRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const secondAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), secondRuntime.runtime as never);
+    const retried: string[] = [];
+
+    secondAdapter.onMessage(async (message) => {
+      retried.push(message.text);
+    });
+
+    await secondAdapter.start();
+    await secondRuntime.runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$retry-me" }) });
+
+    assert.deepEqual(retried, ["hello"]);
+    await secondAdapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MatrixAdapter does not replay committed inbound events after restart", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const firstRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const firstAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), firstRuntime.runtime as never);
+    const firstReceived: string[] = [];
+
+    firstAdapter.onMessage(async (message) => {
+      firstReceived.push(message.text);
+    });
+
+    await firstAdapter.start();
+    await firstRuntime.runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$committed" }) });
+    assert.deepEqual(firstReceived, ["hello"]);
+    await firstAdapter.stop();
+
+    const secondRuntime = createRuntimeMock({ storageRootDir: tempDir });
+    const secondAdapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), secondRuntime.runtime as never);
+    const retried: string[] = [];
+
+    secondAdapter.onMessage(async (message) => {
+      retried.push(message.text);
+    });
+
+    await secondAdapter.start();
+    await secondRuntime.runtime.emitTimeline({ room: createRoom(), event: createEvent({ id: "$committed" }) });
+
+    assert.deepEqual(retried, []);
+    await secondAdapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("MatrixAdapter marks DM messages with configured per-room session scope", async () => {
@@ -364,6 +596,92 @@ test("MatrixAdapter handles reaction-driven matrix actions", async () => {
   assert.equal(relation["event_id"], "$evt1");
   assert.match(String(editPayload["formatted_body"] ?? ""), /^\* /);
   assert.match(String(newContent["body"] ?? ""), /Model changed to Alt/);
+});
+
+test("MatrixAdapter handles text-reply matrix actions", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+
+  adapter.onCommand(async () => ({
+    text: "Current model: Base\nReply with a number/name, react to this message, or send `/model <number|name>`:\n1️⃣ Base [selected]\n2️⃣ Alt",
+    buttons: [
+      { label: "Base [selected]", action: "mdl:0" },
+      { label: "Alt", action: "mdl:1" },
+    ],
+  }));
+  adapter.onAction(async ({ data }) => ({
+    text:
+      data === "mdl:1"
+        ? "Model changed to Alt\n\nCurrent model: Alt\nReply with a number/name, react to this message, or send `/model <number|name>`:\n1️⃣ Base\n2️⃣ Alt [selected]"
+        : "Current model: Base",
+    buttons: [
+      { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
+      { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
+    ],
+  }));
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({ id: "$menu-root", content: { msgtype: "m.text", body: "/model" } }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({
+      id: "$reply-select",
+      content: {
+        msgtype: "m.text",
+        body: "2",
+      },
+      relation: { "m.in_reply_to": { event_id: "$evt1" } },
+    }),
+  });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length >= 2, true);
+  const editPayload = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+  const newContent = editPayload["m.new_content"] as Record<string, unknown>;
+  assert.match(String(newContent["body"] ?? ""), /Model changed to Alt/);
+});
+
+test("MatrixAdapter confirmTool sends approval prompt and returns approval decision", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  let resolveDecision!: (decision: "allow-session") => void;
+  const approvalHandler: MatrixApprovalHandler = {
+    requestApproval: async () => {
+      return await new Promise((resolve) => {
+        resolveDecision = resolve as (decision: "allow-session") => void;
+      });
+    },
+    cancelApproval: () => false,
+    resolveAction: async () => undefined,
+  };
+
+  await adapter.start();
+  const pendingDecision = adapter.confirmTool(
+    {
+      id: "apr-confirm",
+      platform: "matrix",
+      chatId: "!room:test",
+      userId: "@u1:example.org",
+      chatType: "group",
+      messageId: "$evt1",
+      sessionId: "matrix/group/!room:test",
+      toolName: "bash",
+      args: { command: "pwd" },
+    },
+    approvalHandler,
+  );
+
+  const promptCall = calls.find((call) => call.method === "sendMessage");
+  assert.ok(promptCall);
+  const prompt = promptCall?.args[1] as Record<string, unknown>;
+  assert.match(String(prompt.body ?? ""), /Approval required for tool/);
+
+  resolveDecision("allow-session");
+
+  assert.equal(await pendingDecision, "allow-session");
 });
 
 test("MatrixAdapter requires configured group rooms in allowlist mode", async () => {
@@ -644,6 +962,180 @@ test("MatrixAdapter preserves media-only messages as attachment summaries", asyn
 
   assert.equal(received[0]?.attachments.length, 1);
   assert.equal(received[0]?.text, "[matrix image attachment unavailable]");
+});
+
+test("MatrixAdapter coalesces quick multi-event attachment bursts into one logical inbound message", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; attachmentCount: number }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, attachmentCount: message.attachments.length });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$img1",
+      content: {
+        msgtype: "m.image",
+        body: "photo-1.jpg",
+        filename: "photo-1.jpg",
+        info: { mimetype: "image/jpeg", size: 42 },
+        url: "mxc://example.org/photo-1",
+      },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$img2",
+      content: {
+        msgtype: "m.image",
+        body: "photo-2.jpg",
+        filename: "photo-2.jpg",
+        info: { mimetype: "image/jpeg", size: 43 },
+        url: "mxc://example.org/photo-2",
+      },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.attachmentCount, 2);
+  assert.match(received[0]?.text ?? "", /matrix image attachment unavailable/);
+});
+
+test("MatrixAdapter coalesces fragmented group text bursts into one logical inbound message", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$frag1",
+      content: { msgtype: "m.text", body: "a".repeat(180) },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$frag2",
+      content: { msgtype: "m.text", body: "b".repeat(180) },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+
+  assert.deepEqual(received, [`${"a".repeat(180)}\n${"b".repeat(180)}`]);
+});
+
+test("MatrixAdapter marks bridge-style inbound messages as forwarded", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@_telegram_123:example.org"]),
+    runtime as never,
+  );
+  const received: boolean[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.isForwarded);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@_telegram_123:example.org"] }),
+    event: createEvent({
+      id: "$fwd1",
+      sender: "@_telegram_123:example.org",
+      content: { msgtype: "m.text", body: "bridged hello" },
+    }),
+  });
+
+  assert.deepEqual(received, [true]);
+});
+
+test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flow", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const sessionManager = new SessionManager();
+  const toolRegistry = new ToolRegistry();
+  const agent = new AgentBridge(
+    {
+      whitelist: ["@u1:example.org"],
+      blacklist: [],
+      channels: {},
+      llm: { provider: "x", baseUrl: "https://example.com", model: "matrix-test-model" },
+      agents: {},
+    },
+    toolRegistry,
+  );
+  const router = new MessageRouter(["@u1:example.org"], sessionManager, agent);
+
+  const fetchMock = mock.method(globalThis, "fetch", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n'));
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":" world"}}]}\n'));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }) as never;
+  });
+
+  adapter.onMessage(async (msg) => {
+    const streamer = adapter.createStreamer(msg);
+    try {
+      const response = await router.route(msg, {
+        onToken: (token) => streamer.push(token),
+        onToolUse: () => streamer.splitForToolUse(),
+      });
+      await streamer.finish(response);
+    } catch (err) {
+      await streamer.abort();
+      throw err;
+    }
+  });
+
+  try {
+    await adapter.start();
+    await runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({ id: "$stream-flow", content: { msgtype: "m.text", body: "hi there" } }),
+    });
+
+    const sendCalls = calls.filter((call) => call.method === "sendMessage");
+    assert.ok(sendCalls.length >= 2);
+    const firstContent = sendCalls[0]?.args[1] as Record<string, unknown>;
+    const lastContent = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+    assert.equal(firstContent["body"], "hello");
+    assert.equal((lastContent["m.new_content"] as Record<string, unknown>)?.["body"], "hello world");
+  } finally {
+    fetchMock.mock.restore();
+  }
 });
 
 test("MatrixAdapter decrypts encrypted media attachments when crypto is available", async () => {
