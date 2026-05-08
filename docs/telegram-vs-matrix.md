@@ -159,7 +159,7 @@ Main sources:
 | `MEDIA:/path` outbound refs | Yes | Yes | Both |
 | Image/audio/video/file support | Yes | Yes | Both cover the shared attachment types |
 | Voice-specific handling | Yes | Partial | Telegram has native voice handling; Matrix treats audio generically |
-| Album/media-group merge | Yes | No | Telegram only |
+| Album/media-group merge | Yes | Partial | Matrix can merge compatible attachment bursts, but not full album semantics |
 | First-item caption logic | Yes | Partial | Matrix can reconstruct some coalesced media-followup captions, but not full Telegram media-group caption semantics |
 | Attachment summary text when content is unavailable | Partial | Yes | Matrix keeps `summaryText`; Telegram generally drops failed downloads |
 | Configurable max media size | No | Yes | Matrix `mediaMaxMb` |
@@ -333,7 +333,7 @@ These are already implemented and should be treated as non-regression requiremen
 |---|---|---|---|---|
 | P2 | Better command discoverability | Partially closed. Matrix now has `/help`, `/commands`, `/model`, and `/models` guidance, but still cannot expose native platform command registration. | Main-channel usability issue for `/help`, `/model`, `/archive` | Remaining gap is mostly a platform UX limitation |
 | P2 | Better model-selection UX | Partially closed. Model selection now works via reaction or plain-text reply, but still lacks Telegram-style inline clarity. | Matrix is the main channel, so model-switch UX matters more | Functional, but still less obvious than Telegram |
-| P2 | Forwarded / relayed message normalization if detectable | Matrix does not currently expose forwarded-state semantics in normalized messages | Useful context for agent behavior | Depends on what can be detected reliably in Matrix events |
+| P2 | Forwarded / relayed message normalization if detectable | Partially closed. Matrix now exposes `isForwarded`, but only through bridge/relay heuristics rather than a native forwarded flag. | Useful context for agent behavior | Depends on what can be detected reliably in Matrix events |
 | P2 | Better multimessage user-intent reconstruction | Partially closed. Matrix now extends compatible buffered text/media bursts and reconstructs some short trailing media captions, but still avoids broad turn reconstruction. | Improves quality in busy room usage | Separate from strict dedupe/replay behavior |
 | P2 | Delivery-control polish where feasible | Matrix lacks some ergonomic delivery knobs compared to Telegram | Lower impact than reliability and interaction UX | Only worth doing if client behavior is predictable |
 
@@ -341,7 +341,7 @@ These are already implemented and should be treated as non-regression requiremen
 
 | Priority | Feature | Current gap | Why it is lower priority |
 |---|---|---|---|
-| P3 | Forwarded-state parity with Telegram | Matrix has no simple `isForwarded` equivalent today | Useful, but not central to Matrix quality |
+| P3 | Forwarded-state parity with Telegram | Partially closed. Matrix exposes heuristic `isForwarded`, but not Telegram-grade forwarded metadata. | Useful, but not central to Matrix quality |
 | P3 | Additional message-surface polish knobs | Telegram has more send-surface convenience behavior | Nice polish, but not blocking for a strong Matrix channel |
 | P3 | More discoverability sugar around commands | Mostly closed at the adapter layer; remaining gap is Matrix client/platform UX | Should not delay higher-priority work |
 

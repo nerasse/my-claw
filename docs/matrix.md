@@ -19,7 +19,7 @@ Implemented as a split adapter:
 - Matrix poll events normalized to text for triggers and history
 - reaction and plain-text reply actions for menus and approvals
 - generic confirm prompts via reactions or plain-text reply
-- `/commands` and `/models` discoverability commands
+- `/help`, `/commands`, `/model`, `/models`, `/new`, `/clear`, `/status`, and `/archive`
 - outbound text, replies, thread replies, attachments
 - Markdown to Matrix HTML
 - read receipts and typing

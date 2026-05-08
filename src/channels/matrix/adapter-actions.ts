@@ -40,7 +40,7 @@ export function resolveActionForTextReply(buttons: ConfirmationButton[], text: s
   const trimmed = text.trim();
   if (!trimmed) return undefined;
 
-  const indexMatch = /^\/?(10|[1-9])(?:\b|\s|[.)-])/.exec(trimmed);
+  const indexMatch = /^\/?([1-9]\d*)(?:\b|\s|[.)-])/.exec(trimmed);
   if (indexMatch) {
     const index = Number(indexMatch[1]) - 1;
     return index >= 0 ? buttons[index]?.action : undefined;

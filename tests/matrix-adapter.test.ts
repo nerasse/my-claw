@@ -739,6 +739,53 @@ test("MatrixAdapter handles text-reply matrix actions", async () => {
   assert.match(String(newContent["body"] ?? ""), /Model changed to Alt/);
 });
 
+test("MatrixAdapter handles text-reply matrix actions beyond ten options", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+
+  adapter.onCommand(async () => ({
+    text: [
+      "Choose a model",
+      "Reply with a number/name, react to this message, or send `/model <number|name>`:",
+      ...Array.from({ length: 12 }, (_, index) => `${index + 1}. Model ${index + 1}`),
+    ].join("\n"),
+    buttons: Array.from({ length: 12 }, (_, index) => ({
+      label: `Model ${index + 1}${index === 11 ? " [selected]" : ""}`,
+      action: `mdl:${index}`,
+    })),
+  }));
+  adapter.onAction(async ({ data }) => ({
+    text: data === "mdl:11" ? "Model changed to Model 12" : `Selected ${data}`,
+    buttons: Array.from({ length: 12 }, (_, index) => ({
+      label: `Model ${index + 1}${data === `mdl:${index}` ? " [selected]" : ""}`,
+      action: `mdl:${index}`,
+    })),
+  }));
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({ id: "$menu-root-12", content: { msgtype: "m.text", body: "/model" } }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({
+      id: "$reply-select-12",
+      content: {
+        msgtype: "m.text",
+        body: "12",
+      },
+      relation: { "m.in_reply_to": { event_id: "$evt1" } },
+    }),
+  });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length >= 2, true);
+  const editPayload = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+  const newContent = editPayload["m.new_content"] as Record<string, unknown>;
+  assert.match(String(newContent["body"] ?? ""), /Model changed to Model 12/);
+});
+
 test("MatrixAdapter confirmTool sends approval prompt and returns approval decision", async () => {
   const { runtime, calls } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
