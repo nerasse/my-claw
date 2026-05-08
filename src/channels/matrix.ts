@@ -4,6 +4,7 @@ import type { MatrixEvent, Room } from "matrix-js-sdk";
 import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
 import { MY_CLAW_DIR } from "../config.ts";
 import type { MatrixChannelConfig } from "../config.ts";
+import { SessionManager } from "../sessions/manager.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
 import { matrixLog } from "../utils/logger.ts";
 import { MatrixClientRuntime } from "./matrix-client.ts";
@@ -92,9 +93,13 @@ const MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MATRIX_PENDING_ACTION_TTL_MS = 6 * 60 * 60 * 1000;
 const MATRIX_PENDING_ACTION_LIMIT = 128;
 const MATRIX_TEXT_BATCH_THRESHOLD = 160;
+const MATRIX_TEXT_BATCH_DELAY_MS = 600;
+const MATRIX_TEXT_BATCH_SPLIT_DELAY_MS = 2_000;
+const MATRIX_TEXT_BATCH_SPLIT_THRESHOLD = 3_900;
 const MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT = 3;
 
 type PendingBufferedMatrixIngress = {
+  batchKey: string;
   roomId: string;
   eventId: string;
   message: UnifiedMessage;
@@ -513,7 +518,7 @@ export class MatrixAdapter implements ChannelAdapter {
         preparedRoomHistory,
         selfDisplayName,
       );
-      if (this.shouldBufferInboundMessage(roomId, unified, chatType, rootThreadId)) {
+      if (this.shouldBufferInboundMessage(unified, chatType, rootThreadId)) {
         const buffered = await this.bufferOrProcessMessage({
           roomId,
           eventId: unified.id,
@@ -605,7 +610,8 @@ export class MatrixAdapter implements ChannelAdapter {
     commitInboundEventIfClaimed: () => Promise<void>;
     releaseInboundEventIfClaimed: () => Promise<void>;
   }): Promise<boolean> {
-    const coalesced = this.inboundBuffer.coalesce(params.roomId, {
+    const batchKey = this.inboundBatchKey(params.message);
+    const coalesced = this.inboundBuffer.coalesce(batchKey, {
       eventId: params.eventId,
       senderId: params.message.userId,
       chatType: params.message.chatType,
@@ -642,13 +648,14 @@ export class MatrixAdapter implements ChannelAdapter {
       existing.releasers.push(params.releaseInboundEventIfClaimed);
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => {
-        void this.flushBufferedMessage(existing.roomId, existing.eventId);
-      }, 1500);
+        void this.flushBufferedMessage(existing.batchKey, existing.eventId);
+      }, this.bufferedIngressDelayMs(params.message.text));
       this.pendingBufferedIngress.set(existing.eventId, existing);
       return true;
     }
 
     const pending: PendingBufferedMatrixIngress = {
+      batchKey,
       roomId: params.roomId,
       eventId: bufferedItem.eventId,
       message: {
@@ -661,25 +668,25 @@ export class MatrixAdapter implements ChannelAdapter {
       committers: [params.commitInboundEventIfClaimed],
       releasers: [params.releaseInboundEventIfClaimed],
       timer: setTimeout(() => {
-        void this.flushBufferedMessage(params.roomId, bufferedItem.eventId);
-      }, 1500),
+        void this.flushBufferedMessage(batchKey, bufferedItem.eventId);
+      }, this.bufferedIngressDelayMs(params.message.text)),
     };
     this.pendingBufferedIngress.set(bufferedItem.eventId, pending);
     return true;
   }
 
-  private async flushBufferedMessage(roomId: string, eventId: string): Promise<void> {
+  private async flushBufferedMessage(batchKey: string, eventId: string): Promise<void> {
     const pending = this.pendingBufferedIngress.get(eventId);
-    if (!pending || pending.roomId !== roomId) {
+    if (!pending || pending.batchKey !== batchKey) {
       return;
     }
 
     clearTimeout(pending.timer);
     this.pendingBufferedIngress.delete(eventId);
-    this.inboundBuffer.clear(roomId, eventId);
+    this.inboundBuffer.clear(batchKey, eventId);
 
     try {
-      await this.processMessage(roomId, pending.message, pending.histories.at(-1));
+      await this.processMessage(pending.roomId, pending.message, pending.histories.at(-1));
       for (const commit of pending.committers) {
         await commit();
       }
@@ -692,13 +699,33 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private shouldBufferInboundMessage(
-    roomId: string,
     message: UnifiedMessage,
     chatType: MatrixChatType,
     rootThreadId?: string,
   ): boolean {
-    if (chatType !== "group" || rootThreadId) {
+    if (chatType !== "group") {
       return false;
+    }
+    const batchKey = this.inboundBatchKey(message);
+    if (rootThreadId) {
+      if (message.replyToId && message.replyToId !== rootThreadId) {
+        return false;
+      }
+      if (message.attachments.length > 0) {
+        return true;
+      }
+      return message.text.trim().length > 0 || this.inboundBuffer.canCoalesce(batchKey, {
+        eventId: message.id,
+        senderId: message.userId,
+        chatType: message.chatType,
+        text: message.text,
+        content: {},
+        attachments: message.attachments,
+        threadId: message.threadId,
+        replyToId: message.replyToId,
+        mode: message.attachments.length > 0 ? "media" : "text",
+        timestampMs: Date.now(),
+      });
     }
     if (message.attachments.length > 0) {
       return true;
@@ -706,7 +733,7 @@ export class MatrixAdapter implements ChannelAdapter {
     if (message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD) {
       return true;
     }
-    return this.inboundBuffer.canCoalesce(roomId, {
+    return this.inboundBuffer.canCoalesce(batchKey, {
       eventId: message.id,
       senderId: message.userId,
       chatType: message.chatType,
@@ -718,6 +745,21 @@ export class MatrixAdapter implements ChannelAdapter {
       mode: message.attachments.length > 0 ? "media" : "text",
       timestampMs: Date.now(),
     });
+  }
+
+  private inboundBatchKey(message: UnifiedMessage): string {
+    const sessionId = SessionManager.resolveSessionId("matrix", message.chatType, message.chatId, message.userId, {
+      roomId: message.chatId,
+      threadId: message.threadId,
+      sessionScope: message.sessionScope,
+    });
+    return `${message.chatId}|${sessionId}`;
+  }
+
+  protected bufferedIngressDelayMs(latestText: string): number {
+    return latestText.length >= MATRIX_TEXT_BATCH_SPLIT_THRESHOLD
+      ? MATRIX_TEXT_BATCH_SPLIT_DELAY_MS
+      : MATRIX_TEXT_BATCH_DELAY_MS;
   }
 
   private async processMessage(

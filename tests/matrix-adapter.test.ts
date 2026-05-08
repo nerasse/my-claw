@@ -543,6 +543,69 @@ test("MatrixAdapter marks DM messages with configured per-room session scope", a
   assert.deepEqual(receivedScopes, ["per-room"]);
 });
 
+test("MatrixAdapter keeps short DM split turns immediate in per-user scope", async () => {
+  class TestMatrixAdapter extends MatrixAdapter {
+    protected override bufferedIngressDelayMs(): number {
+      return 25;
+    }
+  }
+  const { runtime } = createRuntimeMock();
+  const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ roomId: "!dm-a:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({ id: "$dm1", content: { msgtype: "m.text", body: "hello" } }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ roomId: "!dm-a:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({ id: "$dm2", content: { msgtype: "m.text", body: "again" } }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.deepEqual(received, ["hello", "again"]);
+});
+
+test("MatrixAdapter does not coalesce DM split turns across per-room sessions", async () => {
+  class TestMatrixAdapter extends MatrixAdapter {
+    protected override bufferedIngressDelayMs(): number {
+      return 25;
+    }
+  }
+  const { runtime } = createRuntimeMock();
+  const adapter = new TestMatrixAdapter(
+    createConfig({ dm: { sessionScope: "per-room", allowFrom: ["@u1:example.org"] } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ chatId: string; text: string }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ chatId: message.chatId, text: message.text });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ roomId: "!dm-a:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({ id: "$dm-room-a", content: { msgtype: "m.text", body: "hello" } }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ roomId: "!dm-b:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({ id: "$dm-room-b", content: { msgtype: "m.text", body: "again" } }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.deepEqual(received, [
+    { chatId: "!dm-a:test", text: "hello" },
+    { chatId: "!dm-b:test", text: "again" },
+  ]);
+});
+
 test("MatrixAdapter handles matrix commands inline", async () => {
   const { runtime, calls } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
@@ -1099,6 +1162,68 @@ test("MatrixAdapter coalesces fragmented group text bursts into one logical inbo
   await new Promise((resolve) => setTimeout(resolve, 1700));
 
   assert.deepEqual(received, [`${"a".repeat(180)}\n${"b".repeat(180)}`]);
+});
+
+test("MatrixAdapter coalesces threaded split turns separately from the room root", async () => {
+  class TestMatrixAdapter extends MatrixAdapter {
+    protected override bufferedIngressDelayMs(): number {
+      return 25;
+    }
+  }
+  const { runtime } = createRuntimeMock();
+  const adapter = new TestMatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } }, threadReplies: "inbound" }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; threadId?: string }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, threadId: message.threadId });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$thread-frag-1",
+      content: { msgtype: "m.text", body: "part one" },
+      relation: { rel_type: "m.thread", event_id: "$thread-root", "m.in_reply_to": { event_id: "$thread-root" } },
+      thread: { id: "$thread-root" },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$thread-frag-2",
+      content: { msgtype: "m.text", body: "part two" },
+      relation: { rel_type: "m.thread", event_id: "$thread-root", "m.in_reply_to": { event_id: "$thread-root" } },
+      thread: { id: "$thread-root" },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({ id: "$room-root-msg", content: { msgtype: "m.text", body: "root text" } }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 90));
+
+  assert.deepEqual(received, [
+    { text: "root text", threadId: undefined },
+    { text: "part one\npart two", threadId: "$thread-root" },
+  ]);
+});
+
+test("MatrixAdapter uses longer buffering for near-limit split chunks", async () => {
+  class TestMatrixAdapter extends MatrixAdapter {
+    public bufferedDelayFor(text: string): number {
+      return this.bufferedIngressDelayMs(text);
+    }
+  }
+  const { runtime } = createRuntimeMock();
+  const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+
+  assert.equal(adapter.bufferedDelayFor("short"), 600);
+  assert.equal(adapter.bufferedDelayFor("x".repeat(3900)), 2000);
 });
 
 test("MatrixAdapter marks bridge-style inbound messages as forwarded", async () => {
