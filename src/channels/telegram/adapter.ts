@@ -543,6 +543,17 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     const text = this.messageTextFromRawMessage(msg) ?? "";
+
+    // Defensive fallback: if bot.hears() missed it (no regex match),
+    // intercept known commands before routing them as regular messages.
+    if (text.startsWith("/")) {
+      const command = text.slice(1).split(/\s+/)[0]!;
+      if (["new", "clear", "model", "status", "archive", "help"].includes(command)) {
+        await this.handleCommand(ctx, command);
+        return;
+      }
+    }
+
     const batchKey = `${msg.chat.id}:${userId}`;
 
     if (this.textBatches.has(batchKey) && this.tryAppendToBatch(batchKey, msg, ctx.update.update_id)) {

@@ -658,3 +658,140 @@ test("TelegramAdapter normalizes poll messages into text", async () => {
   assert.match(seen[0]?.text ?? "", /Pizza \(1 vote\)/);
   assert.match(seen[1]?.roomContext ?? "", /\[Poll\]/);
 });
+
+test("TelegramAdapter registers hears handlers for all slash commands", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(createConfig(), new Set(["u1"]), bot as never);
+  await adapter.start();
+
+  assert.equal(handlers.has("hears:^\\/new(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/clear(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/model(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/status(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/archive(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/help(\\s|$)"), true);
+});
+
+test("TelegramAdapter hears /new without bot_command entity triggers command handler", async () => {
+  const { bot, handlers, calls } = createBotMock();
+  const adapter = new TelegramAdapter(createConfig(), new Set(["u1"]), bot as never);
+
+  const commandCalls: Array<{ command: string; args: string }> = [];
+  adapter.onCommand(async (_chatId, _userId, _chatType, command, args) => {
+    commandCalls.push({ command, args });
+    return "ok";
+  });
+
+  await adapter.start();
+  const hearsHandler = handlers.get("hears:^\\/new(\\s|$)");
+  assert.equal(typeof hearsHandler, "function");
+
+  const ctx = {
+    update: { update_id: 100 },
+    chat: { id: 123, type: "private" },
+    from: { id: "u1", is_bot: false, username: "u1" },
+    message: {
+      message_id: 100,
+      date: 200,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/new",
+      // NO entities array — mimics a client that omits bot_command entity
+    },
+    match: "",
+  };
+
+  await hearsHandler?.(ctx);
+
+  assert.equal(commandCalls.length, 1);
+  assert.equal(commandCalls[0]?.command, "new");
+  assert.equal(commandCalls[0]?.args, "");
+
+  // Should send a reply via sendMessage
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 1);
+});
+
+test("TelegramAdapter hears /new with arguments captures them in ctx.match", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(createConfig(), new Set(["u1"]), bot as never);
+
+  const commandCalls: Array<{ command: string; args: string }> = [];
+  adapter.onCommand(async (_chatId, _userId, _chatType, command, args) => {
+    commandCalls.push({ command, args });
+    return "ok";
+  });
+
+  await adapter.start();
+  const hearsHandler = handlers.get("hears:^\\/new(\\s|$)");
+
+  const ctx = {
+    update: { update_id: 101 },
+    chat: { id: 123, type: "private" },
+    from: { id: "u1", is_bot: false, username: "u1" },
+    message: {
+      message_id: 101,
+      date: 201,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/new extra args",
+    },
+    match: "extra args",
+  };
+
+  await hearsHandler?.(ctx);
+
+  assert.equal(commandCalls.length, 1);
+  assert.equal(commandCalls[0]?.command, "new");
+  assert.equal(commandCalls[0]?.args, "extra args");
+});
+
+test("TelegramAdapter command without bot_command entity does NOT reach message handler", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      dm: { policy: "allowlist", allowFrom: ["u1"] },
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  const messageSeen: unknown[] = [];
+  adapter.onMessage(async (msg) => {
+    messageSeen.push(msg);
+  });
+
+  adapter.onCommand(async () => {
+    return "command handled";
+  });
+
+  await adapter.start();
+
+  // Simulate the on:message handler receiving /new (as if bot.hears missed it)
+  const msgHandler = handlers.get("on:message");
+  assert.equal(typeof msgHandler, "function");
+
+  const ctx = {
+    update: { update_id: 102 },
+    chat: { id: 123, type: "private" },
+    from: { id: "u1", is_bot: false, username: "u1" },
+    message: {
+      message_id: 102,
+      date: 202,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/new",
+      // No entities — this is what a copy-paste or some clients send
+    },
+  };
+
+  await msgHandler?.(ctx);
+
+  // Because handleMessage now checks text.startsWith("/") and known commands,
+  // it should NOT produce a message for the router — it should forward to
+  // handleCommand internally. With the hears fix in place, this path should
+  // rarely be hit, but the fallback in handleMessage ensures commands never
+  // leak to the LLM even if hears somehow fails.
+  assert.equal(messageSeen.length, 0);
+});
