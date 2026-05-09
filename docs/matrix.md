@@ -1,104 +1,211 @@
-# Matrix
+# Matrix Channel
 
-## Status
+## Overview
 
-Implemented as a split adapter:
+Matrix adapter built on `matrix-js-sdk` with full E2EE support, room/Thread scoping, and granular access control.
 
-- `src/channels/matrix.ts`: public Matrix adapter facade
-- `src/channels/matrix-client.ts`: Matrix SDK runtime and storage wiring
-- `src/channels/matrix/`: shared Matrix adapter/runtime modules
-- wired in `src/index.ts`
+## File Structure
 
-## Toggle
+```
+src/channels/matrix/
+├── adapter.ts          # Main adapter: timeline ingress, message routing, commands
+├── client.ts           # Matrix SDK runtime: crypto bootstrap, sync lifecycle
+├── policy.ts           # DM/room detection, allowlists, autoJoin filtering
+├── ingress.ts          # Timeline event normalization and room history prep
+├── context.ts          # Room/thread history, reply context, room history text
+├── send.ts             # All outbound: send, edit, upload, stream finalization
+├── format.ts           # Mention resolution, text formatting, reply fallback strip
+├── stream.ts           # Streaming previews via `m.replace`
+├── commands.ts         # `/new`, `/model`, `/status`, `/clear`, `/help`, `/archive`
+├── session-handlers.ts # Model menus, approval prompts, status replies
+├── actions.ts            # Reaction/text-reply action resolution
+├── approval-store.ts     # Persisted approval prompts across restarts
+├── history.ts            # Room history tracker
+├── inbound-buffer.ts     # Fragmented burst coalescing
+├── inbound-dedupe.ts     # Event claim/commit/release with persistence
+├── sync-lifecycle.ts      # Cold-start backlog drop, clean-shutdown marker
+├── sync-store.ts          # File-backed sync token store
+├── polls.ts              # Poll event normalization to text
+├── errors.ts             # Error classification and reporting
+├── storage.ts            # Matrix account storage paths
+├── crypto-idb.ts         # IndexedDB crypto snapshot persistence
+├── decrypt-bridge.ts      # Encrypted event decryption retry bridge
+├── helpers.ts            # ID normalization, member state helpers
+├── text.ts               # Text chunking
+└── types.ts              # Matrix-specific types
+```
 
-- `channels.matrix.enabled: false` disables Matrix startup
+## Configuration
 
-## Behavior
+```json
+{
+  "channels": {
+    "matrix": {
+      "enabled": true,
+      "homeserver": "https://matrix.kssimi.fr",
+      "accessToken": "",
+      "userId": "@claw:kssimi.fr",
+      "deviceId": "xxx",
+      "password": "",
+      "encryption": true,
+      "autoJoin": "allowlist",
+      "dm": {
+        "enabled": true,
+        "policy": "allowlist",
+        "allowFrom": ["@neras:kssimi.fr"],
+        "sessionScope": "per-room"
+      },
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": ["@neras:kssimi.fr"],
+      "allowBots": false,
+      "groups": {
+        "*": {
+          "enabled": true,
+          "autoReply": true
+        }
+      },
+      "contextVisibility": "allowlist_quote",
+      "historyLimit": 10,
+      "replyToMode": "first",
+      "streaming": {
+        "enabled": true,
+        "mode": "partial",
+        "minChars": 30,
+        "throttleMs": 1000
+      }
+    }
+  }
+}
+```
 
-- inbound DM and room messages
-- Matrix poll events normalized to text for triggers and history
-- reaction and plain-text reply actions for menus and approvals
-- generic confirm prompts via reactions or plain-text reply
-- `/help`, `/commands`, `/model`, `/models`, `/new`, `/clear`, `/status`, and `/archive`
-- outbound text, replies, thread replies, attachments
-- Markdown to Matrix HTML
-- read receipts and typing
-- reactions for status and `/model` selection
-- streaming previews via `m.replace`
-- retry/backoff for send, edit, upload, stream preview/final, and redact paths
-- coalescing for quick fragmented group text bursts, short room-root split turns, top-level thread split turns, and compatible attachment bursts
-- short leading and trailing text bursts can reconstruct as Matrix media captions ahead of attachment markers
-- media text normalization strips filename-only bodies, keeps real captions with typed markers, and treats stickers as image-style attachments
-- `isForwarded` is exposed with conservative bridge/relay heuristics
-- encrypted media download when Matrix crypto is available
-- rust-crypto startup when `channels.matrix.encryption` is enabled
-- decrypted `m.room.encrypted` handling after Matrix SDK decryption completes
-- live encrypted events are skipped with a warning when crypto is unavailable
-- repeated decrypt failures now log room-scoped escalation and same-user hints
-- encrypted media upload in encrypted rooms
-- local Matrix sync cache and crypto snapshot persisted under `~/.my-claw/matrix/accounts/...`
+## Security Model
+
+### Authentication
+- Access token + device ID for SDK auth
+- Optional password for initial login (token preferred)
+
+### Auto-Join (who can invite)
+```
+autoJoin: "off" | "always" | "allowlist"
+```
+
+With `allowlist`, the bot verifies the **inviter identity** against:
+- `dm.allowFrom`
+- `groupAllowFrom`
+- `groups.*.users`
+
+Only allowlisted users can invite the bot. Unknown invitations are silently rejected.
+
+### DM Policy
+```
+dm.policy: "open" | "allowlist" | "disabled"
+```
+- `allowlist` (default): only `dm.allowFrom` users can DM
+- `open`: any user (requires `allowFrom: ["*"]`)
+- `disabled`: all DMs ignored
+
+### Room/Group Policy
+```
+groupPolicy: "open" | "allowlist" | "disabled"
+```
+- `allowlist` (default): room must be configured in `groups` and sender in `groupAllowFrom` or per-room `users`
+- `open`: any room, mention-gating only
+- `disabled`: all room messages ignored
+
+### Mention Gating
+- `autoReply: true` → no mention required for allowlisted users
+- `autoReply: false` / `requireMention: true` → `@botname` or reply-to-bot required
+- Commands addressed to bot (`/cmd@botname`) always pass
+
+### Bot-to-Bot
+```
+allowBots: false | true | "mentions"
+```
+- `false` (default): all bot messages ignored
+- `mentions`: bot messages allowed only if bot is @mentioned in group
+- `true`: all bot messages allowed
+- `botUserIds`: whitelist specific bot MXIDs
+
+### Context Visibility
+```
+contextVisibility: "all" | "allowlist" | "allowlist_quote"
+```
+- `all`: agent sees all messages in room context
+- `allowlist`: agent only sees messages from allowlisted senders
+- `allowlist_quote`: same as `allowlist`, but reply quotes from non-allowlisted senders are still shown
+
+### Meta-Command Filtering
+Commands (`/help`, `/status`, `/model`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
+
+## DM Detection
+
+DMs are detected by **protocol-level signals only**:
+1. `room.getDMInviter()` returns a value (room is in `m.direct` account data)
+2. No fallback to member count. A 2-member room without `m.direct` is treated as a normal group room.
+
+This prevents session sharing across private admin/monitoring channels.
 
 ## Encryption
 
-- enable with `channels.matrix.encryption: true`
-- requires the real Matrix `userId` and `deviceId` that match the access token
-- on first encrypted startup, `my-claw` will seed its own crypto snapshot from the matching OpenClaw snapshot when available, then continue with its own local store
-- `my-claw` keeps its own crypto DB prefix and snapshot file; it does not share a live IndexedDB store with OpenClaw
+- Enable: `channels.matrix.encryption: true`
+- Requires real `userId` and `deviceId` matching the access token
+- Rust-crypto bootstrap via `@matrix-org/matrix-sdk-crypto-wasm`
+- Local crypto snapshot persisted under `~/.my-claw/matrix/accounts/...`
+- Can seed initial snapshot from OpenClaw migration
+- Encrypted media: download + decrypt when crypto ready, upload encrypted for encrypted rooms
 
-## Policy
+## Session Scoping
 
-- DM policy: `open | allowlist | disabled`
-- group policy: `open | allowlist | disabled`
-- room config via `groups[roomId]` or `groups["*"]`
-- visible mentions only; hidden metadata-only mentions do not trigger
-- configured bot senders only via `botUserIds`
-- `allowBots`: `false | true | "mentions"`
+| Context | Session ID |
+|---------|-----------|
+| DM (per-user) | `matrix/dm/<userId>` |
+| DM (per-room) | `matrix/dm-room/<roomId>` |
+| Room | `matrix/room/<roomId>` |
+| Thread | `matrix/thread/<roomId>/<threadId>` |
 
-## Context
+## Commands
 
-- reply context: sender + quoted text
-- Matrix reply fallback quotes are stripped from normalized reply text
-- thread root context
-- pending-only recent room context via `historyLimit`
-- `contextVisibility`: `all | allowlist | allowlist_quote`
-- `allowlist_quote` keeps explicit reply quotes even when sender-based filtering blocks thread/history context
+All commands are text-based (Matrix has no native command UI):
+
+| Command | Action |
+|---------|--------|
+| `/new` | Reset current session (preserved in context as boundary) |
+| `/model` | Show model selection menu |
+| `/models` | List available models |
+| `/status` | Show current model and stats |
+| `/clear` | Clear session history |
+| `/archive` | Delete archived sessions |
+| `/help` / `/commands` | Show command list |
 
 ## Delivery
 
-- `replyToMode`: `off | first | all | batched`
-- text chunking via `textChunkLimit` and `chunkMode: length | newline`
-- plain media HTTP fetches use a timeout guard
-- stream fallback redacts the draft before normal final send when needed
-- pending action menus persist across restart
-- generic confirm prompts restore after restart as expired prompts
-- pending tool approvals persist across restart and restore as expired prompts
-- cold start drops pre-startup backlog unless a clean shutdown persisted sync state
-- inbound dedupe persists committed events and live claims under the Matrix account storage root
+- **Reply modes**: `off`, `first`, `all`, `batched`
+- **Threading**: Full `m.thread` relation support
+- **Streaming**: Preview via `m.replace`, final edit or fallback redact
+- **Reactions**: `m.reaction` for status and menu selection
+- **Read receipts**: `m.read` sent on processed events
+- **Typing**: Supported by protocol, not yet wired in adapter
+- **Text chunking**: `textChunkLimit` + `chunkMode: length | newline`
+- **Media**: Plain + encrypted download/upload with timeout guards
+- **Polls**: Normalized to text for routing and history
 
-## Key Files
+## Reliability
 
-- `src/channels/matrix.ts`
-- `src/channels/matrix-client.ts`
-- `src/channels/matrix/file-sync-store.ts`
-- `src/channels/matrix/sync-lifecycle.ts`
-- `src/channels/matrix/decrypt-bridge.ts`
-- `src/channels/matrix/inbound-dedupe.ts`
-- `src/channels/matrix/adapter-ingress.ts`
-- `src/channels/matrix/adapter-policy.ts`
-- `src/channels/matrix/adapter-actions.ts`
-- `src/channels/matrix-format.ts`
-- `src/channels/matrix-stream.ts`
-- `src/channels/matrix-history.ts`
-- `src/channels/matrix-text.ts`
-- `src/channels/matrix-session-handlers.ts`
-
-## Validation
-
-- `bun run check`
-- `bun run check:test`
-- `node --experimental-transform-types --test tests/*.test.ts`
+- **Persisted sync store**: Survives restarts, enables replay recovery
+- **Clean-shutdown marker**: Only trusts replay after graceful stop
+- **Cold-start backlog drop**: Drops pre-startup events if sync untrusted
+- **Inbound dedupe**: `claim -> commit` with TTL pruning and cross-process claim files
+- **Retry logic**: `withMatrixRetry()` on all delivery paths, honors `retry_after_ms`
+- **Fragment coalescing**: Merges rapid split turns, attachment bursts, and media captions
 
 ## Logs
 
-- app: `~/.my-claw/logs/matrix-YYYY-MM-DD(.N).log`
-- sdk: `~/.my-claw/logs/matrix-sdk-YYYY-MM-DD(.N).log`
+- App: `~/.my-claw/logs/matrix-YYYY-MM-DD(.N).log`
+- SDK: `~/.my-claw/logs/matrix-sdk-YYYY-MM-DD(.N).log`
+
+## Validation
+
+```bash
+bun run check
+node --experimental-transform-types --test tests/matrix-*.test.ts
+```
