@@ -143,13 +143,16 @@ async function main() {
         }
 
         if (response) {
-          const textHasMediaRefs = extractMediaRefs(response.text).length > 0;
+          const refs = extractMediaRefs(response.text);
+          const textHasMediaRefs = refs.length > 0;
           if (!telegram.streamingEnabled()) {
             await telegram.send(msg.chatId, { text: response.text, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
           } else if (!textHasMediaRefs && response.attachments?.length) {
             await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
           } else if (textHasMediaRefs) {
-            await telegram.send(msg.chatId, { text: response.text, replyToId: msg.id });
+            // Streaming already sent the text; send only the extracted files
+            const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+            await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
           }
         }
       } finally {
@@ -209,7 +212,8 @@ async function main() {
         }
 
         if (response) {
-          const textHasMediaRefs = extractMediaRefs(response.text).length > 0;
+          const refs = extractMediaRefs(response.text);
+          const textHasMediaRefs = refs.length > 0;
           if (!matrix.streamingEnabled()) {
             await matrix.send(msg.chatId, {
               text: response.text,
@@ -225,8 +229,11 @@ async function main() {
               threadId: msg.threadId,
             });
           } else if (textHasMediaRefs) {
+            // Streaming already sent the text; send only the extracted files
+            const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
             await matrix.send(msg.chatId, {
-              text: response.text,
+              text: "",
+              attachments: mediaAttachments,
               replyToId: msg.id,
               threadId: msg.threadId,
             });
