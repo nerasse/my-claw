@@ -120,7 +120,7 @@ src/
   - `send.ts` : All outgoing methods (send, edit, delete, upload)
   - `context.ts` : Room/thread history, reply context, sender resolution
 - Any file over **500 lines** is a candidate for extraction. Not automatic, but a signal.
-- `core/` has no dependencies on `channels/`, `agent/`, `tools/`.
+- `core/` avoids dependencies on `channels/`, `agent/`, `tools/` where possible. `router.ts` bridges `channels/` and `agent/` by design.
 - `mcp/` and `skills/` stay empty until the feature is activated. No `.gitkeep` clutter.
 
 ### Imports
