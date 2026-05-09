@@ -1,5 +1,6 @@
-import test, { mock } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
+import { mockFetch } from "./helpers/mock-fetch.ts";
 import { chatCompletion, chatCompletionStream } from "../src/llm/provider.ts";
 
 const config = {
@@ -10,7 +11,7 @@ const config = {
 };
 
 test("chatCompletion parses content and tool calls", async () => {
-  const fetchMock = mock.method(globalThis, "fetch", async () =>
+  const fetchMock = mockFetch(async () =>
     new Response(
       JSON.stringify({
         choices: [
@@ -36,7 +37,7 @@ test("chatCompletion parses content and tool calls", async () => {
     assert.equal(result.content, "hello");
     assert.deepEqual(result.toolCalls, [{ id: "tc1", name: "demo", arguments: { x: 1 } }]);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -59,7 +60,7 @@ test("chatCompletionStream parses SSE tokens and streamed tool calls", async () 
     },
   });
 
-  const fetchMock = mock.method(globalThis, "fetch", async () =>
+  const fetchMock = mockFetch(async () =>
     new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never,
   );
 
@@ -77,6 +78,6 @@ test("chatCompletionStream parses SSE tokens and streamed tool calls", async () 
     assert.equal(result.content, "hello");
     assert.deepEqual(result.toolCalls, [{ id: "tc1", name: "demo", arguments: { x: 1 } }]);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });

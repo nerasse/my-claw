@@ -1,5 +1,6 @@
-import test, { mock } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
+import { mockFetch } from "./helpers/mock-fetch.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
@@ -44,7 +45,7 @@ test("AgentBridge returns plain LLM response", async () => {
   const registry = new ToolRegistry();
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(config, registry, skillRegistry);
-  const fetchMock = mock.method(globalThis, "fetch", async () =>
+  const fetchMock = mockFetch(async () =>
     new Response(
       JSON.stringify({
         choices: [{ message: { content: "hi back" } }],
@@ -59,7 +60,7 @@ test("AgentBridge returns plain LLM response", async () => {
     assert.equal(response, "hi back");
     assert.equal(session.messages.length, 2);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -78,7 +79,7 @@ test("AgentBridge executes tool calls and supports model override", async () => 
   const seenModels: string[] = [];
   let callCount = 0;
 
-  const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
     seenModels.push(body.model ?? "");
 
@@ -119,7 +120,7 @@ test("AgentBridge executes tool calls and supports model override", async () => 
     assert.deepEqual(seenModels, ["override-model", "override-model"]);
     assert.equal(session.messages.some((message) => message.role === "tool"), true);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -129,7 +130,7 @@ test("AgentBridge includes reply thread and attachment context in user content",
   const bridge = new AgentBridge(config, registry, skillRegistry);
   let capturedBody = "";
 
-  const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
     capturedBody = String(init?.body ?? "");
     return new Response(
       JSON.stringify({
@@ -174,6 +175,6 @@ test("AgentBridge includes reply thread and attachment context in user content",
     assert.ok(userMessage?.content.includes("[Attachments]"));
     assert.ok(userMessage?.content.includes("123 bytes"));
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });

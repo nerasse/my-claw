@@ -1,5 +1,6 @@
-import test, { mock } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
+import { mockFetch } from "./helpers/mock-fetch.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { SubAgentRunner } from "../src/subagents/runner.ts";
 import { SubAgentRegistry } from "../src/subagents/registry.ts";
@@ -55,7 +56,7 @@ test("SubAgentRunner spawns research agent one-shot", async () => {
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async () => {
+  const fetchMock = mockFetch(async () => {
     if (callCount++ === 0) {
       return new Response(
         JSON.stringify({
@@ -76,7 +77,7 @@ test("SubAgentRunner spawns research agent one-shot", async () => {
     assert.ok(id.startsWith("subagent/run-"));
     assert.equal(result, "research done");
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -86,7 +87,7 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async () => {
+  const fetchMock = mockFetch(async () => {
     if (callCount++ === 0) {
       return new Response(
         JSON.stringify({
@@ -119,7 +120,7 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
 
     await deleteSession(id);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -142,7 +143,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
   const executionOrder: string[] = [];
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async (_input, init) => {
+  const fetchMock = mockFetch(async (_input, init) => {
     const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
     const userMsgs = body.messages?.filter((m) => m.role === "user") ?? [];
     const userMsg = userMsgs[userMsgs.length - 1];
@@ -186,7 +187,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
     await deleteSession(id);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -197,7 +198,7 @@ test("SubAgentRunner queues three sends in order", async () => {
 
   const executionOrder: number[] = [];
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async () => {
+  const fetchMock = mockFetch(async () => {
     executionOrder.push(++callCount);
     await new Promise((r) => setTimeout(r, 20));
     return new Response(
@@ -226,7 +227,7 @@ test("SubAgentRunner queues three sends in order", async () => {
 
     await deleteSession(id);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -236,7 +237,7 @@ test("SubAgentRunner kill and reset", async () => {
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async () => {
+  const fetchMock = mockFetch(async () => {
     callCount++;
     return new Response(
       JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
@@ -261,7 +262,7 @@ test("SubAgentRunner kill and reset", async () => {
 
     await deleteSession(id2);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -272,7 +273,7 @@ test("spawn tool with attachments", async () => {
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", async (_input, init) => {
+  const fetchMock = mockFetch(async (_input, init) => {
     callCount++;
     const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
     const userMsgs = body.messages?.filter((m) => m.role === "user") ?? [];
@@ -300,7 +301,7 @@ test("spawn tool with attachments", async () => {
 
     await deleteSession(id);
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
   }
 });
 
@@ -317,7 +318,7 @@ test("sub-agent with workspaceDir receives same skills as main agent", async () 
   const runner = new SubAgentRunner(config, registry, skillRegistry);
 
   let capturedSystemPrompt = "";
-  const fetchMock = mock.method(globalThis, "fetch", async (_input, init) => {
+  const fetchMock = mockFetch(async (_input, init) => {
     const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
     const sysMsg = body.messages?.find((m) => m.role === "system");
     if (sysMsg) capturedSystemPrompt = sysMsg.content;
@@ -333,7 +334,7 @@ test("sub-agent with workspaceDir receives same skills as main agent", async () 
     assert.ok(capturedSystemPrompt.includes("Available skills"), "System prompt should contain skills");
     assert.ok(capturedSystemPrompt.includes("shared"), "System prompt should contain shared skill");
   } finally {
-    fetchMock.mock.restore();
+    fetchMock.restore();
     await rm(dir, { recursive: true, force: true });
   }
 });

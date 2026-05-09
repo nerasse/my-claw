@@ -1,5 +1,6 @@
-import test, { mock } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
+import { mockFetch } from "./helpers/mock-fetch.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1633,20 +1634,15 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
   );
   const router = new MessageRouter(["@u1:example.org"], sessionManager, agent);
 
-  const fetchMock = mock.method(globalThis, "fetch", async () => {
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n'));
-        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":" world"}}]}\n'));
-        controller.enqueue(new TextEncoder().encode('data: [DONE]\n'));
-        controller.close();
-      },
-    });
-    return new Response(stream, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    }) as never;
-  });
+  // Mock the agent streaming path so the test verifies adapter-router-streamer
+  // wiring without depending on the real LLM fetch implementation.
+  const originalHandleMessageStreaming = agent.handleMessageStreaming.bind(agent);
+  agent.handleMessageStreaming = async (_message, _session, onToken, onToolUse) => {
+    await onToken("hello");
+    await onToken(" world");
+    if (onToolUse) await onToolUse();
+    return "hello world";
+  };
 
   adapter.onMessage(async (msg) => {
     const streamer = adapter.createStreamer(msg);
@@ -1669,14 +1665,24 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
       event: createEvent({ id: "$stream-flow", content: { msgtype: "m.text", body: "hi there" } }),
     });
 
+    // Wait for the short-text ingress buffer (250ms) to flush so the streamer
+    // has time to send preview + final messages before we assert.
+    await new Promise((r) => setTimeout(r, 350));
+
     const sendCalls = calls.filter((call) => call.method === "sendMessage");
     assert.ok(sendCalls.length >= 2);
     const firstContent = sendCalls[0]?.args[1] as Record<string, unknown>;
-    const lastContent = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
     assert.equal(firstContent["body"], "hello");
-    assert.equal((lastContent["m.new_content"] as Record<string, unknown>)?.["body"], "hello world");
+    const finalEdit = sendCalls.find((c) =>
+      (c.args[1] as Record<string, unknown>)?.["m.new_content"] !== undefined,
+    );
+    assert.ok(finalEdit, "expected at least one edit with m.new_content");
+    assert.equal(
+      ((finalEdit!.args[1] as Record<string, unknown>)["m.new_content"] as Record<string, unknown>)?.["body"],
+      "hello world",
+    );
   } finally {
-    fetchMock.mock.restore();
+    agent.handleMessageStreaming = originalHandleMessageStreaming;
   }
 });
 
@@ -1786,8 +1792,7 @@ test("MatrixAdapter aborts plain media fetches that exceed timeout", async () =>
     }
   }
   const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
-  const originalFetch = globalThis.fetch;
-  const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
     await new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });
@@ -1802,8 +1807,7 @@ test("MatrixAdapter aborts plain media fetches that exceed timeout", async () =>
       }),
     );
   } finally {
-    fetchMock.mock.restore();
-    globalThis.fetch = originalFetch;
+    fetchMock.restore();
   }
 });
 

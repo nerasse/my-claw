@@ -365,12 +365,12 @@ export class TelegramAdapter implements ChannelAdapter {
   // ── Handlers ────────────────────────────────────────────────
 
   private setupHandlers(): void {
-    this.bot.hears(/^\/new(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
-    this.bot.hears(/^\/model(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
-    this.bot.hears(/^\/status(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
-    this.bot.hears(/^\/clear(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
-    this.bot.hears(/^\/archive(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
-    this.bot.hears(/^\/help(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
+    this.bot.hears(/^\/new(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
+    this.bot.hears(/^\/model(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
+    this.bot.hears(/^\/status(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
+    this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
+    this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
+    this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
     this.bot.on("message", (ctx) => this.handleMessage(ctx));
   }
@@ -379,11 +379,14 @@ export class TelegramAdapter implements ChannelAdapter {
     const claimed = this.claimUpdate(ctx.update.update_id);
     if (!claimed) return;
 
-    const userId = String(ctx.from?.id);
-    if (!this.whitelist.has(userId)) {
+    const msg = ctx.message;
+    if (!msg?.from || !this.shouldProcessMessage(msg)) {
       this.releaseClaimedUpdate(ctx.update.update_id);
       return;
     }
+
+    const userId = String(msg.from.id);
+    await telegramLog("info", "telegram command received", { command, userId, text: msg.text ?? msg.caption });
 
     if (command === "help") {
       await ctx.reply(getHelpText());
@@ -407,11 +410,16 @@ export class TelegramAdapter implements ChannelAdapter {
         const response = await this.commandHandler(chatId, userId, chatType, command, args, {
           threadId: typeof threadId === "number" ? String(threadId) : undefined,
         });
-        if (!response) return;
+        if (!response) {
+          await telegramLog("info", "telegram command handled with no response", { command, chatId });
+          await this.commitProcessedUpdate(ctx.update.update_id);
+          return;
+        }
 
         const replyToId = messageId ? String(messageId) : undefined;
         if (typeof response === "string") {
           await this.send(chatId, { text: response, replyToId });
+          await telegramLog("info", "telegram command response sent", { command, chatId });
           await this.commitProcessedUpdate(ctx.update.update_id);
           return;
         }
@@ -420,6 +428,7 @@ export class TelegramAdapter implements ChannelAdapter {
           ...response,
           replyToId: response.replyToId ?? replyToId,
         });
+        await telegramLog("info", "telegram command response sent", { command, chatId });
         await this.commitProcessedUpdate(ctx.update.update_id);
       } catch (err) {
         await telegramLog("error", "telegram command failed", { command, chatId, error: String(err) });
@@ -546,8 +555,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
     // Defensive fallback: if bot.hears() missed it (no regex match),
     // intercept known commands before routing them as regular messages.
+    // Strip optional @botname suffix that Telegram appends in groups.
     if (text.startsWith("/")) {
-      const command = text.slice(1).split(/\s+/)[0]!;
+      const raw = text.slice(1).split(/\s+/)[0]!;
+      const command = raw.split("@")[0]!;
       if (["new", "clear", "model", "status", "archive", "help"].includes(command)) {
         await this.handleCommand(ctx, command);
         return;

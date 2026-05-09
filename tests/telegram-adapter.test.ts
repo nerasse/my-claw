@@ -427,7 +427,10 @@ test("TelegramAdapter requires explicit bot addressing in groups when configured
     },
   });
 
-  assert.deepEqual(seen, ["@myclawbot hello", "/status@myclawbot"]);
+  // /status@myclawbot is intercepted as a command by the fallback and
+  // does NOT reach onMessage. Before the @botname fix it leaked through
+  // as plain text; now it is properly recognised as a command.
+  assert.deepEqual(seen, ["@myclawbot hello"]);
 });
 
 test("TelegramAdapter blocks configured bot senders unless they mention the bot", async () => {
@@ -664,12 +667,12 @@ test("TelegramAdapter registers hears handlers for all slash commands", async ()
   const adapter = new TelegramAdapter(createConfig(), new Set(["u1"]), bot as never);
   await adapter.start();
 
-  assert.equal(handlers.has("hears:^\\/new(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/clear(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/model(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/status(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/archive(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/help(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/new(?:@\\w+)?(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/clear(?:@\\w+)?(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/model(?:@\\w+)?(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/status(?:@\\w+)?(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/archive(?:@\\w+)?(\\s|$)"), true);
+  assert.equal(handlers.has("hears:^\\/help(?:@\\w+)?(\\s|$)"), true);
 });
 
 test("TelegramAdapter hears /new without bot_command entity triggers command handler", async () => {
@@ -683,7 +686,7 @@ test("TelegramAdapter hears /new without bot_command entity triggers command han
   });
 
   await adapter.start();
-  const hearsHandler = handlers.get("hears:^\\/new(\\s|$)");
+  const hearsHandler = handlers.get("hears:^\\/new(?:@\\w+)?(\\s|$)");
   assert.equal(typeof hearsHandler, "function");
 
   const ctx = {
@@ -723,7 +726,7 @@ test("TelegramAdapter hears /new with arguments captures them in ctx.match", asy
   });
 
   await adapter.start();
-  const hearsHandler = handlers.get("hears:^\\/new(\\s|$)");
+  const hearsHandler = handlers.get("hears:^\\/new(?:@\\w+)?(\\s|$)");
 
   const ctx = {
     update: { update_id: 101 },
@@ -793,5 +796,87 @@ test("TelegramAdapter command without bot_command entity does NOT reach message 
   // handleCommand internally. With the hears fix in place, this path should
   // rarely be hit, but the fallback in handleMessage ensures commands never
   // leak to the LLM even if hears somehow fails.
+  assert.equal(messageSeen.length, 0);
+});
+
+test("TelegramAdapter hears /new@botname with bot username suffix", async () => {
+  const { bot, handlers, calls } = createBotMock();
+  const adapter = new TelegramAdapter(createConfig(), new Set(["u1"]), bot as never);
+
+  const commandCalls: Array<{ command: string; args: string }> = [];
+  adapter.onCommand(async (_chatId, _userId, _chatType, command, args) => {
+    commandCalls.push({ command, args });
+    return "ok";
+  });
+
+  await adapter.start();
+  const hearsHandler = handlers.get("hears:^\\/new(?:@\\w+)?(\\s|$)");
+  assert.equal(typeof hearsHandler, "function");
+
+  const ctx = {
+    update: { update_id: 103 },
+    chat: { id: 123, type: "private" },
+    from: { id: "u1", is_bot: false, username: "u1" },
+    message: {
+      message_id: 103,
+      date: 203,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/new@myclawbot",
+    },
+    match: "",
+  };
+
+  await hearsHandler?.(ctx);
+
+  assert.equal(commandCalls.length, 1);
+  assert.equal(commandCalls[0]?.command, "new");
+  assert.equal(commandCalls[0]?.args, "");
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 1);
+});
+
+test("TelegramAdapter fallback strips @botname from command in message handler", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      dm: { policy: "allowlist", allowFrom: ["u1"] },
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  const messageSeen: unknown[] = [];
+  adapter.onMessage(async (msg) => {
+    messageSeen.push(msg);
+  });
+
+  adapter.onCommand(async () => {
+    return "command handled";
+  });
+
+  await adapter.start();
+
+  // Simulate the on:message handler receiving /new@botname (as if bot.hears missed it)
+  const msgHandler = handlers.get("on:message");
+  assert.equal(typeof msgHandler, "function");
+
+  const ctx = {
+    update: { update_id: 104 },
+    chat: { id: 123, type: "private" },
+    from: { id: "u1", is_bot: false, username: "u1" },
+    message: {
+      message_id: 104,
+      date: 204,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/new@myclawbot",
+    },
+  };
+
+  await msgHandler?.(ctx);
+
   assert.equal(messageSeen.length, 0);
 });

@@ -11,14 +11,19 @@ to the LLM as plain text instead of resetting the session.
 
 ## Fix
 
-Use `bot.hears(/^\/new(\s|$)/)` which checks raw message text with a regex,
-ignoring entity presence entirely. Applied to all commands:
+Use `bot.hears(/^\/new(?:@\w+)?(\s|$)/)` which checks raw message text with a regex,
+ignoring entity presence entirely. The `(?:@\w+)?` group also accepts the optional
+`@botname` suffix that Telegram appends in groups or that some clients include.
+Applied to all commands:
 `/new`, `/clear`, `/model`, `/status`, `/archive`, `/help`.
+
+A defensive fallback in `handleMessage` strips `@botname` before matching, so
+commands never leak to the LLM even if `bot.hears()` somehow fails.
 
 ## Code
 
 ```typescript
-this.bot.hears(/^\/new(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
+this.bot.hears(/^\/new(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
 ```
 
 ## Reference
