@@ -12,6 +12,7 @@ import {
 import { matrixLog } from "../../utils/logger.ts";
 import type { MatrixChatType, MatrixEventContent } from "./types.ts";
 import type { PreparedMatrixRoomHistory } from "./history.ts";
+import { isMetaCommand } from "../meta-commands.ts";
 
 export async function resolveReplyContext(
   sdk: MatrixClient,
@@ -130,6 +131,7 @@ export async function resolveRoomHistoryContext(
 
 export function resolvePendingRoomHistoryText(text: string, content: MatrixEventContent): string {
   const trimmed = text.trim();
+  if (isMetaCommand(trimmed)) return "";
   if (trimmed) return trimmed;
   return summarizeEventContent(content) ?? "";
 }

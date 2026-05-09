@@ -7,6 +7,7 @@ import {
   type TelegramSender,
   type TelegramChatType,
 } from "./policy.ts";
+import { isMetaCommand } from "../meta-commands.ts";
 
 type GrammyMessage = NonNullable<Context["message"]>;
 type AnyGrammyMessage = GrammyMessage | NonNullable<GrammyMessage["reply_to_message"]>;
@@ -47,6 +48,7 @@ export function shouldIncludeContextSender(
 
 export function contextTextForMessage(message: UnifiedMessage): string | undefined {
   const text = message.text.trim();
+  if (isMetaCommand(text)) return undefined;
   if (text) return text;
 
   const attachmentSummary = message.attachments

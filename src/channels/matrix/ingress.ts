@@ -87,7 +87,7 @@ export async function buildTimelineIngress(params: {
         params.context.resolvePendingRoomHistoryText(prepared.text, prepared.content) ||
         (await getPollSnapshotText()) ||
         "";
-      if (pendingText) {
+      if (pendingText.trim()) {
         params.context.roomHistory.recordPending(params.room.roomId, {
           messageId: params.event.getId() ?? "",
           senderId: params.sender,
@@ -111,12 +111,13 @@ export async function buildTimelineIngress(params: {
     text = pollSnapshotText;
   }
 
+  const historyText = params.context.resolvePendingRoomHistoryText(text, content);
   const preparedRoomHistory: PreparedMatrixRoomHistory | undefined =
-    params.chatType === "group" && params.historyLimit > 0
+    params.chatType === "group" && params.historyLimit > 0 && historyText.trim()
       ? params.context.roomHistory.prepareTrigger(params.room.roomId, params.historyLimit, {
           messageId: params.event.getId() ?? "",
           senderId: params.sender,
-          text: params.context.resolvePendingRoomHistoryText(text, content),
+          text: historyText,
         })
       : undefined;
 
