@@ -15,7 +15,7 @@ import {
   createMatrixCommandHandler,
 } from "./channels/matrix/session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
-import { MessageRouter } from "./core/router.ts";
+import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { AgentBridge } from "./agent/bridge.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";
@@ -116,6 +116,7 @@ async function main() {
     });
 
     telegram.onMessage(async (msg) => {
+      let response: RouteResult | undefined;
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
         await agent.preprocessMessage(msg);
@@ -124,8 +125,6 @@ async function main() {
           await telegram.send(msg.chatId, { ...echo, replyToId: msg.id });
         }
 
-        let response: string | undefined;
-
         if (telegram.streamingEnabled()) {
           const streamer = telegram.createStreamer(msg);
           try {
@@ -133,7 +132,7 @@ async function main() {
               onToken: (token) => streamer.push(token),
               onToolUse: () => streamer.splitForToolUse(),
             });
-            await streamer.finish(response);
+            await streamer.finish(response?.text);
           } catch (err) {
             await streamer.abort();
             throw err;
@@ -144,12 +143,14 @@ async function main() {
 
         if (response) {
           if (!telegram.streamingEnabled()) {
-            await telegram.send(msg.chatId, { text: response, replyToId: msg.id });
+            await telegram.send(msg.chatId, { text: response.text, attachments: response.attachments, replyToId: msg.id });
+          } else if (response.attachments?.length) {
+            await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
           }
         }
       } finally {
         await cleanupAttachments(msg.attachments);
-        agent.hadAudioInbound() && await cleanupTtsTempFiles();
+        await cleanupTtsTempFiles(response?.attachments);
       }
     });
 
@@ -178,6 +179,7 @@ async function main() {
     });
 
     matrix.onMessage(async (msg) => {
+      let response: RouteResult | undefined;
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
         await agent.preprocessMessage(msg);
@@ -186,8 +188,6 @@ async function main() {
           await matrix.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
         }
 
-        let response: string | undefined;
-
         if (matrix.streamingEnabled()) {
           const streamer = matrix.createStreamer(msg);
           try {
@@ -195,7 +195,7 @@ async function main() {
               onToken: (token) => streamer.push(token),
               onToolUse: () => streamer.splitForToolUse(),
             });
-            await streamer.finish(response);
+            await streamer.finish(response?.text);
           } catch (err) {
             await streamer.abort();
             throw err;
@@ -204,16 +204,26 @@ async function main() {
           response = await router.route(msg);
         }
 
-        if (response && !matrix.streamingEnabled()) {
-          await matrix.send(msg.chatId, {
-            text: response,
-            replyToId: msg.id,
-            threadId: msg.threadId,
-          });
+        if (response) {
+          if (!matrix.streamingEnabled()) {
+            await matrix.send(msg.chatId, {
+              text: response.text,
+              attachments: response.attachments,
+              replyToId: msg.id,
+              threadId: msg.threadId,
+            });
+          } else if (response.attachments?.length) {
+            await matrix.send(msg.chatId, {
+              text: "",
+              attachments: response.attachments,
+              replyToId: msg.id,
+              threadId: msg.threadId,
+            });
+          }
         }
       } finally {
         await cleanupAttachments(msg.attachments);
-        agent.hadAudioInbound() && await cleanupTtsTempFiles();
+        await cleanupTtsTempFiles(response?.attachments);
       }
     });
 
@@ -250,9 +260,13 @@ async function cleanupAttachments(attachments: Array<{ path?: string }>): Promis
   }
 }
 
-async function cleanupTtsTempFiles(): Promise<void> {
-  // TTS temp files in /tmp/tts-*/ are left for the OS to clean.
-  // Individual files can be tracked and cleaned if needed.
+async function cleanupTtsTempFiles(attachments?: Array<{ path?: string }>): Promise<void> {
+  if (!attachments?.length) return;
+  for (const att of attachments) {
+    if (att.path?.startsWith("/tmp/tts-")) {
+      await unlink(att.path).catch(() => {});
+    }
+  }
 }
 
 main().catch((err) => {

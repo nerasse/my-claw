@@ -28,10 +28,13 @@ test("MessageRouter does not enforce a second global auth gate", async () => {
     async handleMessageStreaming() {
       throw new Error("should not run");
     },
+    getResponseAttachments() {
+      return [];
+    },
   } as never);
 
   const response = await router.route(createMessage("u2"));
-  assert.equal(response, "ok");
+  assert.equal(response?.text, "ok");
 });
 
 test("MessageRouter forwards streaming callbacks", async () => {
@@ -51,6 +54,9 @@ test("MessageRouter forwards streaming callbacks", async () => {
       await onToolUse?.();
       return "streamed";
     },
+    getResponseAttachments() {
+      return [];
+    },
   } as never);
 
   const response = await router.route(createMessage(), {
@@ -62,7 +68,7 @@ test("MessageRouter forwards streaming callbacks", async () => {
     },
   });
 
-  assert.equal(response, "streamed");
+  assert.equal(response?.text, "streamed");
   assert.deepEqual(events, ["a", "tool"]);
 });
 
@@ -77,6 +83,9 @@ test("MessageRouter uses room-scoped Matrix DM sessions when requested", async (
     },
     async handleMessageStreaming() {
       throw new Error("should not run");
+    },
+    getResponseAttachments() {
+      return [];
     },
   } as never);
 
@@ -93,6 +102,6 @@ test("MessageRouter uses room-scoped Matrix DM sessions when requested", async (
     raw: {},
   });
 
-  assert.equal(response, "ok");
+  assert.equal(response?.text, "ok");
   assert.equal(capturedSessionId, "matrix/dm-room/!dm-room:test");
 });

@@ -1651,7 +1651,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
         onToken: (token) => streamer.push(token),
         onToolUse: () => streamer.splitForToolUse(),
       });
-      await streamer.finish(response);
+      await streamer.finish(response?.text);
     } catch (err) {
       await streamer.abort();
       throw err;

@@ -42,6 +42,7 @@ export class AgentBridge {
   private approvalManager: ToolApprovalManager;
   private currentMessage?: UnifiedMessage;
   private echoMessages: OutgoingMessage[] = [];
+  private responseAttachments: NonNullable<OutgoingMessage["attachments"]> = [];
   private inboundHadAudio = false;
 
   constructor(
@@ -61,6 +62,12 @@ export class AgentBridge {
     const echoes = [...this.echoMessages];
     this.echoMessages = [];
     return echoes;
+  }
+
+  getResponseAttachments(): OutgoingMessage["attachments"] {
+    const attachments = [...this.responseAttachments];
+    this.responseAttachments = [];
+    return attachments;
   }
 
   hadAudioInbound(): boolean {
@@ -211,6 +218,7 @@ export class AgentBridge {
     if (this.currentMessage?.id !== message.id) {
       this.currentMessage = message;
       this.echoMessages = [];
+      this.responseAttachments = [];
       this.inboundHadAudio = false;
       await this.preprocessAudio(message);
       await this.preprocessVideo(message);
@@ -488,6 +496,11 @@ export class AgentBridge {
         __workspaceDir: this.workspaceDir,
       };
       const result = await tool.execute(enrichedArgs);
+      if (result.attachments?.length) {
+        for (const att of result.attachments) {
+          this.responseAttachments.push(att);
+        }
+      }
       if (result.success) {
         return {
           success: true,

@@ -39,7 +39,17 @@ export function createTtsTool(pipeline: TtsPipeline): Tool {
           forceCloud: args.forceCloud as boolean | undefined,
           forceLocal: args.forceLocal as boolean | undefined,
         });
-        return { success: true, output: result.path };
+        return {
+          success: true,
+          output: result.path,
+          attachments: [
+            {
+              type: "audio",
+              path: result.path,
+              mimeType: result.mimeType,
+            },
+          ],
+        };
       } catch (err) {
         return { success: false, output: "", error: String(err) };
       }

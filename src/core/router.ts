@@ -3,6 +3,11 @@ import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
 
+export interface RouteResult {
+  text: string;
+  attachments?: import("../channels/types.ts").Attachment[];
+}
+
 interface RouteOptions {
   onToken?: (token: string) => Promise<void>;
   onToolUse?: () => Promise<void>;
@@ -45,7 +50,7 @@ export class MessageRouter {
     this.agent.setApprovalHandler(handler);
   }
 
-  async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<string | undefined> {
+  async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const streaming = Boolean(options.onToken);
     void log("info", "message received", {
       ...messageLogData(message),
@@ -75,21 +80,23 @@ export class MessageRouter {
         modelOverride: session.modelOverride,
       });
 
-      const response = options.onToken
+      const text = options.onToken
         ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse)
         : await this.agent.handleMessage(message, session);
+      const attachments = this.agent.getResponseAttachments();
       await this.sessionManager.persist(sessionId);
 
       void log("info", "response completed", {
         ...messageLogData(message),
         sessionId,
         streaming,
-        responseChars: response?.length ?? 0,
+        responseChars: text?.length ?? 0,
+        attachmentCount: attachments?.length ?? 0,
         sessionMessageCount: session.messages.length,
         durationMs: Date.now() - startedAt,
       });
 
-      return response;
+      return text === undefined ? undefined : { text, attachments };
     } catch (err) {
       void log("error", "routing failed", {
         ...messageLogData(message),

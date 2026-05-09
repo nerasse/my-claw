@@ -1,7 +1,10 @@
+import type { Attachment } from "../channels/types.ts";
+
 export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  attachments?: Attachment[];
 }
 
 export interface Tool {
