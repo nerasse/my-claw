@@ -2,7 +2,7 @@ import type { Tool } from "./types.ts";
 
 type AgentType = "main" | "general" | "research";
 
-const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch"];
+const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_search"];
 const WRITE_TOOLS = ["write", "bash", "memory"];
 
 export class ToolRegistry {

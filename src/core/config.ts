@@ -130,6 +130,12 @@ export interface VoiceConfig {
   tts?: VoiceTtsConfig;
 }
 
+export interface WebSearchConfig {
+  baseUrl?: string;
+  token?: string;
+  language?: string;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -161,6 +167,7 @@ export interface MyClawConfig {
     research?: { llm?: MyClawConfig["llm"] };
   };
   voice?: VoiceConfig;
+  webSearch?: WebSearchConfig;
   workspace?: string;
 }
 
@@ -207,6 +214,10 @@ function applySecretOverrides(config: MyClawConfig): void {
     if (fireworksKey) {
       config.llm.apiKey = fireworksKey;
     }
+  }
+
+  if (config.webSearch && process.env.MY_CLAW_WEB_SEARCH_TOKEN) {
+    config.webSearch.token = process.env.MY_CLAW_WEB_SEARCH_TOKEN;
   }
 }
 

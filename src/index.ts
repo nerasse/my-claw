@@ -35,6 +35,7 @@ import { createListSkillsTool, createReadSkillTool, createCreateSkillTool, creat
 import { createSttTool } from "./tools/stt.ts";
 import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
+import { createWebSearchTool } from "./tools/web-search.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
@@ -61,6 +62,9 @@ async function main() {
   toolRegistry.register(createSttTool(sttPipeline));
   toolRegistry.register(createTtsTool(ttsPipeline));
   toolRegistry.register(createVoiceModeTool(voiceManager));
+  if (config.webSearch?.baseUrl) {
+    toolRegistry.register(createWebSearchTool(config.webSearch));
+  }
 
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const repoSkillsDir = join(repoRoot, "src", "skills");
