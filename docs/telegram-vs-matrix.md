@@ -34,11 +34,11 @@ Main sources:
 | Native platform command registration | Yes | No | Telegram publishes commands via `setMyCommands()`. Matrix only parses `/...` messages locally. |
 | Inline keyboard callbacks | Yes | No | Telegram has true inline buttons with callback queries. Matrix uses reaction-driven actions instead. |
 | Accept / Deny confirmation UI | Partial | Partial | Telegram adapter has generic `confirm()` with inline buttons and timeout. Matrix now has generic adapter-level confirm prompts via reactions or plain-text reply, but still lacks Telegram-style native inline UI. |
-| Long text batching across multiple inbound messages | Yes | Partial | Telegram can merge rapid consecutive long messages from the same user into one logical input. Matrix now coalesces some rapid fragmented bursts when reply/thread context matches. |
-| Media group / album buffering | Yes | Partial | Telegram can merge grouped media into one normalized message. Matrix can accumulate compatible attachment bursts, but still lacks a broad album-normalization layer. |
+| Long text batching across multiple inbound messages | Yes | Partial | Telegram can merge rapid consecutive long messages from the same user into one logical input. Matrix now coalesces long fragmented group bursts, short room-root split turns, and top-level thread split turns, but still avoids broad DM turn reconstruction. |
+| Media group / album buffering | Yes | Partial | Telegram can merge grouped media into one normalized message. Matrix can now accumulate compatible attachment bursts and reconstruct short leading or trailing text as captions, but still lacks true grouped-media semantics. |
 | Explicit retry and rate-limit backoff | Yes | Partial | Telegram has exponential retry, rate-limit wait, and pre-connect retry handling. Matrix now retries send/edit/upload/stream paths with backoff, but transport coverage is still narrower. |
 | HTML parse fallback to plain text | Yes | No | Telegram retries plain text when Telegram HTML parsing fails. Matrix has no comparable HTML-parse fallback path. |
-| First-media caption pipeline | Yes | Partial | Telegram can attach short text as caption on the first media item. Matrix can now reconstruct some short trailing text followups as captions on buffered media bursts, but still lacks full grouped-media semantics. |
+| First-media caption pipeline | Yes | Partial | Telegram can attach short text as caption on the first media item. Matrix can now reconstruct short leading or trailing text followups as captions on buffered media bursts, but still lacks full grouped-media semantics. |
 | Link preview disable toggle | Yes | No | Telegram supports `linkPreview: false`. Matrix has no equivalent adapter-level toggle. |
 | Thread-not-found send fallback | Yes | No | Telegram can retry without `message_thread_id` when a topic is missing. Matrix has no equivalent because threading works differently. |
 | Forwarded flag normalization | Yes | Partial | Telegram sets `isForwarded` from `forward_origin`. Matrix now sets `isForwarded` with bridge/relay heuristics rather than a native forwarded flag. |
@@ -254,8 +254,8 @@ These are the highest-value Telegram capabilities that Matrix still lacks if the
 | P1 | Better interactive actions than reaction-only menus | Telegram has true inline buttons and callback flows. Matrix uses reactions as a workaround. | High | High | This is the most visible UX asymmetry today. |
 | P2 | Confirmation flow equivalent to Telegram Accept/Deny | Partially closed. Matrix now has a general-purpose adapter-wide confirm primitive plus tool approval prompts, but still lacks Telegram-style native inline UI. | High | Medium | Important for sensitive-action approval UX; the remaining gap is mainly Matrix interaction ergonomics. |
 | P3 | Stronger send retry and transient network recovery | Mostly closed. Matrix now retries send/edit/upload paths, but still has less mature transport ergonomics than Telegram overall. | High | Low | The biggest reliability gap was the missing retry layer; remaining differences are polish. |
-| P4 | Album / grouped media ingestion semantics | Telegram merges media groups into one logical message. Matrix currently handles events individually. | Medium | Medium | Matters for multimodal user input quality. |
-| P5 | Long multi-message batching | Telegram can merge consecutive long messages into one prompt input. Matrix now coalesces some rapid fragmented group and top-level thread bursts, but not general turn reconstruction. | Medium | Medium | Improves UX for users who paste in chunks. |
+| P4 | Album / grouped media ingestion semantics | Telegram merges media groups into one logical message. Matrix now handles compatible bursts much better, but still lacks true grouped-media semantics. | Medium | Medium | Matters for multimodal user input quality. |
+| P5 | Long multi-message batching | Telegram can merge consecutive long messages into one prompt input. Matrix now coalesces fragmented group and top-level thread bursts more broadly, but not full general turn reconstruction or DM turn buffering. | Medium | Medium | Improves UX for users who paste in chunks. |
 | P6 | Better command ergonomics / discoverability | Telegram publishes commands in the platform UI. Matrix does not. | Medium | Low | Lower engineering cost, but less critical than actions and reliability. |
 | P7 | Link-preview style delivery controls | Telegram exposes a preview toggle. Matrix does not. | Low | Low | Useful but not a top product gap. |
 | P8 | Forwarded-message normalization parity | Telegram exposes forwarded state. Matrix does not. | Low | Medium | Helpful context, but lower impact than action UI or retries. |
@@ -364,7 +364,7 @@ These differences exist, but should not drive the Matrix roadmap because they ar
 | 2 | Continue evolving Matrix action UX toward better Matrix-native ergonomics |
 | 3 | Keep improving Matrix action UX beyond reactions and simple text replies |
 | 4 | Keep current retry/backoff coverage green and polish remaining delivery ergonomics |
-| 5 | Expand consecutive-message coalescing beyond the current narrow long-burst path |
-| 6 | Add broader multi-event media aggregation |
+| 5 | Keep current group/thread burst reconstruction green and only broaden it if a concrete Matrix client need appears |
+| 6 | Keep current media burst aggregation green and only broaden semantics when the extra risk is justified |
 | 7 | Improve command and model-selection discoverability further where Matrix clients allow it |
 | 8 | Add lower-value normalization and polish features |
