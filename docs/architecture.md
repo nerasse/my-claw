@@ -4,7 +4,7 @@
 
 | Component | Status |
 |---|---|
-| Telegram adapter (Phase 1) | Complete — see `docs/telegram-phase1.md` |
+| Telegram adapter (Phase 1) | Complete — see `docs/platform-features.md` |
 | Telegram UX (Phase 2) | Complete — see `docs/plan/telegram-phase2.md` |
 | Matrix adapter | Complete — see `docs/matrix.md` |
 | Router + auth | Complete |

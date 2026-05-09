@@ -1,6 +1,6 @@
 # Telegram Implementation Plan
 
-> **Phase 1: COMPLETE** — See `docs/telegram-phase1.md` for implementation reference.
+> **Phase 1: COMPLETE** — See `docs/platform-features.md` for platform comparison and implementation details.
 > **Phase 2: COMPLETE** — See `docs/plan/telegram-phase2.md` for detailed plan and `tests/` for coverage.
 
 ## Overview

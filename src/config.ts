@@ -122,9 +122,17 @@ export interface MyClawConfig {
     baseUrl: string;
     model: string;
     apiKey?: string;
+    limit?: {
+      context?: number;
+      output?: number;
+    };
     models?: Array<{
       id: string;
       label: string;
+      limit?: {
+        context?: number;
+        output?: number;
+      };
     }>;
   };
   agents: {

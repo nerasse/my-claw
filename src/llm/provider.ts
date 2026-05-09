@@ -66,6 +66,9 @@ function buildRequestBody(
   if (stream) {
     body["stream"] = true;
   }
+  if (config.limit?.output) {
+    body["max_tokens"] = config.limit.output;
+  }
 
   return body;
 }
