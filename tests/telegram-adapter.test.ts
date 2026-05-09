@@ -128,6 +128,7 @@ test("TelegramAdapter normalizes replies, thread context, mentions, and DM sessi
   assert.equal(typeof handler, "function");
 
   const firstCtx = {
+    update: { update_id: 10 },
     message: {
       message_id: 10,
       date: 100,
@@ -140,6 +141,7 @@ test("TelegramAdapter normalizes replies, thread context, mentions, and DM sessi
   await handler?.(firstCtx);
 
   const secondCtx = {
+    update: { update_id: 11 },
     message: {
       message_id: 11,
       date: 101,
@@ -161,6 +163,7 @@ test("TelegramAdapter normalizes replies, thread context, mentions, and DM sessi
   await handler?.(secondCtx);
 
   const thirdCtx = {
+    update: { update_id: 12 },
     message: {
       message_id: 12,
       date: 102,
@@ -216,6 +219,7 @@ test("TelegramAdapter blocks group traffic outside configured Telegram group pol
   const handler = handlers.get("on:message");
 
   await handler?.({
+    update: { update_id: 21 },
     message: {
       message_id: 1,
       date: 100,
@@ -250,6 +254,7 @@ test("TelegramAdapter accepts wildcard group config without mention requirement"
   const handler = handlers.get("on:message");
 
   await handler?.({
+    update: { update_id: 31 },
     message: {
       message_id: 2,
       date: 100,
@@ -282,6 +287,7 @@ test("TelegramAdapter requires explicit bot addressing in groups when configured
   const handler = handlers.get("on:message");
 
   await handler?.({
+    update: { update_id: 41 },
     message: {
       message_id: 3,
       date: 100,
@@ -291,6 +297,7 @@ test("TelegramAdapter requires explicit bot addressing in groups when configured
     },
   });
   await handler?.({
+    update: { update_id: 42 },
     message: {
       message_id: 4,
       date: 101,
@@ -301,6 +308,7 @@ test("TelegramAdapter requires explicit bot addressing in groups when configured
     },
   });
   await handler?.({
+    update: { update_id: 43 },
     message: {
       message_id: 5,
       date: 102,
@@ -337,6 +345,7 @@ test("TelegramAdapter blocks configured bot senders unless they mention the bot"
   const handler = handlers.get("on:message");
 
   await handler?.({
+    update: { update_id: 51 },
     message: {
       message_id: 6,
       date: 100,
@@ -346,6 +355,7 @@ test("TelegramAdapter blocks configured bot senders unless they mention the bot"
     },
   });
   await handler?.({
+    update: { update_id: 52 },
     message: {
       message_id: 7,
       date: 101,

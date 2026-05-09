@@ -12,6 +12,7 @@ import { registerCommands, getHelpText } from "./telegram-commands.ts";
 import { ReactionManager } from "./telegram-reactions.ts";
 import { ErrorReporter } from "./telegram-errors.ts";
 import { MessageStreamer } from "./telegram-stream.ts";
+import { createTelegramUpdateDeduper, readTelegramUpdateOffset } from "./telegram-offset-store.ts";
 import {
   isConfiguredTelegramBotUser,
   isTelegramAllowedByPolicy,
@@ -69,18 +70,19 @@ const VOICE_EXTENSIONS = new Set(["ogg", "oga"]);
 const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "m4a", "aac"]);
 
 type GrammyMessage = NonNullable<Context["message"]>;
-type TelegramEntity = NonNullable<GrammyMessage["entities"]>[number];
 
 interface TextBatch {
   messages: Array<{ text: string; messageId: number; date: number }>;
   timer: Timer;
   chatId: string;
   firstMsg: GrammyMessage;
+  updateId?: number;
 }
 
 interface MediaGroupBuffer {
   messages: GrammyMessage[];
   timer: Timer;
+  updateId?: number;
 }
 
 interface PendingConfirmation {
@@ -129,6 +131,10 @@ interface TelegramCommandMeta {
   threadId?: string;
 }
 
+interface ProcessMessageMeta {
+  updateId?: number;
+}
+
 // ── Error classification ──────────────────────────────────────
 
 function isParseError(err: unknown): boolean {
@@ -173,6 +179,16 @@ function mediaTypeFromExt(ext: string): "photo" | "video" | "voice" | "audio" | 
   return "document";
 }
 
+function updateIdForBatch(current: number | undefined, next: number | undefined): number | undefined {
+  if (typeof next !== "number" || !Number.isSafeInteger(next) || next < 0) {
+    return current;
+  }
+  if (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0) {
+    return next;
+  }
+  return Math.max(current, next);
+}
+
 // ── Adapter ───────────────────────────────────────────────────
 
 export class TelegramAdapter implements ChannelAdapter {
@@ -195,6 +211,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private errorReporter: ErrorReporter;
   private selfUserId?: string;
   private selfUsername?: string;
+  private updateDeduper?: Awaited<ReturnType<typeof createTelegramUpdateDeduper>>;
 
   constructor(
     private config: TelegramChannelConfig,
@@ -223,6 +240,7 @@ export class TelegramAdapter implements ChannelAdapter {
   async start(): Promise<void> {
     this.bot.api.config.use(apiThrottler());
     this.bot.catch((err) => telegramLog("error", "grammy unhandled error", { error: String(err) }));
+    this.updateDeduper = await createTelegramUpdateDeduper({ token: this.config.token });
 
     this.setupHandlers();
 
@@ -251,6 +269,8 @@ export class TelegramAdapter implements ChannelAdapter {
     this.mediaGroups.clear();
     this.typingRefs.clear();
     this.pendingConfirmations.clear();
+
+    await this.updateDeduper?.stop().catch(() => undefined);
 
     await this.bot.stop();
     this.webhookServer?.stop();
@@ -659,11 +679,18 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   private async handleCommand(ctx: Context, command: string): Promise<void> {
+    const claimed = this.claimUpdate(ctx.update.update_id);
+    if (!claimed) return;
+
     const userId = String(ctx.from?.id);
-    if (!this.whitelist.has(userId)) return;
+    if (!this.whitelist.has(userId)) {
+      this.releaseClaimedUpdate(ctx.update.update_id);
+      return;
+    }
 
     if (command === "help") {
       await ctx.reply(getHelpText());
+      await this.commitProcessedUpdate(ctx.update.update_id);
       return;
     }
 
@@ -688,6 +715,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const replyToId = messageId ? String(messageId) : undefined;
         if (typeof response === "string") {
           await this.send(chatId, { text: response, replyToId });
+          await this.commitProcessedUpdate(ctx.update.update_id);
           return;
         }
 
@@ -695,20 +723,31 @@ export class TelegramAdapter implements ChannelAdapter {
           ...response,
           replyToId: response.replyToId ?? replyToId,
         });
+        await this.commitProcessedUpdate(ctx.update.update_id);
       } catch (err) {
         await telegramLog("error", "telegram command failed", { command, chatId, error: String(err) });
         await this.reportProcessingError(chatId, messageId ? String(messageId) : undefined, err);
+        this.releaseClaimedUpdate(ctx.update.update_id);
       }
+    } else {
+      this.releaseClaimedUpdate(ctx.update.update_id);
     }
   }
 
   private async handleCallbackQuery(ctx: Context): Promise<void> {
+    const claimed = this.claimUpdate(ctx.update.update_id);
+    if (!claimed) return;
+
     const data = ctx.callbackQuery?.data;
-    if (!data) return;
+    if (!data) {
+      this.releaseClaimedUpdate(ctx.update.update_id);
+      return;
+    }
 
     const userId = String(ctx.from?.id);
     if (!this.whitelist.has(userId)) {
       await ctx.answerCallbackQuery({ text: "Not authorized" });
+      this.releaseClaimedUpdate(ctx.update.update_id);
       return;
     }
 
@@ -717,6 +756,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const message = ctx.callbackQuery?.message;
       if (!message || !this.callbackHandler) {
         await ctx.answerCallbackQuery();
+        this.releaseClaimedUpdate(ctx.update.update_id);
         return;
       }
 
@@ -733,6 +773,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
         if (!response) {
           await ctx.answerCallbackQuery();
+          await this.commitProcessedUpdate(ctx.update.update_id);
           return;
         }
 
@@ -744,11 +785,13 @@ export class TelegramAdapter implements ChannelAdapter {
           await ctx.editMessageText(response.text, params).catch(() => {});
         }
         await ctx.answerCallbackQuery(response.answerText ? { text: response.answerText } : undefined);
+        await this.commitProcessedUpdate(ctx.update.update_id);
       } catch (err) {
         const chatId = String(message.chat.id);
         await telegramLog("error", "telegram callback failed", { chatId, data, error: String(err) });
         await this.reportProcessingError(chatId, String(message.message_id), err);
         await ctx.answerCallbackQuery({ text: "Error" }).catch(() => {});
+        this.releaseClaimedUpdate(ctx.update.update_id);
       }
       return;
     }
@@ -759,6 +802,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     if (!pending) {
       await ctx.answerCallbackQuery({ text: "Expired" });
+      await this.commitProcessedUpdate(ctx.update.update_id);
       return;
     }
 
@@ -770,14 +814,24 @@ export class TelegramAdapter implements ChannelAdapter {
     const label = accepted ? "Accepted" : "Denied";
     await ctx.editMessageText(`${original}\n\n${label}`).catch(() => {});
     await ctx.answerCallbackQuery({ text: label });
+    await this.commitProcessedUpdate(ctx.update.update_id);
   }
 
   // ── Inbound message handling ────────────────────────────────
 
   private async handleMessage(ctx: Context): Promise<void> {
+    const claimed = this.claimUpdate(ctx.update.update_id);
+    if (!claimed) return;
+
     const msg = ctx.message;
-    if (!msg?.from) return;
-    if (!this.shouldProcessMessage(msg)) return;
+    if (!msg?.from) {
+      this.releaseClaimedUpdate(ctx.update.update_id);
+      return;
+    }
+    if (!this.shouldProcessMessage(msg)) {
+      await this.commitProcessedUpdate(ctx.update.update_id);
+      return;
+    }
 
     const userId = String(msg.from.id);
 
@@ -787,29 +841,30 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     if (msg.media_group_id) {
-      this.bufferMediaGroup(msg);
+      this.bufferMediaGroup(msg, ctx.update.update_id);
       return;
     }
 
     const text = msg.text ?? msg.caption ?? "";
     const batchKey = `${msg.chat.id}:${userId}`;
 
-    if (this.textBatches.has(batchKey) && this.tryAppendToBatch(batchKey, msg)) {
+    if (this.textBatches.has(batchKey) && this.tryAppendToBatch(batchKey, msg, ctx.update.update_id)) {
       return;
     }
 
     if (text.length >= TEXT_BATCH_THRESHOLD) {
-      this.startTextBatch(batchKey, msg);
+      this.startTextBatch(batchKey, msg, ctx.update.update_id);
       return;
     }
 
-    await this.processMessage(msg);
+    await this.processMessage(msg, undefined, undefined, { updateId: ctx.update.update_id });
   }
 
   private async processMessage(
     msg: GrammyMessage,
     textOverride?: string,
     extraMessages?: GrammyMessage[],
+    meta?: ProcessMessageMeta,
   ): Promise<void> {
     if (!this.messageHandler) return;
 
@@ -823,6 +878,7 @@ export class TelegramAdapter implements ChannelAdapter {
     try {
       await this.reactions.set(chatId, messageId, "thinking");
       await this.messageHandler(unified);
+      await this.commitProcessedUpdate(meta?.updateId);
       await this.reactions.set(chatId, messageId, "done");
     } catch (err) {
       await this.reactions.set(chatId, messageId, "error");
@@ -831,6 +887,19 @@ export class TelegramAdapter implements ChannelAdapter {
     } finally {
       this.stopTyping(chatId);
     }
+  }
+
+  private claimUpdate(updateId: number | null | undefined): boolean {
+    return this.updateDeduper?.claimUpdate(updateId) ?? true;
+  }
+
+  private async commitProcessedUpdate(updateId: number | null | undefined): Promise<void> {
+    if (!this.updateDeduper) return;
+    await this.updateDeduper.commitUpdate(this.config.token, updateId);
+  }
+
+  private releaseClaimedUpdate(updateId: number | null | undefined): void {
+    this.updateDeduper?.releaseUpdate(updateId);
   }
 
   private async reportProcessingError(
@@ -1282,7 +1351,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
   // ── Text batching ───────────────────────────────────────────
 
-  private startTextBatch(key: string, msg: GrammyMessage): void {
+  private startTextBatch(key: string, msg: GrammyMessage, updateId?: number): void {
     const text = msg.text ?? msg.caption ?? "";
     const timer = setTimeout(() => this.flushTextBatch(key), TEXT_BATCH_GAP_MS);
     this.textBatches.set(key, {
@@ -1290,10 +1359,11 @@ export class TelegramAdapter implements ChannelAdapter {
       timer,
       chatId: String(msg.chat.id),
       firstMsg: msg,
+      updateId,
     });
   }
 
-  private tryAppendToBatch(key: string, msg: GrammyMessage): boolean {
+  private tryAppendToBatch(key: string, msg: GrammyMessage, updateId?: number): boolean {
     const batch = this.textBatches.get(key);
     if (!batch) return false;
 
@@ -1312,6 +1382,7 @@ export class TelegramAdapter implements ChannelAdapter {
       totalChars <= TEXT_BATCH_MAX_CHARS
     ) {
       batch.messages.push({ text, messageId: msg.message_id, date: msg.date });
+      batch.updateId = updateIdForBatch(batch.updateId, updateId);
       clearTimeout(batch.timer);
       batch.timer = setTimeout(() => this.flushTextBatch(key), TEXT_BATCH_GAP_MS);
       return true;
@@ -1326,24 +1397,25 @@ export class TelegramAdapter implements ChannelAdapter {
     this.textBatches.delete(key);
 
     const combined = batch.messages.map((m) => m.text).join("");
-    this.processMessage(batch.firstMsg, combined).catch((err) =>
+    this.processMessage(batch.firstMsg, combined, undefined, { updateId: batch.updateId }).catch((err) =>
       telegramLog("error", "failed to process batched message", { error: String(err) }),
     );
   }
 
   // ── Media group buffering ───────────────────────────────────
 
-  private bufferMediaGroup(msg: GrammyMessage): void {
+  private bufferMediaGroup(msg: GrammyMessage, updateId?: number): void {
     const groupId = msg.media_group_id!;
     const existing = this.mediaGroups.get(groupId);
 
     if (existing) {
       existing.messages.push(msg);
+      existing.updateId = updateIdForBatch(existing.updateId, updateId);
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => this.flushMediaGroup(groupId), MEDIA_GROUP_TIMEOUT_MS);
     } else {
       const timer = setTimeout(() => this.flushMediaGroup(groupId), MEDIA_GROUP_TIMEOUT_MS);
-      this.mediaGroups.set(groupId, { messages: [msg], timer });
+      this.mediaGroups.set(groupId, { messages: [msg], timer, updateId });
     }
   }
 
@@ -1356,7 +1428,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const primary = group.messages.find((m) => m.caption) ?? group.messages[0]!;
     const others = group.messages.filter((m) => m !== primary);
 
-    this.processMessage(primary, undefined, others).catch((err) =>
+    this.processMessage(primary, undefined, others, { updateId: group.updateId }).catch((err) =>
       telegramLog("error", "failed to process media group", { error: String(err) }),
     );
   }
