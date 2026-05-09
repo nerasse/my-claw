@@ -57,6 +57,12 @@ function createConfig(): TelegramChannelConfig {
   return {
     token: "test-token",
     linkPreview: false,
+    dm: {
+      policy: "allowlist",
+      allowFrom: ["u1"],
+    },
+    groupPolicy: "allowlist",
+    groupAllowFrom: ["u1"],
     streaming: { enabled: true, minChars: 1, throttleMs: 0 },
     reactions: { enabled: true },
     errorPolicy: "always",
@@ -105,6 +111,7 @@ test("TelegramAdapter normalizes replies, thread context, mentions, and DM sessi
     {
       ...createConfig(),
       dm: { sessionScope: "per-chat" },
+      groups: { "*": { requireMention: false } },
       historyLimit: 3,
     },
     new Set(["u1"]),
@@ -185,4 +192,169 @@ test("TelegramAdapter normalizes replies, thread context, mentions, and DM sessi
 
   const dm = seen[2] as { sessionScope?: string };
   assert.equal(dm.sessionScope, "per-chat");
+});
+
+test("TelegramAdapter blocks group traffic outside configured Telegram group policy", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      groupPolicy: "allowlist",
+      groupAllowFrom: ["u1"],
+      groups: { "-1001": { requireMention: false } },
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: unknown[] = [];
+  adapter.onMessage(async (message) => {
+    seen.push(message);
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    message: {
+      message_id: 1,
+      date: 100,
+      chat: { id: -2002, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "hello",
+    },
+  });
+
+  assert.equal(seen.length, 0);
+});
+
+test("TelegramAdapter accepts wildcard group config without mention requirement", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      groupPolicy: "allowlist",
+      groupAllowFrom: ["u1"],
+      groups: { "*": { requireMention: false } },
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: string[] = [];
+  adapter.onMessage(async (message) => {
+    seen.push(message.text);
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    message: {
+      message_id: 2,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "hello",
+    },
+  });
+
+  assert.deepEqual(seen, ["hello"]);
+});
+
+test("TelegramAdapter requires explicit bot addressing in groups when configured", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      groups: { "-1001": { requireMention: true } },
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: string[] = [];
+  adapter.onMessage(async (message) => {
+    seen.push(message.text);
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    message: {
+      message_id: 3,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "hello",
+    },
+  });
+  await handler?.({
+    message: {
+      message_id: 4,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "@myclawbot hello",
+      entities: [{ type: "mention", offset: 0, length: 10 }],
+    },
+  });
+  await handler?.({
+    message: {
+      message_id: 5,
+      date: 102,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "/status@myclawbot",
+      entities: [{ type: "bot_command", offset: 0, length: 17 }],
+    },
+  });
+
+  assert.deepEqual(seen, ["@myclawbot hello", "/status@myclawbot"]);
+});
+
+test("TelegramAdapter blocks configured bot senders unless they mention the bot", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      groupAllowFrom: ["helperbot"],
+      botUserIds: ["helperbot"],
+      allowBots: "mentions",
+      groups: { "-1001": { requireMention: false } },
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: string[] = [];
+  adapter.onMessage(async (message) => {
+    seen.push(message.text);
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    message: {
+      message_id: 6,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "helperbot", is_bot: true, username: "helperbot" },
+      text: "hello",
+    },
+  });
+  await handler?.({
+    message: {
+      message_id: 7,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "helperbot", is_bot: true, username: "helperbot" },
+      text: "@myclawbot hello",
+      entities: [{ type: "mention", offset: 0, length: 10 }],
+    },
+  });
+
+  assert.deepEqual(seen, ["@myclawbot hello"]);
 });

@@ -2,7 +2,6 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
-import { AuthGuard } from "./auth.ts";
 
 interface RouteOptions {
   onToken?: (token: string) => Promise<void>;
@@ -36,15 +35,11 @@ function errorLogData(err: unknown): unknown {
 }
 
 export class MessageRouter {
-  private authGuard: AuthGuard;
-
   constructor(
-    whitelist: string[],
+    _whitelist: string[],
     private sessionManager: SessionManager,
     private agent: AgentBridge,
-  ) {
-    this.authGuard = new AuthGuard(whitelist);
-  }
+  ) {}
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.agent.setApprovalHandler(handler);
@@ -56,14 +51,6 @@ export class MessageRouter {
       ...messageLogData(message),
       streaming,
     });
-
-    if (!this.authGuard.isAuthorized(message.userId)) {
-      void log("warn", "message rejected", {
-        ...messageLogData(message),
-        reason: "unauthorized_user",
-      });
-      return;
-    }
 
     const sessionId = SessionManager.resolveSessionId(
       message.platform,

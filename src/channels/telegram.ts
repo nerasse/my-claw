@@ -12,7 +12,16 @@ import { registerCommands, getHelpText } from "./telegram-commands.ts";
 import { ReactionManager } from "./telegram-reactions.ts";
 import { ErrorReporter } from "./telegram-errors.ts";
 import { MessageStreamer } from "./telegram-stream.ts";
-import { shouldIncludeSupplementalContext, type ContextVisibilityKind, type ContextVisibilityMode } from "./context-visibility.ts";
+import {
+  isConfiguredTelegramBotUser,
+  isTelegramAllowedByPolicy,
+  isTelegramChatAllowed,
+  resolveTelegramAllowBotsMode,
+  resolveTelegramGroupConfig,
+  resolveTelegramRequireMention,
+  shouldIncludeTelegramContextSender,
+  type TelegramChatType,
+} from "./telegram-policy.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
 import { telegramLog } from "../utils/logger.ts";
 
@@ -60,6 +69,7 @@ const VOICE_EXTENSIONS = new Set(["ogg", "oga"]);
 const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "m4a", "aac"]);
 
 type GrammyMessage = NonNullable<Context["message"]>;
+type TelegramEntity = NonNullable<GrammyMessage["entities"]>[number];
 
 interface TextBatch {
   messages: Array<{ text: string; messageId: number; date: number }>;
@@ -253,8 +263,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     if (!text && !mediaRefs.length && !message.attachments?.length) return;
 
-    const replyToId = message.replyToId ? Math.trunc(Number(message.replyToId)) : undefined;
-    const threadId = message.replyToId ? this.messageThreadIds.get(message.replyToId) : undefined;
+    const threadId = this.outboundReplyThreadId(message);
     const hasMedia = mediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
 
     // Caption: text ≤ 1024 chars with media → attach to first media (OpenClaw: all-or-nothing at 1024)
@@ -274,7 +283,7 @@ export class TelegramAdapter implements ChannelAdapter {
       for (let i = 0; i < htmlChunks.length; i++) {
         await this.sendTextMessage(chatId, htmlChunks[i]!, plainChunks[i] ?? "", {
           threadId,
-          replyToId: i === 0 ? replyToId : undefined,
+          replyToId: this.replyTargetForChunk(message, i, { chunkCount: htmlChunks.length, hasMedia }),
           keyboard:
             i === htmlChunks.length - 1 && message.buttons?.length
               ? this.buildKeyboard(message.buttons)
@@ -767,10 +776,10 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private async handleMessage(ctx: Context): Promise<void> {
     const msg = ctx.message;
-    if (!msg?.from || msg.from.is_bot) return;
+    if (!msg?.from) return;
+    if (!this.shouldProcessMessage(msg)) return;
 
     const userId = String(msg.from.id);
-    if (!this.whitelist.has(userId)) return;
 
     if (msg.message_thread_id) {
       this.messageThreadIds.set(String(msg.message_id), msg.message_thread_id);
@@ -853,7 +862,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const threadId = typeof msg.message_thread_id === "number" ? String(msg.message_thread_id) : undefined;
     const replyMessage = msg.reply_to_message;
     const replyContext = replyMessage
-      ? this.resolveReplyContext(chatId, chatType, replyMessage)
+      ? this.resolveReplyContext(chatId, chatType, replyMessage, threadId)
       : undefined;
     const threadRoot = threadId ? this.resolveThreadRootContext(chatId, chatType, threadId) : undefined;
 
@@ -884,24 +893,24 @@ export class TelegramAdapter implements ChannelAdapter {
     this.selfUsername = this.bot.botInfo.username?.toLowerCase();
   }
 
-  private contextVisibility(): ContextVisibilityMode {
-    return this.config.contextVisibility ?? "all";
-  }
-
   private historyLimit(): number {
     return Math.max(0, this.config.historyLimit ?? 0);
   }
 
   private shouldIncludeContextSender(
+    chatId: string,
     chatType: UnifiedMessage["chatType"],
-    kind: ContextVisibilityKind,
-    senderId?: string,
+    kind: "history" | "thread" | "quote",
+    sender: GrammyMessage["from"] | undefined,
+    threadId?: string,
   ): boolean {
-    if (chatType !== "group") return true;
-    return shouldIncludeSupplementalContext({
-      mode: this.contextVisibility(),
+    return shouldIncludeTelegramContextSender({
+      config: this.config,
+      whitelist: this.whitelist,
+      groupConfig: resolveTelegramGroupConfig(this.config, chatId, threadId),
+      chatType,
       kind,
-      senderAllowed: typeof senderId === "string" && this.whitelist.has(senderId),
+      sender,
     });
   }
 
@@ -940,11 +949,11 @@ export class TelegramAdapter implements ChannelAdapter {
     chatId: string,
     chatType: UnifiedMessage["chatType"],
     replyMessage: GrammyMessage,
+    threadId?: string,
   ): TelegramHistoryEntry | undefined {
     const messageId = String(replyMessage.message_id);
     const stored = this.messageContexts.get(this.messageContextKey(chatId, messageId));
-    const senderId = replyMessage.from ? String(replyMessage.from.id) : stored?.senderId;
-    if (!this.shouldIncludeContextSender(chatType, "quote", senderId)) {
+    if (!this.shouldIncludeContextSender(chatId, chatType, "quote", replyMessage.from, threadId)) {
       return undefined;
     }
 
@@ -953,7 +962,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     return {
       messageId,
-      senderId: senderId ?? "unknown",
+      senderId: replyMessage.from ? String(replyMessage.from.id) : stored?.senderId ?? "unknown",
       senderLabel: this.senderLabel(replyMessage.from) || stored?.senderLabel || "unknown",
       text,
     };
@@ -967,7 +976,9 @@ export class TelegramAdapter implements ChannelAdapter {
     const entry = this.threadRoots.get(this.threadRootKey(chatId, threadId))
       ?? this.historyByScope.get(this.historyScopeKey(chatId, threadId))?.[0];
     if (!entry) return undefined;
-    if (!this.shouldIncludeContextSender(chatType, "thread", entry.senderId)) {
+    const stored = this.messageContexts.get(this.messageContextKey(chatId, entry.messageId));
+    const sender = stored ? { id: stored.senderId, username: stored.senderLabel.replace(/^@/, "") } : undefined;
+    if (!this.shouldIncludeContextSender(chatId, chatType, "thread", sender, threadId)) {
       return undefined;
     }
     return entry;
@@ -982,7 +993,11 @@ export class TelegramAdapter implements ChannelAdapter {
     if (limit <= 0) return undefined;
 
     const lines = (this.historyByScope.get(this.historyScopeKey(chatId, threadId)) ?? [])
-      .filter((entry) => this.shouldIncludeContextSender(chatType, "history", entry.senderId))
+      .filter((entry) => {
+        const stored = this.messageContexts.get(this.messageContextKey(chatId, entry.messageId));
+        const sender = stored ? { id: stored.senderId, username: stored.senderLabel.replace(/^@/, "") } : undefined;
+        return this.shouldIncludeContextSender(chatId, chatType, "history", sender, threadId);
+      })
       .slice(-limit)
       .map((entry) => {
         const body = entry.text.trim();
@@ -1014,6 +1029,93 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     return this.isReplyToSelf(msg.reply_to_message);
+  }
+
+  private shouldProcessMessage(msg: GrammyMessage): boolean {
+    const chatType: TelegramChatType = msg.chat.type === "private" ? "dm" : "group";
+    const chatId = String(msg.chat.id);
+    const threadId = typeof msg.message_thread_id === "number" ? String(msg.message_thread_id) : undefined;
+    const groupConfig = resolveTelegramGroupConfig(this.config, chatId, threadId);
+
+    if (!isTelegramChatAllowed(this.config, groupConfig, chatType)) {
+      return false;
+    }
+    if (!isTelegramAllowedByPolicy({
+      config: this.config,
+      whitelist: this.whitelist,
+      groupConfig,
+      sender: msg.from,
+      chatType,
+    })) {
+      return false;
+    }
+
+    const mentionedBot = this.resolveMentionsBot(msg);
+    if (isConfiguredTelegramBotUser(this.config, this.selfUserId, msg.from)) {
+      const allowBotsMode = resolveTelegramAllowBotsMode(this.config, groupConfig);
+      if (allowBotsMode === "off") {
+        return false;
+      }
+      if (allowBotsMode === "mentions" && chatType === "group" && !mentionedBot) {
+        return false;
+      }
+    }
+
+    if (chatType === "dm") {
+      return true;
+    }
+    if (!resolveTelegramRequireMention(groupConfig)) {
+      return true;
+    }
+    if (mentionedBot) {
+      return true;
+    }
+    return this.isAddressedGroupCommand(msg);
+  }
+
+  private isAddressedGroupCommand(msg: GrammyMessage): boolean {
+    const entities = msg.entities ?? msg.caption_entities ?? [];
+    const text = msg.text ?? msg.caption ?? "";
+    const commandEntity = entities.find((entity) => entity.type === "bot_command" && entity.offset === 0);
+    if (!commandEntity) return false;
+
+    const commandText = text.slice(commandEntity.offset, commandEntity.offset + commandEntity.length);
+    if (!commandText.startsWith("/")) return false;
+
+    const atIndex = commandText.indexOf("@");
+    if (atIndex === -1 || !this.selfUsername) return false;
+    return commandText.slice(atIndex + 1).toLowerCase() === this.selfUsername;
+  }
+
+  private outboundReplyThreadId(message: OutgoingMessage): number | undefined {
+    if (message.threadId) {
+      const parsed = Math.trunc(Number(message.threadId));
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return message.replyToId ? this.messageThreadIds.get(message.replyToId) : undefined;
+  }
+
+  private replyTargetForChunk(
+    message: OutgoingMessage,
+    chunkIndex: number,
+    params: { chunkCount: number; hasMedia: boolean },
+  ): number | undefined {
+    if (message.threadId) return undefined;
+
+    const replyToId = message.replyToId ? Math.trunc(Number(message.replyToId)) : undefined;
+    if (!replyToId) return undefined;
+
+    const mode = this.config.threadReplies ?? "off";
+    if (mode === "off") return undefined;
+
+    const multiPart = params.hasMedia || params.chunkCount > 1;
+    if (!multiPart) return replyToId;
+    if (mode === "always") return replyToId;
+    if (mode === "inbound") return chunkIndex === 0 ? replyToId : undefined;
+    return undefined;
   }
 
   private isReplyToSelf(message: GrammyMessage["reply_to_message"]): boolean {

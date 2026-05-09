@@ -7,8 +7,25 @@ export interface TelegramChannelConfig {
   token: string;
   mode?: "polling" | "webhook";
   dm?: {
+    enabled?: boolean;
+    policy?: "open" | "allowlist" | "disabled";
+    allowFrom?: string[];
     sessionScope?: "per-user" | "per-chat";
   };
+  groupPolicy?: "open" | "allowlist" | "disabled";
+  groupAllowFrom?: string[];
+  botUserIds?: string[];
+  allowBots?: boolean | "mentions";
+  groups?: Record<
+    string,
+    {
+      enabled?: boolean;
+      requireMention?: boolean;
+      users?: string[];
+      autoReply?: boolean;
+      allowBots?: boolean | "mentions";
+    }
+  >;
   threadReplies?: "off" | "inbound" | "always";
   historyLimit?: number;
   contextVisibility?: "all" | "allowlist" | "allowlist_quote";

@@ -19,11 +19,11 @@ function createMessage(userId = "u1"): UnifiedMessage {
   };
 }
 
-test("MessageRouter blocks unauthorized users", async () => {
+test("MessageRouter does not enforce a second global auth gate", async () => {
   const sessionManager = new SessionManager();
   const router = new MessageRouter(["u1"], sessionManager, {
     async handleMessage() {
-      throw new Error("should not run");
+      return "ok";
     },
     async handleMessageStreaming() {
       throw new Error("should not run");
@@ -31,7 +31,7 @@ test("MessageRouter blocks unauthorized users", async () => {
   } as never);
 
   const response = await router.route(createMessage("u2"));
-  assert.equal(response, undefined);
+  assert.equal(response, "ok");
 });
 
 test("MessageRouter forwards streaming callbacks", async () => {
