@@ -47,6 +47,7 @@ export interface Attachment {
   width?: number;
   height?: number;
   durationMs?: number;
+  audioAsVoice?: boolean;
 }
 
 export interface OutgoingMessage {

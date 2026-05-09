@@ -1,5 +1,5 @@
 import type { MyClawConfig } from "../core/config.ts";
-import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
+import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
@@ -7,6 +7,8 @@ import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolApprovalManager } from "./approvals.ts";
+import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
+import type { TranscriptionResult } from "../voice/types.ts";
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -38,15 +40,30 @@ function errorLogData(err: unknown): unknown {
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
   private currentMessage?: UnifiedMessage;
+  private echoMessages: OutgoingMessage[] = [];
+  private inboundHadAudio = false;
 
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
     private skillRegistry: SkillRegistry,
+    private voiceManager: VoiceManager,
+    private sttPipeline: SttPipeline,
+    private ttsPipeline: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
+  }
+
+  getEchoMessages(): OutgoingMessage[] {
+    const echoes = [...this.echoMessages];
+    this.echoMessages = [];
+    return echoes;
+  }
+
+  hadAudioInbound(): boolean {
+    return this.inboundHadAudio;
   }
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
@@ -69,13 +86,98 @@ export class AgentBridge {
     return this.handle(message, session, onToken, onToolUse);
   }
 
+  private async preprocessAudio(message: UnifiedMessage): Promise<TranscriptionResult> {
+    const audioAttachments = message.attachments.filter((a) => a.type === "audio");
+    if (audioAttachments.length === 0) {
+      return { text: "" };
+    }
+
+    this.inboundHadAudio = true;
+    const att = audioAttachments[0]!;
+
+    // Media unavailable (encrypted, download failed, too large)
+    if (!att.path) {
+      const isEncrypted = att.summaryText?.includes("unavailable") ?? false;
+      const reason = isEncrypted
+        ? "Ce media est chiffre (E2EE) et inaccessible. Verifie mon device dans la room ou envoie un message non-chiffre."
+        : "Media non telecharge (indisponible ou trop volumineux).";
+
+      const existingText = message.text ? message.text.trim() : "";
+      const audioPrefix = existingText ? `\n\n` : "";
+      message.text = `${existingText}${audioPrefix}[Audio]: [unavailable — ${reason}]`;
+
+      const { enabled } = this.voiceManager.getEchoConfig();
+      if (enabled) {
+        this.echoMessages.push({
+          text: `⚠️ ${reason}`,
+          replyToId: message.id,
+          threadId: message.threadId,
+        });
+      }
+
+      return { text: "", error: reason };
+    }
+
+    try {
+      const { stat } = await import("node:fs/promises");
+      const fileStat = await stat(att.path);
+      void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
+
+      const result = await this.sttPipeline.transcribe(att.path);
+      const existingText = message.text ? message.text.trim() : "";
+      const audioPrefix = existingText ? `\n\n` : "";
+      message.text = `${existingText}${audioPrefix}[Audio]: "${result.text}"`;
+
+      const { enabled } = this.voiceManager.getEchoConfig();
+      if (enabled) {
+        this.echoMessages.push({
+          text: this.voiceManager.formatEcho(result.text),
+          replyToId: message.id,
+          threadId: message.threadId,
+        });
+      }
+
+      return { text: result.text };
+    } catch (err) {
+      const errorMsg = String(err);
+      const existingText = message.text ? message.text.trim() : "";
+      const audioPrefix = existingText ? `\n\n` : "";
+      message.text = `${existingText}${audioPrefix}[Audio]: [Transcription failed: ${errorMsg}]`;
+
+      const { enabled } = this.voiceManager.getEchoConfig();
+      if (enabled) {
+        this.echoMessages.push({
+          text: `⚠️ STT failed: ${errorMsg}`,
+          replyToId: message.id,
+          threadId: message.threadId,
+        });
+      }
+
+      return { text: "", error: errorMsg };
+    }
+  }
+
+  async preprocessMessage(message: UnifiedMessage): Promise<void> {
+    if (this.currentMessage?.id === message.id) return;
+    this.currentMessage = message;
+    this.echoMessages = [];
+    this.inboundHadAudio = false;
+    await this.preprocessAudio(message);
+  }
+
   private async handle(
     message: UnifiedMessage,
     session: SessionData,
     onToken?: (token: string) => Promise<void>,
     onToolUse?: () => Promise<void>,
   ): Promise<string> {
-    this.currentMessage = message;
+    if (this.currentMessage?.id !== message.id) {
+      this.currentMessage = message;
+      this.echoMessages = [];
+      this.inboundHadAudio = false;
+      await this.preprocessAudio(message);
+    }
+
     const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
     const model = session.modelOverride ?? this.config.llm.model;
     const llmConfig = { ...this.config.llm, model };

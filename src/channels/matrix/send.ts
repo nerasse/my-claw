@@ -28,6 +28,8 @@ export async function sendMediaByPath(
   filePath: string,
   replyToId?: string,
   threadId?: string,
+  audioAsVoice?: boolean,
+  durationMs?: number,
 ): Promise<void> {
   const buffer = Buffer.from(await readFile(filePath));
   const name = basename(filePath);
@@ -47,6 +49,14 @@ export async function sendMediaByPath(
     replyToId,
     threadId,
   });
+
+  if (audioAsVoice) {
+    content["org.matrix.msc3245.voice"] = {};
+    if (typeof durationMs === "number") {
+      content["org.matrix.msc1767.audio"] = { duration: durationMs };
+    }
+  }
+
   await sendMatrixMessage(sdk, roomId, content, outboundTxnId(`media-${name}`));
 }
 
@@ -63,7 +73,7 @@ export async function sendAttachment(
   if (!source) return;
 
   if (attachment.path) {
-    await sendMediaByPath(sdk, crypto, roomId, attachment.path, replyToId, threadId);
+    await sendMediaByPath(sdk, crypto, roomId, attachment.path, replyToId, threadId, attachment.audioAsVoice, attachment.durationMs);
     return;
   }
 
@@ -90,6 +100,14 @@ export async function sendAttachment(
     replyToId,
     threadId,
   });
+
+  if (attachment.type === "audio" && attachment.audioAsVoice) {
+    content["org.matrix.msc3245.voice"] = {};
+    if (typeof attachment.durationMs === "number") {
+      content["org.matrix.msc1767.audio"] = { duration: attachment.durationMs };
+    }
+  }
+
   await sendMatrixMessage(sdk, roomId, content, outboundTxnId(`attachment-${name}`));
 }
 

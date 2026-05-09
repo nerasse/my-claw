@@ -16,6 +16,7 @@
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
+| Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
 
 ## Channel Structure
@@ -71,11 +72,27 @@
 - Forwarded messages from an authorized user are processed normally
 - Global whitelist (an authorized user has access everywhere)
 
+### Voice / Multimedia
+
+- **STT auto**: inbound audio transcribed automatically before agent processing
+  - Cloud: Groq API (whisper-large-v3), requires GROQ_API_KEY
+  - Local: faster-whisper server on :18792
+  - No fallback — error explicit if chosen mode fails
+  - Echo transcript sent as visible message: `📝 "transcription"`
+- **TTS manual**: agent calls `tts` tool only when user asks for audio
+  - Cloud: Edge TTS (fr-FR-RemyMultilingualNeural)
+  - Local: Piper (fr_FR-siwis-medium)
+  - No automatic TTS post-response
+- **Voice mode**: runtime switchable without reboot
+  - `voice_mode(mode="cloud", feature="all")`
+  - Priority: per-call > feature-level > global > auto-detect
+- Config: `voice.mode`, `voice.stt.mode`, `voice.tts.mode`, `voice.tts.voice`
+
 ### Storage
 
 ```
 ~/.my-claw/
-├── config.json              # global config (providers, models, whitelist, blacklist, etc.)
+├── config.json              # global config (providers, models, whitelist, blacklist, voice, etc.)
 ├── prompt/                  # system prompt files
 │   ├── SOUL.md
 │   ├── AGENTS.md

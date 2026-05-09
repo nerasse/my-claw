@@ -32,11 +32,15 @@ import { createListAgentsTool } from "./tools/list-agents.ts";
 import { createKillAgentTool } from "./tools/kill-agent.ts";
 import { createResetAgentTool } from "./tools/reset-agent.ts";
 import { createListSkillsTool, createReadSkillTool, createCreateSkillTool, createUpdateSkillTool, createDeleteSkillTool } from "./tools/skills.ts";
+import { createSttTool } from "./tools/stt.ts";
+import { createTtsTool } from "./tools/tts.ts";
+import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
+import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { log } from "./utils/logger.ts";
 
 async function main() {
@@ -45,10 +49,18 @@ async function main() {
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const modelPicker = new ModelPicker(config.llm.models ?? []);
 
+  const voiceManager = new VoiceManager(config);
+  const sttPipeline = new SttPipeline(voiceManager);
+  const ttsPipeline = new TtsPipeline(voiceManager);
+
   const toolRegistry = new ToolRegistry();
   for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, memoryTool]) {
     toolRegistry.register(tool);
   }
+
+  toolRegistry.register(createSttTool(sttPipeline));
+  toolRegistry.register(createTtsTool(ttsPipeline));
+  toolRegistry.register(createVoiceModeTool(voiceManager));
 
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const repoSkillsDir = join(repoRoot, "src", "skills");
@@ -66,7 +78,7 @@ async function main() {
 
   const subAgentRegistry = new SubAgentRegistry();
   await subAgentRegistry.load();
-  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry);
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
   toolRegistry.register(createSpawnTool(subAgentRunner, subAgentRegistry));
   toolRegistry.register(createSendTool(subAgentRunner, subAgentRegistry));
   toolRegistry.register(createListAgentsTool(subAgentRunner, subAgentRegistry));
@@ -80,7 +92,7 @@ async function main() {
   toolRegistry.register(createDeleteSkillTool(workspaceSkillsDir, customDir, skillRegistry));
 
   const sessionManager = new SessionManager();
-  const agent = new AgentBridge(config, toolRegistry, skillRegistry);
+  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
   const router = new MessageRouter(config.whitelist, sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
@@ -101,6 +113,13 @@ async function main() {
 
     telegram.onMessage(async (msg) => {
       try {
+        // Pre-process audio (STT + echo) before routing so echoes arrive first
+        await agent.preprocessMessage(msg);
+        const echoes = agent.getEchoMessages();
+        for (const echo of echoes) {
+          await telegram.send(msg.chatId, { ...echo, replyToId: msg.id });
+        }
+
         let response: string | undefined;
 
         if (telegram.streamingEnabled()) {
@@ -126,6 +145,7 @@ async function main() {
         }
       } finally {
         await cleanupAttachments(msg.attachments);
+        agent.hadAudioInbound() && await cleanupTtsTempFiles();
       }
     });
 
@@ -155,6 +175,13 @@ async function main() {
 
     matrix.onMessage(async (msg) => {
       try {
+        // Pre-process audio (STT + echo) before routing so echoes arrive first
+        await agent.preprocessMessage(msg);
+        const echoes = agent.getEchoMessages();
+        for (const echo of echoes) {
+          await matrix.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
+        }
+
         let response: string | undefined;
 
         if (matrix.streamingEnabled()) {
@@ -182,6 +209,7 @@ async function main() {
         }
       } finally {
         await cleanupAttachments(msg.attachments);
+        agent.hadAudioInbound() && await cleanupTtsTempFiles();
       }
     });
 
@@ -216,6 +244,11 @@ async function cleanupAttachments(attachments: Array<{ path?: string }>): Promis
       await unlink(att.path).catch(() => {});
     }
   }
+}
+
+async function cleanupTtsTempFiles(): Promise<void> {
+  // TTS temp files in /tmp/tts-*/ are left for the OS to clean.
+  // Individual files can be tracked and cleaned if needed.
 }
 
 main().catch((err) => {

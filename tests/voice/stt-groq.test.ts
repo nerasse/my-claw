@@ -1,0 +1,161 @@
+import { describe, test, expect, mock } from "bun:test";
+import { SttPipeline } from "../../src/voice/stt.ts";
+import { VoiceManager } from "../../src/voice/manager.ts";
+import type { MyClawConfig } from "../../src/core/config.ts";
+import { writeFile, unlink, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
+  return {
+    whitelist: [],
+    blacklist: [],
+    channels: {},
+    llm: { provider: "test", baseUrl: "http://test", model: "test" },
+    ...overrides,
+  } as MyClawConfig;
+}
+
+describe("SttPipeline Groq upload fixes", () => {
+  describe("file extension normalization", () => {
+    test("renames .oga to .ogg for Groq", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "voice.oga");
+      // Write a minimal valid Ogg header (OggS magic + some bytes)
+      const oggHeader = Buffer.from([0x4F, 0x67, 0x67, 0x53, 0x00, 0x00, 0x00, 0x00]);
+      await writeFile(filePath, oggHeader);
+
+      const config = createConfig({ voice: { mode: "cloud" } });
+      const manager = new VoiceManager(config);
+      const pipeline = new SttPipeline(manager);
+
+      // Mock fetch to inspect FormData
+      const fetchCalls: Array<{ formData: FormData }> = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+        if (url.includes("groq.com")) {
+          const fd = init?.body as FormData;
+          fetchCalls.push({ formData: fd });
+          return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
+        }
+        return originalFetch(url, init);
+      });
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        await pipeline.transcribe(filePath);
+
+        expect(fetchCalls.length).toBe(1);
+        const fileEntry = fetchCalls[0]!.formData.get("file") as File;
+        expect(fileEntry).toBeDefined();
+        expect(fileEntry.name).toBe("voice.ogg"); // .oga -> .ogg
+        expect(fileEntry.type).toBe("audio/ogg");  // forced MIME type
+      } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+
+    test("keeps .ogg extension unchanged", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "audio.ogg");
+      const oggHeader = Buffer.from([0x4F, 0x67, 0x67, 0x53, 0x00, 0x00, 0x00, 0x00]);
+      await writeFile(filePath, oggHeader);
+
+      const config = createConfig({ voice: { mode: "cloud" } });
+      const manager = new VoiceManager(config);
+      const pipeline = new SttPipeline(manager);
+
+      const fetchCalls: Array<{ formData: FormData }> = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+        if (url.includes("groq.com")) {
+          fetchCalls.push({ formData: init?.body as FormData });
+          return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
+        }
+        return originalFetch(url, init);
+      });
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        await pipeline.transcribe(filePath);
+
+        expect(fetchCalls.length).toBe(1);
+        const fileEntry = fetchCalls[0]!.formData.get("file") as File;
+        expect(fileEntry.name).toBe("audio.ogg");
+        expect(fileEntry.type).toBe("audio/ogg");
+      } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+  });
+
+  describe("Ogg header validation", () => {
+    test("throws for non-Ogg files", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "fake.mp3");
+      await writeFile(filePath, Buffer.from("not an ogg file"));
+
+      const config = createConfig({ voice: { mode: "cloud" } });
+      const manager = new VoiceManager(config);
+      const pipeline = new SttPipeline(manager);
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        await expect(pipeline.transcribe(filePath)).rejects.toThrow("not a valid Ogg/Opus file");
+      } finally {
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+
+    test("accepts valid Ogg header", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "voice.ogg");
+      const oggHeader = Buffer.from([0x4F, 0x67, 0x67, 0x53, 0x00, 0x00, 0x00, 0x00]);
+      await writeFile(filePath, oggHeader);
+
+      const config = createConfig({ voice: { mode: "cloud" } });
+      const manager = new VoiceManager(config);
+      const pipeline = new SttPipeline(manager);
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = mock(async () => {
+        return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
+      });
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        const result = await pipeline.transcribe(filePath);
+        expect(result.text).toBe("hello");
+      } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+  });
+
+  describe("empty file validation", () => {
+    test("throws for empty audio files", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "empty.ogg");
+      await writeFile(filePath, Buffer.alloc(0));
+
+      const config = createConfig({ voice: { mode: "cloud" } });
+      const manager = new VoiceManager(config);
+      const pipeline = new SttPipeline(manager);
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        await expect(pipeline.transcribe(filePath)).rejects.toThrow("empty (0 bytes)");
+      } finally {
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+  });
+});

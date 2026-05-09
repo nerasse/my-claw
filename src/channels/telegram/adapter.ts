@@ -875,6 +875,8 @@ export class TelegramAdapter implements ChannelAdapter {
       const localPath = join(TMP_DIR, `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${ext}`);
       await Bun.write(localPath, buffer);
 
+      await telegramLog("info", "telegram file downloaded", { path: localPath, size: buffer.byteLength, mimeType: res.headers.get("content-type") });
+
       return { path: localPath, mimeType: res.headers.get("content-type") ?? undefined };
     } catch (err) {
       await telegramLog("error", "failed to download telegram file", { fileId, error: String(err) });

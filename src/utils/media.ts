@@ -3,6 +3,8 @@ const MEDIA_PATTERN = /MEDIA:(\/[^\s]+)/g;
 export interface MediaRef {
   path: string;
   match: string;
+  audioAsVoice?: boolean;
+  durationMs?: number;
 }
 
 export function extractMediaRefs(text: string): MediaRef[] {

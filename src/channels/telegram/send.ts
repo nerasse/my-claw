@@ -349,7 +349,9 @@ export async function sendAttachment(
       case "video":
         return bot.api.sendVideo(chatId, file, p);
       case "audio":
-        return bot.api.sendAudio(chatId, file, p);
+        return att.audioAsVoice
+          ? bot.api.sendVoice(chatId, file, p)
+          : bot.api.sendAudio(chatId, file, p);
       default:
         return bot.api.sendDocument(chatId, file, p);
     }

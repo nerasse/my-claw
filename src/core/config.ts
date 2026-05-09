@@ -111,6 +111,25 @@ export interface MatrixChannelConfig {
   mediaMaxMb?: number;
 }
 
+export interface VoiceFeatureConfig {
+  mode?: "cloud" | "local" | "auto";
+}
+
+export interface VoiceTtsConfig extends VoiceFeatureConfig {
+  voice?: string;
+}
+
+export interface VoiceSttConfig extends VoiceFeatureConfig {
+  echoTranscript?: boolean;
+  echoFormat?: string;
+}
+
+export interface VoiceConfig {
+  mode?: "cloud" | "local" | "auto";
+  stt?: VoiceSttConfig;
+  tts?: VoiceTtsConfig;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -140,6 +159,7 @@ export interface MyClawConfig {
     general?: { llm?: MyClawConfig["llm"] };
     research?: { llm?: MyClawConfig["llm"] };
   };
+  voice?: VoiceConfig;
   workspace?: string;
 }
 

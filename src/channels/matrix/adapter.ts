@@ -291,7 +291,7 @@ export class MatrixAdapter implements ChannelAdapter {
     if (!hasMedia) return;
 
     for (const ref of mediaRefs) {
-      await sendMediaByPath(this.runtime.sdk, this.runtime.mediaCrypto, chatId, ref.path, message.replyToId, message.threadId);
+      await sendMediaByPath(this.runtime.sdk, this.runtime.mediaCrypto, chatId, ref.path, message.replyToId, message.threadId, ref.audioAsVoice, ref.durationMs);
     }
     for (const attachment of message.attachments ?? []) {
       await sendAttachment(this.runtime.sdk, this.runtime.mediaCrypto, (url) => this.fetchWithTimeout(url), chatId, attachment, message.replyToId, message.threadId);
@@ -1345,8 +1345,12 @@ export class MatrixAdapter implements ChannelAdapter {
           readIdleTimeoutMs: MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS,
         });
       } else {
+        const token = this.config.accessToken;
         const response = await this.fetchWithTimeout(httpUrl ?? mxcUrl, {
-          headers: { Accept: "*/*" },
+          headers: {
+            Accept: "*/*",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
         });
         if (!response.ok) {
           throw new Error(`Matrix media download failed: HTTP ${response.status}`);

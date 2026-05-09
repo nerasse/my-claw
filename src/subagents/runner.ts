@@ -7,6 +7,7 @@ import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
+import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 
 const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
@@ -20,6 +21,9 @@ export class SubAgentRunner {
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
     private skillRegistry: SkillRegistry,
+    private voiceManager: VoiceManager,
+    private sttPipeline: SttPipeline,
+    private ttsPipeline: TtsPipeline,
   ) {}
 
   canSpawn(depth: number): boolean {
@@ -174,6 +178,9 @@ export class SubAgentRunner {
       { ...this.config, llm: llmConfig, agents: {} },
       this.toolRegistry,
       this.skillRegistry,
+      this.voiceManager,
+      this.sttPipeline,
+      this.ttsPipeline,
       depth,
       workspaceDir,
     );

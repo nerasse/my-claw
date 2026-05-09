@@ -278,7 +278,10 @@ export class MatrixClientRuntime {
           const timeout = setTimeout(() => controller.abort(), opts?.readIdleTimeoutMs ?? 30_000);
           try {
             const response = await fetch(contentUrl, {
-              headers: { Accept: "*/*" },
+              headers: {
+                Accept: "*/*",
+                ...(this.config.accessToken ? { Authorization: `Bearer ${this.config.accessToken}` } : {}),
+              },
               signal: controller.signal,
             });
             if (!response.ok) {
