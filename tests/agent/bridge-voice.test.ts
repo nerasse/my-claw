@@ -147,4 +147,85 @@ describe("AgentBridge voice integration", () => {
 
     expect(bridge.hadAudioInbound()).toBe(false);
   });
+
+  test("hides audio attachments from LLM prompt after transcription", async () => {
+    const config = createConfig();
+    const toolRegistry = new ToolRegistry();
+    const skillRegistry = new SkillRegistry(new Map());
+    const voiceManager = new VoiceManager(config);
+    const sttPipeline = new SttPipeline(voiceManager);
+    const ttsPipeline = new TtsPipeline(voiceManager);
+
+    const bridge = new AgentBridge(
+      config,
+      toolRegistry,
+      skillRegistry,
+      voiceManager,
+      sttPipeline,
+      ttsPipeline,
+    );
+
+    const message = createMessage({
+      text: "check this",
+      attachments: [
+        { type: "audio", path: "/tmp/test.ogg", mimeType: "audio/ogg" },
+        { type: "image", path: "/tmp/photo.jpg", mimeType: "image/jpeg" },
+      ],
+    });
+    const session = createSession();
+
+    try {
+      await bridge.handleMessage(message, session);
+    } catch {
+      // Expected to fail due to mocked LLM.
+    }
+
+    // Check that the user message in session does not contain the audio attachment
+    const userMessage = session.messages.find((m) => m.role === "user");
+    expect(userMessage).toBeDefined();
+    // Audio attachment should not appear in the [Attachments] section
+    // (it was already transcribed into [Audio]: ...)
+    const attachmentsMatch = userMessage!.content.match(/\[Attachments\][\s\S]*/);
+    if (attachmentsMatch) {
+      expect(attachmentsMatch[0]).toContain("image");
+      expect(attachmentsMatch[0]).not.toContain("audio");
+      expect(attachmentsMatch[0]).not.toContain("test.ogg");
+    }
+  });
+
+  test("hides audio attachments even when STT fails", async () => {
+    const config = createConfig();
+    const toolRegistry = new ToolRegistry();
+    const skillRegistry = new SkillRegistry(new Map());
+    const voiceManager = new VoiceManager(config);
+    const sttPipeline = new SttPipeline(voiceManager);
+    const ttsPipeline = new TtsPipeline(voiceManager);
+
+    const bridge = new AgentBridge(
+      config,
+      toolRegistry,
+      skillRegistry,
+      voiceManager,
+      sttPipeline,
+      ttsPipeline,
+    );
+
+    const message = createMessage({
+      attachments: [
+        { type: "audio", path: "/tmp/nonexistent.ogg" },
+      ],
+    });
+    const session = createSession();
+
+    try {
+      await bridge.handleMessage(message, session);
+    } catch {
+      // Expected.
+    }
+
+    const userMessage = session.messages.find((m) => m.role === "user");
+    expect(userMessage).toBeDefined();
+    expect(userMessage!.content).toContain("[Audio]: [Transcription failed");
+    expect(userMessage!.content).not.toContain("[Attachments]");
+  });
 });

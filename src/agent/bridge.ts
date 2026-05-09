@@ -359,8 +359,11 @@ export class AgentBridge {
     }
 
     let content = message.text;
-    if (message.attachments.length > 0) {
-      const lines = message.attachments.map((a) => {
+    // Filter out audio attachments that were already transcribed —
+    // the transcript is in message.text, raw audio binary would only waste tokens
+    const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
+    if (visibleAttachments.length > 0) {
+      const lines = visibleAttachments.map((a) => {
         const source = a.path ?? a.url ?? "unknown";
         const details = [
           a.mimeType,
