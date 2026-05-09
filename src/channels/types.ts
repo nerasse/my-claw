@@ -14,7 +14,7 @@ export interface UnifiedMessage {
   threadRootText?: string;
   roomContext?: string;
   mentionsBot?: boolean;
-  sessionScope?: "per-user" | "per-room";
+  sessionScope?: "per-user" | "per-room" | "per-chat";
   raw: unknown;
 }
 

@@ -6,6 +6,12 @@ export interface TelegramChannelConfig {
   enabled?: boolean;
   token: string;
   mode?: "polling" | "webhook";
+  dm?: {
+    sessionScope?: "per-user" | "per-chat";
+  };
+  threadReplies?: "off" | "inbound" | "always";
+  historyLimit?: number;
+  contextVisibility?: "all" | "allowlist" | "allowlist_quote";
   webhook?: {
     url: string;
     secret: string;

@@ -5,10 +5,13 @@ import type { TelegramChannelConfig } from "../src/config.ts";
 
 function createBotMock() {
   const calls: Array<{ method: string; args: unknown[] }> = [];
+  const handlers = new Map<string, (ctx: unknown) => unknown>();
 
   return {
     calls,
+    handlers,
     bot: {
+      botInfo: { id: 99, username: "myclawbot" },
       api: {
         config: { use() {} },
         async sendMessage(...args: unknown[]) {
@@ -37,8 +40,12 @@ function createBotMock() {
         },
       },
       catch() {},
-      command() {},
-      on() {},
+      command(name: string, handler: (ctx: unknown) => unknown) {
+        handlers.set(`command:${name}`, handler);
+      },
+      on(event: string, handler: (ctx: unknown) => unknown) {
+        handlers.set(`on:${event}`, handler);
+      },
       async init() {},
       start() {},
       async stop() {},
@@ -90,4 +97,92 @@ test("TelegramAdapter streamer uses bot edit/send helpers", async () => {
 
   assert.equal(calls.some((call) => call.method === "sendMessage"), true);
   assert.equal(calls.some((call) => call.method === "editMessageText"), true);
+});
+
+test("TelegramAdapter normalizes replies, thread context, mentions, and DM session scope", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      dm: { sessionScope: "per-chat" },
+      historyLimit: 3,
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  const seen: unknown[] = [];
+  adapter.onMessage(async (message) => {
+    seen.push(message);
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+  assert.equal(typeof handler, "function");
+
+  const firstCtx = {
+    message: {
+      message_id: 10,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "thread root",
+      message_thread_id: 777,
+    },
+  };
+  await handler?.(firstCtx);
+
+  const secondCtx = {
+    message: {
+      message_id: 11,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "@myclawbot follow-up",
+      entities: [{ type: "mention", offset: 0, length: 10 }],
+      message_thread_id: 777,
+      reply_to_message: {
+        message_id: 10,
+        date: 100,
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: "u1", is_bot: false, username: "u1" },
+        text: "thread root",
+        message_thread_id: 777,
+      },
+    },
+  };
+  await handler?.(secondCtx);
+
+  const thirdCtx = {
+    message: {
+      message_id: 12,
+      date: 102,
+      chat: { id: 123, type: "private" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "dm message",
+    },
+  };
+  await handler?.(thirdCtx);
+
+  assert.equal(seen.length, 3);
+
+  const threaded = seen[1] as {
+    replyToId?: string;
+    replyToText?: string;
+    replyToSender?: string;
+    threadId?: string;
+    threadRootText?: string;
+    roomContext?: string;
+    mentionsBot?: boolean;
+  };
+  assert.equal(threaded.replyToId, "10");
+  assert.equal(threaded.replyToText, "thread root");
+  assert.equal(threaded.replyToSender, "@u1");
+  assert.equal(threaded.threadId, "777");
+  assert.equal(threaded.threadRootText, "thread root");
+  assert.match(threaded.roomContext ?? "", /Recent Thread Context/);
+  assert.equal(threaded.mentionsBot, true);
+
+  const dm = seen[2] as { sessionScope?: string };
+  assert.equal(dm.sessionScope, "per-chat");
 });

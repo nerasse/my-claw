@@ -20,7 +20,7 @@ export class SessionManager {
     chatType: "dm" | "group",
     chatId: string,
     userId: string,
-    meta?: { roomId?: string; threadId?: string; sessionScope?: "per-user" | "per-room" },
+    meta?: { roomId?: string; threadId?: string; sessionScope?: "per-user" | "per-room" | "per-chat" },
   ): string {
     if (platform === "matrix") {
       const roomId = meta?.roomId ?? chatId;
@@ -35,6 +35,20 @@ export class SessionManager {
         return `matrix/dm/${userId}`;
       }
       return `matrix/room/${roomId}`;
+    }
+
+    if (platform === "telegram") {
+      const threadId = meta?.threadId?.trim();
+      if (threadId) {
+        return `telegram/thread/${chatId}/${threadId}`;
+      }
+      if (chatType === "dm") {
+        if (meta?.sessionScope === "per-chat") {
+          return `telegram/dm-chat/${chatId}`;
+        }
+        return `telegram/dm/${userId}`;
+      }
+      return `telegram/group/${chatId}`;
     }
 
     if (chatType === "dm") return `${platform}/dm/${userId}`;

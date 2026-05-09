@@ -12,6 +12,7 @@ import { registerCommands, getHelpText } from "./telegram-commands.ts";
 import { ReactionManager } from "./telegram-reactions.ts";
 import { ErrorReporter } from "./telegram-errors.ts";
 import { MessageStreamer } from "./telegram-stream.ts";
+import { shouldIncludeSupplementalContext, type ContextVisibilityKind, type ContextVisibilityMode } from "./context-visibility.ts";
 import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
 import { telegramLog } from "../utils/logger.ts";
 
@@ -47,6 +48,9 @@ const TYPING_INTERVAL_MS = 5000;
 const GENERAL_TOPIC_ID = 1;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_THREAD_ID_ENTRIES = 10_000;
+const MAX_HISTORY_SCOPE_ENTRIES = 200;
+const MAX_MESSAGE_CONTEXT_ENTRIES = 10_000;
+const MAX_THREAD_ROOT_ENTRIES = 2_000;
 const TMP_DIR = join(MY_CLAW_DIR, "tmp");
 const ERROR_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -91,12 +95,28 @@ interface TelegramCallbackContext {
   messageId: string;
   data: string;
   messageText?: string;
+  threadId?: string;
 }
 
 interface TelegramCallbackResponse {
   text?: string;
   buttons?: Array<{ label: string; action: string }>;
   answerText?: string;
+}
+
+interface TelegramHistoryEntry {
+  messageId: string;
+  senderId: string;
+  senderLabel: string;
+  text: string;
+}
+
+interface TelegramStoredMessageContext extends TelegramHistoryEntry {
+  scopeKey: string;
+}
+
+interface TelegramCommandMeta {
+  threadId?: string;
 }
 
 // ── Error classification ──────────────────────────────────────
@@ -149,17 +169,22 @@ export class TelegramAdapter implements ChannelAdapter {
   readonly platform = "telegram" as const;
   private bot: Bot;
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
-  private commandHandler?: (chatId: string, userId: string, chatType: "dm" | "group", command: string, args: string) => Promise<OutgoingMessage | string | undefined>;
+  private commandHandler?: (chatId: string, userId: string, chatType: "dm" | "group", command: string, args: string, meta?: TelegramCommandMeta) => Promise<OutgoingMessage | string | undefined>;
   private callbackHandler?: (ctx: TelegramCallbackContext) => Promise<TelegramCallbackResponse | undefined>;
 
   private textBatches = new Map<string, TextBatch>();
   private mediaGroups = new Map<string, MediaGroupBuffer>();
   private typingRefs = new Map<string, TypingRef>();
+  private historyByScope = new Map<string, TelegramHistoryEntry[]>();
+  private messageContexts = new Map<string, TelegramStoredMessageContext>();
   private messageThreadIds = new Map<string, number>();
   private pendingConfirmations = new Map<string, PendingConfirmation>();
+  private threadRoots = new Map<string, TelegramHistoryEntry>();
   private webhookServer: { stop(): void } | undefined;
   private reactions: ReactionManager;
   private errorReporter: ErrorReporter;
+  private selfUserId?: string;
+  private selfUsername?: string;
 
   constructor(
     private config: TelegramChannelConfig,
@@ -195,6 +220,7 @@ export class TelegramAdapter implements ChannelAdapter {
       await this.startWebhook();
     } else {
       await this.bot.init();
+      this.captureSelfInfo();
       await registerCommands(this.bot);
       this.bot.start({ onStart: () => telegramLog("info", "telegram polling started") });
     }
@@ -277,7 +303,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.messageHandler = handler;
   }
 
-  onCommand(handler: (chatId: string, userId: string, chatType: "dm" | "group", command: string, args: string) => Promise<OutgoingMessage | string | undefined>): void {
+  onCommand(handler: (chatId: string, userId: string, chatType: "dm" | "group", command: string, args: string, meta?: TelegramCommandMeta) => Promise<OutgoingMessage | string | undefined>): void {
     this.commandHandler = handler;
   }
 
@@ -617,6 +643,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.command("model", (ctx) => this.handleCommand(ctx, "model"));
     this.bot.command("status", (ctx) => this.handleCommand(ctx, "status"));
     this.bot.command("clear", (ctx) => this.handleCommand(ctx, "clear"));
+    this.bot.command("archive", (ctx) => this.handleCommand(ctx, "archive"));
     this.bot.command("help", (ctx) => this.handleCommand(ctx, "help"));
     this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
     this.bot.on("message", (ctx) => this.handleMessage(ctx));
@@ -644,7 +671,9 @@ export class TelegramAdapter implements ChannelAdapter {
       }
 
       try {
-        const response = await this.commandHandler(chatId, userId, chatType, command, args);
+        const response = await this.commandHandler(chatId, userId, chatType, command, args, {
+          threadId: typeof threadId === "number" ? String(threadId) : undefined,
+        });
         if (!response) return;
 
         const replyToId = messageId ? String(messageId) : undefined;
@@ -690,6 +719,7 @@ export class TelegramAdapter implements ChannelAdapter {
           messageId: String(message.message_id),
           data,
           messageText: message.text,
+          threadId: typeof message.message_thread_id === "number" ? String(message.message_thread_id) : undefined,
         });
 
         if (!response) {
@@ -777,6 +807,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = String(msg.chat.id);
     const messageId = msg.message_id;
     const unified = await this.normalizeMessage(msg, textOverride, extraMessages);
+    this.rememberInboundContext(unified);
 
     await this.reactions.set(chatId, messageId, "received");
     this.startTyping(chatId, msg.message_thread_id);
@@ -817,18 +848,260 @@ export class TelegramAdapter implements ChannelAdapter {
     const allMessages = [msg, ...(extraMessages ?? [])];
     const attachmentArrays = await Promise.all(allMessages.map((m) => this.extractAttachments(m)));
     const attachments = attachmentArrays.flat();
+    const chatId = String(msg.chat.id);
+    const chatType = msg.chat.type === "private" ? "dm" : "group";
+    const threadId = typeof msg.message_thread_id === "number" ? String(msg.message_thread_id) : undefined;
+    const replyMessage = msg.reply_to_message;
+    const replyContext = replyMessage
+      ? this.resolveReplyContext(chatId, chatType, replyMessage)
+      : undefined;
+    const threadRoot = threadId ? this.resolveThreadRootContext(chatId, chatType, threadId) : undefined;
 
     return {
       id: String(msg.message_id),
       platform: "telegram",
       userId: String(msg.from!.id),
-      chatId: String(msg.chat.id),
-      chatType: msg.chat.type === "private" ? "dm" : "group",
+      chatId,
+      chatType,
       text: textOverride ?? msg.text ?? msg.caption ?? "",
       attachments,
       isForwarded: !!msg.forward_origin,
+      replyToId: replyContext?.messageId,
+      replyToText: replyContext?.text,
+      replyToSender: replyContext?.senderLabel,
+      threadId,
+      threadRootText: threadRoot?.text,
+      roomContext: this.resolveRoomHistoryContext(chatId, chatType, threadId),
+      mentionsBot: this.resolveMentionsBot(msg),
+      sessionScope: chatType === "dm" ? this.config.dm?.sessionScope ?? "per-user" : undefined,
       raw: msg,
     };
+  }
+
+  private captureSelfInfo(): void {
+    if (!this.bot.botInfo) return;
+    this.selfUserId = String(this.bot.botInfo.id);
+    this.selfUsername = this.bot.botInfo.username?.toLowerCase();
+  }
+
+  private contextVisibility(): ContextVisibilityMode {
+    return this.config.contextVisibility ?? "all";
+  }
+
+  private historyLimit(): number {
+    return Math.max(0, this.config.historyLimit ?? 0);
+  }
+
+  private shouldIncludeContextSender(
+    chatType: UnifiedMessage["chatType"],
+    kind: ContextVisibilityKind,
+    senderId?: string,
+  ): boolean {
+    if (chatType !== "group") return true;
+    return shouldIncludeSupplementalContext({
+      mode: this.contextVisibility(),
+      kind,
+      senderAllowed: typeof senderId === "string" && this.whitelist.has(senderId),
+    });
+  }
+
+  private rememberInboundContext(message: UnifiedMessage): void {
+    const raw = message.raw as GrammyMessage;
+    const text = this.contextTextForMessage(message);
+    if (!text) return;
+
+    const entry: TelegramHistoryEntry = {
+      messageId: message.id,
+      senderId: message.userId,
+      senderLabel: this.senderLabel(raw.from),
+      text,
+    };
+    const scopeKey = this.historyScopeKey(message.chatId, message.threadId);
+    const history = this.historyByScope.get(scopeKey) ?? [];
+    history.push(entry);
+    if (history.length > MAX_HISTORY_SCOPE_ENTRIES) {
+      history.splice(0, history.length - MAX_HISTORY_SCOPE_ENTRIES);
+    }
+    this.historyByScope.set(scopeKey, history);
+
+    this.messageContexts.set(this.messageContextKey(message.chatId, message.id), { ...entry, scopeKey });
+    this.pruneMessageContexts();
+
+    if (message.threadId) {
+      const threadKey = this.threadRootKey(message.chatId, message.threadId);
+      if (!this.threadRoots.has(threadKey)) {
+        this.threadRoots.set(threadKey, entry);
+        this.pruneThreadRoots();
+      }
+    }
+  }
+
+  private resolveReplyContext(
+    chatId: string,
+    chatType: UnifiedMessage["chatType"],
+    replyMessage: GrammyMessage,
+  ): TelegramHistoryEntry | undefined {
+    const messageId = String(replyMessage.message_id);
+    const stored = this.messageContexts.get(this.messageContextKey(chatId, messageId));
+    const senderId = replyMessage.from ? String(replyMessage.from.id) : stored?.senderId;
+    if (!this.shouldIncludeContextSender(chatType, "quote", senderId)) {
+      return undefined;
+    }
+
+    const text = this.contextTextFromRawMessage(replyMessage) ?? stored?.text;
+    if (!text) return undefined;
+
+    return {
+      messageId,
+      senderId: senderId ?? "unknown",
+      senderLabel: this.senderLabel(replyMessage.from) || stored?.senderLabel || "unknown",
+      text,
+    };
+  }
+
+  private resolveThreadRootContext(
+    chatId: string,
+    chatType: UnifiedMessage["chatType"],
+    threadId: string,
+  ): TelegramHistoryEntry | undefined {
+    const entry = this.threadRoots.get(this.threadRootKey(chatId, threadId))
+      ?? this.historyByScope.get(this.historyScopeKey(chatId, threadId))?.[0];
+    if (!entry) return undefined;
+    if (!this.shouldIncludeContextSender(chatType, "thread", entry.senderId)) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  private resolveRoomHistoryContext(
+    chatId: string,
+    chatType: UnifiedMessage["chatType"],
+    threadId?: string,
+  ): string | undefined {
+    const limit = this.historyLimit();
+    if (limit <= 0) return undefined;
+
+    const lines = (this.historyByScope.get(this.historyScopeKey(chatId, threadId)) ?? [])
+      .filter((entry) => this.shouldIncludeContextSender(chatType, "history", entry.senderId))
+      .slice(-limit)
+      .map((entry) => {
+        const body = entry.text.trim();
+        return body ? `${entry.senderLabel}: ${body}` : undefined;
+      })
+      .filter((value): value is string => Boolean(value));
+
+    if (lines.length === 0) return undefined;
+    return `${threadId ? "[Recent Thread Context]" : "[Recent Room Context]"}\n${lines.join("\n")}`;
+  }
+
+  private resolveMentionsBot(msg: GrammyMessage): boolean {
+    const entities = msg.entities ?? msg.caption_entities ?? [];
+    const text = msg.text ?? msg.caption ?? "";
+
+    for (const entity of entities) {
+      if (entity.type === "mention" && this.selfUsername) {
+        const mention = text
+          .slice(entity.offset, entity.offset + entity.length)
+          .replace(/^@/, "")
+          .toLowerCase();
+        if (mention === this.selfUsername) {
+          return true;
+        }
+      }
+      if (entity.type === "text_mention" && this.selfUserId && String(entity.user.id) === this.selfUserId) {
+        return true;
+      }
+    }
+
+    return this.isReplyToSelf(msg.reply_to_message);
+  }
+
+  private isReplyToSelf(message: GrammyMessage["reply_to_message"]): boolean {
+    if (!message?.from?.is_bot) return false;
+    if (this.selfUserId && String(message.from.id) === this.selfUserId) {
+      return true;
+    }
+    if (this.selfUsername && message.from.username?.toLowerCase() === this.selfUsername) {
+      return true;
+    }
+    return false;
+  }
+
+  private contextTextForMessage(message: UnifiedMessage): string | undefined {
+    const text = message.text.trim();
+    if (text) return text;
+
+    const attachmentSummary = message.attachments
+      .map((attachment) => {
+        if (attachment.summaryText?.trim()) return attachment.summaryText.trim();
+        if (attachment.filename?.trim()) return `[${attachment.type}: ${attachment.filename.trim()}]`;
+        return `[${attachment.type}]`;
+      })
+      .join(" ")
+      .trim();
+
+    return attachmentSummary || undefined;
+  }
+
+  private contextTextFromRawMessage(message: GrammyMessage): string | undefined {
+    const text = (message.text ?? message.caption ?? "").trim();
+    if (text) return text;
+    if (message.photo?.length) return "[image]";
+    if (message.video) return "[video]";
+    if (message.voice) return "[voice message]";
+    if (message.audio) return "[audio]";
+    if (message.document) {
+      return message.document.file_name?.trim()
+        ? `[file: ${message.document.file_name.trim()}]`
+        : "[file]";
+    }
+    if (message.sticker) return "[sticker]";
+    return undefined;
+  }
+
+  private senderLabel(from: GrammyMessage["from"]): string {
+    if (!from) return "unknown";
+    if (from.username?.trim()) return `@${from.username.trim()}`;
+    const name = [from.first_name, from.last_name]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join(" ")
+      .trim();
+    if (name) return name;
+    return String(from.id);
+  }
+
+  private historyScopeKey(chatId: string, threadId?: string): string {
+    return threadId ? `${chatId}/thread/${threadId}` : `${chatId}/room`;
+  }
+
+  private threadRootKey(chatId: string, threadId: string): string {
+    return `${chatId}/thread-root/${threadId}`;
+  }
+
+  private messageContextKey(chatId: string, messageId: string): string {
+    return `${chatId}/${messageId}`;
+  }
+
+  private pruneMessageContexts(): void {
+    if (this.messageContexts.size <= MAX_MESSAGE_CONTEXT_ENTRIES) return;
+    const toDelete = this.messageContexts.size - MAX_MESSAGE_CONTEXT_ENTRIES;
+    let deleted = 0;
+    for (const key of this.messageContexts.keys()) {
+      if (deleted >= toDelete) break;
+      this.messageContexts.delete(key);
+      deleted++;
+    }
+  }
+
+  private pruneThreadRoots(): void {
+    if (this.threadRoots.size <= MAX_THREAD_ROOT_ENTRIES) return;
+    const toDelete = this.threadRoots.size - MAX_THREAD_ROOT_ENTRIES;
+    let deleted = 0;
+    for (const key of this.threadRoots.keys()) {
+      if (deleted >= toDelete) break;
+      this.threadRoots.delete(key);
+      deleted++;
+    }
   }
 
   private async extractAttachments(msg: GrammyMessage): Promise<Attachment[]> {
@@ -1033,6 +1306,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const wh = this.config.webhook!;
 
     await this.bot.init();
+    this.captureSelfInfo();
     await registerCommands(this.bot);
     await this.bot.api.setWebhook(wh.url, { secret_token: wh.secret });
 

@@ -5,11 +5,16 @@ import { ModelPicker } from "./model-picker.ts";
 
 type TelegramChatType = "dm" | "group";
 
+interface TelegramSessionMeta {
+  threadId?: string;
+}
+
 interface TelegramCallbackContext {
   chatId: string;
   userId: string;
   chatType: TelegramChatType;
   data: string;
+  threadId?: string;
 }
 
 interface TelegramCallbackResponse {
@@ -24,6 +29,22 @@ interface TelegramSessionHandlerDeps {
   modelPicker: ModelPicker;
 }
 
+function resolveTelegramSessionId(params: {
+  config: MyClawConfig;
+  chatId: string;
+  userId: string;
+  chatType: TelegramChatType;
+  threadId?: string;
+}): string {
+  return SessionManager.resolveSessionId("telegram", params.chatType, params.chatId, params.userId, {
+    threadId: params.threadId,
+    sessionScope:
+      params.chatType === "dm"
+        ? params.config.channels.telegram?.dm?.sessionScope ?? "per-user"
+        : undefined,
+  });
+}
+
 export function createTelegramCommandHandler({
   config,
   sessionManager,
@@ -34,9 +55,16 @@ export function createTelegramCommandHandler({
   chatType: TelegramChatType,
   command: string,
   args: string,
+  meta?: TelegramSessionMeta,
 ) => Promise<OutgoingMessage | string | undefined> {
-  return async (chatId, userId, chatType, command, args) => {
-    const sessionId = SessionManager.resolveSessionId("telegram", chatType, chatId, userId);
+  return async (chatId, userId, chatType, command, args, meta) => {
+    const sessionId = resolveTelegramSessionId({
+      config,
+      chatId,
+      userId,
+      chatType,
+      threadId: meta?.threadId,
+    });
 
     switch (command) {
       case "new":
@@ -125,11 +153,17 @@ export function createTelegramCallbackHandler({
 }: TelegramSessionHandlerDeps): (
   ctx: TelegramCallbackContext,
 ) => Promise<TelegramCallbackResponse | undefined> {
-  return async ({ chatId, userId, chatType, data }) => {
+  return async ({ chatId, userId, chatType, data, threadId }) => {
     const modelId = modelPicker.parseCallback(data);
     if (!modelId) return undefined;
 
-    const sessionId = SessionManager.resolveSessionId("telegram", chatType, chatId, userId);
+    const sessionId = resolveTelegramSessionId({
+      config,
+      chatId,
+      userId,
+      chatType,
+      threadId,
+    });
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
     session.modelOverride = modelId === config.llm.model ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
