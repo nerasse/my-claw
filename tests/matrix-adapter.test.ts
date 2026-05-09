@@ -247,6 +247,7 @@ function createConfig(overrides: Partial<MatrixChannelConfig> = {}): MatrixChann
     dm: { enabled: true, policy: "allowlist", allowFrom: ["@u1:example.org"] },
     groupPolicy: "allowlist",
     groupAllowFrom: ["@u1:example.org"],
+    groups: { "*": { enabled: true, autoReply: true } },
   };
 
   return {
@@ -1151,7 +1152,7 @@ test("MatrixAdapter preserves media-only messages as attachment summaries", asyn
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom(),
+    room: createRoom({ inviter: "@u1:example.org" }),
     event: createEvent({
       content: {
         msgtype: "m.image",
@@ -1339,7 +1340,7 @@ test("MatrixAdapter keeps real media captions but strips filename-only bodies", 
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom(),
+    room: createRoom({ inviter: "@u1:example.org" }),
     event: createEvent({
       id: "$captioned-image",
       content: {
@@ -1352,7 +1353,7 @@ test("MatrixAdapter keeps real media captions but strips filename-only bodies", 
     }),
   });
   await runtime.emitTimeline({
-    room: createRoom(),
+    room: createRoom({ inviter: "@u1:example.org" }),
     event: createEvent({
       id: "$filename-only-image",
       content: {
@@ -1479,7 +1480,7 @@ test("MatrixAdapter marks bridge-style inbound messages as forwarded", async () 
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom({ joinedMembers: ["@bot:example.org", "@_telegram_123:example.org"] }),
+    room: createRoom({ inviter: "@_telegram_123:example.org", joinedMembers: ["@bot:example.org", "@_telegram_123:example.org"] }),
     event: createEvent({
       id: "$fwd1",
       sender: "@_telegram_123:example.org",
@@ -1505,7 +1506,7 @@ test("MatrixAdapter marks double-puppet metadata messages as forwarded", async (
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    room: createRoom({ inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
     event: createEvent({
       id: "$fwd-double-puppet",
       sender: "@u1:example.org",
@@ -1531,7 +1532,7 @@ test("MatrixAdapter does not mark ordinary messages as forwarded", async () => {
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    room: createRoom({ inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
     event: createEvent({
       id: "$not-forwarded",
       sender: "@u1:example.org",
@@ -1832,7 +1833,7 @@ test("MatrixAdapter decrypts encrypted media attachments when crypto is availabl
 
   await adapter.start();
   await runtime.emitTimeline({
-    room: createRoom(),
+    room: createRoom({ inviter: "@u1:example.org" }),
     event: createEvent({
       content: {
         msgtype: "m.file",

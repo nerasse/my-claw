@@ -4,12 +4,26 @@ import { shouldIncludeSupplementalContext } from "../context-visibility.ts";
 import type { MatrixChatType, MatrixRoomConfig } from "./types.ts";
 import { matrixUserListIncludes, normalizeRoomKey, trimString } from "./helpers.ts";
 
-export function resolveAutoJoinAllowed(roomId: string, config: MatrixChannelConfig): boolean {
+export function resolveAutoJoinAllowed(
+  roomId: string,
+  config: MatrixChannelConfig,
+  inviterId?: string,
+): boolean {
   const mode = config.autoJoin ?? "off";
   if (mode === "always") return true;
   if (mode === "off") return false;
   const allowlist = config.autoJoinAllowlist ?? [];
-  return allowlist.includes("*") || allowlist.includes(roomId);
+  if (allowlist.includes("*") || allowlist.includes(roomId)) return true;
+
+  if (inviterId) {
+    if (matrixUserListIncludes(config.dm?.allowFrom, inviterId)) return true;
+    if (matrixUserListIncludes(config.groupAllowFrom, inviterId)) return true;
+    for (const groupConfig of Object.values(config.groups ?? {})) {
+      if (matrixUserListIncludes(groupConfig.users, inviterId)) return true;
+    }
+  }
+
+  return false;
 }
 
 export function resolveRoomConfig(config: MatrixChannelConfig, roomId: string): MatrixRoomConfig | null {
@@ -23,12 +37,14 @@ export function hasConfiguredGroupRooms(config: MatrixChannelConfig): boolean {
   return Object.keys(config.groups ?? {}).length > 0;
 }
 
-export function isDirectMessage(room: Room, selfUserId?: string, fallbackUserId?: string): boolean {
-  const joined = room.getJoinedMembers().map((member) => member.userId);
+export function isDirectMessage(room: Room, _selfUserId?: string, _fallbackUserId?: string): boolean {
   const inviter = room.getDMInviter();
   if (inviter) return true;
-  const self = selfUserId ?? fallbackUserId;
-  return Boolean(self && joined.length <= 2 && joined.includes(self));
+
+  // Do NOT fall back to member count. Matrix explicitly distinguishes DMs
+  // via m.direct account data and is_direct on the invite event. A 2-member
+  // room without those flags is a normal group room, not a DM.
+  return false;
 }
 
 export function selfDisplayNameForRoom(

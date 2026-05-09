@@ -1498,7 +1498,12 @@ export class MatrixAdapter implements ChannelAdapter {
     if (membership !== "invite" || prevMembership === "invite") {
       return;
     }
-    if (!resolveAutoJoinAllowed(room.roomId, this.config)) {
+    let inviterId: string | undefined;
+    const selfMember = this.selfUserId ? room.getMember(this.selfUserId) : undefined;
+    if (selfMember?.events?.member) {
+      inviterId = selfMember.events.member.getSender() ?? undefined;
+    }
+    if (!resolveAutoJoinAllowed(room.roomId, this.config, inviterId)) {
       return;
     }
 

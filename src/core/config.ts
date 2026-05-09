@@ -145,6 +145,50 @@ export interface MyClawConfig {
 
 export const MY_CLAW_DIR = join(homedir(), ".my-claw");
 
+async function loadEnv(): Promise<void> {
+  const envPath = join(MY_CLAW_DIR, ".env");
+  try {
+    const text = await readFile(envPath, "utf-8");
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim();
+      if (key && value && process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    }
+  } catch {
+    // .env absent; continue with existing env.
+  }
+}
+
+function applySecretOverrides(config: MyClawConfig): void {
+  const tg = config.channels.telegram;
+  if (tg && process.env.MY_CLAW_TELEGRAM_TOKEN) {
+    tg.token = process.env.MY_CLAW_TELEGRAM_TOKEN;
+  }
+
+  const mx = config.channels.matrix;
+  if (mx) {
+    if (process.env.MY_CLAW_MATRIX_ACCESS_TOKEN) {
+      mx.accessToken = process.env.MY_CLAW_MATRIX_ACCESS_TOKEN;
+    }
+    if (process.env.MY_CLAW_MATRIX_PASSWORD) {
+      mx.password = process.env.MY_CLAW_MATRIX_PASSWORD;
+    }
+  }
+
+  if (config.llm) {
+    const fireworksKey = process.env.MY_CLAW_FIREWORKS_API_KEY ?? process.env.FIREWORKS_API_KEY;
+    if (fireworksKey) {
+      config.llm.apiKey = fireworksKey;
+    }
+  }
+}
+
 export function isTelegramChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.telegram?.enabled !== false && Boolean(config.channels.telegram);
 }
@@ -174,9 +218,11 @@ async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
 
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
+  await loadEnv();
   const configPath = join(MY_CLAW_DIR, "config.json");
   const raw = await readFile(configPath, "utf-8");
   const config = JSON.parse(raw) as MyClawConfig;
+  applySecretOverrides(config);
   const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
   await mkdir(workspacePath, { recursive: true });
   await seedWorkspaceTemplates(workspacePath);

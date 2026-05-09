@@ -9,7 +9,7 @@ Before doing anything else:
 1. Read `SOUL.md` — this is who you are
 2. Read `USER.md` — this is who you're helping
 3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
-4. **If in MAIN SESSION** (direct chat): Also read `MEMORY.md`
+4. Also read `MEMORY.md` — it is global memory, always load it
 
 Don't ask permission. Just do it.
 
@@ -24,9 +24,8 @@ Capture what matters. Skip the secrets unless asked to keep them.
 
 ### MEMORY.md - Long-Term Memory
 
-- **ONLY load in main session** (direct chats)
-- **DO NOT load in shared contexts** (group chats)
-- Read, edit, update freely in main sessions
+- Load in every session — it is global memory
+- Read, edit, update freely
 - Write significant events, decisions, lessons learned
 - Distilled essence, not raw logs
 
