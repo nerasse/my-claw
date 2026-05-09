@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "./types.ts";
+import { resolveWorkspacePath } from "./workspace.ts";
 
 export const findTool: Tool = {
   name: "find",
@@ -14,8 +15,8 @@ export const findTool: Tool = {
   async execute(args): Promise<ToolResult> {
     try {
       const proc = Bun.spawn(
-        ["find", args["path"] as string, "-name", args["pattern"] as string],
-        { stdout: "pipe", stderr: "pipe" },
+        ["find", resolveWorkspacePath(args["path"] as string), "-name", args["pattern"] as string],
+        { stdout: "pipe", stderr: "pipe", cwd: process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

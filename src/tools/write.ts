@@ -1,6 +1,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
+import { resolveWorkspacePath } from "./workspace.ts";
 
 export const writeTool: Tool = {
   name: "write",
@@ -15,9 +16,10 @@ export const writeTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     try {
-      await mkdir(dirname(args["path"] as string), { recursive: true });
-      await writeFile(args["path"] as string, args["content"] as string);
-      return { success: true, output: `Written to ${args["path"]}` };
+      const resolved = resolveWorkspacePath(args["path"] as string);
+      await mkdir(dirname(resolved), { recursive: true });
+      await writeFile(resolved, args["content"] as string);
+      return { success: true, output: `Written to ${resolved}` };
     } catch (e) {
       return { success: false, output: "", error: String(e) };
     }

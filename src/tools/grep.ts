@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "./types.ts";
+import { resolveWorkspacePath } from "./workspace.ts";
 
 export const grepTool: Tool = {
   name: "grep",
@@ -16,8 +17,8 @@ export const grepTool: Tool = {
     try {
       const flags = args["recursive"] !== false ? "-rn" : "-n";
       const proc = Bun.spawn(
-        ["grep", flags, args["pattern"] as string, args["path"] as string],
-        { stdout: "pipe", stderr: "pipe" },
+        ["grep", flags, args["pattern"] as string, resolveWorkspacePath(args["path"] as string)],
+        { stdout: "pipe", stderr: "pipe", cwd: process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

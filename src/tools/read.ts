@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
+import { resolveWorkspacePath } from "./workspace.ts";
 
 export const readTool: Tool = {
   name: "read",
@@ -13,7 +14,7 @@ export const readTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     try {
-      const content = await readFile(args["path"] as string, "utf-8");
+      const content = await readFile(resolveWorkspacePath(args["path"] as string), "utf-8");
       return { success: true, output: content };
     } catch (e) {
       return { success: false, output: "", error: String(e) };

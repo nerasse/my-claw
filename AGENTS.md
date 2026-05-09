@@ -123,6 +123,14 @@ src/
 - `core/` avoids dependencies on `channels/`, `agent/`, `tools/` where possible. `router.ts` bridges `channels/` and `agent/` by design.
 - `mcp/` and `skills/` stay empty until the feature is activated. No `.gitkeep` clutter.
 
+### Workspace
+
+- The agent operates inside `~/.my-claw/workspace/` (configurable via `config.workspace`).
+- The workspace is created on boot if it does not exist.
+- Default prompt templates (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`) are copied from `docs/prompt/` into the workspace on first start.
+- All filesystem tools (`bash`, `read`, `write`, `ls`, `find`, `grep`) resolve relative paths against the workspace.
+- `bash` spawns with `cwd` set to the workspace.
+
 ### Imports
 
 - Use `../types.ts` for shared channel types when inside a channel subfolder.

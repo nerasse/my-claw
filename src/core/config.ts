@@ -1,6 +1,7 @@
-import { readFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, mkdir, copyFile, access } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 export interface TelegramChannelConfig {
   enabled?: boolean;
@@ -139,6 +140,7 @@ export interface MyClawConfig {
     general?: { llm?: MyClawConfig["llm"] };
     research?: { llm?: MyClawConfig["llm"] };
   };
+  workspace?: string;
 }
 
 export const MY_CLAW_DIR = join(homedir(), ".my-claw");
@@ -151,9 +153,33 @@ export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
 }
 
+const PROMPT_TEMPLATES = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+
+async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const templateDir = join(repoRoot, "docs", "prompt");
+  for (const name of PROMPT_TEMPLATES) {
+    const dest = join(workspacePath, name);
+    try {
+      await access(dest);
+    } catch {
+      try {
+        await copyFile(join(templateDir, name), dest);
+      } catch {
+        // Template source missing; leave destination empty.
+      }
+    }
+  }
+}
+
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
   const configPath = join(MY_CLAW_DIR, "config.json");
   const raw = await readFile(configPath, "utf-8");
-  return JSON.parse(raw) as MyClawConfig;
+  const config = JSON.parse(raw) as MyClawConfig;
+  const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
+  await mkdir(workspacePath, { recursive: true });
+  await seedWorkspaceTemplates(workspacePath);
+  config.workspace = workspacePath;
+  return config;
 }

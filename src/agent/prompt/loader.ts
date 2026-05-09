@@ -1,16 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MY_CLAW_DIR } from "../../core/config.ts";
-
-const PROMPT_DIR = join(MY_CLAW_DIR, "prompt");
 
 const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
 
 export type PromptFile = (typeof PROMPT_FILES)[number];
 
+function promptDir(): string {
+  return process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
+}
+
 export async function loadPromptFile(name: PromptFile): Promise<string> {
   try {
-    return await readFile(join(PROMPT_DIR, name), "utf-8");
+    return await readFile(join(promptDir(), name), "utf-8");
   } catch {
     return "";
   }

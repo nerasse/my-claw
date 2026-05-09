@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
+import { resolveWorkspacePath } from "./workspace.ts";
 
 export const lsTool: Tool = {
   name: "ls",
@@ -13,7 +14,7 @@ export const lsTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     try {
-      const entries = await readdir(args["path"] as string, { withFileTypes: true });
+      const entries = await readdir(resolveWorkspacePath(args["path"] as string), { withFileTypes: true });
       const output = entries
         .map((e) => `${e.isDirectory() ? "d" : "f"} ${e.name}`)
         .join("\n");

@@ -16,6 +16,7 @@ export const bashTool: Tool = {
       const proc = Bun.spawn(["bash", "-c", args["command"] as string], {
         stdout: "pipe",
         stderr: "pipe",
+        cwd: process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
       });
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();

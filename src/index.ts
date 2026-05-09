@@ -28,6 +28,7 @@ import { log } from "./utils/logger.ts";
 
 async function main() {
   const config = await loadConfig();
+  process.env["MY_CLAW_WORKSPACE"] = config.workspace;
   const modelPicker = new ModelPicker(config.llm.models ?? []);
 
   const toolRegistry = new ToolRegistry();
