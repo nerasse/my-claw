@@ -42,6 +42,7 @@ import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
+import { extractMediaRefs } from "./utils/media.ts";
 import { log } from "./utils/logger.ts";
 
 async function main() {
@@ -142,9 +143,10 @@ async function main() {
         }
 
         if (response) {
+          const textHasMediaRefs = extractMediaRefs(response.text).length > 0;
           if (!telegram.streamingEnabled()) {
-            await telegram.send(msg.chatId, { text: response.text, attachments: response.attachments, replyToId: msg.id });
-          } else if (response.attachments?.length) {
+            await telegram.send(msg.chatId, { text: response.text, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
+          } else if (!textHasMediaRefs && response.attachments?.length) {
             await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
           }
         }
@@ -205,14 +207,15 @@ async function main() {
         }
 
         if (response) {
+          const textHasMediaRefs = extractMediaRefs(response.text).length > 0;
           if (!matrix.streamingEnabled()) {
             await matrix.send(msg.chatId, {
               text: response.text,
-              attachments: response.attachments,
+              attachments: textHasMediaRefs ? undefined : response.attachments,
               replyToId: msg.id,
               threadId: msg.threadId,
             });
-          } else if (response.attachments?.length) {
+          } else if (!textHasMediaRefs && response.attachments?.length) {
             await matrix.send(msg.chatId, {
               text: "",
               attachments: response.attachments,

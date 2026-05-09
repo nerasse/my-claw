@@ -22,7 +22,7 @@ import {
   resolveTelegramRequireMention,
   type TelegramChatType,
 } from "./policy.ts";
-import { deduplicateMediaRefs, extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { telegramLog } from "../../utils/logger.ts";
 import {
   sendTextMessage,
@@ -244,13 +244,16 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
     const mediaRefs = extractMediaRefs(message.text);
-    const uniqueMediaRefs = deduplicateMediaRefs(mediaRefs, message.attachments ?? []);
     const text = stripMediaRefs(message.text);
+    // If the agent explicitly references files via MEDIA: in its text, trust
+    // that and do NOT send programmatic attachments (e.g. TTS auto-audio).
+    const hasTextRefs = mediaRefs.length > 0;
+    const attachmentsToSend = hasTextRefs ? [] : (message.attachments ?? []);
 
-    if (!text && !uniqueMediaRefs.length && !message.attachments?.length) return;
+    if (!text && !mediaRefs.length && !attachmentsToSend.length) return;
 
     const threadId = this.outboundReplyThreadId(message);
-    const hasMedia = uniqueMediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
+    const hasMedia = mediaRefs.length > 0 || attachmentsToSend.length > 0;
 
     let caption: Caption | undefined;
     if (text && hasMedia && text.length <= CAPTION_LIMIT) {
@@ -258,7 +261,7 @@ export class TelegramAdapter implements ChannelAdapter {
       caption = { html, plain: stripHtml(html) };
     }
 
-    const mediaCount = uniqueMediaRefs.length + (message.attachments?.length ?? 0);
+    const mediaCount = mediaRefs.length + attachmentsToSend.length;
     const textChunkCount = text && !caption ? splitHtmlChunks(markdownToTelegramHtml(text)).length : 0;
     const totalParts = textChunkCount + mediaCount;
     let partIndex = 0;
@@ -282,17 +285,15 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     let usedCaption = false;
-    for (const ref of uniqueMediaRefs) {
+    for (const ref of mediaRefs) {
       const cap = !usedCaption ? caption : undefined;
       await sendMediaByPath(this.bot, chatId, ref.path, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
       if (cap) usedCaption = true;
     }
-    if (message.attachments) {
-      for (const att of message.attachments) {
-        const cap = !usedCaption ? caption : undefined;
-        await sendAttachment(this.bot, chatId, att, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
-        if (cap) usedCaption = true;
-      }
+    for (const att of attachmentsToSend) {
+      const cap = !usedCaption ? caption : undefined;
+      await sendAttachment(this.bot, chatId, att, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
+      if (cap) usedCaption = true;
     }
   }
 
