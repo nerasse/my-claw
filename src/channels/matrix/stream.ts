@@ -1,6 +1,7 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
 import { withMatrixRetry } from "./retry.ts";
+import { stripMediaRefs } from "../../utils/media.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
 
@@ -241,10 +242,11 @@ export class MatrixMessageStreamer {
   private async finishInternal(finalText: string): Promise<void> {
     if (this.finished) return;
     this.finished = true;
-    this.fullText = finalText;
+    const cleanText = stripMediaRefs(finalText);
+    this.fullText = cleanText;
     this.clearTimer();
 
-    const text = finalText.trimEnd();
+    const text = cleanText.trimEnd();
     if (!text) {
       if (this.sentEventId) {
         await this.redactEvent(this.sentEventId);

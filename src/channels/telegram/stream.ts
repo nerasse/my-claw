@@ -1,5 +1,6 @@
 import { markdownToTelegramHtml, stripHtml } from "./format.ts";
 import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./split.ts";
+import { stripMediaRefs } from "../../utils/media.ts";
 
 const MESSAGE_NOT_FOUND_RE = /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i;
 
@@ -161,10 +162,11 @@ export class MessageStreamer {
     if (this.finished) return;
 
     this.finished = true;
-    this.fullText = finalText;
+    const cleanText = stripMediaRefs(finalText);
+    this.fullText = cleanText;
     this.clearTimer();
 
-    const finalContent = finalText.trimEnd();
+    const finalContent = cleanText.trimEnd();
     if (!finalContent) {
       await this.deletePreviews();
       return;
