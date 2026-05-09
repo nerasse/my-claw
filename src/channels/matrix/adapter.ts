@@ -5,7 +5,7 @@ import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
 import { MY_CLAW_DIR } from "../../core/config.ts";
 import type { MatrixChannelConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
-import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { deduplicateMediaRefs, extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { matrixLog } from "../../utils/logger.ts";
 import { MatrixClientRuntime } from "./client.ts";
 import {
@@ -246,8 +246,9 @@ export class MatrixAdapter implements ChannelAdapter {
 
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
     const mediaRefs = extractMediaRefs(message.text);
+    const uniqueMediaRefs = deduplicateMediaRefs(mediaRefs, message.attachments ?? []);
     const text = stripMediaRefs(message.text);
-    const hasMedia = mediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
+    const hasMedia = uniqueMediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
 
     let actionAnchorEventId: string | undefined;
 
@@ -290,7 +291,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
     if (!hasMedia) return;
 
-    for (const ref of mediaRefs) {
+    for (const ref of uniqueMediaRefs) {
       await sendMediaByPath(this.runtime.sdk, this.runtime.mediaCrypto, chatId, ref.path, message.replyToId, message.threadId, ref.audioAsVoice, ref.durationMs);
     }
     for (const attachment of message.attachments ?? []) {

@@ -19,3 +19,11 @@ export function extractMediaRefs(text: string): MediaRef[] {
 export function stripMediaRefs(text: string): string {
   return text.replace(MEDIA_PATTERN, "").trim();
 }
+
+export function deduplicateMediaRefs(
+  refs: MediaRef[],
+  attachments: Array<{ path?: string }>,
+): MediaRef[] {
+  const attachedPaths = new Set(attachments.map((a) => a.path).filter(Boolean));
+  return refs.filter((ref) => !attachedPaths.has(ref.path));
+}

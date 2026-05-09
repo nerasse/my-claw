@@ -22,7 +22,7 @@ import {
   resolveTelegramRequireMention,
   type TelegramChatType,
 } from "./policy.ts";
-import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { deduplicateMediaRefs, extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { telegramLog } from "../../utils/logger.ts";
 import {
   sendTextMessage,
@@ -244,12 +244,13 @@ export class TelegramAdapter implements ChannelAdapter {
 
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
     const mediaRefs = extractMediaRefs(message.text);
+    const uniqueMediaRefs = deduplicateMediaRefs(mediaRefs, message.attachments ?? []);
     const text = stripMediaRefs(message.text);
 
-    if (!text && !mediaRefs.length && !message.attachments?.length) return;
+    if (!text && !uniqueMediaRefs.length && !message.attachments?.length) return;
 
     const threadId = this.outboundReplyThreadId(message);
-    const hasMedia = mediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
+    const hasMedia = uniqueMediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
 
     let caption: Caption | undefined;
     if (text && hasMedia && text.length <= CAPTION_LIMIT) {
@@ -257,7 +258,7 @@ export class TelegramAdapter implements ChannelAdapter {
       caption = { html, plain: stripHtml(html) };
     }
 
-    const mediaCount = mediaRefs.length + (message.attachments?.length ?? 0);
+    const mediaCount = uniqueMediaRefs.length + (message.attachments?.length ?? 0);
     const textChunkCount = text && !caption ? splitHtmlChunks(markdownToTelegramHtml(text)).length : 0;
     const totalParts = textChunkCount + mediaCount;
     let partIndex = 0;
@@ -281,7 +282,7 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     let usedCaption = false;
-    for (const ref of mediaRefs) {
+    for (const ref of uniqueMediaRefs) {
       const cap = !usedCaption ? caption : undefined;
       await sendMediaByPath(this.bot, chatId, ref.path, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
       if (cap) usedCaption = true;
