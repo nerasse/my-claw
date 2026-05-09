@@ -148,6 +148,8 @@ async function main() {
             await telegram.send(msg.chatId, { text: response.text, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
           } else if (!textHasMediaRefs && response.attachments?.length) {
             await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
+          } else if (textHasMediaRefs) {
+            await telegram.send(msg.chatId, { text: response.text, replyToId: msg.id });
           }
         }
       } finally {
@@ -219,6 +221,12 @@ async function main() {
             await matrix.send(msg.chatId, {
               text: "",
               attachments: response.attachments,
+              replyToId: msg.id,
+              threadId: msg.threadId,
+            });
+          } else if (textHasMediaRefs) {
+            await matrix.send(msg.chatId, {
+              text: response.text,
               replyToId: msg.id,
               threadId: msg.threadId,
             });
