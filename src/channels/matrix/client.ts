@@ -26,15 +26,15 @@ import {
 } from "fake-indexeddb";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { createSdkLogger, installMatrixSdkRootLogger, matrixLog } from "../utils/logger.ts";
-import { copyIdbSnapshotWithPrefix, persistIdbToDisk, restoreIdbFromDisk } from "./matrix-crypto-idb.ts";
-import { MatrixDecryptBridge, type MatrixDecryptionFailure } from "./matrix/decrypt-bridge.ts";
-import { FileBackedMatrixSyncStore } from "./matrix/file-sync-store.ts";
+import { createSdkLogger, installMatrixSdkRootLogger, matrixLog } from "../../utils/logger.ts";
+import { copyIdbSnapshotWithPrefix, persistIdbToDisk, restoreIdbFromDisk } from "./crypto-idb.ts";
+import { MatrixDecryptBridge, type MatrixDecryptionFailure } from "./decrypt-bridge.ts";
+import { FileBackedMatrixSyncStore } from "./file-sync-store.ts";
 import {
   resolveMatrixRuntimeStoragePaths,
   resolveOpenClawSnapshotPath,
   type MatrixRuntimeStoragePaths,
-} from "./matrix/storage.ts";
+} from "./storage.ts";
 
 export interface MatrixRuntimeConfig {
   homeserver: string;

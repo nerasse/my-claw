@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MatrixAdapter } from "../src/channels/matrix.ts";
-import type { MatrixChannelConfig } from "../src/config.ts";
-import { MessageRouter } from "../src/router/router.ts";
+import { MatrixAdapter } from "../src/channels/matrix/adapter.ts";
+import type { MatrixChannelConfig } from "../src/core/config.ts";
+import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
@@ -13,10 +13,10 @@ import {
   createMatrixActionHandler,
   createMatrixApprovalHandler,
   type MatrixApprovalHandler,
-} from "../src/channels/matrix-session-handlers.ts";
+} from "../src/channels/matrix/session-handlers.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
 import { resolveMatrixRuntimeStoragePaths } from "../src/channels/matrix/storage.ts";
-import type { MyClawConfig } from "../src/config.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 
 type MatrixEventContentMock = Record<string, unknown>;
 type MatrixFetchedEventMock = {
@@ -528,7 +528,7 @@ test("MatrixAdapter marks DM messages with configured per-room session scope", a
     new Set(["@u1:example.org"]),
     runtime as never,
   );
-  const receivedScopes: Array<"per-user" | "per-room" | undefined> = [];
+  const receivedScopes: Array<"per-user" | "per-room" | "per-chat" | undefined> = [];
 
   adapter.onMessage(async (message) => {
     receivedScopes.push(message.sessionScope);

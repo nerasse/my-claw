@@ -1,6 +1,6 @@
 import type { MatrixEvent, Room } from "matrix-js-sdk";
-import type { MatrixChannelConfig } from "../../config.ts";
-import type { PreparedMatrixRoomHistory } from "../matrix-history.ts";
+import type { MatrixChannelConfig } from "../../core/config.ts";
+import type { PreparedMatrixRoomHistory } from "./history.ts";
 import type { ConfirmationButton } from "../types.ts";
 
 export type MatrixChatType = "dm" | "group";

@@ -4,7 +4,7 @@ import {
   isMatrixChannelEnabled,
   isTelegramChannelEnabled,
   type MyClawConfig,
-} from "../src/config.ts";
+} from "../src/core/config.ts";
 
 function createConfig(): MyClawConfig {
   return {

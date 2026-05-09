@@ -1,8 +1,8 @@
 import type { Room } from "matrix-js-sdk";
-import type { MatrixChannelConfig } from "../../config.ts";
+import type { MatrixChannelConfig } from "../../core/config.ts";
 import { shouldIncludeSupplementalContext } from "../context-visibility.ts";
-import type { MatrixChatType, MatrixRoomConfig } from "./adapter-types.ts";
-import { matrixUserListIncludes, normalizeRoomKey, trimString } from "./adapter-helpers.ts";
+import type { MatrixChatType, MatrixRoomConfig } from "./types.ts";
+import { matrixUserListIncludes, normalizeRoomKey, trimString } from "./helpers.ts";
 
 export function resolveAutoJoinAllowed(roomId: string, config: MatrixChannelConfig): boolean {
   const mode = config.autoJoin ?? "off";

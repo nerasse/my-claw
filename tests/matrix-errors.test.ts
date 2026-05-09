@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MatrixErrorReporter } from "../src/channels/matrix-errors.ts";
+import { MatrixErrorReporter } from "../src/channels/matrix/errors.ts";
 
 test("MatrixErrorReporter handles always and silent modes", () => {
   const always = new MatrixErrorReporter({ mode: "always", onceCooldownMs: 1000 });

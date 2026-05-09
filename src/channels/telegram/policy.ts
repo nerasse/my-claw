@@ -1,9 +1,9 @@
-import type { TelegramChannelConfig } from "../config.ts";
-import { shouldIncludeSupplementalContext, type ContextVisibilityKind } from "./context-visibility.ts";
+import type { TelegramChannelConfig } from "../../core/config.ts";
+import { shouldIncludeSupplementalContext, type ContextVisibilityKind } from "../context-visibility.ts";
 
 export type TelegramChatType = "dm" | "group";
 
-type TelegramSender = {
+export type TelegramSender = {
   id: string | number;
   username?: string;
   is_bot?: boolean;

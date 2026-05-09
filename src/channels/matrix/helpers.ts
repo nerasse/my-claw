@@ -1,5 +1,5 @@
 import type { Attachment } from "../types.ts";
-import type { MatrixEventContent } from "./adapter-types.ts";
+import type { MatrixEventContent } from "./types.ts";
 import { MsgType, RelationType, type MatrixEvent } from "matrix-js-sdk";
 
 export function trimString(value: unknown): string | undefined {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { MY_CLAW_DIR } from "../../config.ts";
+import { MY_CLAW_DIR } from "../../core/config.ts";
 
 export interface MatrixStorageConfig {
   homeserver: string;

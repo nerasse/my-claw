@@ -1,13 +1,13 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { join } from "node:path";
 import type { MatrixEvent, Room } from "matrix-js-sdk";
 import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
-import { MY_CLAW_DIR } from "../config.ts";
-import type { MatrixChannelConfig } from "../config.ts";
-import { SessionManager } from "../sessions/manager.ts";
-import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
-import { matrixLog } from "../utils/logger.ts";
-import { MatrixClientRuntime } from "./matrix-client.ts";
+import { MY_CLAW_DIR } from "../../core/config.ts";
+import type { MatrixChannelConfig } from "../../core/config.ts";
+import { SessionManager } from "../../sessions/manager.ts";
+import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { matrixLog } from "../../utils/logger.ts";
+import { MatrixClientRuntime } from "./client.ts";
 import {
   applyActionResponse as applyMatrixActionResponse,
   editPendingActionMessage as editMatrixPendingActionMessage,
@@ -16,20 +16,18 @@ import {
   resolveActionForReaction as resolveMatrixActionForReaction,
   resolveActionForTextReply as resolveMatrixActionForTextReply,
   resolvePendingAction as resolveMatrixPendingAction,
-} from "./matrix/adapter-actions.ts";
+} from "./actions.ts";
 import {
   buildRelation,
   extFromFilename,
-  limitRecentItems,
   matrixAttachmentTypeFromMsgType,
   messageBody,
-  resolveMatrixCaptionAndFilename,
   resolveMatrixMessageAttachmentSummary,
   stripMatrixReplyFallback,
   threadRootId,
   trimString,
-} from "./matrix/adapter-helpers.ts";
-import { buildTimelineIngress } from "./matrix/adapter-ingress.ts";
+} from "./helpers.ts";
+import { buildTimelineIngress } from "./ingress.ts";
 import {
   allowBotsModeForRoom as resolveAllowBotsModeForRoom,
   contextVisibility as resolveContextVisibility,
@@ -42,7 +40,7 @@ import {
   resolveRoomConfig as resolveConfiguredMatrixRoom,
   selfDisplayNameForRoom as resolveMatrixSelfDisplayNameForRoom,
   shouldIncludeContextSender as shouldIncludeMatrixContextSender,
-} from "./matrix/adapter-policy.ts";
+} from "./policy.ts";
 import type {
   IngressTail,
   MatrixActionHandler,
@@ -54,27 +52,26 @@ import type {
   MatrixMediaInfo,
   PendingMatrixAction,
   TypingRef,
-} from "./matrix/adapter-types.ts";
-import { createMatrixInboundBuffer } from "./matrix/inbound-buffer.ts";
-import { createMatrixInboundEventDeduper, type MatrixInboundEventDeduper } from "./matrix/inbound-dedupe.ts";
-import { createMatrixSyncLifecycle, type MatrixSyncLifecycle } from "./matrix/sync-lifecycle.ts";
-import { getMatrixHelpText, parseMatrixCommand } from "./matrix-commands.ts";
-import { MatrixErrorReporter } from "./matrix-errors.ts";
+} from "./types.ts";
+import { createMatrixInboundBuffer } from "./inbound-buffer.ts";
+import { createMatrixInboundEventDeduper, type MatrixInboundEventDeduper } from "./inbound-dedupe.ts";
+import { createMatrixSyncLifecycle, type MatrixSyncLifecycle } from "./sync-lifecycle.ts";
+import { getMatrixHelpText, parseMatrixCommand } from "./commands.ts";
+import { MatrixErrorReporter } from "./errors.ts";
 import {
   createMatrixRoomHistoryTracker,
   type PreparedMatrixRoomHistory,
-} from "./matrix-history.ts";
+} from "./history.ts";
 import {
   buildMatrixFormattedText,
   resolveInboundMatrixMentions,
   stripMatrixMentionPrefix,
-} from "./matrix-format.ts";
-import { MatrixReactionManager } from "./matrix-reactions.ts";
-import { fetchMatrixPollSnapshot } from "./matrix-polls.ts";
-import { MatrixMessageStreamer } from "./matrix-stream.ts";
-import { chunkMatrixText } from "./matrix-text.ts";
-import { buildMatrixApprovalMenu, type MatrixApprovalHandler } from "./matrix-session-handlers.ts";
-import { withMatrixRetry } from "./matrix/retry.ts";
+} from "./format.ts";
+import { MatrixReactionManager } from "./reactions.ts";
+import { fetchMatrixPollSnapshot } from "./polls.ts";
+import { MatrixMessageStreamer } from "./stream.ts";
+import { chunkMatrixText } from "./text.ts";
+import { buildMatrixApprovalMenu, type MatrixApprovalHandler } from "./session-handlers.ts";
 import type {
   ApprovalDecision,
   Attachment,
@@ -83,7 +80,25 @@ import type {
   OutgoingMessage,
   ToolApprovalRequest,
   UnifiedMessage,
-} from "./types.ts";
+} from "../types.ts";
+import {
+  chunkMode,
+  extFromMime,
+  outboundTxnId,
+  replyTargetForChunk,
+  sendAttachment,
+  sendMatrixMessage,
+  sendMediaByPath,
+  streamReplyTarget,
+  textChunkLimit,
+} from "./send.ts";
+import {
+  resolveNormalizedInboundText,
+  resolvePendingRoomHistoryText,
+  resolveReplyContext,
+  resolveRoomHistoryContext,
+  resolveThreadContext,
+} from "./context.ts";
 
 const TYPING_TIMEOUT_MS = 5000;
 const TYPING_REFRESH_MS = 4000;
@@ -236,13 +251,13 @@ export class MatrixAdapter implements ChannelAdapter {
 
     let actionAnchorEventId: string | undefined;
 
-    const textChunks = chunkMatrixText(text, this.textChunkLimit(), this.chunkMode());
+    const textChunks = chunkMatrixText(text, textChunkLimit(this.config), chunkMode(this.config));
     for (let index = 0; index < textChunks.length; index++) {
       const chunk = textChunks[index]!;
       const formatted = buildMatrixFormattedText(chunk);
       const relation = buildRelation(
         message.threadId,
-        this.replyTargetForChunk(message, index, {
+        replyTargetForChunk(this.config, message, index, {
           chunkCount: textChunks.length,
           hasMedia,
         }),
@@ -262,7 +277,7 @@ export class MatrixAdapter implements ChannelAdapter {
         content["m.relates_to"] = relation;
       }
 
-      const sent = await this.sendMatrixMessage(chatId, content, this.outboundTxnId(`text-${index}`));
+      const sent = await sendMatrixMessage(this.runtime.sdk, chatId, content, outboundTxnId(`text-${index}`));
       if (index === 0) {
         actionAnchorEventId = sent.event_id;
       }
@@ -276,10 +291,10 @@ export class MatrixAdapter implements ChannelAdapter {
     if (!hasMedia) return;
 
     for (const ref of mediaRefs) {
-      await this.sendMediaByPath(chatId, ref.path, message.replyToId, message.threadId);
+      await sendMediaByPath(this.runtime.sdk, this.runtime.mediaCrypto, chatId, ref.path, message.replyToId, message.threadId);
     }
     for (const attachment of message.attachments ?? []) {
-      await this.sendAttachment(chatId, attachment, message.replyToId, message.threadId);
+      await sendAttachment(this.runtime.sdk, this.runtime.mediaCrypto, (url) => this.fetchWithTimeout(url), chatId, attachment, message.replyToId, message.threadId);
     }
   }
 
@@ -336,7 +351,7 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   createStreamer(message: UnifiedMessage): MatrixMessageStreamer {
-    const replyToId = this.streamReplyTarget(message);
+    const replyToId = streamReplyTarget(this.config, message);
     return new MatrixMessageStreamer(this.runtime.sdk, {
       roomId: message.chatId,
       threadId: message.threadId,
@@ -351,7 +366,7 @@ export class MatrixAdapter implements ChannelAdapter {
       mode: this.config.streaming?.mode ?? "partial",
       minCharsBeforeSend: this.config.streaming?.minChars ?? 30,
       editThrottleMs: this.config.streaming?.throttleMs ?? 1000,
-      chunkLimit: this.textChunkLimit(),
+      chunkLimit: textChunkLimit(this.config),
     });
   }
 
@@ -620,7 +635,7 @@ export class MatrixAdapter implements ChannelAdapter {
         isDirectMessage: (targetRoom) => this.isDirectMessage(targetRoom),
         selfDisplayNameForRoom: (targetRoom) => this.selfDisplayNameForRoom(targetRoom),
         resolveInboundThreadId: (targetChatType, targetEvent) => this.resolveInboundThreadId(targetChatType, targetEvent),
-        resolvePendingRoomHistoryText: (text, content) => this.resolvePendingRoomHistoryText(text, content),
+        resolvePendingRoomHistoryText: (text, content) => resolvePendingRoomHistoryText(text, content),
         shouldProcessRoomMessage: (targetRoom, text, content, selfDisplayName) =>
           this.shouldProcessRoomMessage(targetRoom, text, content, selfDisplayName),
         isAllowedByPolicy: (userId, targetRoom, targetChatType) =>
@@ -1098,7 +1113,7 @@ export class MatrixAdapter implements ChannelAdapter {
   ): Promise<void> {
     await editMatrixPendingActionMessage({
       sendMessage: async (targetRoomId, content) => {
-        await this.sendMatrixMessage(targetRoomId, content, this.outboundTxnId(`edit-${eventId}`));
+        await sendMatrixMessage(this.runtime.sdk, targetRoomId, content, outboundTxnId(`edit-${eventId}`));
       },
       roomId,
       eventId,
@@ -1142,11 +1157,11 @@ export class MatrixAdapter implements ChannelAdapter {
   ): Promise<UnifiedMessage> {
     const attachments = await this.extractAttachments(content);
     let replyContext = replyToId
-      ? await this.resolveReplyContext(room.roomId, replyToId)
+      ? await resolveReplyContext(this.runtime.sdk, room.roomId, replyToId)
       : undefined;
     let threadContext =
       threadId && threadId !== replyToId
-        ? await this.resolveThreadContext(room.roomId, threadId)
+        ? await resolveThreadContext(this.runtime.sdk, room.roomId, threadId)
         : undefined;
     const contextVisibility = this.contextVisibility();
     if (
@@ -1161,7 +1176,14 @@ export class MatrixAdapter implements ChannelAdapter {
     ) {
       threadContext = undefined;
     }
-    const roomContext = await this.resolveRoomHistoryContext(room.roomId, chatType, preparedRoomHistory, contextVisibility);
+    const roomContext = await resolveRoomHistoryContext(
+      this.config,
+      room.roomId,
+      chatType,
+      preparedRoomHistory,
+      contextVisibility,
+      (senderId) => this.shouldIncludeContextSender(room.roomId, chatType, "history", senderId, contextVisibility),
+    );
     const strippedText = stripMatrixReplyFallback(text, Boolean(replyToId));
     const mentions = resolveInboundMatrixMentions({
       content,
@@ -1169,11 +1191,7 @@ export class MatrixAdapter implements ChannelAdapter {
       userId: this.selfUserId ?? this.config.userId,
       displayName: selfDisplayName,
     });
-    const normalizedText = this.resolveNormalizedInboundText({
-      content,
-      text: strippedText,
-      attachments,
-    });
+    const normalizedText = resolveNormalizedInboundText(content, strippedText, attachments);
 
     return {
       id: event.getId() ?? "",
@@ -1343,7 +1361,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
       const extension =
         extFromFilename(params.filename) ||
-        this.extFromMime(resolvedMimeType ?? "");
+        extFromMime(resolvedMimeType ?? "");
       await mkdir(MATRIX_TMP_DIR, { recursive: true });
       const localPath = `${MATRIX_TMP_DIR}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}${extension}`;
       await writeFile(localPath, buffer);
@@ -1358,268 +1376,9 @@ export class MatrixAdapter implements ChannelAdapter {
     }
   }
 
-  private async resolveReplyContext(
-    roomId: string,
-    eventId: string,
-  ): Promise<{ body?: string; sender?: string } | undefined> {
-    const event = await this.fetchEventContent(roomId, eventId);
-    if (!event) return undefined;
 
-    return {
-      body: this.summarizeEventContent(event.content),
-      sender: trimString(event.sender),
-    };
-  }
 
-  private async resolveThreadContext(
-    roomId: string,
-    eventId: string,
-  ): Promise<{ text?: string; sender?: string } | undefined> {
-    const event = await this.fetchEventContent(roomId, eventId);
-    if (!event) return undefined;
 
-    const body = this.summarizeEventContent(event.content);
-    const sender = trimString(event.sender);
-    if (body && sender) return { text: `Matrix thread root from ${sender}:\n${body}`, sender };
-    if (body) return { text: body, sender };
-    if (sender) return { text: `Matrix thread root from ${sender}`, sender };
-    return undefined;
-  }
-
-  private async fetchEventContent(
-    roomId: string,
-    eventId: string,
-  ): Promise<{ sender?: string; content: MatrixEventContent } | undefined> {
-    try {
-      const raw = await this.runtime.sdk.fetchRoomEvent(roomId, eventId);
-      const content = raw.content;
-      if (!content || typeof content !== "object") return undefined;
-      return {
-        sender: trimString(raw.sender),
-        content: content as MatrixEventContent,
-      };
-    } catch (err) {
-      await matrixLog("warn", "matrix event context fetch failed", { roomId, eventId, error: String(err) });
-      return undefined;
-    }
-  }
-
-  private summarizeEventContent(content: MatrixEventContent): string | undefined {
-    const body = messageBody(content);
-    const filename = trimString(content.filename);
-    const msgtype = trimString(content.msgtype);
-    const mediaSummary = resolveMatrixMessageAttachmentSummary({ body, filename, msgtype });
-    return mediaSummary ?? (body || undefined);
-  }
-
-  private resolveNormalizedInboundText(params: {
-    content: MatrixEventContent;
-    text: string;
-    attachments: Attachment[];
-  }): string {
-    const msgtype = trimString(params.content.msgtype);
-    if (!this.isMediaMsgType(msgtype)) {
-      return params.text;
-    }
-
-    const summary = params.attachments
-      .map((attachment) => attachment.summaryText?.trim())
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n");
-
-    const caption = resolveMatrixCaptionAndFilename({
-      body: params.text,
-      filename: trimString(params.content.filename),
-    }).caption?.trim();
-
-    return summary || caption || params.text;
-  }
-
-  private isMediaMsgType(msgtype?: string): boolean {
-    return msgtype === MsgType.Image || msgtype === MsgType.Audio || msgtype === MsgType.Video || msgtype === MsgType.File || msgtype === "m.sticker";
-  }
-
-  private async resolveRoomHistoryContext(
-    roomId: string,
-    chatType: MatrixChatType,
-    preparedRoomHistory?: PreparedMatrixRoomHistory,
-    visibility: ReturnType<MatrixAdapter["contextVisibility"]> = this.contextVisibility(),
-  ): Promise<string | undefined> {
-    const limit = chatType === "dm"
-      ? Math.max(0, this.config.dm?.historyLimit ?? this.config.historyLimit ?? 0)
-      : Math.max(0, this.config.historyLimit ?? 0);
-    if (limit <= 0) return undefined;
-
-    const recent = limitRecentItems(
-      (preparedRoomHistory?.history ?? []).filter((entry) =>
-        this.shouldIncludeContextSender(roomId, chatType, "history", entry.senderId, visibility)
-      ),
-      limit,
-    );
-    const lines = recent
-      .map((entry) => {
-        const sender = entry.senderId || "unknown";
-        const body = entry.text.trim();
-        return body ? `${sender}: ${body}` : undefined;
-      })
-      .filter((value): value is string => Boolean(value));
-
-    if (lines.length === 0) return undefined;
-    return `[Recent Room Context]\n${lines.join("\n")}`;
-  }
-
-  private async sendMediaByPath(
-    roomId: string,
-    filePath: string,
-    replyToId?: string,
-    threadId?: string,
-  ): Promise<void> {
-    const buffer = Buffer.from(await readFile(filePath));
-    const name = basename(filePath);
-    const mimeType = this.mimeFromExt(extname(filePath));
-    const upload = await this.uploadMedia(roomId, buffer, {
-      name,
-      type: mimeType,
-    });
-    const content = this.buildMediaContent({
-      body: name,
-      filename: name,
-      msgtype: this.msgTypeFromMime(mimeType),
-      url: upload.url,
-      file: upload.file,
-      mimeType,
-      size: buffer.byteLength,
-      replyToId,
-      threadId,
-    });
-    await this.sendMatrixMessage(roomId, content, this.outboundTxnId(`media-${name}`));
-  }
-
-  private async sendAttachment(
-    roomId: string,
-    attachment: Attachment,
-    replyToId?: string,
-    threadId?: string,
-  ): Promise<void> {
-    const source = attachment.path ?? attachment.url;
-    if (!source) return;
-
-    if (attachment.path) {
-      await this.sendMediaByPath(roomId, attachment.path, replyToId, threadId);
-      return;
-    }
-
-    const response = await this.fetchWithTimeout(source);
-    if (!response.ok) {
-      throw new Error(`Matrix attachment fetch failed: HTTP ${response.status}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const mimeType = attachment.mimeType ?? response.headers.get("content-type") ?? "application/octet-stream";
-    const name = source.split("/").pop() ?? `file${this.extFromMime(mimeType)}`;
-    const upload = await this.uploadMedia(roomId, buffer, {
-      name,
-      type: mimeType,
-    });
-    const content = this.buildMediaContent({
-      body: name,
-      filename: name,
-      msgtype: this.msgTypeFromMime(mimeType),
-      url: upload.url,
-      file: upload.file,
-      mimeType,
-      size: buffer.byteLength,
-      replyToId,
-      threadId,
-    });
-    await this.sendMatrixMessage(roomId, content, this.outboundTxnId(`attachment-${name}`));
-  }
-
-  private async uploadMedia(
-    roomId: string,
-    buffer: Buffer,
-    opts: { name?: string; type?: string },
-  ): Promise<{ url: string; file?: MatrixEncryptedFile }> {
-    const crypto = this.resolveMatrixCrypto();
-    const shouldEncrypt = (await crypto?.isRoomEncrypted?.(roomId)) === true && typeof crypto?.encryptMedia === "function";
-    if (shouldEncrypt && crypto?.encryptMedia) {
-      const encrypted = await crypto.encryptMedia(buffer);
-      const upload = await withMatrixRetry({
-        task: () =>
-          this.runtime.sdk.uploadContent(encrypted.buffer, {
-            ...opts,
-            includeFilename: false,
-          }),
-      });
-      return {
-        url: upload.content_uri,
-        file: {
-          url: upload.content_uri,
-          key: encrypted.file.key,
-          iv: encrypted.file.iv,
-          hashes: encrypted.file.hashes,
-          v: encrypted.file.v,
-        },
-      };
-    }
-    const upload = await withMatrixRetry({
-      task: () => this.runtime.sdk.uploadContent(buffer, opts),
-    });
-    return { url: upload.content_uri };
-  }
-
-  private async sendMatrixMessage(
-    roomId: string,
-    content: Record<string, unknown>,
-    txnId = this.outboundTxnId("message"),
-  ): Promise<{ event_id: string }> {
-    return await withMatrixRetry({
-      task: () => this.runtime.sdk.sendMessage(roomId, content as never, txnId),
-    });
-  }
-
-  private outboundTxnId(prefix: string): string {
-    return `${prefix}-${Date.now()}-${crypto.randomUUID()}`;
-  }
-
-  private buildMediaContent(params: {
-    body: string;
-    filename?: string;
-    msgtype: string;
-    url: string;
-    file?: MatrixEncryptedFile;
-    mimeType?: string;
-    size: number;
-    replyToId?: string;
-    threadId?: string;
-  }): Record<string, unknown> {
-    const relation = buildRelation(
-      params.threadId,
-      this.effectiveReplyToId({ text: params.body, replyToId: params.replyToId, threadId: params.threadId }),
-    );
-    const info: Record<string, unknown> = {
-      size: params.size,
-    };
-    if (params.mimeType) {
-      info["mimetype"] = params.mimeType;
-    }
-
-    const content: Record<string, unknown> = {
-      msgtype: params.msgtype,
-      body: params.body,
-      filename: params.filename,
-      info,
-    };
-    if (params.file) {
-      content["file"] = params.file;
-    } else {
-      content["url"] = params.url;
-    }
-    if (relation) {
-      content["m.relates_to"] = relation;
-    }
-    return content;
-  }
 
   private commandText(text: string, room: Room, selfDisplayName?: string): string {
     const direct = this.isDirectMessage(room);
@@ -1748,49 +1507,7 @@ export class MatrixAdapter implements ChannelAdapter {
     });
   };
 
-  private effectiveReplyToId(message: OutgoingMessage): string | undefined {
-    return message.threadId ? undefined : message.replyToId;
-  }
 
-  private replyTargetForChunk(
-    message: OutgoingMessage,
-    chunkIndex: number,
-    params: { chunkCount: number; hasMedia: boolean },
-  ): string | undefined {
-    if (message.threadId) return undefined;
-
-    const replyToId = message.replyToId;
-    if (!replyToId) return undefined;
-
-    const mode = this.config.replyToMode ?? "off";
-    if (mode === "off") return undefined;
-    const multiPart = params.hasMedia || params.chunkCount > 1;
-    if (!multiPart) return replyToId;
-    if (mode === "all") return replyToId;
-    if (mode === "batched") return replyToId;
-    if (mode === "first") return chunkIndex === 0 ? replyToId : undefined;
-    return undefined;
-  }
-
-  private streamReplyTarget(message: UnifiedMessage): string | undefined {
-    if (message.threadId) return undefined;
-
-    const mode = this.config.replyToMode ?? "off";
-    if (mode === "off") return undefined;
-    return message.id;
-  }
-
-  private textChunkLimit(): number {
-    const limit = this.config.textChunkLimit;
-    if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
-      return 4000;
-    }
-    return Math.floor(limit);
-  }
-
-  private chunkMode(): "plain" | "line" {
-    return (this.config.chunkMode ?? "newline") === "length" ? "plain" : "line";
-  }
 
   private contextVisibility(): "all" | "allowlist" | "allowlist_quote" {
     return resolveContextVisibility(this.config);
@@ -1827,11 +1544,7 @@ export class MatrixAdapter implements ChannelAdapter {
     return resolveHistoryLimitForChatType(this.config, chatType);
   }
 
-  private resolvePendingRoomHistoryText(text: string, content: MatrixEventContent): string {
-    const trimmed = text.trim();
-    if (trimmed) return trimmed;
-    return this.summarizeEventContent(content) ?? "";
-  }
+
 
   private isForwardedMatrixMessage(event: MatrixEvent, content: MatrixEventContent): boolean {
     const sender = event.getSender();
@@ -1899,47 +1612,5 @@ export class MatrixAdapter implements ChannelAdapter {
     return MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS;
   }
 
-  private mimeFromExt(ext: string): string {
-    switch (ext.toLowerCase()) {
-      case ".jpg":
-      case ".jpeg":
-        return "image/jpeg";
-      case ".png":
-        return "image/png";
-      case ".webp":
-        return "image/webp";
-      case ".gif":
-        return "image/gif";
-      case ".mp4":
-        return "video/mp4";
-      case ".webm":
-        return "video/webm";
-      case ".mp3":
-        return "audio/mpeg";
-      case ".ogg":
-      case ".oga":
-        return "audio/ogg";
-      case ".wav":
-        return "audio/wav";
-      default:
-        return "application/octet-stream";
-    }
-  }
 
-  private msgTypeFromMime(mimeType: string): string {
-    if (mimeType.startsWith("image/")) return MsgType.Image;
-    if (mimeType.startsWith("video/")) return MsgType.Video;
-    if (mimeType.startsWith("audio/")) return MsgType.Audio;
-    return MsgType.File;
-  }
-
-  private extFromMime(mimeType: string): string {
-    if (mimeType === "image/jpeg") return ".jpg";
-    if (mimeType === "image/png") return ".png";
-    if (mimeType === "image/webp") return ".webp";
-    if (mimeType === "video/mp4") return ".mp4";
-    if (mimeType === "audio/mpeg") return ".mp3";
-    if (mimeType === "audio/ogg") return ".ogg";
-    return "";
-  }
 }

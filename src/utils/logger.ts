@@ -1,6 +1,6 @@
 import { appendFile, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { MY_CLAW_DIR } from "../config.ts";
+import { MY_CLAW_DIR } from "../core/config.ts";
 
 const LOGS_DIR = join(MY_CLAW_DIR, "logs");
 const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024;

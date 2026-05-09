@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createMatrixRoomHistoryTracker } from "../src/channels/matrix-history.ts";
+import { createMatrixRoomHistoryTracker } from "../src/channels/matrix/history.ts";
 
 test("Matrix room history snapshots keep unconsumed trigger entries across overlaps", () => {
   const tracker = createMatrixRoomHistoryTracker();

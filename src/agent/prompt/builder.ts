@@ -1,4 +1,4 @@
-import type { Tool } from "../tools/types.ts";
+import type { Tool } from "../../tools/types.ts";
 import { loadAllPromptFiles } from "./loader.ts";
 import { getPlatformHint } from "./platform-hints.ts";
 

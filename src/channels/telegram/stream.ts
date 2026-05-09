@@ -1,5 +1,5 @@
-import { markdownToTelegramHtml, stripHtml } from "./telegram-format.ts";
-import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./telegram-split.ts";
+import { markdownToTelegramHtml, stripHtml } from "./format.ts";
+import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./split.ts";
 
 const MESSAGE_NOT_FOUND_RE = /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i;
 

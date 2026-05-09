@@ -1,7 +1,7 @@
-import type { MyClawConfig } from "../config.ts";
+import type { MyClawConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { buildSystemPrompt } from "../prompt/builder.ts";
+import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { log } from "../utils/logger.ts";

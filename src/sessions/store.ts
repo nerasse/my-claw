@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, unlink, rename, readdir, rm, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { MY_CLAW_DIR } from "../config.ts";
+import { MY_CLAW_DIR } from "../core/config.ts";
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string }

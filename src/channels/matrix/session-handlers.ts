@@ -1,9 +1,9 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import type { MyClawConfig } from "../config.ts";
-import { SessionManager } from "../sessions/manager.ts";
-import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "./types.ts";
-import { ModelPicker } from "./model-picker.ts";
-import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./matrix/approval-store.ts";
+import type { MyClawConfig } from "../../core/config.ts";
+import { SessionManager } from "../../sessions/manager.ts";
+import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
+import { ModelPicker } from "../model-picker.ts";
+import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
 
 type MatrixChatType = "dm" | "group";
 const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];

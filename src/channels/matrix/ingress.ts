@@ -1,14 +1,14 @@
 import { EventType, MsgType, RelationType, type MatrixEvent, type Room } from "matrix-js-sdk";
-import type { PreparedMatrixRoomHistory } from "../matrix-history.ts";
-import { fetchMatrixPollSnapshot, isMatrixPollEventType, resolveMatrixPollPrecheckText } from "../matrix-polls.ts";
+import type { PreparedMatrixRoomHistory } from "./history.ts";
+import { fetchMatrixPollSnapshot, isMatrixPollEventType, resolveMatrixPollPrecheckText } from "./polls.ts";
 import type {
   MatrixChatType,
   MatrixEventContent,
   MatrixInboundContext,
   MatrixPreparedTimelineEvent,
   MatrixTimelineIngress,
-} from "./adapter-types.ts";
-import { messageBody, replyToEventId } from "./adapter-helpers.ts";
+} from "./types.ts";
+import { messageBody, replyToEventId } from "./helpers.ts";
 
 export async function prepareTimelineEvent(params: {
   room: Room;

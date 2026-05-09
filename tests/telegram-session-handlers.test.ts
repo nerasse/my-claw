@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import {
   createTelegramCallbackHandler,
   createTelegramCommandHandler,
-} from "../src/channels/telegram-session-handlers.ts";
+} from "../src/channels/telegram/session-handlers.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
-import type { MyClawConfig } from "../src/config.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],

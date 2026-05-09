@@ -1,4 +1,4 @@
-import type { MyClawConfig } from "../config.ts";
+import type { MyClawConfig } from "../core/config.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 
 type SubAgentType = "general" | "research";

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { MY_CLAW_DIR } from "../config.ts";
+import { MY_CLAW_DIR } from "../../core/config.ts";
 
 const STORE_VERSION = 1;
 const LOCK_STALE_MS = 60_000;

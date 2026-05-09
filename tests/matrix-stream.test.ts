@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { prefixEditedMatrixFormattedBody } from "../src/channels/matrix-format.ts";
-import { MatrixMessageStreamer } from "../src/channels/matrix-stream.ts";
+import { prefixEditedMatrixFormattedBody } from "../src/channels/matrix/format.ts";
+import { MatrixMessageStreamer } from "../src/channels/matrix/stream.ts";
 
 function createClientMock() {
   let nextId = 1;

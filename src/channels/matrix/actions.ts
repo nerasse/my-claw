@@ -1,8 +1,8 @@
 import { MsgType } from "matrix-js-sdk";
-import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "../matrix-format.ts";
+import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
 import type { ConfirmationButton, OutgoingMessage } from "../types.ts";
-import type { PendingMatrixAction } from "./adapter-types.ts";
-import { buildReplaceRelation, trimString } from "./adapter-helpers.ts";
+import type { PendingMatrixAction } from "./types.ts";
+import { buildReplaceRelation, trimString } from "./helpers.ts";
 
 export const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 

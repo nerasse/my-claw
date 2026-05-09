@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TelegramAdapter } from "../src/channels/telegram.ts";
-import type { TelegramChannelConfig } from "../src/config.ts";
+import { TelegramAdapter } from "../src/channels/telegram/adapter.ts";
+import type { TelegramChannelConfig } from "../src/core/config.ts";
 
 function createBotMock() {
   const calls: Array<{ method: string; args: unknown[] }> = [];

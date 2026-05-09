@@ -1,5 +1,5 @@
 import type { Attachment } from "../types.ts";
-import type { MatrixEventContent } from "./adapter-types.ts";
+import type { MatrixEventContent } from "./types.ts";
 
 export type MatrixBufferedIngressItem = {
   eventId: string;

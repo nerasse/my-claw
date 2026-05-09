@@ -8,7 +8,7 @@ import {
   readTelegramUpdateOffset,
   resolveTelegramUpdateOffsetPath,
   writeTelegramUpdateOffset,
-} from "../src/channels/telegram-offset-store.ts";
+} from "../src/channels/telegram/offset-store.ts";
 
 const TOKEN = "99:test-token";
 

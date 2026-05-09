@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createMatrixApprovalStore } from "../src/channels/matrix/approval-store.ts";
-import { createMatrixApprovalHandler } from "../src/channels/matrix-session-handlers.ts";
+import { createMatrixApprovalHandler } from "../src/channels/matrix/session-handlers.ts";
 import type { ToolApprovalRequest } from "../src/channels/types.ts";
 
 function createRequest(id: string): ToolApprovalRequest {

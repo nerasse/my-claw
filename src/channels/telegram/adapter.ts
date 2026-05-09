@@ -1,18 +1,18 @@
-import { Bot, InlineKeyboard, InputFile, GrammyError, HttpError } from "grammy";
+import { Bot, InlineKeyboard, InputFile } from "grammy";
 import type { Context } from "grammy";
 import { apiThrottler } from "@grammyjs/transformer-throttler";
 import { mkdir } from "node:fs/promises";
 import { join, extname } from "node:path";
-import type { ChannelAdapter, UnifiedMessage, OutgoingMessage, Attachment } from "./types.ts";
-import type { TelegramChannelConfig } from "../config.ts";
-import { MY_CLAW_DIR } from "../config.ts";
-import { markdownToTelegramHtml, stripHtml } from "./telegram-format.ts";
-import { CHUNK_LIMIT, splitHtmlChunks, alignPlainTextChunks } from "./telegram-split.ts";
-import { registerCommands, getHelpText } from "./telegram-commands.ts";
-import { ReactionManager } from "./telegram-reactions.ts";
-import { ErrorReporter } from "./telegram-errors.ts";
-import { MessageStreamer } from "./telegram-stream.ts";
-import { createTelegramUpdateDeduper, readTelegramUpdateOffset } from "./telegram-offset-store.ts";
+import type { ChannelAdapter, UnifiedMessage, OutgoingMessage, Attachment } from "../types.ts";
+import type { TelegramChannelConfig } from "../../core/config.ts";
+import { MY_CLAW_DIR } from "../../core/config.ts";
+import { markdownToTelegramHtml, stripHtml } from "./format.ts";
+import { CHUNK_LIMIT, splitHtmlChunks, alignPlainTextChunks } from "./split.ts";
+import { registerCommands, getHelpText } from "./commands.ts";
+import { ReactionManager } from "./reactions.ts";
+import { ErrorReporter } from "./errors.ts";
+import { MessageStreamer } from "./stream.ts";
+import { createTelegramUpdateDeduper, readTelegramUpdateOffset } from "./offset-store.ts";
 import {
   isConfiguredTelegramBotUser,
   isTelegramAllowedByPolicy,
@@ -20,23 +20,32 @@ import {
   resolveTelegramAllowBotsMode,
   resolveTelegramGroupConfig,
   resolveTelegramRequireMention,
-  shouldIncludeTelegramContextSender,
   type TelegramChatType,
-} from "./telegram-policy.ts";
-import { extractMediaRefs, stripMediaRefs } from "../utils/media.ts";
-import { telegramLog } from "../utils/logger.ts";
-
-// Error detection (from OpenClaw)
-const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
-const THREAD_NOT_FOUND_RE = /message thread not found/i;
-const MESSAGE_NOT_MODIFIED_RE = /message is not modified/i;
-const PRE_CONNECT_ERROR_CODES = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ENETUNREACH",
-  "EHOSTUNREACH",
-]);
+} from "./policy.ts";
+import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { telegramLog } from "../../utils/logger.ts";
+import {
+  sendTextMessage,
+  sendPlainTextMessage,
+  editPlainTextMessage,
+  editTextMessage,
+  deleteMessage,
+  sendMediaByPath,
+  sendAttachment,
+  threadParams,
+  buildKeyboard,
+  withRetry,
+  type Caption,
+} from "./send.ts";
+import {
+  rememberInboundContext,
+  resolveReplyContext,
+  resolveThreadRootContext,
+  resolveRoomHistoryContext,
+  senderLabel,
+  type TelegramHistoryEntry,
+  type TelegramStoredMessageContext,
+} from "./context.ts";
 
 // Text batching (from OpenClaw)
 const TEXT_BATCH_THRESHOLD = 4000;
@@ -45,31 +54,17 @@ const TEXT_BATCH_MAX_PARTS = 12;
 const TEXT_BATCH_MAX_CHARS = 50_000;
 const TEXT_BATCH_MAX_ID_GAP = 1;
 
-// Retry (from OpenClaw: 3 attempts, exponential backoff, jitter)
-const RETRY_ATTEMPTS = 3;
-const RETRY_MIN_DELAY_MS = 400;
-const RETRY_MAX_DELAY_MS = 30_000;
-const RETRY_JITTER = 0.1;
-
 // Media, typing, misc
 const MEDIA_GROUP_TIMEOUT_MS = 500;
 const CAPTION_LIMIT = 1024;
 const TYPING_INTERVAL_MS = 5000;
-const GENERAL_TOPIC_ID = 1;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_THREAD_ID_ENTRIES = 10_000;
-const MAX_HISTORY_SCOPE_ENTRIES = 200;
-const MAX_MESSAGE_CONTEXT_ENTRIES = 10_000;
-const MAX_THREAD_ROOT_ENTRIES = 2_000;
 const TMP_DIR = join(MY_CLAW_DIR, "tmp");
 const ERROR_REPORT_COOLDOWN_MS = 5 * 60 * 1000;
 
-const PHOTO_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
-const VIDEO_EXTENSIONS = new Set(["mp4", "avi", "mkv", "mov", "webm"]);
-const VOICE_EXTENSIONS = new Set(["ogg", "oga"]);
-const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "flac", "m4a", "aac"]);
-
 type GrammyMessage = NonNullable<Context["message"]>;
+type AnyGrammyMessage = GrammyMessage | NonNullable<GrammyMessage["reply_to_message"]>;
 
 interface TextBatch {
   messages: Array<{ text: string; messageId: number; date: number }>;
@@ -95,11 +90,6 @@ interface TypingRef {
   count: number;
 }
 
-interface Caption {
-  html: string;
-  plain: string;
-}
-
 interface TelegramCallbackContext {
   chatId: string;
   userId: string;
@@ -114,17 +104,6 @@ interface TelegramCallbackResponse {
   text?: string;
   buttons?: Array<{ label: string; action: string }>;
   answerText?: string;
-}
-
-interface TelegramHistoryEntry {
-  messageId: string;
-  senderId: string;
-  senderLabel: string;
-  text: string;
-}
-
-interface TelegramStoredMessageContext extends TelegramHistoryEntry {
-  scopeKey: string;
 }
 
 interface TelegramCommandMeta {
@@ -163,50 +142,6 @@ function formatTelegramPollText(poll: {
   }
 
   return lines.join("\n");
-}
-
-// ── Error classification ──────────────────────────────────────
-
-function isParseError(err: unknown): boolean {
-  return err instanceof GrammyError && PARSE_ERR_RE.test(err.description);
-}
-
-function isThreadNotFoundError(err: unknown): boolean {
-  return err instanceof GrammyError && THREAD_NOT_FOUND_RE.test(err.description);
-}
-
-function isMessageNotModifiedError(err: unknown): boolean {
-  return err instanceof GrammyError && MESSAGE_NOT_MODIFIED_RE.test(err.description);
-}
-
-function isRateLimitError(err: unknown): err is GrammyError {
-  return err instanceof GrammyError && err.error_code === 429;
-}
-
-function getRetryAfter(err: GrammyError): number {
-  const params = err.parameters as Record<string, unknown> | undefined;
-  return typeof params?.retry_after === "number" ? params.retry_after : 5;
-}
-
-function isPreConnectError(err: unknown): boolean {
-  if (err instanceof HttpError) {
-    const code = (err.error as Record<string, unknown> | undefined)?.code;
-    return typeof code === "string" && PRE_CONNECT_ERROR_CODES.has(code);
-  }
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function mediaTypeFromExt(ext: string): "photo" | "video" | "voice" | "audio" | "document" {
-  const e = ext.toLowerCase().replace(/^\./, "");
-  if (PHOTO_EXTENSIONS.has(e)) return "photo";
-  if (VIDEO_EXTENSIONS.has(e)) return "video";
-  if (VOICE_EXTENSIONS.has(e)) return "voice";
-  if (AUDIO_EXTENSIONS.has(e)) return "audio";
-  return "document";
 }
 
 function updateIdForBatch(current: number | undefined, next: number | undefined): number | undefined {
@@ -316,7 +251,6 @@ export class TelegramAdapter implements ChannelAdapter {
     const threadId = this.outboundReplyThreadId(message);
     const hasMedia = mediaRefs.length > 0 || (message.attachments?.length ?? 0) > 0;
 
-    // Caption: text ≤ 1024 chars with media → attach to first media (OpenClaw: all-or-nothing at 1024)
     let caption: Caption | undefined;
     if (text && hasMedia && text.length <= CAPTION_LIMIT) {
       const html = markdownToTelegramHtml(text);
@@ -328,7 +262,6 @@ export class TelegramAdapter implements ChannelAdapter {
     const totalParts = textChunkCount + mediaCount;
     let partIndex = 0;
 
-    // Send text as chunked messages (if too long for caption or no media)
     if (text && !caption) {
       const html = markdownToTelegramHtml(text);
       const plain = stripHtml(html);
@@ -336,28 +269,27 @@ export class TelegramAdapter implements ChannelAdapter {
       const plainChunks = alignPlainTextChunks(plain, htmlChunks.length);
 
       for (let i = 0; i < htmlChunks.length; i++) {
-        await this.sendTextMessage(chatId, htmlChunks[i]!, plainChunks[i] ?? "", {
+        await sendTextMessage(this.bot, this.config, chatId, htmlChunks[i]!, plainChunks[i] ?? "", {
           threadId,
           replyToId: this.replyTargetForPart(message, partIndex++, totalParts),
           keyboard:
             i === htmlChunks.length - 1 && message.buttons?.length
-              ? this.buildKeyboard(message.buttons)
+              ? buildKeyboard(message.buttons)
               : undefined,
         });
       }
     }
 
-    // Send media with optional caption on first item
     let usedCaption = false;
     for (const ref of mediaRefs) {
       const cap = !usedCaption ? caption : undefined;
-      await this.sendMediaByPath(chatId, ref.path, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
+      await sendMediaByPath(this.bot, chatId, ref.path, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
       if (cap) usedCaption = true;
     }
     if (message.attachments) {
       for (const att of message.attachments) {
         const cap = !usedCaption ? caption : undefined;
-        await this.sendAttachment(chatId, att, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
+        await sendAttachment(this.bot, chatId, att, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
         if (cap) usedCaption = true;
       }
     }
@@ -392,11 +324,11 @@ export class TelegramAdapter implements ChannelAdapter {
         chunkLimit: CHUNK_LIMIT,
       },
       {
-        sendPlain: (chatId, text, opts) => this.sendPlainTextMessage(chatId, text, opts),
-        editPlain: (chatId, messageId, text) => this.editPlainTextMessage(chatId, messageId, text),
-        sendFinal: (chatId, html, plain, opts) => this.sendTextMessage(chatId, html, plain, opts),
-        editFinal: (chatId, messageId, html, plain) => this.editTextMessage(chatId, messageId, html, plain),
-        deleteMessage: (chatId, messageId) => this.deleteMessage(chatId, messageId),
+        sendPlain: (chatId, text, opts) => sendPlainTextMessage(this.bot, this.config, chatId, text, opts),
+        editPlain: (chatId, messageId, text) => editPlainTextMessage(this.bot, this.config, chatId, messageId, text),
+        sendFinal: (chatId, html, plain, opts) => sendTextMessage(this.bot, this.config, chatId, html, plain, opts),
+        editFinal: (chatId, messageId, html, plain) => editTextMessage(this.bot, this.config, chatId, messageId, html, plain),
+        deleteMessage: (chatId, messageId) => deleteMessage(this.bot, chatId, messageId),
       },
     );
   }
@@ -418,7 +350,7 @@ export class TelegramAdapter implements ChannelAdapter {
       };
     }
 
-    await this.withRetry(() => this.bot.api.sendMessage(chatId, text, params));
+    await withRetry(() => this.bot.api.sendMessage(chatId, text, params));
 
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
@@ -428,291 +360,6 @@ export class TelegramAdapter implements ChannelAdapter {
 
       this.pendingConfirmations.set(id, { resolve, timer });
     });
-  }
-
-  // ── Sending ─────────────────────────────────────────────────
-
-  private async sendTextMessage(
-    chatId: string,
-    html: string,
-    plain: string,
-    opts: { threadId?: number; replyToId?: number; keyboard?: InlineKeyboard },
-  ): Promise<number> {
-    const params: Record<string, unknown> = {};
-    if (this.config.linkPreview === false) {
-      params.link_preview_options = { is_disabled: true };
-    }
-    if (opts.threadId && opts.threadId !== GENERAL_TOPIC_ID) {
-      params.message_thread_id = opts.threadId;
-    }
-    if (opts.replyToId) {
-      params.reply_parameters = {
-        message_id: opts.replyToId,
-        allow_sending_without_reply: true,
-      };
-    }
-    if (opts.keyboard) {
-      params.reply_markup = opts.keyboard;
-    }
-
-    try {
-      const msg = await this.withRetry(() =>
-        this.bot.api.sendMessage(chatId, html, { ...params, parse_mode: "HTML" }),
-      );
-      return msg.message_id;
-    } catch (err) {
-      if (isParseError(err)) {
-        await telegramLog("warn", "HTML parse failed, falling back to plain text", { chatId });
-        const msg = await this.withRetry(() => this.bot.api.sendMessage(chatId, plain, params));
-        return msg.message_id;
-      }
-      if (isThreadNotFoundError(err) && params.message_thread_id) {
-        await telegramLog("warn", "thread not found, retrying without thread_id", { chatId });
-        delete params.message_thread_id;
-        try {
-          const msg = await this.withRetry(() =>
-            this.bot.api.sendMessage(chatId, html, { ...params, parse_mode: "HTML" }),
-          );
-          return msg.message_id;
-        } catch (retryErr) {
-          if (isParseError(retryErr)) {
-            const msg = await this.bot.api.sendMessage(chatId, plain, params);
-            return msg.message_id;
-          }
-          throw retryErr;
-        }
-      }
-      throw err;
-    }
-  }
-
-  private async sendPlainTextMessage(
-    chatId: string,
-    plain: string,
-    opts: { threadId?: number; replyToId?: number },
-  ): Promise<number> {
-    const params: Record<string, unknown> = {};
-    if (this.config.linkPreview === false) {
-      params.link_preview_options = { is_disabled: true };
-    }
-    if (opts.threadId && opts.threadId !== GENERAL_TOPIC_ID) {
-      params.message_thread_id = opts.threadId;
-    }
-    if (opts.replyToId) {
-      params.reply_parameters = {
-        message_id: opts.replyToId,
-        allow_sending_without_reply: true,
-      };
-    }
-
-    try {
-      const msg = await this.withRetry(() => this.bot.api.sendMessage(chatId, plain, params));
-      return msg.message_id;
-    } catch (err) {
-      if (isThreadNotFoundError(err) && params.message_thread_id) {
-        delete params.message_thread_id;
-        const msg = await this.withRetry(() => this.bot.api.sendMessage(chatId, plain, params));
-        return msg.message_id;
-      }
-      throw err;
-    }
-  }
-
-  private async editPlainTextMessage(chatId: string, messageId: number, plain: string): Promise<void> {
-    const params: Record<string, unknown> = {};
-    if (this.config.linkPreview === false) {
-      params.link_preview_options = { is_disabled: true };
-    }
-
-    try {
-      await this.withRetry(() => this.bot.api.editMessageText(chatId, messageId, plain, params));
-    } catch (err) {
-      if (isMessageNotModifiedError(err)) return;
-      throw err;
-    }
-  }
-
-  private async editTextMessage(
-    chatId: string,
-    messageId: number,
-    html: string,
-    plain: string,
-  ): Promise<void> {
-    const params: Record<string, unknown> = {};
-    if (this.config.linkPreview === false) {
-      params.link_preview_options = { is_disabled: true };
-    }
-
-    try {
-      await this.withRetry(() =>
-        this.bot.api.editMessageText(chatId, messageId, html, { ...params, parse_mode: "HTML" }),
-      );
-      return;
-    } catch (err) {
-      if (isMessageNotModifiedError(err)) return;
-      if (!isParseError(err)) throw err;
-    }
-
-    try {
-      await this.withRetry(() => this.bot.api.editMessageText(chatId, messageId, plain, params));
-    } catch (err) {
-      if (isMessageNotModifiedError(err)) return;
-      throw err;
-    }
-  }
-
-  private async deleteMessage(chatId: string, messageId: number): Promise<void> {
-    await this.bot.api.deleteMessage(chatId, messageId).catch(() => {});
-  }
-
-  private async sendMediaByPath(
-    chatId: string,
-    filePath: string,
-    threadId?: number,
-    replyToId?: number,
-    caption?: Caption,
-  ): Promise<void> {
-    const ext = extname(filePath);
-    const type = mediaTypeFromExt(ext);
-    const file = new InputFile(filePath);
-    const params: Record<string, unknown> = { ...this.threadParams(threadId) };
-    if (replyToId) {
-      params.reply_parameters = {
-        message_id: replyToId,
-        allow_sending_without_reply: true,
-      };
-    }
-
-    if (caption) {
-      params.caption = caption.html;
-      params.parse_mode = "HTML";
-    }
-
-    const sendByType = (p: Record<string, unknown>): Promise<unknown> => {
-      switch (type) {
-        case "photo":
-          return this.bot.api.sendPhoto(chatId, file, p);
-        case "video":
-          return this.bot.api.sendVideo(chatId, file, p);
-        case "voice":
-          return this.bot.api.sendVoice(chatId, file, p);
-        case "audio":
-          return this.bot.api.sendAudio(chatId, file, p);
-        default:
-          return this.bot.api.sendDocument(chatId, file, p);
-      }
-    };
-
-    try {
-      await this.withRetry(() => sendByType(params));
-    } catch (err) {
-      if (caption && isParseError(err)) {
-        params.caption = caption.plain;
-        delete params.parse_mode;
-        await this.withRetry(() => sendByType(params));
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  private async sendAttachment(
-    chatId: string,
-    att: Attachment,
-    threadId?: number,
-    replyToId?: number,
-    caption?: Caption,
-  ): Promise<void> {
-    const source = att.path ?? att.url;
-    if (!source) return;
-
-    const file = att.path ? new InputFile(att.path) : new InputFile(new URL(source));
-    const params: Record<string, unknown> = { ...this.threadParams(threadId) };
-    if (replyToId) {
-      params.reply_parameters = {
-        message_id: replyToId,
-        allow_sending_without_reply: true,
-      };
-    }
-
-    if (caption) {
-      params.caption = caption.html;
-      params.parse_mode = "HTML";
-    }
-
-    const sendByType = (p: Record<string, unknown>): Promise<unknown> => {
-      switch (att.type) {
-        case "image":
-          return this.bot.api.sendPhoto(chatId, file, p);
-        case "video":
-          return this.bot.api.sendVideo(chatId, file, p);
-        case "audio":
-          return this.bot.api.sendAudio(chatId, file, p);
-        default:
-          return this.bot.api.sendDocument(chatId, file, p);
-      }
-    };
-
-    try {
-      await this.withRetry(() => sendByType(params));
-    } catch (err) {
-      if (caption && isParseError(err)) {
-        params.caption = caption.plain;
-        delete params.parse_mode;
-        await this.withRetry(() => sendByType(params));
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  private threadParams(threadId?: number): Record<string, unknown> {
-    if (threadId && threadId !== GENERAL_TOPIC_ID) {
-      return { message_thread_id: threadId };
-    }
-    return {};
-  }
-
-  private buildKeyboard(buttons: Array<{ label: string; action: string }>): InlineKeyboard {
-    const kb = new InlineKeyboard();
-    buttons.forEach((btn, index) => {
-      kb.text(btn.label, btn.action);
-      if (index % 2 === 1 && index < buttons.length - 1) kb.row();
-    });
-    return kb;
-  }
-
-  // ── Retry (exponential backoff, from OpenClaw) ──────────────
-
-  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
-    let lastErr: unknown;
-
-    for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        lastErr = err;
-        if (attempt === RETRY_ATTEMPTS) break;
-
-        if (isRateLimitError(err)) {
-          const seconds = getRetryAfter(err);
-          await telegramLog("warn", `rate limited, waiting ${seconds}s`);
-          await sleep(seconds * 1000);
-          continue;
-        }
-
-        if (!isPreConnectError(err)) break;
-
-        const base = RETRY_MIN_DELAY_MS * Math.pow(2, attempt - 1);
-        const clamped = Math.min(base, RETRY_MAX_DELAY_MS);
-        const jittered = clamped * (1 + (Math.random() * 2 - 1) * RETRY_JITTER);
-        const delay = Math.max(RETRY_MIN_DELAY_MS, Math.min(jittered, RETRY_MAX_DELAY_MS));
-        await telegramLog("warn", `pre-connect error, retrying in ${Math.round(delay)}ms (attempt ${attempt}/${RETRY_ATTEMPTS})`);
-        await sleep(delay);
-      }
-    }
-
-    throw lastErr;
   }
 
   // ── Handlers ────────────────────────────────────────────────
@@ -829,7 +476,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
         const params: Record<string, unknown> = {};
         if (response.buttons?.length) {
-          params.reply_markup = this.buildKeyboard(response.buttons);
+          params.reply_markup = buildKeyboard(response.buttons);
         }
         if (response.text) {
           await ctx.editMessageText(response.text, params).catch(() => {});
@@ -921,7 +568,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = String(msg.chat.id);
     const messageId = msg.message_id;
     const unified = await this.normalizeMessage(msg, textOverride, extraMessages);
-    this.rememberInboundContext(unified);
+    rememberInboundContext(this.config, this.whitelist, this.historyByScope, this.messageContexts, this.threadRoots, unified);
 
     await this.reactions.set(chatId, messageId, "received");
     this.startTyping(chatId, msg.message_thread_id);
@@ -981,9 +628,9 @@ export class TelegramAdapter implements ChannelAdapter {
     const threadId = typeof msg.message_thread_id === "number" ? String(msg.message_thread_id) : undefined;
     const replyMessage = msg.reply_to_message;
     const replyContext = replyMessage
-      ? this.resolveReplyContext(chatId, chatType, replyMessage, threadId)
+      ? resolveReplyContext(this.config, this.whitelist, this.messageContexts, chatId, chatType, replyMessage, threadId, (m) => this.messageTextFromRawMessage(m))
       : undefined;
-    const threadRoot = threadId ? this.resolveThreadRootContext(chatId, chatType, threadId) : undefined;
+    const threadRoot = threadId ? resolveThreadRootContext(this.config, this.whitelist, this.messageContexts, this.threadRoots, this.historyByScope, chatId, chatType, threadId) : undefined;
 
     return {
       id: String(msg.message_id),
@@ -999,7 +646,7 @@ export class TelegramAdapter implements ChannelAdapter {
       replyToSender: replyContext?.senderLabel,
       threadId,
       threadRootText: threadRoot?.text,
-      roomContext: this.resolveRoomHistoryContext(chatId, chatType, threadId),
+      roomContext: resolveRoomHistoryContext(this.config, this.whitelist, this.messageContexts, this.historyByScope, chatId, chatType, threadId),
       mentionsBot: this.resolveMentionsBot(msg),
       sessionScope: chatType === "dm" ? this.config.dm?.sessionScope ?? "per-user" : undefined,
       raw: msg,
@@ -1012,16 +659,12 @@ export class TelegramAdapter implements ChannelAdapter {
     this.selfUsername = this.bot.botInfo.username?.toLowerCase();
   }
 
-  private historyLimit(): number {
-    return Math.max(0, this.config.historyLimit ?? 0);
-  }
-
   private normalizedMessageText(msg: GrammyMessage, textOverride?: string): string {
     if (textOverride !== undefined) return textOverride;
     return this.messageTextFromRawMessage(msg) ?? "";
   }
 
-  private messageTextFromRawMessage(msg: GrammyMessage): string | undefined {
+  private messageTextFromRawMessage(msg: AnyGrammyMessage): string | undefined {
     const text = (msg.text ?? msg.caption)?.trim();
     if (text) return text;
     if (msg.poll) {
@@ -1029,140 +672,6 @@ export class TelegramAdapter implements ChannelAdapter {
       if (pollText) return pollText;
     }
     return undefined;
-  }
-
-  private shouldIncludeContextSender(
-    chatId: string,
-    chatType: UnifiedMessage["chatType"],
-    kind: "history" | "thread" | "quote",
-    sender: GrammyMessage["from"] | undefined,
-    threadId?: string,
-  ): boolean {
-    return shouldIncludeTelegramContextSender({
-      config: this.config,
-      whitelist: this.whitelist,
-      groupConfig: resolveTelegramGroupConfig(this.config, chatId, threadId),
-      chatType,
-      kind,
-      sender,
-    });
-  }
-
-  private rememberInboundContext(message: UnifiedMessage): void {
-    const raw = message.raw as GrammyMessage;
-    const text = this.contextTextForMessage(message);
-    if (!text) return;
-
-    const entry: TelegramHistoryEntry = {
-      messageId: message.id,
-      senderId: message.userId,
-      senderLabel: this.senderLabel(raw.from),
-      text,
-    };
-    const scopeKey = this.historyScopeKey(message.chatId, message.threadId);
-    const history = this.historyByScope.get(scopeKey) ?? [];
-    history.push(entry);
-    if (history.length > MAX_HISTORY_SCOPE_ENTRIES) {
-      history.splice(0, history.length - MAX_HISTORY_SCOPE_ENTRIES);
-    }
-    this.historyByScope.set(scopeKey, history);
-
-    this.messageContexts.set(this.messageContextKey(message.chatId, message.id), { ...entry, scopeKey });
-    this.pruneMessageContexts();
-
-    if (message.threadId) {
-      const threadKey = this.threadRootKey(message.chatId, message.threadId);
-      if (!this.threadRoots.has(threadKey)) {
-        this.threadRoots.set(threadKey, entry);
-        this.pruneThreadRoots();
-      }
-    }
-  }
-
-  private resolveReplyContext(
-    chatId: string,
-    chatType: UnifiedMessage["chatType"],
-    replyMessage: GrammyMessage,
-    threadId?: string,
-  ): TelegramHistoryEntry | undefined {
-    const messageId = String(replyMessage.message_id);
-    const stored = this.messageContexts.get(this.messageContextKey(chatId, messageId));
-    if (!this.shouldIncludeContextSender(chatId, chatType, "quote", replyMessage.from, threadId)) {
-      return undefined;
-    }
-
-    const text = this.contextTextFromRawMessage(replyMessage) ?? stored?.text;
-    if (!text) return undefined;
-
-    return {
-      messageId,
-      senderId: replyMessage.from ? String(replyMessage.from.id) : stored?.senderId ?? "unknown",
-      senderLabel: this.senderLabel(replyMessage.from) || stored?.senderLabel || "unknown",
-      text,
-    };
-  }
-
-  private resolveThreadRootContext(
-    chatId: string,
-    chatType: UnifiedMessage["chatType"],
-    threadId: string,
-  ): TelegramHistoryEntry | undefined {
-    const entry = this.threadRoots.get(this.threadRootKey(chatId, threadId))
-      ?? this.historyByScope.get(this.historyScopeKey(chatId, threadId))?.[0];
-    if (!entry) return undefined;
-    const stored = this.messageContexts.get(this.messageContextKey(chatId, entry.messageId));
-    const sender = stored ? { id: stored.senderId, username: stored.senderLabel.replace(/^@/, "") } : undefined;
-    if (!this.shouldIncludeContextSender(chatId, chatType, "thread", sender, threadId)) {
-      return undefined;
-    }
-    return entry;
-  }
-
-  private resolveRoomHistoryContext(
-    chatId: string,
-    chatType: UnifiedMessage["chatType"],
-    threadId?: string,
-  ): string | undefined {
-    const limit = this.historyLimit();
-    if (limit <= 0) return undefined;
-
-    const lines = (this.historyByScope.get(this.historyScopeKey(chatId, threadId)) ?? [])
-      .filter((entry) => {
-        const stored = this.messageContexts.get(this.messageContextKey(chatId, entry.messageId));
-        const sender = stored ? { id: stored.senderId, username: stored.senderLabel.replace(/^@/, "") } : undefined;
-        return this.shouldIncludeContextSender(chatId, chatType, "history", sender, threadId);
-      })
-      .slice(-limit)
-      .map((entry) => {
-        const body = entry.text.trim();
-        return body ? `${entry.senderLabel}: ${body}` : undefined;
-      })
-      .filter((value): value is string => Boolean(value));
-
-    if (lines.length === 0) return undefined;
-    return `${threadId ? "[Recent Thread Context]" : "[Recent Room Context]"}\n${lines.join("\n")}`;
-  }
-
-  private resolveMentionsBot(msg: GrammyMessage): boolean {
-    const entities = msg.entities ?? msg.caption_entities ?? [];
-    const text = msg.text ?? msg.caption ?? "";
-
-    for (const entity of entities) {
-      if (entity.type === "mention" && this.selfUsername) {
-        const mention = text
-          .slice(entity.offset, entity.offset + entity.length)
-          .replace(/^@/, "")
-          .toLowerCase();
-        if (mention === this.selfUsername) {
-          return true;
-        }
-      }
-      if (entity.type === "text_mention" && this.selfUserId && String(entity.user.id) === this.selfUserId) {
-        return true;
-      }
-    }
-
-    return this.isReplyToSelf(msg.reply_to_message);
   }
 
   private shouldProcessMessage(msg: GrammyMessage): boolean {
@@ -1277,81 +786,26 @@ export class TelegramAdapter implements ChannelAdapter {
     return false;
   }
 
-  private contextTextForMessage(message: UnifiedMessage): string | undefined {
-    const text = message.text.trim();
-    if (text) return text;
+  private resolveMentionsBot(msg: GrammyMessage): boolean {
+    const entities = msg.entities ?? msg.caption_entities ?? [];
+    const text = msg.text ?? msg.caption ?? "";
 
-    const attachmentSummary = message.attachments
-      .map((attachment) => {
-        if (attachment.summaryText?.trim()) return attachment.summaryText.trim();
-        if (attachment.filename?.trim()) return `[${attachment.type}: ${attachment.filename.trim()}]`;
-        return `[${attachment.type}]`;
-      })
-      .join(" ")
-      .trim();
-
-    return attachmentSummary || undefined;
-  }
-
-  private contextTextFromRawMessage(message: GrammyMessage): string | undefined {
-    const text = this.messageTextFromRawMessage(message)?.trim() ?? "";
-    if (text) return text;
-    if (message.photo?.length) return "[image]";
-    if (message.video) return "[video]";
-    if (message.voice) return "[voice message]";
-    if (message.audio) return "[audio]";
-    if (message.document) {
-      return message.document.file_name?.trim()
-        ? `[file: ${message.document.file_name.trim()}]`
-        : "[file]";
+    for (const entity of entities) {
+      if (entity.type === "mention" && this.selfUsername) {
+        const mention = text
+          .slice(entity.offset, entity.offset + entity.length)
+          .replace(/^@/, "")
+          .toLowerCase();
+        if (mention === this.selfUsername) {
+          return true;
+        }
+      }
+      if (entity.type === "text_mention" && this.selfUserId && String(entity.user.id) === this.selfUserId) {
+        return true;
+      }
     }
-    if (message.sticker) return "[sticker]";
-    return undefined;
-  }
 
-  private senderLabel(from: GrammyMessage["from"]): string {
-    if (!from) return "unknown";
-    if (from.username?.trim()) return `@${from.username.trim()}`;
-    const name = [from.first_name, from.last_name]
-      .filter((part): part is string => Boolean(part?.trim()))
-      .join(" ")
-      .trim();
-    if (name) return name;
-    return String(from.id);
-  }
-
-  private historyScopeKey(chatId: string, threadId?: string): string {
-    return threadId ? `${chatId}/thread/${threadId}` : `${chatId}/room`;
-  }
-
-  private threadRootKey(chatId: string, threadId: string): string {
-    return `${chatId}/thread-root/${threadId}`;
-  }
-
-  private messageContextKey(chatId: string, messageId: string): string {
-    return `${chatId}/${messageId}`;
-  }
-
-  private pruneMessageContexts(): void {
-    if (this.messageContexts.size <= MAX_MESSAGE_CONTEXT_ENTRIES) return;
-    const toDelete = this.messageContexts.size - MAX_MESSAGE_CONTEXT_ENTRIES;
-    let deleted = 0;
-    for (const key of this.messageContexts.keys()) {
-      if (deleted >= toDelete) break;
-      this.messageContexts.delete(key);
-      deleted++;
-    }
-  }
-
-  private pruneThreadRoots(): void {
-    if (this.threadRoots.size <= MAX_THREAD_ROOT_ENTRIES) return;
-    const toDelete = this.threadRoots.size - MAX_THREAD_ROOT_ENTRIES;
-    let deleted = 0;
-    for (const key of this.threadRoots.keys()) {
-      if (deleted >= toDelete) break;
-      this.threadRoots.delete(key);
-      deleted++;
-    }
+    return this.isReplyToSelf(msg.reply_to_message);
   }
 
   private async extractAttachments(msg: GrammyMessage): Promise<Attachment[]> {
@@ -1522,7 +976,7 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     const send = () => {
-      const params = this.threadParams(threadId);
+      const params = threadParams(threadId);
       this.bot.api.sendChatAction(chatId, "typing", params).catch(() => {});
     };
     send();
@@ -1577,7 +1031,6 @@ export class TelegramAdapter implements ChannelAdapter {
           return new Response("Bad Request", { status: 400 });
         }
 
-        // ACK immediately, process in background (prevents Telegram re-delivery)
         void this.bot.handleUpdate(update).catch((err) => {
           void telegramLog("error", "webhook update processing error", { error: String(err) });
         });

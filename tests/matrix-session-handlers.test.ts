@@ -4,12 +4,12 @@ import {
   createMatrixApprovalHandler,
   createMatrixActionHandler,
   createMatrixCommandHandler,
-} from "../src/channels/matrix-session-handlers.ts";
-import { editPendingActionMessage } from "../src/channels/matrix/adapter-actions.ts";
-import { getMatrixHelpText } from "../src/channels/matrix-commands.ts";
+} from "../src/channels/matrix/session-handlers.ts";
+import { editPendingActionMessage } from "../src/channels/matrix/actions.ts";
+import { getMatrixHelpText } from "../src/channels/matrix/commands.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
-import type { MyClawConfig } from "../src/config.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 
 const config: MyClawConfig = {
   whitelist: ["@u1:example.org"],

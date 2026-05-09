@@ -1,19 +1,19 @@
 import { unlink } from "node:fs/promises";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig } from "./config.ts";
-import { TelegramAdapter } from "./channels/telegram.ts";
-import { MatrixAdapter } from "./channels/matrix.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig } from "./core/config.ts";
+import { TelegramAdapter } from "./channels/telegram/adapter.ts";
+import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import {
   createTelegramCommandHandler,
   createTelegramCallbackHandler,
-} from "./channels/telegram-session-handlers.ts";
+} from "./channels/telegram/session-handlers.ts";
 import {
   createMatrixApprovalHandler,
   createMatrixActionHandler,
   createMatrixCommandHandler,
-} from "./channels/matrix-session-handlers.ts";
+} from "./channels/matrix/session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
-import { MessageRouter } from "./router/router.ts";
+import { MessageRouter } from "./core/router.ts";
 import { AgentBridge } from "./agent/bridge.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";

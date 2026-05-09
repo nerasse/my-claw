@@ -2,7 +2,7 @@ import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
-import type { MyClawConfig } from "../src/config.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import type { SessionData } from "../src/sessions/store.ts";
 

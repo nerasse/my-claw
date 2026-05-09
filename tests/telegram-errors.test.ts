@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GrammyError, HttpError } from "grammy";
-import { ErrorReporter } from "../src/channels/telegram-errors.ts";
+import { ErrorReporter } from "../src/channels/telegram/errors.ts";
 
 test("ErrorReporter handles always and silent modes", () => {
   const always = new ErrorReporter({ mode: "always", onceCooldownMs: 1000 });

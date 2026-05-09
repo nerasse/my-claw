@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { markdownToTelegramHtml, stripHtml } from "../src/channels/telegram-format.ts";
+import { markdownToTelegramHtml, stripHtml } from "../src/channels/telegram/format.ts";
 
 test("markdownToTelegramHtml renders core formatting", () => {
   const html = markdownToTelegramHtml("**bold** *italic* ~~gone~~ `code` [site](https://example.com)");

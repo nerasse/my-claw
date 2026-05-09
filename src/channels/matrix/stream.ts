@@ -1,6 +1,6 @@
 import type { MatrixClient } from "matrix-js-sdk";
-import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./matrix-format.ts";
-import { withMatrixRetry } from "./matrix/retry.ts";
+import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
+import { withMatrixRetry } from "./retry.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
 

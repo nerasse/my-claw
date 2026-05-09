@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MY_CLAW_DIR } from "../config.ts";
+import { MY_CLAW_DIR } from "../core/config.ts";
 import type { Tool, ToolResult } from "./types.ts";
 
 const PROMPT_DIR = join(MY_CLAW_DIR, "prompt");

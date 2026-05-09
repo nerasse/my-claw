@@ -7,7 +7,7 @@ import {
   resolveInboundMatrixMentions,
   stripMatrixHtml,
   stripMatrixMentionPrefix,
-} from "../src/channels/matrix-format.ts";
+} from "../src/channels/matrix/format.ts";
 
 test("matrix formatter renders markdown to html", () => {
   const html = markdownToMatrixHtml("**bold**\n\n`code`");

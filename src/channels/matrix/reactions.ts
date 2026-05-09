@@ -1,5 +1,5 @@
 import { EventType, type MatrixClient } from "matrix-js-sdk";
-import { MATRIX_REACTION_BUTTON_EMOJIS } from "./matrix/adapter-actions.ts";
+import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
 
 export type MatrixReactionState = "received" | "thinking" | "tool_use" | "done" | "error";
 

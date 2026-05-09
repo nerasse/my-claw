@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { alignPlainTextChunks, splitHtmlChunks, splitPlainText } from "../src/channels/telegram-split.ts";
+import { alignPlainTextChunks, splitHtmlChunks, splitPlainText } from "../src/channels/telegram/split.ts";
 
 test("splitPlainText splits long content", () => {
   const chunks = splitPlainText("a".repeat(5000), 4000);

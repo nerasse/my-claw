@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ReactionManager } from "../src/channels/telegram-reactions.ts";
+import { ReactionManager } from "../src/channels/telegram/reactions.ts";
 
 function createBotMock(shouldThrow = false) {
   const calls: Array<{ chatId: string; messageId: number; reaction: unknown[] }> = [];

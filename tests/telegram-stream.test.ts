@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MessageStreamer, type StreamTransport } from "../src/channels/telegram-stream.ts";
+import { MessageStreamer, type StreamTransport } from "../src/channels/telegram/stream.ts";
 
 function createTransport() {
   let nextId = 1;
