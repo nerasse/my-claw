@@ -2,6 +2,24 @@ import type { Tool } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { writeFile, mkdir, readFile, access, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { formatError } from "../utils/errors.ts";
+
+const MAX_NAME_LENGTH = 64;
+const MAX_DESC_LENGTH = 1024;
+const VALID_NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+function validateSkillName(name: string): string | null {
+  if (!name) return "name is required.";
+  if (name.length > MAX_NAME_LENGTH) return `name must be at most ${MAX_NAME_LENGTH} characters (got ${name.length}).`;
+  if (!VALID_NAME_RE.test(name)) return `name must be lowercase alphanumeric with hyphens only (e.g., 'deploy-node', 'security-audit'). Got: "${name}".`;
+  return null;
+}
+
+function validateSkillDescription(desc: string): string | null {
+  if (!desc) return "description is required.";
+  if (desc.length > MAX_DESC_LENGTH) return `description must be at most ${MAX_DESC_LENGTH} characters (got ${desc.length}).`;
+  return null;
+}
 
 export function createListSkillsTool(registry: SkillRegistry): Tool {
   return {
@@ -41,7 +59,7 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
       const filePath = args["file_path"] ? String(args["file_path"]) : undefined;
       const skill = registry.get(name);
       if (!skill) {
-        return { success: false, output: `Skill "${name}" not found.` };
+        return { success: false, output: `Skill "${name}" not found. Use list_skills() to see available skills.` };
       }
 
       const { dirname } = await import("node:path");
@@ -56,8 +74,8 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
         const targetPath = join(skillDir, filePath);
         try {
           rawContent = await readFile(targetPath, "utf-8");
-        } catch {
-          return { success: false, output: `File "${filePath}" not found in skill "${name}".` };
+        } catch (err) {
+          return { success: false, output: formatError(`File "${filePath}" in skill "${name}"`, err) };
         }
       }
 
@@ -70,12 +88,12 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
 export function createCreateSkillTool(workspaceSkillsDir: string): Tool {
   return {
     name: "create_skill",
-    description: "Create a new skill in the workspace skills directory. Only the agent can create skills here.",
+    description: "Create a new skill in the workspace skills directory. Validates name format (lowercase, hyphens, max 64 chars) and description length (max 1024 chars).",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Skill name (lowercase, hyphens allowed)" },
-        description: { type: "string", description: "Short description of what this skill does" },
+        name: { type: "string", description: "Skill name: lowercase alphanumeric with hyphens, max 64 chars (e.g., 'deploy-node')" },
+        description: { type: "string", description: "Short description of what this skill does, max 1024 chars" },
         instructions: { type: "string", description: "Full markdown instructions for the skill" },
       },
       required: ["name", "description", "instructions"],
@@ -85,17 +103,35 @@ export function createCreateSkillTool(workspaceSkillsDir: string): Tool {
       const description = String(args["description"] ?? "").trim();
       const instructions = String(args["instructions"] ?? "").trim();
 
-      if (!name || !description || !instructions) {
-        return { success: false, output: "Missing required fields: name, description, instructions." };
+      const nameError = validateSkillName(name);
+      if (nameError) {
+        return { success: false, output: `Invalid skill name: ${nameError}` };
+      }
+
+      const descError = validateSkillDescription(description);
+      if (descError) {
+        return { success: false, output: `Invalid description: ${descError}` };
+      }
+
+      if (!instructions) {
+        return { success: false, output: "instructions is required (cannot be empty)." };
       }
 
       const skillDir = join(workspaceSkillsDir, name);
-      await mkdir(skillDir, { recursive: true });
+      try {
+        await mkdir(skillDir, { recursive: true });
+      } catch (err) {
+        return { success: false, output: formatError(`Failed to create skill directory "${name}"`, err) };
+      }
 
       const content = `---\nname: ${name}\ndescription: ${description}\n---\n\n${instructions}\n`;
-      await writeFile(join(skillDir, "SKILL.md"), content);
+      try {
+        await writeFile(join(skillDir, "SKILL.md"), content);
+      } catch (err) {
+        return { success: false, output: formatError(`Failed to write SKILL.md for "${name}"`, err) };
+      }
 
-      return { success: true, output: `Skill "${name}" created in workspace/skills/.` };
+      return { success: true, output: `Skill "${name}" created in workspace/skills/.\nPath: ${skillDir}/SKILL.md\nTip: use write() to add references/ and examples/ files if needed.` };
     },
   };
 }

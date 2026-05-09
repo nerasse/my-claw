@@ -524,3 +524,106 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
 
   await rm(dir, { recursive: true, force: true });
 });
+
+test("create_skill validates name format", async () => {
+  const ws = await setupDir();
+  const tool = createCreateSkillTool(ws);
+
+  // Empty name
+  const empty = await tool.execute({ name: "", description: "d", instructions: "i" });
+  assert.equal(empty.success, false);
+  assert.ok(empty.output.includes("name is required"));
+
+  // Uppercase
+  const upper = await tool.execute({ name: "BadName", description: "d", instructions: "i" });
+  assert.equal(upper.success, false);
+  assert.ok(upper.output.includes("lowercase"));
+
+  // Special chars
+  const special = await tool.execute({ name: "bad_name!", description: "d", instructions: "i" });
+  assert.equal(special.success, false);
+  assert.ok(special.output.includes("hyphens"));
+
+  // Too long
+  const long = await tool.execute({ name: "a".repeat(65), description: "d", instructions: "i" });
+  assert.equal(long.success, false);
+  assert.ok(long.output.includes("64"));
+
+  // Valid name succeeds
+  const valid = await tool.execute({ name: "deploy-node", description: "Deploy", instructions: "Step 1" });
+  assert.equal(valid.success, true);
+
+  await rm(ws, { recursive: true, force: true });
+});
+
+test("create_skill validates description and instructions", async () => {
+  const ws = await setupDir();
+  const tool = createCreateSkillTool(ws);
+
+  // Empty description
+  const noDesc = await tool.execute({ name: "test", description: "", instructions: "i" });
+  assert.equal(noDesc.success, false);
+  assert.ok(noDesc.output.includes("description"));
+
+  // Description too long
+  const longDesc = await tool.execute({ name: "test", description: "d".repeat(1025), instructions: "i" });
+  assert.equal(longDesc.success, false);
+  assert.ok(longDesc.output.includes("1024"));
+
+  // Empty instructions
+  const noInst = await tool.execute({ name: "test", description: "d", instructions: "" });
+  assert.equal(noInst.success, false);
+  assert.ok(noInst.output.includes("instructions"));
+
+  await rm(ws, { recursive: true, force: true });
+});
+
+test("create_skill writes to correct workspace path", async () => {
+  const ws = await setupDir();
+  const tool = createCreateSkillTool(ws);
+
+  const result = await tool.execute({
+    name: "my-skill",
+    description: "My skill",
+    instructions: "Do this.",
+  });
+
+  assert.equal(result.success, true);
+  assert.ok(result.output.includes("my-skill"));
+  assert.ok(result.output.includes("workspace/skills"));
+
+  const content = await readFile(join(ws, "my-skill", "SKILL.md"), "utf-8");
+  assert.ok(content.includes("name: my-skill"));
+  assert.ok(content.includes("description: My skill"));
+  assert.ok(content.includes("Do this."));
+
+  await rm(ws, { recursive: true, force: true });
+});
+
+test("read error on missing file is clear", async () => {
+  const { readTool } = await import("../src/tools/read.ts");
+  const result = await readTool.execute({ path: "/tmp/definitely-does-not-exist-12345.txt" });
+  assert.equal(result.success, false);
+  assert.ok(result.output.includes("not found"));
+});
+
+test("fetch error on bad URL is clear", async () => {
+  const { fetchTool } = await import("../src/tools/fetch.ts");
+  const result = await fetchTool.execute({ url: "http://localhost:99999" });
+  assert.equal(result.success, false);
+  assert.ok(result.error?.includes("Failed to fetch"));
+});
+
+test("ls error on missing directory is clear", async () => {
+  const { lsTool } = await import("../src/tools/ls.ts");
+  const result = await lsTool.execute({ path: "/tmp/does-not-exist-99999" });
+  assert.equal(result.success, false);
+  assert.ok(result.output.includes("not found"));
+});
+
+test("memory append without content is clear", async () => {
+  const { memoryTool } = await import("../src/tools/memory.ts");
+  const result = await memoryTool.execute({ file: "MEMORY.md", action: "append", content: "" });
+  assert.equal(result.success, false);
+  assert.ok(result.output.includes("content is required"));
+});

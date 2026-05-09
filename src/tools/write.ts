@@ -2,6 +2,7 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Tool, ToolResult } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const writeTool: Tool = {
   name: "write",
@@ -15,13 +16,17 @@ export const writeTool: Tool = {
     required: ["path", "content"],
   },
   async execute(args): Promise<ToolResult> {
+    const path = args["path"] as string;
+    if (!path || !path.trim()) {
+      return { success: false, output: "path is required and cannot be empty." };
+    }
     try {
-      const resolved = resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined);
+      const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
       await mkdir(dirname(resolved), { recursive: true });
       await writeFile(resolved, args["content"] as string);
       return { success: true, output: `Written to ${resolved}` };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to write "${path}"`, e) };
     }
   },
 };

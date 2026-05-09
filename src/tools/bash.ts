@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "./types.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const bashTool: Tool = {
   name: "bash",
@@ -12,8 +13,12 @@ export const bashTool: Tool = {
     required: ["command"],
   },
   async execute(args): Promise<ToolResult> {
+    const command = args["command"] as string;
+    if (!command || !command.trim()) {
+      return { success: false, output: "command is required and cannot be empty." };
+    }
     try {
-      const proc = Bun.spawn(["bash", "-c", args["command"] as string], {
+      const proc = Bun.spawn(["bash", "-c", command], {
         stdout: "pipe",
         stderr: "pipe",
         cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
@@ -22,13 +27,17 @@ export const bashTool: Tool = {
       const stderr = await new Response(proc.stderr).text();
       const exitCode = await proc.exited;
 
+      const output = stdout + (stderr ? `\nSTDERR: ${stderr}` : "");
+      if (exitCode === 0) {
+        return { success: true, output };
+      }
       return {
-        success: exitCode === 0,
-        output: stdout + (stderr ? `\nSTDERR: ${stderr}` : ""),
-        error: exitCode !== 0 ? `Exit code: ${exitCode}` : undefined,
+        success: false,
+        output,
+        error: `Command failed with exit code ${exitCode}. Check STDERR above for details.`,
       };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to execute "${command}"`, e) };
     }
   },
 };

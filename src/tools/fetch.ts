@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "./types.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const fetchTool: Tool = {
   name: "fetch",
@@ -13,19 +14,26 @@ export const fetchTool: Tool = {
     required: ["url"],
   },
   async execute(args): Promise<ToolResult> {
+    const url = args["url"] as string;
+    if (!url || !url.trim()) {
+      return { success: false, output: "url is required and cannot be empty." };
+    }
     try {
-      const response = await fetch(args["url"] as string, {
+      const response = await fetch(url, {
         method: (args["method"] as string) ?? "GET",
         body: args["body"] as string | undefined,
       });
       const text = await response.text();
+      if (response.ok) {
+        return { success: true, output: text };
+      }
       return {
-        success: response.ok,
+        success: false,
         output: text,
-        error: response.ok ? undefined : `HTTP ${response.status}`,
+        error: `HTTP ${response.status} from ${url}. Check the URL, method, and authentication.`,
       };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to fetch "${url}"`, e) };
     }
   },
 };

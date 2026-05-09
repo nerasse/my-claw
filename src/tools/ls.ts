@@ -1,6 +1,7 @@
-import { readdir } from "node:fs/promises";
+import { readdir, access } from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const lsTool: Tool = {
   name: "ls",
@@ -13,14 +14,27 @@ export const lsTool: Tool = {
     required: ["path"],
   },
   async execute(args): Promise<ToolResult> {
+    const path = args["path"] as string;
+    if (!path || !path.trim()) {
+      return { success: false, output: "path is required and cannot be empty." };
+    }
+    const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
     try {
-      const entries = await readdir(resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined), { withFileTypes: true });
+      await access(resolved);
+    } catch {
+      return { success: false, output: `Directory not found: ${resolved}. Check the path exists.` };
+    }
+    try {
+      const entries = await readdir(resolved, { withFileTypes: true });
+      if (entries.length === 0) {
+        return { success: true, output: "(empty directory)" };
+      }
       const output = entries
         .map((e) => `${e.isDirectory() ? "d" : "f"} ${e.name}`)
         .join("\n");
       return { success: true, output };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to list "${resolved}"`, e) };
     }
   },
 };

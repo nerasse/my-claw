@@ -1,5 +1,7 @@
+import { access } from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const findTool: Tool = {
   name: "find",
@@ -13,16 +15,30 @@ export const findTool: Tool = {
     required: ["path", "pattern"],
   },
   async execute(args): Promise<ToolResult> {
+    const path = args["path"] as string;
+    const pattern = args["pattern"] as string;
+    if (!path || !path.trim()) {
+      return { success: false, output: "path is required and cannot be empty." };
+    }
+    if (!pattern || !pattern.trim()) {
+      return { success: false, output: "pattern is required and cannot be empty." };
+    }
+    const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
+    try {
+      await access(resolved);
+    } catch {
+      return { success: false, output: `Directory not found: ${resolved}. Check the path exists.` };
+    }
     try {
       const proc = Bun.spawn(
-        ["find", resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined), "-name", args["pattern"] as string],
+        ["find", resolved, "-name", pattern],
         { stdout: "pipe", stderr: "pipe", cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;
       return { success: true, output: stdout || "No files found" };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to find in "${resolved}"`, e) };
     }
   },
 };

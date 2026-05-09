@@ -1,6 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, access } from "node:fs/promises";
 import type { Tool, ToolResult } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
+import { formatError } from "../utils/errors.ts";
 
 export const readTool: Tool = {
   name: "read",
@@ -13,11 +14,17 @@ export const readTool: Tool = {
     required: ["path"],
   },
   async execute(args): Promise<ToolResult> {
+    const resolved = resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined);
     try {
-      const content = await readFile(resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined), "utf-8");
+      await access(resolved);
+    } catch {
+      return { success: false, output: `File not found: ${resolved}. Check the path and ensure the file exists.` };
+    }
+    try {
+      const content = await readFile(resolved, "utf-8");
       return { success: true, output: content };
     } catch (e) {
-      return { success: false, output: "", error: String(e) };
+      return { success: false, output: "", error: formatError(`Failed to read "${resolved}"`, e) };
     }
   },
 };
