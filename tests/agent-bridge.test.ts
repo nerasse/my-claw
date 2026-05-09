@@ -2,6 +2,7 @@ import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { SkillRegistry } from "../src/skills/registry.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import type { SessionData } from "../src/sessions/store.ts";
@@ -41,7 +42,8 @@ function createSession(): SessionData {
 
 test("AgentBridge returns plain LLM response", async () => {
   const registry = new ToolRegistry();
-  const bridge = new AgentBridge(config, registry);
+  const skillRegistry = new SkillRegistry();
+  const bridge = new AgentBridge(config, registry, skillRegistry);
   const fetchMock = mock.method(globalThis, "fetch", async () =>
     new Response(
       JSON.stringify({
@@ -71,7 +73,8 @@ test("AgentBridge executes tool calls and supports model override", async () => 
       return { success: true, output: "tool ok" };
     },
   });
-  const bridge = new AgentBridge(config, registry);
+  const skillRegistry = new SkillRegistry();
+  const bridge = new AgentBridge(config, registry, skillRegistry);
   const seenModels: string[] = [];
   let callCount = 0;
 
@@ -122,7 +125,8 @@ test("AgentBridge executes tool calls and supports model override", async () => 
 
 test("AgentBridge includes reply thread and attachment context in user content", async () => {
   const registry = new ToolRegistry();
-  const bridge = new AgentBridge(config, registry);
+  const skillRegistry = new SkillRegistry();
+  const bridge = new AgentBridge(config, registry, skillRegistry);
   let capturedBody = "";
 
   const fetchMock = mock.method(globalThis, "fetch", async (_input: string | URL | Request, init?: RequestInit) => {

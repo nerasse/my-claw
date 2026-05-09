@@ -1,7 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { ToolRegistry } from "../tools/registry.ts";
+import { SkillRegistry } from "../skills/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
-import { buildSystemPrompt } from "../agent/prompt/builder.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
@@ -19,6 +19,7 @@ export class SubAgentRunner {
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
+    private skillRegistry: SkillRegistry,
   ) {}
 
   canSpawn(depth: number): boolean {
@@ -172,6 +173,7 @@ export class SubAgentRunner {
     const bridge = new AgentBridge(
       { ...this.config, llm: llmConfig, agents: {} },
       this.toolRegistry,
+      this.skillRegistry,
       depth,
       workspaceDir,
     );

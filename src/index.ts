@@ -1,5 +1,7 @@
 import { unlink } from "node:fs/promises";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig } from "./core/config.ts";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR } from "./core/config.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
@@ -29,13 +31,18 @@ import { createSendTool } from "./tools/send.ts";
 import { createListAgentsTool } from "./tools/list-agents.ts";
 import { createKillAgentTool } from "./tools/kill-agent.ts";
 import { createResetAgentTool } from "./tools/reset-agent.ts";
+import { createListSkillsTool, createReadSkillTool, createCreateSkillTool, createUpdateSkillTool, createDeleteSkillTool } from "./tools/skills.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
+import { SkillRegistry } from "./skills/registry.ts";
+import { loadAllSkills } from "./skills/loader.ts";
+import { syncBuiltIn } from "./skills/sync.ts";
 import { log } from "./utils/logger.ts";
 
 async function main() {
   const config = await loadConfig();
-  process.env["MY_CLAW_WORKSPACE"] = config.workspace;
+  const workspacePath = config.workspace!;
+  process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const modelPicker = new ModelPicker(config.llm.models ?? []);
 
   const toolRegistry = new ToolRegistry();
@@ -43,17 +50,37 @@ async function main() {
     toolRegistry.register(tool);
   }
 
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const repoSkillsDir = join(repoRoot, "src", "skills");
+  const builtinDir = join(MY_CLAW_DIR, "skills", ".builtin");
+  const customDir = join(MY_CLAW_DIR, "skills");
+  const workspaceSkillsDir = join(workspacePath, "skills");
+
+  const changedBuiltins = await syncBuiltIn(repoSkillsDir, builtinDir);
+  if (changedBuiltins.length > 0) {
+    void log("info", "skills synced", { changed: changedBuiltins });
+  }
+
+  const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+  const skillRegistry = new SkillRegistry(allSkills);
+
   const subAgentRegistry = new SubAgentRegistry();
   await subAgentRegistry.load();
-  const subAgentRunner = new SubAgentRunner(config, toolRegistry);
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry);
   toolRegistry.register(createSpawnTool(subAgentRunner, subAgentRegistry));
   toolRegistry.register(createSendTool(subAgentRunner, subAgentRegistry));
   toolRegistry.register(createListAgentsTool(subAgentRunner, subAgentRegistry));
   toolRegistry.register(createKillAgentTool(subAgentRunner));
   toolRegistry.register(createResetAgentTool(subAgentRunner));
 
+  toolRegistry.register(createListSkillsTool(skillRegistry));
+  toolRegistry.register(createReadSkillTool(skillRegistry));
+  toolRegistry.register(createCreateSkillTool(workspaceSkillsDir));
+  toolRegistry.register(createUpdateSkillTool(workspaceSkillsDir, customDir, skillRegistry));
+  toolRegistry.register(createDeleteSkillTool(workspaceSkillsDir, customDir, skillRegistry));
+
   const sessionManager = new SessionManager();
-  const agent = new AgentBridge(config, toolRegistry);
+  const agent = new AgentBridge(config, toolRegistry, skillRegistry);
   const router = new MessageRouter(config.whitelist, sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];

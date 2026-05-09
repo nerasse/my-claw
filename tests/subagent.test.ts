@@ -4,9 +4,24 @@ import { AgentBridge } from "../src/agent/bridge.ts";
 import { SubAgentRunner } from "../src/subagents/runner.ts";
 import { SubAgentRegistry } from "../src/subagents/registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { SkillRegistry } from "../src/skills/registry.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { deleteSession, loadSession } from "../src/sessions/store.ts";
+import { mkdir, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+
+async function setupDir(): Promise<string> {
+  const dir = join("/tmp", `subagent-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+async function writeSkill(dir: string, name: string, content: string): Promise<void> {
+  const skillDir = join(dir, name);
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), content);
+}
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -36,7 +51,7 @@ function createMessage(): UnifiedMessage {
 
 test("SubAgentRunner spawns research agent one-shot", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -67,7 +82,7 @@ test("SubAgentRunner spawns research agent one-shot", async () => {
 
 test("SubAgentRunner spawns persistent session and sends message", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -122,7 +137,7 @@ test("SubAgentRegistry generates unique IDs", async () => {
 
 test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   const executionOrder: string[] = [];
@@ -177,7 +192,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
 test("SubAgentRunner queues three sends in order", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   const executionOrder: number[] = [];
@@ -217,7 +232,7 @@ test("SubAgentRunner queues three sends in order", async () => {
 
 test("SubAgentRunner kill and reset", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -253,7 +268,7 @@ test("SubAgentRunner kill and reset", async () => {
 test("spawn tool with attachments", async () => {
   const { createSendTool } = await import("../src/tools/send.ts");
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry);
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -286,6 +301,40 @@ test("spawn tool with attachments", async () => {
     await deleteSession(id);
   } finally {
     fetchMock.mock.restore();
+  }
+});
+
+test("sub-agent with workspaceDir receives same skills as main agent", async () => {
+  const { loadAllSkills } = await import("../src/skills/loader.ts");
+  const { SkillRegistry } = await import("../src/skills/registry.ts");
+  const dir = await setupDir();
+  await writeSkill(dir, "shared", "---\nname: shared\ndescription: Shared skill\n---\n\nShared.");
+
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skillRegistry = new SkillRegistry(skills);
+
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, skillRegistry);
+
+  let capturedSystemPrompt = "";
+  const fetchMock = mock.method(globalThis, "fetch", async (_input, init) => {
+    const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
+    const sysMsg = body.messages?.find((m) => m.role === "system");
+    if (sysMsg) capturedSystemPrompt = sysMsg.content;
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+      { status: 200 },
+    ) as never;
+  });
+
+  try {
+    const existing = await new SubAgentRegistry().listExistingIds();
+    await runner.spawn("skill-test", "research", "run", "test", "/tmp/project", createMessage(), existing, (n, e) => new SubAgentRegistry().generateId(n, e));
+    assert.ok(capturedSystemPrompt.includes("Available skills"), "System prompt should contain skills");
+    assert.ok(capturedSystemPrompt.includes("shared"), "System prompt should contain shared skill");
+  } finally {
+    fetchMock.mock.restore();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

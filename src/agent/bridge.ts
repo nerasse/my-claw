@@ -4,6 +4,7 @@ import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { ToolRegistry } from "../tools/registry.ts";
+import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 
@@ -41,6 +42,7 @@ export class AgentBridge {
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
+    private skillRegistry: SkillRegistry,
     private depth: number = 0,
     private workspaceDir?: string,
   ) {
@@ -96,6 +98,7 @@ export class AgentBridge {
         channelId: message.chatId,
         sessionId: session.id,
         tools,
+        skills: this.skillRegistry.list(),
       });
 
       const userContent = this.buildUserContent(message);

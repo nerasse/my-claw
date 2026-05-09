@@ -11,11 +11,12 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, max 10 iterations, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8) | Complete: bash, read, write, fetch, find, grep, ls, memory |
-| System prompt builder | Complete (7-layer architecture) |
+| Tools (8 base) | Complete: bash, read, write, fetch, find, grep, ls, memory |
+| System prompt builder | Complete (8-layer architecture with skills layer) |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
+| Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
-| Full wiring (index.ts) | Complete — config -> tools -> sessions -> agent -> router -> adapter |
+| Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
 
 ## Channel Structure
 
@@ -124,6 +125,19 @@
 - Configurable LLM per type via `config.agents.{general,research}.llm`
 - Optional `workspaceDir` per sub-agent for filesystem isolation
 
+### Skills
+
+- Hybrid 3-tier: **built-in** (repo, versioned, auto-sync), **custom** (user-managed), **workspace** (agent-generated)
+- Format: `SKILL.md` with YAML frontmatter (agentskills.io standard)
+- Progressive disclosure: only index (name + description) in system prompt; full content loaded on-demand via `read_skill`
+- Multi-file skills: `references/`, `examples/`, `scripts/` subdirectories supported
+- Script execution: `${SKILL_DIR}` placeholder substituted with absolute skill directory path in `read_skill` output
+- 5 tools: `list_skills`, `read_skill`, `create_skill`, `update_skill`, `delete_skill`
+- Shared globally: main agent and all sub-agents see the same skills regardless of `workspaceDir`
+- Resolution priority: workspace > custom > built-in
+- Auto-update: SHA256 hash comparison at boot, manifest.json tracking
+- Built-in skills read-only for agent
+
 ### Invocation
 
 - DM: responds to every message from an authorized user
@@ -145,6 +159,7 @@
 | 2 | Directives | AGENTS.md |
 | 3 | User context | USER.md |
 | 4 | Memory | MEMORY.md (frozen snapshot) |
-| 5 | Tools | Available tool list |
-| 6 | Platform hints | Telegram vs Matrix formatting guidance |
-| 7 | Runtime | Date, model, channel, session ID |
+| 5 | Skills | Available skills index (name + description) |
+| 6 | Tools | Available tool list |
+| 7 | Platform hints | Telegram vs Matrix formatting guidance |
+| 8 | Runtime | Date, model, channel, session ID |

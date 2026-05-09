@@ -9,6 +9,7 @@ import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
+import { SkillRegistry } from "../src/skills/registry.ts";
 import {
   createMatrixActionHandler,
   createMatrixApprovalHandler,
@@ -1618,6 +1619,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
   );
   const sessionManager = new SessionManager();
   const toolRegistry = new ToolRegistry();
+  const skillRegistry = new SkillRegistry();
   const agent = new AgentBridge(
     {
       whitelist: ["@u1:example.org"],
@@ -1627,6 +1629,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
       agents: {},
     },
     toolRegistry,
+    skillRegistry,
   );
   const router = new MessageRouter(["@u1:example.org"], sessionManager, agent);
 
