@@ -25,6 +25,8 @@ export function resolveMatrixMessageAttachmentSummary(params: {
         return "video";
       case MsgType.File:
         return "file";
+      case "m.sticker":
+        return "sticker";
       default:
         return undefined;
     }
@@ -156,6 +158,7 @@ export function normalizeRoomKey(value: string): string {
 export function matrixAttachmentTypeFromMsgType(msgtype?: string): Attachment["type"] {
   switch (msgtype) {
     case MsgType.Image:
+    case "m.sticker":
       return "image";
     case MsgType.Audio:
       return "audio";

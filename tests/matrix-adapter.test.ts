@@ -636,7 +636,7 @@ test("MatrixAdapter reports unknown matrix commands with guidance", async () => 
   const promptCall = calls.find((call) => call.method === "sendMessage");
   const prompt = promptCall?.args[1] as Record<string, unknown>;
   assert.match(String(prompt?.body ?? ""), /Unknown command: \/unknown/);
-  assert.match(String(prompt?.body ?? ""), /Use \/commands to list available commands/);
+  assert.match(String(prompt?.body ?? ""), /Use \/help or \/commands to list available commands/);
 });
 
 test("MatrixAdapter handles reaction-driven matrix actions", async () => {
@@ -1255,6 +1255,79 @@ test("MatrixAdapter rewrites trailing text bursts into media captions", async ()
   assert.equal(received[0]?.text, "look at this\n\n[matrix image attachment unavailable]");
 });
 
+test("MatrixAdapter rewrites short leading text bursts into media captions", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: Array<{ text: string; attachmentCount: number }> = [];
+
+  adapter.onMessage(async (message) => {
+    received.push({ text: message.text, attachmentCount: message.attachments.length });
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$lead-caption-text",
+      content: { msgtype: "m.text", body: "look at this" },
+    }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({
+      id: "$lead-caption-image",
+      content: {
+        msgtype: "m.image",
+        body: "photo.jpg",
+        filename: "photo.jpg",
+        info: { mimetype: "image/jpeg", size: 42 },
+        url: "mxc://example.org/photo-leading-caption",
+      },
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 900));
+
+  assert.equal(received.length, 1);
+  assert.equal(received[0]?.attachmentCount, 1);
+  assert.equal(received[0]?.text, "look at this\n\n[matrix image attachment unavailable]");
+});
+
+test("MatrixAdapter coalesces short room-root split turns that arrive quickly", async () => {
+  class TestMatrixAdapter extends MatrixAdapter {
+    protected override bufferedIngressDelayForMessage(message: import("../src/channels/types.ts").UnifiedMessage): number {
+      return message.text.trim().length > 0 && message.text.length < 160 ? 25 : super.bufferedIngressDelayForMessage(message);
+    }
+  }
+  const { runtime } = createRuntimeMock();
+  const adapter = new TestMatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: string[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.text);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({ id: "$short-frag-1", content: { msgtype: "m.text", body: "part one" } }),
+  });
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
+    event: createEvent({ id: "$short-frag-2", content: { msgtype: "m.text", body: "part two" } }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 90));
+
+  assert.deepEqual(received, ["part one\npart two"]);
+});
+
 test("MatrixAdapter keeps real media captions but strips filename-only bodies", async () => {
   const { runtime } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
@@ -1415,6 +1488,58 @@ test("MatrixAdapter marks bridge-style inbound messages as forwarded", async () 
   });
 
   assert.deepEqual(received, [true]);
+});
+
+test("MatrixAdapter marks double-puppet metadata messages as forwarded", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: boolean[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.isForwarded);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({
+      id: "$fwd-double-puppet",
+      sender: "@u1:example.org",
+      content: { msgtype: "m.text", body: "bridged hello", "fi.mau.double_puppet_source": "telegram" },
+    }),
+  });
+
+  assert.deepEqual(received, [true]);
+});
+
+test("MatrixAdapter does not mark ordinary messages as forwarded", async () => {
+  const { runtime } = createRuntimeMock();
+  const adapter = new MatrixAdapter(
+    createConfig({ groups: { "!room:test": { requireMention: false } } }),
+    new Set(["@u1:example.org"]),
+    runtime as never,
+  );
+  const received: boolean[] = [];
+
+  adapter.onMessage(async (message) => {
+    received.push(message.isForwarded);
+  });
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
+    event: createEvent({
+      id: "$not-forwarded",
+      sender: "@u1:example.org",
+      content: { msgtype: "m.text", body: "plain hello" },
+    }),
+  });
+
+  assert.deepEqual(received, [false]);
 });
 
 test("MatrixAdapter strips Matrix reply fallback from normalized text", async () => {
@@ -2084,7 +2209,7 @@ test("MatrixAdapter does not treat unconfigured users as bots when allowBots is 
   const adapter = new MatrixAdapter(
     createConfig({
       allowBots: false,
-      groupAllowFrom: ["@helperbot:example.org"],
+      groupAllowFrom: ["@u1:example.org"],
       groups: { "!room:test": { requireMention: false } },
       botUserIds: ["@otherbot:example.org"],
     }),
@@ -2100,7 +2225,7 @@ test("MatrixAdapter does not treat unconfigured users as bots when allowBots is 
   await adapter.start();
   await runtime.emitTimeline({
     room: createRoom({ joinedMembers: ["@bot:example.org", "@helperbot:example.org", "@u1:example.org"] }),
-    event: createEvent({ sender: "@helperbot:example.org" }),
+    event: createEvent({ sender: "@u1:example.org" }),
   });
 
   assert.deepEqual(received, ["hello"]);
@@ -2273,6 +2398,7 @@ test("MatrixAdapter normalizes poll responses into text", async () => {
       },
     }),
   });
+  await new Promise((resolve) => setTimeout(resolve, 900));
 
   assert.match(received[0] ?? "", /Lunch\?/);
   assert.match(received[0] ?? "", /Pizza \(1 vote\)/);

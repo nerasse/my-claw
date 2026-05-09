@@ -61,9 +61,34 @@ test("matrix help text includes command discoverability tips", () => {
   const help = getMatrixHelpText();
   assert.match(help, /Matrix commands:/);
   assert.match(help, /Reply with a menu number/i);
+  assert.match(help, /replies work for every numbered option/i);
   assert.match(help, /Use `\/model` with no args/i);
   assert.match(help, /Use `\/models` to browse/i);
   assert.match(help, /Use `\/commands` to list commands explicitly/i);
+});
+
+test("matrix model menu copy explains replies beyond ten options", async () => {
+  const bigConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      models: Array.from({ length: 12 }, (_, index) => ({
+        id: `model-${index + 1}`,
+        label: `Model ${index + 1}`,
+      })),
+      model: "model-1",
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(bigConfig.llm.models ?? []);
+  const commandHandler = createMatrixCommandHandler({ config: bigConfig, sessionManager, modelPicker });
+
+  const modelMessage = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "");
+  assert.equal(typeof modelMessage, "object");
+  assert.match(
+    String((modelMessage as { text?: string }).text ?? ""),
+    /Reply with a number\/name for any option, react to this message for the first 10/i,
+  );
 });
 
 test("matrix session handlers list models and improve unknown-model guidance", async () => {

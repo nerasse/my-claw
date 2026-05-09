@@ -87,7 +87,9 @@ function buildMatrixModelMenu(params: {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
       `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
-      "Reply with a number/name, react to this message, or send `/model <number|name>`:",
+      models.length > MATRIX_REACTION_BUTTON_EMOJIS.length
+        ? "Reply with a number/name for any option, react to this message for the first 10, or send `/model <number|name>`:"
+        : "Reply with a number/name, react to this message, or send `/model <number|name>`:",
       ...models.map((model, index) => {
         const prefix = MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`;
         const suffix = model.id === params.currentModel ? " [selected]" : "";
@@ -127,7 +129,7 @@ export function buildMatrixApprovalMenu(params: {
     "```",
     params.expired || params.decision
       ? ""
-      : "Reply with `1`, `2`, `3`, or the action name. You can also react: 1️⃣ allow once, 2️⃣ allow for this session, 3️⃣ deny.",
+      : "Reply with `1`, `2`, `3`, or the button label. You can also react: 1️⃣ allow once, 2️⃣ allow for this session, 3️⃣ deny.",
   ].join("\n");
   return {
     text,

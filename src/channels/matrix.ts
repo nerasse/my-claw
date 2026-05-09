@@ -96,8 +96,10 @@ const MATRIX_TEXT_BATCH_THRESHOLD = 160;
 const MATRIX_TEXT_BATCH_DELAY_MS = 600;
 const MATRIX_TEXT_BATCH_SPLIT_DELAY_MS = 2_000;
 const MATRIX_TEXT_BATCH_SPLIT_THRESHOLD = 3_900;
+const MATRIX_SHORT_TEXT_HOLD_DELAY_MS = 250;
 const MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT = 3;
 const MATRIX_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+const MATRIX_ATTACHMENT_SUMMARY_LINE = /^\[matrix .+ attachment(?: unavailable| too large)?\]$/;
 
 type PendingBufferedMatrixIngress = {
   batchKey: string;
@@ -501,7 +503,7 @@ export class MatrixAdapter implements ChannelAdapter {
           );
           if (!response) {
             await this.send(roomId, {
-              text: `Unknown command: /${parsedCommand.command}\nUse /commands to list available commands.`,
+              text: `Unknown command: /${parsedCommand.command}\nUse /help or /commands to list available commands.`,
               replyToId: event.getId(),
               threadId: rootThreadId,
               notice: true,
@@ -703,7 +705,7 @@ export class MatrixAdapter implements ChannelAdapter {
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => {
         void this.flushBufferedMessage(existing.batchKey, existing.eventId);
-      }, this.bufferedIngressDelayMs(params.message.text));
+      }, this.bufferedIngressDelayForMessage(existing.message));
       this.pendingBufferedIngress.set(existing.eventId, existing);
       return true;
     }
@@ -723,7 +725,12 @@ export class MatrixAdapter implements ChannelAdapter {
       releasers: [params.releaseInboundEventIfClaimed],
       timer: setTimeout(() => {
         void this.flushBufferedMessage(batchKey, bufferedItem.eventId);
-      }, this.bufferedIngressDelayMs(params.message.text)),
+      }, this.bufferedIngressDelayForMessage({
+        ...params.message,
+        id: bufferedItem.eventId,
+        text: bufferedItem.text,
+        attachments: bufferedItem.attachments ?? [],
+      })),
     };
     this.pendingBufferedIngress.set(bufferedItem.eventId, pending);
     return true;
@@ -787,7 +794,35 @@ export class MatrixAdapter implements ChannelAdapter {
     if (message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD) {
       return true;
     }
-    return this.inboundBuffer.canCoalesce(batchKey, {
+    if (message.mentionsBot) {
+      return this.inboundBuffer.canCoalesce(batchKey, {
+        eventId: message.id,
+        senderId: message.userId,
+        chatType: message.chatType,
+        text: message.text,
+        content: {},
+        attachments: message.attachments,
+        threadId: message.threadId,
+        replyToId: message.replyToId,
+        mode: message.attachments.length > 0 ? "media" : "text",
+        timestampMs: Date.now(),
+      });
+    }
+    if (this.pendingBufferedIngress.size > 0) {
+      return this.inboundBuffer.canCoalesce(batchKey, {
+        eventId: message.id,
+        senderId: message.userId,
+        chatType: message.chatType,
+        text: message.text,
+        content: {},
+        attachments: message.attachments,
+        threadId: message.threadId,
+        replyToId: message.replyToId,
+        mode: message.attachments.length > 0 ? "media" : "text",
+        timestampMs: Date.now(),
+      });
+    }
+    return this.inboundBuffer.shouldHold(batchKey, {
       eventId: message.id,
       senderId: message.userId,
       chatType: message.chatType,
@@ -814,6 +849,27 @@ export class MatrixAdapter implements ChannelAdapter {
     return latestText.length >= MATRIX_TEXT_BATCH_SPLIT_THRESHOLD
       ? MATRIX_TEXT_BATCH_SPLIT_DELAY_MS
       : MATRIX_TEXT_BATCH_DELAY_MS;
+  }
+
+  protected bufferedIngressDelayForMessage(message: UnifiedMessage): number {
+    const trimmed = message.text.trim();
+    const lines = trimmed
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const isAttachmentSummary = lines.length > 0 && lines.every((line) => MATRIX_ATTACHMENT_SUMMARY_LINE.test(line));
+    if (
+      message.chatType === "group" &&
+      !message.threadId &&
+      !message.replyToId &&
+      !message.mentionsBot &&
+      trimmed.length > 0 &&
+      trimmed.length < MATRIX_TEXT_BATCH_THRESHOLD &&
+      !isAttachmentSummary
+    ) {
+      return MATRIX_SHORT_TEXT_HOLD_DELAY_MS;
+    }
+    return this.bufferedIngressDelayMs(message.text);
   }
 
   private async processMessage(
@@ -1380,7 +1436,7 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private isMediaMsgType(msgtype?: string): boolean {
-    return msgtype === MsgType.Image || msgtype === MsgType.Audio || msgtype === MsgType.Video || msgtype === MsgType.File;
+    return msgtype === MsgType.Image || msgtype === MsgType.Audio || msgtype === MsgType.Video || msgtype === MsgType.File || msgtype === "m.sticker";
   }
 
   private async resolveRoomHistoryContext(
@@ -1783,11 +1839,14 @@ export class MatrixAdapter implements ChannelAdapter {
       return true;
     }
 
+    const unsigned = event.getUnsigned();
+    const unsignedRecord = unsigned && typeof unsigned === "object" ? (unsigned as Record<string, unknown>) : {};
     return Object.keys(content).some((key) =>
       key.includes("double_puppet") ||
       key === "uk.half-shot.bridge" ||
+      key === "com.beeper.linkpreviews" ||
       key.endsWith(".bridge")
-    );
+    ) || Object.keys(unsignedRecord).some((key) => key.includes("double_puppet") || key === "uk.half-shot.bridge");
   }
 
   private isBridgeRelaySender(userId?: string): boolean {

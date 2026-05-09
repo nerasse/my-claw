@@ -145,3 +145,37 @@ test("matrix inbound buffer coalesces media with a short trailing text caption",
   assert.equal(second.item.text, "caption\n\n[matrix image attachment]");
   assert.equal(second.item.attachments?.length, 1);
 });
+
+test("matrix inbound buffer recommends holding a short room-root text for follow-up media", () => {
+  const buffer = createMatrixInboundBuffer({ coalesceWindowMs: 1000, maxItems: 4 });
+
+  assert.equal(
+    buffer.shouldHold("!room:test", {
+      eventId: "$lead-caption",
+      senderId: "@u1:example.org",
+      chatType: "group",
+      text: "look at this",
+      content: {},
+      mode: "text",
+      timestampMs: 1000,
+    }),
+    true,
+  );
+});
+
+test("matrix inbound buffer does not hold punctuated room-root text that looks complete", () => {
+  const buffer = createMatrixInboundBuffer({ coalesceWindowMs: 1000, maxItems: 4 });
+
+  assert.equal(
+    buffer.shouldHold("!room:test", {
+      eventId: "$complete-text",
+      senderId: "@u1:example.org",
+      chatType: "group",
+      text: "This is complete.",
+      content: {},
+      mode: "text",
+      timestampMs: 1000,
+    }),
+    false,
+  );
+});

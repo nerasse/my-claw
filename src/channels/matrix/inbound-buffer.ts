@@ -21,6 +21,7 @@ type MatrixIngressQueue = {
 const DEFAULT_COALESCE_WINDOW_MS = 1500;
 const DEFAULT_MAX_ITEMS = 6;
 const DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS = 280;
+const DEFAULT_SHORT_TEXT_HOLD_MAX_CHARS = 120;
 const MATRIX_ATTACHMENT_SUMMARY_LINE = /^\[matrix .+ attachment(?: unavailable| too large)?\]$/;
 
 function sameIngressContext(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressItem, coalesceWindowMs: number): boolean {
@@ -46,6 +47,26 @@ function canMergeModes(a: MatrixBufferedIngressItem, b: MatrixBufferedIngressIte
 
   const trimmed = textItem.text.trim();
   return trimmed.length > 0 && trimmed.length <= DEFAULT_MEDIA_TEXT_MERGE_MAX_CHARS;
+}
+
+function shouldHoldShortText(item: MatrixBufferedIngressItem): boolean {
+  if (item.chatType !== "group") {
+    return false;
+  }
+  if (item.threadId || item.replyToId || item.mode !== "text") {
+    return false;
+  }
+  const trimmed = item.text.trim();
+  if (!trimmed || trimmed.length > DEFAULT_SHORT_TEXT_HOLD_MAX_CHARS || trimmed.length < 8) {
+    return false;
+  }
+  if (trimmed.includes("\n") || trimmed.startsWith("/") || trimmed.startsWith("@") || trimmed.startsWith("[")) {
+    return false;
+  }
+  if (/^[^\s:]+:\s/.test(trimmed)) {
+    return false;
+  }
+  return !/[.!?]\s*$/.test(trimmed);
 }
 
 function isAttachmentSummaryBlock(text: string): boolean {
@@ -123,6 +144,15 @@ export function createMatrixInboundBuffer(params?: {
       const queue = rooms.get(roomId);
       const last = queue?.items.at(-1);
       return Boolean(last && sameIngressContext(last, item, coalesceWindowMs) && canMergeModes(last, item));
+    },
+
+    shouldHold(roomId: string, item: MatrixBufferedIngressItem): boolean {
+      const queue = rooms.get(roomId);
+      const last = queue?.items.at(-1);
+      if (last && sameIngressContext(last, item, coalesceWindowMs) && canMergeModes(last, item)) {
+        return true;
+      }
+      return shouldHoldShortText(item);
     },
 
     clear(roomId: string, eventId: string): void {

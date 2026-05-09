@@ -16,7 +16,7 @@ export function getMatrixHelpText(): string {
     "",
     "Tips:",
     "- Reply with a menu number when model or approval menus are shown",
-    "- React to menu messages if your client makes reactions easier than replies",
+    "- Reactions work well for quick choices; replies work for every numbered option",
     "- Use `/model` with no args to reopen the model menu",
     "- Use `/models` to browse the configured model list",
     "- Use `/commands` to list commands explicitly",
