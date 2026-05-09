@@ -2,8 +2,8 @@
 
 ## Status: Complete
 
-All Phase 1 features are implemented, type-checked, and production-polished.
-Patterns ported from OpenClaw's production Telegram extension, simplified for single-bot use.
+All Phase 1 features are implemented, with follow-up parity work now covering policy gating, contextual reconstruction, persistent replay safety, and reply behavior tuning.
+Patterns are ported from OpenClaw's production Telegram extension, simplified for single-bot use.
 
 ## Toggle
 
@@ -17,17 +17,19 @@ Patterns ported from OpenClaw's production Telegram extension, simplified for si
 
 | File | Lines | Role |
 |---|---|---|
-| `src/channels/telegram.ts` | ~830 | Adapter: bot init, handlers, send pipeline, retry, typing, batching, webhook |
+| `src/channels/telegram.ts` | ~1500 | Adapter: bot init, handlers, send pipeline, retry, typing, batching, webhook, policy, context, replay |
 | `src/channels/telegram-format.ts` | ~354 | Markdown to Telegram HTML via markdown-it tokenizer |
 | `src/channels/telegram-split.ts` | ~199 | HTML-tag-aware message splitting + aligned plain text chunks |
 | `src/channels/telegram-commands.ts` | ~20 | Command definitions + `setMyCommands()` registration |
 | `src/channels/types.ts` | ~38 | Shared interfaces: UnifiedMessage, Attachment, OutgoingMessage, ChannelAdapter |
 | `src/agent/bridge.ts` | ~130 | Agent loop: system prompt + history -> LLM -> tool calls -> loop -> response |
 | `src/llm/provider.ts` | ~70 | OpenAI-compatible chat completion with tool call support |
-| `src/router/router.ts` | ~40 | Auth guard + session resolution + agent bridge call |
-| `src/sessions/manager.ts` | ~72 | In-memory session cache + disk persistence + reset/clear/info |
+| `src/router/router.ts` | ~40 | Session resolution + agent bridge call |
+| `src/sessions/manager.ts` | ~90 | In-memory session cache + disk persistence + reset/clear/info |
 | `src/sessions/store.ts` | ~50 | Typed session messages, JSON file read/write/delete |
 | `src/index.ts` | ~108 | Wiring: config -> tools -> sessions -> agent -> router -> adapter + shutdown |
+| `src/channels/telegram-policy.ts` | ~143 | Telegram DM/group/topic policy, allowlists, bot gating, context visibility |
+| `src/channels/telegram-offset-store.ts` | ~300 | Persistent offset + claim/commit/release dedupe across restarts/process overlap |
 
 ## Adapter: `TelegramAdapter`
 
@@ -119,7 +121,45 @@ Buffers rapid consecutive messages from the same user in the same chat:
 - `chatType`: "dm" (private) or "group" (group/supergroup/channel)
 - `attachments`: downloaded to `~/.my-claw/tmp/`, parallel extraction
 - `isForwarded`: boolean from forward_origin
+- `replyToId`, `replyToText`, `replyToSender` when replying
+- `threadId`, `threadRootText` for forum topics
+- `roomContext` from recent room/topic history when enabled
+- `mentionsBot` for mention, text_mention, reply-to-bot, and `/cmd@bot`
+- `sessionScope` for Telegram DM `per-user` vs `per-chat`
 - `raw`: original grammy message
+
+Telegram polls are also normalized into plain text for routing and recent-context history.
+
+## Policy and Context Controls
+
+- DM policy: `dm.policy = open | allowlist | disabled`
+- Group policy: `groupPolicy = open | allowlist | disabled`
+- Group/topic config: `groups[chatId]`, `groups["*"]`, `groups["chatId:threadId"]`, `groups["chatId:*"]`
+- Mention gating: `requireMention`, `autoReply`, `/cmd@bot`, explicit mentions, reply-to-bot
+- Bot sender gating: `botUserIds` + `allowBots = false | true | "mentions"`
+- Context visibility: `contextVisibility = all | allowlist | allowlist_quote`
+
+`allowlist_quote` keeps quoted reply context even when thread root and recent room context are filtered out.
+
+## Session Scoping
+
+- DM sessions: `telegram/dm/<user>` by default
+- DM per-chat sessions: `telegram/dm-chat/<chat>` when `dm.sessionScope = "per-chat"`
+- Group sessions: `telegram/group/<chat>`
+- Topic sessions: `telegram/thread/<chat>/<thread>`
+
+## Reply Behavior
+
+- `threadReplies = off | inbound | always` still controls inbound topic association behavior
+- `replyToMode = off | first | all` controls outbound reply attachment on split text/media sends
+- Streaming previews and final sends use the same reply mode behavior
+- Topic fallback remains in place when Telegram returns `message thread not found`
+
+## Replay Safety
+
+- Telegram persists a token-bound processed offset store under `~/.my-claw/telegram/accounts/<botId>/<tokenHash>/update-offset.json`
+- Inbound updates use `claim -> commit -> release`
+- This prevents duplicate handling across restarts and overlapping local processes
 
 ## Typing Indicator
 
@@ -189,7 +229,7 @@ Standalone plain text splitting (newline > space > hard cut).
 |---|---|
 | `/new` | `sessionManager.resetSession()` — deletes file + creates fresh session |
 | `/clear` | `sessionManager.clearHistory()` — empties messages array |
-| `/model` | Returns current model name. Args not yet supported. |
+| `/model` | Returns current model and supports switching by text arg or inline button. |
 | `/status` | Returns model, session ID, message count, created/last active dates |
 | `/help` | Static list from `telegram-commands.ts` |
 
@@ -215,8 +255,8 @@ Cleaned up in `finally` block after message processing completes (even on error)
 
 ## Router
 
-- Double auth: adapter checks whitelist (fast reject at Telegram level), router checks via AuthGuard (defense in depth)
-- Session ID: `{platform}/{dm|group}/{userId|chatId}`
+- Adapter enforces Telegram policy and allowlists before routing
+- Session ID now reflects Telegram DM/group/topic scope resolution
 - Delegates all message history management to AgentBridge
 - Persists session to disk after each exchange
 - Catches agent errors, returns generic error message

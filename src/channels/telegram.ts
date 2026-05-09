@@ -135,6 +135,36 @@ interface ProcessMessageMeta {
   updateId?: number;
 }
 
+function formatTelegramPollText(poll: {
+  question?: string;
+  options?: Array<{ text?: string; voter_count?: number }>;
+  is_closed?: boolean;
+  total_voter_count?: number;
+}): string {
+  const question = poll.question?.trim();
+  if (!question) return "";
+
+  const lines = [poll.is_closed ? "[Poll closed]" : "[Poll]", question];
+  const options = Array.isArray(poll.options) ? poll.options : [];
+  if (options.length > 0) {
+    lines.push("");
+    for (const [index, option] of options.entries()) {
+      const text = option.text?.trim() || `Option ${index + 1}`;
+      const votes =
+        typeof option.voter_count === "number" && Number.isFinite(option.voter_count)
+          ? option.voter_count
+          : undefined;
+      lines.push(votes === undefined ? `${index + 1}. ${text}` : `${index + 1}. ${text} (${votes} vote${votes === 1 ? "" : "s"})`);
+    }
+  }
+
+  if (typeof poll.total_voter_count === "number" && Number.isFinite(poll.total_voter_count)) {
+    lines.push("", `Total voters: ${poll.total_voter_count}`);
+  }
+
+  return lines.join("\n");
+}
+
 // ── Error classification ──────────────────────────────────────
 
 function isParseError(err: unknown): boolean {
@@ -293,6 +323,11 @@ export class TelegramAdapter implements ChannelAdapter {
       caption = { html, plain: stripHtml(html) };
     }
 
+    const mediaCount = mediaRefs.length + (message.attachments?.length ?? 0);
+    const textChunkCount = text && !caption ? splitHtmlChunks(markdownToTelegramHtml(text)).length : 0;
+    const totalParts = textChunkCount + mediaCount;
+    let partIndex = 0;
+
     // Send text as chunked messages (if too long for caption or no media)
     if (text && !caption) {
       const html = markdownToTelegramHtml(text);
@@ -303,7 +338,7 @@ export class TelegramAdapter implements ChannelAdapter {
       for (let i = 0; i < htmlChunks.length; i++) {
         await this.sendTextMessage(chatId, htmlChunks[i]!, plainChunks[i] ?? "", {
           threadId,
-          replyToId: this.replyTargetForChunk(message, i, { chunkCount: htmlChunks.length, hasMedia }),
+          replyToId: this.replyTargetForPart(message, partIndex++, totalParts),
           keyboard:
             i === htmlChunks.length - 1 && message.buttons?.length
               ? this.buildKeyboard(message.buttons)
@@ -316,13 +351,13 @@ export class TelegramAdapter implements ChannelAdapter {
     let usedCaption = false;
     for (const ref of mediaRefs) {
       const cap = !usedCaption ? caption : undefined;
-      await this.sendMediaByPath(chatId, ref.path, threadId, cap);
+      await this.sendMediaByPath(chatId, ref.path, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
       if (cap) usedCaption = true;
     }
     if (message.attachments) {
       for (const att of message.attachments) {
         const cap = !usedCaption ? caption : undefined;
-        await this.sendAttachment(chatId, att, threadId, cap);
+        await this.sendAttachment(chatId, att, threadId, this.replyTargetForPart(message, partIndex++, totalParts), cap);
         if (cap) usedCaption = true;
       }
     }
@@ -350,7 +385,8 @@ export class TelegramAdapter implements ChannelAdapter {
       {
         chatId: message.chatId,
         threadId: raw.message_thread_id,
-        replyToId: Math.trunc(Number(message.id)),
+        replyToId: this.streamReplyTarget(message),
+        replyMode: this.replyToMode(),
         minCharsBeforeSend: this.config.streaming?.minChars ?? 30,
         editThrottleMs: this.config.streaming?.throttleMs ?? 1000,
         chunkLimit: CHUNK_LIMIT,
@@ -533,12 +569,19 @@ export class TelegramAdapter implements ChannelAdapter {
     chatId: string,
     filePath: string,
     threadId?: number,
+    replyToId?: number,
     caption?: Caption,
   ): Promise<void> {
     const ext = extname(filePath);
     const type = mediaTypeFromExt(ext);
     const file = new InputFile(filePath);
     const params: Record<string, unknown> = { ...this.threadParams(threadId) };
+    if (replyToId) {
+      params.reply_parameters = {
+        message_id: replyToId,
+        allow_sending_without_reply: true,
+      };
+    }
 
     if (caption) {
       params.caption = caption.html;
@@ -577,6 +620,7 @@ export class TelegramAdapter implements ChannelAdapter {
     chatId: string,
     att: Attachment,
     threadId?: number,
+    replyToId?: number,
     caption?: Caption,
   ): Promise<void> {
     const source = att.path ?? att.url;
@@ -584,6 +628,12 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const file = att.path ? new InputFile(att.path) : new InputFile(new URL(source));
     const params: Record<string, unknown> = { ...this.threadParams(threadId) };
+    if (replyToId) {
+      params.reply_parameters = {
+        message_id: replyToId,
+        allow_sending_without_reply: true,
+      };
+    }
 
     if (caption) {
       params.caption = caption.html;
@@ -845,7 +895,7 @@ export class TelegramAdapter implements ChannelAdapter {
       return;
     }
 
-    const text = msg.text ?? msg.caption ?? "";
+    const text = this.messageTextFromRawMessage(msg) ?? "";
     const batchKey = `${msg.chat.id}:${userId}`;
 
     if (this.textBatches.has(batchKey) && this.tryAppendToBatch(batchKey, msg, ctx.update.update_id)) {
@@ -941,7 +991,7 @@ export class TelegramAdapter implements ChannelAdapter {
       userId: String(msg.from!.id),
       chatId,
       chatType,
-      text: textOverride ?? msg.text ?? msg.caption ?? "",
+      text: this.normalizedMessageText(msg, textOverride),
       attachments,
       isForwarded: !!msg.forward_origin,
       replyToId: replyContext?.messageId,
@@ -964,6 +1014,21 @@ export class TelegramAdapter implements ChannelAdapter {
 
   private historyLimit(): number {
     return Math.max(0, this.config.historyLimit ?? 0);
+  }
+
+  private normalizedMessageText(msg: GrammyMessage, textOverride?: string): string {
+    if (textOverride !== undefined) return textOverride;
+    return this.messageTextFromRawMessage(msg) ?? "";
+  }
+
+  private messageTextFromRawMessage(msg: GrammyMessage): string | undefined {
+    const text = (msg.text ?? msg.caption)?.trim();
+    if (text) return text;
+    if (msg.poll) {
+      const pollText = formatTelegramPollText(msg.poll);
+      if (pollText) return pollText;
+    }
+    return undefined;
   }
 
   private shouldIncludeContextSender(
@@ -1167,23 +1232,37 @@ export class TelegramAdapter implements ChannelAdapter {
     return message.replyToId ? this.messageThreadIds.get(message.replyToId) : undefined;
   }
 
-  private replyTargetForChunk(
-    message: OutgoingMessage,
-    chunkIndex: number,
-    params: { chunkCount: number; hasMedia: boolean },
-  ): number | undefined {
-    if (message.threadId) return undefined;
+  private replyToMode(): "off" | "first" | "all" {
+    if (this.config.replyToMode) {
+      return this.config.replyToMode;
+    }
 
+    const legacyMode = this.config.threadReplies ?? "off";
+    if (legacyMode === "always") return "all";
+    if (legacyMode === "inbound") return "first";
+    return "off";
+  }
+
+  private streamReplyTarget(message: UnifiedMessage): number | undefined {
+    const replyToId = Math.trunc(Number(message.id));
+    if (!Number.isFinite(replyToId) || replyToId <= 0) return undefined;
+    return this.replyToMode() === "off" ? undefined : replyToId;
+  }
+
+  private replyTargetForPart(
+    message: OutgoingMessage,
+    partIndex: number,
+    partCount: number,
+  ): number | undefined {
     const replyToId = message.replyToId ? Math.trunc(Number(message.replyToId)) : undefined;
     if (!replyToId) return undefined;
 
-    const mode = this.config.threadReplies ?? "off";
+    const mode = this.replyToMode();
     if (mode === "off") return undefined;
 
-    const multiPart = params.hasMedia || params.chunkCount > 1;
-    if (!multiPart) return replyToId;
-    if (mode === "always") return replyToId;
-    if (mode === "inbound") return chunkIndex === 0 ? replyToId : undefined;
+    if (partCount <= 1) return replyToId;
+    if (mode === "all") return replyToId;
+    if (mode === "first") return partIndex === 0 ? replyToId : undefined;
     return undefined;
   }
 
@@ -1215,7 +1294,7 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   private contextTextFromRawMessage(message: GrammyMessage): string | undefined {
-    const text = (message.text ?? message.caption ?? "").trim();
+    const text = this.messageTextFromRawMessage(message)?.trim() ?? "";
     if (text) return text;
     if (message.photo?.length) return "[image]";
     if (message.video) return "[video]";

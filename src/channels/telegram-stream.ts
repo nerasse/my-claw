@@ -7,6 +7,7 @@ export interface StreamOptions {
   chatId: string;
   threadId?: number;
   replyToId?: number;
+  replyMode?: "off" | "first" | "all";
   minCharsBeforeSend?: number;
   editThrottleMs?: number;
   chunkLimit?: number;
@@ -97,6 +98,14 @@ export class MessageStreamer {
     return this.opts.chunkLimit ?? CHUNK_LIMIT;
   }
 
+  private replyTargetForIndex(index: number): number | undefined {
+    if (!this.opts.replyToId) return undefined;
+    const mode = this.opts.replyMode ?? "first";
+    if (mode === "off") return undefined;
+    if (mode === "all") return this.opts.replyToId;
+    return index === 0 ? this.opts.replyToId : undefined;
+  }
+
   private enqueue(work: () => Promise<void>): Promise<void> {
     const run = this.queue.then(work, work);
     this.queue = run.catch(() => {});
@@ -183,7 +192,7 @@ export class MessageStreamer {
 
       this.messageIds[index] = await this.transport.sendFinal(this.opts.chatId, htmlChunk, plainChunk, {
         threadId: this.opts.threadId,
-        replyToId: index === 0 ? this.opts.replyToId : undefined,
+        replyToId: this.replyTargetForIndex(index),
       });
       this.lastRenderedParts[index] = plainChunk;
     }
@@ -211,12 +220,12 @@ export class MessageStreamer {
         return;
       }
 
-      await this.transport
-        .sendPlain(this.opts.chatId, text, {
-          threadId: this.opts.threadId,
-          replyToId: this.opts.replyToId,
-        })
-        .catch(() => {});
+        await this.transport
+          .sendPlain(this.opts.chatId, text, {
+            threadId: this.opts.threadId,
+            replyToId: this.replyTargetForIndex(0),
+          })
+          .catch(() => {});
       return;
     }
 
@@ -270,7 +279,7 @@ export class MessageStreamer {
 
     this.messageIds[index] = await this.transport.sendPlain(this.opts.chatId, text, {
       threadId: this.opts.threadId,
-      replyToId: index === 0 ? this.opts.replyToId : undefined,
+      replyToId: this.replyTargetForIndex(index),
     });
     this.lastRenderedParts[index] = text;
     this.lastEditAt = Date.now();

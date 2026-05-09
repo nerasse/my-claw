@@ -47,23 +47,23 @@ Main sources:
 
 | Gap | Telegram | Matrix | Why it matters |
 |---|---|---|---|
-| DM policy config | No | Yes | Matrix supports `open | allowlist | disabled` for DMs. |
-| Group policy config | No | Yes | Matrix supports `open | allowlist | disabled` for groups/rooms. |
-| Room-specific config and wildcard room config | No | Yes | Matrix supports `groups[roomId]` and `groups["*"]`. |
+| DM policy config | Yes | Yes | Both support `open | allowlist | disabled` for DMs. |
+| Group policy config | Yes | Yes | Both support `open | allowlist | disabled` for groups/rooms. |
+| Room-specific config and wildcard room config | Yes | Yes | Telegram supports `groups[chatId]`, `groups["*"]`, and topic-aware keys; Matrix supports room-specific and wildcard config. |
 | Auto-join invited rooms | No | Yes | Matrix can auto-join according to config and allowlist. |
-| Bot sender policy | No | Yes | Matrix can allow or deny configured bot users with `botUserIds` and `allowBots`. |
-| Visible-mention filtering | No | Yes | Matrix only triggers on visible mentions, not metadata-only mentions. |
-| Poll normalization | No | Yes | Matrix poll events are turned into text for routing and room history. |
-| Reply context | No | Yes | Matrix resolves reply sender and quoted text into the normalized message. |
-| Thread root context | No | Yes | Matrix resolves thread root text and sender. |
-| Recent room context | No | Yes | Matrix can inject pending-only room history via `historyLimit`. |
-| Context visibility policy | No | Yes | Matrix supports `all | allowlist | allowlist_quote` for supplemental context. |
-| True thread support | Partial | Yes | Telegram routes to forum topics, but Matrix has real thread relations on inbound and outbound messages. |
-| Thread-scoped sessions | No | Yes | Matrix can store one session per thread. |
-| DM session scope per user or per room | No | Yes | Matrix supports `per-user` and `per-room` DM session scope. |
+| Bot sender policy | Yes | Yes | Both channels can allow or deny configured bot users with `botUserIds` and `allowBots`. |
+| Visible-mention filtering | Partial | Yes | Telegram resolves explicit mention, text_mention, reply-to-bot, and `/cmd@bot`, but does not have Matrix-style event metadata semantics. |
+| Poll normalization | Yes | Yes | Both channels normalize inbound polls into text for routing and recent-context history, though Matrix has a richer poll event model. |
+| Reply context | Yes | Yes | Both resolve reply sender and quoted text into the normalized message. |
+| Thread root context | Yes | Yes | Both resolve thread/topic root text for normalized context. |
+| Recent room context | Yes | Yes | Both can inject recent room or thread history via `historyLimit`. |
+| Context visibility policy | Yes | Yes | Both support `all | allowlist | allowlist_quote` for supplemental context filtering. |
+| True thread support | Partial | Yes | Telegram routes to forum topics and topic-scoped sessions, but Matrix has real thread relations on inbound and outbound messages. |
+| Thread-scoped sessions | Yes | Yes | Telegram scopes sessions by topic/thread id; Matrix scopes sessions by thread id. |
+| DM session scope per user or per room | Partial | Yes | Telegram supports `per-user` and `per-chat`; Matrix supports `per-user` and `per-room`. |
 | Read receipts | No | Yes | Matrix sends read receipts for processed events. |
 | Quiet / notice mode | No | Yes | Matrix can send `m.notice` and has `quiet` streaming mode. |
-| Reply behavior tuning | No | Yes | Matrix supports `replyToMode: off | first | all | batched`. |
+| Reply behavior tuning | Partial | Yes | Telegram supports `replyToMode: off | first | all`; Matrix also supports `batched`. |
 | Chunking policy tuning | No | Yes | Matrix supports `textChunkLimit` and `chunkMode`. |
 | Persisted sync store | No | Yes | Matrix persists sync state to local storage. |
 | Clean-shutdown replay trust | No | Yes | Matrix only trusts persisted replay after clean shutdown. |
@@ -97,14 +97,14 @@ Main sources:
 | Feature | Telegram | Matrix | Notes |
 |---|---|---|---|
 | Global whitelist | Yes | Yes | Both filter unauthorized users early |
-| Router-level auth guard | Yes | Yes | Defense in depth |
-| DM policy config | No | Yes | Matrix: `open | allowlist | disabled` |
-| Group policy config | No | Yes | Matrix: `open | allowlist | disabled` |
-| Per-room allowlist config | No | Yes | Matrix room config |
-| Wildcard room config | No | Yes | Matrix `groups["*"]` |
-| Require mention in group by config | No | Yes | Matrix room-level behavior |
-| Allow configured bot senders | No | Yes | Matrix `botUserIds` + `allowBots` |
-| Visible mention detection | No | Yes | Matrix ignores hidden metadata mentions |
+| Router-level auth guard | No | No | Channel adapters and room policy now enforce auth/routing eligibility before router execution |
+| DM policy config | Yes | Yes | Both support `open | allowlist | disabled` |
+| Group policy config | Yes | Yes | Both support `open | allowlist | disabled` |
+| Per-room allowlist config | Yes | Yes | Telegram group/topic config and Matrix room config |
+| Wildcard room config | Yes | Yes | Both support `groups["*"]` |
+| Require mention in group by config | Yes | Yes | Both support room/group-level mention gating |
+| Allow configured bot senders | Yes | Yes | Both support `botUserIds` + `allowBots` |
+| Visible mention detection | Partial | Yes | Telegram handles visible mention forms available in Bot API, but not Matrix metadata semantics |
 
 ### Commands and session controls
 
@@ -125,9 +125,9 @@ Main sources:
 | Feature | Telegram | Matrix | Notes |
 |---|---|---|---|
 | DM session per user | Yes | Yes | Both support this |
-| DM session per room | No | Yes | Matrix `sessionScope: per-room` |
+| DM session per room | Partial | Yes | Telegram supports `per-chat`; Matrix `sessionScope: per-room` |
 | Group/room session | Yes | Yes | Telegram group session, Matrix room session |
-| Thread session | No | Yes | Matrix supports session per thread |
+| Thread session | Yes | Yes | Telegram supports session per topic/thread; Matrix supports session per thread |
 | Topic-aware reply routing | Partial | Yes | Telegram stores `message_id -> message_thread_id`; Matrix has real thread relations |
 
 ### Inbound message handling
@@ -138,14 +138,14 @@ Main sources:
 | Group/room inbound messages | Yes | Yes | Both |
 | Ignore self messages | Partial | Yes | Telegram ignores bot messages; Matrix ignores own sender id |
 | Forwarded flag normalization | Yes | Partial | Matrix sets `isForwarded` via bridge/relay heuristics, not a native Matrix forwarded flag |
-| Reply id normalization | No | Yes | Matrix fills `replyToId` |
-| Reply text normalization | No | Yes | Matrix fetches and summarizes reply context |
-| Reply sender normalization | No | Yes | Matrix fills `replyToSender` |
-| Thread id normalization | Partial | Yes | Telegram mostly uses topic routing, Matrix exposes thread id directly |
-| Thread root text normalization | No | Yes | Matrix fills `threadRootText` |
-| Recent room context normalization | No | Yes | Matrix fills `roomContext` |
-| Mentioned-bot signal | No | Yes | Matrix fills `mentionsBot` |
-| Poll normalization | No | Yes | Matrix converts poll events to text |
+| Reply id normalization | Yes | Yes | Both fill `replyToId` |
+| Reply text normalization | Yes | Yes | Both resolve quoted text into normalized messages |
+| Reply sender normalization | Yes | Yes | Both fill `replyToSender` |
+| Thread id normalization | Partial | Yes | Telegram exposes topic ids rather than true thread relations |
+| Thread root text normalization | Yes | Yes | Both fill `threadRootText` |
+| Recent room context normalization | Yes | Yes | Both fill `roomContext` |
+| Mentioned-bot signal | Yes | Yes | Both fill `mentionsBot` |
+| Poll normalization | Yes | Yes | Both normalize inbound polls into text |
 | Long text inbound batching | Yes | Partial | Matrix coalesces some rapid fragmented bursts, but not full general turn batching |
 | Media group inbound buffering | Yes | Partial | Matrix can merge compatible attachment bursts, but not full album semantics |
 | Per-room serialized ingress | No | Yes | Matrix protects room history ordering |
@@ -177,7 +177,7 @@ Main sources:
 | Configurable chunking mode | No | Yes | Matrix `length | newline` |
 | Reply send support | Yes | Yes | Both |
 | Thread reply send support | Partial | Yes | Telegram via topic id, Matrix via thread relation |
-| Reply mode tuning | No | Yes | Matrix `replyToMode` |
+| Reply mode tuning | Partial | Yes | Telegram `replyToMode: off | first | all`; Matrix also supports `batched` |
 | Link preview disable | Yes | No | Telegram only |
 | Notice / quiet send type | No | Yes | Matrix can emit `m.notice` |
 | HTML parse fallback to plain text | Yes | No | Telegram only |
@@ -266,14 +266,14 @@ These are the highest-value Matrix capabilities that Telegram still lacks if the
 
 | Priority | Feature to port toward Telegram parity | Current gap | User impact | Implementation cost | Why this priority |
 |---|---|---|---|---|---|
-| P1 | Reply/thread/history context reconstruction | Matrix fills reply, thread, and room context. Telegram does not. | High | Medium | This is the largest intelligence/context quality gap. |
-| P2 | Session scoping beyond simple DM/group | Matrix supports per-room DM sessions and thread sessions. Telegram does not. | High | Medium | Important for forum/topic workflows and clean context isolation. |
-| P3 | Fine-grained policy model | Matrix has DM policy, group policy, room config, bot policy, mention policy. Telegram has only whitelist-level gating. | High | Medium | Important if Telegram usage expands beyond simple trusted chats. |
-| P4 | Persistent replay safety / dedupe semantics | Matrix persists sync state, trusted replay, and inbound dedupe. Telegram does not have an equivalent transport-state layer. | Medium | High | Less visible day one, but very important for robustness and restart correctness. |
-| P5 | Mention-aware routing and bot gating | Matrix can tell whether the bot was visibly mentioned and can gate bot senders. Telegram lacks equivalent nuance. | Medium | Medium | Improves group behavior and reduces false triggers. |
-| P6 | Poll normalization | Matrix turns polls into text triggers/history. Telegram does not currently normalize polls into the same path. | Medium | Medium | Useful for parity in collaborative group workflows. |
-| P7 | Reply behavior tuning | Matrix supports `replyToMode` and thread reply behavior. Telegram is much more fixed. | Medium | Low | Good parity feature with moderate value. |
-| P8 | Configurable contextual visibility rules | Matrix supports `contextVisibility`. Telegram has no equivalent context filtering because it lacks the context feature itself. | Low | Medium | Useful once Telegram gets richer context first. |
+| P1 | Persistent replay safety / dedupe semantics | Matrix persists sync state plus clean-shutdown trust; Telegram now has persistent offset and live claim protection but still lacks Matrix's richer sync lifecycle. | Medium | High | Less visible day one, but still important for robustness and restart correctness. |
+| P2 | Stronger native thread semantics | Matrix has true thread relations end to end. Telegram uses forum topic ids and fallback heuristics. | Medium | Medium | Important for deep thread-native behavior. |
+| P3 | Visible-mention semantics parity | Matrix can distinguish explicit visible mentions from metadata-only mention state. Telegram covers Bot API mention forms but not the same event model. | Medium | Medium | Reduces false triggers in richer client semantics. |
+| P4 | Richer poll model | Telegram now normalizes inbound polls, but Matrix still has the stronger event model and poll lifecycle. | Medium | Medium | Matters for collaborative workflows and result fidelity. |
+| P5 | Reply behavior parity | Telegram now supports `off | first | all`, but Matrix still has `batched`. | Low | Low | Smaller polish gap after the latest batch. |
+| P6 | Delivery-control polish | Matrix still exposes more chunking and send-surface tuning. | Low | Low | Useful polish, not a major product gap. |
+| P7 | E2EE and encrypted media | Matrix supports encrypted events and media. Telegram does not. | High | High | Structural channel difference, not simple parity work. |
+| P8 | Auto-join invited rooms | Matrix can auto-join according to config and allowlist. Telegram has no equivalent need or surface. | Low | Low | Platform-specific feature rather than a likely Telegram priority. |
 
 ## Top 5 Product / UX Gaps
 

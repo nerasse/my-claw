@@ -27,6 +27,7 @@ export interface TelegramChannelConfig {
     }
   >;
   threadReplies?: "off" | "inbound" | "always";
+  replyToMode?: "off" | "first" | "all";
   historyLimit?: number;
   contextVisibility?: "all" | "allowlist" | "allowlist_quote";
   webhook?: {

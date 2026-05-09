@@ -105,6 +105,111 @@ test("TelegramAdapter streamer uses bot edit/send helpers", async () => {
   assert.equal(calls.some((call) => call.method === "editMessageText"), true);
 });
 
+test("TelegramAdapter streamer respects replyToMode off", async () => {
+  const { bot, calls } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      replyToMode: "off",
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  const streamer = adapter.createStreamer({
+    id: "42",
+    platform: "telegram",
+    userId: "u1",
+    chatId: "c1",
+    chatType: "dm",
+    text: "hello",
+    attachments: [],
+    isForwarded: false,
+    raw: {},
+  });
+
+  await streamer.push("hello");
+
+  const sendCall = calls.find((call) => call.method === "sendMessage");
+  assert.equal(Boolean((sendCall?.args[2] as { reply_parameters?: unknown } | undefined)?.reply_parameters), false);
+});
+
+test("TelegramAdapter send honors replyToMode first across split chunks", async () => {
+  const { bot, calls } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      replyToMode: "first",
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  await adapter.send("c1", { text: "a".repeat(5000), replyToId: "9" });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 2);
+  assert.equal(Boolean((sendCalls[0]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+  assert.equal(Boolean((sendCalls[1]?.args[2] as { reply_parameters?: unknown }).reply_parameters), false);
+});
+
+test("TelegramAdapter send honors replyToMode all across split chunks", async () => {
+  const { bot, calls } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      replyToMode: "all",
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  await adapter.send("c1", { text: "a".repeat(5000), replyToId: "9" });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 2);
+  assert.equal(Boolean((sendCalls[0]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+  assert.equal(Boolean((sendCalls[1]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+});
+
+test("TelegramAdapter maps legacy threadReplies inbound to first reply behavior", async () => {
+  const { bot, calls } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      threadReplies: "inbound",
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  await adapter.send("c1", { text: "a".repeat(5000), replyToId: "9" });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 2);
+  assert.equal(Boolean((sendCalls[0]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+  assert.equal(Boolean((sendCalls[1]?.args[2] as { reply_parameters?: unknown }).reply_parameters), false);
+});
+
+test("TelegramAdapter maps legacy threadReplies always to all reply behavior", async () => {
+  const { bot, calls } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      threadReplies: "always",
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  await adapter.send("c1", { text: "a".repeat(5000), replyToId: "9" });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  assert.equal(sendCalls.length, 2);
+  assert.equal(Boolean((sendCalls[0]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+  assert.equal(Boolean((sendCalls[1]?.args[2] as { reply_parameters?: unknown }).reply_parameters), true);
+});
+
 test("TelegramAdapter normalizes replies, thread context, mentions, and DM session scope", async () => {
   const { bot, handlers } = createBotMock();
   const adapter = new TelegramAdapter(
@@ -367,4 +472,186 @@ test("TelegramAdapter blocks configured bot senders unless they mention the bot"
   });
 
   assert.deepEqual(seen, ["@myclawbot hello"]);
+});
+
+test("TelegramAdapter keeps explicit reply quote when contextVisibility is allowlist_quote", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      contextVisibility: "allowlist_quote",
+      groupAllowFrom: ["u1"],
+      groups: { "-1001": { requireMention: false } },
+      historyLimit: 3,
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: Array<{ replyToText?: string; replyToSender?: string; roomContext?: string; threadRootText?: string }> = [];
+  adapter.onMessage(async (message) => {
+    seen.push({
+      replyToText: message.replyToText,
+      replyToSender: message.replyToSender,
+      roomContext: message.roomContext,
+      threadRootText: message.threadRootText,
+    });
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    update: { update_id: 61 },
+    message: {
+      message_id: 20,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u2", is_bot: false, username: "u2" },
+      text: "blocked root",
+      message_thread_id: 777,
+    },
+  });
+  await handler?.({
+    update: { update_id: 62 },
+    message: {
+      message_id: 21,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "quoted allowed only",
+      message_thread_id: 777,
+      reply_to_message: {
+        message_id: 20,
+        date: 100,
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: "u2", is_bot: false, username: "u2" },
+        text: "blocked root",
+        message_thread_id: 777,
+      },
+    },
+  });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.replyToText, "blocked root");
+  assert.equal(seen[0]?.replyToSender, "@u2");
+  assert.equal(seen[0]?.roomContext, undefined);
+  assert.equal(seen[0]?.threadRootText, undefined);
+});
+
+test("TelegramAdapter omits blocked supplemental context when contextVisibility is allowlist", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      contextVisibility: "allowlist",
+      groupAllowFrom: ["u1"],
+      groups: { "-1001": { requireMention: false } },
+      historyLimit: 3,
+    },
+    new Set(),
+    bot as never,
+  );
+
+  const seen: Array<{ replyToText?: string; roomContext?: string; threadRootText?: string }> = [];
+  adapter.onMessage(async (message) => {
+    seen.push({
+      replyToText: message.replyToText,
+      roomContext: message.roomContext,
+      threadRootText: message.threadRootText,
+    });
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    update: { update_id: 71 },
+    message: {
+      message_id: 30,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u2", is_bot: false, username: "u2" },
+      text: "blocked root",
+      message_thread_id: 888,
+    },
+  });
+  await handler?.({
+    update: { update_id: 72 },
+    message: {
+      message_id: 31,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "allowed message",
+      message_thread_id: 888,
+      reply_to_message: {
+        message_id: 30,
+        date: 100,
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: "u2", is_bot: false, username: "u2" },
+        text: "blocked root",
+        message_thread_id: 888,
+      },
+    },
+  });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.replyToText, undefined);
+  assert.equal(seen[0]?.threadRootText, undefined);
+  assert.equal(seen[0]?.roomContext, undefined);
+});
+
+test("TelegramAdapter normalizes poll messages into text", async () => {
+  const { bot, handlers } = createBotMock();
+  const adapter = new TelegramAdapter(
+    {
+      ...createConfig(),
+      groups: { "-1001": { requireMention: false } },
+      historyLimit: 2,
+    },
+    new Set(["u1"]),
+    bot as never,
+  );
+
+  const seen: Array<{ text: string; roomContext?: string }> = [];
+  adapter.onMessage(async (message) => {
+    seen.push({ text: message.text, roomContext: message.roomContext });
+  });
+
+  await adapter.start();
+  const handler = handlers.get("on:message");
+
+  await handler?.({
+    update: { update_id: 81 },
+    message: {
+      message_id: 40,
+      date: 100,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      poll: {
+        question: "Lunch?",
+        options: [
+          { text: "Pizza", voter_count: 1 },
+          { text: "Salad", voter_count: 0 },
+        ],
+        total_voter_count: 1,
+      },
+    },
+  });
+  await handler?.({
+    update: { update_id: 82 },
+    message: {
+      message_id: 41,
+      date: 101,
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: "u1", is_bot: false, username: "u1" },
+      text: "hello",
+    },
+  });
+
+  assert.match(seen[0]?.text ?? "", /\[Poll\]/);
+  assert.match(seen[0]?.text ?? "", /Lunch\?/);
+  assert.match(seen[0]?.text ?? "", /Pizza \(1 vote\)/);
+  assert.match(seen[1]?.roomContext ?? "", /\[Poll\]/);
 });
