@@ -2,13 +2,14 @@ import type { MyClawConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
-import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
+import { chatCompletion, chatCompletionStream, type ChatMessage, type ChatMessageContent } from "../llm/provider.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
+import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 
 const MAX_TOOL_ITERATIONS = 10;
 
@@ -157,12 +158,48 @@ export class AgentBridge {
     }
   }
 
+  private async preprocessVideo(message: UnifiedMessage): Promise<void> {
+    const videoAttachments = message.attachments.filter((a) => a.type === "video" && a.path);
+    if (videoAttachments.length === 0) return;
+
+    for (const att of videoAttachments) {
+      try {
+        const frames = await extractVideoFrames(att.path!, {
+          fps: 1 / 3,
+          maxFrames: 20,
+          maxWidth: 1920,
+        });
+
+        for (const framePath of frames) {
+          message.attachments.push({
+            type: "image",
+            path: framePath,
+            mimeType: "image/jpeg",
+          });
+        }
+
+        const existingText = message.text ? message.text.trim() : "";
+        const prefix = existingText ? `\n\n` : "";
+        message.text = `${existingText}${prefix}[Video]: "${att.filename ?? "video"}" (${frames.length} frames extracted)`;
+      } catch (err) {
+        const errorMsg = String(err);
+        const existingText = message.text ? message.text.trim() : "";
+        const prefix = existingText ? `\n\n` : "";
+        message.text = `${existingText}${prefix}[Video]: [Frame extraction failed: ${errorMsg}]`;
+      }
+    }
+
+    // Remove original video attachments — frames now handle the visual content
+    message.attachments = message.attachments.filter((a) => a.type !== "video");
+  }
+
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
     if (this.currentMessage?.id === message.id) return;
     this.currentMessage = message;
     this.echoMessages = [];
     this.inboundHadAudio = false;
     await this.preprocessAudio(message);
+    await this.preprocessVideo(message);
   }
 
   private async handle(
@@ -176,6 +213,7 @@ export class AgentBridge {
       this.echoMessages = [];
       this.inboundHadAudio = false;
       await this.preprocessAudio(message);
+      await this.preprocessVideo(message);
     }
 
     const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
@@ -216,6 +254,16 @@ export class AgentBridge {
         { role: "system", content: systemPrompt },
         ...this.toChatMessages(session.messages),
       ];
+
+      if (this.config.llm.vision && message.attachments.some((a) => a.type === "image" && a.path)) {
+        const lastIdx = chatMessages.length - 1;
+        if (chatMessages[lastIdx]?.role === "user") {
+          chatMessages[lastIdx] = {
+            role: "user",
+            content: await this.buildImageContent(message),
+          };
+        }
+      }
 
       for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
         const iteration = i + 1;
@@ -379,6 +427,19 @@ export class AgentBridge {
 
     parts.push(content);
     return parts.filter((part) => part.trim()).join("\n\n");
+  }
+
+  private async buildImageContent(message: UnifiedMessage): Promise<ChatMessageContent[]> {
+    const contents: ChatMessageContent[] = [{ type: "text", text: message.text }];
+
+    for (const att of message.attachments) {
+      if (att.type === "image" && att.path) {
+        const { dataUrl } = await imageToBase64(att.path);
+        contents.push({ type: "image_url", image_url: { url: dataUrl } });
+      }
+    }
+
+    return contents;
   }
 
   private async executeTool(params: {

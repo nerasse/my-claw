@@ -408,7 +408,7 @@ for (const att of outgoing.attachments) {
 
 ---
 
-## Phase 3 : Images (Vision)
+## Phase 3 : Images (Vision) — COMPLETE
 
 ### 3.1 Pipeline Images
 
@@ -417,7 +417,7 @@ for (const att of outgoing.attachments) {
 **Quoi** :
 1. ffmpeg resize si nécessaire (> 2000px ou > 2MB)
 2. Encode base64
-3. Si `llm.supportsVision === true` → `image_url` dans content array
+3. Si `llm.vision === true` → `image_url` dans content array
 4. Sinon → texte `[image: /tmp/photo.jpg]` dans le prompt
 
 ### 3.2 Implémentation
@@ -454,14 +454,15 @@ export type ChatMessage =
 ### 3.4 Intégration Bridge
 
 ```typescript
-// Dans buildUserContent, si vision supportée
-if (this.config.llm.supportsVision && message.attachments.some(a => a.type === "image")) {
-  const content: ChatMessageContent[] = [{ type: "text", text: message.text }];
-  for (const img of imageAttachments) {
-    const { dataUrl } = await imageToBase64(img.path!);
-    content.push({ type: "image_url", image_url: { url: dataUrl } });
+// Dans handle(), si vision supportée
+if (this.config.llm.vision && message.attachments.some(a => a.type === "image" && a.path)) {
+  const lastIdx = chatMessages.length - 1;
+  if (chatMessages[lastIdx]?.role === "user") {
+    chatMessages[lastIdx] = {
+      role: "user",
+      content: await this.buildImageContent(message),
+    };
   }
-  // Remplacer message.text par content array
 }
 ```
 
@@ -654,9 +655,9 @@ Pas de fallback automatique. Si le mode choisi échoue, l'erreur est remontée e
 | `src/voice/stt.ts` | `SttPipeline` — transcription Groq + local |
 | `src/voice/tts.ts` | `TtsPipeline` — génération Edge TTS + Piper |
 | `src/voice/index.ts` | Export central |
-| `src/media/image.ts` | Encode/resize images via ffmpeg + base64 |
-| `src/media/video.ts` | Extract frames via ffmpeg |
-| `src/media/index.ts` | Export central média |
+| `src/media/image.ts` | Encode/resize images via ffmpeg + base64 ✅ |
+| `src/media/video.ts` | Extract frames via ffmpeg ✅ |
+| `src/media/index.ts` | Export central média ✅ |
 | `src/tools/stt.ts` | Tool natif `stt` (manuel) |
 | `src/tools/tts.ts` | Tool natif `tts` (manuel) |
 | `src/tools/voice-mode.ts` | Tool natif `voice_mode` |
@@ -666,13 +667,13 @@ Pas de fallback automatique. Si le mode choisi échoue, l'erreur est remontée e
 
 | Fichier | Changements |
 |---|---|
-| `src/core/config.ts` | Ajouter `VoiceConfig` dans `MyClawConfig` |
-| `src/agent/bridge.ts` | Injecter `VoiceManager`, `SttPipeline`, `TtsPipeline`. Pré-traitement audio inbound auto + echo transcript. |
-| `src/index.ts` | Instancier `VoiceManager`, `SttPipeline`, `TtsPipeline`. Register les 3 tools. |
-| `src/llm/provider.ts` | Support `content` array (text + image_url) |
-| `src/channels/telegram/send.ts` | Support `sendVoice` / `sendAudio` pour pièces jointes audio |
-| `src/channels/matrix/send.ts` | Support `org.matrix.msc3245.voice` pour pièces jointes audio |
-| `src/channels/types.ts` | Ajouter `audioAsVoice?: boolean` et `durationMs?: number` à `Attachment` |
+| `src/core/config.ts` | Ajouter `VoiceConfig` dans `MyClawConfig`. Ajouter `vision?: boolean` dans `llm`. ✅ |
+| `src/agent/bridge.ts` | Injecter `VoiceManager`, `SttPipeline`, `TtsPipeline`. Pré-traitement audio inbound auto + echo transcript. Injection images conditionnelle. ✅ |
+| `src/index.ts` | Instancier `VoiceManager`, `SttPipeline`, `TtsPipeline`. Register les 3 tools. ✅ |
+| `src/llm/provider.ts` | Support `content` array (text + image_url) ✅ |
+| `src/channels/telegram/send.ts` | Support `sendVoice` / `sendAudio` pour pièces jointes audio ✅ |
+| `src/channels/matrix/send.ts` | Support `org.matrix.msc3245.voice` pour pièces jointes audio ✅ |
+| `src/channels/types.ts` | Ajouter `audioAsVoice?: boolean` et `durationMs?: number` à `Attachment` ✅ |
 
 ## Tests
 
@@ -684,6 +685,21 @@ Pas de fallback automatique. Si le mode choisi échoue, l'erreur est remontée e
 - **Couverture** : unitaires pour la logique dense (VoiceManager, pipelines), intégration pour les flows complets.
 
 ### Tests unitaires
+
+#### `tests/media/image.test.ts`
+
+| Test | Setup | Expected |
+|---|---|---|
+| returns base64 data URL for small image | 1x1 JPEG | `wasResized: false`, `dataUrl` starts with `data:image/jpeg;base64,` |
+| resizes image when file exceeds maxBytes | 4000x4000 JPEG, maxBytes=50KB | `wasResized: true`, valid data URL |
+| throws for nonexistent file | `/tmp/nonexistent` | throws Error |
+| infers PNG mime type from extension | 2x2 PNG | `dataUrl` starts with `data:image/png;base64,` |
+
+#### `tests/llm/provider-content.test.ts`
+
+| Test | Setup | Expected |
+|---|---|---|
+| serializes array content with image_url | user message with `content: [{type:"text"}, {type:"image_url"}]` | request body contains array with both entries |
 
 #### `tests/voice/manager.test.ts`
 
@@ -839,16 +855,16 @@ bun test tests/voice/manager.test.ts
 9. **Tests** : `tests/voice/manager.test.ts`, `tests/voice/stt.test.ts`, `tests/voice/tts.test.ts`, `tests/tools/tts.test.ts`, `tests/tools/voice-mode.test.ts`
 10. **Tests intégration** : `tests/agent/bridge-voice.test.ts`
 
-### Étape 2 : Images + Provider (1 jour)
-1. `src/llm/provider.ts` — `content` array
-2. `src/media/image.ts` — ffmpeg resize + base64
-3. `src/agent/bridge.ts` — injection images conditionnelle
-4. **Tests** : `tests/media/image.test.ts`, `tests/llm/provider.test.ts`
+### Étape 2 : Images + Provider (1 jour) — COMPLETE ✅
+1. `src/llm/provider.ts` — `content` array ✅
+2. `src/media/image.ts` — ffmpeg resize + base64 ✅
+3. `src/agent/bridge.ts` — injection images conditionnelle ✅
+4. **Tests** : `tests/media/image.test.ts`, `tests/llm/provider-content.test.ts` ✅
 
-### Étape 3 : Vidéo (0.5 jour)
-1. `src/media/video.ts` — ffmpeg frames
-2. `src/agent/bridge.ts` — conversion vidéo → images
-3. **Tests** : `tests/media/video.test.ts`, `tests/e2e/telegram-voice.test.ts`, `tests/e2e/matrix-voice.test.ts`
+### Étape 3 : Vidéo (0.5 jour) — COMPLETE ✅
+1. `src/media/video.ts` — ffmpeg frames (1/3s, max 20, scale 1920px) ✅
+2. `src/agent/bridge.ts` — conversion vidéo → images ✅
+3. **Tests** : `tests/media/video.test.ts` ✅
 
 ## Dépendances système
 

@@ -16,7 +16,7 @@
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
-| Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript |
+| Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
 
 ## Channel Structure
@@ -83,10 +83,19 @@
   - Cloud: Edge TTS (fr-FR-RemyMultilingualNeural)
   - Local: Piper (fr_FR-siwis-medium)
   - No automatic TTS post-response
+- **Images (vision)**: inbound images converted to base64 and sent via `image_url` in content array
+  - ffmpeg resize if > 2MB (scale to max 2000px)
+  - Only sent when `llm.vision: true` in config
+  - Session store keeps text representation only (not base64 blob)
+- **Video**: inbound videos converted to image frames before processing
+  - ffmpeg extracts 1 frame every 3 seconds, max 20 frames
+  - Frames become `image` attachments, processed by the image pipeline
+  - Original video attachments removed after extraction
+  - Text note `[Video]: "filename" (N frames extracted)` added to message
 - **Voice mode**: runtime switchable without reboot
   - `voice_mode(mode="cloud", feature="all")`
   - Priority: per-call > feature-level > global > auto-detect
-- Config: `voice.mode`, `voice.stt.mode`, `voice.tts.mode`, `voice.tts.voice`
+- Config: `voice.mode`, `voice.stt.mode`, `voice.tts.mode`, `voice.tts.voice`, `llm.vision`
 
 ### Storage
 

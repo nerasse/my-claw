@@ -142,6 +142,7 @@ export interface MyClawConfig {
     baseUrl: string;
     model: string;
     apiKey?: string;
+    vision?: boolean;
     limit?: {
       context?: number;
       output?: number;

@@ -1,0 +1,56 @@
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { extractVideoFrames } from "../../src/media/video.ts";
+import { stat, unlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp } from "node:fs/promises";
+
+const execFileAsync = promisify(execFile);
+
+let videoPath: string;
+let tmpDir: string;
+
+describe("extractVideoFrames", () => {
+  beforeAll(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "video-test-"));
+    videoPath = join(tmpDir, "test.mp4");
+
+    // 6-second 1fps red video = 6 frames
+    await execFileAsync("ffmpeg", [
+      "-f", "lavfi",
+      "-i", "color=c=red:s=320x240:r=1",
+      "-t", "6",
+      "-pix_fmt", "yuv420p",
+      videoPath,
+    ]);
+  });
+
+  afterAll(async () => {
+    await unlink(videoPath).catch(() => {});
+  });
+
+  test("extracts frames from a short video", async () => {
+    const frames = await extractVideoFrames(videoPath, { fps: 1, maxFrames: 10 });
+
+    expect(frames.length).toBeGreaterThanOrEqual(5);
+    expect(frames.length).toBeLessThanOrEqual(10);
+
+    for (const frame of frames) {
+      expect(frame).toEndWith(".jpg");
+      const s = await stat(frame);
+      expect(s.size).toBeGreaterThan(0);
+    }
+  });
+
+  test("respects maxFrames cap", async () => {
+    const frames = await extractVideoFrames(videoPath, { fps: 1, maxFrames: 3 });
+
+    expect(frames.length).toBeLessThanOrEqual(3);
+  });
+
+  test("throws for nonexistent video file", async () => {
+    await expect(extractVideoFrames("/tmp/nonexistent-video-12345.mp4")).rejects.toThrow("Video frame extraction failed");
+  });
+});
