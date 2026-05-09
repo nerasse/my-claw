@@ -43,6 +43,9 @@ function createBotMock() {
       command(name: string, handler: (ctx: unknown) => unknown) {
         handlers.set(`command:${name}`, handler);
       },
+      hears(trigger: RegExp, handler: (ctx: unknown) => unknown) {
+        handlers.set(`hears:${trigger.source}`, handler);
+      },
       on(event: string, handler: (ctx: unknown) => unknown) {
         handlers.set(`on:${event}`, handler);
       },

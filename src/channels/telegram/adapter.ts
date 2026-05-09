@@ -365,12 +365,12 @@ export class TelegramAdapter implements ChannelAdapter {
   // ── Handlers ────────────────────────────────────────────────
 
   private setupHandlers(): void {
-    this.bot.command("new", (ctx) => this.handleCommand(ctx, "new"));
-    this.bot.command("model", (ctx) => this.handleCommand(ctx, "model"));
-    this.bot.command("status", (ctx) => this.handleCommand(ctx, "status"));
-    this.bot.command("clear", (ctx) => this.handleCommand(ctx, "clear"));
-    this.bot.command("archive", (ctx) => this.handleCommand(ctx, "archive"));
-    this.bot.command("help", (ctx) => this.handleCommand(ctx, "help"));
+    this.bot.hears(/^\/new(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
+    this.bot.hears(/^\/model(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
+    this.bot.hears(/^\/status(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
+    this.bot.hears(/^\/clear(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
+    this.bot.hears(/^\/archive(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
+    this.bot.hears(/^\/help(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
     this.bot.on("message", (ctx) => this.handleMessage(ctx));
   }
