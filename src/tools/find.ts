@@ -15,8 +15,8 @@ export const findTool: Tool = {
   async execute(args): Promise<ToolResult> {
     try {
       const proc = Bun.spawn(
-        ["find", resolveWorkspacePath(args["path"] as string), "-name", args["pattern"] as string],
-        { stdout: "pipe", stderr: "pipe", cwd: process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
+        ["find", resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined), "-name", args["pattern"] as string],
+        { stdout: "pipe", stderr: "pipe", cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

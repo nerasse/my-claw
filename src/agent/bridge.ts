@@ -36,10 +36,13 @@ function errorLogData(err: unknown): unknown {
 
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
+  private currentMessage?: UnifiedMessage;
 
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
+    private depth: number = 0,
+    private workspaceDir?: string,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
   }
@@ -70,7 +73,8 @@ export class AgentBridge {
     onToken?: (token: string) => Promise<void>,
     onToolUse?: () => Promise<void>,
   ): Promise<string> {
-    const tools = this.toolRegistry.getForAgent("main");
+    this.currentMessage = message;
+    const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
     const model = session.modelOverride ?? this.config.llm.model;
     const llmConfig = { ...this.config.llm, model };
     const startedAt = Date.now();
@@ -308,7 +312,13 @@ export class AgentBridge {
     }
 
     try {
-      const result = await tool.execute(params.args);
+      const enrichedArgs = {
+        ...params.args,
+        __depth: this.depth,
+        __message: this.currentMessage,
+        __workspaceDir: this.workspaceDir,
+      };
+      const result = await tool.execute(enrichedArgs);
       if (result.success) {
         return {
           success: true,

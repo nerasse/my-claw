@@ -7,6 +7,14 @@ export type SessionMessage =
   | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
+export interface SubAgentMeta {
+  displayName: string;
+  type: "general" | "research";
+  workspaceDir?: string;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface SessionData {
   id: string;
   platform: string;
@@ -18,6 +26,7 @@ export interface SessionData {
   roomId?: string;
   threadId?: string;
   approvedTools?: string[];
+  meta?: SubAgentMeta;
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

@@ -14,7 +14,7 @@ export const lsTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     try {
-      const entries = await readdir(resolveWorkspacePath(args["path"] as string), { withFileTypes: true });
+      const entries = await readdir(resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined), { withFileTypes: true });
       const output = entries
         .map((e) => `${e.isDirectory() ? "d" : "f"} ${e.name}`)
         .join("\n");

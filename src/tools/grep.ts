@@ -17,8 +17,8 @@ export const grepTool: Tool = {
     try {
       const flags = args["recursive"] !== false ? "-rn" : "-n";
       const proc = Bun.spawn(
-        ["grep", flags, args["pattern"] as string, resolveWorkspacePath(args["path"] as string)],
-        { stdout: "pipe", stderr: "pipe", cwd: process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
+        ["grep", flags, args["pattern"] as string, resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined)],
+        { stdout: "pipe", stderr: "pipe", cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

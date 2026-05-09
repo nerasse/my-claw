@@ -24,6 +24,13 @@ import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
 import { lsTool } from "./tools/ls.ts";
 import { memoryTool } from "./tools/memory.ts";
+import { createSpawnTool } from "./tools/spawn.ts";
+import { createSendTool } from "./tools/send.ts";
+import { createListAgentsTool } from "./tools/list-agents.ts";
+import { createKillAgentTool } from "./tools/kill-agent.ts";
+import { createResetAgentTool } from "./tools/reset-agent.ts";
+import { SubAgentRunner } from "./subagents/runner.ts";
+import { SubAgentRegistry } from "./subagents/registry.ts";
 import { log } from "./utils/logger.ts";
 
 async function main() {
@@ -35,6 +42,15 @@ async function main() {
   for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, memoryTool]) {
     toolRegistry.register(tool);
   }
+
+  const subAgentRegistry = new SubAgentRegistry();
+  await subAgentRegistry.load();
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry);
+  toolRegistry.register(createSpawnTool(subAgentRunner, subAgentRegistry));
+  toolRegistry.register(createSendTool(subAgentRunner, subAgentRegistry));
+  toolRegistry.register(createListAgentsTool(subAgentRunner, subAgentRegistry));
+  toolRegistry.register(createKillAgentTool(subAgentRunner));
+  toolRegistry.register(createResetAgentTool(subAgentRunner));
 
   const sessionManager = new SessionManager();
   const agent = new AgentBridge(config, toolRegistry);

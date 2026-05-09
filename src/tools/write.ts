@@ -16,7 +16,7 @@ export const writeTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     try {
-      const resolved = resolveWorkspacePath(args["path"] as string);
+      const resolved = resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined);
       await mkdir(dirname(resolved), { recursive: true });
       await writeFile(resolved, args["content"] as string);
       return { success: true, output: `Written to ${resolved}` };

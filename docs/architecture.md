@@ -13,7 +13,7 @@
 | LLM provider | Complete — sync + streaming |
 | Tools (8) | Complete: bash, read, write, fetch, find, grep, ls, memory |
 | System prompt builder | Complete (7-layer architecture) |
-| Sub-agents | Scaffolded, not wired |
+| Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Full wiring (index.ts) | Complete — config -> tools -> sessions -> agent -> router -> adapter |
 
@@ -75,9 +75,6 @@
 ```
 ~/.my-claw/
 ├── config.json              # global config (providers, models, whitelist, blacklist, etc.)
-├── agents/                  # sub-agent configs
-│   ├── general.json
-│   └── research.json
 ├── prompt/                  # system prompt files
 │   ├── SOUL.md
 │   ├── AGENTS.md
@@ -89,11 +86,14 @@
 │   │   │   └── <user_id>.json
 │   │   └── group/
 │   │       └── <group_id>.json
-│   └── matrix/
-│       ├── dm/
-│       │   └── <user_id>.json
-│       └── room/
-│           └── <room_id>.json
+│   ├── matrix/
+│   │   ├── dm/
+│   │   │   └── <user_id>.json
+│   │   └── room/
+│   │       └── <room_id>.json
+│   └── subagent/            # persistent sub-agent sessions
+│       └── <name>-<hex4>.json
+├── sessions-archive/        # archived sessions (reset, clear)
 └── logs/
 ```
 
@@ -116,14 +116,13 @@
 
 ### Sub-agents
 
-- 2 predefined sub-agent types:
-  - **general**: same capabilities as the main agent (read, write, bash, everything)
-  - **research**: read-only, exploration, command execution without modifications
-- LLM inheritance: sub-agent uses main agent's LLM by default
-- If a sub-agent has a specific LLM config, it uses that instead
-- Limit: 3 simultaneous sub-agents max
-- Max depth: 2 levels (main -> sub-agent -> sub-sub-agent, no deeper)
-- Config in `~/.my-claw/agents/`
+- 2 types: **general** (full tools) and **research** (read-only: read, grep, find, ls, fetch)
+- Mode `run` = one-shot (max 3 concurrent, depth 2), mode `session` = persistent on disk
+- Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
+- 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`
+- FIFO queueing: concurrent `send` to same sub-agent queues instead of rejecting
+- Configurable LLM per type via `config.agents.{general,research}.llm`
+- Optional `workspaceDir` per sub-agent for filesystem isolation
 
 ### Invocation
 
