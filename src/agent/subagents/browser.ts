@@ -2,6 +2,7 @@ import type { MyClawConfig } from "../../core/config.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse } from "../../llm/provider.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
+import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserPool } from "../../browser/pool.ts";
 import { BrowserService } from "../../browser/service.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -69,11 +70,7 @@ export class BrowserSubagent {
     let currentUrl = startUrl ?? "";
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      const agentTools = this.toolRegistry.getForAgent("general");
-      const openaiTools = agentTools.map((t) => ({
-        type: "function" as const,
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
+      const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
       let response: LlmResponse;
       try {

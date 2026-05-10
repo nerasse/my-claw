@@ -4,6 +4,7 @@ import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type ChatMessageContent } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
+import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
@@ -253,10 +254,7 @@ export class AgentBridge {
       const now = new Date().toISOString();
       session.messages.push({ role: "user", content: userContent, timestamp: now });
 
-      const openaiTools = tools.map((t) => ({
-        type: "function" as const,
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
+      const openaiTools = toOpenAiToolDefinitions(tools);
 
       const chatMessages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
@@ -315,11 +313,7 @@ export class AgentBridge {
           await onToolUse();
         }
 
-        const assistantToolCalls = response.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function" as const,
-          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-        }));
+        const assistantToolCalls = toOpenAiToolCalls(response.toolCalls);
 
         chatMessages.push({
           role: "assistant",
@@ -533,11 +527,7 @@ export class AgentBridge {
             out.push({
               role: "assistant",
               content: msg.content,
-              tool_calls: msg.toolCalls.map((tc) => ({
-                id: tc.id,
-                type: "function" as const,
-                function: { name: tc.name, arguments: tc.arguments },
-              })),
+              tool_calls: toOpenAiToolCalls(msg.toolCalls),
             });
           } else {
             out.push({ role: "assistant", content: msg.content });
