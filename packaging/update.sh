@@ -138,7 +138,7 @@ for template in "${EXTRACT_DIR}/templates/"*.service; do
 done
 
 # Re-install update script
-cp "${EXTRACT_DIR}/update.sh" /usr/local/bin/my-claw-update
+cp "${EXTRACT_DIR}/packaging/update.sh" /usr/local/bin/my-claw-update
 chmod 755 /usr/local/bin/my-claw-update
 
 # Re-install CLI wrapper
