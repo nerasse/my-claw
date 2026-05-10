@@ -135,7 +135,7 @@ contextVisibility: "all" | "allowlist" | "allowlist_quote"
 - `allowlist_quote`: same as `allowlist`, but reply quotes from non-allowlisted senders are still shown
 
 ### Meta-Command Filtering
-Commands (`/help`, `/status`, `/model`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
+Commands (`/help`, `/status`, `/model`, `/compact`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
 
 ## DM Detection
 
@@ -172,6 +172,7 @@ All commands are text-based (Matrix has no native command UI):
 | `/new` | Reset current session (preserved in context as boundary) |
 | `/model` | Show model selection menu |
 | `/models` | List available models |
+| `/compact` | Compact session context (summarize middle, keep head+tail) |
 | `/status` | Show current model and stats |
 | `/clear` | Clear session history |
 | `/archive` | Delete archived sessions |

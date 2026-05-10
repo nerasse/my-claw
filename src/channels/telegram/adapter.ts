@@ -369,6 +369,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private setupHandlers(): void {
     this.bot.hears(/^\/new(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
     this.bot.hears(/^\/model(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
+    this.bot.hears(/^\/compact(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "compact"));
     this.bot.hears(/^\/status(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
     this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
     this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));

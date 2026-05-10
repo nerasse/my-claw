@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
+import { compactSession } from "../../sessions/compaction.ts";
 import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
 
@@ -125,6 +126,16 @@ export function createTelegramCommandHandler({
           text: `Current model: ${modelPicker.labelFor(currentModel)}`,
           buttons: modelPicker.buildButtons(currentModel),
         };
+      }
+
+      case "compact": {
+        const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+        const result = await compactSession(config, session, args.trim() || undefined);
+        if (!result.ok) {
+          return result.reason ?? "Compaction failed.";
+        }
+        await sessionManager.persist(sessionId);
+        return `Context compacte: ${result.beforeCount} → ${result.afterCount} messages.`;
       }
 
       case "status": {

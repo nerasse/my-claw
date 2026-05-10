@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
+import { compactSession } from "../../sessions/compaction.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
@@ -315,6 +316,16 @@ export function createMatrixCommandHandler({
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
         return buildMatrixModelsList({ config, modelPicker, currentModel });
+      }
+
+      case "compact": {
+        const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
+        const result = await compactSession(config, session, args.trim() || undefined);
+        if (!result.ok) {
+          return result.reason ?? "Compaction failed.";
+        }
+        await sessionManager.persist(sessionId);
+        return `Context compacte: ${result.beforeCount} → ${result.afterCount} messages.`;
       }
 
       case "help":

@@ -2,6 +2,7 @@ export const MATRIX_COMMANDS = [
   { command: "new", description: "Start a fresh session" },
   { command: "model", description: "Show model menu or change current model" },
   { command: "models", description: "List available models" },
+  { command: "compact", description: "Compact session context" },
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },

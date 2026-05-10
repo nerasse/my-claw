@@ -43,7 +43,7 @@
 - Format: HTML parse mode with plain text fallback
 - Message split: 4000 chars, HTML-tag-aware
 - Text batching: 1s debounce for split messages
-- Native commands: /new, /model, /status, /clear, /help
+- Native commands: /new, /model, /compact, /status, /clear, /help
 - Inline buttons: accept/deny for blacklisted actions
 - Media: photo, voice, audio, video, document (in/out)
 - No dependency injection, no plugin SDK, no multi-account
