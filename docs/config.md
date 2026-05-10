@@ -69,12 +69,29 @@ Migrates automatically to the new format internally. No manual action needed.
 
 ### API Key Resolution
 
+Env vars are loaded from `~/.my-claw/.env` at boot. Use the same name in `.env` as in `config.json` `apiKeyEnv`.
+
 Priority (highest first):
 
-1. `config.llm.apiKey` (global key)
+1. `config.llm.apiKey` (global key — legacy mode only)
 2. `process.env[provider.apiKeyEnv]` (provider-specific env var)
-3. `process.env.FIREWORKS_API_KEY` (legacy fallback)
-4. `process.env.OPENAI_API_KEY` (legacy fallback)
+3. `process.env.FIREWORKS_API_KEY` (fallback for legacy configs)
+4. `process.env.OPENAI_API_KEY` (fallback for legacy configs)
+
+Example:
+```json
+"providers": {
+  "fireworks": {
+    "baseUrl": "https://api.fireworks.ai/inference/v1",
+    "apiKeyEnv": "FIREWORKS_API_KEY"
+  }
+}
+```
+
+```bash
+# ~/.my-claw/.env
+FIREWORKS_API_KEY=sk-...
+```
 
 ### Model Switching
 
