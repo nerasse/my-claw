@@ -1,140 +1,140 @@
 # System Prompt Research -- Hermes Agent vs OpenClaw
 
-## Comparatif
+## Comparison
 
-### Architecture generale
+### General Architecture
 
 | | Hermes Agent | OpenClaw |
-|---|---|---|
-| Langage | Python | TypeScript |
-| Construction | `_build_system_prompt()` dans run_agent.py | `buildAgentSystemPrompt()` dans system-prompt.ts |
-| Cache | Build une fois par session, invalide a la compression | Deux zones (stable/dynamique) separees par un marqueur cache |
-| Layers | 10 couches ordonnees, `"\n\n".join()` | 2 zones (~20 sections stable + ~10 sections dynamiques) |
-| Fichier principal | `agent/prompt_builder.py` | `src/agents/system-prompt.ts` |
+|---|---|---|---
+| Language | Python | TypeScript |
+| Construction | `_build_system_prompt()` in run_agent.py | `buildAgentSystemPrompt()` in system-prompt.ts |
+| Cache | Built once per session, invalidated on compression | Two zones (stable/dynamic) separated by a cache marker |
+| Layers | 10 ordered layers, `"\n\n".join()` | 2 zones (~20 stable sections + ~10 dynamic sections) |
+| Main file | `agent/prompt_builder.py` | `src/agents/system-prompt.ts` |
 
-### Fichiers de personnalite
+### Personality Files
 
-| Fichier | Hermes | OpenClaw | Role |
+| File | Hermes | OpenClaw | Role |
 |---|---|---|---|
-| SOUL.md | `~/.hermes/SOUL.md` | `workspace/SOUL.md` | Personnalite, ton, identite |
-| AGENTS.md | cwd (contexte projet) | `workspace/AGENTS.md` | Regles de comportement agent |
-| IDENTITY.md | non | `workspace/IDENTITY.md` | Nom, avatar, emoji, type |
-| USER.md | via memory tool | `workspace/USER.md` | Profil utilisateur |
-| MEMORY.md | via memory tool | `workspace/MEMORY.md` | Memoire long terme |
-| TOOLS.md | non | `workspace/TOOLS.md` | Notes sur les outils locaux |
-| HEARTBEAT.md | non | `workspace/HEARTBEAT.md` | Taches periodiques |
-| BOOTSTRAP.md | non | `workspace/BOOTSTRAP.md` | Premier lancement, supprime apres |
+| SOUL.md | `~/.hermes/SOUL.md` | `workspace/SOUL.md` | Personality, tone, identity |
+| AGENTS.md | cwd (project context) | `workspace/AGENTS.md` | Agent behavior rules |
+| IDENTITY.md | no | `workspace/IDENTITY.md` | Name, avatar, emoji, type |
+| USER.md | via memory tool | `workspace/USER.md` | User profile |
+| MEMORY.md | via memory tool | `workspace/MEMORY.md` | Long-term memory |
+| TOOLS.md | no | `workspace/TOOLS.md` | Notes on local tools |
+| HEARTBEAT.md | no | `workspace/HEARTBEAT.md` | Periodic tasks |
+| BOOTSTRAP.md | no | `workspace/BOOTSTRAP.md` | First launch, deleted after |
 
-### Couches du system prompt
+### System Prompt Layers
 
-#### Hermes Agent (10 couches, dans l'ordre)
+#### Hermes Agent (10 layers, in order)
 
-| # | Couche | Source | Dynamique ? |
+| # | Layer | Source | Dynamic? |
 |---|---|---|---|
-| 1 | Identite agent | SOUL.md ou DEFAULT_AGENT_IDENTITY | Non (cache) |
-| 1.5 | Help guidance | Constante HERMES_AGENT_HELP_GUIDANCE | Non |
-| 2 | Guidance par tool | Constantes conditionnelles (memory, skills, kanban) | Non |
-| 2.5 | Nous subscription | build_nous_subscription_prompt() | Non |
-| 3 | Enforcement modele | Guidance specifique GPT/Gemini/Codex | Non |
-| 4 | System message custom | Parametre caller (gateway/CLI) | Non |
-| 5 | Memoire persistante | MEMORY.md + USER.md (snapshots figes) | Non |
-| 6 | Index skills | Skills XML avec cache LRU + disque | Non |
-| 7 | Fichiers contexte | AGENTS.md / CLAUDE.md / .cursorrules (1 seul, priorite) | Non |
-| 8 | Timestamp + session | Date, session ID, model, provider | Non |
-| 9 | Hints environnement | Detection WSL | Non |
-| 10 | Hints plateforme | Formatage par channel (telegram, discord, matrix...) | Non |
+| 1 | Agent identity | SOUL.md or DEFAULT_AGENT_IDENTITY | No (cache) |
+| 1.5 | Help guidance | Constant HERMES_AGENT_HELP_GUIDANCE | No |
+| 2 | Per-tool guidance | Conditional constants (memory, skills, kanban) | No |
+| 2.5 | Nous subscription | build_nous_subscription_prompt() | No |
+| 3 | Model enforcement | GPT/Gemini/Codex specific guidance | No |
+| 4 | Custom system message | Caller parameter (gateway/CLI) | No |
+| 5 | Persistent memory | MEMORY.md + USER.md (frozen snapshots) | No |
+| 6 | Skills index | Skills XML with LRU cache + disk | No |
+| 7 | Context files | AGENTS.md / CLAUDE.md / .cursorrules (1 only, priority) | No |
+| 8 | Timestamp + session | Date, session ID, model, provider | No |
+| 9 | Environment hints | WSL detection | No |
+| 10 | Platform hints | Formatting by channel (telegram, discord, matrix...) | No |
 
-**Injections runtime (hors cache)** :
+**Runtime injections (outside cache)**:
 - Ephemeral system prompt (env var / config / /personality)
 - Prefill messages
-- Session context (gateway : platform, user, channel topic)
-- Memory nudge / skill review (dans le user message, pas le system prompt)
+- Session context (gateway: platform, user, channel topic)
+- Memory nudge / skill review (in the user message, not the system prompt)
 
 #### OpenClaw (2 zones, ~30 sections)
 
-**Zone stable (cacheable)** :
+**Stable zone (cacheable)**:
 
-| Section | Contenu |
+| Section | Content |
 |---|---|
-| Identite | "You are a personal assistant running inside OpenClaw." |
-| Tooling | Liste des tools avec descriptions |
-| Style interaction | Overlay configurable (ex: GPT-5 friendly) |
-| Style tool call | Guidance d'utilisation des tools |
-| Execution bias | Approche d'execution |
-| Securite | Anti-manipulation, pas d'auto-replication |
-| CLI reference | Commandes gateway |
-| Skills | XML blocks avec descriptions |
-| Memoire | Guidance memory tool |
-| Self-update | Gestion updates |
-| Model aliases | Mappings configures |
+| Identity | "You are a personal assistant running inside OpenClaw." |
+| Tooling | Tool list with descriptions |
+| Interaction style | Configurable overlay (ex: GPT-5 friendly) |
+| Tool call style | Tool usage guidance |
+| Execution bias | Execution approach |
+| Security | Anti-manipulation, no auto-replication |
+| CLI reference | Gateway commands |
+| Skills | XML blocks with descriptions |
+| Memory | Memory tool guidance |
+| Self-update | Update management |
+| Model aliases | Configured mappings |
 | Workspace | Working dir, sandbox info |
-| Docs | URLs documentation |
+| Docs | Documentation URLs |
 | Authorized senders | Owner identity |
-| Date/heure | Timezone utilisateur |
-| Output directives | Tags MEDIA, reply tags |
-| Fichiers projet | AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md, MEMORY.md |
-| Silent replies | Token NO_REPLY |
+| Date/time | User timezone |
+| Output directives | MEDIA tags, reply tags |
+| Project files | AGENTS.md, SOUL.md, IDENTITY.md, USER.md, TOOLS.md, MEMORY.md |
+| Silent replies | NO_REPLY token |
 
-**Zone dynamique (par tour)** :
+**Dynamic zone (per turn)**:
 
-| Section | Contenu |
+| Section | Content |
 |---|---|
-| Fichiers dynamiques | HEARTBEAT.md |
-| Webchat canvas | Si channel webchat |
-| Messaging | Guidance channel + boutons inline |
-| TTS | Config voix |
-| Group chat context | Extra prompt du contexte appelant |
-| Reactions | Guidance reactions par channel |
-| Provider suffix | Additions provider-specifiques |
-| Heartbeats | Instructions heartbeat poll |
+| Dynamic files | HEARTBEAT.md |
+| Webchat canvas | If webchat channel |
+| Messaging | Channel guidance + inline buttons |
+| TTS | Voice config |
+| Group chat context | Extra prompt from caller context |
+| Reactions | Per-channel reaction guidance |
+| Provider suffix | Provider-specific additions |
+| Heartbeats | Heartbeat poll instructions |
 | Runtime | agent, host, os, model, channel, capabilities |
-| Reasoning level | Mode reasoning actuel |
+| Reasoning level | Current reasoning mode |
 
-### Securite des prompts
-
-| | Hermes | OpenClaw |
-|---|---|---|
-| Scan injection | `_scan_context_content()` -- 10 patterns + unicode invisible | `sanitize-for-prompt.ts` -- sanitize strings non fiables |
-| Troncature | 20,000 chars (70% head / 20% tail) | 20,000 chars/fichier, 150,000 total |
-| PII | Redaction optionnelle (gateway sessions) | Owner identity hashable SHA-256 |
-
-### Configurabilite
+### Prompt Security
 
 | | Hermes | OpenClaw |
 |---|---|---|
-| Per-agent | Oui (params init : platform, skip_context, skip_memory) | Oui (config.agents.list[].systemPromptOverride) |
+| Injection scan | `_scan_context_content()` -- 10 patterns + invisible unicode | `sanitize-for-prompt.ts` -- sanitize untrusted strings |
+| Truncation | 20,000 chars (70% head / 20% tail) | 20,000 chars/file, 150,000 total |
+| PII | Optional redaction (gateway sessions) | Owner identity hashable SHA-256 |
+
+### Configurability
+
+| | Hermes | OpenClaw |
+|---|---|---|
+| Per-agent | Yes (init params: platform, skip_context, skip_memory) | Yes (config.agents.list[].systemPromptOverride) |
 | Per-session | /personality command (predefined personas) | Per-workspace files (SOUL.md, AGENTS.md) |
-| Per-channel | PLATFORM_HINTS dict (formatage par plateforme) | Channel-specific messaging guidance |
-| Override total | HERMES_EPHEMERAL_SYSTEM_PROMPT env var | systemPromptOverride dans config |
-| Sous-agents | `_build_child_system_prompt()` -- prompt dedie a la tache | `subagent-system-prompt.ts` -- mode "minimal" |
-| Plugins | Hooks pre-LLM dans user message (pas system prompt) | Hooks `before_prompt_build`, `agent_turn_prepare` dans system prompt |
+| Per-channel | PLATFORM_HINTS dict (formatting by platform) | Channel-specific messaging guidance |
+| Total override | HERMES_EPHEMERAL_SYSTEM_PROMPT env var | systemPromptOverride in config |
+| Sub-agents | `_build_child_system_prompt()` -- task-dedicated prompt | `subagent-system-prompt.ts` -- "minimal" mode |
+| Plugins | Pre-LLM hooks in user message (not system prompt) | Hooks `before_prompt_build`, `agent_turn_prepare` in system prompt |
 
-### Sous-agents
+### Sub-agents
 
 | | Hermes | OpenClaw |
 |---|---|---|
-| Prompt sous-agent | Completement different (focus tache) | Mode "minimal" (sections reduites) |
+| Sub-agent prompt | Completely different (task-focused) | "Minimal" mode (reduced sections) |
 | Spawn | `delegate_tool.py` -- _build_child_system_prompt() | `subagent-system-prompt.ts` |
-| Memoire | Pas de memoire injectee | Pas de memoire injectee (skip) |
-| Contexte workspace | Optionnel (workspace path) | Herite du workspace parent |
+| Memory | No memory injected | No memory injected (skip) |
+| Workspace context | Optional (workspace path) | Inherited from parent workspace |
 
-## Points cles pour my-claw
+## Key takeaways for my-claw
 
-### Ce qu'on retient de Hermes
+### What we keep from Hermes
 
-1. **SOUL.md** comme fichier unique de personnalite editable par l'utilisateur
-2. **Couches ordonnees** -- simple a comprendre et debugger
-3. **Cache une fois par session** -- pas de rebuild a chaque tour
-4. **Snapshots figes pour la memoire** -- evite d'invalider le cache
-5. **Scan anti-injection** sur tout fichier externe charge
-6. **PLATFORM_HINTS** -- guidance de formatage par channel (essentiel pour nous)
-7. **Ephemeral system prompt** -- overlay temporaire sans toucher au cache
+1. **SOUL.md** as a single editable personality file for the user
+2. **Ordered layers** -- simple to understand and debug
+3. **Cache once per session** -- no rebuild every turn
+4. **Frozen snapshots for memory** -- avoids invalidating the cache
+5. **Anti-injection scan** on every external file loaded
+6. **PLATFORM_HINTS** -- formatting guidance per channel (essential for us)
+7. **Ephemeral system prompt** -- temporary overlay without touching the cache
 
-### Ce qu'on retient d'OpenClaw
+### What we keep from OpenClaw
 
-1. **Deux zones (stable/dynamique)** -- meilleur pour le cache LLM
-2. **Fichiers separes par role** (SOUL, IDENTITY, USER, TOOLS, MEMORY) -- plus modulaire
-3. **BOOTSTRAP.md** -- premier lancement guide puis supprime
-4. **Provider contributions** -- adaptations par famille de modele
-5. **Prompt mode** (full/minimal/none) -- pour les sous-agents
-6. **Runtime line** -- metadata machine injectee (os, model, channel, capabilities)
+1. **Two zones (stable/dynamic)** -- better for LLM cache
+2. **Separate files per role** (SOUL, IDENTITY, USER, TOOLS, MEMORY) -- more modular
+3. **BOOTSTRAP.md** -- guided first launch then deleted
+4. **Provider contributions** -- adaptations per model family
+5. **Prompt mode** (full/minimal/none) -- for sub-agents
+6. **Runtime line** -- injected machine metadata (os, model, channel, capabilities)

@@ -79,15 +79,15 @@ On boot, `SubAgentRegistry.load()` scans `sessions/subagent/`. All existing sub-
 ## Example interaction
 
 ```
-User: "crée un code-explorer"
+User: "create a code-explorer"
 LLM → spawn("code-explorer", "research", "session", "explore src/")
 → "Sub-agent 'subagent/code-explorer-a7b3' created."
 
-User: "demande-lui d'analyser core/"
+User: "ask it to analyze core/"
 LLM → send("subagent/code-explorer-a7b3", "analyze core/")
 → (sub-agent reuses its full session history)
 
-User: "liste mes sous-agents"
+User: "list my sub-agents"
 LLM → list_agents()
 → "subagent/code-explorer-a7b3 | code-explorer | research | 12 messages | idle"
 
@@ -95,7 +95,7 @@ User: "reset code-explorer"
 LLM → reset_agent("subagent/code-explorer-a7b3")
 → "Session reset. Workspace preserved."
 
-User: "supprime-le"
+User: "delete it"
 LLM → kill_agent("subagent/code-explorer-a7b3")
 → "Sub-agent deleted."
 ```

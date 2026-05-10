@@ -108,8 +108,8 @@ export class AgentBridge {
     if (!att.path) {
       const isEncrypted = att.summaryText?.includes("unavailable") ?? false;
       const reason = isEncrypted
-        ? "Ce media est chiffre (E2EE) et inaccessible. Verifie mon device dans la room ou envoie un message non-chiffre."
-        : "Media non telecharge (indisponible ou trop volumineux).";
+        ? "This media is encrypted (E2EE) and inaccessible. Check my device in the room or send an unencrypted message."
+        : "Media not downloaded (unavailable or too large).";
 
       const existingText = message.text ? message.text.trim() : "";
       const audioPrefix = existingText ? `\n\n` : "";
@@ -118,7 +118,7 @@ export class AgentBridge {
       const { enabled } = this.voiceManager.getEchoConfig();
       if (enabled) {
         this.echoMessages.push({
-          text: `⚠️ ${reason}`,
+          text: `[Warning] ${reason}`,
           replyToId: message.id,
           threadId: message.threadId,
         });
@@ -156,7 +156,7 @@ export class AgentBridge {
       const { enabled } = this.voiceManager.getEchoConfig();
       if (enabled) {
         this.echoMessages.push({
-          text: `⚠️ STT failed: ${errorMsg}`,
+          text: `[Warning] STT failed: ${errorMsg}`,
           replyToId: message.id,
           threadId: message.threadId,
         });

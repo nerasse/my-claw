@@ -1,45 +1,45 @@
 ---
 name: voice
 description: |
-  Gestion du mode voix cloud/local pour STT et TTS.
-  Integre dans l'orchestrateur — pas de scripts externes.
+  Manage cloud/local voice mode for STT and TTS.
+  Integrated into the orchestrator — no external scripts.
 ---
 
 # Voice Skill
 
-## STT Automatique (inbound)
+## Automatic STT (inbound)
 
-Les voice notes sont transcrits automatiquement avant traitement par l'agent.
-La transcription est envoyee comme message visible a l'utilisateur.
+Voice notes are transcribed automatically before agent processing.
+The transcript is sent as a visible message to the user.
 
-Pas de tool call necessaire pour l'inbound STT.
+No tool call needed for inbound STT.
 
-## TTS Manuel (outbound)
+## Manual TTS (outbound)
 
-Le TTS n'est **jamais automatique**. L'agent doit appeler le tool `tts`
-quand l'utilisateur demande un audio.
-
-```tool
-tts(text="Bonjour")                     # Mode effectif
-tts(text="Bonjour", forceCloud=true)    # Forcer cloud
-tts(text="Bonjour", forceLocal=true)    # Forcer local
-```
-
-## STT Manuel
+TTS is **never automatic**. The agent must call the `tts` tool
+when the user asks for audio.
 
 ```tool
-stt(filePath="/tmp/audio.ogg")           # Transcrire un fichier
+tts(text="Hello")                     # Effective mode
+tts(text="Hello", forceCloud=true)    # Force cloud
+tts(text="Hello", forceLocal=true)    # Force local
 ```
 
-## Changement de mode (runtime)
+## Manual STT
 
 ```tool
-voice_mode(mode="cloud", feature="all")     # Tout en cloud
-voice_mode(mode="local", feature="stt")     # STT local uniquement
-voice_mode(mode="local", feature="tts")     # TTS local uniquement
+stt(filePath="/tmp/audio.ogg")           # Transcribe a file
 ```
 
-Le changement est **runtime** — pas besoin de redemarrer.
+## Mode Switch (runtime)
+
+```tool
+voice_mode(mode="cloud", feature="all")     # Everything cloud
+voice_mode(mode="local", feature="stt")     # STT local only
+voice_mode(mode="local", feature="tts")     # TTS local only
+```
+
+The change is **runtime** — no reboot needed.
 
 ## Modes
 
@@ -48,16 +48,16 @@ Le changement est **runtime** — pas besoin de redemarrer.
 | Cloud | Groq whisper-large-v3 (~1-2s) | Edge TTS MP3 |
 | Local | faster-whisper :18792 (~5-7s) | Piper WAV |
 
-## Erreurs
+## Errors
 
-Pas de fallback automatique. Si le mode choisi echoue, l'erreur est remontee
-explicitement :
-- STT : message d'erreur visible au user
-- TTS : erreur retournee au tool, l'agent gere la reponse
+No automatic fallback. If the chosen mode fails, the error is raised
+explicitly:
+- STT: visible error message to the user
+- TTS: error returned to the tool, the agent handles the response
 
-## Overrides (priorite)
+## Overrides (priority)
 
-1. `forceCloud` / `forceLocal` dans l'appel tool (per-call)
+1. `forceCloud` / `forceLocal` in the tool call (per-call)
 2. `voice.features.<stt|tts>.mode` (per-feature)
 3. `voice.mode` (global)
-4. `"auto"` -> cloud si credentials dispo, sinon local
+4. `"auto"` -> cloud if credentials available, else local

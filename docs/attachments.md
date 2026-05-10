@@ -14,7 +14,7 @@ This prevents double delivery when both the LLM and the tool reference the same 
 ## TTS flow
 
 ```
-User: "dis bonjour"
+User: "say hello"
 Agent calls tts tool → generates /tmp/tts-xxx/output.mp3
 ToolResult includes attachment: { type: "audio", path, mimeType }
 AgentBridge collects attachments
