@@ -517,7 +517,7 @@ If the subagent encounters a CAPTCHA, login wall, or 2FA:
 - [x] click, type, screenshot, scroll, back
 - [x] Tool registration in registry
 - [x] Unit tests for all tools (7 tests, SSRF guard included)
-- [ ] E2E test scaffold (optional flag)
+- [x] E2E test scaffold with `BROWSER_E2E=1` flag
 
 ### Milestone 3: Subagent + Human Loop (Day 3) ✅
 - [x] `BrowserSubagent` loop runner
@@ -530,15 +530,15 @@ If the subagent encounters a CAPTCHA, login wall, or 2FA:
 - [x] `web-browsing` skill creation (`src/skills/web-browsing/SKILL.md`)
 - [x] AgentBridge integration (skill loading via sync, delegation via tool)
 - [x] Config schema + defaults
-- [ ] E2E tests with real pages
+- [x] E2E tests with real pages (behind `BROWSER_E2E=1`)
 - [x] Documentation (`docs/plan/browser-use.md`)
 
-### Milestone 5: Polish (Day 5) — TODO
-- [ ] Screenshots annotated with ref labels (overlay via Playwright DOM injection)
-- [ ] Dialog handler (auto-dismiss or capture)
-- [ ] Multi-tab support (list/focus/close)
-- [ ] Session idle sweeper (background cleanup)
-- [ ] Performance: reuse same browser context across subagent turns (optional)
+### Milestone 5: Polish (Day 5) ✅
+- [x] Screenshots annotated with ref labels (`injectRefLabels` / `removeRefLabels`)
+- [x] Dialog handler (auto-dismiss via `page.on('dialog')`)
+- [x] Multi-tab support (`browser_list_tabs`, `browser_focus_tab`, `browser_close_tab`)
+- [x] Session idle sweeper (background cleanup every 60s, default 5min timeout)
+- [ ] Performance: reuse same browser context across subagent turns (optional — future)
 
 ## Open Questions
 

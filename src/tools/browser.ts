@@ -195,16 +195,88 @@ export function createBrowserScreenshotTool(service: BrowserService): Tool {
       type: "object",
       properties: {
         full_page: { type: "boolean", description: "Capture full page vs viewport only" },
+        labels: { type: "boolean", description: "Overlay ref labels on elements for easier identification" },
       },
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const attachment = await service.screenshot(getPage(), Boolean(args["full_page"]));
+        const useLabels = Boolean(args["labels"]);
+        const attachment = useLabels
+          ? await service.screenshotWithLabels(getPage(), Boolean(args["full_page"]))
+          : await service.screenshot(getPage(), Boolean(args["full_page"]));
         return {
           success: true,
           output: "Screenshot captured.",
           attachments: [attachment],
         };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserListTabsTool(service: BrowserService): Tool {
+  return {
+    name: "browser_list_tabs",
+    description: "List all open browser tabs with their index and URL.",
+    parameters: { type: "object", properties: {} },
+    async execute(): Promise<ToolResult> {
+      try {
+        const tabs = await service.listTabs();
+        const lines = tabs.map((t, i) => `[${i}] ${t.url}`).join("\n");
+        return { success: true, output: tabs.length > 0 ? lines : "No tabs open." };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserFocusTabTool(service: BrowserService): Tool {
+  return {
+    name: "browser_focus_tab",
+    description: "Switch to a tab by its index number (from browser_list_tabs).",
+    parameters: {
+      type: "object",
+      properties: {
+        index: { type: "number", description: "Tab index" },
+      },
+      required: ["index"],
+    },
+    async execute(args): Promise<ToolResult> {
+      const index = Number(args["index"]);
+      try {
+        const page = await service.focusTab(index);
+        currentPage = page;
+        const snapshot = await service.snapshot(page);
+        return {
+          success: true,
+          output: `Switched to tab [${index}].\n${formatSnapshot(snapshot)}`,
+        };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserCloseTabTool(service: BrowserService): Tool {
+  return {
+    name: "browser_close_tab",
+    description: "Close a tab by its index number.",
+    parameters: {
+      type: "object",
+      properties: {
+        index: { type: "number", description: "Tab index" },
+      },
+      required: ["index"],
+    },
+    async execute(args): Promise<ToolResult> {
+      const index = Number(args["index"]);
+      try {
+        await service.closeTab(index);
+        return { success: true, output: `Tab [${index}] closed.` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

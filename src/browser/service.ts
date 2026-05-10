@@ -1,5 +1,6 @@
 import type { Page, BrowserContext } from "playwright-core";
 import { BrowserPool } from "./pool.ts";
+import { injectRefLabels, removeRefLabels } from "./labels.ts";
 import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
 
 export class BrowserService {
@@ -10,9 +11,17 @@ export class BrowserService {
   async navigate(url: string): Promise<BrowserResult> {
     const context = await this.ensureContext();
     const page = await context.newPage();
+    this.pool.trackPage(page);
+    this.attachDialogHandler(page);
     await page.goto(url, { waitUntil: "networkidle" });
     const snapshot = await this.snapshot(page);
     return { page, snapshot, url: page.url() };
+  }
+
+  private attachDialogHandler(page: Page): void {
+    page.on("dialog", (dialog) => {
+      void dialog.accept().catch(() => undefined);
+    });
   }
 
   async snapshot(page: Page): Promise<BrowserSnapshot> {
@@ -22,27 +31,41 @@ export class BrowserService {
   }
 
   async click(page: Page, ref: number): Promise<void> {
+    this.pool.touchPage(page);
     const locator = page.locator(`[__ref="${ref}"]`);
     await locator.click();
   }
 
   async type(page: Page, ref: number, text: string): Promise<void> {
+    this.pool.touchPage(page);
     const locator = page.locator(`[__ref="${ref}"]`);
     await locator.fill(text);
   }
 
   async screenshot(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
+    this.pool.touchPage(page);
     const path = `/tmp/browser-${Date.now()}.png`;
     await page.screenshot({ path, fullPage });
     return { type: "image", path, mimeType: "image/png" };
   }
 
+  async screenshotWithLabels(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
+    this.pool.touchPage(page);
+    const path = `/tmp/browser-${Date.now()}.png`;
+    await injectRefLabels(page);
+    await page.screenshot({ path, fullPage });
+    await removeRefLabels(page);
+    return { type: "image", path, mimeType: "image/png" };
+  }
+
   async scroll(page: Page, direction: "up" | "down"): Promise<void> {
+    this.pool.touchPage(page);
     const amount = direction === "up" ? -500 : 500;
     await page.evaluate((amt: number) => { (globalThis as any).scrollBy(0, amt); }, amount);
   }
 
   async back(page: Page): Promise<void> {
+    this.pool.touchPage(page);
     await page.goBack({ waitUntil: "networkidle" });
   }
 
@@ -54,6 +77,37 @@ export class BrowserService {
       url: p.url(),
       title: "",
     }));
+  }
+
+  async focusTab(index: number): Promise<Page> {
+    const context = await this.ensureContext();
+    const pages = context.pages();
+    const page = pages[index];
+    if (!page) {
+      throw new Error(`Tab ${index} not found.`);
+    }
+    await page.bringToFront();
+    return page;
+  }
+
+  async closeTab(index: number): Promise<void> {
+    const context = await this.ensureContext();
+    const pages = context.pages();
+    const page = pages[index];
+    if (!page) {
+      throw new Error(`Tab ${index} not found.`);
+    }
+    await page.close();
+  }
+
+  async closeAllTabsExceptCurrent(page: Page): Promise<void> {
+    const context = await this.ensureContext();
+    const pages = context.pages();
+    for (const p of pages) {
+      if (p !== page) {
+        await p.close().catch(() => undefined);
+      }
+    }
   }
 
   async closePage(page: Page): Promise<void> {

@@ -51,6 +51,8 @@ function createMockService(): BrowserService {
   service.click = createMock(() => Promise.resolve());
   service.type = createMock(() => Promise.resolve());
   service.screenshot = createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" }));
+  service.focusTab = createMock(() => Promise.resolve(mockPage as unknown as Page));
+  service.closeTab = createMock(() => Promise.resolve());
 
   return service;
 }
@@ -110,5 +112,29 @@ describe("browser tools", () => {
     assert.strictEqual(result.success, true);
     assert.ok(result.attachments);
     assert.strictEqual(result.attachments![0].type, "image");
+  });
+
+  test("list_tabs returns tab list", async () => {
+    const { createBrowserListTabsTool } = await import("../../src/tools/browser.ts");
+    const tool = createBrowserListTabsTool(createMockService());
+    const result = await tool.execute({});
+    assert.strictEqual(result.success, true);
+  });
+
+  test("focus_tab switches to tab", async () => {
+    const { createBrowserFocusTabTool } = await import("../../src/tools/browser.ts");
+    const tool = createBrowserFocusTabTool(createMockService());
+    const mockPage = { url: () => "" } as unknown as Page;
+    setCurrentPage(mockPage);
+    const result = await tool.execute({ index: 0 });
+    assert.strictEqual(result.success, true);
+  });
+
+  test("close_tab closes tab", async () => {
+    const { createBrowserCloseTabTool } = await import("../../src/tools/browser.ts");
+    const tool = createBrowserCloseTabTool(createMockService());
+    const result = await tool.execute({ index: 0 });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("closed"));
   });
 });

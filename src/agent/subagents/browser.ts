@@ -4,7 +4,16 @@ import { chatCompletion, type ChatMessage, type LlmResponse } from "../../llm/pr
 import { BrowserPool } from "../../browser/pool.ts";
 import { BrowserService } from "../../browser/service.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
-import { createBrowserNavigateTool, createBrowserSnapshotTool, createBrowserClickTool, createBrowserTypeTool, createBrowserScreenshotTool } from "../../tools/browser.ts";
+import {
+  createBrowserNavigateTool,
+  createBrowserSnapshotTool,
+  createBrowserClickTool,
+  createBrowserTypeTool,
+  createBrowserScreenshotTool,
+  createBrowserListTabsTool,
+  createBrowserFocusTabTool,
+  createBrowserCloseTabTool,
+} from "../../tools/browser.ts";
 
 export interface BrowserSubagentResult {
   success: boolean;
@@ -45,6 +54,9 @@ export class BrowserSubagent {
     this.toolRegistry.register(createBrowserClickTool(this.service));
     this.toolRegistry.register(createBrowserTypeTool(this.service));
     this.toolRegistry.register(createBrowserScreenshotTool(this.service));
+    this.toolRegistry.register(createBrowserListTabsTool(this.service));
+    this.toolRegistry.register(createBrowserFocusTabTool(this.service));
+    this.toolRegistry.register(createBrowserCloseTabTool(this.service));
   }
 
   async run(task: string, startUrl?: string): Promise<BrowserSubagentResult> {

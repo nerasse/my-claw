@@ -16,10 +16,11 @@ describe("BrowserService", () => {
         ariaSnapshot: createMock(() => Promise.resolve('button "OK" [__ref="5"]')),
       })),
       screenshot: createMock(() => Promise.resolve()),
+      close: createMock(() => Promise.resolve()),
       evaluate: createMock(() => Promise.resolve()),
       goBack: createMock(() => Promise.resolve()),
-      close: createMock(() => Promise.resolve()),
       setViewportSize: createMock(() => Promise.resolve()),
+      on: createMock(() => undefined),
     };
 
     const mockContext = {
@@ -36,6 +37,8 @@ describe("BrowserService", () => {
       })),
       disconnect: createMock(() => Promise.resolve()),
       isConnected: () => true,
+      trackPage: createMock(() => undefined),
+      touchPage: createMock(() => undefined),
     } as unknown as BrowserPool;
 
     service = new BrowserService(mockPool);
@@ -84,6 +87,52 @@ describe("BrowserService", () => {
   test("listTabs returns tab info", async () => {
     const tabs = await service.listTabs();
     assert.ok(Array.isArray(tabs));
+  });
+
+  test("focusTab switches page and returns it", async () => {
+    const mockBringToFront = createMock(() => Promise.resolve());
+    const mockPage = {
+      bringToFront: mockBringToFront,
+      url: createMock(() => "https://example.com"),
+    } as unknown as import("playwright-core").Page;
+
+    const mockContext = {
+      pages: createMock(() => [mockPage]),
+    };
+
+    mockPool = {
+      newContext: createMock(() => Promise.resolve(mockContext)),
+      connect: createMock(() => Promise.resolve()),
+      disconnect: createMock(() => Promise.resolve()),
+      isConnected: () => true,
+    } as unknown as BrowserPool;
+
+    service = new BrowserService(mockPool);
+    const page = await service.focusTab(0);
+    assert.strictEqual(mockBringToFront.calls.length, 1);
+    assert.strictEqual(page.url(), "https://example.com");
+  });
+
+  test("closeTab closes page by index", async () => {
+    const mockClose = createMock(() => Promise.resolve());
+    const mockPage = {
+      close: mockClose,
+    } as unknown as import("playwright-core").Page;
+
+    const mockContext = {
+      pages: createMock(() => [mockPage]),
+    };
+
+    mockPool = {
+      newContext: createMock(() => Promise.resolve(mockContext)),
+      connect: createMock(() => Promise.resolve()),
+      disconnect: createMock(() => Promise.resolve()),
+      isConnected: () => true,
+    } as unknown as BrowserPool;
+
+    service = new BrowserService(mockPool);
+    await service.closeTab(0);
+    assert.strictEqual(mockClose.calls.length, 1);
   });
 });
 
