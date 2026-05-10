@@ -69,11 +69,27 @@ export class BrowserSubagent {
     let currentUrl = startUrl ?? "";
 
     for (let step = 0; step < MAX_STEPS; step++) {
-      const response: LlmResponse = await chatCompletion(
-        resolveLlmConfig(this.config.llm),
-        messages,
-        this.toolRegistry.getForAgent("general"),
-      );
+      const agentTools = this.toolRegistry.getForAgent("general");
+      const openaiTools = agentTools.map((t) => ({
+        type: "function" as const,
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }));
+
+      let response: LlmResponse;
+      try {
+        response = await chatCompletion(
+          resolveLlmConfig(this.config.llm),
+          messages,
+          openaiTools,
+        );
+      } catch (e) {
+        return {
+          success: false,
+          needs_human: true,
+          hint: `LLM call failed: ${String(e)}`,
+          current_url: currentUrl,
+        };
+      }
 
       const text = response.content ?? "";
       const toolCalls = response.toolCalls ?? [];
