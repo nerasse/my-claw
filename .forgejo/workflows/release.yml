@@ -84,6 +84,18 @@ jobs:
 
           echo "Creating release for tag ${TAG_NAME}..."
 
+          # Idempotent: delete existing release for this tag to avoid 409
+          EXISTING=$(curl -fsS --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+            -H "Accept: application/json" \
+            "${FORGEJO_URL}/api/v1/repos/claw/my-claw/releases/tags/${TAG_NAME}" 2>/dev/null | jq -r '.id // empty') || true
+
+          if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "null" ]; then
+            echo "Release ${EXISTING} already exists for tag ${TAG_NAME}, deleting..."
+            curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+              "${FORGEJO_URL}/api/v1/repos/claw/my-claw/releases/${EXISTING}" || true
+            echo "Deleted existing release."
+          fi
+
           curl --fail --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
