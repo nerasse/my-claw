@@ -104,9 +104,9 @@ echo "Main app stopped. Running dev server..."
 echo "Press Ctrl+C to stop"
 echo ""
 
-# Lancer bun dans un subshell qui ignore INT.
-# Comme ca, quand Ctrl+C est presse, seul le shell parent recoit INT.
-# Le trap du parent tue bun proprement avec SIGTERM -> pas de double log.
+# Ignore INT in bun subshell so only the parent shell receives it.
+# Prevents double-shutdown when Ctrl+C is pressed: the parent trap
+# sends SIGTERM to bun, waits, then runs cleanup once.
 (trap '' INT; HOME="${TARGET_HOME}" "${BUN_BIN}" run --watch src/index.ts) &
 BUN_PID=$!
 trap 'kill $BUN_PID 2>/dev/null; wait $BUN_PID 2>/dev/null; cleanup' INT TERM
