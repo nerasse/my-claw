@@ -96,6 +96,7 @@
   - `voice_mode(mode="cloud", feature="all")`
   - Priority: per-call > feature-level > global > auto-detect
 - Config: `voice.mode`, `voice.stt.mode`, `voice.tts.mode`, `voice.tts.voice`, `llm.vision`
+- See `docs/config.md` for full LLM configuration reference
 
 ### Storage
 
@@ -136,10 +137,13 @@
 ### LLM
 
 - Standard API: OpenAI-compatible (universal format)
-- Any OpenAI-compatible provider works (Fireworks, OpenRouter, Ollama, LM Studio, etc.)
-- Current provider: Fireworks AI (FirePass, Kimi K2.5 Turbo, $7/week)
-- Model configurable per session/agent
-- Auth: API key per provider (env vars)
+- **Multi-provider**: unlimited OpenAI-compatible providers via `config.llm.providers`
+- Any provider works: Fireworks, Groq, OpenRouter, Anthropic (via OpenRouter), Together, Ollama, vLLM, LM Studio, or any custom endpoint
+- Current default: Fireworks AI (FirePass, Kimi K2.6 Turbo)
+- Model configurable per session/agent — `/model` command switches provider at runtime
+- Auth: API key per provider via env vars (`apiKeyEnv` in provider config), with global fallback
+- Custom headers per provider supported
+- Backward-compatible: legacy `{baseUrl, model}` configs auto-migrate on boot
 
 ### Sub-agents
 
@@ -148,7 +152,7 @@
 - Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
 - 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`
 - FIFO queueing: concurrent `send` to same sub-agent queues instead of rejecting
-- Configurable LLM per type via `config.agents.{general,research}.llm`
+- Configurable LLM per type via `config.agents.{general,research}.llm.model` (any provider/model)
 - Optional `workspaceDir` per sub-agent for filesystem isolation
 
 ### Skills

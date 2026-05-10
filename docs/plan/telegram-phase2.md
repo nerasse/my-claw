@@ -382,37 +382,42 @@ export interface SessionData {
 }
 ```
 
-`AgentBridge.handleMessage` checks `session.modelOverride ?? this.config.llm.model` when calling the LLM.
+`AgentBridge.handleMessage` resolves the LLM config via `resolveLlmConfig(config.llm, session.modelOverride)`.
 
 ### Model List Source
 
 Config-driven. Add to `MyClawConfig`:
 ```ts
 llm: {
-  provider: string;
-  baseUrl: string;
-  model: string;
+  defaultProvider: string;
+  defaultModel: string;
   apiKey?: string;
-  models?: Array<{ id: string; label: string }>;  // available models for picker
+  providers?: Record<string, { baseUrl: string; apiKeyEnv?: string; headers?: Record<string, string> }>;
+  models?: Array<{ id: string; label: string; provider?: string }>;
 }
 ```
 
 If `models` is not set, `/model` just shows the current model (no picker).
-The list is static in config — no API call to list models (Fireworks/OpenRouter model list APIs vary too much).
+The list is static in config — no API call to list models (provider model list APIs vary too much).
 
 ### Config Example
 
 ```json
 {
   "llm": {
-    "provider": "fireworks",
-    "baseUrl": "https://api.fireworks.ai/inference/v1",
-    "model": "accounts/fireworks/models/kimi-k2p5-turbo",
+    "defaultProvider": "fireworks",
+    "defaultModel": "accounts/fireworks/models/kimi-k2p5-turbo",
+    "providers": {
+      "fireworks": {
+        "baseUrl": "https://api.fireworks.ai/inference/v1",
+        "apiKeyEnv": "FIREWORKS_API_KEY"
+      }
+    },
     "models": [
-      { "id": "accounts/fireworks/models/kimi-k2p5-turbo", "label": "Kimi K2.5 Turbo" },
-      { "id": "accounts/fireworks/models/llama-v3p3-70b-instruct", "label": "Llama 3.3 70B" },
-      { "id": "accounts/fireworks/models/qwen3-235b-a22b", "label": "Qwen3 235B" },
-      { "id": "accounts/fireworks/models/deepseek-v3", "label": "DeepSeek V3" }
+      { "id": "accounts/fireworks/models/kimi-k2p5-turbo", "label": "Kimi K2.5 Turbo", "provider": "fireworks" },
+      { "id": "accounts/fireworks/models/llama-v3p3-70b-instruct", "label": "Llama 3.3 70B", "provider": "fireworks" },
+      { "id": "accounts/fireworks/models/qwen3-235b-a22b", "label": "Qwen3 235B", "provider": "fireworks" },
+      { "id": "accounts/fireworks/models/deepseek-v3", "label": "DeepSeek V3", "provider": "fireworks" }
     ]
   }
 }

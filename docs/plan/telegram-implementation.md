@@ -288,9 +288,14 @@ Configurable emojis. Reaction removed or changed at each state transition.
   "whitelist": ["123456789", "987654321"],
   "blacklist": [],
   "llm": {
-    "provider": "fireworks",
-    "baseUrl": "https://api.fireworks.ai/inference/v1",
-    "model": "accounts/fireworks/models/kimi-k2p5-turbo"
+    "defaultProvider": "fireworks",
+    "defaultModel": "accounts/fireworks/models/kimi-k2p5-turbo",
+    "providers": {
+      "fireworks": {
+        "baseUrl": "https://api.fireworks.ai/inference/v1",
+        "apiKeyEnv": "FIREWORKS_API_KEY"
+      }
+    }
   }
 }
 ```
