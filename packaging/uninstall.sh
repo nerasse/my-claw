@@ -35,11 +35,14 @@ for svc in my-claw my-claw-whisper my-claw-chromium my-claw-xvfb my-claw-vnc my-
 done
 
 # Remove files
+rm -f /usr/local/bin/myclaw
 rm -f /usr/local/bin/my-claw-update
 rm -f /etc/systemd/system/my-claw*.service
 rm -rf /opt/my-claw
 rm -rf /etc/my-claw
 rm -rf /var/log/my-claw
+
+systemctl daemon-reload
 
 echo "my-claw uninstalled."
 
