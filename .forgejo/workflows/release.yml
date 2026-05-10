@@ -51,15 +51,51 @@ jobs:
 
       - name: Upload to Package Registry
         run: |
-          export PATH="$HOME/.bun/bin:$PATH"
           FORGEJO_URL="${FORGEJO_URL:-https://git.kssimi.fr}"
           FORGEJO_USER="${FORGEJO_USER:-neras}"
-          VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[:space:]')
+          VERSION=$(jq -r '.version' package.json)
           TAR_FILE="dist/my-claw-${VERSION}-linux-x64.tar.gz"
-          
+          PKG_URL="${FORGEJO_URL}/api/packages/claw/generic/my-claw/${VERSION}/my-claw-${VERSION}-linux-x64.tar.gz"
+
+          echo "Version: ${VERSION}"
+          echo "Tarball: ${TAR_FILE}"
+          echo "Package URL: ${PKG_URL}"
+
+          # Idempotent: remove existing file to avoid 409 Conflict on re-tag
+          echo "Cleaning any existing package file..."
+          curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" "${PKG_URL}" || true
+
+          echo "Uploading..."
           curl --fail --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
             --upload-file "${TAR_FILE}" \
-            "${FORGEJO_URL}/api/packages/claw/generic/my-claw/${VERSION}/my-claw-${VERSION}-linux-x64.tar.gz"
+            "${PKG_URL}"
+
+          echo "Upload complete."
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+
+      - name: Create Forgejo Release
+        run: |
+          FORGEJO_URL="${FORGEJO_URL:-https://git.kssimi.fr}"
+          FORGEJO_USER="${FORGEJO_USER:-neras}"
+          VERSION=$(jq -r '.version' package.json)
+          TAG_NAME="${GITHUB_REF_NAME}"
+          PKG_URL="${FORGEJO_URL}/api/packages/claw/generic/my-claw/${VERSION}/my-claw-${VERSION}-linux-x64.tar.gz"
+
+          echo "Creating release for tag ${TAG_NAME}..."
+
+          curl --fail --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -X POST \
+            -d "$(jq -n \
+              --arg tag "${TAG_NAME}" \
+              --arg name "my-claw ${VERSION}" \
+              --arg body "Universal tar.gz release. Download: ${PKG_URL}" \
+              '{tag_name: $tag, name: $name, body: $body, target_commitish: "main"}')" \
+            "${FORGEJO_URL}/api/v1/repos/claw/my-claw/releases"
+
+          echo "Release created."
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
 

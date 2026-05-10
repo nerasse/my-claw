@@ -10,10 +10,11 @@ PACKAGE="my-claw"
 
 echo "Fetching versions from Package Registry..."
 
-# List all versions (ignore 404 if package doesn't exist yet)
+# List all package versions via API v1
 versions=$(curl -fsS --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
-  "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}" 2>/dev/null | \
-  jq -r '.[] | select(.type == "generic") | .version' | \
+  -H "Accept: application/json" \
+  "${FORGEJO_URL}/api/v1/packages/${OWNER}" | \
+  jq -r --arg pkg "${PACKAGE}" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
   sort -V) || true
 
 if [ -z "$versions" ]; then
@@ -33,18 +34,21 @@ echo "Found ${total} versions, keeping latest ${KEEP_VERSIONS}"
 # Delete oldest versions (beyond the N latest)
 echo "$versions" | head -n -${KEEP_VERSIONS} | while read -r version; do
   echo "Deleting version ${version}..."
-  
-  # Get files for this version
-  files=$(curl -fsS -H "Authorization: token ${FORGEJO_TOKEN}" \
-    "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}" | \
-    jq -r '.files[] | .name')
-  
-  for file in $files; do
-    echo "  Removing file: ${file}"
-    curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
-      "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}/${file}" || true
-  done
-  
+
+  # List files for this version
+  files=$(curl -fsS --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+    -H "Accept: application/json" \
+    "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}" 2>/dev/null | \
+    jq -r '.files[]? | .name') || true
+
+  if [ -n "$files" ]; then
+    for file in $files; do
+      echo "  Removing file: ${file}"
+      curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+        "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}/${file}" || true
+    done
+  fi
+
   # Delete the version itself
   curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
     "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}" || true
