@@ -64,7 +64,7 @@ Basic Auth format: `--user "${FORGEJO_USER}:${FORGEJO_TOKEN}"`
 ### Fresh install (local tarball)
 
 ```bash
-cd my-claw-0.1.6-linux-x64
+cd my-claw-0.1.8-linux-x64
 sudo ./packaging/install.sh --user neras
 ```
 
@@ -86,6 +86,20 @@ sudo my-claw-update [version]
 ```
 
 Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `/etc/my-claw/.env`. Backs up `config.json` before overwrite.
+
+### Development mode
+
+```bash
+myclaw dev
+# or from repo:
+bun run dev
+```
+
+- Stops only `my-claw.service` (the main app)
+- Keeps dependencies running: `xvfb`, `chromium`, `whisper`, `vnc`, `novnc`
+- Starts missing dependencies if needed
+- Launches `bun run --watch src/index.ts`
+- Ctrl+C prompts to restart `my-claw.service`; dependencies stay up
 
 ### Uninstall
 

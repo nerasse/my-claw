@@ -101,43 +101,51 @@ show_status() {
 }
 
 dev_mode() {
-  # Check if any service is active
-  ACTIVE_SERVICES=""
-  for svc in $SERVICES; do
-    if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
-      ACTIVE_SERVICES="$ACTIVE_SERVICES ${svc}"
+  MAIN="my-claw"
+  DEPS="my-claw-xvfb my-claw-chromium my-claw-whisper my-claw-vnc my-claw-novnc"
+  WAS_MAIN_ACTIVE=""
+
+  # Stop main app if running
+  if systemctl is-active --quiet "${MAIN}.service" 2>/dev/null; then
+    WAS_MAIN_ACTIVE="yes"
+    echo ""
+    echo "Stopping ${MAIN} for development mode..."
+    sudo systemctl stop "${MAIN}.service"
+    echo "  Stopped ${MAIN}"
+  fi
+
+  # Ensure dependencies are running
+  MISSING_DEPS=""
+  for svc in $DEPS; do
+    if ! systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+      MISSING_DEPS="$MISSING_DEPS ${svc}"
     fi
   done
 
-  if [ -n "$ACTIVE_SERVICES" ]; then
+  if [ -n "$MISSING_DEPS" ]; then
     echo ""
-    echo "Systemd services are running:$ACTIVE_SERVICES"
-    echo "Stopping them for development mode..."
-    echo ""
-    for svc in $ACTIVE_SERVICES; do
-      sudo systemctl stop "${svc}.service"
-      echo "  Stopped ${svc}"
+    echo "Starting missing dependencies..."
+    for svc in $MISSING_DEPS; do
+      echo "  Starting ${svc}..."
+      sudo systemctl start "${svc}.service" 2>/dev/null || true
     done
-    echo ""
   fi
 
-  # Trap Ctrl+C to offer restart
+  # Trap Ctrl+C to offer restart of main service
   cleanup() {
     echo ""
     echo ""
     echo "Development server stopped."
-    if [ -n "$ACTIVE_SERVICES" ]; then
+    if [ "$WAS_MAIN_ACTIVE" = "yes" ]; then
       echo ""
-      read -p "Relaunch systemd services? [Y/n] " REPLY
+      read -p "Restart ${MAIN} systemd service? [Y/n] " REPLY
       REPLY="${REPLY:-y}"
       if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-        echo "Starting services..."
-        for svc in $SERVICES; do
-          sudo systemctl start "${svc}.service" 2>/dev/null || true
-        done
+        echo "Starting ${MAIN}..."
+        sudo systemctl start "${MAIN}.service"
         echo "Done. Check: myclaw status"
       else
-        echo "Services not started. Run 'myclaw start' to relaunch."
+        echo "${MAIN} not started. Run 'myclaw start' to relaunch."
       fi
     fi
     exit 0
@@ -145,7 +153,9 @@ dev_mode() {
 
   trap cleanup INT TERM EXIT
 
-  echo "Starting my-claw in development mode..."
+  echo ""
+  echo "Dependencies active: ${DEPS}"
+  echo "Main app stopped. Running dev server..."
   echo "Press Ctrl+C to stop"
   echo ""
 

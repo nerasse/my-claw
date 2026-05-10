@@ -3,48 +3,55 @@ set -uo pipefail
 
 # Dev wrapper for my-claw
 # Usage: bun run dev (via package.json)
-# Stops systemd services before dev, offers restart after.
+# Stops only my-claw app, keeps deps (xvfb, chromium, whisper, vnc, novnc).
+# If deps are missing, starts them.
 
-SERVICES="my-claw my-claw-whisper my-claw-chromium my-claw-xvfb my-claw-vnc my-claw-novnc"
+MAIN="my-claw"
+DEPS="my-claw-xvfb my-claw-chromium my-claw-whisper my-claw-vnc my-claw-novnc"
+WAS_MAIN_ACTIVE=""
 
-# Check if any my-claw service is active
-ACTIVE_SERVICES=""
-for svc in $SERVICES; do
-  if systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
-    ACTIVE_SERVICES="$ACTIVE_SERVICES ${svc}"
+# Stop main app if running
+if systemctl is-active --quiet "${MAIN}.service" 2>/dev/null; then
+  WAS_MAIN_ACTIVE="yes"
+  echo ""
+  echo "Stopping ${MAIN} for development mode..."
+  sudo systemctl stop "${MAIN}.service"
+  echo "  Stopped ${MAIN}"
+fi
+
+# Ensure dependencies are running
+MISSING_DEPS=""
+for svc in $DEPS; do
+  if ! systemctl is-active --quiet "${svc}.service" 2>/dev/null; then
+    MISSING_DEPS="$MISSING_DEPS ${svc}"
   fi
 done
 
-if [ -n "$ACTIVE_SERVICES" ]; then
+if [ -n "$MISSING_DEPS" ]; then
   echo ""
-  echo "Systemd services are running:$ACTIVE_SERVICES"
-  echo "Stopping them for development mode..."
-  echo ""
-  for svc in $ACTIVE_SERVICES; do
-    sudo systemctl stop "${svc}.service"
-    echo "  Stopped ${svc}"
+  echo "Starting missing dependencies..."
+  for svc in $MISSING_DEPS; do
+    echo "  Starting ${svc}..."
+    sudo systemctl start "${svc}.service" 2>/dev/null || true
   done
-  echo ""
 fi
 
-# Trap Ctrl+C and other exits to offer service restart
+# Trap Ctrl+C and other exits to restart main service if it was active
 cleanup() {
   echo ""
   echo ""
   echo "Development server stopped."
-  if [ -n "$ACTIVE_SERVICES" ]; then
+  if [ "$WAS_MAIN_ACTIVE" = "yes" ]; then
     echo ""
-    read -p "Relaunch systemd services? [Y/n] " REPLY
+    read -p "Restart ${MAIN} systemd service? [Y/n] " REPLY
     REPLY="${REPLY:-y}"
     if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-      echo "Starting services..."
-      for svc in $SERVICES; do
-        sudo systemctl start "${svc}.service" 2>/dev/null || true
-      done
-      echo "Done. Check: sudo systemctl status my-claw"
+      echo "Starting ${MAIN}..."
+      sudo systemctl start "${MAIN}.service"
+      echo "Done. Check: sudo systemctl status ${MAIN}"
     else
-      echo "Services not started. Start manually with:"
-      echo "  sudo systemctl start my-claw"
+      echo "${MAIN} not started. Start manually with:"
+      echo "  sudo systemctl start ${MAIN}"
     fi
   fi
   exit 0
@@ -52,9 +59,10 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-echo "Starting my-claw in development mode..."
+echo ""
+echo "Dependencies active: $DEPS"
+echo "Main app stopped. Running dev server..."
 echo "Press Ctrl+C to stop"
 echo ""
 
-# Run the actual dev server
 exec bun run --watch src/index.ts
