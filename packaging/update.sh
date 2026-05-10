@@ -71,9 +71,10 @@ VERSION="${1:-latest}"
 
 if [ "$VERSION" = "latest" ]; then
   echo "Checking latest version..."
-  VERSION=$(curl -fsS -H "Authorization: token ${FORGEJO_TOKEN}" \
-    "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}" | \
-    jq -r '.[] | select(.type == "generic") | .version' | \
+  VERSION=$(curl -fsS --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" \
+    -H "Accept: application/json" \
+    "${FORGEJO_URL}/api/v1/packages/${OWNER}" | \
+    jq -r --arg pkg "${PACKAGE}" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
     sort -V | tail -1)
   if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
     echo "Error: could not determine latest version"
