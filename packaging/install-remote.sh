@@ -20,9 +20,10 @@ fi
 
 if [ "$VERSION" = "latest" ]; then
   echo "Fetching latest version..."
-  VERSION=$(curl -fsS -H "Authorization: token ${FORGEJO_TOKEN}" \
-    "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}" | \
-    jq -r '.[] | select(.type == "generic") | .version' | \
+  VERSION=$(curl -fsS --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" \
+    -H "Accept: application/json" \
+    "${FORGEJO_URL}/api/v1/packages/${OWNER}" | \
+    jq -r --arg pkg "${PACKAGE}" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
     sort -V | tail -1)
   if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
     echo "Error: could not determine latest version"
@@ -45,9 +46,9 @@ echo "Installing..."
 cd "${TMP_DIR}/my-claw-${VERSION}-linux-x64"
 if [ "$EUID" -ne 0 ]; then
   echo "Root required. Running with sudo..."
-  sudo ./packaging/install.sh "$@"
+  sudo ./packaging/install.sh
 else
-  ./packaging/install.sh "$@"
+  ./packaging/install.sh
 fi
 
 rm -rf "$TMP_DIR"
