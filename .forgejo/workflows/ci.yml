@@ -7,7 +7,8 @@ on:
   pull_request:
 
 jobs:
-  check:
+  lint:
+    name: Lint & Type Check
     runs-on: debian-bookworm
     steps:
       - name: Checkout
@@ -41,8 +42,9 @@ jobs:
           bun run check
 
   test:
+    name: Unit & Integration Tests
     runs-on: debian-bookworm
-    needs: check
+    needs: lint
     steps:
       - name: Checkout
         uses: actions/checkout@v4
