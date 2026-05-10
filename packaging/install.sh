@@ -11,6 +11,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Parse --user flag
 TARGET_USER=""
@@ -51,6 +52,11 @@ fi
 TARGET_HOME="$(eval echo "~$TARGET_USER")"
 BUN_PATH="$(command -v bun || true)"
 PYTHON_PATH="$(command -v python3 || command -v python || true)"
+
+# If bun not in root PATH, check target user's home
+if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
+  BUN_PATH="${TARGET_HOME}/.bun/bin/bun"
+fi
 
 if [ -z "$BUN_PATH" ]; then
   echo "Error: bun is required but not installed."
@@ -108,31 +114,31 @@ chown -R "${TARGET_USER}:${TARGET_USER}" /var/log/my-claw
 APP_DIR="/opt/my-claw"
 mkdir -p "${APP_DIR}"
 rm -rf "${APP_DIR}"/*
-cp -r "${SCRIPT_DIR}"/* "${APP_DIR}/"
+cp -r "${PROJECT_DIR}"/* "${APP_DIR}/"
 chown -R root:root "${APP_DIR}"
 
 # Install config templates
 if [ ! -f /etc/my-claw/config.json ]; then
-  cp "${SCRIPT_DIR}/etc/config.json" /etc/my-claw/
+  cp "${PROJECT_DIR}/etc/config.json" /etc/my-claw/
   chmod 644 /etc/my-claw/config.json
   echo "Installed config template to /etc/my-claw/config.json"
 fi
 
 if [ ! -f /etc/my-claw/.env ]; then
-  cp "${SCRIPT_DIR}/etc/.env.example" /etc/my-claw/.env
+  cp "${PROJECT_DIR}/etc/.env.example" /etc/my-claw/.env
   chmod 600 /etc/my-claw/.env
   echo "Installed env template to /etc/my-claw/.env"
 fi
 
 # Install config in user home (where the app reads it)
 if [ ! -f "${TARGET_HOME}/.my-claw/config.json" ]; then
-  cp "${SCRIPT_DIR}/etc/config.json" "${TARGET_HOME}/.my-claw/"
+  cp "${PROJECT_DIR}/etc/config.json" "${TARGET_HOME}/.my-claw/"
   chmod 644 "${TARGET_HOME}/.my-claw/config.json"
   chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json"
 fi
 
 # Generate systemd services from templates
-for template in "${SCRIPT_DIR}/templates/"*.service; do
+for template in "${PROJECT_DIR}/templates/"*.service; do
   [ -e "$template" ] || continue
   svc_name="$(basename "$template")"
   sed -e "s|{{USER}}|${TARGET_USER}|g" \
