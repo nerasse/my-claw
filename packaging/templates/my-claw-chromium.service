@@ -8,6 +8,8 @@ Type=simple
 User={{USER}}
 Group={{USER}}
 Environment=DISPLAY=:99
+# Kill stale Chromium CDP from same user before starting
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "chromium.*9222" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
 ExecStart=/usr/bin/chromium --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9222 --window-size=1920,1080 about:blank
 Restart=always
 RestartSec=5

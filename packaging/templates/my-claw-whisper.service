@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 User={{USER}}
 Group={{USER}}
+# Kill stale Whisper server from same user before starting
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "faster-whisper-server.*8000" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
 ExecStart=/bin/sh -c 'command -v faster-whisper-server >/dev/null 2>&1 && faster-whisper-server --host 127.0.0.1 --port 8000 || {{PYTHON}} -m faster_whisper_server --host 127.0.0.1 --port 8000'
 Restart=always
 RestartSec=5

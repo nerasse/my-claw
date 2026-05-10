@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 User={{USER}}
 Group={{USER}}
+# If another Xvfb already holds :99 (e.g. a user session service), stop it first
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "Xvfb :99" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
 ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -noreset
 Restart=always
 RestartSec=5

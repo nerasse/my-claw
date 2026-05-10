@@ -38,6 +38,34 @@ require_sudo() {
 
 start_services() {
   require_sudo
+
+  # Detect target user from install metadata
+  TARGET_USER=""
+  if [ -f /etc/my-claw/.install-meta ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in USER) TARGET_USER="$value" ;; esac
+    done < /etc/my-claw/.install-meta
+  fi
+
+  # Kill stale user processes blocking our resources
+  if [ -n "$TARGET_USER" ]; then
+    # Stop any user-level systemd service that might hold :99
+    su - "$TARGET_USER" -c "systemctl --user stop xvfb.service 2>/dev/null || true" 2>/dev/null || true
+
+    for pid in $(pgrep -u "$TARGET_USER" -f "Xvfb :99" 2>/dev/null || true); do
+      echo "  Killing stale Xvfb :99 (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+    for pid in $(pgrep -u "$TARGET_USER" -f "chromium.*9222" 2>/dev/null || true); do
+      echo "  Killing stale Chromium CDP (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+    for pid in $(pgrep -u "$TARGET_USER" -f "faster-whisper-server.*8000" 2>/dev/null || true); do
+      echo "  Killing stale Whisper server (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+  fi
+
   echo "Starting my-claw services..."
   for svc in $SERVICES; do
     echo "  Starting ${svc}..."
