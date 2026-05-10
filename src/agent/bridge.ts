@@ -3,6 +3,7 @@ import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../ch
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type ChatMessageContent } from "../llm/provider.ts";
+import { resolveLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
@@ -225,15 +226,14 @@ export class AgentBridge {
     }
 
     const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
-    const model = session.modelOverride ?? this.config.llm.model;
-    const llmConfig = { ...this.config.llm, model };
+    const llmConfig = resolveLlmConfig(this.config.llm, session.modelOverride);
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     let toolExecutions = 0;
 
     void log("info", "agent run started", {
       ...runLogData(message, session),
-      model,
+      model: llmConfig.model,
       streaming,
       toolCount: tools.length,
       sessionMessageCount: session.messages.length,
@@ -242,7 +242,7 @@ export class AgentBridge {
     try {
       const systemPrompt = await buildSystemPrompt({
         platform: message.platform,
-        model,
+        model: llmConfig.model,
         channelId: message.chatId,
         sessionId: session.id,
         tools,
@@ -292,7 +292,7 @@ export class AgentBridge {
           session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
           void log("info", "agent run finished", {
             ...runLogData(message, session),
-            model,
+            model: llmConfig.model,
             streaming,
             iteration,
             toolExecutions,
@@ -305,7 +305,7 @@ export class AgentBridge {
 
         void log("info", "agent requested tool calls", {
           ...runLogData(message, session),
-          model,
+          model: llmConfig.model,
           iteration,
           toolCallCount: response.toolCalls.length,
           tools: response.toolCalls.map((tc) => tc.name),
@@ -342,7 +342,7 @@ export class AgentBridge {
           const toolStartedAt = Date.now();
           void log("info", "tool execution started", {
             ...runLogData(message, session),
-            model,
+            model: llmConfig.model,
             iteration,
             toolCallId: tc.id,
             tool: tc.name,
@@ -360,7 +360,7 @@ export class AgentBridge {
 
           void log(result.success ? "info" : "warn", "tool execution finished", {
             ...runLogData(message, session),
-            model,
+            model: llmConfig.model,
             iteration,
             toolCallId: tc.id,
             tool: tc.name,
@@ -378,7 +378,7 @@ export class AgentBridge {
       session.messages.push({ role: "assistant", content: fallback, timestamp: new Date().toISOString() });
       void log("warn", "agent run reached tool iteration limit", {
         ...runLogData(message, session),
-        model,
+        model: llmConfig.model,
         streaming,
         toolExecutions,
         maxToolIterations: MAX_TOOL_ITERATIONS,
@@ -388,7 +388,7 @@ export class AgentBridge {
     } catch (err) {
       void log("error", "agent run failed", {
         ...runLogData(message, session),
-        model,
+        model: llmConfig.model,
         streaming,
         toolExecutions,
         durationMs: Date.now() - startedAt,

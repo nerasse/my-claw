@@ -1,4 +1,4 @@
-import type { MyClawConfig } from "../core/config.ts";
+import type { ResolvedLlmConfig } from "../core/config.ts";
 
 export type ChatMessageContent =
   | { type: "text"; text: string }
@@ -49,12 +49,8 @@ interface ChatCompletionStreamChunk {
   }>;
 }
 
-function resolveApiKey(config: MyClawConfig["llm"]): string | undefined {
-  return config.apiKey ?? process.env["FIREWORKS_API_KEY"] ?? process.env["OPENAI_API_KEY"];
-}
-
 function buildRequestBody(
-  config: MyClawConfig["llm"],
+  config: ResolvedLlmConfig,
   messages: ChatMessage[],
   tools?: unknown[],
   stream?: boolean,
@@ -91,18 +87,19 @@ function parseToolCalls(
 }
 
 export async function chatCompletion(
-  config: MyClawConfig["llm"],
+  config: ResolvedLlmConfig,
   messages: ChatMessage[],
   tools?: unknown[],
 ): Promise<LlmResponse> {
-  const apiKey = resolveApiKey(config);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.apiKey ?? ""}`,
+    ...config.headers,
+  };
 
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify(buildRequestBody(config, messages, tools)),
   });
 
@@ -122,18 +119,20 @@ export async function chatCompletion(
 }
 
 export async function chatCompletionStream(
-  config: MyClawConfig["llm"],
+  config: ResolvedLlmConfig,
   messages: ChatMessage[],
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
 ): Promise<LlmResponse> {
-  const apiKey = resolveApiKey(config);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.apiKey ?? ""}`,
+    ...config.headers,
+  };
+
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify(buildRequestBody(config, messages, tools, true)),
   });
 

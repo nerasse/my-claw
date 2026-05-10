@@ -1,9 +1,22 @@
 {
   "llm": {
-    "provider": "fireworks",
-    "model": "accounts/fireworks/models/kimi-k2p5-turbo",
+    "defaultProvider": "fireworks",
+    "defaultModel": "accounts/fireworks/models/kimi-k2p5-turbo",
     "apiKey": "",
-    "vision": true
+    "vision": true,
+    "providers": {
+      "fireworks": {
+        "baseUrl": "https://api.fireworks.ai/inference/v1",
+        "apiKeyEnv": "FIREWORKS_API_KEY"
+      }
+    },
+    "models": [
+      {
+        "id": "accounts/fireworks/models/kimi-k2p5-turbo",
+        "label": "Kimi K2.5 Turbo",
+        "provider": "fireworks"
+      }
+    ]
   },
   "telegram": {
     "enabled": true,

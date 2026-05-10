@@ -144,6 +144,52 @@ export interface BrowserConfig {
   idleTimeoutMs?: number;
 }
 
+export interface LlmProviderConfig {
+  baseUrl: string;
+  apiKeyEnv?: string;
+  headers?: Record<string, string>;
+}
+
+export interface LlmModelConfig {
+  id: string;
+  label: string;
+  provider?: string;
+  vision?: boolean;
+  limit?: {
+    context?: number;
+    output?: number;
+  };
+}
+
+export interface LlmConfig {
+  provider?: string;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  vision?: boolean;
+  limit?: {
+    context?: number;
+    output?: number;
+  };
+  models?: LlmModelConfig[];
+
+  defaultProvider?: string;
+  defaultModel?: string;
+  providers?: Record<string, LlmProviderConfig>;
+}
+
+export interface ResolvedLlmConfig {
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  vision?: boolean;
+  limit?: {
+    context?: number;
+    output?: number;
+  };
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -151,28 +197,10 @@ export interface MyClawConfig {
     telegram?: TelegramChannelConfig;
     matrix?: MatrixChannelConfig;
   };
-  llm: {
-    provider: string;
-    baseUrl: string;
-    model: string;
-    apiKey?: string;
-    vision?: boolean;
-    limit?: {
-      context?: number;
-      output?: number;
-    };
-    models?: Array<{
-      id: string;
-      label: string;
-      limit?: {
-        context?: number;
-        output?: number;
-      };
-    }>;
-  };
+  llm: LlmConfig;
   agents: {
-    general?: { llm?: MyClawConfig["llm"] };
-    research?: { llm?: MyClawConfig["llm"] };
+    general?: { llm?: LlmConfig };
+    research?: { llm?: LlmConfig };
   };
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
@@ -257,12 +285,69 @@ async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
   }
 }
 
+function isLegacyLlmConfig(llm: unknown): boolean {
+  if (!llm || typeof llm !== "object") return false;
+  const cast = llm as Record<string, unknown>;
+  return cast.providers === undefined && (cast.baseUrl !== undefined || cast.model !== undefined);
+}
+
+function migrateLegacyLlmConfig(llm: Record<string, unknown>): LlmConfig {
+  const baseUrl = typeof llm.baseUrl === "string" ? llm.baseUrl : "";
+  const model = typeof llm.model === "string" ? llm.model : "";
+  const providerName = typeof llm.provider === "string" ? llm.provider : "default";
+
+  const migrated: LlmConfig = {
+    defaultProvider: providerName,
+    defaultModel: model,
+    apiKey: typeof llm.apiKey === "string" ? llm.apiKey : undefined,
+    vision: typeof llm.vision === "boolean" ? llm.vision : undefined,
+    limit: llm.limit && typeof llm.limit === "object" ? llm.limit as LlmConfig["limit"] : undefined,
+    providers: {
+      [providerName]: {
+        baseUrl: baseUrl || "https://api.fireworks.ai/inference/v1",
+      },
+    },
+    models: Array.isArray(llm.models)
+      ? llm.models.map((m: unknown) => {
+        if (!m || typeof m !== "object") return { id: "", label: "" };
+        const cast = m as Record<string, unknown>;
+        return {
+          id: typeof cast.id === "string" ? cast.id : "",
+          label: typeof cast.label === "string" ? cast.label : "",
+          provider: providerName,
+          limit: cast.limit && typeof cast.limit === "object" ? cast.limit as LlmConfig["limit"] : undefined,
+        };
+      }).filter((m) => m.id)
+      : [],
+  };
+
+  return migrated;
+}
+
+function migrateLegacyAgentLlmConfig(agentLlm: unknown): LlmConfig {
+  if (!agentLlm || typeof agentLlm !== "object") {
+    throw new Error("Invalid agent LLM config");
+  }
+  return migrateLegacyLlmConfig(agentLlm as Record<string, unknown>);
+}
+
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
   await loadEnv();
   const configPath = join(MY_CLAW_DIR, "config.json");
   const raw = await readFile(configPath, "utf-8");
   const config = JSON.parse(raw) as MyClawConfig;
+
+  if (isLegacyLlmConfig(config.llm)) {
+    config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);
+  }
+  if (config.agents?.general?.llm && isLegacyLlmConfig(config.agents.general.llm)) {
+    config.agents.general.llm = migrateLegacyAgentLlmConfig(config.agents.general.llm);
+  }
+  if (config.agents?.research?.llm && isLegacyLlmConfig(config.agents.research.llm)) {
+    config.agents.research.llm = migrateLegacyAgentLlmConfig(config.agents.research.llm);
+  }
+
   applySecretOverrides(config);
   const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
   await mkdir(workspacePath, { recursive: true });

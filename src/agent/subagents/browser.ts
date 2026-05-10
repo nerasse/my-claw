@@ -1,6 +1,7 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse } from "../../llm/provider.ts";
+import { resolveLlmConfig } from "../../llm/resolver.ts";
 import { BrowserPool } from "../../browser/pool.ts";
 import { BrowserService } from "../../browser/service.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -69,7 +70,7 @@ export class BrowserSubagent {
 
     for (let step = 0; step < MAX_STEPS; step++) {
       const response: LlmResponse = await chatCompletion(
-        this.config.llm,
+        resolveLlmConfig(this.config.llm),
         messages,
         this.toolRegistry.getForAgent("general"),
       );

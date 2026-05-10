@@ -100,7 +100,7 @@ export function createTelegramCommandHandler({
 
       case "model": {
         const existingSession = await sessionManager.peek(sessionId);
-        const currentModel = existingSession?.modelOverride ?? config.llm.model;
+        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
 
         if (args) {
           const match = modelPicker.find(args);
@@ -111,7 +111,7 @@ export function createTelegramCommandHandler({
           const session =
             existingSession ??
             (await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType));
-          session.modelOverride = match.id === config.llm.model ? undefined : match.id;
+          session.modelOverride = match.id === (config.llm.defaultModel ?? config.llm.model) ? undefined : match.id;
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
           return `Model changed to ${modelPicker.labelFor(match.id)}`;
@@ -129,7 +129,7 @@ export function createTelegramCommandHandler({
 
       case "status": {
         const session = await sessionManager.peek(sessionId);
-        const currentModel = session?.modelOverride ?? config.llm.model;
+        const currentModel = session?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
         if (!session) return `Model: ${currentModel}\nSession: none active`;
         return [
           `Model: ${currentModel}`,
@@ -165,7 +165,7 @@ export function createTelegramCallbackHandler({
       threadId,
     });
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-    session.modelOverride = modelId === config.llm.model ? undefined : modelId;
+    session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
 
