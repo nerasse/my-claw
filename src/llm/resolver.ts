@@ -1,4 +1,4 @@
-import type { LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
+import type { AgentLlmConfig, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -23,36 +23,56 @@ function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefin
   return config.models?.find((m) => m.id === modelId);
 }
 
-export function resolveLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
-  const effectiveModelId = modelId ?? config.defaultModel ?? config.model ?? "";
+function resolveFromMerged(
+  merged: LlmConfig,
+  modelId?: string,
+): ResolvedLlmConfig {
+  const effectiveModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
 
-  if (!isNewFormat(config)) {
-    const provider = buildImplicitProvider(config);
+  if (!isNewFormat(merged)) {
+    const provider = buildImplicitProvider(merged);
     return {
       baseUrl: provider.baseUrl || "https://api.fireworks.ai/inference/v1",
       model: effectiveModelId,
-      apiKey: resolveApiKey(provider, config.apiKey),
-      vision: config.vision,
-      limit: config.limit,
+      apiKey: resolveApiKey(provider, merged.apiKey),
+      vision: merged.vision,
+      limit: merged.limit,
     };
   }
 
-  const model = findModel(config, effectiveModelId);
-  const providerName = model?.provider ?? config.defaultProvider ?? "default";
-  const provider = config.providers?.[providerName];
+  const model = findModel(merged, effectiveModelId);
+  const providerName = model?.provider ?? merged.defaultProvider ?? "default";
+  const provider = merged.providers?.[providerName];
 
   if (!provider) {
-    throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(config.providers ?? {}).join(", ")}`);
+    throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(merged.providers ?? {}).join(", ")}`);
   }
 
   return {
     baseUrl: provider.baseUrl,
     model: effectiveModelId,
-    apiKey: resolveApiKey(provider, config.apiKey),
+    apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
-    vision: model?.vision ?? config.vision,
-    limit: model?.limit ?? config.limit,
+    vision: model?.vision ?? merged.vision,
+    limit: model?.limit ?? merged.limit,
   };
+}
+
+export function resolveLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
+  return resolveFromMerged(config, modelId);
+}
+
+export function resolveAgentLlmConfig(
+  agentConfig: AgentLlmConfig | undefined,
+  globalConfig: LlmConfig,
+  modelId?: string,
+): ResolvedLlmConfig {
+  const merged: LlmConfig = {
+    ...globalConfig,
+    defaultProvider: agentConfig?.defaultProvider ?? globalConfig.defaultProvider,
+    defaultModel: agentConfig?.defaultModel ?? globalConfig.defaultModel,
+  };
+  return resolveFromMerged(merged, modelId);
 }
 
 export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {

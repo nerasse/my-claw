@@ -109,30 +109,26 @@ Add custom headers per provider:
 }
 ```
 
-### Per-Agent Provider
+### Per-Agent Model
 
-Sub-agents can target different providers:
+Sub-agents inherit the global `llm.providers`. You only need to specify a different model if desired:
 
 ```json
 "agents": {
   "general": {
     "llm": {
-      "defaultProvider": "groq",
-      "defaultModel": "llama-3.3-70b-versatile",
-      "providers": { ... }
+      "defaultModel": "llama-3.3-70b-versatile"
     }
   },
   "research": {
     "llm": {
-      "defaultProvider": "fireworks",
-      "defaultModel": "accounts/fireworks/routers/kimi-k2p6-turbo",
-      "providers": { ... }
+      "defaultModel": "accounts/fireworks/routers/kimi-k2p6-turbo"
     }
   }
 }
 ```
 
-If `providers` is omitted in an agent config, the main `llm.providers` is used.
+If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `defaultModel` is omitted, the global `llm.defaultModel` is used.
 
 ## Other Sections
 

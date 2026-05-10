@@ -1,4 +1,5 @@
 import type { MyClawConfig } from "../core/config.ts";
+import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
@@ -171,11 +172,13 @@ export class SubAgentRunner {
     parentMessage: UnifiedMessage,
   ): Promise<string> {
     const depth = 1;
-    const llmConfig = this.config.agents[type]?.llm ?? this.config.llm;
+    const resolved = resolveAgentLlmConfig(this.config.agents[type]?.llm, this.config.llm);
     const tools = this.toolRegistry.getForAgent(type === "research" ? "research" : "general");
 
+    session.modelOverride = resolved.model;
+
     const bridge = new AgentBridge(
-      { ...this.config, llm: llmConfig, agents: {} },
+      this.config,
       this.toolRegistry,
       this.skillRegistry,
       this.voiceManager,

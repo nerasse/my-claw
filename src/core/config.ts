@@ -190,6 +190,11 @@ export interface ResolvedLlmConfig {
   };
 }
 
+export interface AgentLlmConfig {
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -199,8 +204,8 @@ export interface MyClawConfig {
   };
   llm: LlmConfig;
   agents: {
-    general?: { llm?: LlmConfig };
-    research?: { llm?: LlmConfig };
+    general?: { llm?: AgentLlmConfig };
+    research?: { llm?: AgentLlmConfig };
   };
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
@@ -324,11 +329,15 @@ function migrateLegacyLlmConfig(llm: Record<string, unknown>): LlmConfig {
   return migrated;
 }
 
-function migrateLegacyAgentLlmConfig(agentLlm: unknown): LlmConfig {
+function migrateLegacyAgentLlmConfig(agentLlm: unknown): AgentLlmConfig {
   if (!agentLlm || typeof agentLlm !== "object") {
     throw new Error("Invalid agent LLM config");
   }
-  return migrateLegacyLlmConfig(agentLlm as Record<string, unknown>);
+  const cast = agentLlm as Record<string, unknown>;
+  return {
+    defaultProvider: typeof cast.provider === "string" ? cast.provider : undefined,
+    defaultModel: typeof cast.model === "string" ? cast.model : undefined,
+  };
 }
 
 export async function loadConfig(): Promise<MyClawConfig> {
