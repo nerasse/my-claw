@@ -254,7 +254,10 @@ function applySecretOverrides(config: MyClawConfig): void {
   if (config.llm) {
     const fireworksKey = process.env.MY_CLAW_FIREWORKS_API_KEY ?? process.env.FIREWORKS_API_KEY;
     if (fireworksKey) {
-      config.llm.apiKey = fireworksKey;
+      const isNewFormat = config.llm.providers !== undefined || config.llm.defaultProvider !== undefined;
+      if (!isNewFormat) {
+        config.llm.apiKey = fireworksKey;
+      }
     }
   }
 
