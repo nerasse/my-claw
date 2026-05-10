@@ -1,0 +1,101 @@
+import { test, describe, beforeEach } from "node:test";
+import assert from "node:assert";
+import { BrowserService, extractRefs } from "../../src/browser/service.ts";
+import { BrowserPool } from "../../src/browser/pool.ts";
+import { createMock } from "../helpers/mock.ts";
+
+describe("BrowserService", () => {
+  let service: BrowserService;
+  let mockPool: BrowserPool;
+
+  beforeEach(() => {
+    const mockPage = {
+      goto: createMock(() => Promise.resolve()),
+      url: createMock(() => "https://example.com"),
+      locator: createMock(() => ({
+        ariaSnapshot: createMock(() => Promise.resolve('button "OK" [__ref="5"]')),
+      })),
+      screenshot: createMock(() => Promise.resolve()),
+      evaluate: createMock(() => Promise.resolve()),
+      goBack: createMock(() => Promise.resolve()),
+      close: createMock(() => Promise.resolve()),
+      setViewportSize: createMock(() => Promise.resolve()),
+    };
+
+    const mockContext = {
+      newPage: createMock(() => Promise.resolve(mockPage)),
+      pages: createMock(() => [mockPage]),
+    };
+
+    mockPool = {
+      newContext: createMock(() => Promise.resolve(mockContext)),
+      connect: createMock(() => Promise.resolve({
+        isConnected: () => true,
+        contexts: () => [],
+        close: () => Promise.resolve(),
+      })),
+      disconnect: createMock(() => Promise.resolve()),
+      isConnected: () => true,
+    } as unknown as BrowserPool;
+
+    service = new BrowserService(mockPool);
+  });
+
+  test("navigate creates page and returns snapshot", async () => {
+    const result = await service.navigate("https://example.com");
+    assert.strictEqual(result.url, "https://example.com");
+    assert.ok(result.snapshot);
+    assert.deepStrictEqual(result.snapshot.refs, [5]);
+  });
+
+  test("click resolves ref and clicks", async () => {
+    const mockClick = createMock(() => Promise.resolve());
+    const mockPage = {
+      locator: createMock(() => ({ click: mockClick })),
+    } as unknown as import("playwright-core").Page;
+
+    await service.click(mockPage, 5);
+    assert.strictEqual((mockPage.locator as any).calls[0].arguments[0], '[__ref="5"]');
+    assert.strictEqual(mockClick.calls.length, 1);
+  });
+
+  test("type resolves ref and fills", async () => {
+    const mockFill = createMock(() => Promise.resolve());
+    const mockPage = {
+      locator: createMock(() => ({ fill: mockFill })),
+    } as unknown as import("playwright-core").Page;
+
+    await service.type(mockPage, 3, "hello");
+    assert.strictEqual((mockPage.locator as any).calls[0].arguments[0], '[__ref="3"]');
+    assert.strictEqual(mockFill.calls[0].arguments[0], "hello");
+  });
+
+  test("screenshot returns attachment", async () => {
+    const mockPage = {
+      screenshot: createMock(() => Promise.resolve()),
+    } as unknown as import("playwright-core").Page;
+
+    const attachment = await service.screenshot(mockPage);
+    assert.strictEqual(attachment.type, "image");
+    assert.strictEqual(attachment.mimeType, "image/png");
+    assert.ok(attachment.path.startsWith("/tmp/browser-"));
+  });
+
+  test("listTabs returns tab info", async () => {
+    const tabs = await service.listTabs();
+    assert.ok(Array.isArray(tabs));
+  });
+});
+
+describe("extractRefs", () => {
+  test("extracts ref numbers from snapshot", () => {
+    const snapshot = 'button "OK" [__ref="5"]\ninput [__ref="3"]\nlink [__ref="5"]'; // duplicate 5
+    const refs = extractRefs(snapshot);
+    assert.deepStrictEqual(refs, [3, 5]);
+  });
+
+  test("returns empty array when no refs", () => {
+    const refs = extractRefs("no refs here");
+    assert.deepStrictEqual(refs, []);
+  });
+});

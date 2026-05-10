@@ -136,6 +136,14 @@ export interface WebSearchConfig {
   language?: string;
 }
 
+export interface BrowserConfig {
+  enabled?: boolean;
+  cdpUrl?: string;
+  viewport?: { width: number; height: number };
+  maxSteps?: number;
+  idleTimeoutMs?: number;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -168,6 +176,7 @@ export interface MyClawConfig {
   };
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
+  browser?: BrowserConfig;
   workspace?: string;
 }
 

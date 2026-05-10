@@ -1,0 +1,84 @@
+import type { Page, BrowserContext } from "playwright-core";
+import { BrowserPool } from "./pool.ts";
+import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
+
+export class BrowserService {
+  private context: BrowserContext | null = null;
+
+  constructor(private pool: BrowserPool) {}
+
+  async navigate(url: string): Promise<BrowserResult> {
+    const context = await this.ensureContext();
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: "networkidle" });
+    const snapshot = await this.snapshot(page);
+    return { page, snapshot, url: page.url() };
+  }
+
+  async snapshot(page: Page): Promise<BrowserSnapshot> {
+    const raw = await (page.locator("body").ariaSnapshot as any)({ ref: true });
+    const refs = extractRefs(raw);
+    return { raw, refs };
+  }
+
+  async click(page: Page, ref: number): Promise<void> {
+    const locator = page.locator(`[__ref="${ref}"]`);
+    await locator.click();
+  }
+
+  async type(page: Page, ref: number, text: string): Promise<void> {
+    const locator = page.locator(`[__ref="${ref}"]`);
+    await locator.fill(text);
+  }
+
+  async screenshot(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
+    const path = `/tmp/browser-${Date.now()}.png`;
+    await page.screenshot({ path, fullPage });
+    return { type: "image", path, mimeType: "image/png" };
+  }
+
+  async scroll(page: Page, direction: "up" | "down"): Promise<void> {
+    const amount = direction === "up" ? -500 : 500;
+    await page.evaluate((amt: number) => { (globalThis as any).scrollBy(0, amt); }, amount);
+  }
+
+  async back(page: Page): Promise<void> {
+    await page.goBack({ waitUntil: "networkidle" });
+  }
+
+  async listTabs(): Promise<BrowserTabInfo[]> {
+    const context = await this.ensureContext();
+    const pages = context.pages();
+    return pages.map((p, i) => ({
+      id: String(i),
+      url: p.url(),
+      title: "",
+    }));
+  }
+
+  async closePage(page: Page): Promise<void> {
+    await page.close();
+  }
+
+  async cleanup(): Promise<void> {
+    await this.pool.disconnect();
+    this.context = null;
+  }
+
+  private async ensureContext(): Promise<BrowserContext> {
+    if (!this.context) {
+      this.context = await this.pool.newContext({ width: 1920, height: 1080 });
+    }
+    return this.context;
+  }
+}
+
+export function extractRefs(snapshot: string): number[] {
+  const refs: number[] = [];
+  const regex = /\[__ref="(\d+)"\]/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(snapshot)) !== null) {
+    refs.push(Number(match[1]));
+  }
+  return [...new Set(refs)].sort((a, b) => a - b);
+}
