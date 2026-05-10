@@ -17,11 +17,11 @@ export interface CompactionResult {
 }
 
 function isToolPairStart(msg: SessionMessage, next: SessionMessage | undefined): boolean {
-  return msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0 && next !== undefined;
+  return msg.role === "assistant" && (msg.toolCalls?.length ?? 0) > 0 && next !== undefined;
 }
 
 function isToolPairEnd(msg: SessionMessage, prev: SessionMessage | undefined): boolean {
-  return msg.role === "tool" && prev?.role === "assistant" && prev.toolCalls && prev.toolCalls.some((tc) => tc.id === msg.toolCallId);
+  return msg.role === "tool" && prev?.role === "assistant" && (prev.toolCalls?.some((tc) => tc.id === msg.toolCallId) ?? false);
 }
 
 function alignTailBoundary(messages: SessionMessage[], tailStart: number): number {
@@ -61,7 +61,7 @@ function alignHeadBoundary(messages: SessionMessage[], headEnd: number): number 
       // prev is assistant with tool_calls, need to include tool results
       idx += 1;
       // Continue to include all tool results for this call
-      while (idx < messages.length && messages[idx].role === "tool") {
+      while (idx < messages.length && messages[idx]?.role === "tool") {
         idx += 1;
       }
       continue;
