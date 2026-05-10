@@ -13,6 +13,9 @@ Forgejo Actions. Debian Bookworm runner. No self-hosted runner needed.
 
 Token scope: `write:repository` (for Package Registry and releases).
 
+Secrets in workflows:
+- `release.yml` uses `${{ secrets.FORGEJO_TOKEN }}` for Package Registry upload and release creation.
+
 ## Workflows
 
 ### `ci.yml` — push to main / pull request
@@ -57,14 +60,14 @@ Basic Auth format: `--user "${FORGEJO_USER}:${FORGEJO_TOKEN}"`
 | `packaging/install-remote.sh` | One-liner: download tarball from registry, run install.sh | Any (calls sudo) |
 | `packaging/cleanup-versions.sh` | Keep last N versions in Package Registry | Any |
 | `scripts/myclaw.sh` | CLI: `start`, `stop`, `restart`, `status`, `dev`, `update` | `root` for start/stop/restart/update |
-| `scripts/dev.sh` | Stop systemd, run `bun --watch` | User |
+| `scripts/dev.sh` | Stop main app, keep deps, run `bun --watch` | Any (calls sudo to stop/start systemd) |
 
 ## Install / Update / Uninstall Cycle
 
 ### Fresh install (local tarball)
 
 ```bash
-cd my-claw-0.1.8-linux-x64
+cd my-claw-0.1.11-linux-x64
 sudo ./packaging/install.sh --user neras
 ```
 
@@ -90,16 +93,20 @@ Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `/etc/my-claw/.env`. Backs up `conf
 ### Development mode
 
 ```bash
-myclaw dev
-# or from repo:
-bun run dev
+myclaw dev          # via CLI wrapper (uses /usr/local/bin/myclaw)
+bun run dev         # from repo (uses scripts/dev.sh)
 ```
+
+Both do the same thing. `package.json` defines `"dev": "bash scripts/dev.sh"`.
 
 - Stops only `my-claw.service` (the main app)
 - Keeps dependencies running: `xvfb`, `chromium`, `whisper`, `vnc`, `novnc`
 - Starts missing dependencies if needed
 - Launches `bun run --watch src/index.ts` with correct `HOME`
-- Ctrl+C prompts to restart `my-claw.service`; dependencies stay up
+- **Ctrl+C**: kills the watch process, then prompts:
+  - `Restart my-claw systemd service? [Y/n]`
+  - `Y` (default) → starts `my-claw.service`, deps stay up
+  - `N` → leaves `my-claw.service` inactive; run `myclaw start` to relaunch
 
 ### Uninstall
 
@@ -135,6 +142,18 @@ my-claw-{VERSION}-linux-x64/
 Templates in `packaging/templates/` use `{{USER}}`, `{{HOME}}`, `{{BUN}}`, `{{PYTHON}}`, `{{APP_DIR}}`. Replaced at install/update time by `sed`.
 
 Services: `my-claw-xvfb`, `my-claw-chromium`, `my-claw-whisper`, `my-claw-vnc`, `my-claw-novnc`, `my-claw`.
+
+### Stale process cleanup
+
+Some templates include `ExecStartPre` to kill stale user processes from previous sessions:
+
+| Service | Kills stale |
+|---|---|
+| `my-claw-xvfb` | `Xvfb :99` (restricted to target user) |
+| `my-claw-chromium` | `chromium.*9222` |
+| `my-claw-whisper` | `faster-whisper-server.*8000` |
+
+`myclaw start` also detects and kills these stale processes before launching systemd services, and stops any user-level `xvfb.service`.
 
 ## Release Checklist
 
