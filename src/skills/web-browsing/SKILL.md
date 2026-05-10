@@ -1,6 +1,9 @@
 ---
 name: web-browsing
-description: Delegate web browsing tasks to a specialized subagent. Use for filling forms, searching websites, checking accounts, booking, or any multi-step web interaction.
+description: |
+  Delegate web browsing tasks to a specialized subagent.
+  Use for filling forms, searching websites, checking accounts,
+  booking, or any multi-step web interaction.
 ---
 
 # Web Browsing
@@ -39,18 +42,32 @@ If the subagent encounters a CAPTCHA, login wall, or 2FA:
 - After every action, the subagent calls `browser_snapshot` to verify state
 - If stuck for 3 consecutive steps, it stops and asks for help
 
+## Session persistence
+
+**With `delegate_browser_task`:** YES. The CDP session stays alive during the entire subagent flow. You can navigate, click, scroll, and capture within a single continuous session.
+
+**Without (bash direct):** NO. Each `bash` command spawns an isolated process. There is no state shared between separate tool calls.
+
+## Common errors
+
+| Error | Cause | Severity |
+|---|---|---|
+| ALSA audio warnings | Headless Chromium without a sound card | Benign. Does not block rendering or navigation. |
+| "Opening in existing browser session" | Conflicting Chromium process already running in the background | Kill the existing process and relaunch in an isolated headless session. |
+| `delegate_browser_task` returns HTTP 400 | The subagent LLM call failed (not the browser itself) | Check that CDP, Xvfb, and noVNC are up. The browser infrastructure is usually fine; the failure is at the LLM delegation layer. |
+
 ## Example flow
 
 ```
 User: "Book me a train ticket to Lyon tomorrow"
-→ delegate_browser_task(
+-> delegate_browser_task(
     url: "https://www.sncf-connect.com",
     instructions: "Find next train Paris-Lyon tomorrow morning, select 9am departure, fill passenger info with name John Doe, proceed to payment"
   )
-→ Subagent navigates, fills form
-→ If CAPTCHA appears → returns needs_human
-→ You ask user to open noVNC :6080
-→ User solves CAPTCHA, says "continue"
-→ Subagent finishes booking
-→ Returns summary with booking reference
+-> Subagent navigates, fills form
+-> If CAPTCHA appears -> returns needs_human
+-> You ask user to open noVNC :6080
+-> User solves CAPTCHA, says "continue"
+-> Subagent finishes booking
+-> Returns summary with booking reference
 ```
