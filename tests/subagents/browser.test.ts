@@ -1,4 +1,4 @@
-import { test, describe, beforeEach } from "node:test";
+import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert";
 import { BrowserSubagent, detectHumanBlocker } from "../../src/agent/subagents/browser.ts";
 

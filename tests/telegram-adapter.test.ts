@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { TelegramAdapter } from "../src/channels/telegram/adapter.ts";
 import type { TelegramChannelConfig } from "../src/core/config.ts";

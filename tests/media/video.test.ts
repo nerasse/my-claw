@@ -17,10 +17,10 @@ describe("extractVideoFrames", () => {
     tmpDir = await mkdtemp(join(tmpdir(), "video-test-"));
     videoPath = join(tmpDir, "test.mp4");
 
-    // 6-second 1fps red video = 6 frames
+    // 6-second 1fps test video = 6 frames
     await execFileAsync("ffmpeg", [
       "-f", "lavfi",
-      "-i", "color=c=red:s=320x240:r=1",
+      "-i", "testsrc=duration=6:size=320x240:rate=1",
       "-t", "6",
       "-pix_fmt", "yuv420p",
       videoPath,

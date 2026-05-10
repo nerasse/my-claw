@@ -1,19 +1,25 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 KEEP_VERSIONS=${KEEP_VERSIONS:-15}
 FORGEJO_URL=${FORGEJO_URL:-https://git.kssimi.fr}
+FORGEJO_USER=${FORGEJO_USER:-neras}
 FORGEJO_TOKEN=${FORGEJO_TOKEN:-}
 OWNER="claw"
 PACKAGE="my-claw"
 
 echo "Fetching versions from Package Registry..."
 
-# List all versions
-versions=$(curl -fsS -H "Authorization: token ${FORGEJO_TOKEN}" \
-  "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}" | \
+# List all versions (ignore 404 if package doesn't exist yet)
+versions=$(curl -fsS --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+  "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}" 2>/dev/null | \
   jq -r '.[] | select(.type == "generic") | .version' | \
-  sort -V)
+  sort -V) || true
+
+if [ -z "$versions" ]; then
+  echo "No versions found in Package Registry (or package does not exist yet)"
+  exit 0
+fi
 
 total=$(echo "$versions" | wc -l)
 
@@ -35,12 +41,12 @@ echo "$versions" | head -n -${KEEP_VERSIONS} | while read -r version; do
   
   for file in $files; do
     echo "  Removing file: ${file}"
-    curl -fsS -X DELETE -H "Authorization: token ${FORGEJO_TOKEN}" \
+    curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
       "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}/${file}" || true
   done
   
   # Delete the version itself
-  curl -fsS -X DELETE -H "Authorization: token ${FORGEJO_TOKEN}" \
+  curl -fsS -X DELETE --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
     "${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}" || true
 done
 

@@ -87,7 +87,7 @@ URL="${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${VERSION}/${TAR_FI
 TMP_DIR="$(mktemp -d)"
 
 echo "Downloading ${TAR_FILE}..."
-curl -fsSL -H "Authorization: token ${FORGEJO_TOKEN}" "$URL" -o "${TMP_DIR}/${TAR_FILE}"
+curl -fsSL --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" "$URL" -o "${TMP_DIR}/${TAR_FILE}"
 
 echo "Extracting..."
 tar xzf "${TMP_DIR}/${TAR_FILE}" -C "${TMP_DIR}"

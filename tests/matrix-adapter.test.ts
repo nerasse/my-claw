@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test, afterAll } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -44,7 +44,7 @@ type MatrixRelationsResponseMock = {
 
 const runtimeTempDirs = new Set<string>();
 
-test.after(async () => {
+afterAll(async () => {
   await Promise.allSettled(
     [...runtimeTempDirs].map(async (dir) => {
       runtimeTempDirs.delete(dir);
@@ -1871,22 +1871,29 @@ test("MatrixAdapter uploads encrypted media in encrypted rooms", async () => {
     runtime as never,
   );
 
-  const tempPath = "/tmp/opencode/matrix-encrypted-upload.txt";
+  const tmpDir = await mkdtemp(join(tmpdir(), "matrix-enc-test-"));
+  runtimeTempDirs.add(tmpDir);
+  const tempPath = join(tmpDir, "matrix-encrypted-upload.txt");
   await writeFile(tempPath, "hello encrypted world");
 
-  await adapter.send("!room:test", {
-    text: "",
-    attachments: [{ type: "file", path: tempPath, filename: "matrix-encrypted-upload.txt" }],
-  });
+  try {
+    await adapter.send("!room:test", {
+      text: "",
+      attachments: [{ type: "file", path: tempPath, filename: "matrix-encrypted-upload.txt" }],
+    });
 
-  const uploadCall = calls.find((call) => call.method === "uploadContent");
-  assert.ok(uploadCall);
-  const uploadBody = uploadCall?.args[0] as Buffer;
-  assert.match(uploadBody.toString("utf8"), /^encrypted:/);
-  const sendCall = calls.filter((call) => call.method === "sendMessage").at(-1);
-  const content = sendCall?.args[1] as Record<string, unknown>;
-  assert.equal(typeof content.file, "object");
-  assert.equal(content.url, undefined);
+    const uploadCall = calls.find((call) => call.method === "uploadContent");
+    assert.ok(uploadCall);
+    const uploadBody = uploadCall?.args[0] as Buffer;
+    assert.match(uploadBody.toString("utf8"), /^encrypted:/);
+    const sendCall = calls.filter((call) => call.method === "sendMessage").at(-1);
+    const content = sendCall?.args[1] as Record<string, unknown>;
+    assert.equal(typeof content.file, "object");
+    assert.equal(content.url, undefined);
+  } finally {
+    runtimeTempDirs.delete(tmpDir);
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 });
 
 test("MatrixAdapter includes recent room history when configured", async () => {

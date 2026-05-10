@@ -2,7 +2,7 @@
 // Requires a real Chromium with CDP on ws://127.0.0.1:9222
 // Run with: BROWSER_E2E=1 bun test tests-e2e/browser/*.test.ts
 
-import { test, describe, before, after } from "node:test";
+import { test, describe, beforeAll, afterAll } from "bun:test";
 import assert from "node:assert";
 import { BrowserPool } from "../../src/browser/pool.ts";
 import { BrowserService } from "../../src/browser/service.ts";
@@ -15,7 +15,7 @@ describe("Browser E2E", () => {
   let server: ReturnType<typeof Bun.serve>;
   let baseUrl: string;
 
-  before(async () => {
+  beforeAll(async () => {
     if (!E2E_ENABLED) return;
     server = Bun.serve({
       port: 0,
@@ -39,7 +39,7 @@ describe("Browser E2E", () => {
     service = new BrowserService(pool);
   });
 
-  after(async () => {
+  afterAll(async () => {
     if (!E2E_ENABLED) return;
     await service.cleanup();
     server.stop();

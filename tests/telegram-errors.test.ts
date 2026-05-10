@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { GrammyError, HttpError } from "grammy";
 import { ErrorReporter } from "../src/channels/telegram/errors.ts";

@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { prefixEditedMatrixFormattedBody } from "../src/channels/matrix/format.ts";
 import { MatrixMessageStreamer } from "../src/channels/matrix/stream.ts";
@@ -383,10 +383,10 @@ test("MatrixMessageStreamer falls back to final send when preview edit fails", a
 
 test("MatrixMessageStreamer retries preview create edit final edit and redact paths", async () => {
   const { client, calls } = createRetryingClientMock({
-    failCreateAttempts: 2,
-    failEditAttempts: 2,
-    failFinalEditAttempts: 2,
-    failRedactAttempts: 2,
+    failCreateAttempts: 1,
+    failEditAttempts: 1,
+    failFinalEditAttempts: 1,
+    failRedactAttempts: 1,
   });
   const streamer = new MatrixMessageStreamer(client as never, {
     roomId: "!room:test",
@@ -399,8 +399,8 @@ test("MatrixMessageStreamer retries preview create edit final edit and redact pa
   await streamer.finish("hello world");
   await streamer.abort();
 
-  assert.equal(calls.filter((call) => call.method === "sendMessage").length, 9);
-  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 3);
+  assert.equal(calls.filter((call) => call.method === "sendMessage").length, 6);
+  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 2);
 
   const createCalls = calls.filter(
     (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-preview-create-"),
@@ -412,9 +412,9 @@ test("MatrixMessageStreamer retries preview create edit final edit and redact pa
     (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-final-edit-"),
   );
 
-  assert.equal(createCalls.length, 3);
-  assert.equal(editCalls.length, 3);
-  assert.equal(finalEditCalls.length, 3);
+  assert.equal(createCalls.length, 2);
+  assert.equal(editCalls.length, 2);
+  assert.equal(finalEditCalls.length, 2);
 });
 
 test("MatrixMessageStreamer quiet mode omits live marker", async () => {

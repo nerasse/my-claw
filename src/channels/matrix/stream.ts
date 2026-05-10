@@ -15,6 +15,11 @@ export interface MatrixStreamOptions {
   minCharsBeforeSend?: number;
   editThrottleMs?: number;
   chunkLimit?: number;
+  retry?: {
+    attempts?: number;
+    minDelayMs?: number;
+    maxDelayMs?: number;
+  };
 }
 
 function buildReplyRelation(replyToId?: string): Record<string, unknown> | undefined {
@@ -147,6 +152,7 @@ export class MatrixMessageStreamer {
     const txnId = this.outboundTxnId(prefix);
     return await withMatrixRetry({
       task: () => this.client.sendMessage(this.opts.roomId, content as never, txnId),
+      ...(this.opts.retry || {}),
     });
   }
 
@@ -155,6 +161,7 @@ export class MatrixMessageStreamer {
       task: async () => {
         await this.client.redactEvent(this.opts.roomId, eventId);
       },
+      ...(this.opts.retry || {}),
     }).catch(() => undefined);
   }
 

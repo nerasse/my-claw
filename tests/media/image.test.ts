@@ -1,13 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { imageToBase64 } from "../../src/media/image.ts";
-import { writeFile, unlink, stat } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
-
-const execFileAsync = promisify(execFile);
+import { genPpmImage } from "../helpers/gen-test-image.ts";
 
 let smallImagePath: string;
 let largeImagePath: string;
@@ -16,26 +13,14 @@ let tmpDir: string;
 describe("imageToBase64", () => {
   beforeAll(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), "media-test-"));
-    smallImagePath = join(tmpDir, "small.jpg");
-    largeImagePath = join(tmpDir, "large.jpg");
+    smallImagePath = join(tmpDir, "small.ppm");
+    largeImagePath = join(tmpDir, "large.ppm");
 
-    // 1x1 red JPEG (tiny, no resize needed)
-    await execFileAsync("ffmpeg", [
-      "-f", "lavfi",
-      "-i", "color=c=red:s=1x1",
-      "-q:v", "5",
-      "-frames:v", "1",
-      smallImagePath,
-    ]);
+    // 1x1 red image (tiny, no resize needed)
+    await genPpmImage(smallImagePath, 1, 1, { r: 255, g: 0, b: 0 });
 
-    // 4000x4000 red JPEG (large, triggers resize if maxBytes low)
-    await execFileAsync("ffmpeg", [
-      "-f", "lavfi",
-      "-i", "color=c=red:s=4000x4000",
-      "-q:v", "1",
-      "-frames:v", "1",
-      largeImagePath,
-    ]);
+    // 4000x4000 red image (large, triggers resize if maxBytes low)
+    await genPpmImage(largeImagePath, 4000, 4000, { r: 255, g: 0, b: 0 });
   });
 
   afterAll(async () => {
@@ -68,12 +53,7 @@ describe("imageToBase64", () => {
 
   test("infers PNG mime type from extension", async () => {
     const pngPath = join(tmpDir, "test.png");
-    await execFileAsync("ffmpeg", [
-      "-f", "lavfi",
-      "-i", "color=c=blue:s=2x2",
-      "-frames:v", "1",
-      pngPath,
-    ]);
+    await genPpmImage(pngPath, 2, 2, { r: 0, g: 0, b: 255 });
 
     try {
       const result = await imageToBase64(pngPath);

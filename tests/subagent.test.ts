@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
