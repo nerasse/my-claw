@@ -84,8 +84,6 @@ cleanup() {
   exit 0
 }
 
-trap cleanup INT TERM EXIT
-
 # Ensure app sees the correct home directory (sudo changes HOME to /root)
 TARGET_HOME=""
 if [ -f /etc/my-claw/.install-meta ]; then
@@ -106,8 +104,11 @@ echo "Main app stopped. Running dev server..."
 echo "Press Ctrl+C to stop"
 echo ""
 
-HOME="${TARGET_HOME}" "${BUN_BIN}" run --watch src/index.ts &
+# Lancer bun dans un subshell qui ignore INT.
+# Comme ca, quand Ctrl+C est presse, seul le shell parent recoit INT.
+# Le trap du parent tue bun proprement avec SIGTERM -> pas de double log.
+(trap '' INT; HOME="${TARGET_HOME}" "${BUN_BIN}" run --watch src/index.ts) &
 BUN_PID=$!
-trap "kill $BUN_PID 2>/dev/null; cleanup" INT
+trap 'kill $BUN_PID 2>/dev/null; wait $BUN_PID 2>/dev/null; cleanup' INT TERM
 wait $BUN_PID
 cleanup
