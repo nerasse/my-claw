@@ -106,7 +106,7 @@ test("compactSession refuses sessions with fewer than 10 messages", async () => 
   const session = makeSession(5);
   const result = await compactSession(makeConfig(), session);
   assert.equal(result.ok, false);
-  assert.ok(result.reason?.includes("trop courte"));
+  assert.ok(result.reason?.includes("too short"));
   assert.equal(result.beforeCount, 5);
   assert.equal(result.afterCount, 5);
   assert.equal(session.messages.length, 5);
@@ -135,7 +135,7 @@ test("compactSession summarizes middle and keeps head + tail", async () => {
 
     // Summary inserted
     assert.ok(session.messages[3].content.includes("Summary of earlier context."));
-    assert.ok(session.messages[3].content.includes("Contexte anterieur resume"));
+    assert.ok(session.messages[3].content.includes("Prior context summarized"));
     assert.equal(session.messages[3].role, "user");
 
     // Tail preserved
@@ -230,7 +230,7 @@ test("compactSession handles LLM errors gracefully", async () => {
   try {
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, false);
-    assert.ok(result.reason?.includes("Erreur"));
+    assert.ok(result.reason?.includes("Compaction error"));
     assert.equal(session.messages.length, 12); // untouched
   } finally {
     fetchMock.restore();

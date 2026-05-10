@@ -325,7 +325,7 @@ export function createMatrixCommandHandler({
           return result.reason ?? "Compaction failed.";
         }
         await sessionManager.persist(sessionId);
-        return `Context compacte: ${result.beforeCount} → ${result.afterCount} messages.`;
+        return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
       }
 
       case "help":

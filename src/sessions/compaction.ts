@@ -95,25 +95,25 @@ function serializeForCompaction(messages: SessionMessage[]): string {
 }
 
 function buildCompactionPrompt(serialized: string, instructions?: string): string {
-  const focus = instructions ? `Focus specifique: ${instructions}` : "Resume les faits cles, les decisions prises, l'etat technique, et les taches en cours.";
+  const focus = instructions ? `Specific focus: ${instructions}` : "Summarize key facts, decisions made, technical state, and ongoing tasks.";
   return [
-    "Tu es un agent de compaction de contexte. Résume les échanges ci-dessous en un résumé structuré et concis.",
+    "You are a context compaction agent. Summarize the conversation below into a structured and concise summary.",
     "",
     focus,
     "",
-    "Directives:",
-    "- Ecris dans la meme langue que la conversation originale",
-    "- Preserve: la tache principale, les decisions cles, l'etat technique (fichiers modifies, branches, etc.), les erreurs rencontrees, le travail restant",
-    "- Ignore: salutations, remerciements, confirmations generiques, meta-commentaires",
-    "- Ne JAMAIS inclure de cles API, tokens, mots de passe, ou secrets",
-    "- Format: texte continu, pas de markdown complexe",
+    "Guidelines:",
+    "- Write in the same language as the original conversation",
+    "- Preserve: the main task, key decisions, technical state (modified files, branches, etc.), errors encountered, remaining work",
+    "- Ignore: greetings, thanks, generic confirmations, meta-commentary",
+    "- NEVER include API keys, tokens, passwords, or secrets",
+    "- Format: continuous text, no complex markdown",
     "",
-    "Conversation a resumer:",
+    "Conversation to summarize:",
     "=== START ===",
     serialized,
     "=== END ===",
     "",
-    "Résumé:",
+    "Summary:",
   ].join("\n");
 }
 
@@ -127,7 +127,7 @@ export async function compactSession(
   if (messages.length < MIN_MESSAGES_TO_COMPACT) {
     return {
       ok: false,
-      reason: `Session trop courte pour compacter (${messages.length} messages, minimum ${MIN_MESSAGES_TO_COMPACT}).`,
+      reason: `Session too short to compact (${messages.length} messages, minimum ${MIN_MESSAGES_TO_COMPACT}).`,
       beforeCount: messages.length,
       afterCount: messages.length,
     };
@@ -141,7 +141,7 @@ export async function compactSession(
   if (tailStart <= headEnd) {
     return {
       ok: false,
-      reason: "Pas assez de messages entre la tete et la queue pour compacter.",
+      reason: "Not enough messages between head and tail to compact.",
       beforeCount: messages.length,
       afterCount: messages.length,
     };
@@ -160,7 +160,7 @@ export async function compactSession(
     const response = await chatCompletion(
       llmConfig,
       [
-        { role: "system", content: "Tu es un agent de compaction de contexte conversationnel." },
+        { role: "system", content: "You are a conversational context compaction agent." },
         { role: "user", content: prompt },
       ],
       undefined,
@@ -170,7 +170,7 @@ export async function compactSession(
     if (!summary) {
       return {
         ok: false,
-        reason: "Le modele a retourne un resume vide.",
+        reason: "The model returned an empty summary.",
         beforeCount: messages.length,
         afterCount: messages.length,
       };
@@ -178,7 +178,7 @@ export async function compactSession(
 
     const summaryMessage: SessionMessage = {
       role: "user",
-      content: `[Contexte anterieur resume]\n${summary}\n\n[Fin du resume — reponds au message suivant]`,
+      content: `[Prior context summarized]\n${summary}\n\n[End of summary — respond to the message below]`,
       timestamp: new Date().toISOString(),
     };
 
@@ -195,7 +195,7 @@ export async function compactSession(
     const errorMsg = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
-      reason: `Erreur lors de la compaction: ${errorMsg}`,
+      reason: `Compaction error: ${errorMsg}`,
       beforeCount: messages.length,
       afterCount: messages.length,
     };
