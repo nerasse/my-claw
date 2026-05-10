@@ -1,15 +1,16 @@
 import type { LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
+  if (globalApiKey) return globalApiKey;
   if (provider?.apiKeyEnv) {
     const envKey = process.env[provider.apiKeyEnv];
     if (envKey) return envKey;
   }
-  return globalApiKey ?? process.env["FIREWORKS_API_KEY"] ?? process.env["OPENAI_API_KEY"];
+  return process.env["FIREWORKS_API_KEY"] ?? process.env["OPENAI_API_KEY"];
 }
 
 function isNewFormat(config: LlmConfig): boolean {
-  return config.providers !== undefined && Object.keys(config.providers).length > 0;
+  return config.providers !== undefined || config.defaultProvider !== undefined;
 }
 
 function buildImplicitProvider(config: LlmConfig): LlmProviderConfig {

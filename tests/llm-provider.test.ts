@@ -4,7 +4,6 @@ import { mockFetch } from "./helpers/mock-fetch.ts";
 import { chatCompletion, chatCompletionStream } from "../src/llm/provider.ts";
 
 const config = {
-  provider: "x",
   baseUrl: "https://example.com",
   model: "base-model",
   apiKey: "token",
@@ -36,6 +35,31 @@ test("chatCompletion parses content and tool calls", async () => {
     const result = await chatCompletion(config, [{ role: "user", content: "hi" }]);
     assert.equal(result.content, "hello");
     assert.deepEqual(result.toolCalls, [{ id: "tc1", name: "demo", arguments: { x: 1 } }]);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("chatCompletion sends custom headers", async () => {
+  let capturedUrl = "";
+  let capturedInit: RequestInit | undefined;
+  const fetchMock = mockFetch(async (url: string | Request, init?: RequestInit) => {
+    capturedUrl = String(url);
+    capturedInit = init;
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    await chatCompletion(
+      { ...config, headers: { "x-custom": "value" } },
+      [{ role: "user", content: "hi" }],
+    );
+    const headers = capturedInit?.headers as Record<string, string> | undefined;
+    assert.equal(headers?.["x-custom"], "value");
+    assert.ok(headers?.["Authorization"]?.includes("token"));
   } finally {
     fetchMock.restore();
   }
