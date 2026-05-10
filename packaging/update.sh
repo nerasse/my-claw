@@ -125,6 +125,11 @@ fi
 BUN_PATH="$(command -v bun || true)"
 PYTHON_PATH="$(command -v python3 || command -v python || true)"
 
+# If bun not in root PATH, check target user's home
+if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
+  BUN_PATH="${TARGET_HOME}/.bun/bin/bun"
+fi
+
 for template in "${EXTRACT_DIR}/templates/"*.service; do
   [ -e "$template" ] || continue
   svc_name="$(basename "$template")"

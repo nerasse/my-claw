@@ -10,6 +10,28 @@ APP_SERVICES="my-claw my-claw-whisper my-claw-chromium my-claw-vnc my-claw-novnc
 
 cmd="${1:-}"
 
+# Resolve absolute bun path (not always in root PATH)
+resolve_bun() {
+  local bun_path=""
+  if command -v bun >/dev/null 2>&1; then
+    bun_path="$(command -v bun)"
+  fi
+  if [ -z "$bun_path" ] && [ -f /etc/my-claw/.install-meta ]; then
+    local target_user=""
+    while IFS='=' read -r key value; do
+      case "$key" in USER) target_user="$value" ;; esac
+    done < /etc/my-claw/.install-meta
+    if [ -n "$target_user" ] && [ -x "/home/${target_user}/.bun/bin/bun" ]; then
+      bun_path="/home/${target_user}/.bun/bin/bun"
+    elif [ -n "$target_user" ] && [ -x "$(eval echo "~${target_user}")/.bun/bin/bun" ]; then
+      bun_path="$(eval echo "~${target_user}")/.bun/bin/bun"
+    fi
+  fi
+  echo "$bun_path"
+}
+
+BUN_BIN="$(resolve_bun)"
+
 usage() {
   echo "Usage: myclaw <command>"
   echo ""
@@ -159,7 +181,7 @@ dev_mode() {
   echo "Press Ctrl+C to stop"
   echo ""
 
-  exec bun run --watch src/index.ts
+  exec "${BUN_BIN}" run --watch src/index.ts
 }
 
 run_update() {
