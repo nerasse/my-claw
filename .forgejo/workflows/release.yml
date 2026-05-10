@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: debian-bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: https://code.forgejo.org/oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install system deps
+        run: |
+          apt-get update
+          apt-get install -y jq curl
+
+      - name: Install project deps
+        run: bun install
+
+      - name: Check types
+        run: bun run check
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build tarball
+        run: bash packaging/build-tar.sh
+
+      - name: Upload to Package Registry
+        run: |
+          VERSION=$(cat package.json | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[:space:]')
+          TAR_FILE="dist/my-claw-${VERSION}-linux-x64.tar.gz"
+          
+          curl --fail --upload-file "${TAR_FILE}" \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            "${FORGEJO_URL}/api/packages/claw/generic/my-claw/${VERSION}/my-claw-${VERSION}-linux-x64.tar.gz"
+        env:
+          FORGEJO_URL: ${{ vars.FORGEJO_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+
+      - name: Cleanup old versions
+        run: bash packaging/cleanup-versions.sh
+        env:
+          FORGEJO_URL: ${{ vars.FORGEJO_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          KEEP_VERSIONS: 15

@@ -1,0 +1,14 @@
+[Unit]
+Description=Faster Whisper STT server for my-claw
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+ExecStart=/bin/sh -c 'command -v faster-whisper-server >/dev/null 2>&1 && faster-whisper-server --host 127.0.0.1 --port 8000 || {{PYTHON}} -m faster_whisper_server --host 127.0.0.1 --port 8000'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

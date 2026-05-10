@@ -1,0 +1,19 @@
+[Unit]
+Description=my-claw - personal AI agent
+After=network.target my-claw-xvfb.service my-claw-chromium.service my-claw-whisper.service
+Requires=my-claw-xvfb.service my-claw-chromium.service
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{HOME}}
+EnvironmentFile=/etc/my-claw/.env
+ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/my-claw/my-claw.log
+StandardError=append:/var/log/my-claw/my-claw.log
+
+[Install]
+WantedBy=multi-user.target

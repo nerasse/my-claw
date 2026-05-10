@@ -1,0 +1,62 @@
+{
+  "llm": {
+    "provider": "fireworks",
+    "model": "accounts/fireworks/models/kimi-k2p5-turbo",
+    "apiKey": "",
+    "vision": true
+  },
+  "telegram": {
+    "enabled": true,
+    "token": ""
+  },
+  "matrix": {
+    "enabled": false,
+    "homeserver": "https://matrix.org",
+    "userId": "",
+    "password": "",
+    "accessToken": "",
+    "deviceId": "",
+    "roomId": ""
+  },
+  "voice": {
+    "enabled": true,
+    "stt": {
+      "mode": "cloud",
+      "cloud": {
+        "provider": "groq",
+        "apiKey": ""
+      },
+      "local": {
+        "url": "http://127.0.0.1:8000",
+        "model": "large-v3",
+        "language": "fr"
+      }
+    },
+    "tts": {
+      "enabled": true,
+      "mode": "cloud",
+      "cloud": {
+        "provider": "edge-tts",
+        "language": "fr-FR"
+      },
+      "local": {
+        "url": "http://127.0.0.1:5000",
+        "speakerId": "pierre"
+      }
+    }
+  },
+  "webSearch": {
+    "enabled": true,
+    "url": "https://search.kssimi.fr",
+    "token": "",
+    "defaultLanguage": "fr"
+  },
+  "browser": {
+    "enabled": true,
+    "cdpUrl": "http://127.0.0.1:9222",
+    "viewport": { "width": 1920, "height": 1080 },
+    "maxSteps": 30,
+    "idleTimeoutMs": 300000
+  },
+  "language": "fr"
+}

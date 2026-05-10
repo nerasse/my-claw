@@ -1,0 +1,15 @@
+[Unit]
+Description=X11 VNC for my-claw remote monitoring
+After=my-claw-xvfb.service
+Requires=my-claw-xvfb.service
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+ExecStart=/usr/bin/x11vnc -display :99 -nopw -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

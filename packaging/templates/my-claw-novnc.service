@@ -1,0 +1,15 @@
+[Unit]
+Description=noVNC for my-claw browser remote access
+After=my-claw-vnc.service
+Requires=my-claw-vnc.service
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 6080 localhost:5900
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

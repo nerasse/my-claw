@@ -1,0 +1,16 @@
+[Unit]
+Description=Chromium CDP for my-claw browser automation
+After=my-claw-xvfb.service
+Requires=my-claw-xvfb.service
+
+[Service]
+Type=simple
+User={{USER}}
+Group={{USER}}
+Environment=DISPLAY=:99
+ExecStart=/usr/bin/chromium --no-sandbox --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9222 --window-size=1920,1080 about:blank
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

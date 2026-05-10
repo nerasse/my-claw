@@ -12,7 +12,11 @@
     "check": "tsc --noEmit",
     "check:test": "tsc --noEmit -p tsconfig.test.json",
     "test": "node --experimental-transform-types --test tests/*.test.ts",
-    "test:watch": "node --experimental-transform-types --test --watch tests/*.test.ts"
+    "test:watch": "node --experimental-transform-types --test --watch tests/*.test.ts",
+    "build:tar": "bash packaging/build-tar.sh",
+    "build": "bun run build:tar",
+    "release": "make release",
+    "clean": "rm -rf dist/"
   },
   "devDependencies": {
     "@types/bun": "latest",
