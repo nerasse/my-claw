@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-VERSION=$(cat "${PROJECT_ROOT}/package.json" | grep '"version"' | head -1 | awk -F: '{ print $2 }' | sed 's/[",]//g' | tr -d '[:space:]')
+VERSION=$(jq -r '.version' "${PROJECT_ROOT}/package.json")
 BUILD_DIR="${PROJECT_ROOT}/dist"
 TAR_NAME="my-claw-${VERSION}-linux-x64"
 TAR_DIR="${BUILD_DIR}/${TAR_NAME}"

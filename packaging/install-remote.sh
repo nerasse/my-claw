@@ -14,7 +14,8 @@ VERSION="${1:-latest}"
 if [ -z "$FORGEJO_TOKEN" ]; then
   echo "Error: FORGEJO_TOKEN is required."
   echo "Get one from ${FORGEJO_URL}/user/settings/applications"
-  echo "Then run: FORGEJO_TOKEN=your_token bash install-remote.sh"
+  echo "Then run: FORGEJO_TOKEN=your_token bash install-remote.sh [version]"
+  echo "Optionally set FORGEJO_USER (default: neras)"
   exit 1
 fi
 
