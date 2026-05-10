@@ -148,6 +148,10 @@ done
 cp "${SCRIPT_DIR}/update.sh" /usr/local/bin/my-claw-update
 chmod 755 /usr/local/bin/my-claw-update
 
+# Install CLI wrapper
+cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw
+chmod 755 /usr/local/bin/myclaw
+
 # Store install metadata for update/uninstall
 mkdir -p /etc/my-claw
 cat > /etc/my-claw/.install-meta <<EOF

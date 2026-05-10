@@ -29,6 +29,11 @@ cp "${SCRIPT_DIR}/uninstall.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/update.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
 
+# Copy CLI wrapper
+mkdir -p "${TAR_DIR}/scripts"
+cp "${PROJECT_ROOT}/scripts/myclaw.sh" "${TAR_DIR}/scripts/"
+chmod 755 "${TAR_DIR}/scripts/myclaw.sh"
+
 # Copy config templates
 mkdir -p "${TAR_DIR}/etc"
 cp "${SCRIPT_DIR}/config.json" "${TAR_DIR}/etc/"

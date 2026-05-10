@@ -140,6 +140,10 @@ done
 cp "${EXTRACT_DIR}/update.sh" /usr/local/bin/my-claw-update
 chmod 755 /usr/local/bin/my-claw-update
 
+# Re-install CLI wrapper
+cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw
+chmod 755 /usr/local/bin/myclaw
+
 # Clean up temp dir
 rm -rf "$TMP_DIR"
 
