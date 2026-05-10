@@ -98,7 +98,7 @@ bun run dev
 - Stops only `my-claw.service` (the main app)
 - Keeps dependencies running: `xvfb`, `chromium`, `whisper`, `vnc`, `novnc`
 - Starts missing dependencies if needed
-- Launches `bun run --watch src/index.ts`
+- Launches `bun run --watch src/index.ts` with correct `HOME`
 - Ctrl+C prompts to restart `my-claw.service`; dependencies stay up
 
 ### Uninstall

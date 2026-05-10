@@ -59,7 +59,12 @@ if [ -n "$MISSING_DEPS" ]; then
 fi
 
 # Trap Ctrl+C and other exits to restart main service if it was active
+CLEANUP_DONE=""
 cleanup() {
+  if [ -n "$CLEANUP_DONE" ]; then
+    return
+  fi
+  CLEANUP_DONE="yes"
   echo ""
   echo ""
   echo "Development server stopped."
@@ -81,10 +86,28 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
+# Ensure app sees the correct home directory (sudo changes HOME to /root)
+TARGET_HOME=""
+if [ -f /etc/my-claw/.install-meta ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in HOME) TARGET_HOME="$value" ;; esac
+  done < /etc/my-claw/.install-meta
+fi
+if [ -z "$TARGET_HOME" ] && [ -n "${SUDO_USER:-}" ]; then
+  TARGET_HOME="$(eval echo "~${SUDO_USER}")"
+fi
+if [ -z "$TARGET_HOME" ]; then
+  TARGET_HOME="${HOME}"
+fi
+
 echo ""
-echo "Dependencies active: $DEPS"
+echo "Dependencies active: ${DEPS}"
 echo "Main app stopped. Running dev server..."
 echo "Press Ctrl+C to stop"
 echo ""
 
-exec "${BUN_BIN}" run --watch src/index.ts
+HOME="${TARGET_HOME}" "${BUN_BIN}" run --watch src/index.ts &
+BUN_PID=$!
+trap "kill $BUN_PID 2>/dev/null; cleanup" INT
+wait $BUN_PID
+cleanup

@@ -154,7 +154,12 @@ dev_mode() {
   fi
 
   # Trap Ctrl+C to offer restart of main service
+  CLEANUP_DONE=""
   cleanup() {
+    if [ -n "$CLEANUP_DONE" ]; then
+      return
+    fi
+    CLEANUP_DONE="yes"
     echo ""
     echo ""
     echo "Development server stopped."
@@ -175,13 +180,31 @@ dev_mode() {
 
   trap cleanup INT TERM EXIT
 
+  # Ensure app sees the correct home directory (sudo changes HOME to /root)
+  local dev_home=""
+  if [ -f /etc/my-claw/.install-meta ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in HOME) dev_home="$value" ;; esac
+    done < /etc/my-claw/.install-meta
+  fi
+  if [ -z "$dev_home" ] && [ -n "${SUDO_USER:-}" ]; then
+    dev_home="$(eval echo "~${SUDO_USER}")"
+  fi
+  if [ -z "$dev_home" ]; then
+    dev_home="${HOME}"
+  fi
+
   echo ""
   echo "Dependencies active: ${DEPS}"
   echo "Main app stopped. Running dev server..."
   echo "Press Ctrl+C to stop"
   echo ""
 
-  exec "${BUN_BIN}" run --watch src/index.ts
+  HOME="${dev_home}" "${BUN_BIN}" run --watch src/index.ts &
+  BUN_PID=$!
+  trap "kill $BUN_PID 2>/dev/null; cleanup" INT
+  wait $BUN_PID
+  cleanup
 }
 
 run_update() {
