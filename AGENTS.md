@@ -27,6 +27,13 @@
 - Never force push
 - Never use `--no-verify`
 
+## Releases
+
+**IMPORTANT: Always wait for explicit user approval before tagging or creating a release.**
+- Never bump version, tag, or push a new release without the user saying "go" or explicitly asking for it
+- The user controls the release cadence — even if the code is ready and CI is green, wait for the green light
+- This rule takes precedence over any automation or script that might suggest tagging
+
 ## Project Structure
 
 ```
