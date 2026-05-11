@@ -1,5 +1,5 @@
-import { execFile, spawn } from "node:child_process";
-import { mkdtemp, writeFile, unlink } from "node:fs/promises";
+import { exec, execFile, spawn } from "node:child_process";
+import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -7,6 +7,36 @@ import type { VoiceManager } from "./manager.ts";
 import type { TTSResult } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
+
+/** Resolve absolute path to a binary via shell PATH, with known fallback paths. */
+async function resolveBinary(name: string): Promise<string> {
+  try {
+    const { stdout } = await execAsync(`command -v ${name}`);
+    const path = stdout.trim();
+    if (path) return path;
+  } catch {
+    // command -v failed, fall through
+  }
+
+  const home = process.env.HOME ?? "/home";
+  const candidates = [
+    join(home, ".local", "bin", name),
+    "/usr/local/bin/" + name,
+    "/usr/bin/" + name,
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync(candidate, ["--version"]);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(`${name} not found in PATH or fallback locations`);
+}
 
 export class TtsPipeline {
   constructor(private voiceManager: VoiceManager) {}
@@ -32,7 +62,8 @@ export class TtsPipeline {
     const voiceId = voice ?? this.voiceManager.getVoiceConfig()?.tts?.voice ?? "fr-FR-RemyMultilingualNeural";
 
     try {
-      await execFileAsync("edge-tts", [
+      const bin = await resolveBinary("edge-tts");
+      await execFileAsync(bin, [
         "--text", text,
         "--voice", voiceId,
         "--write-media", outputPath,
@@ -55,8 +86,9 @@ export class TtsPipeline {
     const modelPath = model ?? this.voiceManager.getVoiceConfig()?.tts?.voice ?? "fr_FR-siwis-medium";
 
     try {
+      const bin = await resolveBinary("piper");
       await new Promise<void>((resolve, reject) => {
-        const child = spawn("piper", [
+        const child = spawn(bin, [
           "--model", `${modelPath}.onnx`,
           "--output_file", outputPath,
         ]);

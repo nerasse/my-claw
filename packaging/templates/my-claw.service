@@ -9,6 +9,7 @@ User={{USER}}
 Group={{USER}}
 WorkingDirectory={{HOME}}
 EnvironmentFile=/etc/my-claw/.env
+Environment="PATH={{HOME}}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
 ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
 Restart=always
 RestartSec=5
