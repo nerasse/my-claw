@@ -274,7 +274,7 @@ export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
 }
 
-const PROMPT_TEMPLATES = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+const PROMPT_TEMPLATES = ["SYSTEM.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
 
 async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));

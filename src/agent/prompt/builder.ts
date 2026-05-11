@@ -2,6 +2,8 @@ import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
 import { loadAllPromptFiles } from "./loader.ts";
 import { getPlatformHint } from "./platform-hints.ts";
+import { CORE_PROMPT } from "./core-prompts.ts";
+import { scanForInjection } from "./anti-injection.ts";
 
 export interface PromptContext {
   platform: string;
@@ -13,28 +15,19 @@ export interface PromptContext {
 }
 
 export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
-  const files = await loadAllPromptFiles();
-
   const layers: string[] = [];
 
-  // Layer 1: Identity
-  if (files["SOUL.md"]) {
-    layers.push(files["SOUL.md"]);
-  }
+  // Layer 0: Core directives (hardcoded, incassable)
+  layers.push(CORE_PROMPT);
 
-  // Layer 2: Directives
-  if (files["AGENTS.md"]) {
-    layers.push(files["AGENTS.md"]);
-  }
-
-  // Layer 3: User context
-  if (files["USER.md"]) {
-    layers.push(files["USER.md"]);
-  }
-
-  // Layer 4: Memory (frozen snapshot)
-  if (files["MEMORY.md"]) {
-    layers.push(files["MEMORY.md"]);
+  // Layer 1-4: Workspace files (scanned for injection)
+  const files = await loadAllPromptFiles();
+  const fileOrder: Array<keyof typeof files> = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"];
+  for (const name of fileOrder) {
+    const content = files[name];
+    if (content) {
+      layers.push(scanForInjection(content, name));
+    }
   }
 
   // Layer 5: Available skills

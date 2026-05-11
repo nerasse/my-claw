@@ -31,7 +31,7 @@ import { createSendTool } from "./tools/send.ts";
 import { createListAgentsTool } from "./tools/list-agents.ts";
 import { createKillAgentTool } from "./tools/kill-agent.ts";
 import { createResetAgentTool } from "./tools/reset-agent.ts";
-import { createListSkillsTool, createReadSkillTool, createCreateSkillTool, createUpdateSkillTool, createDeleteSkillTool } from "./tools/skills.ts";
+import { createListSkillsTool, createReadSkillTool, createManageSkillsTool } from "./tools/skills.ts";
 import { createSttTool } from "./tools/stt.ts";
 import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
@@ -97,9 +97,7 @@ async function main() {
 
   toolRegistry.register(createListSkillsTool(skillRegistry));
   toolRegistry.register(createReadSkillTool(skillRegistry));
-  toolRegistry.register(createCreateSkillTool(workspaceSkillsDir));
-  toolRegistry.register(createUpdateSkillTool(workspaceSkillsDir, customDir, skillRegistry));
-  toolRegistry.register(createDeleteSkillTool(workspaceSkillsDir, customDir, skillRegistry));
+  toolRegistry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
 
   const sessionManager = new SessionManager();
   const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
@@ -114,6 +112,10 @@ async function main() {
       config,
       sessionManager,
       modelPicker,
+      skillRegistry,
+      builtinDir,
+      customDir,
+      workspaceSkillsDir,
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -181,6 +183,10 @@ async function main() {
       config,
       sessionManager,
       modelPicker,
+      skillRegistry,
+      builtinDir,
+      customDir,
+      workspaceSkillsDir,
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
@@ -188,6 +194,10 @@ async function main() {
       sessionManager,
       modelPicker,
       approvalHandler,
+      skillRegistry,
+      builtinDir,
+      customDir,
+      workspaceSkillsDir,
     });
 
     matrix.onMessage(async (msg) => {

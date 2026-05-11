@@ -92,9 +92,8 @@ you MUST call read_skill(name) to load its full instructions.
 |---|---|
 | `list_skills()` | List all available skills with source |
 | `read_skill(name, file_path?)` | Load full content of a skill. If `file_path` is provided, reads a specific file within the skill directory (e.g., `references/format.md`). Replaces `${SKILL_DIR}` with the absolute skill directory path in the returned content. |
-| `create_skill(name, description, instructions)` | Create a workspace skill |
-| `update_skill(name, instructions)` | Update a workspace/custom skill |
-| `delete_skill(name)` | Delete a workspace/custom skill |
+| `manage_skills(action, name?, description?, instructions?)` | Manage skills: `create` (needs name + description + instructions), `update` (needs name + instructions), `delete` (needs name), `reload` (no args). Auto-refreshes registry after create/update/delete. |
+| `/reload-skills` | User command to force rescan all skills from disk |
 
 ## Scripts in Skills
 

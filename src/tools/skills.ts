@@ -1,8 +1,9 @@
-import type { Tool } from "../tools/types.ts";
+import type { Tool, ToolResult } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { writeFile, mkdir, readFile, access, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { formatError } from "../utils/errors.ts";
+import { loadAllSkills } from "../skills/loader.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESC_LENGTH = 1024;
@@ -85,148 +86,158 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
   };
 }
 
-export function createCreateSkillTool(workspaceSkillsDir: string): Tool {
-  return {
-    name: "create_skill",
-    description: "Create a new skill in the workspace skills directory. Validates name format (lowercase, hyphens, max 64 chars) and description length (max 1024 chars).",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Skill name: lowercase alphanumeric with hyphens, max 64 chars (e.g., 'deploy-node')" },
-        description: { type: "string", description: "Short description of what this skill does, max 1024 chars" },
-        instructions: { type: "string", description: "Full markdown instructions for the skill" },
-      },
-      required: ["name", "description", "instructions"],
-    },
-    execute: async (args: Record<string, unknown>) => {
-      const name = String(args["name"] ?? "").trim();
-      const description = String(args["description"] ?? "").trim();
-      const instructions = String(args["instructions"] ?? "").trim();
-
-      const nameError = validateSkillName(name);
-      if (nameError) {
-        return { success: false, output: `Invalid skill name: ${nameError}` };
-      }
-
-      const descError = validateSkillDescription(description);
-      if (descError) {
-        return { success: false, output: `Invalid description: ${descError}` };
-      }
-
-      if (!instructions) {
-        return { success: false, output: "instructions is required (cannot be empty)." };
-      }
-
-      const skillDir = join(workspaceSkillsDir, name);
-      try {
-        await mkdir(skillDir, { recursive: true });
-      } catch (err) {
-        return { success: false, output: formatError(`Failed to create skill directory "${name}"`, err) };
-      }
-
-      const content = `---\nname: ${name}\ndescription: ${description}\n---\n\n${instructions}\n`;
-      try {
-        await writeFile(join(skillDir, "SKILL.md"), content);
-      } catch (err) {
-        return { success: false, output: formatError(`Failed to write SKILL.md for "${name}"`, err) };
-      }
-
-      return { success: true, output: `Skill "${name}" created in workspace/skills/.\nPath: ${skillDir}/SKILL.md\nTip: use write() to add references/ and examples/ files if needed.` };
-    },
-  };
-}
-
-export function createUpdateSkillTool(
+export function createManageSkillsTool(
+  skillRegistry: SkillRegistry,
+  builtinDir: string,
+  customDir: string,
   workspaceSkillsDir: string,
-  customSkillsDir: string,
-  registry: SkillRegistry,
 ): Tool {
+  async function refreshRegistry(): Promise<void> {
+    const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+    skillRegistry.setAll(allSkills);
+  }
+
   return {
-    name: "update_skill",
-    description: "Update the instructions of an existing workspace or custom skill. Built-in skills cannot be modified.",
+    name: "manage_skills",
+    description: "Manage the skill registry. Actions: create, update, delete, reload. After create/update/delete, the registry auto-refreshes. Use reload to force a rescan from disk.",
     parameters: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Name of the skill to update" },
-        instructions: { type: "string", description: "New markdown instructions" },
+        action: {
+          type: "string",
+          enum: ["create", "update", "delete", "reload"],
+          description: "Action to perform: create a new skill, update an existing one, delete a skill, or reload the registry from disk",
+        },
+        name: {
+          type: "string",
+          description: "Skill name (lowercase, hyphens, max 64 chars). Required for create/update/delete.",
+        },
+        description: {
+          type: "string",
+          description: "Short description of what this skill does, max 1024 chars. Required for create.",
+        },
+        instructions: {
+          type: "string",
+          description: "Full markdown instructions for the skill. Required for create/update.",
+        },
       },
-      required: ["name", "instructions"],
+      required: ["action"],
     },
-    execute: async (args: Record<string, unknown>) => {
-      const name = String(args["name"] ?? "").trim();
-      const instructions = String(args["instructions"] ?? "").trim();
+    execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
+      const action = String(args["action"] ?? "").trim();
 
-      const skill = registry.get(name);
-      if (!skill) {
-        return { success: false, output: `Skill "${name}" not found.` };
-      }
-      if (skill.source === "built-in") {
-        return { success: false, output: `Cannot modify built-in skill "${name}".` };
-      }
-
-      const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customSkillsDir;
-      const skillFile = join(baseDir, name, "SKILL.md");
-
-      try {
-        await access(skillFile);
-      } catch {
-        return { success: false, output: `Skill file not found for "${name}".` };
+      if (action === "reload") {
+        try {
+          await refreshRegistry();
+          const count = skillRegistry.list().length;
+          return { success: true, output: `Skills reloaded. ${count} skills available.` };
+        } catch (err) {
+          return { success: false, output: formatError("Failed to reload skills", err) };
+        }
       }
 
-      let existing = "";
-      try {
-        existing = await readFile(skillFile, "utf-8");
-      } catch {
-        return { success: false, output: `Failed to read skill "${name}".` };
-      }
-
-      const lines = existing.split("\n");
-      const frontmatterEnd = lines.findIndex((line) => line.trim() === "---" && lines.indexOf(line) > 0);
-      const header = frontmatterEnd >= 0 ? lines.slice(0, frontmatterEnd + 1).join("\n") : `---\nname: ${name}\n---`;
-      const newContent = `${header}\n\n${instructions}\n`;
-      await writeFile(skillFile, newContent);
-
-      return { success: true, output: `Skill "${name}" updated.` };
-    },
-  };
-}
-
-export function createDeleteSkillTool(
-  workspaceSkillsDir: string,
-  customSkillsDir: string,
-  registry: SkillRegistry,
-): Tool {
-  return {
-    name: "delete_skill",
-    description: "Delete a workspace or custom skill. Built-in skills cannot be deleted.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Name of the skill to delete" },
-      },
-      required: ["name"],
-    },
-    execute: async (args: Record<string, unknown>) => {
       const name = String(args["name"] ?? "").trim();
 
-      const skill = registry.get(name);
-      if (!skill) {
-        return { success: false, output: `Skill "${name}" not found.` };
-      }
-      if (skill.source === "built-in") {
-        return { success: false, output: `Cannot delete built-in skill "${name}".` };
+      if (action === "create") {
+        const description = String(args["description"] ?? "").trim();
+        const instructions = String(args["instructions"] ?? "").trim();
+
+        const nameError = validateSkillName(name);
+        if (nameError) {
+          return { success: false, output: `Invalid skill name: ${nameError}` };
+        }
+
+        const descError = validateSkillDescription(description);
+        if (descError) {
+          return { success: false, output: `Invalid description: ${descError}` };
+        }
+
+        if (!instructions) {
+          return { success: false, output: "instructions is required (cannot be empty)." };
+        }
+
+        const skillDir = join(workspaceSkillsDir, name);
+        try {
+          await mkdir(skillDir, { recursive: true });
+        } catch (err) {
+          return { success: false, output: formatError(`Failed to create skill directory "${name}"`, err) };
+        }
+
+        const content = `---\nname: ${name}\ndescription: ${description}\n---\n\n${instructions}\n`;
+        try {
+          await writeFile(join(skillDir, "SKILL.md"), content);
+        } catch (err) {
+          return { success: false, output: formatError(`Failed to write SKILL.md for "${name}"`, err) };
+        }
+
+        await refreshRegistry();
+        return { success: true, output: `Skill "${name}" created and registry refreshed.\nPath: ${skillDir}/SKILL.md\nTip: use write() to add references/ and examples/ files if needed.` };
       }
 
-      const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customSkillsDir;
-      const skillFile = join(baseDir, name, "SKILL.md");
+      if (action === "update") {
+        const instructions = String(args["instructions"] ?? "").trim();
 
-      try {
-        await unlink(skillFile);
-      } catch {
-        return { success: false, output: `Failed to delete skill "${name}".` };
+        if (!instructions) {
+          return { success: false, output: "instructions is required for update." };
+        }
+
+        const skill = skillRegistry.get(name);
+        if (!skill) {
+          return { success: false, output: `Skill "${name}" not found.` };
+        }
+        if (skill.source === "built-in") {
+          return { success: false, output: `Cannot modify built-in skill "${name}".` };
+        }
+
+        const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customDir;
+        const skillFile = join(baseDir, name, "SKILL.md");
+
+        try {
+          await access(skillFile);
+        } catch {
+          return { success: false, output: `Skill file not found for "${name}".` };
+        }
+
+        let existing = "";
+        try {
+          existing = await readFile(skillFile, "utf-8");
+        } catch {
+          return { success: false, output: `Failed to read skill "${name}".` };
+        }
+
+        const lines = existing.split("\n");
+        const frontmatterEnd = lines.findIndex((line) => line.trim() === "---" && lines.indexOf(line) > 0);
+        const header = frontmatterEnd >= 0 ? lines.slice(0, frontmatterEnd + 1).join("\n") : `---\nname: ${name}\n---`;
+        const newContent = `${header}\n\n${instructions}\n`;
+        await writeFile(skillFile, newContent);
+
+        await refreshRegistry();
+        return { success: true, output: `Skill "${name}" updated and registry refreshed.` };
       }
 
-      return { success: true, output: `Skill "${name}" deleted.` };
+      if (action === "delete") {
+        const skill = skillRegistry.get(name);
+        if (!skill) {
+          return { success: false, output: `Skill "${name}" not found.` };
+        }
+        if (skill.source === "built-in") {
+          return { success: false, output: `Cannot delete built-in skill "${name}".` };
+        }
+
+        const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customDir;
+        const skillFile = join(baseDir, name, "SKILL.md");
+
+        try {
+          await unlink(skillFile);
+        } catch {
+          return { success: false, output: `Failed to delete skill "${name}".` };
+        }
+
+        await refreshRegistry();
+        return { success: true, output: `Skill "${name}" deleted and registry refreshed.` };
+      }
+
+      return { success: false, output: `Unknown action '${action}'. Use: create, update, delete, reload.` };
     },
   };
 }

@@ -4,6 +4,8 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
+import { SkillRegistry } from "../../skills/registry.ts";
+import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
 
 type MatrixChatType = "dm" | "group";
@@ -37,6 +39,10 @@ interface MatrixSessionHandlerDeps {
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
   approvalHandler?: MatrixApprovalHandler;
+  skillRegistry?: SkillRegistry;
+  builtinDir?: string;
+  customDir?: string;
+  workspaceSkillsDir?: string;
 }
 
 function resolveMatrixSessionId(params: {
@@ -237,6 +243,10 @@ export function createMatrixCommandHandler({
   config,
   sessionManager,
   modelPicker,
+  skillRegistry,
+  builtinDir,
+  customDir,
+  workspaceSkillsDir,
 }: MatrixSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -326,6 +336,15 @@ export function createMatrixCommandHandler({
         }
         await sessionManager.persist(sessionId);
         return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
+      }
+
+      case "reload-skills": {
+        if (!skillRegistry || !builtinDir || !customDir || !workspaceSkillsDir) {
+          return "Skill registry not available.";
+        }
+        const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+        skillRegistry.setAll(allSkills);
+        return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
       case "help":

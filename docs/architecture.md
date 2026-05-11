@@ -12,7 +12,7 @@
 | Agent bridge | Complete — tool call loop, max 10 iterations, typed session messages |
 | LLM provider | Complete — sync + streaming |
 | Tools (8 base) | Complete: bash, read, write, fetch, find, grep, ls, memory |
-| System prompt builder | Complete (8-layer architecture with skills layer) |
+| System prompt builder | Complete (9-layer: hardcoded core + 4 workspace files + 4 dynamic) |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
@@ -43,7 +43,7 @@
 - Format: HTML parse mode with plain text fallback
 - Message split: 4000 chars, HTML-tag-aware
 - Text batching: 1s debounce for split messages
-- Native commands: /new, /model, /compact, /status, /clear, /help
+- Native commands: /new, /model, /compact, /reload (Telegram) / /reload-skills (Matrix), /status, /clear, /help
 - Inline buttons: accept/deny for blacklisted actions
 - Media: photo, voice, audio, video, document (in/out)
 - No dependency injection, no plugin SDK, no multi-account
@@ -162,7 +162,10 @@
 - Progressive disclosure: only index (name + description) in system prompt; full content loaded on-demand via `read_skill`
 - Multi-file skills: `references/`, `examples/`, `scripts/` subdirectories supported
 - Script execution: `${SKILL_DIR}` placeholder substituted with absolute skill directory path in `read_skill` output
-- 5 tools: `list_skills`, `read_skill`, `create_skill`, `update_skill`, `delete_skill`
+- 3 tools: `list_skills` (read), `read_skill` (read), `manage_skills` (write)
+  - `manage_skills` actions: `create`, `update`, `delete`, `reload`
+  - Auto-reload: registry refreshes automatically after create/update/delete
+  - User command: `/reload-skills` forces rescan from disk
 - Shared globally: main agent and all sub-agents see the same skills regardless of `workspaceDir`
 - Resolution priority: workspace > custom > built-in
 - Auto-update: SHA256 hash comparison at boot, manifest.json tracking
@@ -176,20 +179,33 @@
 
 ### System prompt
 
-- Layered architecture (ordered layers, joined with newlines)
-- Inspired by Hermes Agent + OpenClaw
-- Format: markdown files (SOUL.md, AGENTS.md, USER.md, MEMORY.md)
-- Configurable (not hardcoded)
+- Hybrid architecture: hardcoded core + workspace files + dynamic content
+- Inspired by Hermes Agent (safety/tool-use) + OpenClaw (two-zone cache concept, simplified)
+- Ultra-minimal hardcoded base (~25 lines) — models are smart enough
+- Rich tool/skill descriptions do the heavy lifting
 
 #### Prompt build order
 
-| # | Layer | Source |
-|---|---|---|
-| 1 | Identity | SOUL.md |
-| 2 | Directives | AGENTS.md |
-| 3 | User context | USER.md |
-| 4 | Memory | MEMORY.md (frozen snapshot) |
-| 5 | Skills | Available skills index (name + description) |
-| 6 | Tools | Available tool list |
-| 7 | Platform hints | Telegram vs Matrix formatting guidance |
-| 8 | Runtime | Date, model, channel, session ID |
+| # | Layer | Source | Content |
+|---|---|---|---|
+| 0 | Core directives | **Hardcoded** (incassable) | Tool-use enforcement, safety, verification, skill reload, memory rules |
+| 1 | Identity | SOUL.md (workspace) | Personality, tone, style |
+| 2 | Directives | AGENTS.md (workspace) | Workspace rules, red lines |
+| 3 | User context | USER.md (workspace) | User profile |
+| 4 | Memory | MEMORY.md (workspace) | Long-term memory |
+| 5 | Skills | Dynamic | Available skills index + `read_skill()` injonction |
+| 6 | Tools | Dynamic | Available tools with rich descriptions |
+| 7 | Platform hints | Dynamic | Telegram/Matrix formatting |
+| 8 | Runtime | Dynamic | Date, model, channel, session ID |
+
+#### Anti-injection
+
+- All workspace files scanned before injection
+- 10 threat patterns + invisible unicode characters
+- Blocked files replaced with `[BLOCKED: potential prompt injection]`
+
+#### SYSTEM.md
+
+- Reference document (not injected into prompt)
+- Documents hardcoded rules for user reference
+- Auto-seeded from `docs/prompt/SYSTEM.md` template

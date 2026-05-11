@@ -9,9 +9,7 @@ import { syncBuiltIn } from "../src/skills/sync.ts";
 import {
   createListSkillsTool,
   createReadSkillTool,
-  createCreateSkillTool,
-  createUpdateSkillTool,
-  createDeleteSkillTool,
+  createManageSkillsTool,
 } from "../src/tools/skills.ts";
 
 async function setupDir(): Promise<string> {
@@ -208,11 +206,16 @@ test("read_skill tool", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("create_skill tool", async () => {
+test("manage_skills create action", async () => {
   const ws = await setupDir();
-  const tool = createCreateSkillTool(ws);
+  const custom = await setupDir();
+  const builtin = await setupDir();
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
+  const registry = new SkillRegistry(skills);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
   const result = await tool.execute({
+    action: "create",
     name: "new-skill",
     description: "A new skill",
     instructions: "Do this, then that.",
@@ -222,31 +225,38 @@ test("create_skill tool", async () => {
   const content = await readFile(join(ws, "new-skill", "SKILL.md"), "utf-8");
   assert.ok(content.includes("name: new-skill"));
   assert.ok(content.includes("Do this, then that."));
+  assert.ok(result.output.includes("registry refreshed"));
+  assert.equal(registry.exists("new-skill"), true);
 
   await rm(ws, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
-test("update_skill tool modifies workspace skill", async () => {
+test("manage_skills update action modifies workspace skill", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
+  const builtin = await setupDir();
 
   await writeSkill(ws, "updatable", "---\nname: updatable\ndescription: Original\n---\n\nOld.");
 
-  const skills = await loadAllSkills({ builtInDir: ws, customDir: custom, workspaceDir: ws });
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createUpdateSkillTool(ws, custom, registry);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
-  const result = await tool.execute({ name: "updatable", instructions: "New content." });
+  const result = await tool.execute({ action: "update", name: "updatable", instructions: "New content." });
   assert.equal(result.success, true);
+  assert.ok(result.output.includes("registry refreshed"));
 
   const content = await readFile(join(ws, "updatable", "SKILL.md"), "utf-8");
   assert.ok(content.includes("New content."));
 
   await rm(ws, { recursive: true, force: true });
   await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
-test("update_skill tool rejects built-in", async () => {
+test("manage_skills update rejects built-in", async () => {
   const builtin = await setupDir();
   const custom = await setupDir();
   const ws = await setupDir();
@@ -255,9 +265,9 @@ test("update_skill tool rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createUpdateSkillTool(ws, custom, registry);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
-  const result = await tool.execute({ name: "protected", instructions: "Hack." });
+  const result = await tool.execute({ action: "update", name: "protected", instructions: "Hack." });
   assert.equal(result.success, false);
   assert.ok(result.output.includes("Cannot modify built-in"));
 
@@ -266,24 +276,28 @@ test("update_skill tool rejects built-in", async () => {
   await rm(ws, { recursive: true, force: true });
 });
 
-test("delete_skill tool removes workspace skill", async () => {
+test("manage_skills delete removes workspace skill", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
+  const builtin = await setupDir();
 
   await writeSkill(ws, "deletable", "---\nname: deletable\ndescription: Delete me\n---\n\nBye.");
 
-  const skills = await loadAllSkills({ builtInDir: ws, customDir: custom, workspaceDir: ws });
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createDeleteSkillTool(ws, custom, registry);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
-  const result = await tool.execute({ name: "deletable" });
+  const result = await tool.execute({ action: "delete", name: "deletable" });
   assert.equal(result.success, true);
+  assert.ok(result.output.includes("registry refreshed"));
+  assert.equal(registry.exists("deletable"), false);
 
   await rm(ws, { recursive: true, force: true });
   await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
-test("delete_skill tool rejects built-in", async () => {
+test("manage_skills delete rejects built-in", async () => {
   const builtin = await setupDir();
   const custom = await setupDir();
   const ws = await setupDir();
@@ -292,9 +306,9 @@ test("delete_skill tool rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createDeleteSkillTool(ws, custom, registry);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
-  const result = await tool.execute({ name: "protected2" });
+  const result = await tool.execute({ action: "delete", name: "protected2" });
   assert.equal(result.success, false);
   assert.ok(result.output.includes("Cannot delete built-in"));
 
@@ -525,64 +539,81 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
   await rm(dir, { recursive: true, force: true });
 });
 
-test("create_skill validates name format", async () => {
+test("manage_skills create validates name format", async () => {
   const ws = await setupDir();
-  const tool = createCreateSkillTool(ws);
+  const custom = await setupDir();
+  const builtin = await setupDir();
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
+  const registry = new SkillRegistry(skills);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
   // Empty name
-  const empty = await tool.execute({ name: "", description: "d", instructions: "i" });
+  const empty = await tool.execute({ action: "create", name: "", description: "d", instructions: "i" });
   assert.equal(empty.success, false);
   assert.ok(empty.output.includes("name is required"));
 
   // Uppercase
-  const upper = await tool.execute({ name: "BadName", description: "d", instructions: "i" });
+  const upper = await tool.execute({ action: "create", name: "BadName", description: "d", instructions: "i" });
   assert.equal(upper.success, false);
   assert.ok(upper.output.includes("lowercase"));
 
   // Special chars
-  const special = await tool.execute({ name: "bad_name!", description: "d", instructions: "i" });
+  const special = await tool.execute({ action: "create", name: "bad_name!", description: "d", instructions: "i" });
   assert.equal(special.success, false);
   assert.ok(special.output.includes("hyphens"));
 
   // Too long
-  const long = await tool.execute({ name: "a".repeat(65), description: "d", instructions: "i" });
+  const long = await tool.execute({ action: "create", name: "a".repeat(65), description: "d", instructions: "i" });
   assert.equal(long.success, false);
   assert.ok(long.output.includes("64"));
 
   // Valid name succeeds
-  const valid = await tool.execute({ name: "deploy-node", description: "Deploy", instructions: "Step 1" });
+  const valid = await tool.execute({ action: "create", name: "deploy-node", description: "Deploy", instructions: "Step 1" });
   assert.equal(valid.success, true);
 
   await rm(ws, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
-test("create_skill validates description and instructions", async () => {
+test("manage_skills create validates description and instructions", async () => {
   const ws = await setupDir();
-  const tool = createCreateSkillTool(ws);
+  const custom = await setupDir();
+  const builtin = await setupDir();
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
+  const registry = new SkillRegistry(skills);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
   // Empty description
-  const noDesc = await tool.execute({ name: "test", description: "", instructions: "i" });
+  const noDesc = await tool.execute({ action: "create", name: "test", description: "", instructions: "i" });
   assert.equal(noDesc.success, false);
   assert.ok(noDesc.output.includes("description"));
 
   // Description too long
-  const longDesc = await tool.execute({ name: "test", description: "d".repeat(1025), instructions: "i" });
+  const longDesc = await tool.execute({ action: "create", name: "test", description: "d".repeat(1025), instructions: "i" });
   assert.equal(longDesc.success, false);
   assert.ok(longDesc.output.includes("1024"));
 
   // Empty instructions
-  const noInst = await tool.execute({ name: "test", description: "d", instructions: "" });
+  const noInst = await tool.execute({ action: "create", name: "test", description: "d", instructions: "" });
   assert.equal(noInst.success, false);
   assert.ok(noInst.output.includes("instructions"));
 
   await rm(ws, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
-test("create_skill writes to correct workspace path", async () => {
+test("manage_skills create writes to correct workspace path", async () => {
   const ws = await setupDir();
-  const tool = createCreateSkillTool(ws);
+  const custom = await setupDir();
+  const builtin = await setupDir();
+  const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
+  const registry = new SkillRegistry(skills);
+  const tool = createManageSkillsTool(registry, builtin, custom, ws);
 
   const result = await tool.execute({
+    action: "create",
     name: "my-skill",
     description: "My skill",
     instructions: "Do this.",
@@ -590,7 +621,7 @@ test("create_skill writes to correct workspace path", async () => {
 
   assert.equal(result.success, true);
   assert.ok(result.output.includes("my-skill"));
-  assert.ok(result.output.includes("workspace/skills"));
+  assert.ok(result.output.includes("registry refreshed"));
 
   const content = await readFile(join(ws, "my-skill", "SKILL.md"), "utf-8");
   assert.ok(content.includes("name: my-skill"));
@@ -598,6 +629,8 @@ test("create_skill writes to correct workspace path", async () => {
   assert.ok(content.includes("Do this."));
 
   await rm(ws, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
 test("read error on missing file is clear", async () => {

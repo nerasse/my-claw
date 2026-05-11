@@ -3,6 +3,8 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
+import { SkillRegistry } from "../../skills/registry.ts";
+import { loadAllSkills } from "../../skills/loader.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -28,6 +30,10 @@ interface TelegramSessionHandlerDeps {
   config: MyClawConfig;
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
+  skillRegistry?: SkillRegistry;
+  builtinDir?: string;
+  customDir?: string;
+  workspaceSkillsDir?: string;
 }
 
 function resolveTelegramSessionId(params: {
@@ -50,6 +56,10 @@ export function createTelegramCommandHandler({
   config,
   sessionManager,
   modelPicker,
+  skillRegistry,
+  builtinDir,
+  customDir,
+  workspaceSkillsDir,
 }: TelegramSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -136,6 +146,15 @@ export function createTelegramCommandHandler({
         }
         await sessionManager.persist(sessionId);
         return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
+      }
+
+      case "reload": {
+        if (!skillRegistry || !builtinDir || !customDir || !workspaceSkillsDir) {
+          return "Skill registry not available.";
+        }
+        const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+        skillRegistry.setAll(allSkills);
+        return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
       case "status": {
