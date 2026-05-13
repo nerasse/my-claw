@@ -195,6 +195,11 @@ export interface AgentLlmConfig {
   defaultModel?: string;
 }
 
+export interface AgentConfig {
+  maxIterations?: number;
+  llm?: AgentLlmConfig;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -204,13 +209,25 @@ export interface MyClawConfig {
   };
   llm: LlmConfig;
   agents: {
-    general?: { llm?: AgentLlmConfig };
-    research?: { llm?: AgentLlmConfig };
+    orchestrator?: AgentConfig;
+    general?: AgentConfig;
+    research?: AgentConfig;
   };
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
   browser?: BrowserConfig;
   workspace?: string;
+}
+
+export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;
+export const DEFAULT_SUBAGENT_MAX_ITERATIONS = 50;
+
+export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" | "general" | "research"): number {
+  const agentCfg = config.agents?.[type];
+  if (agentCfg?.maxIterations !== undefined && Number.isFinite(agentCfg.maxIterations) && agentCfg.maxIterations > 0) {
+    return agentCfg.maxIterations;
+  }
+  return type === "orchestrator" ? DEFAULT_ORCHESTRATOR_MAX_ITERATIONS : DEFAULT_SUBAGENT_MAX_ITERATIONS;
 }
 
 export const MY_CLAW_DIR = join(homedir(), ".my-claw");

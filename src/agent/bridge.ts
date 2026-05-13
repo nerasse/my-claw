@@ -1,4 +1,5 @@
 import type { MyClawConfig } from "../core/config.ts";
+import { resolveMaxIterations } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
@@ -12,8 +13,7 @@ import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
-
-const MAX_TOOL_ITERATIONS = 10;
+import { IterationBudget } from "./iteration-budget.ts";
 
 function runLogData(message: UnifiedMessage, session: SessionData): Record<string, unknown> {
   return {
@@ -56,6 +56,7 @@ export class AgentBridge {
     private ttsPipeline: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
+    private iterationBudget?: IterationBudget,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
   }
@@ -232,11 +233,15 @@ export class AgentBridge {
     const streaming = Boolean(onToken);
     let toolExecutions = 0;
 
+    const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
+    const budget = this.iterationBudget ?? new IterationBudget(resolveMaxIterations(this.config, agentType));
+
     void log("info", "agent run started", {
       ...runLogData(message, session),
       model: llmConfig.model,
       streaming,
       toolCount: tools.length,
+      maxIterations: budget.total,
       sessionMessageCount: session.messages.length,
     });
 
@@ -271,8 +276,9 @@ export class AgentBridge {
         }
       }
 
-      for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-        const iteration = i + 1;
+      let iteration = 0;
+      while (budget.consume()) {
+        iteration++;
         const response = onToken
           ? await chatCompletionStream(
               llmConfig,
@@ -294,6 +300,7 @@ export class AgentBridge {
             streaming,
             iteration,
             toolExecutions,
+            maxIterations: budget.total,
             responseChars: response.content.length,
             sessionMessageCount: session.messages.length,
             durationMs: Date.now() - startedAt,
@@ -307,6 +314,8 @@ export class AgentBridge {
           iteration,
           toolCallCount: response.toolCalls.length,
           tools: response.toolCalls.map((tc) => tc.name),
+          budgetUsed: budget.total - budget.remaining,
+          budgetRemaining: budget.remaining,
         });
 
         if (onToolUse) {
@@ -368,17 +377,7 @@ export class AgentBridge {
         }
       }
 
-      const fallback = "Reached maximum tool call iterations. Stopping here.";
-      session.messages.push({ role: "assistant", content: fallback, timestamp: new Date().toISOString() });
-      void log("warn", "agent run reached tool iteration limit", {
-        ...runLogData(message, session),
-        model: llmConfig.model,
-        streaming,
-        toolExecutions,
-        maxToolIterations: MAX_TOOL_ITERATIONS,
-        durationMs: Date.now() - startedAt,
-      });
-      return fallback;
+      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget);
     } catch (err) {
       void log("error", "agent run failed", {
         ...runLogData(message, session),
@@ -390,6 +389,52 @@ export class AgentBridge {
       });
       throw err;
     }
+  }
+
+  private async handleMaxIterations(
+    chatMessages: ChatMessage[],
+    session: SessionData,
+    message: UnifiedMessage,
+    llmConfig: ReturnType<typeof resolveLlmConfig>,
+    startedAt: number,
+    toolExecutions: number,
+    iteration: number,
+    budget: IterationBudget,
+  ): Promise<string> {
+    const summaryPrompt =
+      "You've reached the maximum number of tool-calling iterations allowed. " +
+      "Please provide a final response summarizing what you've found and accomplished so far, " +
+      "without calling any more tools.";
+
+    chatMessages.push({ role: "user", content: summaryPrompt });
+    session.messages.push({ role: "user", content: summaryPrompt, timestamp: new Date().toISOString() });
+
+    void log("warn", "agent run requesting summary after iteration limit", {
+      ...runLogData(message, session),
+      model: llmConfig.model,
+      iteration,
+      toolExecutions,
+      maxIterations: budget.total,
+      durationMs: Date.now() - startedAt,
+    });
+
+    const summaryResponse = await chatCompletion(llmConfig, chatMessages);
+
+    const finalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
+
+    session.messages.push({ role: "assistant", content: finalText, timestamp: new Date().toISOString() });
+
+    void log("info", "agent run finished with summary", {
+      ...runLogData(message, session),
+      model: llmConfig.model,
+      iteration,
+      toolExecutions,
+      maxIterations: budget.total,
+      responseChars: finalText.length,
+      durationMs: Date.now() - startedAt,
+    });
+
+    return finalText;
   }
 
   private buildUserContent(message: UnifiedMessage): string {

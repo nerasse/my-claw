@@ -71,5 +71,16 @@
     "maxSteps": 30,
     "idleTimeoutMs": 300000
   },
+  "agents": {
+    "orchestrator": {
+      "maxIterations": 90
+    },
+    "general": {
+      "maxIterations": 50
+    },
+    "research": {
+      "maxIterations": 50
+    }
+  },
   "language": "fr"
 }

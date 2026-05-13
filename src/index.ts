@@ -45,6 +45,8 @@ import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs } from "./utils/media.ts";
 import { log } from "./utils/logger.ts";
+import { IterationBudget } from "./agent/iteration-budget.ts";
+import { resolveMaxIterations } from "./core/config.ts";
 
 async function main() {
   const config = await loadConfig();
@@ -100,7 +102,8 @@ async function main() {
   toolRegistry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
 
   const sessionManager = new SessionManager();
-  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
+  const orchestratorBudget = new IterationBudget(resolveMaxIterations(config, "orchestrator"));
+  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline, 0, undefined, orchestratorBudget);
   const router = new MessageRouter(config.whitelist, sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];

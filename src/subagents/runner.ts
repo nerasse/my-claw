@@ -1,8 +1,10 @@
 import type { MyClawConfig } from "../core/config.ts";
+import { resolveMaxIterations } from "../core/config.ts";
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
+import { IterationBudget } from "../agent/iteration-budget.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
@@ -177,6 +179,8 @@ export class SubAgentRunner {
 
     session.modelOverride = resolved.model;
 
+    const budget = new IterationBudget(resolveMaxIterations(this.config, type));
+
     const bridge = new AgentBridge(
       this.config,
       this.toolRegistry,
@@ -186,6 +190,7 @@ export class SubAgentRunner {
       this.ttsPipeline,
       depth,
       workspaceDir,
+      budget,
     );
 
     const subMessage: UnifiedMessage = {

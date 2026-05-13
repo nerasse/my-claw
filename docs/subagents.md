@@ -65,12 +65,16 @@ Each attachment is rendered as `[Attachments]` in the user message context. The 
 
 ## Limits
 
-| Limit | Value |
-|---|---|
-| Max concurrent one-shot runs | 3 |
-| Max spawn depth | 2 |
-| Max messages per persistent session | 500 (auto-truncates to last 50) |
-| Unlimited persistent sub-agents on disk | Yes |
+| Limit | Value | Configurable |
+|---|---|---|
+| Max concurrent one-shot runs | 3 | Hardcoded |
+| Max spawn depth | 2 | Hardcoded |
+| Max messages per persistent session | 500 (auto-truncates to last 50) | Hardcoded |
+| Iteration budget (orchestrator) | 90 | `agents.orchestrator.maxIterations` |
+| Iteration budget (sub-agent) | 50 | `agents.general.maxIterations`, `agents.research.maxIterations` |
+| Unlimited persistent sub-agents on disk | Yes | — |
+
+Each agent (orchestrator and every sub-agent) gets its own isolated `IterationBudget`. A sub-agent burning 50 iterations does not affect the parent's budget. When a budget is exhausted, the agent makes one final toolless LLM call to produce a graceful summary instead of returning a truncated error.
 
 ## Reboot behavior
 
