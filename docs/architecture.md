@@ -9,7 +9,7 @@
 | Matrix adapter | Complete — see `docs/matrix.md` |
 | Router + auth | Complete |
 | Sessions (memory + disk) | Complete |
-| Agent bridge | Complete — tool call loop, max 10 iterations, typed session messages |
+| Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
 | Tools (8 base) | Complete: bash, read, write, fetch, find, grep, ls, memory |
 | System prompt builder | Complete (9-layer: hardcoded core + 4 workspace files + 4 dynamic) |

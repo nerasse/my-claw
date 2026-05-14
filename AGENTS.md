@@ -43,6 +43,8 @@ src/
 │   └── router.ts          # Message routing (router/ moved here)
 ├── agent/
 │   ├── bridge.ts          # LLM agent orchestration
+│   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
+│   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
 │   ├── blacklist.ts
 │   ├── sub-agents.ts

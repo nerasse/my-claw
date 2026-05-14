@@ -78,11 +78,21 @@ Each agent (orchestrator and every sub-agent) gets its own isolated `IterationBu
 
 ## Streaming behavior
 
-- Single message per agent run (both Telegram and Matrix)
-- Tool calls append inline with `toolName(args)` format
+Single message per agent run on both Telegram and Matrix. Tool call output is appended inline after execution (not before), so timing data is included.
+
+### `/verbose` toggle (per session, ON by default)
+
+| Mode | Format | Example |
+|---|---|---|
+| **ON** | Code block with args + timing | `bash({"cmd":"ls"}) [120ms]` |
+| **OFF** | Blockquote with names only | `> bash, read` |
+
+### Rules
+
 - Arguments truncated to 240 chars if JSON > 300 chars; full display otherwise
 - Natural chunking when message limit reached (Telegram 4096, Matrix 4000)
 - Typing indicator active during entire agent run, stopped on completion or max iterations
+- `onToolUse` fires after tool execution (captures timing), not before
 
 ## Reboot behavior
 
