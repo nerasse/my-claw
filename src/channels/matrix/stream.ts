@@ -2,6 +2,7 @@ import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
 import { withMatrixRetry } from "./retry.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
+import { formatToolStatus } from "../../agent/tool-status.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
 
@@ -92,19 +93,10 @@ export class MatrixMessageStreamer {
     });
   }
 
-  async splitForToolUse(note = "Running tool..."): Promise<void> {
-    return this.enqueue(async () => {
-      if (this.finished) return;
-
-      await this.finalizeCurrentBlock();
-      this.previewText = "";
-      this.fullText = "";
-      this.sentEventId = null;
-      this.lastRenderedText = "";
-      this.lastEditAt = 0;
-      this.mustFallbackToFinal = false;
-      this.currentReplyToId = this.opts.preserveReplyId ? this.opts.replyToId : undefined;
-    });
+  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): Promise<void> {
+    const note = formatToolStatus(toolCalls);
+    if (!note) return;
+    return this.enqueue(() => this.pushInternal(note));
   }
 
   private enqueue(work: () => Promise<void>): Promise<void> {
@@ -275,46 +267,6 @@ export class MatrixMessageStreamer {
             true,
           ),
           "stream-final-edit",
-        );
-        return;
-      } catch {
-        await this.redactEvent(this.sentEventId);
-        this.sentEventId = null;
-      }
-    }
-
-    if (this.sentEventId && this.mustFallbackToFinal) {
-      await this.redactEvent(this.sentEventId);
-      this.sentEventId = null;
-    }
-
-    await this.deliverFinalNormally(text);
-  }
-
-  private async finalizeCurrentBlock(): Promise<void> {
-    this.clearTimer();
-    const text = this.previewText.trimEnd();
-    if (!text) {
-      if (this.sentEventId) {
-        await this.redactEvent(this.sentEventId);
-      }
-      return;
-    }
-
-    if (this.sentEventId && !this.mustFallbackToFinal) {
-      const formatted = buildMatrixFormattedText(text);
-      try {
-        await this.sendMessage(
-          this.editContent(
-            this.sentEventId,
-            {
-              body: formatted.body,
-              formatted_body: formatted.formatted_body,
-              mentions: formatted.mentions as Record<string, unknown> | undefined,
-            },
-            true,
-          ),
-          "stream-block-finalize",
         );
         return;
       } catch {

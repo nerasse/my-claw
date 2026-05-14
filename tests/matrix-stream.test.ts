@@ -258,7 +258,7 @@ test("MatrixMessageStreamer redacts preview before final fallback when draft alr
   assert.equal(deliveredFinal, "hello world");
 });
 
-test("MatrixMessageStreamer splitForToolUse starts new preview lane", async () => {
+test("MatrixMessageStreamer appendToolUse adds inline tool call", async () => {
   const { client, calls } = createClientMock();
   const streamer = new MatrixMessageStreamer(client as never, {
     roomId: "!room:test",
@@ -267,60 +267,16 @@ test("MatrixMessageStreamer splitForToolUse starts new preview lane", async () =
   });
 
   await streamer.push("hello");
-  await streamer.splitForToolUse();
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
   await streamer.push("after tool");
   await streamer.finish();
 
-  const sends = calls.filter((call) => call.method === "sendMessage");
-  assert.ok(sends.length >= 3);
-});
-
-test("MatrixMessageStreamer preserves reply target across tool boundaries when configured", async () => {
-  const { client, calls } = createClientMock();
-  const streamer = new MatrixMessageStreamer(client as never, {
-    roomId: "!room:test",
-    replyToId: "$reply",
-    preserveReplyId: true,
-    minCharsBeforeSend: 1,
-    editThrottleMs: 0,
-  });
-
-  await streamer.push("hello");
-  await streamer.splitForToolUse();
-  await streamer.push("after tool");
-  await streamer.finish();
-
-  const previewCreates = calls.filter(
-    (call) => call.method === "sendMessage" && !String((call.args[1] as Record<string, unknown>)["body"] ?? "").startsWith("* "),
-  );
-  const lastPreview = previewCreates.at(-1)?.args[1] as Record<string, unknown>;
-  assert.equal(Boolean(lastPreview["m.relates_to"]), true);
-});
-
-test("MatrixMessageStreamer finalizes the current block before a tool boundary", async () => {
-  const { client, calls } = createClientMock();
-  const streamer = new MatrixMessageStreamer(client as never, {
-    roomId: "!room:test",
-    minCharsBeforeSend: 1,
-    editThrottleMs: 0,
-  });
-
-  await streamer.push("hello world");
-  await streamer.splitForToolUse();
-  await streamer.push("done");
-  await streamer.finish("done");
-
-  const sendCalls = calls.filter((call) => call.method === "sendMessage");
-  assert.ok(sendCalls.length >= 4);
-
-  const finalizedFirstBlock = sendCalls[1]?.args[1] as Record<string, unknown>;
-  const finalizedNewContent = finalizedFirstBlock["m.new_content"] as Record<string, unknown>;
-  assert.equal(finalizedNewContent["body"], "hello world");
-  assert.equal(finalizedFirstBlock["org.matrix.msc4357.live"], undefined);
-
-  const postToolPreview = sendCalls[2]?.args[1] as Record<string, unknown>;
-  assert.equal(String(postToolPreview["body"] ?? ""), "done");
-  assert.equal(postToolPreview["m.relates_to"], undefined);
+  const lastSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.ok(lastSend);
+  const body = String((lastSend.args[1] as Record<string, unknown>)["body"] ?? "");
+  assert.ok(body.includes("hello"));
+  assert.ok(body.includes("bash"));
+  assert.ok(body.includes("after tool"));
 });
 
 test("MatrixMessageStreamer falls back to normal delivery when final edit fails", async () => {

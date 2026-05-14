@@ -76,6 +76,14 @@ Each attachment is rendered as `[Attachments]` in the user message context. The 
 
 Each agent (orchestrator and every sub-agent) gets its own isolated `IterationBudget`. A sub-agent burning 50 iterations does not affect the parent's budget. When a budget is exhausted, the agent makes one final toolless LLM call to produce a graceful summary instead of returning a truncated error.
 
+## Streaming behavior
+
+- Single message per agent run (both Telegram and Matrix)
+- Tool calls append inline with `toolName(args)` format
+- Arguments truncated to 240 chars if JSON > 300 chars; full display otherwise
+- Natural chunking when message limit reached (Telegram 4096, Matrix 4000)
+- Typing indicator active during entire agent run, stopped on completion or max iterations
+
 ## Reboot behavior
 
 On boot, `SubAgentRegistry.load()` scans `sessions/subagent/`. All existing sub-agents appear as `idle` in `list_agents()`. A `send()` immediately reloads the full session history from disk and continues the conversation.

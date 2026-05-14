@@ -1640,7 +1640,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
   agent.handleMessageStreaming = async (_message, _session, onToken, onToolUse) => {
     await onToken("hello");
     await onToken(" world");
-    if (onToolUse) await onToolUse();
+    if (onToolUse) await onToolUse([{ name: "bash", arguments: { command: "ls" } }]);
     return "hello world";
   };
 
@@ -1649,7 +1649,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
     try {
       const response = await router.route(msg, {
         onToken: (token) => streamer.push(token),
-        onToolUse: () => streamer.splitForToolUse(),
+        onToolUse: (tools) => streamer.appendToolUse(tools),
       });
       await streamer.finish(response?.text);
     } catch (err) {

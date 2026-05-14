@@ -1,6 +1,7 @@
 import { markdownToTelegramHtml, stripHtml } from "./format.ts";
 import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./split.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
+import { formatToolStatus } from "../../agent/tool-status.ts";
 
 const MESSAGE_NOT_FOUND_RE = /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i;
 
@@ -63,28 +64,10 @@ export class MessageStreamer {
     return this.enqueue(() => this.abortInternal(errorText));
   }
 
-  async forceNewMessage(): Promise<void> {
-    return this.enqueue(async () => {
-      if (this.finished) return;
-      await this.flushCurrentPart(true);
-      this.previewParts.push("");
-      this.messageIds.push(null);
-      this.lastRenderedParts.push("");
-    });
-  }
-
-  async splitForToolUse(note = "Running tool..."): Promise<void> {
-    return this.enqueue(async () => {
-      if (this.finished) return;
-
-      const index = this.currentIndex();
-      const current = this.previewParts[index] ?? "";
-      this.previewParts[index] = current ? `${current}\n\n${note}` : note;
-      await this.flushCurrentPart(true);
-      this.previewParts.push("");
-      this.messageIds.push(null);
-      this.lastRenderedParts.push("");
-    });
+  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): Promise<void> {
+    const note = formatToolStatus(toolCalls);
+    if (!note) return;
+    return this.enqueue(() => this.pushInternal(note));
   }
 
   private minCharsBeforeSend(): number {

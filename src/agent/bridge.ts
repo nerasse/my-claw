@@ -92,7 +92,7 @@ export class AgentBridge {
     message: UnifiedMessage,
     session: SessionData,
     onToken: (token: string) => Promise<void>,
-    onToolUse?: () => Promise<void>,
+    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown> }>) => Promise<void>,
   ): Promise<string> {
     return this.handle(message, session, onToken, onToolUse);
   }
@@ -216,7 +216,7 @@ export class AgentBridge {
     message: UnifiedMessage,
     session: SessionData,
     onToken?: (token: string) => Promise<void>,
-    onToolUse?: () => Promise<void>,
+    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown> }>) => Promise<void>,
   ): Promise<string> {
     if (this.currentMessage?.id !== message.id) {
       this.currentMessage = message;
@@ -319,7 +319,7 @@ export class AgentBridge {
         });
 
         if (onToolUse) {
-          await onToolUse();
+          await onToolUse(response.toolCalls);
         }
 
         const assistantToolCalls = toOpenAiToolCalls(response.toolCalls);

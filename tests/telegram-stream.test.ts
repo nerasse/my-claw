@@ -61,17 +61,21 @@ test("MessageStreamer overflows into a second message", async () => {
   assert.ok(sendCalls.length >= 2);
 });
 
-test("MessageStreamer splitForToolUse starts a new preview lane", async () => {
+test("MessageStreamer appendToolUse adds inline tool call to existing lane", async () => {
   const { transport, calls } = createTransport();
   const streamer = new MessageStreamer({ chatId: "1", minCharsBeforeSend: 1, editThrottleMs: 0 }, transport);
 
   await streamer.push("hello");
-  await streamer.splitForToolUse();
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
   await streamer.push("after tool");
   await streamer.finish();
 
-  const previewSends = calls.filter((call) => call.method === "sendPlain");
-  assert.ok(previewSends.length >= 2);
+  const finalEdit = calls.filter((call) => call.method === "editFinal").at(-1);
+  assert.ok(finalEdit);
+  const html = String(finalEdit.args[2] ?? "");
+  assert.ok(html.includes("hello"));
+  assert.ok(html.includes("bash"));
+  assert.ok(html.includes("after tool"));
 });
 
 test("MessageStreamer abort deletes previews", async () => {
