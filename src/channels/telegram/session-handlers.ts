@@ -138,6 +138,14 @@ export function createTelegramCommandHandler({
         };
       }
 
+      case "verbose": {
+        const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+        session.verbose = session.verbose === false ? undefined : false;
+        session.lastActiveAt = new Date().toISOString();
+        await sessionManager.persist(sessionId);
+        return `Verbose mode: ${session.verbose === false ? "OFF" : "ON"}`;
+      }
+
       case "compact": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
         const result = await compactSession(config, session, args.trim() || undefined);

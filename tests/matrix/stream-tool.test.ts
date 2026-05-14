@@ -3,11 +3,9 @@ import { MatrixMessageStreamer, type MatrixStreamOptions } from "../../src/chann
 
 function createMockClient() {
   const sent: Array<Record<string, unknown>> = [];
-  const edits: Array<Record<string, unknown>> = [];
 
   return {
     sent,
-    edits,
     async sendMessage(_roomId: string, content: Record<string, unknown>, _txnId?: string) {
       sent.push(content);
       return { event_id: `ev-${sent.length}` };
@@ -16,7 +14,7 @@ function createMockClient() {
   };
 }
 
-test("Matrix appendToolUse adds inline tool call to single event", async () => {
+test("Matrix appendToolUse verbose mode shows args and timing", async () => {
   const client = createMockClient();
   const streamer = new MatrixMessageStreamer(client as never, {
     roomId: "!room:server",
@@ -26,19 +24,17 @@ test("Matrix appendToolUse adds inline tool call to single event", async () => {
   } as MatrixStreamOptions);
 
   await streamer.push("Hello");
-  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" }, durationMs: 120 }], true);
   await streamer.push(" world");
   await streamer.finish();
 
-  // All edits (including final) are sent events in Matrix; the last one holds the final text
   expect(client.sent.length).toBeGreaterThanOrEqual(1);
   const lastBody = String(client.sent[client.sent.length - 1]?.body ?? "");
-  expect(lastBody).toContain("Hello");
-  expect(lastBody).toContain("bash({\"command\":\"ls\"})");
+  expect(lastBody).toContain("bash({\"command\":\"ls\"}) [120ms]");
   expect(lastBody).toContain("world");
 });
 
-test("Matrix appendToolUse does not create intermediate final events", async () => {
+test("Matrix appendToolUse compact mode shows names only", async () => {
   const client = createMockClient();
   const streamer = new MatrixMessageStreamer(client as never, {
     roomId: "!room:server",
@@ -47,15 +43,14 @@ test("Matrix appendToolUse does not create intermediate final events", async () 
     chunkLimit: 4000,
   } as MatrixStreamOptions);
 
-  await streamer.push("A");
-  await streamer.appendToolUse([{ name: "read", arguments: { path: "/tmp/test.ts" } }]);
-  await streamer.push("B");
-  await streamer.appendToolUse([{ name: "write", arguments: { path: "/tmp/out", content: "hello" } }]);
-  await streamer.push("C");
+  await streamer.push("Hello");
+  await streamer.appendToolUse([
+    { name: "bash", arguments: { command: "ls" }, durationMs: 100 },
+    { name: "read", arguments: { path: "/tmp" }, durationMs: 50 },
+  ], false);
   await streamer.finish();
 
-  // No redactions (which would indicate intermediate finalizeCurrentBlock calls)
-  // All sent events should be edits with m.replace relations (or the initial preview)
-  const nonEditEvents = client.sent.filter((c) => c["m.relates_to"] && c["m.relates_to"].rel_type !== "m.replace");
-  expect(nonEditEvents.length).toBeLessThanOrEqual(1);
+  const lastBody = String(client.sent[client.sent.length - 1]?.body ?? "");
+  expect(lastBody).toContain("> bash, read");
+  expect(lastBody).not.toContain("command");
 });

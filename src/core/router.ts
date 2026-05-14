@@ -10,7 +10,7 @@ export interface RouteResult {
 
 interface RouteOptions {
   onToken?: (token: string) => Promise<void>;
-  onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown> }>) => Promise<void>;
+  onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>;
 }
 
 function messageLogData(message: UnifiedMessage): Record<string, unknown> {

@@ -4,6 +4,7 @@ export const MATRIX_COMMANDS = [
   { command: "models", description: "List available models" },
   { command: "compact", description: "Compact session context" },
   { command: "reload-skills", description: "Reload skills from disk" },
+  { command: "verbose", description: "Toggle verbose tool output" },
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },

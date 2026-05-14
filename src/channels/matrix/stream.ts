@@ -2,7 +2,7 @@ import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
 import { withMatrixRetry } from "./retry.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
-import { formatToolStatus } from "../../agent/tool-status.ts";
+import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
 
@@ -93,8 +93,8 @@ export class MatrixMessageStreamer {
     });
   }
 
-  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): Promise<void> {
-    const note = formatToolStatus(toolCalls);
+  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean): Promise<void> {
+    const note = verbose ? formatToolStatusVerbose(toolCalls) : formatToolStatusCompact(toolCalls);
     if (!note) return;
     return this.enqueue(() => this.pushInternal(note));
   }

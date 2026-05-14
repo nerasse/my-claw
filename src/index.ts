@@ -141,7 +141,7 @@ async function main() {
           try {
             response = await router.route(msg, {
               onToken: (token) => streamer.push(token),
-              onToolUse: (tools) => streamer.appendToolUse(tools),
+              onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
             });
             await streamer.finish();
           } catch (err) {
@@ -218,7 +218,7 @@ async function main() {
           try {
             response = await router.route(msg, {
               onToken: (token) => streamer.push(token),
-              onToolUse: (tools) => streamer.appendToolUse(tools),
+              onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
             });
             await streamer.finish();
           } catch (err) {

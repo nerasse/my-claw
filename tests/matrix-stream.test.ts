@@ -267,7 +267,7 @@ test("MatrixMessageStreamer appendToolUse adds inline tool call", async () => {
   });
 
   await streamer.push("hello");
-  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" }, durationMs: 10 }], true);
   await streamer.push("after tool");
   await streamer.finish();
 

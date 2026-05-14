@@ -92,7 +92,7 @@ export class AgentBridge {
     message: UnifiedMessage,
     session: SessionData,
     onToken: (token: string) => Promise<void>,
-    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown> }>) => Promise<void>,
+    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
   ): Promise<string> {
     return this.handle(message, session, onToken, onToolUse);
   }
@@ -216,7 +216,7 @@ export class AgentBridge {
     message: UnifiedMessage,
     session: SessionData,
     onToken?: (token: string) => Promise<void>,
-    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown> }>) => Promise<void>,
+    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
   ): Promise<string> {
     if (this.currentMessage?.id !== message.id) {
       this.currentMessage = message;
@@ -318,10 +318,6 @@ export class AgentBridge {
           budgetRemaining: budget.remaining,
         });
 
-        if (onToolUse) {
-          await onToolUse(response.toolCalls);
-        }
-
         const assistantToolCalls = toOpenAiToolCalls(response.toolCalls);
 
         chatMessages.push({
@@ -340,6 +336,8 @@ export class AgentBridge {
           })),
           timestamp: new Date().toISOString(),
         });
+
+        const toolResults: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }> = [];
 
         for (const tc of response.toolCalls) {
           const toolStartedAt = Date.now();
@@ -361,6 +359,9 @@ export class AgentBridge {
           });
           toolExecutions += 1;
 
+          const durationMs = Date.now() - toolStartedAt;
+          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
+
           void log(result.success ? "info" : "warn", "tool execution finished", {
             ...runLogData(message, session),
             model: llmConfig.model,
@@ -369,11 +370,15 @@ export class AgentBridge {
             tool: tc.name,
             success: result.success,
             outputChars: result.content.length,
-            durationMs: Date.now() - toolStartedAt,
+            durationMs,
           });
 
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: result.content });
           session.messages.push({ role: "tool", toolCallId: tc.id, content: result.content, timestamp: new Date().toISOString() });
+        }
+
+        if (onToolUse) {
+          await onToolUse(toolResults, session.verbose !== false);
         }
       }
 

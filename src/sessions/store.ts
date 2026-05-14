@@ -25,6 +25,7 @@ export interface SessionData {
   modelOverride?: string;
   roomId?: string;
   threadId?: string;
+  verbose?: boolean;
   approvedTools?: string[];
   meta?: SubAgentMeta;
 }

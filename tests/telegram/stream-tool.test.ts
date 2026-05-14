@@ -29,7 +29,7 @@ function createMockTransport(): StreamTransport & { sent: Array<{ text: string; 
   };
 }
 
-test("Telegram appendToolUse adds inline tool call to preview", async () => {
+test("Telegram appendToolUse verbose mode shows args and timing", async () => {
   const transport = createMockTransport();
   const streamer = new MessageStreamer(
     { chatId: "123", minCharsBeforeSend: 1, editThrottleMs: 0 },
@@ -37,11 +37,27 @@ test("Telegram appendToolUse adds inline tool call to preview", async () => {
   );
 
   await streamer.push("Hello");
-  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" }, durationMs: 120 }], true);
 
-  // 1 message sent, then edited with tool call
   expect(transport.sent.length).toBe(1);
-  expect(transport.sent[0]?.text ?? "").toContain("Hello");
   const lastEdit = transport.edits[transport.edits.length - 1];
-  expect(lastEdit?.text ?? "").toContain("bash({\"command\":\"ls\"})");
+  expect(lastEdit?.text ?? "").toContain("bash({\"command\":\"ls\"}) [120ms]");
+});
+
+test("Telegram appendToolUse compact mode shows names only", async () => {
+  const transport = createMockTransport();
+  const streamer = new MessageStreamer(
+    { chatId: "123", minCharsBeforeSend: 1, editThrottleMs: 0 },
+    transport,
+  );
+
+  await streamer.push("Hello");
+  await streamer.appendToolUse([
+    { name: "bash", arguments: { command: "ls" }, durationMs: 100 },
+    { name: "read", arguments: { path: "/tmp" }, durationMs: 50 },
+  ], false);
+
+  const lastEdit = transport.edits[transport.edits.length - 1];
+  expect(lastEdit?.text ?? "").toContain("> bash, read");
+  expect(lastEdit?.text ?? "").not.toContain("command");
 });

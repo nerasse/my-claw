@@ -48,10 +48,10 @@ test("MessageRouter forwards streaming callbacks", async () => {
       _message: UnifiedMessage,
       _session: SessionData,
       onToken: (token: string) => Promise<void>,
-      onToolUse?: () => Promise<void>,
+      onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
     ) {
       await onToken("a");
-      await onToolUse?.();
+      await onToolUse?.([{ name: "bash", arguments: {}, durationMs: 10 }], true);
       return "streamed";
     },
     getResponseAttachments() {

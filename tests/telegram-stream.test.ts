@@ -66,7 +66,7 @@ test("MessageStreamer appendToolUse adds inline tool call to existing lane", asy
   const streamer = new MessageStreamer({ chatId: "1", minCharsBeforeSend: 1, editThrottleMs: 0 }, transport);
 
   await streamer.push("hello");
-  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
+  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" }, durationMs: 10 }], true);
   await streamer.push("after tool");
   await streamer.finish();
 

@@ -1,7 +1,7 @@
 import { markdownToTelegramHtml, stripHtml } from "./format.ts";
 import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./split.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
-import { formatToolStatus } from "../../agent/tool-status.ts";
+import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
 
 const MESSAGE_NOT_FOUND_RE = /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i;
 
@@ -64,8 +64,8 @@ export class MessageStreamer {
     return this.enqueue(() => this.abortInternal(errorText));
   }
 
-  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): Promise<void> {
-    const note = formatToolStatus(toolCalls);
+  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean): Promise<void> {
+    const note = verbose ? formatToolStatusVerbose(toolCalls) : formatToolStatusCompact(toolCalls);
     if (!note) return;
     return this.enqueue(() => this.pushInternal(note));
   }

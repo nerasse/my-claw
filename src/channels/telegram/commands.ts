@@ -5,6 +5,7 @@ export const COMMANDS = [
   { command: "model", description: "Show or change current model" },
   { command: "compact", description: "Compact session context" },
   { command: "reload", description: "Reload skills from disk" },
+  { command: "verbose", description: "Toggle verbose tool output" },
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
