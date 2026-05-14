@@ -10,5 +10,5 @@ export function formatToolStatus(toolCalls: ToolCallInfo[]): string {
     const display = argsStr.length > 300 ? argsStr.slice(0, 240) + "..." : argsStr;
     return `${tc.name}(${display})`;
   });
-  return "\n\n" + lines.join("\n");
+  return "\n\n```\n" + lines.join("\n") + "\n```\n";
 }

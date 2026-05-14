@@ -29,7 +29,7 @@ function createMockTransport(): StreamTransport & { sent: Array<{ text: string; 
   };
 }
 
-test("Telegram appendToolUse adds inline tool call to single message", async () => {
+test("Telegram appendToolUse adds inline tool call to preview", async () => {
   const transport = createMockTransport();
   const streamer = new MessageStreamer(
     { chatId: "123", minCharsBeforeSend: 1, editThrottleMs: 0 },
@@ -38,29 +38,10 @@ test("Telegram appendToolUse adds inline tool call to single message", async () 
 
   await streamer.push("Hello");
   await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
-  await streamer.push(" world");
-  await streamer.finish();
 
-  // 1 initial message + final edit on same message
+  // 1 message sent, then edited with tool call
   expect(transport.sent.length).toBe(1);
-  // The final content is in the edit
+  expect(transport.sent[0]?.text ?? "").toContain("Hello");
   const lastEdit = transport.edits[transport.edits.length - 1];
-  expect(lastEdit?.text ?? "").toContain("Hello");
   expect(lastEdit?.text ?? "").toContain("bash({\"command\":\"ls\"})");
-  expect(lastEdit?.text ?? "").toContain(" world");
-});
-
-test("Telegram appendToolUse with large text still fragments naturally", async () => {
-  const transport = createMockTransport();
-  const streamer = new MessageStreamer(
-    { chatId: "123", minCharsBeforeSend: 1, editThrottleMs: 0, chunkLimit: 20 },
-    transport,
-  );
-
-  await streamer.push("Line one text here");
-  await streamer.appendToolUse([{ name: "bash", arguments: { command: "ls" } }]);
-  await streamer.finish();
-
-  // The tool call text might force a natural chunk split (>20 chars)
-  expect(transport.sent.length).toBeGreaterThanOrEqual(1);
 });

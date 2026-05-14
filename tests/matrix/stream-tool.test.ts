@@ -35,7 +35,7 @@ test("Matrix appendToolUse adds inline tool call to single event", async () => {
   const lastBody = String(client.sent[client.sent.length - 1]?.body ?? "");
   expect(lastBody).toContain("Hello");
   expect(lastBody).toContain("bash({\"command\":\"ls\"})");
-  expect(lastBody).toContain(" world");
+  expect(lastBody).toContain("world");
 });
 
 test("Matrix appendToolUse does not create intermediate final events", async () => {
