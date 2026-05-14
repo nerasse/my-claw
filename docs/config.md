@@ -147,6 +147,51 @@ Sub-agents inherit the global `llm.providers`. You only need to specify a differ
 
 If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `defaultModel` is omitted, the global `llm.defaultModel` is used.
 
+## Context Limits
+
+Per-model or global `limit` controls context window and output cap:
+
+```json
+{
+  "llm": {
+    "limit": {
+      "context": 128000,
+      "output": 8192
+    },
+    "models": [
+      {
+        "id": "accounts/fireworks/models/kimi-k2p6-turbo",
+        "label": "Kimi K2.6",
+        "provider": "fireworks",
+        "limit": { "context": 262144, "output": 65536 }
+      }
+    ]
+  }
+}
+```
+
+- `limit.context` — max tokens for the full prompt (system + messages + tools). When exceeded, old messages are auto-trimmed (head preserved, middle dropped, tail preserved, tool pairs kept intact). Estimation: 4 chars/token, 15% safety margin.
+- `limit.output` — sent as `max_tokens` to the provider.
+- Per-model `limit` overrides the global `limit`.
+
+## Analytics
+
+Every LLM API call is logged to `~/.my-claw/analytics.db` (SQLite, WAL mode).
+
+**Table `api_calls`**: `timestamp`, `session_id`, `platform`, `model`, `base_url`, `streaming`, `caller` (orchestrator/subagent/compaction/browser), `prompt_tokens`, `completion_tokens`, `total_tokens`, `tool_calls`, `iteration`, `duration_ms`, `error`.
+
+Query with `sqlite3`:
+```bash
+# tokens per day
+sqlite3 ~/.my-claw/analytics.db "SELECT date(timestamp) d, sum(total_tokens) t, count(*) c FROM api_calls GROUP BY d"
+
+# by model
+sqlite3 ~/.my-claw/analytics.db "SELECT model, sum(total_tokens), count(*) FROM api_calls GROUP BY model"
+
+# avg latency by caller
+sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM api_calls GROUP BY caller"
+```
+
 ## Other Sections
 
 - `whitelist`: array of user IDs who can interact with the agent

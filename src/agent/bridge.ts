@@ -1,11 +1,13 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveMaxIterations } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
-import type { SessionData, SessionMessage } from "../sessions/store.ts";
+import type { SessionData, SessionMessage, TokenUsage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type ChatMessageContent } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
+import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
+import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
@@ -14,6 +16,17 @@ import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 import { IterationBudget } from "./iteration-budget.ts";
+
+function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+  if (!usage) return;
+  if (!session.tokenUsage) {
+    session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
+  }
+  session.tokenUsage.promptTokens += usage.promptTokens;
+  session.tokenUsage.completionTokens += usage.completionTokens;
+  session.tokenUsage.totalTokens += usage.totalTokens;
+  session.tokenUsage.apiCalls += 1;
+}
 
 function runLogData(message: UnifiedMessage, session: SessionData): Record<string, unknown> {
   return {
@@ -276,9 +289,18 @@ export class AgentBridge {
         }
       }
 
+      const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+
       let iteration = 0;
       while (budget.consume()) {
         iteration++;
+        const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context, toolSchemaTokens);
+        if (trimmed !== chatMessages) {
+          chatMessages.length = 0;
+          chatMessages.push(...trimmed);
+        }
+
+        const llmStartedAt = Date.now();
         const response = onToken
           ? await chatCompletionStream(
               llmConfig,
@@ -291,6 +313,23 @@ export class AgentBridge {
               chatMessages,
               openaiTools.length > 0 ? openaiTools : undefined,
             );
+        const llmDurationMs = Date.now() - llmStartedAt;
+
+        accumulateUsage(session, response.usage);
+        recordApiCall({
+          sessionId: session.id,
+          platform: message.platform,
+          model: llmConfig.model,
+          baseUrl: llmConfig.baseUrl,
+          streaming,
+          caller: this.depth === 0 ? "orchestrator" : "subagent",
+          promptTokens: response.usage?.promptTokens ?? 0,
+          completionTokens: response.usage?.completionTokens ?? 0,
+          totalTokens: response.usage?.totalTokens ?? 0,
+          toolCalls: response.toolCalls?.length ?? 0,
+          iteration,
+          durationMs: llmDurationMs,
+        });
 
         if (!response.toolCalls?.length) {
           session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
@@ -304,6 +343,8 @@ export class AgentBridge {
             responseChars: response.content.length,
             sessionMessageCount: session.messages.length,
             durationMs: Date.now() - startedAt,
+            usage: response.usage,
+            sessionTokenUsage: session.tokenUsage,
           });
           return response.content;
         }
@@ -414,6 +455,12 @@ export class AgentBridge {
     chatMessages.push({ role: "user", content: summaryPrompt });
     session.messages.push({ role: "user", content: summaryPrompt, timestamp: new Date().toISOString() });
 
+    const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context);
+    if (trimmed !== chatMessages) {
+      chatMessages.length = 0;
+      chatMessages.push(...trimmed);
+    }
+
     void log("warn", "agent run requesting summary after iteration limit", {
       ...runLogData(message, session),
       model: llmConfig.model,
@@ -423,7 +470,23 @@ export class AgentBridge {
       durationMs: Date.now() - startedAt,
     });
 
+    const summaryStartedAt = Date.now();
     const summaryResponse = await chatCompletion(llmConfig, chatMessages);
+    accumulateUsage(session, summaryResponse.usage);
+    recordApiCall({
+      sessionId: session.id,
+      platform: message.platform,
+      model: llmConfig.model,
+      baseUrl: llmConfig.baseUrl,
+      streaming: false,
+      caller: this.depth === 0 ? "orchestrator" : "subagent",
+      promptTokens: summaryResponse.usage?.promptTokens ?? 0,
+      completionTokens: summaryResponse.usage?.completionTokens ?? 0,
+      totalTokens: summaryResponse.usage?.totalTokens ?? 0,
+      toolCalls: 0,
+      iteration: iteration + 1,
+      durationMs: Date.now() - summaryStartedAt,
+    });
 
     const finalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
 

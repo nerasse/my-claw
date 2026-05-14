@@ -122,6 +122,7 @@
 │   └── subagent/            # persistent sub-agent sessions
 │       └── <name>-<hex4>.json
 ├── sessions-archive/        # archived sessions (reset, clear)
+├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
 └── logs/
 ```
 
@@ -144,6 +145,13 @@
 - Auth: API key per provider via env vars (`apiKeyEnv` in provider config), with global fallback
 - Custom headers per provider supported
 - Backward-compatible: legacy `{baseUrl, model}` configs auto-migrate on boot
+- **Retry**: 3 attempts with exponential backoff + jitter for 429/5xx, respects `Retry-After`
+- **Timeout**: 120s non-streaming, 300s streaming (AbortController)
+- **Safe parsing**: malformed JSON in SSE chunks or tool args logged + skipped, never crashes
+- Error responses read and included in thrown error messages
+- **Context window**: auto-trims old messages before each LLM call when `limit.context` is set (4 chars/token heuristic, 15% safety margin, respects tool-call/result pairs)
+- **Usage tracking**: captures `prompt_tokens`/`completion_tokens` from every API response (including streaming via `stream_options.include_usage`), accumulates per session in `tokenUsage`, persisted to disk, shown in `/status`
+- **Analytics DB**: SQLite at `~/.my-claw/analytics.db` — one row per API call with session, model, tokens, duration, caller type. WAL mode. Queryable via `sqlite3` or any SQL tool
 
 ### Sub-agents
 

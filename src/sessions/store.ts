@@ -15,6 +15,13 @@ export interface SubAgentMeta {
   createdAt: string;
 }
 
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  apiCalls: number;
+}
+
 export interface SessionData {
   id: string;
   platform: string;
@@ -28,6 +35,7 @@ export interface SessionData {
   verbose?: boolean;
   approvedTools?: string[];
   meta?: SubAgentMeta;
+  tokenUsage?: TokenUsage;
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

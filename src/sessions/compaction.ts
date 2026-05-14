@@ -2,6 +2,7 @@ import type { MyClawConfig } from "../core/config.ts";
 import { chatCompletion } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
+import { recordApiCall } from "../analytics/usage-db.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 const HEAD_KEEP = 3;
@@ -157,6 +158,7 @@ export async function compactSession(
   const llmConfig = resolveLlmConfig(config.llm, session.modelOverride);
 
   try {
+    const compactionStartedAt = Date.now();
     const response = await chatCompletion(
       llmConfig,
       [
@@ -165,6 +167,20 @@ export async function compactSession(
       ],
       undefined,
     );
+    recordApiCall({
+      sessionId: session.id,
+      platform: session.platform,
+      model: llmConfig.model,
+      baseUrl: llmConfig.baseUrl,
+      streaming: false,
+      caller: "compaction",
+      promptTokens: response.usage?.promptTokens ?? 0,
+      completionTokens: response.usage?.completionTokens ?? 0,
+      totalTokens: response.usage?.totalTokens ?? 0,
+      toolCalls: 0,
+      iteration: 0,
+      durationMs: Date.now() - compactionStartedAt,
+    });
 
     const summary = response.content.slice(0, MAX_SUMMARY_CHARS).trim();
     if (!summary) {

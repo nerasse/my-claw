@@ -363,13 +363,19 @@ export function createMatrixCommandHandler({
         const session = await sessionManager.peek(sessionId);
         const currentModel = session?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
         if (!session) return `Model: ${currentModel}\nSession: none active`;
-        return [
+        const lines = [
           `Model: ${currentModel}`,
           `Session: ${sessionId}`,
           `Messages: ${session.messages.length}`,
           `Created: ${session.createdAt}`,
           `Last active: ${session.lastActiveAt}`,
-        ].join("\n");
+        ];
+        if (session.tokenUsage) {
+          const u = session.tokenUsage;
+          lines.push(`Tokens: ${u.totalTokens.toLocaleString()} (in: ${u.promptTokens.toLocaleString()}, out: ${u.completionTokens.toLocaleString()})`);
+          lines.push(`API calls: ${u.apiCalls}`);
+        }
+        return lines.join("\n");
       }
 
       default:

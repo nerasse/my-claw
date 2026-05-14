@@ -1,4 +1,5 @@
 import type { MyClawConfig } from "../../core/config.ts";
+import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse } from "../../llm/provider.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
@@ -73,12 +74,24 @@ export class BrowserSubagent {
       const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
       let response: LlmResponse;
+      const llmConfig = resolveLlmConfig(this.config.llm);
+      const browserLlmStart = Date.now();
       try {
-        response = await chatCompletion(
-          resolveLlmConfig(this.config.llm),
-          messages,
-          openaiTools,
-        );
+        response = await chatCompletion(llmConfig, messages, openaiTools);
+        recordApiCall({
+          sessionId: "browser-subagent",
+          platform: "internal",
+          model: llmConfig.model,
+          baseUrl: llmConfig.baseUrl,
+          streaming: false,
+          caller: "browser",
+          promptTokens: response.usage?.promptTokens ?? 0,
+          completionTokens: response.usage?.completionTokens ?? 0,
+          totalTokens: response.usage?.totalTokens ?? 0,
+          toolCalls: response.toolCalls?.length ?? 0,
+          iteration: step,
+          durationMs: Date.now() - browserLlmStart,
+        });
       } catch (e) {
         return {
           success: false,

@@ -1,4 +1,26 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
+import { log } from "../utils/logger.ts";
+
+const LLM_RETRY_ATTEMPTS = 3;
+const LLM_RETRY_BASE_MS = 500;
+const LLM_RETRY_MAX_MS = 30_000;
+const LLM_RETRY_JITTER = 0.15;
+const LLM_TIMEOUT_MS = 120_000;
+const LLM_STREAM_TIMEOUT_MS = 300_000;
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isTransientError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  const code = (err as { code?: string })?.code;
+  if (code && TRANSIENT_CODES.has(code)) return true;
+  const msg = (err as Error)?.message ?? "";
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(msg);
+}
 
 export type ChatMessageContent =
   | { type: "text"; text: string }
@@ -10,9 +32,16 @@ export type ChatMessage =
   | { role: "assistant"; content: string; tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> }
   | { role: "tool"; tool_call_id: string; content: string };
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface LlmResponse {
   content: string;
   toolCalls?: ToolCall[];
+  usage?: LlmUsage;
 }
 
 export interface ToolCall {
@@ -31,6 +60,13 @@ interface ChatCompletionResponse {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
 
 interface ChatCompletionStreamChunk {
@@ -47,6 +83,13 @@ interface ChatCompletionStreamChunk {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
 }
 
 function buildRequestBody(
@@ -65,12 +108,61 @@ function buildRequestBody(
   }
   if (stream) {
     body["stream"] = true;
+    body["stream_options"] = { include_usage: true };
   }
   if (config.limit?.output) {
     body["max_tokens"] = config.limit.output;
   }
 
   return body;
+}
+
+async function readErrorBody(response: Response): Promise<string> {
+  try {
+    const body = await response.text();
+    const trimmed = body.slice(0, 500);
+    try {
+      const json = JSON.parse(trimmed);
+      return json?.error?.message ?? json?.message ?? trimmed;
+    } catch {
+      return trimmed;
+    }
+  } catch {
+    return "(unreadable)";
+  }
+}
+
+function retryDelay(attempt: number, retryAfterMs?: number): number {
+  if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, LLM_RETRY_MAX_MS);
+  const base = LLM_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+  const clamped = Math.min(base, LLM_RETRY_MAX_MS);
+  return clamped * (1 + (Math.random() * 2 - 1) * LLM_RETRY_JITTER);
+}
+
+function parseRetryAfterMs(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+}
+
+function safeJsonParse(raw: string, label: string): Record<string, unknown> {
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    log("warn", `Failed to parse ${label} JSON: ${(err as Error).message}`, { raw: raw.slice(0, 200) }).catch(() => {});
+    return {};
+  }
+}
+
+function normalizeUsage(raw?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; input_tokens?: number; output_tokens?: number }): LlmUsage | undefined {
+  if (!raw) return undefined;
+  const prompt = raw.prompt_tokens ?? raw.input_tokens ?? 0;
+  const completion = raw.completion_tokens ?? raw.output_tokens ?? 0;
+  const total = raw.total_tokens ?? prompt + completion;
+  if (prompt === 0 && completion === 0) return undefined;
+  return { promptTokens: prompt, completionTokens: completion, totalTokens: total };
 }
 
 function parseToolCalls(
@@ -82,7 +174,7 @@ function parseToolCalls(
   return toolCalls?.map((tc) => ({
     id: tc.id,
     name: tc.function.name,
-    arguments: tc.function.arguments.trim() ? JSON.parse(tc.function.arguments) : {},
+    arguments: safeJsonParse(tc.function.arguments, "tool_call.arguments"),
   }));
 }
 
@@ -93,29 +185,62 @@ export async function chatCompletion(
 ): Promise<LlmResponse> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${config.apiKey ?? ""}`,
+    ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     ...config.headers,
   };
+  const body = JSON.stringify(buildRequestBody(config, messages, tools));
+  const url = `${config.baseUrl}/chat/completions`;
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(buildRequestBody(config, messages, tools)),
-  });
+  let lastErr: unknown;
 
-  if (!response.ok) {
-    throw new Error(`LLM request failed: HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+
+      if (!response.ok) {
+        const detail = await readErrorBody(response);
+        const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`);
+
+        if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
+          const delay = retryDelay(attempt, parseRetryAfterMs(response));
+          await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
+          await sleep(delay);
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+
+      const data = (await response.json()) as ChatCompletionResponse;
+      const choice = data.choices[0];
+      if (!choice?.message) throw new Error("No response from LLM");
+
+      return {
+        content: choice.message.content ?? "",
+        toolCalls: parseToolCalls(choice.message.tool_calls),
+        usage: normalizeUsage(data.usage),
+      };
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        lastErr = new Error(`LLM request timed out after ${LLM_TIMEOUT_MS}ms`);
+      }
+      if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
+        const delay = retryDelay(attempt);
+        await log("warn", `LLM transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
+        await sleep(delay);
+        continue;
+      }
+      throw lastErr;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
-  const data = (await response.json()) as ChatCompletionResponse;
-
-  const choice = data.choices[0];
-  if (!choice?.message) throw new Error("No response from LLM");
-
-  return {
-    content: choice.message.content ?? "",
-    toolCalls: parseToolCalls(choice.message.tool_calls),
-  };
+  throw lastErr;
 }
 
 export async function chatCompletionStream(
@@ -126,86 +251,138 @@ export async function chatCompletionStream(
 ): Promise<LlmResponse> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${config.apiKey ?? ""}`,
+    ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     ...config.headers,
   };
+  const body = JSON.stringify(buildRequestBody(config, messages, tools, true));
+  const url = `${config.baseUrl}/chat/completions`;
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(buildRequestBody(config, messages, tools, true)),
-  });
+  let lastErr: unknown;
 
-  if (!response.ok) {
-    throw new Error(`LLM request failed: HTTP ${response.status}`);
-  }
-  if (!response.body) {
-    throw new Error("LLM stream response has no body");
-  }
+  for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_STREAM_TIMEOUT_MS);
 
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-  const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+    try {
+      const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
 
-  const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
-    const delta = payload.choices?.[0]?.delta;
-    if (!delta) return;
+      if (!response.ok) {
+        const detail = await readErrorBody(response);
+        const err = new Error(`LLM stream request failed: HTTP ${response.status} — ${detail}`);
 
-    if (typeof delta.content === "string" && delta.content.length > 0) {
-      content += delta.content;
-      await onToken(delta.content);
-    }
-
-    for (const toolCall of delta.tool_calls ?? []) {
-      const index = toolCall.index ?? 0;
-      const entry = toolCalls.get(index) ?? { id: `call_${index}`, name: "", arguments: "" };
-      if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
-        entry.id = toolCall.id;
-      }
-      if (typeof toolCall.function?.name === "string" && toolCall.function.name.length > 0) {
-        entry.name += toolCall.function.name;
-      }
-      if (typeof toolCall.function?.arguments === "string" && toolCall.function.arguments.length > 0) {
-        entry.arguments += toolCall.function.arguments;
-      }
-      toolCalls.set(index, entry);
-    }
-  };
-
-  for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-    buffer += decoder.decode(chunk, { stream: true });
-
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
-      buffer = buffer.slice(newlineIndex + 1);
-
-      if (rawLine.startsWith("data: ")) {
-        const data = rawLine.slice(6);
-        if (data === "[DONE]") {
-          buffer = "";
-          break;
+        if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
+          const delay = retryDelay(attempt, parseRetryAfterMs(response));
+          await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
+          await sleep(delay);
+          lastErr = err;
+          continue;
         }
-        if (data) {
-          await handleChunk(JSON.parse(data) as ChatCompletionStreamChunk);
+        throw err;
+      }
+      if (!response.body) {
+        throw new Error("LLM stream response has no body");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let content = "";
+      let streamUsage: LlmUsage | undefined;
+      const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+
+      const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
+        if (payload.usage) {
+          streamUsage = normalizeUsage(payload.usage);
+        }
+
+        const delta = payload.choices?.[0]?.delta;
+        if (!delta) return;
+
+        if (typeof delta.content === "string" && delta.content.length > 0) {
+          content += delta.content;
+          await onToken(delta.content);
+        }
+
+        for (const toolCall of delta.tool_calls ?? []) {
+          const index = toolCall.index ?? 0;
+          const entry = toolCalls.get(index) ?? { id: `call_${index}`, name: "", arguments: "" };
+          if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
+            entry.id = toolCall.id;
+          }
+          if (typeof toolCall.function?.name === "string" && toolCall.function.name.length > 0) {
+            entry.name += toolCall.function.name;
+          }
+          if (typeof toolCall.function?.arguments === "string" && toolCall.function.arguments.length > 0) {
+            entry.arguments += toolCall.function.arguments;
+          }
+          toolCalls.set(index, entry);
+        }
+      };
+
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+        buffer += decoder.decode(chunk, { stream: true });
+
+        let newlineIndex = buffer.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
+          buffer = buffer.slice(newlineIndex + 1);
+
+          if (rawLine.startsWith("data: ")) {
+            const data = rawLine.slice(6);
+            if (data === "[DONE]") {
+              buffer = "";
+              break;
+            }
+            if (data) {
+              const parsed = safeJsonParse(data, "SSE chunk");
+              if (Object.keys(parsed).length > 0) {
+                await handleChunk(parsed as ChatCompletionStreamChunk);
+              }
+            }
+          }
+
+          newlineIndex = buffer.indexOf("\n");
         }
       }
 
-      newlineIndex = buffer.indexOf("\n");
+      if (buffer.trim().startsWith("data: ")) {
+        const remaining = buffer.trim().slice(6);
+        if (remaining && remaining !== "[DONE]") {
+          const parsed = safeJsonParse(remaining, "SSE tail");
+          if (Object.keys(parsed).length > 0) {
+            await handleChunk(parsed as ChatCompletionStreamChunk);
+          }
+        }
+      }
+
+      const streamedToolCalls = [...toolCalls.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, toolCall]) => ({
+          id: toolCall.id,
+          name: toolCall.name,
+          arguments: safeJsonParse(toolCall.arguments, "streamed tool_call.arguments"),
+        }));
+
+      return {
+        content,
+        toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
+        usage: streamUsage,
+      };
+    } catch (err) {
+      lastErr = err;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        lastErr = new Error(`LLM stream timed out after ${LLM_STREAM_TIMEOUT_MS}ms`);
+      }
+      if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
+        const delay = retryDelay(attempt);
+        await log("warn", `LLM stream transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
+        await sleep(delay);
+        continue;
+      }
+      throw lastErr;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
-  const streamedToolCalls = [...toolCalls.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, toolCall]) => ({
-      id: toolCall.id,
-      name: toolCall.name,
-      arguments: toolCall.arguments.trim() ? JSON.parse(toolCall.arguments) : {},
-    }));
-
-  return {
-    content,
-    toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
-  };
+  throw lastErr;
 }

@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import { closeDb } from "./analytics/usage-db.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR } from "./core/config.ts";
@@ -281,6 +282,7 @@ async function main() {
   const shutdown = async () => {
     log("info", "shutting down...");
     await Promise.allSettled(adapters.map((a) => a.stop()));
+    closeDb();
     process.exit(0);
   };
 
