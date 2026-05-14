@@ -143,7 +143,7 @@ async function main() {
               onToken: (token) => streamer.push(token),
               onToolUse: (tools) => streamer.appendToolUse(tools),
             });
-            await streamer.finish(response?.text);
+            await streamer.finish();
           } catch (err) {
             await streamer.abort();
             throw err;
@@ -220,7 +220,7 @@ async function main() {
               onToken: (token) => streamer.push(token),
               onToolUse: (tools) => streamer.appendToolUse(tools),
             });
-            await streamer.finish(response?.text);
+            await streamer.finish();
           } catch (err) {
             await streamer.abort();
             throw err;
