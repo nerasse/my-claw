@@ -27,6 +27,7 @@ import {
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createSdkLogger, installMatrixSdkRootLogger, matrixLog } from "../../utils/logger.ts";
+import { LruMap } from "../../utils/lru-map.ts";
 import { copyIdbSnapshotWithPrefix, persistIdbToDisk, restoreIdbFromDisk } from "./crypto-idb.ts";
 import { MatrixDecryptBridge, type MatrixDecryptionFailure } from "./decrypt-bridge.ts";
 import { FileBackedMatrixSyncStore } from "./file-sync-store.ts";
@@ -125,7 +126,7 @@ export class MatrixClientRuntime {
   private readonly decryptBridge: MatrixDecryptBridge;
   private readonly storagePaths: MatrixRuntimeStoragePaths;
   private readonly syncStore: FileBackedMatrixSyncStore;
-  private readonly decryptFailureCounts = new Map<string, number[]>();
+  private readonly decryptFailureCounts = new LruMap<string, number[]>(500);
 
   constructor(
     private config: MatrixRuntimeConfig,

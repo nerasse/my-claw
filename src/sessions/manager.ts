@@ -1,8 +1,17 @@
 import type { UnifiedMessage } from "../channels/types.ts";
 import { loadSession, saveSession, deleteSession, archiveSession, purgeSessionArchives, type SessionData } from "./store.ts";
+import { LruMap } from "../utils/lru-map.ts";
+
+const MAX_CACHED_SESSIONS = 100;
 
 export class SessionManager {
-  private sessions = new Map<string, SessionData>();
+  private sessions: LruMap<string, SessionData>;
+
+  constructor() {
+    this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
+      saveSession(key, value).catch(() => {});
+    });
+  }
 
   private createSession(sessionId: string, platform: string, chatType: string): SessionData {
     return {

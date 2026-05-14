@@ -1,6 +1,7 @@
 import { MatrixEventEvent, type MatrixEvent } from "matrix-js-sdk";
 import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api/CryptoEvent.js";
 import { DecryptionFailureCode } from "matrix-js-sdk/lib/crypto-api/index.js";
+import { TtlSet } from "../../utils/lru-map.ts";
 
 export type MatrixDecryptionFailure = {
   roomId: string;
@@ -76,8 +77,8 @@ export class MatrixDecryptBridge {
   private readonly trackedEncryptedEvents = new WeakSet<object>();
   private readonly decryptedMessageDedupe = new Map<string, number>();
   private readonly decryptRetries = new Map<string, MatrixDecryptRetryState>();
-  private readonly failedDecryptionsNotified = new Set<string>();
-  private readonly exhaustedDecryptRetries = new Set<string>();
+  private readonly failedDecryptionsNotified = new TtlSet<string>(30 * 60_000, 5000);
+  private readonly exhaustedDecryptRetries = new TtlSet<string>(30 * 60_000, 5000);
   private activeRetryRuns = 0;
   private readonly retryIdleResolvers = new Set<() => void>();
   private cryptoRetrySignalsBound = false;

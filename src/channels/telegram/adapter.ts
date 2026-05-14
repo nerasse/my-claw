@@ -24,6 +24,7 @@ import {
 } from "./policy.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { telegramLog } from "../../utils/logger.ts";
+import { LruMap } from "../../utils/lru-map.ts";
 import {
   sendTextMessage,
   sendPlainTextMessage,
@@ -166,7 +167,7 @@ export class TelegramAdapter implements ChannelAdapter {
   private textBatches = new Map<string, TextBatch>();
   private mediaGroups = new Map<string, MediaGroupBuffer>();
   private typingRefs = new Map<string, TypingRef>();
-  private historyByScope = new Map<string, TelegramHistoryEntry[]>();
+  private historyByScope = new LruMap<string, TelegramHistoryEntry[]>(1000);
   private messageContexts = new Map<string, TelegramStoredMessageContext>();
   private messageThreadIds = new Map<string, number>();
   private pendingConfirmations = new Map<string, PendingConfirmation>();

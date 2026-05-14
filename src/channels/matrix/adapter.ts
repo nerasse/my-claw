@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { MatrixEvent, Room } from "matrix-js-sdk";
 import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
 import { MY_CLAW_DIR } from "../../core/config.ts";
+import { LruMap } from "../../utils/lru-map.ts";
 import type { MatrixChannelConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
@@ -156,7 +157,7 @@ export class MatrixAdapter implements ChannelAdapter {
   private inboundBuffer = createMatrixInboundBuffer();
   private pendingBufferedIngress = new Map<string, PendingBufferedMatrixIngress>();
   private typingRefs = new Map<string, TypingRef>();
-  private encryptedIngressSkips = new Map<string, number>();
+  private encryptedIngressSkips = new LruMap<string, number>(1000);
   private selfUserId?: string;
   private timelineOff?: () => void;
   private inboundDeduper?: MatrixInboundEventDeduper;
