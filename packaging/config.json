@@ -1,8 +1,9 @@
 {
+  "whitelist": [],
+  "blacklist": ["bash", "write"],
   "llm": {
     "defaultProvider": "fireworks",
-    "defaultModel": "accounts/fireworks/models/kimi-k2p5-turbo",
-    "apiKey": "",
+    "defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo",
     "vision": true,
     "providers": {
       "fireworks": {
@@ -12,75 +13,73 @@
     },
     "models": [
       {
-        "id": "accounts/fireworks/models/kimi-k2p5-turbo",
-        "label": "Kimi K2.5 Turbo",
+        "id": "accounts/fireworks/models/kimi-k2p6-turbo",
+        "label": "Kimi K2.6 Turbo",
         "provider": "fireworks"
       }
-    ]
+    ],
+    "limit": {
+      "context": 128000,
+      "output": 8192
+    }
   },
-  "telegram": {
-    "enabled": true,
-    "token": ""
-  },
-  "matrix": {
-    "enabled": false,
-    "homeserver": "https://matrix.org",
-    "userId": "",
-    "password": "",
-    "accessToken": "",
-    "deviceId": "",
-    "roomId": ""
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "",
+      "mode": "polling",
+      "dm": {
+        "enabled": true,
+        "policy": "allowlist",
+        "allowFrom": []
+      },
+      "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
+      "reactions": { "enabled": true },
+      "errorPolicy": "once"
+    },
+    "matrix": {
+      "enabled": false,
+      "homeserver": "https://matrix.org",
+      "accessToken": "",
+      "userId": "",
+      "deviceId": "",
+      "encryption": false,
+      "dm": {
+        "enabled": true,
+        "policy": "allowlist",
+        "allowFrom": []
+      },
+      "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
+      "reactions": { "enabled": true },
+      "errorPolicy": "once"
+    }
   },
   "voice": {
-    "enabled": true,
+    "mode": "auto",
     "stt": {
       "mode": "cloud",
-      "cloud": {
-        "provider": "groq",
-        "apiKey": ""
-      },
-      "local": {
-        "url": "http://127.0.0.1:8000",
-        "model": "large-v3",
-        "language": "fr"
-      }
+      "echoTranscript": true
     },
     "tts": {
-      "enabled": true,
       "mode": "cloud",
-      "cloud": {
-        "provider": "edge-tts",
-        "language": "fr-FR"
-      },
-      "local": {
-        "url": "http://127.0.0.1:5000",
-        "speakerId": "pierre"
-      }
+      "voice": "fr-FR-RemyMultilingualNeural"
     }
   },
   "webSearch": {
-    "enabled": true,
-    "url": "https://search.kssimi.fr",
+    "baseUrl": "https://search.example.com",
     "token": "",
-    "defaultLanguage": "fr"
+    "language": "fr"
   },
   "browser": {
-    "enabled": true,
+    "enabled": false,
     "cdpUrl": "http://127.0.0.1:9222",
     "viewport": { "width": 1920, "height": 1080 },
     "maxSteps": 30,
     "idleTimeoutMs": 300000
   },
   "agents": {
-    "orchestrator": {
-      "maxIterations": 90
-    },
-    "general": {
-      "maxIterations": 50
-    },
-    "research": {
-      "maxIterations": 50
-    }
-  },
-  "language": "fr"
+    "orchestrator": { "maxIterations": 90 },
+    "general": { "maxIterations": 50 },
+    "research": { "maxIterations": 50 }
+  }
 }

@@ -120,11 +120,23 @@ function resolveMatrixMentionCandidates(params: {
   return candidates;
 }
 
+const mentionPatternCache = new Map<string, RegExp>();
+
+function getMentionPattern(candidate: string): RegExp {
+  let pattern = mentionPatternCache.get(candidate);
+  if (!pattern) {
+    pattern = new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(candidate)}(?=$|[^A-Za-z0-9_])`, "i");
+    mentionPatternCache.set(candidate, pattern);
+    if (mentionPatternCache.size > 200) {
+      const oldest = mentionPatternCache.keys().next().value;
+      if (oldest !== undefined) mentionPatternCache.delete(oldest);
+    }
+  }
+  return pattern;
+}
+
 function textContainsMention(text: string, candidates: string[]): boolean {
-  return candidates.some((candidate) => {
-    const pattern = new RegExp(`(^|[^A-Za-z0-9_])${escapeRegExp(candidate)}(?=$|[^A-Za-z0-9_])`, "i");
-    return pattern.test(text);
-  });
+  return candidates.some((candidate) => getMentionPattern(candidate).test(text));
 }
 
 function visibleLabelMatchesMention(label: string, candidates: string[]): boolean {
@@ -199,17 +211,28 @@ export function extractMatrixMentions(text: string): MatrixMentions {
   };
 }
 
+const stripPrefixCache = new Map<string, RegExp>();
+
+function getStripPrefixPattern(candidate: string): RegExp {
+  let pattern = stripPrefixCache.get(candidate);
+  if (!pattern) {
+    pattern = new RegExp(`^\\s*${escapeRegExp(candidate)}(?:\\s*[:,])?(?:\\s+|$)`, "i");
+    stripPrefixCache.set(candidate, pattern);
+    if (stripPrefixCache.size > 200) {
+      const oldest = stripPrefixCache.keys().next().value;
+      if (oldest !== undefined) stripPrefixCache.delete(oldest);
+    }
+  }
+  return pattern;
+}
+
 export function stripMatrixMentionPrefix(params: {
   text: string;
   userId?: string;
   displayName?: string;
 }): string {
   for (const candidate of resolveMatrixMentionCandidates(params)) {
-    const escaped = escapeRegExp(candidate);
-    const stripped = params.text.replace(
-      new RegExp(`^\\s*${escaped}(?:\\s*[:,])?(?:\\s+|$)`, "i"),
-      "",
-    );
+    const stripped = params.text.replace(getStripPrefixPattern(candidate), "");
     if (stripped !== params.text) {
       return stripped;
     }

@@ -4,6 +4,11 @@ const ESCAPE_MAP: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&g
 const FILE_REF_TLD_EXTENSIONS = new Set(["md", "go", "py", "pl", "sh", "am", "at", "be", "cc"]);
 const HTML_TAG_RE = /(<\/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?>/gi;
 const AUTO_LINKED_ANCHOR_RE = /<a\s+href="https?:\/\/([^"]+)"[^>]*>\1<\/a>/gi;
+const FILE_EXT_PATTERN = [...FILE_REF_TLD_EXTENSIONS].join("|");
+const FILE_EXT_RE = FILE_REF_TLD_EXTENSIONS.size > 0 ? new RegExp(`\\.(?:${FILE_EXT_PATTERN})$`, "i") : null;
+const FILE_REF_RE = FILE_REF_TLD_EXTENSIONS.size > 0
+  ? new RegExp(`(^|[^a-zA-Z0-9_\\-/])([a-zA-Z0-9_.\\-/]+\\.(?:${FILE_EXT_PATTERN}))(?=$|[^a-zA-Z0-9_\\-/])`, "gi")
+  : null;
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 md.enable("strikethrough");
@@ -289,20 +294,14 @@ function renderTableAsPre(data: TableData): string {
 // ── File reference wrapping ───────────────────────────────────
 
 function wrapFileReferences(html: string): string {
-  if (FILE_REF_TLD_EXTENSIONS.size === 0) return html;
+  if (!FILE_EXT_RE || !FILE_REF_RE) return html;
 
-  // De-linkify auto-generated anchors for file refs (e.g., http://readme.md → <code>readme.md</code>)
-  const extPattern = [...FILE_REF_TLD_EXTENSIONS].join("|");
-  const fileExtRe = new RegExp(`\\.(?:${extPattern})$`, "i");
   html = html.replace(AUTO_LINKED_ANCHOR_RE, (full, label: string) => {
-    if (fileExtRe.test(label)) return `<code>${escapeHtml(label)}</code>`;
+    if (FILE_EXT_RE.test(label)) return `<code>${escapeHtml(label)}</code>`;
     return full;
   });
 
-  const fileRefRe = new RegExp(
-    `(^|[^a-zA-Z0-9_\\-/])([a-zA-Z0-9_.\\-/]+\\.(?:${extPattern}))(?=$|[^a-zA-Z0-9_\\-/])`,
-    "gi",
-  );
+  const fileRefRe = FILE_REF_RE;
 
   const segments: string[] = [];
   let lastIdx = 0;
