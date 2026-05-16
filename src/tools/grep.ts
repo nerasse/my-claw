@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt, bool } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 
@@ -16,25 +16,26 @@ export const grepTool: Tool = {
     required: ["pattern", "path"],
   },
   async execute(args): Promise<ToolResult> {
-    const pattern = args["pattern"] as string;
-    const path = args["path"] as string;
-    if (!pattern || !pattern.trim()) {
+    const pattern = str(args, "pattern");
+    const path = str(args, "path");
+    if (!pattern.trim()) {
       return { success: false, output: "pattern is required and cannot be empty." };
     }
-    if (!path || !path.trim()) {
+    if (!path.trim()) {
       return { success: false, output: "path is required and cannot be empty." };
     }
-    const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
+    const wsDir = strOpt(args, "__workspaceDir");
+    const resolved = resolveWorkspacePath(path, wsDir);
     try {
       await access(resolved);
     } catch {
       return { success: false, output: `Path not found: ${resolved}. Check the path exists.` };
     }
     try {
-      const flags = args["recursive"] !== false ? "-rn" : "-n";
+      const flags = bool(args, "recursive", true) ? "-rn" : "-n";
       const proc = Bun.spawn(
         ["grep", flags, pattern, resolved],
-        { stdout: "pipe", stderr: "pipe", cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
+        { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

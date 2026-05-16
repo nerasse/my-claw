@@ -1,5 +1,5 @@
 import { readdir, access } from "node:fs/promises";
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 
@@ -14,11 +14,11 @@ export const lsTool: Tool = {
     required: ["path"],
   },
   async execute(args): Promise<ToolResult> {
-    const path = args["path"] as string;
-    if (!path || !path.trim()) {
+    const path = str(args, "path");
+    if (!path.trim()) {
       return { success: false, output: "path is required and cannot be empty." };
     }
-    const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
+    const resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
     try {
       await access(resolved);
     } catch {

@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, num, bool } from "./types.ts";
 import type { BrowserService } from "../browser/service.ts";
 import type { Page } from "playwright-core";
 
@@ -51,7 +51,7 @@ export function createBrowserNavigateTool(service: BrowserService): Tool {
       required: ["url"],
     },
     async execute(args): Promise<ToolResult> {
-      const url = args["url"] as string;
+      const url = str(args, "url");
       try {
         guardUrl(url);
         const result = await service.navigate(url);
@@ -101,7 +101,7 @@ export function createBrowserClickTool(service: BrowserService): Tool {
       required: ["ref"],
     },
     async execute(args): Promise<ToolResult> {
-      const ref = Number(args["ref"]);
+      const ref = num(args, "ref", 0);
       try {
         await service.click(getPage(), ref);
         const snapshot = await service.snapshot(getPage());
@@ -129,8 +129,8 @@ export function createBrowserTypeTool(service: BrowserService): Tool {
       required: ["ref", "text"],
     },
     async execute(args): Promise<ToolResult> {
-      const ref = Number(args["ref"]);
-      const text = args["text"] as string;
+      const ref = num(args, "ref", 0);
+      const text = str(args, "text");
       try {
         await service.type(getPage(), ref, text);
         const snapshot = await service.snapshot(getPage());
@@ -161,8 +161,8 @@ export function createDelegateBrowserTool(config: MyClawConfig, cdpUrl: string):
       required: ["url", "instructions"],
     },
     async execute(args): Promise<ToolResult> {
-      const url = args["url"] as string;
-      const instructions = args["instructions"] as string;
+      const url = str(args, "url");
+      const instructions = str(args, "instructions");
       const subagent = new BrowserSubagent(config, cdpUrl);
       try {
         const result = await subagent.run(instructions, url);
@@ -200,10 +200,10 @@ export function createBrowserScreenshotTool(service: BrowserService): Tool {
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const useLabels = Boolean(args["labels"]);
+        const useLabels = bool(args, "labels", false);
         const attachment = useLabels
-          ? await service.screenshotWithLabels(getPage(), Boolean(args["full_page"]))
-          : await service.screenshot(getPage(), Boolean(args["full_page"]));
+          ? await service.screenshotWithLabels(getPage(), bool(args, "full_page", false))
+          : await service.screenshot(getPage(), bool(args, "full_page", false));
         return {
           success: true,
           output: "Screenshot captured.",
@@ -245,7 +245,7 @@ export function createBrowserFocusTabTool(service: BrowserService): Tool {
       required: ["index"],
     },
     async execute(args): Promise<ToolResult> {
-      const index = Number(args["index"]);
+      const index = num(args, "index", 0);
       try {
         const page = await service.focusTab(index);
         currentPage = page;
@@ -273,7 +273,7 @@ export function createBrowserCloseTabTool(service: BrowserService): Tool {
       required: ["index"],
     },
     async execute(args): Promise<ToolResult> {
-      const index = Number(args["index"]);
+      const index = num(args, "index", 0);
       try {
         await service.closeTab(index);
         return { success: true, output: `Tab [${index}] closed.` };

@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
@@ -24,11 +24,11 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const name = args["name"] as string;
-        const type = (args["type"] as string) ?? "research";
-        const mode = (args["mode"] as string) ?? "run";
-        const task = args["task"] as string;
-        const workspaceDir = args["workspaceDir"] as string | undefined;
+        const name = str(args, "name");
+        const type = str(args, "type") || "research";
+        const mode = str(args, "mode") || "run";
+        const task = str(args, "task");
+        const workspaceDir = strOpt(args, "workspaceDir");
         const message = args["__message"] as UnifiedMessage | undefined;
 
         if (!message) {

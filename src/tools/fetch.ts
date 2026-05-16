@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 
 export const fetchTool: Tool = {
@@ -14,14 +14,14 @@ export const fetchTool: Tool = {
     required: ["url"],
   },
   async execute(args): Promise<ToolResult> {
-    const url = args["url"] as string;
-    if (!url || !url.trim()) {
+    const url = str(args, "url");
+    if (!url.trim()) {
       return { success: false, output: "url is required and cannot be empty." };
     }
     try {
       const response = await fetch(url, {
-        method: (args["method"] as string) ?? "GET",
-        body: args["body"] as string | undefined,
+        method: strOpt(args, "method") ?? "GET",
+        body: strOpt(args, "body"),
       });
       const text = await response.text();
       if (response.ok) {

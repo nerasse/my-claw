@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 
 const PROMPT_DIR = join(MY_CLAW_DIR, "prompt");
@@ -19,8 +19,8 @@ export const memoryTool: Tool = {
     required: ["file", "action"],
   },
   async execute(args): Promise<ToolResult> {
-    const file = args["file"] as string;
-    const action = args["action"] as string;
+    const file = str(args, "file");
+    const action = str(args, "action");
     if (!file) {
       return { success: false, output: "file is required. Must be 'MEMORY.md' or 'USER.md'." };
     }
@@ -34,7 +34,7 @@ export const memoryTool: Tool = {
         return { success: true, output: content };
       }
       if (action === "append") {
-        const contentToAppend = args["content"] as string;
+        const contentToAppend = str(args, "content");
         if (!contentToAppend || !contentToAppend.trim()) {
           return { success: false, output: "content is required for append action and cannot be empty." };
         }

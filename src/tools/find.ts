@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 
@@ -15,15 +15,16 @@ export const findTool: Tool = {
     required: ["path", "pattern"],
   },
   async execute(args): Promise<ToolResult> {
-    const path = args["path"] as string;
-    const pattern = args["pattern"] as string;
-    if (!path || !path.trim()) {
+    const path = str(args, "path");
+    const pattern = str(args, "pattern");
+    if (!path.trim()) {
       return { success: false, output: "path is required and cannot be empty." };
     }
-    if (!pattern || !pattern.trim()) {
+    if (!pattern.trim()) {
       return { success: false, output: "pattern is required and cannot be empty." };
     }
-    const resolved = resolveWorkspacePath(path, args["__workspaceDir"] as string | undefined);
+    const wsDir = strOpt(args, "__workspaceDir");
+    const resolved = resolveWorkspacePath(path, wsDir);
     try {
       await access(resolved);
     } catch {
@@ -32,7 +33,7 @@ export const findTool: Tool = {
     try {
       const proc = Bun.spawn(
         ["find", resolved, "-name", pattern],
-        { stdout: "pipe", stderr: "pipe", cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
+        { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;

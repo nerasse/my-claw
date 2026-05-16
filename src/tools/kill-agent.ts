@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 
 export function createKillAgentTool(runner: SubAgentRunner): Tool {
@@ -14,7 +14,7 @@ export function createKillAgentTool(runner: SubAgentRunner): Tool {
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const id = args["id"] as string;
+        const id = str(args, "id");
         const result = await runner.kill(id);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {

@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 
 export interface WebSearchConfig {
@@ -92,13 +92,13 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
         };
       }
 
-      const query = (args["query"] as string)?.trim();
+      const query = str(args, "query").trim();
       if (!query) {
         return { success: false, output: "", error: "query is required and cannot be empty." };
       }
 
-      const count = Math.min(10, Math.max(1, Math.floor((args["count"] as number) ?? 5)));
-      const language = (args["language"] as string)?.trim() || config?.language || DEFAULT_LANGUAGE;
+      const count = Math.min(10, Math.max(1, Math.floor(num(args, "count", 5))));
+      const language = strOpt(args, "language")?.trim() || config?.language || DEFAULT_LANGUAGE;
 
       const url = buildSearchUrl({ baseUrl, query, count, language });
 

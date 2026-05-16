@@ -1,5 +1,5 @@
 import { readFile, access } from "node:fs/promises";
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 
@@ -14,7 +14,7 @@ export const readTool: Tool = {
     required: ["path"],
   },
   async execute(args): Promise<ToolResult> {
-    const resolved = resolveWorkspacePath(args["path"] as string, args["__workspaceDir"] as string | undefined);
+    const resolved = resolveWorkspacePath(str(args, "path"), strOpt(args, "__workspaceDir"));
     try {
       await access(resolved);
     } catch {

@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 
 export const bashTool: Tool = {
@@ -13,15 +13,15 @@ export const bashTool: Tool = {
     required: ["command"],
   },
   async execute(args): Promise<ToolResult> {
-    const command = args["command"] as string;
-    if (!command || !command.trim()) {
+    const command = str(args, "command");
+    if (!command.trim()) {
       return { success: false, output: "command is required and cannot be empty." };
     }
     try {
       const proc = Bun.spawn(["bash", "-c", command], {
         stdout: "pipe",
         stderr: "pipe",
-        cwd: (args["__workspaceDir"] as string | undefined) ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+        cwd: strOpt(args, "__workspaceDir") ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
       });
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();

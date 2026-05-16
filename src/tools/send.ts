@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
@@ -29,8 +29,8 @@ export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistr
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const id = args["id"] as string;
-        const message = args["message"] as string;
+        const id = str(args, "id");
+        const message = str(args, "message");
         const attachments = (args["attachments"] as Array<{ path: string; type: string }> | undefined)?.map((a) => ({ path: a.path, type: a.type as Attachment["type"] }));
         const parentMessage = args["__message"] as UnifiedMessage | undefined;
         if (!parentMessage) {
