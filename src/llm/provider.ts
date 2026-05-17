@@ -256,6 +256,15 @@ export async function chatCompletion(
   throw lastErr;
 }
 
+function idToIndex(id: string, existing: Map<number, unknown>): number {
+  for (const [idx, entry] of existing) {
+    if ((entry as { id?: string }).id === id) return idx;
+  }
+  let next = 0;
+  while (existing.has(next)) next++;
+  return next;
+}
+
 export async function chatCompletionStream(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
@@ -316,7 +325,7 @@ export async function chatCompletionStream(
         }
 
         for (const toolCall of delta.tool_calls ?? []) {
-          const index = toolCall.index ?? 0;
+          const index = toolCall.index ?? (typeof toolCall.id === "string" ? idToIndex(toolCall.id, toolCalls) : 0);
           const entry = toolCalls.get(index) ?? { id: `call_${index}`, name: "", arguments: "" };
           if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
             entry.id = toolCall.id;

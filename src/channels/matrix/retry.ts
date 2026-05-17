@@ -7,19 +7,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
+const RETRYABLE_ERRCODES = new Set(["M_LIMIT_EXCEEDED", "M_UNKNOWN"]);
+const RETRYABLE_TEXT_PATTERNS = /\b429\b|M_LIMIT_EXCEEDED|timeout|network|temporarily|unavailable|reset|connect|closed/i;
+
 export function isMatrixRetryableError(err: unknown): boolean {
-  const text = String(err).toLowerCase();
-  return (
-    text.includes("429") ||
-    text.includes("m_limit_exceeded") ||
-    text.includes("timeout") ||
-    text.includes("network") ||
-    text.includes("temporarily") ||
-    text.includes("unavailable") ||
-    text.includes("reset") ||
-    text.includes("connect") ||
-    text.includes("closed")
-  );
+  if (err && typeof err === "object") {
+    const typed = err as { httpStatus?: number; errcode?: string; statusCode?: number };
+    if (typeof typed.httpStatus === "number" && RETRYABLE_HTTP_STATUS.has(typed.httpStatus)) return true;
+    if (typeof typed.statusCode === "number" && RETRYABLE_HTTP_STATUS.has(typed.statusCode)) return true;
+    if (typeof typed.errcode === "string" && RETRYABLE_ERRCODES.has(typed.errcode)) return true;
+  }
+  const text = String(err);
+  return RETRYABLE_TEXT_PATTERNS.test(text);
 }
 
 export function matrixRetryAfterMs(err: unknown): number | undefined {

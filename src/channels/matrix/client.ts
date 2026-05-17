@@ -219,9 +219,11 @@ export class MatrixClientRuntime {
 
     await this.client.startClient({ initialSyncLimit: this.config.initialSyncLimit ?? 20 });
     await this.readyPromise;
+    this.client.on(ClientEvent.Sync, this.handleOngoingSync);
   }
 
   async stop(): Promise<void> {
+    this.client.off(ClientEvent.Sync, this.handleOngoingSync);
     this.client.off(RoomEvent.Timeline, this.handleTimeline);
     if (this.cryptoPersistTimer) {
       clearInterval(this.cryptoPersistTimer);
@@ -346,7 +348,7 @@ export class MatrixClientRuntime {
         this.client.getCrypto() as { on: (eventName: string, listener: (...args: unknown[]) => void) => void } | undefined,
       );
     } catch (error) {
-      await matrixLog("warn", "matrix rust crypto init failed", { error: String(error) });
+      await matrixLog("error", "matrix rust crypto init failed — encrypted messages will be dropped", { error: String(error) });
     }
   }
 
@@ -359,6 +361,14 @@ export class MatrixClientRuntime {
       this.storagePaths.cryptoDatabasePrefix,
     );
   }
+
+  private handleOngoingSync = (state: SyncState, prev: SyncState | null, data?: { error?: Error }): void => {
+    if (state === SyncState.Error) {
+      void matrixLog("error", "matrix sync lost", { previous: prev, error: String(data?.error) });
+    } else if (state === SyncState.Syncing && prev === SyncState.Error) {
+      void matrixLog("info", "matrix sync recovered");
+    }
+  };
 
   private handleTimeline = (
     event: MatrixEvent,
