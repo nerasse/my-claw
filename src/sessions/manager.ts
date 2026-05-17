@@ -1,6 +1,7 @@
 import type { UnifiedMessage } from "../channels/types.ts";
 import { loadSession, saveSession, deleteSession, archiveSession, purgeSessionArchives, type SessionData } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
+import { log } from "../utils/logger.ts";
 
 const MAX_CACHED_SESSIONS = 100;
 
@@ -9,7 +10,9 @@ export class SessionManager {
 
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
-      saveSession(key, value).catch(() => {});
+      saveSession(key, value).catch((err) => {
+        void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
+      });
     });
   }
 

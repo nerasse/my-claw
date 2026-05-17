@@ -1,6 +1,7 @@
 import { type Tool, type ToolResult, str, num, bool } from "./types.ts";
 import type { BrowserService } from "../browser/service.ts";
 import type { Page } from "playwright-core";
+import { isPrivateUrl } from "./fetch.ts";
 
 // Track the current page across tool calls within a single agent turn
 let currentPage: Page | null = null;
@@ -21,14 +22,13 @@ function guardUrl(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
-    return; // Let navigate handle invalid URLs
-  }
-  const blocked = ["localhost", "127.0.0.1", "::1", "0.0.0.0"];
-  if (blocked.includes(parsed.hostname)) {
-    throw new Error(`Navigation to ${parsed.hostname} is blocked for security.`);
+    throw new Error(`Invalid URL: "${url}"`);
   }
   if (parsed.protocol === "file:") {
     throw new Error("file:// protocol is blocked for security.");
+  }
+  if (isPrivateUrl(url)) {
+    throw new Error(`Navigation to ${parsed.hostname} is blocked: private/internal network address.`);
   }
 }
 

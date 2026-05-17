@@ -4,6 +4,7 @@ import { writeFile, mkdir, readFile, access, unlink } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { loadAllSkills } from "../skills/loader.ts";
+import { scanForInjection } from "../agent/prompt/anti-injection.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESC_LENGTH = 1024;
@@ -81,7 +82,7 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
       }
 
       const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
-      return { success: true, output: resolved };
+      return { success: true, output: scanForInjection(resolved, `skill:${name}`) };
     },
   };
 }

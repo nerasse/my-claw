@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
@@ -29,6 +30,13 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         const mode = str(args, "mode") || "run";
         const task = str(args, "task");
         const workspaceDir = strOpt(args, "workspaceDir");
+        const mainWorkspace = process.env["MY_CLAW_WORKSPACE"];
+        if (workspaceDir && mainWorkspace) {
+          const resolved = resolve(workspaceDir);
+          if (!resolved.startsWith(mainWorkspace + "/") && resolved !== mainWorkspace) {
+            return { success: false, output: "", error: `workspaceDir "${workspaceDir}" must be within the main workspace.` };
+          }
+        }
         const message = args["__message"] as UnifiedMessage | undefined;
 
         if (!message) {

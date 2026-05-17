@@ -15,6 +15,7 @@ import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
+import { scanForInjection } from "./prompt/anti-injection.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!usage) return;
@@ -142,7 +143,8 @@ export class AgentBridge {
         skills: this.skillRegistry.list(),
       });
 
-      const userContent = this.preprocessor.buildUserContent(message);
+      const rawUserContent = this.preprocessor.buildUserContent(message);
+      const userContent = scanForInjection(rawUserContent, "user-message");
       const now = new Date().toISOString();
       session.messages.push({ role: "user", content: userContent, timestamp: now });
 

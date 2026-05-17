@@ -163,8 +163,12 @@ async function main() {
     telegram.onCommand(commandHandler);
     telegram.onCallbackQuery(callbackHandler);
 
-    await telegram.start();
-    adapters.push(telegram);
+    try {
+      await telegram.start();
+      adapters.push(telegram);
+    } catch (err) {
+      log("error", "telegram adapter failed to start", { error: String(err) });
+    }
   }
 
   if (isMatrixChannelEnabled(config)) {
@@ -262,8 +266,12 @@ async function main() {
       return await matrix.confirmTool(request, approvalHandler);
     });
     await approvalHandler.restorePendingApprovals();
-    await matrix.start();
-    adapters.push(matrix);
+    try {
+      await matrix.start();
+      adapters.push(matrix);
+    } catch (err) {
+      log("error", "matrix adapter failed to start", { error: String(err) });
+    }
   }
 
   log("info", "my-claw started", { channels: Object.keys(config.channels) });

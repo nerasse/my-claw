@@ -48,7 +48,22 @@ export const fetchTool: Tool = {
       const response = await fetch(url, {
         method: strOpt(args, "method") ?? "GET",
         body: strOpt(args, "body"),
+        redirect: "manual",
       });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (location && isPrivateUrl(location)) {
+          return { success: false, output: "", error: "Blocked: redirect target points to a private/internal network address." };
+        }
+        const redirected = await fetch(location ?? url, {
+          method: strOpt(args, "method") ?? "GET",
+          body: strOpt(args, "body"),
+        });
+        const text = await redirected.text();
+        return redirected.ok
+          ? { success: true, output: text }
+          : { success: false, output: text, error: `HTTP ${redirected.status} from ${location ?? url}.` };
+      }
       const text = await response.text();
       if (response.ok) {
         return { success: true, output: text };
