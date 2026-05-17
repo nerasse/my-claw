@@ -138,6 +138,25 @@ export function createTelegramCommandHandler({
         };
       }
 
+      case "models": {
+        const existingSession = await sessionManager.peek(sessionId);
+        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const models = config.llm.models ?? [];
+        if (models.length === 0) {
+          return `Current model: ${modelPicker.labelFor(currentModel)}`;
+        }
+        return [
+          `Current model: ${modelPicker.labelFor(currentModel)}`,
+          "Available models:",
+          ...models.map((m, i) => {
+            const suffix = m.id === currentModel ? " [selected]" : "";
+            return `${i + 1}. ${m.label} (${m.id})${suffix}`;
+          }),
+          "",
+          "Use /model <number|name> to switch.",
+        ].join("\n");
+      }
+
       case "verbose": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
         session.verbose = session.verbose === false ? undefined : false;

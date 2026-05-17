@@ -346,6 +346,7 @@ export function createMatrixCommandHandler({
         return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
       }
 
+      case "reload":
       case "reload-skills": {
         if (!skillRegistry || !builtinDir || !customDir || !workspaceSkillsDir) {
           return "Skill registry not available.";

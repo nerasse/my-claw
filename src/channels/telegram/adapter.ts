@@ -370,12 +370,15 @@ export class TelegramAdapter implements ChannelAdapter {
   private setupHandlers(): void {
     this.bot.hears(/^\/new(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
     this.bot.hears(/^\/model(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
+    this.bot.hears(/^\/models(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "models"));
     this.bot.hears(/^\/compact(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "compact"));
+    this.bot.hears(/^\/reload(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "reload"));
     this.bot.hears(/^\/verbose(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "verbose"));
     this.bot.hears(/^\/status(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
     this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
     this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
     this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
+    this.bot.hears(/^\/commands(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
     this.bot.on("message", (ctx) => this.handleMessage(ctx));
   }
@@ -393,7 +396,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const userId = String(msg.from.id);
     await telegramLog("info", "telegram command received", { command, userId, text: msg.text ?? msg.caption });
 
-    if (command === "help") {
+    if (command === "help" || command === "commands") {
       await ctx.reply(getHelpText());
       await this.commitProcessedUpdate(ctx.update.update_id);
       return;
@@ -564,7 +567,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "clear", "model", "verbose", "status", "archive", "help"].includes(command)) {
+      if (["new", "clear", "model", "models", "compact", "reload", "verbose", "status", "archive", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command);
         return;
       }
