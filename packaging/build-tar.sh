@@ -19,6 +19,10 @@ cp -r "${PROJECT_ROOT}/src" "${TAR_DIR}/"
 cp "${PROJECT_ROOT}/package.json" "${TAR_DIR}/"
 cp "${PROJECT_ROOT}/tsconfig.json" "${TAR_DIR}/"
 
+# Copy prompt templates (needed for workspace seeding)
+mkdir -p "${TAR_DIR}/docs"
+cp -r "${PROJECT_ROOT}/docs/prompt" "${TAR_DIR}/docs/prompt"
+
 # Copy node_modules (pre-installed)
 cp -r "${PROJECT_ROOT}/node_modules" "${TAR_DIR}/"
 

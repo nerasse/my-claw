@@ -92,7 +92,7 @@ async function main() {
 
   const sessionManager = new SessionManager();
   const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
-  const router = new MessageRouter(config.whitelist, sessionManager, agent);
+  const router = new MessageRouter(sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
 

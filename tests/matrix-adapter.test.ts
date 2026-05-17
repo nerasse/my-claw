@@ -1626,7 +1626,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
     toolRegistry,
     skillRegistry,
   );
-  const router = new MessageRouter(["@u1:example.org"], sessionManager, agent);
+  const router = new MessageRouter(sessionManager, agent);
 
   // Mock the agent streaming path so the test verifies adapter-router-streamer
   // wiring without depending on the real LLM fetch implementation.

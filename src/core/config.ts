@@ -269,16 +269,6 @@ function applySecretOverrides(config: MyClawConfig): void {
     }
   }
 
-  if (config.llm) {
-    const fireworksKey = process.env.FIREWORKS_API_KEY;
-    if (fireworksKey) {
-      const isNewFormat = config.llm.providers !== undefined || config.llm.defaultProvider !== undefined;
-      if (!isNewFormat) {
-        config.llm.apiKey = fireworksKey;
-      }
-    }
-  }
-
   if (config.webSearch && process.env.MY_CLAW_WEB_SEARCH_TOKEN) {
     config.webSearch.token = process.env.MY_CLAW_WEB_SEARCH_TOKEN;
   }

@@ -53,6 +53,9 @@ function errorLogData(err: unknown): unknown {
   return String(err);
 }
 
+const MAX_SESSION_MESSAGES = 500;
+const MAX_SESSION_MESSAGES_KEEP = 50;
+
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
@@ -222,6 +225,9 @@ export class AgentBridge {
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
           });
+          if (session.messages.length > MAX_SESSION_MESSAGES) {
+            session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+          }
           return response.content;
         }
 
@@ -306,6 +312,9 @@ export class AgentBridge {
         }
       }
 
+      if (session.messages.length > MAX_SESSION_MESSAGES) {
+        session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+      }
       return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget);
     } catch (err) {
       void log("error", "agent run failed", {

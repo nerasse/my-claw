@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str } from "./types.ts";
 import type { SttPipeline } from "../voice/stt.ts";
 
 export function createSttTool(pipeline: SttPipeline): Tool {
@@ -12,23 +12,11 @@ export function createSttTool(pipeline: SttPipeline): Tool {
           type: "string",
           description: "Absolute path to the audio file to transcribe",
         },
-        language: {
-          type: "string",
-          description: "Language code override (e.g. 'fr', 'en'). Optional.",
-        },
-        forceCloud: {
-          type: "boolean",
-          description: "Force cloud provider for this call",
-        },
-        forceLocal: {
-          type: "boolean",
-          description: "Force local provider for this call",
-        },
       },
       required: ["filePath"],
     },
     async execute(args): Promise<ToolResult> {
-      const filePath = args.filePath as string;
+      const filePath = str(args, "filePath");
       if (!filePath) {
         return { success: false, output: "", error: "filePath is required" };
       }

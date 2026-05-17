@@ -21,7 +21,7 @@ function createMessage(userId = "u1"): UnifiedMessage {
 
 test("MessageRouter does not enforce a second global auth gate", async () => {
   const sessionManager = new SessionManager();
-  const router = new MessageRouter(["u1"], sessionManager, {
+  const router = new MessageRouter(sessionManager, {
     async handleMessage() {
       return "ok";
     },
@@ -40,7 +40,7 @@ test("MessageRouter does not enforce a second global auth gate", async () => {
 test("MessageRouter forwards streaming callbacks", async () => {
   const sessionManager = new SessionManager();
   const events: string[] = [];
-  const router = new MessageRouter(["u1"], sessionManager, {
+  const router = new MessageRouter(sessionManager, {
     async handleMessage() {
       return "plain";
     },
@@ -75,7 +75,7 @@ test("MessageRouter forwards streaming callbacks", async () => {
 test("MessageRouter uses room-scoped Matrix DM sessions when requested", async () => {
   const sessionManager = new SessionManager();
   let capturedSessionId = "";
-  const router = new MessageRouter(["@u1:example.org"], sessionManager, {
+  const router = new MessageRouter(sessionManager, {
     async handleMessage(_message: UnifiedMessage, session: SessionData) {
       capturedSessionId = session.id;
       session.modelOverride = "alt-model";

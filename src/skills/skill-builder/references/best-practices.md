@@ -35,13 +35,13 @@ Good triggers:
 
 ## Updating Skills
 
-Use `update_skill(name, instructions)` to modify SKILL.md.
+Use `manage_skills(action="update", name=..., instructions=...)` to modify SKILL.md.
 
 For multi-file skills, use `read` to check current `references/` content, then `write` to update specific files.
 
 ## Deleting Skills
 
-`delete_skill(name)` removes the skill directory. Use this when a skill is obsolete or replaced.
+`manage_skills(action="delete", name=...)` removes the skill directory. Use this when a skill is obsolete or replaced.
 
 ## Versioning
 

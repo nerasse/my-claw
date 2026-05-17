@@ -28,6 +28,7 @@ describe("BrowserPool", () => {
       close: () => Promise.resolve(),
       contexts: () => [],
       newContext: () => Promise.resolve({}),
+      on: () => {},
     } as unknown as import("playwright-core").Browser;
 
     const { chromium } = await import("playwright-core");
@@ -73,6 +74,7 @@ describe("BrowserPool", () => {
       isConnected: () => true,
       close: () => Promise.resolve(),
       contexts: () => [],
+      on: () => {},
     } as unknown as import("playwright-core").Browser;
 
     const { chromium } = await import("playwright-core");

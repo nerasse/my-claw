@@ -41,7 +41,6 @@ function errorLogData(err: unknown): unknown {
 
 export class MessageRouter {
   constructor(
-    _whitelist: string[],
     private sessionManager: SessionManager,
     private agent: AgentBridge,
   ) {}

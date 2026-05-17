@@ -72,6 +72,7 @@ export class BrowserSubagent {
 
     let currentUrl = startUrl ?? "";
 
+    try {
     for (let step = 0; step < this.maxSteps; step++) {
       const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
@@ -160,6 +161,9 @@ export class BrowserSubagent {
       hint: "Reached maximum number of steps without completing the task.",
       current_url: currentUrl,
     };
+    } finally {
+      await this.service.closeAllPages().catch(() => undefined);
+    }
   }
 
   async cleanup(): Promise<void> {

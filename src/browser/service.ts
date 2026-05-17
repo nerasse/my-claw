@@ -119,6 +119,14 @@ export class BrowserService {
     await page.close();
   }
 
+  async closeAllPages(): Promise<void> {
+    if (!this.context) return;
+    const pages = this.context.pages();
+    for (const p of pages) {
+      await p.close().catch(() => undefined);
+    }
+  }
+
   async cleanup(): Promise<void> {
     await this.pool.disconnect();
     this.context = null;

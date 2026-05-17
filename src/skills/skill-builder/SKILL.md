@@ -77,7 +77,7 @@ The agent sees the resolved absolute path and can execute it directly.
 
 ## Creating a Skill
 
-Call `create_skill(name, description, instructions)` to write SKILL.md to `workspace/skills/`.
+Call `manage_skills(action="create", name=..., description=..., instructions=...)` to write SKILL.md to `workspace/skills/`.
 
 For multi-file skills, use `write` to create `references/` and `examples/` files after creating SKILL.md.
 

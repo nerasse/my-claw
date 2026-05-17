@@ -26,6 +26,11 @@ export class BrowserPool {
     this.connecting = true;
     try {
       this.browser = await chromium.connectOverCDP(this.cdpUrl);
+      this.browser.on("disconnected", () => {
+        this.pages.clear();
+        this.browser = null;
+        this.stopSweep();
+      });
       this.startSweep();
       return this.browser;
     } finally {
