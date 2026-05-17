@@ -1,10 +1,9 @@
-import { stat } from "node:fs/promises";
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveMaxIterations } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
-import type { SessionData, SessionMessage, TokenUsage } from "../sessions/store.ts";
+import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
-import { chatCompletion, chatCompletionStream, type ChatMessage, type ChatMessageContent } from "../llm/provider.ts";
+import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
@@ -14,8 +13,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
-import type { TranscriptionResult } from "../voice/types.ts";
-import { imageToBase64, extractVideoFrames } from "../media/index.ts";
+import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
@@ -56,39 +54,33 @@ function errorLogData(err: unknown): unknown {
 
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
-  private currentMessage?: UnifiedMessage;
-  private echoMessages: OutgoingMessage[] = [];
-  private responseAttachments: NonNullable<OutgoingMessage["attachments"]> = [];
-  private inboundHadAudio = false;
+  private preprocessor: MessagePreprocessor;
 
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
     private skillRegistry: SkillRegistry,
-    private voiceManager: VoiceManager,
-    private sttPipeline: SttPipeline,
-    private ttsPipeline: TtsPipeline,
+    private voiceManager?: VoiceManager,
+    private sttPipeline?: SttPipeline,
+    private ttsPipeline?: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
     private iterationBudget?: IterationBudget,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
+    this.preprocessor = new MessagePreprocessor(this.voiceManager!, this.sttPipeline!);
   }
 
   getEchoMessages(): OutgoingMessage[] {
-    const echoes = [...this.echoMessages];
-    this.echoMessages = [];
-    return echoes;
+    return this.preprocessor.consumeEchoMessages();
   }
 
   getResponseAttachments(): OutgoingMessage["attachments"] {
-    const attachments = [...this.responseAttachments];
-    this.responseAttachments = [];
-    return attachments;
+    return this.preprocessor.consumeResponseAttachments();
   }
 
   hadAudioInbound(): boolean {
-    return this.inboundHadAudio;
+    return this.preprocessor.inboundHadAudio;
   }
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
@@ -111,118 +103,8 @@ export class AgentBridge {
     return this.handle(message, session, onToken, onToolUse);
   }
 
-  private async preprocessAudio(message: UnifiedMessage): Promise<TranscriptionResult> {
-    const audioAttachments = message.attachments.filter((a) => a.type === "audio");
-    if (audioAttachments.length === 0) {
-      return { text: "" };
-    }
-
-    this.inboundHadAudio = true;
-    const att = audioAttachments[0]!;
-
-    // Media unavailable (encrypted, download failed, too large)
-    if (!att.path) {
-      const isEncrypted = att.summaryText?.includes("unavailable") ?? false;
-      const reason = isEncrypted
-        ? "This media is encrypted (E2EE) and inaccessible. Check my device in the room or send an unencrypted message."
-        : "Media not downloaded (unavailable or too large).";
-
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: [unavailable — ${reason}]`;
-
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this.echoMessages.push({
-          text: `[Warning] ${reason}`,
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
-      }
-
-      return { text: "", error: reason };
-    }
-
-    try {
-      const fileStat = await stat(att.path);
-      void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
-
-      const result = await this.sttPipeline.transcribe(att.path);
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: "${result.text}"`;
-
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this.echoMessages.push({
-          text: this.voiceManager.formatEcho(result.text),
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
-      }
-
-      return { text: result.text };
-    } catch (err) {
-      const errorMsg = String(err);
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: [Transcription failed: ${errorMsg}]`;
-
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this.echoMessages.push({
-          text: `[Warning] STT failed: ${errorMsg}`,
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
-      }
-
-      return { text: "", error: errorMsg };
-    }
-  }
-
-  private async preprocessVideo(message: UnifiedMessage): Promise<void> {
-    const videoAttachments = message.attachments.filter((a) => a.type === "video" && a.path);
-    if (videoAttachments.length === 0) return;
-
-    for (const att of videoAttachments) {
-      try {
-        const frames = await extractVideoFrames(att.path!, {
-          fps: 1 / 3,
-          maxFrames: 20,
-          maxWidth: 1920,
-        });
-
-        for (const framePath of frames) {
-          message.attachments.push({
-            type: "image",
-            path: framePath,
-            mimeType: "image/jpeg",
-          });
-        }
-
-        const existingText = message.text ? message.text.trim() : "";
-        const prefix = existingText ? `\n\n` : "";
-        message.text = `${existingText}${prefix}[Video]: "${att.filename ?? "video"}" (${frames.length} frames extracted)`;
-      } catch (err) {
-        const errorMsg = String(err);
-        const existingText = message.text ? message.text.trim() : "";
-        const prefix = existingText ? `\n\n` : "";
-        message.text = `${existingText}${prefix}[Video]: [Frame extraction failed: ${errorMsg}]`;
-      }
-    }
-
-    // Remove original video attachments — frames now handle the visual content
-    message.attachments = message.attachments.filter((a) => a.type !== "video");
-  }
-
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
-    if (this.currentMessage?.id === message.id) return;
-    this.currentMessage = message;
-    this.echoMessages = [];
-    this.inboundHadAudio = false;
-    await this.preprocessAudio(message);
-    await this.preprocessVideo(message);
+    return this.preprocessor.preprocessMessage(message);
   }
 
   private async handle(
@@ -231,14 +113,7 @@ export class AgentBridge {
     onToken?: (token: string) => Promise<void>,
     onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
   ): Promise<string> {
-    if (this.currentMessage?.id !== message.id) {
-      this.currentMessage = message;
-      this.echoMessages = [];
-      this.responseAttachments = [];
-      this.inboundHadAudio = false;
-      await this.preprocessAudio(message);
-      await this.preprocessVideo(message);
-    }
+    await this.preprocessor.preprocessForHandle(message);
 
     const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
     const llmConfig = resolveLlmConfig(this.config.llm, session.modelOverride);
@@ -268,7 +143,7 @@ export class AgentBridge {
         skills: this.skillRegistry.list(),
       });
 
-      const userContent = this.buildUserContent(message);
+      const userContent = this.preprocessor.buildUserContent(message);
       const now = new Date().toISOString();
       session.messages.push({ role: "user", content: userContent, timestamp: now });
 
@@ -284,7 +159,7 @@ export class AgentBridge {
         if (chatMessages[lastIdx]?.role === "user") {
           chatMessages[lastIdx] = {
             role: "user",
-            content: await this.buildImageContent(message),
+            content: await this.preprocessor.buildImageContent(message),
           };
         }
       }
@@ -512,58 +387,6 @@ export class AgentBridge {
     return finalText;
   }
 
-  private buildUserContent(message: UnifiedMessage): string {
-    const parts: string[] = [];
-
-    if (message.replyToText) {
-      const sender = message.replyToSender ? ` from ${message.replyToSender}` : "";
-      parts.push(`[Reply${sender}]\n${message.replyToText}`);
-    }
-
-    if (message.threadRootText) {
-      parts.push(`[Thread Root]\n${message.threadRootText}`);
-    }
-
-    if (message.roomContext) {
-      parts.push(message.roomContext);
-    }
-
-    let content = message.text;
-    // Filter out audio attachments that were already transcribed —
-    // the transcript is in message.text, raw audio binary would only waste tokens
-    const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
-    if (visibleAttachments.length > 0) {
-      const lines = visibleAttachments.map((a) => {
-        const source = a.path ?? a.url ?? "unknown";
-        const details = [
-          a.mimeType,
-          typeof a.sizeBytes === "number" ? `${a.sizeBytes} bytes` : undefined,
-          a.filename,
-          typeof a.width === "number" && typeof a.height === "number" ? `${a.width}x${a.height}` : undefined,
-          typeof a.durationMs === "number" ? `${a.durationMs} ms` : undefined,
-        ].filter(Boolean);
-        return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
-      });
-      content += `\n\n[Attachments]\n${lines.join("\n")}`;
-    }
-
-    parts.push(content);
-    return parts.filter((part) => part.trim()).join("\n\n");
-  }
-
-  private async buildImageContent(message: UnifiedMessage): Promise<ChatMessageContent[]> {
-    const contents: ChatMessageContent[] = [{ type: "text", text: message.text }];
-
-    for (const att of message.attachments) {
-      if (att.type === "image" && att.path) {
-        const { dataUrl } = await imageToBase64(att.path);
-        contents.push({ type: "image_url", image_url: { url: dataUrl } });
-      }
-    }
-
-    return contents;
-  }
-
   private async executeTool(params: {
     name: string;
     args: Record<string, unknown>;
@@ -606,13 +429,13 @@ export class AgentBridge {
       const enrichedArgs = {
         ...params.args,
         __depth: this.depth,
-        __message: this.currentMessage,
+        __message: params.message,
         __workspaceDir: this.workspaceDir,
       };
       const result = await tool.execute(enrichedArgs);
       if (result.attachments?.length) {
         for (const att of result.attachments) {
-          this.responseAttachments.push(att);
+          this.preprocessor.addResponseAttachment(att);
         }
       }
       if (result.success) {

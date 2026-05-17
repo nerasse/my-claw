@@ -60,7 +60,7 @@ Single JSON file. jq-compatible. Loaded at boot.
   "llm": {
     "provider": "fireworks",
     "baseUrl": "https://api.fireworks.ai/inference/v1",
-    "model": "accounts/fireworks/models/kimi-k2p5-turbo"
+    "model": "accounts/fireworks/models/kimi-k2p6-turbo"
   }
 }
 ```
@@ -192,14 +192,140 @@ sqlite3 ~/.my-claw/analytics.db "SELECT model, sum(total_tokens), count(*) FROM 
 sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM api_calls GROUP BY caller"
 ```
 
-## Other Sections
+## Whitelist & Blacklist
 
-- `whitelist`: array of user IDs who can interact with the agent
-- `blacklist`: array of tool names requiring approval (e.g. `["bash", "write"]`)
-- `channels.telegram`: Telegram bot configuration
-- `channels.matrix`: Matrix bot configuration
-- `voice`: STT/TTS configuration
-- `webSearch`: SearXNG search configuration
-- `browser`: Browser automation configuration
+```json
+{
+  "whitelist": ["123456789", "@user:matrix.org"],
+  "blacklist": ["bash", "write"]
+}
+```
 
-See `docs/architecture.md` for full architecture details.
+- `whitelist` — User IDs allowed to interact. Telegram: numeric IDs. Matrix: `@user:server` format (auto-normalized at boot).
+- `blacklist` — Tool names requiring approval before execution. `bash` is always per-invocation (never session-cached).
+
+## Channels
+
+### Telegram
+
+```json
+"channels": {
+  "telegram": {
+    "enabled": true,
+    "token": "BOT_TOKEN",
+    "mode": "polling",
+    "dm": { "enabled": true, "policy": "allowlist", "allowFrom": ["123"] },
+    "groupPolicy": "allowlist",
+    "groupAllowFrom": ["123"],
+    "groups": { "-100123": { "enabled": true, "requireMention": true } },
+    "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
+    "reactions": { "enabled": true },
+    "threadReplies": "inbound",
+    "replyToMode": "first",
+    "historyLimit": 10,
+    "errorPolicy": "once"
+  }
+}
+```
+
+Key fields:
+- `mode` — `"polling"` or `"webhook"`. Webhook requires `webhook.url`, `webhook.secret`, `webhook.port`.
+- `dm.policy` — `"open"` (anyone), `"allowlist"` (only `dm.allowFrom`), `"disabled"`.
+- `groupPolicy` — same as dm.policy but for groups.
+- `groups` — per-group config keyed by chat ID. `"*"` matches all groups.
+- `requireMention` — group messages only routed when bot is mentioned.
+- `streaming` — live token streaming via message edits.
+- `reactions` — emoji feedback on messages (received/thinking/tool_use/done/error).
+- `threadReplies` — `"off"`, `"inbound"` (reply in thread if user is in thread), `"always"`.
+- `replyToMode` — `"off"`, `"first"` (reply to first chunk only), `"all"`.
+- `errorPolicy` — `"always"` (report every error), `"once"` (one per session), `"silent"`.
+
+### Matrix
+
+```json
+"channels": {
+  "matrix": {
+    "enabled": true,
+    "homeserver": "https://matrix.org",
+    "accessToken": "syt_...",
+    "userId": "@bot:matrix.org",
+    "deviceId": "ABCDEF",
+    "encryption": true,
+    "dm": { "enabled": true, "policy": "allowlist", "allowFrom": ["@user:matrix.org"] },
+    "groupPolicy": "allowlist",
+    "groups": { "!room:matrix.org": { "enabled": true, "requireMention": true } },
+    "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
+    "reactions": { "enabled": true },
+    "contextVisibility": "all",
+    "errorPolicy": "once"
+  }
+}
+```
+
+Additional Matrix fields:
+- `encryption` — enable E2EE (requires `userId` + `deviceId`).
+- `contextVisibility` — `"all"` (include all room context), `"allowlist"` (only allowed senders), `"allowlist_quote"` (allowlist + quoted replies from anyone).
+- `displayName` — override bot display name for mention detection.
+- `autoJoin` — `"off"`, `"always"`, or use `autoJoinAllowlist`.
+
+## Voice
+
+```json
+"voice": {
+  "mode": "auto",
+  "stt": { "mode": "cloud", "echoTranscript": true, "language": "fr" },
+  "tts": { "mode": "cloud", "voice": "fr-FR-RemyMultilingualNeural" }
+}
+```
+
+- `mode` — global default: `"cloud"`, `"local"`, `"auto"` (cloud if credentials available, local otherwise).
+- `stt.mode` — override for STT. Cloud uses Groq Whisper, local uses faster-whisper at `FASTER_WHISPER_ENDPOINT`.
+- `stt.echoTranscript` — send transcription as reply before routing (default: true).
+- `stt.language` — Whisper language code (default: `"fr"`).
+- `tts.mode` — override for TTS. Cloud uses Edge TTS, local uses Piper.
+- `tts.voice` — voice ID (Edge TTS voice name or Piper model name).
+
+## Web Search
+
+```json
+"webSearch": {
+  "baseUrl": "https://search.example.com",
+  "token": "",
+  "language": "fr"
+}
+```
+
+- `baseUrl` — SearXNG instance URL. Required to enable the `web_search` tool.
+- `token` — optional Bearer token for authenticated instances.
+- `language` — default search language (default: `"fr"`).
+
+## Browser
+
+```json
+"browser": {
+  "enabled": false,
+  "cdpUrl": "http://127.0.0.1:9222",
+  "viewport": { "width": 1920, "height": 1080 },
+  "maxSteps": 30,
+  "idleTimeoutMs": 300000
+}
+```
+
+- `enabled` — enable the `delegate_browser_task` tool (default: true).
+- `cdpUrl` — Chrome DevTools Protocol endpoint.
+- `viewport` — browser viewport size.
+- `maxSteps` — max LLM iterations for the browser sub-agent (default: 30).
+- `idleTimeoutMs` — close idle pages after this duration (default: 300000ms / 5min).
+
+## Agents
+
+```json
+"agents": {
+  "orchestrator": { "maxIterations": 90 },
+  "general": { "maxIterations": 50, "llm": { "defaultModel": "llama-3.3-70b" } },
+  "research": { "maxIterations": 50 }
+}
+```
+
+- `maxIterations` — max tool-calling loops before forcing a summary response.
+- `llm` — optional per-agent LLM config override (inherits providers from global `llm`).

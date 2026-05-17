@@ -61,13 +61,8 @@ async function main() {
   const ttsPipeline = new TtsPipeline(voiceManager);
 
   const toolRegistry = new ToolRegistry();
-  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, memoryTool]) {
-    toolRegistry.register(tool);
-  }
-
-  toolRegistry.register(createSttTool(sttPipeline));
-  toolRegistry.register(createTtsTool(ttsPipeline));
-  toolRegistry.register(createVoiceModeTool(voiceManager));
+  registerCoreTools(toolRegistry);
+  registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
   if (config.webSearch?.baseUrl) {
     toolRegistry.register(createWebSearchTool(config.webSearch));
   }
@@ -93,15 +88,8 @@ async function main() {
   const subAgentRegistry = new SubAgentRegistry();
   await subAgentRegistry.load();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
-  toolRegistry.register(createSpawnTool(subAgentRunner, subAgentRegistry));
-  toolRegistry.register(createSendTool(subAgentRunner, subAgentRegistry));
-  toolRegistry.register(createListAgentsTool(subAgentRunner, subAgentRegistry));
-  toolRegistry.register(createKillAgentTool(subAgentRunner));
-  toolRegistry.register(createResetAgentTool(subAgentRunner));
-
-  toolRegistry.register(createListSkillsTool(skillRegistry));
-  toolRegistry.register(createReadSkillTool(skillRegistry));
-  toolRegistry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
+  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry);
+  registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
   const orchestratorBudget = new IterationBudget(resolveMaxIterations(config, "orchestrator"));
@@ -308,6 +296,37 @@ async function cleanupTtsTempFiles(attachments?: Array<{ path?: string }>): Prom
       await unlink(att.path).catch(() => {});
     }
   }
+}
+
+function registerCoreTools(registry: ToolRegistry): void {
+  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, memoryTool]) {
+    registry.register(tool);
+  }
+}
+
+function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPipeline, voice: VoiceManager): void {
+  registry.register(createSttTool(stt));
+  registry.register(createTtsTool(tts));
+  registry.register(createVoiceModeTool(voice));
+}
+
+function registerSubAgentTools(
+  registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry,
+): void {
+  registry.register(createSpawnTool(runner, subRegistry));
+  registry.register(createSendTool(runner, subRegistry));
+  registry.register(createListAgentsTool(runner, subRegistry));
+  registry.register(createKillAgentTool(runner));
+  registry.register(createResetAgentTool(runner));
+}
+
+function registerSkillTools(
+  registry: ToolRegistry, skillRegistry: SkillRegistry,
+  builtinDir: string, customDir: string, workspaceSkillsDir: string,
+): void {
+  registry.register(createListSkillsTool(skillRegistry));
+  registry.register(createReadSkillTool(skillRegistry));
+  registry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
 }
 
 main().catch((err) => {

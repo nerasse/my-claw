@@ -10,7 +10,7 @@ const SCROLL_AMOUNT = 500;
 export class BrowserService {
   private context: BrowserContext | null = null;
 
-  constructor(private pool: BrowserPool) {}
+  constructor(private pool: BrowserPool, private viewport = DEFAULT_VIEWPORT) {}
 
   async navigate(url: string): Promise<BrowserResult> {
     const context = await this.ensureContext();
@@ -126,7 +126,7 @@ export class BrowserService {
 
   private async ensureContext(): Promise<BrowserContext> {
     if (!this.context) {
-      this.context = await this.pool.newContext(DEFAULT_VIEWPORT);
+      this.context = await this.pool.newContext(this.viewport);
     }
     return this.context;
   }

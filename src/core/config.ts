@@ -122,6 +122,7 @@ export interface VoiceTtsConfig extends VoiceFeatureConfig {
 export interface VoiceSttConfig extends VoiceFeatureConfig {
   echoTranscript?: boolean;
   echoFormat?: string;
+  language?: string;
 }
 
 export interface VoiceConfig {

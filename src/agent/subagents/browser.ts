@@ -27,7 +27,7 @@ export interface BrowserSubagentResult {
   attachments?: Attachment[];
 }
 
-const MAX_STEPS = 30;
+const DEFAULT_MAX_STEPS = 30;
 
 const HUMAN_BLOCKERS = [
   "captcha", "recaptcha", "verify", "human verification",
@@ -44,13 +44,15 @@ export class BrowserSubagent {
   private pool: BrowserPool;
   private service: BrowserService;
   private toolRegistry: ToolRegistry;
+  private maxSteps: number;
 
   constructor(
     private config: MyClawConfig,
     private cdpUrl: string,
   ) {
-    this.pool = new BrowserPool(cdpUrl);
-    this.service = new BrowserService(this.pool);
+    this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
+    this.pool = new BrowserPool(cdpUrl, config.browser?.idleTimeoutMs);
+    this.service = new BrowserService(this.pool, config.browser?.viewport);
     this.toolRegistry = new ToolRegistry();
     this.toolRegistry.register(createBrowserNavigateTool(this.service));
     this.toolRegistry.register(createBrowserSnapshotTool(this.service));
@@ -70,7 +72,7 @@ export class BrowserSubagent {
 
     let currentUrl = startUrl ?? "";
 
-    for (let step = 0; step < MAX_STEPS; step++) {
+    for (let step = 0; step < this.maxSteps; step++) {
       const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
       let response: LlmResponse;

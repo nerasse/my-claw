@@ -58,7 +58,8 @@
     "mode": "auto",
     "stt": {
       "mode": "cloud",
-      "echoTranscript": true
+      "echoTranscript": true,
+      "language": "fr"
     },
     "tts": {
       "mode": "cloud",

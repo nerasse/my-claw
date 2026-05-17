@@ -53,7 +53,8 @@ export class SttPipeline {
     const file = new File([buffer], uploadName, { type: "audio/ogg" });
     formData.append("file", file);
     formData.append("model", "whisper-large-v3");
-    formData.append("language", "fr");
+    const language = this.voiceManager.getVoiceConfig()?.stt?.language ?? "fr";
+    formData.append("language", language);
 
     const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
