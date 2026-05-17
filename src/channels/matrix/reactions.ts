@@ -10,10 +10,10 @@ export interface MatrixReactionConfig {
 
 const DEFAULT_EMOJIS: Record<MatrixReactionState, string> = {
   received: "👀",
-  thinking: "🧠",
-  tool_use: "⚙️",
-  done: "✅",
-  error: "⚠️",
+  thinking: "🤔",
+  tool_use: "🔥",
+  done: "👍",
+  error: "😨",
 };
 
 function buildReactionContent(eventId: string, emoji: string): Record<string, unknown> {

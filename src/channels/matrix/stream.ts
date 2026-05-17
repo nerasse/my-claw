@@ -85,10 +85,31 @@ export class MatrixMessageStreamer {
     return this.enqueue(() => this.finishInternal(finalText));
   }
 
-  async abort(): Promise<void> {
+  async abort(errorText?: string): Promise<void> {
     return this.enqueue(async () => {
       this.finished = true;
       this.clearTimer();
+      const text = errorText?.trim();
+      if (text && this.sentEventId) {
+        const formatted = buildMatrixFormattedText(text);
+        try {
+          await this.sendMessage(
+            this.editContent(this.sentEventId, {
+              body: formatted.body,
+              formatted_body: formatted.formatted_body,
+              mentions: formatted.mentions as Record<string, unknown> | undefined,
+            }, true),
+            "stream-abort-edit",
+          );
+          return;
+        } catch {
+          // fall through to redact
+        }
+      }
+      if (text && !this.sentEventId) {
+        await this.deliverFinalNormally(text);
+        return;
+      }
       if (this.sentEventId) {
         await this.redactEvent(this.sentEventId);
       }

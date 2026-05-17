@@ -147,7 +147,8 @@ async function main() {
             });
             await streamer.finish();
           } catch (err) {
-            await streamer.abort();
+            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+            await streamer.abort(brief);
             throw err;
           }
         } else {
@@ -224,7 +225,8 @@ async function main() {
             });
             await streamer.finish();
           } catch (err) {
-            await streamer.abort();
+            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+            await streamer.abort(brief);
             throw err;
           }
         } else {

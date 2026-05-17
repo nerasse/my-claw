@@ -459,8 +459,8 @@ export class AgentBridge {
       "Please provide a final response summarizing what you've found and accomplished so far, " +
       "without calling any more tools.";
 
-    chatMessages.push({ role: "user", content: summaryPrompt });
-    session.messages.push({ role: "user", content: summaryPrompt, timestamp: new Date().toISOString() });
+    chatMessages.push({ role: "system", content: summaryPrompt });
+    session.messages.push({ role: "user", content: `[system: ${summaryPrompt}]`, timestamp: new Date().toISOString() });
 
     const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context);
     if (trimmed !== chatMessages) {

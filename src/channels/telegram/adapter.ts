@@ -460,7 +460,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const userId = String(ctx.from?.id);
     if (!this.whitelist.has(userId)) {
-      await ctx.answerCallbackQuery({ text: "Not authorized" });
+      await ctx.answerCallbackQuery({ text: "Not authorized. Contact the bot owner if you think this is an error." });
       this.releaseClaimedUpdate(ctx.update.update_id);
       return;
     }
@@ -504,7 +504,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const chatId = String(message.chat.id);
         await telegramLog("error", "telegram callback failed", { chatId, data, error: String(err) });
         await this.reportProcessingError(chatId, String(message.message_id), err);
-        await ctx.answerCallbackQuery({ text: "Error" }).catch((e) => { telegramLog("debug", "answer callback query failed", { error: String(e) }).catch(() => {}); });
+        await ctx.answerCallbackQuery({ text: "Something went wrong. Try again or use /help." }).catch((e) => { telegramLog("debug", "answer callback query failed", { error: String(e) }).catch(() => {}); });
         this.releaseClaimedUpdate(ctx.update.update_id);
       }
       return;
@@ -515,7 +515,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const pending = this.pendingConfirmations.get(id);
 
     if (!pending) {
-      await ctx.answerCallbackQuery({ text: "Expired" });
+      await ctx.answerCallbackQuery({ text: "This action has expired. Please try again." });
       await this.commitProcessedUpdate(ctx.update.update_id);
       return;
     }
@@ -612,7 +612,7 @@ export class TelegramAdapter implements ChannelAdapter {
       await telegramLog("error", "telegram message handling failed", { chatId, error: String(err) });
       await this.reportProcessingError(chatId, String(messageId), err);
     } finally {
-      this.stopTyping(chatId);
+      this.stopTyping(chatId, msg.message_thread_id);
     }
   }
 
@@ -1001,7 +1001,8 @@ export class TelegramAdapter implements ChannelAdapter {
   // ── Typing indicator (ref-counted) ──────────────────────────
 
   private startTyping(chatId: string, threadId?: number): void {
-    const existing = this.typingRefs.get(chatId);
+    const key = threadId ? `${chatId}:${threadId}` : chatId;
+    const existing = this.typingRefs.get(key);
     if (existing) {
       existing.count++;
       return;
@@ -1013,16 +1014,17 @@ export class TelegramAdapter implements ChannelAdapter {
     };
     send();
     const interval = setInterval(send, TYPING_INTERVAL_MS);
-    this.typingRefs.set(chatId, { interval, count: 1 });
+    this.typingRefs.set(key, { interval, count: 1 });
   }
 
-  private stopTyping(chatId: string): void {
-    const ref = this.typingRefs.get(chatId);
+  private stopTyping(chatId: string, threadId?: number): void {
+    const key = threadId ? `${chatId}:${threadId}` : chatId;
+    const ref = this.typingRefs.get(key);
     if (!ref) return;
     ref.count--;
     if (ref.count <= 0) {
       clearInterval(ref.interval);
-      this.typingRefs.delete(chatId);
+      this.typingRefs.delete(key);
     }
   }
 
