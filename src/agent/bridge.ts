@@ -378,9 +378,7 @@ export class AgentBridge {
           timestamp: new Date().toISOString(),
         });
 
-        const toolResults: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }> = [];
-
-        for (const tc of response.toolCalls) {
+        const executeOne = async (tc: typeof response.toolCalls[number]) => {
           const toolStartedAt = Date.now();
           void log("info", "tool execution started", {
             ...runLogData(message, session),
@@ -398,10 +396,8 @@ export class AgentBridge {
             session,
             toolCallId: tc.id,
           });
-          toolExecutions += 1;
 
           const durationMs = Date.now() - toolStartedAt;
-          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
 
           void log(result.success ? "info" : "warn", "tool execution finished", {
             ...runLogData(message, session),
@@ -414,6 +410,17 @@ export class AgentBridge {
             durationMs,
           });
 
+          return { tc, result, durationMs };
+        };
+
+        const settled = response.toolCalls.length > 1
+          ? await Promise.all(response.toolCalls.map(executeOne))
+          : [await executeOne(response.toolCalls[0]!)];
+
+        const toolResults: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }> = [];
+        for (const { tc, result, durationMs } of settled) {
+          toolExecutions += 1;
+          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: result.content });
           session.messages.push({ role: "tool", toolCallId: tc.id, content: result.content, timestamp: new Date().toISOString() });
         }
