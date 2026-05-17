@@ -3,8 +3,10 @@ import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./for
 import { withMatrixRetry } from "./retry.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
 import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
+import { matrixLog } from "../../utils/logger.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
+const DEFAULT_CHUNK_LIMIT = 4000;
 
 export interface MatrixStreamOptions {
   roomId: string;
@@ -114,7 +116,7 @@ export class MatrixMessageStreamer {
   }
 
   private chunkLimit(): number {
-    return this.opts.chunkLimit ?? 4000;
+    return this.opts.chunkLimit ?? DEFAULT_CHUNK_LIMIT;
   }
 
   private clearTimer(): void {
@@ -154,7 +156,7 @@ export class MatrixMessageStreamer {
         await this.client.redactEvent(this.opts.roomId, eventId);
       },
       ...(this.opts.retry || {}),
-    }).catch(() => undefined);
+    }).catch((e) => { matrixLog("debug", "redact stream event failed", { error: String(e) }).catch(() => {}); });
   }
 
   private previewContent(text: string): Record<string, unknown> {

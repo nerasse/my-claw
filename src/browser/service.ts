@@ -3,6 +3,10 @@ import { BrowserPool } from "./pool.ts";
 import { injectRefLabels, removeRefLabels } from "./labels.ts";
 import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
 
+const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
+const SCREENSHOT_DIR = "/tmp";
+const SCROLL_AMOUNT = 500;
+
 export class BrowserService {
   private context: BrowserContext | null = null;
 
@@ -25,7 +29,8 @@ export class BrowserService {
   }
 
   async snapshot(page: Page): Promise<BrowserSnapshot> {
-    const raw = await (page.locator("body").ariaSnapshot as any)({ ref: true });
+    // @ts-expect-error ariaSnapshot is available in recent Playwright but missing from typedefs
+    const raw = await page.locator("body").ariaSnapshot({ ref: true });
     const refs = extractRefs(raw);
     return { raw, refs };
   }
@@ -44,14 +49,14 @@ export class BrowserService {
 
   async screenshot(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
     this.pool.touchPage(page);
-    const path = `/tmp/browser-${Date.now()}.png`;
+    const path = `${SCREENSHOT_DIR}/browser-${Date.now()}.png`;
     await page.screenshot({ path, fullPage });
     return { type: "image", path, mimeType: "image/png" };
   }
 
   async screenshotWithLabels(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
     this.pool.touchPage(page);
-    const path = `/tmp/browser-${Date.now()}.png`;
+    const path = `${SCREENSHOT_DIR}/browser-${Date.now()}.png`;
     await injectRefLabels(page);
     await page.screenshot({ path, fullPage });
     await removeRefLabels(page);
@@ -60,8 +65,8 @@ export class BrowserService {
 
   async scroll(page: Page, direction: "up" | "down"): Promise<void> {
     this.pool.touchPage(page);
-    const amount = direction === "up" ? -500 : 500;
-    await page.evaluate((amt: number) => { (globalThis as any).scrollBy(0, amt); }, amount);
+    const amount = direction === "up" ? -SCROLL_AMOUNT : SCROLL_AMOUNT;
+    await page.evaluate((amt: number) => { window.scrollBy(0, amt); }, amount);
   }
 
   async back(page: Page): Promise<void> {
@@ -121,7 +126,7 @@ export class BrowserService {
 
   private async ensureContext(): Promise<BrowserContext> {
     if (!this.context) {
-      this.context = await this.pool.newContext({ width: 1920, height: 1080 });
+      this.context = await this.pool.newContext(DEFAULT_VIEWPORT);
     }
     return this.context;
   }

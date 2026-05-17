@@ -14,6 +14,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function* readStream(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function isTransientError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === "AbortError") return true;
   const code = (err as { code?: string })?.code;
@@ -318,7 +331,7 @@ export async function chatCompletionStream(
         }
       };
 
-      for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
+      for await (const chunk of readStream(response.body)) {
         buffer += decoder.decode(chunk, { stream: true });
 
         let newlineIndex = buffer.indexOf("\n");

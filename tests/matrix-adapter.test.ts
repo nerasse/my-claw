@@ -333,6 +333,15 @@ function createEvent(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+class TestMatrixAdapter extends MatrixAdapter {
+  protected override bufferedIngressDelayMs(): number {
+    return 25;
+  }
+  protected override bufferedIngressDelayForMessage(): number {
+    return 25;
+  }
+}
+
 test("MatrixAdapter send emits formatted Matrix message", async () => {
   const { runtime, calls } = createRuntimeMock();
   const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
@@ -547,11 +556,6 @@ test("MatrixAdapter marks DM messages with configured per-room session scope", a
 });
 
 test("MatrixAdapter keeps short DM split turns immediate in per-user scope", async () => {
-  class TestMatrixAdapter extends MatrixAdapter {
-    protected override bufferedIngressDelayMs(): number {
-      return 25;
-    }
-  }
   const { runtime } = createRuntimeMock();
   const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
   const received: string[] = [];
@@ -575,11 +579,6 @@ test("MatrixAdapter keeps short DM split turns immediate in per-user scope", asy
 });
 
 test("MatrixAdapter does not coalesce DM split turns across per-room sessions", async () => {
-  class TestMatrixAdapter extends MatrixAdapter {
-    protected override bufferedIngressDelayMs(): number {
-      return 25;
-    }
-  }
   const { runtime } = createRuntimeMock();
   const adapter = new TestMatrixAdapter(
     createConfig({ dm: { sessionScope: "per-room", allowFrom: ["@u1:example.org"] } }),
@@ -1172,7 +1171,7 @@ test("MatrixAdapter preserves media-only messages as attachment summaries", asyn
 
 test("MatrixAdapter coalesces quick multi-event attachment bursts into one logical inbound message", async () => {
   const { runtime } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1210,7 +1209,7 @@ test("MatrixAdapter coalesces quick multi-event attachment bursts into one logic
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 1700));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 2);
@@ -1219,7 +1218,7 @@ test("MatrixAdapter coalesces quick multi-event attachment bursts into one logic
 
 test("MatrixAdapter rewrites trailing text bursts into media captions", async () => {
   const { runtime } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1251,7 +1250,7 @@ test("MatrixAdapter rewrites trailing text bursts into media captions", async ()
       content: { msgtype: "m.text", body: "look at this" },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 1700));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 1);
@@ -1260,7 +1259,7 @@ test("MatrixAdapter rewrites trailing text bursts into media captions", async ()
 
 test("MatrixAdapter rewrites short leading text bursts into media captions", async () => {
   const { runtime } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1288,11 +1287,11 @@ test("MatrixAdapter rewrites short leading text bursts into media captions", asy
         body: "photo.jpg",
         filename: "photo.jpg",
         info: { mimetype: "image/jpeg", size: 42 },
-        url: "mxc://example.org/photo-leading-caption",
+      url: "mxc://example.org/photo-leading-caption",
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 1);
@@ -1374,7 +1373,7 @@ test("MatrixAdapter keeps real media captions but strips filename-only bodies", 
 
 test("MatrixAdapter coalesces fragmented group text bursts into one logical inbound message", async () => {
   const { runtime } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1400,17 +1399,12 @@ test("MatrixAdapter coalesces fragmented group text bursts into one logical inbo
       content: { msgtype: "m.text", body: "b".repeat(180) },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 1700));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.deepEqual(received, [`${"a".repeat(180)}\n${"b".repeat(180)}`]);
 });
 
 test("MatrixAdapter coalesces threaded split turns separately from the room root", async () => {
-  class TestMatrixAdapter extends MatrixAdapter {
-    protected override bufferedIngressDelayMs(): number {
-      return 25;
-    }
-  }
   const { runtime } = createRuntimeMock();
   const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } }, threadReplies: "inbound" }),
@@ -1576,7 +1570,7 @@ test("MatrixAdapter strips Matrix reply fallback from normalized text", async ()
 
 test("MatrixAdapter does not coalesce fragmented group bursts across different reply targets", async () => {
   const { runtime } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1604,7 +1598,7 @@ test("MatrixAdapter does not coalesce fragmented group bursts across different r
       relation: { "m.in_reply_to": { event_id: "$reply-b" } },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 1700));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.equal(received.length, 2);
   assert.equal(received[0]?.replyToId, "$reply-a");
@@ -1613,7 +1607,7 @@ test("MatrixAdapter does not coalesce fragmented group bursts across different r
 
 test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flow", async () => {
   const { runtime, calls } = createRuntimeMock();
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set(["@u1:example.org"]),
     runtime as never,
@@ -1665,9 +1659,7 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
       event: createEvent({ id: "$stream-flow", content: { msgtype: "m.text", body: "hi there" } }),
     });
 
-    // Wait for the short-text ingress buffer (250ms) to flush so the streamer
-    // has time to send preview + final messages before we assert.
-    await new Promise((r) => setTimeout(r, 350));
+    await new Promise((r) => setTimeout(r, 80));
 
     const sendCalls = calls.filter((call) => call.method === "sendMessage");
     assert.ok(sendCalls.length >= 2);
@@ -2390,7 +2382,7 @@ test("MatrixAdapter normalizes poll responses into text", async () => {
     ],
   });
 
-  const adapter = new MatrixAdapter(
+  const adapter = new TestMatrixAdapter(
     createConfig({ groups: { "!room:test": { requireMention: false } } }),
     new Set<string>(),
     runtime as never,
@@ -2413,7 +2405,7 @@ test("MatrixAdapter normalizes poll responses into text", async () => {
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  await new Promise((resolve) => setTimeout(resolve, 80));
 
   assert.match(received[0] ?? "", /Lunch\?/);
   assert.match(received[0] ?? "", /Pizza \(1 vote\)/);

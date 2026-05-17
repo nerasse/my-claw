@@ -2,6 +2,7 @@ import { markdownToTelegramHtml, stripHtml } from "./format.ts";
 import { CHUNK_LIMIT, alignPlainTextChunks, splitHtmlChunks } from "./split.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
 import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
+import { telegramLog } from "../../utils/logger.ts";
 
 const MESSAGE_NOT_FOUND_RE = /message to edit not found|message can't be edited|MESSAGE_ID_INVALID/i;
 
@@ -186,7 +187,7 @@ export class MessageStreamer {
       for (let index = htmlChunks.length; index < this.messageIds.length; index++) {
         const messageId = this.messageIds[index];
         if (messageId === null || messageId === undefined) continue;
-        await this.transport.deleteMessage(this.opts.chatId, messageId).catch(() => {});
+        await this.transport.deleteMessage(this.opts.chatId, messageId).catch((e) => { telegramLog("debug", "delete overflow preview message failed", { error: String(e) }).catch(() => {}); });
       }
     }
   }
@@ -201,7 +202,7 @@ export class MessageStreamer {
     if (text) {
       const latestMessageId = [...this.messageIds].reverse().find((messageId) => messageId !== null && messageId !== undefined);
       if (latestMessageId !== undefined) {
-        await this.transport.editPlain(this.opts.chatId, latestMessageId, text).catch(() => {});
+        await this.transport.editPlain(this.opts.chatId, latestMessageId, text).catch((e) => { telegramLog("debug", "edit abort message failed", { error: String(e) }).catch(() => {}); });
         return;
       }
 
@@ -210,7 +211,7 @@ export class MessageStreamer {
             threadId: this.opts.threadId,
             replyToId: this.replyTargetForIndex(0),
           })
-          .catch(() => {});
+          .catch((e) => { telegramLog("debug", "send abort message failed", { error: String(e) }).catch(() => {}); });
       return;
     }
 
@@ -222,7 +223,7 @@ export class MessageStreamer {
 
     for (const messageId of this.messageIds) {
       if (messageId === null || messageId === undefined) continue;
-      await this.transport.deleteMessage(this.opts.chatId, messageId).catch(() => {});
+      await this.transport.deleteMessage(this.opts.chatId, messageId).catch((e) => { telegramLog("debug", "delete preview message failed", { error: String(e) }).catch(() => {}); });
     }
   }
 

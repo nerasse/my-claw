@@ -262,7 +262,7 @@ export async function editTextMessage(
 }
 
 export async function deleteMessage(bot: Bot, chatId: string, messageId: number): Promise<void> {
-  await bot.api.deleteMessage(chatId, messageId).catch(() => {});
+  await bot.api.deleteMessage(chatId, messageId).catch((e) => { telegramLog("debug", "delete message failed", { error: String(e) }).catch(() => {}); });
 }
 
 export async function sendMediaByPath(

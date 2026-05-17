@@ -151,7 +151,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
     
     executionOrder.push(content);
     callCount++;
-    await new Promise((r) => setTimeout(r, 30)); // simulate slow LLM
+    await new Promise((r) => setTimeout(r, 1));
     
     return new Response(
       JSON.stringify({ choices: [{ message: { content: `reply-${callCount}` } }] }),
@@ -200,7 +200,7 @@ test("SubAgentRunner queues three sends in order", async () => {
   let callCount = 0;
   const fetchMock = mockFetch(async () => {
     executionOrder.push(++callCount);
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 1));
     return new Response(
       JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
       { status: 200 },

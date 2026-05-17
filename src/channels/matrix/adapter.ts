@@ -904,7 +904,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
     try {
       await this.reactions.set(roomId, message.id, "thinking");
-      await this.runtime.sdk.sendReadReceipt(this.findRoomEvent(roomId, message.id) ?? null).catch(() => {});
+      await this.runtime.sdk.sendReadReceipt(this.findRoomEvent(roomId, message.id) ?? null).catch((e) => { matrixLog("debug", "send read receipt failed", { error: String(e) }).catch(() => {}); });
       await this.messageHandler(message);
       if (preparedRoomHistory) {
         this.roomHistory.consumeHistory(roomId, preparedRoomHistory);
@@ -1461,7 +1461,7 @@ export class MatrixAdapter implements ChannelAdapter {
     }
 
     const send = () => {
-      void this.runtime.sdk.sendTyping(roomId, true, TYPING_TIMEOUT_MS).catch(() => {});
+      void this.runtime.sdk.sendTyping(roomId, true, TYPING_TIMEOUT_MS).catch((e) => { matrixLog("debug", "send typing indicator failed", { error: String(e) }).catch(() => {}); });
     };
     send();
     const interval = setInterval(send, TYPING_REFRESH_MS);
@@ -1475,7 +1475,7 @@ export class MatrixAdapter implements ChannelAdapter {
     if (ref.count <= 0) {
       clearInterval(ref.interval);
       this.typingRefs.delete(roomId);
-      void this.runtime.sdk.sendTyping(roomId, false, 0).catch(() => {});
+      void this.runtime.sdk.sendTyping(roomId, false, 0).catch((e) => { matrixLog("debug", "stop typing indicator failed", { error: String(e) }).catch(() => {}); });
     }
   }
 

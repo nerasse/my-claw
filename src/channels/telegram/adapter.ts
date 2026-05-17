@@ -496,7 +496,7 @@ export class TelegramAdapter implements ChannelAdapter {
           params.reply_markup = buildKeyboard(response.buttons);
         }
         if (response.text) {
-          await ctx.editMessageText(response.text, params).catch(() => {});
+          await ctx.editMessageText(response.text, params).catch((e) => { telegramLog("debug", "edit callback message failed", { error: String(e) }).catch(() => {}); });
         }
         await ctx.answerCallbackQuery(response.answerText ? { text: response.answerText } : undefined);
         await this.commitProcessedUpdate(ctx.update.update_id);
@@ -504,7 +504,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const chatId = String(message.chat.id);
         await telegramLog("error", "telegram callback failed", { chatId, data, error: String(err) });
         await this.reportProcessingError(chatId, String(message.message_id), err);
-        await ctx.answerCallbackQuery({ text: "Error" }).catch(() => {});
+        await ctx.answerCallbackQuery({ text: "Error" }).catch((e) => { telegramLog("debug", "answer callback query failed", { error: String(e) }).catch(() => {}); });
         this.releaseClaimedUpdate(ctx.update.update_id);
       }
       return;
@@ -526,7 +526,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const original = ctx.callbackQuery!.message?.text ?? "";
     const label = accepted ? "Accepted" : "Denied";
-    await ctx.editMessageText(`${original}\n\n${label}`).catch(() => {});
+    await ctx.editMessageText(`${original}\n\n${label}`).catch((e) => { telegramLog("debug", "edit confirmation message failed", { error: String(e) }).catch(() => {}); });
     await ctx.answerCallbackQuery({ text: label });
     await this.commitProcessedUpdate(ctx.update.update_id);
   }
@@ -1009,7 +1009,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const send = () => {
       const params = threadParams(threadId);
-      this.bot.api.sendChatAction(chatId, "typing", params).catch(() => {});
+      this.bot.api.sendChatAction(chatId, "typing", params).catch((e) => { telegramLog("debug", "send typing indicator failed", { error: String(e) }).catch(() => {}); });
     };
     send();
     const interval = setInterval(send, TYPING_INTERVAL_MS);
