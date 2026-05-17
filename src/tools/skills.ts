@@ -1,7 +1,7 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { writeFile, mkdir, readFile, access, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { loadAllSkills } from "../skills/loader.ts";
 
@@ -63,16 +63,16 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
         return { success: false, output: `Skill "${name}" not found. Use list_skills() to see available skills.` };
       }
 
-      const { dirname } = await import("node:path");
       const skillDir = dirname(skill.path);
 
       let rawContent: string;
       if (!filePath) {
         rawContent = skill.content;
       } else {
-        const { readFile } = await import("node:fs/promises");
-        const { join } = await import("node:path");
-        const targetPath = join(skillDir, filePath);
+        const targetPath = resolve(skillDir, filePath);
+        if (!targetPath.startsWith(skillDir + "/") && targetPath !== skillDir) {
+          return { success: false, output: `Blocked: "${filePath}" escapes skill directory.` };
+        }
         try {
           rawContent = await readFile(targetPath, "utf-8");
         } catch (err) {

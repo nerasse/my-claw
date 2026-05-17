@@ -64,31 +64,49 @@ test("blacklisted tool, handler returns allow-once", async () => {
 });
 
 test("blacklisted tool, handler returns allow-session updates approvedTools", async () => {
-  const mgr = new ToolApprovalManager(["bash"], async () => "allow-session");
+  const mgr = new ToolApprovalManager(["write"], async () => "allow-session");
   const session = createSession();
   const decision = await mgr.decide({
     session,
-    request: createRequest("bash"),
+    request: createRequest("write"),
   });
   assert.equal(decision, "allow-session");
   assert.ok(session.approvedTools);
-  assert.ok(session.approvedTools.includes("bash"));
+  assert.ok(session.approvedTools.includes("write"));
 });
 
 test("already-approved tool returns allow-session without calling handler", async () => {
   let called = false;
-  const mgr = new ToolApprovalManager(["bash"], async () => {
+  const mgr = new ToolApprovalManager(["write"], async () => {
     called = true;
     return "deny";
   });
   const session = createSession();
-  session.approvedTools = ["bash"];
+  session.approvedTools = ["write"];
   const decision = await mgr.decide({
     session,
-    request: createRequest("bash"),
+    request: createRequest("write"),
   });
   assert.equal(decision, "allow-session");
   assert.equal(called, false);
+});
+
+test("bash is always per-invocation: skips session cache, does not store approval", async () => {
+  let callCount = 0;
+  const mgr = new ToolApprovalManager(["bash"], async () => {
+    callCount++;
+    return "allow-session";
+  });
+  const session = createSession();
+  session.approvedTools = ["bash"];
+
+  const d1 = await mgr.decide({ session, request: createRequest("bash") });
+  assert.equal(d1, "allow-session");
+  assert.equal(callCount, 1);
+
+  const d2 = await mgr.decide({ session, request: createRequest("bash") });
+  assert.equal(d2, "allow-session");
+  assert.equal(callCount, 2);
 });
 
 test("setHandler replaces handler", async () => {

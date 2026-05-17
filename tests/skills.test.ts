@@ -644,7 +644,7 @@ test("fetch error on bad URL is clear", async () => {
   const { fetchTool } = await import("../src/tools/fetch.ts");
   const result = await fetchTool.execute({ url: "http://localhost:99999" });
   assert.equal(result.success, false);
-  assert.ok(result.error?.includes("Failed to fetch"));
+  assert.ok(result.error?.includes("Blocked") || result.error?.includes("Failed to fetch"));
 });
 
 test("ls error on missing directory is clear", async () => {

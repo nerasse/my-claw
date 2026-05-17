@@ -1,3 +1,5 @@
+import { stat, readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type { VoiceManager } from "./manager.ts";
 import type { STTResult, TranscriptionResult } from "./types.ts";
 
@@ -30,13 +32,11 @@ export class SttPipeline {
       throw new Error("GROQ_API_KEY not set");
     }
 
-    const { stat } = await import("node:fs/promises");
     const fileStat = await stat(filePath);
     if (fileStat.size === 0) {
       throw new Error("Audio file is empty (0 bytes)");
     }
 
-    const { readFile } = await import("node:fs/promises");
     const buffer = await readFile(filePath);
 
     // Validate Ogg header (Telegram voice notes should start with "OggS")
@@ -46,7 +46,6 @@ export class SttPipeline {
     }
 
     const formData = new FormData();
-    const { basename } = await import("node:path");
     const originalName = basename(filePath);
     // Groq doesn't accept .oga (Telegram voice note extension), normalize to .ogg
     const uploadName = originalName.replace(/\.oga$/i, ".ogg");

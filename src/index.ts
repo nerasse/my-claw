@@ -38,6 +38,7 @@ import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { createDelegateBrowserTool } from "./tools/browser.ts";
+import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
@@ -180,7 +181,7 @@ async function main() {
   }
 
   if (isMatrixChannelEnabled(config)) {
-    const whitelist = new Set(config.whitelist);
+    const whitelist = new Set(config.whitelist.map(normalizeMatrixUserId));
     const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
     const matrixStoragePaths = matrix.runtimeStoragePaths();
     const commandHandler = createMatrixCommandHandler({

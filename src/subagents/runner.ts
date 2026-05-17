@@ -1,5 +1,7 @@
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { MyClawConfig } from "../core/config.ts";
-import { resolveMaxIterations } from "../core/config.ts";
+import { resolveMaxIterations, MY_CLAW_DIR } from "../core/config.ts";
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
@@ -110,9 +112,6 @@ export class SubAgentRunner {
   }
 
   async list(registry: { isRunning: (id: string) => boolean }): Promise<SubAgentInfo[]> {
-    const { readdir } = await import("node:fs/promises");
-    const { join } = await import("node:path");
-    const { MY_CLAW_DIR } = await import("../core/config.ts");
     const dir = join(MY_CLAW_DIR, "sessions", "subagent");
     const out: SubAgentInfo[] = [];
     try {

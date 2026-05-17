@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveMaxIterations } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
@@ -143,7 +144,6 @@ export class AgentBridge {
     }
 
     try {
-      const { stat } = await import("node:fs/promises");
       const fileStat = await stat(att.path);
       void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
 

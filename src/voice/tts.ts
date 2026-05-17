@@ -1,4 +1,4 @@
-import { exec, execFile, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,16 +7,16 @@ import type { VoiceManager } from "./manager.ts";
 import type { TTSResult } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
 
 /** Resolve absolute path to a binary via shell PATH, with known fallback paths. */
 async function resolveBinary(name: string): Promise<string> {
   try {
-    const { stdout } = await execAsync(`command -v ${name}`);
-    const path = stdout.trim();
-    if (path) return path;
+    const proc = Bun.spawn(["which", name], { stdout: "pipe", stderr: "pipe" });
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (exitCode === 0 && stdout.trim()) return stdout.trim();
   } catch {
-    // command -v failed, fall through
+    // which failed, fall through
   }
 
   const home = process.env.HOME ?? "/home";

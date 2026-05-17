@@ -1,8 +1,8 @@
 import type { SessionData } from "../sessions/store.ts";
-import type { ToolApprovalHandler, ToolApprovalRequest } from "../channels/types.ts";
+import type { ApprovalDecision, ToolApprovalHandler, ToolApprovalRequest } from "../channels/types.ts";
 import { ActionBlacklist } from "./blacklist.ts";
 
-export type ApprovalDecision = "allow-once" | "allow-session" | "deny";
+const ALWAYS_PER_INVOCATION = new Set(["bash"]);
 
 export class ToolApprovalManager {
   private blacklist: ActionBlacklist;
@@ -26,9 +26,11 @@ export class ToolApprovalManager {
       return "allow-once";
     }
 
-    const approvedTools = params.session.approvedTools ?? [];
-    if (approvedTools.includes(params.request.toolName)) {
-      return "allow-session";
+    if (!ALWAYS_PER_INVOCATION.has(params.request.toolName)) {
+      const approvedTools = params.session.approvedTools ?? [];
+      if (approvedTools.includes(params.request.toolName)) {
+        return "allow-session";
+      }
     }
 
     if (!this.approvalHandler) {
@@ -36,7 +38,8 @@ export class ToolApprovalManager {
     }
 
     const decision = await this.approvalHandler(params.request);
-    if (decision === "allow-session") {
+    if (decision === "allow-session" && !ALWAYS_PER_INVOCATION.has(params.request.toolName)) {
+      const approvedTools = params.session.approvedTools ?? [];
       params.session.approvedTools = [...approvedTools, params.request.toolName];
     }
     return decision;

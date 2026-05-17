@@ -1,11 +1,6 @@
 import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
-
-export interface WebSearchConfig {
-  baseUrl?: string;
-  token?: string;
-  language?: string;
-}
+import type { WebSearchConfig } from "../core/config.ts";
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_LANGUAGE = "fr";

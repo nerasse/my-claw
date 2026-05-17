@@ -6,12 +6,7 @@ const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 const SUBAGENT_DIR = join(SESSIONS_DIR, "subagent");
 
 function randomHex(n: number): string {
-  const chars = "0123456789abcdef";
-  let out = "";
-  for (let i = 0; i < n; i++) {
-    out += chars[Math.floor(Math.random() * 16)];
-  }
-  return out;
+  return crypto.randomUUID().replace(/-/g, "").slice(0, n);
 }
 
 export class SubAgentRegistry {

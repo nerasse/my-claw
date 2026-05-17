@@ -1,8 +1,8 @@
-import { Bot, InlineKeyboard, InputFile } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { apiThrottler } from "@grammyjs/transformer-throttler";
 import { mkdir } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { join } from "node:path";
 import type { ChannelAdapter, UnifiedMessage, OutgoingMessage, Attachment } from "../types.ts";
 import type { TelegramChannelConfig } from "../../core/config.ts";
 import { MY_CLAW_DIR } from "../../core/config.ts";
@@ -12,7 +12,7 @@ import { registerCommands, getHelpText } from "./commands.ts";
 import { ReactionManager } from "./reactions.ts";
 import { ErrorReporter, userFacingError } from "./errors.ts";
 import { MessageStreamer } from "./stream.ts";
-import { createTelegramUpdateDeduper, readTelegramUpdateOffset } from "./offset-store.ts";
+import { createTelegramUpdateDeduper } from "./offset-store.ts";
 import {
   isConfiguredTelegramBotUser,
   isTelegramAllowedByPolicy,

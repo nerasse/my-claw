@@ -45,8 +45,12 @@ function archiveTimestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+function sanitizeSessionId(raw: string): string {
+  return raw.replace(/\.\./g, "_").replace(/\0/g, "");
+}
+
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
-  const path = join(SESSIONS_DIR, `${sessionId}.json`);
+  const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     const raw = await readFile(path, "utf-8");
     return JSON.parse(raw) as SessionData;
@@ -56,13 +60,13 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
 }
 
 export async function saveSession(sessionId: string, data: SessionData): Promise<void> {
-  const path = join(SESSIONS_DIR, `${sessionId}.json`);
+  const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(data, null, 2));
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const path = join(SESSIONS_DIR, `${sessionId}.json`);
+  const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     await unlink(path);
   } catch {
@@ -71,8 +75,9 @@ export async function deleteSession(sessionId: string): Promise<void> {
 }
 
 export async function archiveSession(sessionId: string): Promise<string | null> {
-  const source = join(SESSIONS_DIR, `${sessionId}.json`);
-  const target = join(ARCHIVES_DIR, sessionId, `${archiveTimestamp()}.json`);
+  const safe = sanitizeSessionId(sessionId);
+  const source = join(SESSIONS_DIR, `${safe}.json`);
+  const target = join(ARCHIVES_DIR, safe, `${archiveTimestamp()}.json`);
   try {
     await mkdir(dirname(target), { recursive: true });
     await rename(source, target);

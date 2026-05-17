@@ -1,12 +1,6 @@
 export type SubAgentType = "general" | "research";
 
-export interface SubAgentMeta {
-  displayName: string;
-  type: SubAgentType;
-  workspaceDir?: string;
-  createdBy: string;
-  createdAt: string;
-}
+export type { SubAgentMeta } from "../sessions/store.ts";
 
 export interface SubAgentInfo {
   id: string;
