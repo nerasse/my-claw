@@ -9,7 +9,7 @@ my-claw is a single-tenant personal agent that connects to Telegram and Matrix, 
 **Core capabilities:**
 - Multi-channel: Telegram (grammy) + Matrix (matrix-js-sdk)
 - Session memory: per-user/per-room persistent sessions
-- Tool system: bash, read, write, fetch, find, grep, ls, memory
+- Tool system: 8 base (bash, read, write, fetch, find, grep, ls, memory) + voice, browser, skill, subagent, search tools
 - Sub-agents: general and research agents with persistent sessions
 - Voice: STT auto (inbound audio transcribed), TTS manual (tool call only)
 - Vision: images and video converted to LLM-compatible format
@@ -22,7 +22,7 @@ my-claw is a single-tenant personal agent that connects to Telegram and Matrix, 
 - TypeScript, Bun runtime
 - OpenAI-compatible LLM provider (Fireworks AI default)
 - Router + session manager orchestrate inbound messages
-- Agent bridge handles tool call loops (max 10 iterations)
+- Agent bridge handles tool call loops (configurable: 90 orchestrator, 50 subagent), parallel execution
 - Channel adapters are self-contained (telegram/, matrix/)
 
 See `docs/architecture.md` for full details.
@@ -113,9 +113,7 @@ Config lives in `~/.my-claw/config.json`. Key sections:
 
 Secrets can also go in `~/.my-claw/.env`:
 ```
-MY_CLAW_TELEGRAM_TOKEN=...
-MY_CLAW_MATRIX_ACCESS_TOKEN=...
-MY_CLAW_FIREWORKS_API_KEY=...
+FIREWORKS_API_KEY=...
 GROQ_API_KEY=...
 ```
 
@@ -128,7 +126,8 @@ src/
   channels/       # Telegram + Matrix adapters
   llm/            # OpenAI-compatible provider
   sessions/       # Session manager + store
-  tools/          # Tool registry + 8 base tools
+  tools/          # Tool registry + all tools (base, voice, browser, skill, subagent, search)
+  analytics/      # SQLite usage tracking (per-API-call token analytics)
   voice/          # VoiceManager, STT, TTS pipelines
   media/          # Image resize + base64, video frame extraction
   skills/         # Skill registry + built-in skills

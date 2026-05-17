@@ -11,7 +11,7 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8 base) | Complete: bash, read, write, fetch, find, grep, ls, memory |
+| Tools (8 base + voice, browser, skill, subagent, search) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search |
 | System prompt builder | Complete (9-layer: hardcoded core + 4 workspace files + 4 dynamic) |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
@@ -22,10 +22,10 @@
 ## Channel Structure
 
 - `src/index.ts` wires channel adapters into the router/session stack
-- `src/channels/telegram.ts` remains a mostly self-contained adapter
-- `src/channels/matrix.ts` is the public Matrix adapter facade
-- `src/channels/matrix-client.ts` owns Matrix SDK runtime, crypto bootstrap, sync persistence, and shutdown handling
-- `src/channels/matrix/` holds split Matrix modules for ingress, policy, lifecycle, decrypt retry, sync store, storage paths, and inbound dedupe
+- `src/channels/telegram/adapter.ts` — Grammy bot, handler wiring, lifecycle, inbound processing, attachments
+- `src/channels/matrix/adapter.ts` — Matrix timeline ingress, lifecycle, inbound buffering, attachments
+- Both channel folders contain split modules: `send.ts`, `context.ts`, `commands.ts`, `errors.ts`, `format.ts`, `policy.ts`, `reactions.ts`, `stream.ts`, `session-handlers.ts`
+- Matrix-specific: `client.ts` (SDK runtime, crypto), `decrypt-bridge.ts`, `ingress.ts`, `inbound-buffer.ts`, `inbound-dedupe.ts`, `sync-lifecycle.ts`
 
 ## Decisions
 
@@ -43,7 +43,7 @@
 - Format: HTML parse mode with plain text fallback
 - Message split: 4000 chars, HTML-tag-aware
 - Text batching: 1s debounce for split messages
-- Native commands: /new, /model, /compact, /reload (Telegram) / /reload-skills (Matrix), /status, /clear, /help
+- Commands (unified both platforms): /new, /model, /models, /compact, /reload, /verbose, /status, /clear, /archive, /help, /commands
 - Inline buttons: accept/deny for blacklisted actions
 - Media: photo, voice, audio, video, document (in/out)
 - No dependency injection, no plugin SDK, no multi-account
@@ -189,7 +189,7 @@
 
 - Hybrid architecture: hardcoded core + workspace files + dynamic content
 - Inspired by Hermes Agent (safety/tool-use) + OpenClaw (two-zone cache concept, simplified)
-- Ultra-minimal hardcoded base (~25 lines) — models are smart enough
+- Ultra-minimal hardcoded base (~15 lines) — models are smart enough
 - Rich tool/skill descriptions do the heavy lifting
 
 #### Prompt build order

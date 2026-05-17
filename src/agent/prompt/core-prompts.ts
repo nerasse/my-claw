@@ -1,6 +1,6 @@
 export const CORE_PROMPT = [
   "# Core Directives",
-  "You have tools, skills, and MCP servers. Before acting, check if any matches your task.",
+  "You have tools and skills. Before acting, check if any matches your task.",
   "Use tools to act — never describe without doing. Execute immediately, don't promise.",
   "",
   "# Safety",

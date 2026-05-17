@@ -47,10 +47,13 @@ src/
 │   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
 │   ├── blacklist.ts
-│   ├── sub-agents.ts
+│   ├── subagents/
+│   │   └── browser.ts
 │   └── prompt/
 │       ├── builder.ts
 │       ├── loader.ts
+│       ├── core-prompts.ts
+│       ├── anti-injection.ts
 │       └── platform-hints.ts
 ├── channels/
 │   ├── types.ts           # UnifiedMessage, ChannelAdapter, shared types
@@ -99,27 +102,52 @@ src/
 │       ├── text.ts
 │       └── types.ts
 ├── llm/
-│   └── provider.ts        # OpenAI-compatible API client
+│   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
+│   ├── tokens.ts          # Token estimation + context window trimming
+│   ├── resolver.ts        # Multi-provider model resolution
+│   └── openai-format.ts   # Tool definition + tool call format conversion
 ├── sessions/
-│   ├── manager.ts
-│   └── store.ts
+│   ├── manager.ts         # LRU-cached session manager (max 100, persist-on-evict)
+│   ├── store.ts           # Session persistence (JSON files)
+│   └── compaction.ts      # Session context compaction (LLM summarization)
+├── analytics/
+│   └── usage-db.ts        # SQLite analytics (per-API-call token tracking)
 ├── tools/
-│   ├── types.ts
+│   ├── types.ts           # Tool interface + safe arg helpers (str, num, bool)
 │   ├── registry.ts
-│   ├── bash.ts
-│   ├── read.ts
-│   ├── write.ts
-│   ├── fetch.ts
-│   ├── find.ts
-│   ├── grep.ts
-│   ├── ls.ts
-│   └── memory.ts
-├── mcp/                   # Reserved for future MCP integration
-├── skills/                # Reserved for future skill system
+│   ├── workspace.ts       # Workspace path resolution
+│   ├── bash.ts, read.ts, write.ts, fetch.ts, find.ts, grep.ts, ls.ts, memory.ts
+│   ├── web-search.ts
+│   ├── browser.ts         # Browser navigation/interaction tools
+│   ├── skills.ts          # Skill management tools
+│   └── spawn.ts, send.ts, list-agents.ts, kill-agent.ts, reset-agent.ts
+├── subagents/
+│   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset)
+│   ├── registry.ts        # Sub-agent ID generation + listing
+│   └── types.ts
+├── skills/
+│   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace)
+│   ├── loader.ts          # Skill file loader + YAML frontmatter parser
+│   ├── sync.ts            # Built-in skill auto-sync (SHA256 hash)
+│   └── types.ts
+├── voice/
+│   ├── manager.ts         # Voice mode resolution (cloud/local/auto)
+│   ├── stt.ts             # Speech-to-text (Groq cloud + faster-whisper local)
+│   ├── tts.ts             # Text-to-speech (Edge TTS + Piper)
+│   └── types.ts
+├── browser/
+│   ├── pool.ts            # CDP browser pool with idle timeout
+│   ├── service.ts         # Page navigation, snapshot, click, type
+│   └── labels.ts          # Element label overlay for screenshots
+├── media/
+│   ├── image.ts           # Image resize + base64 conversion
+│   └── video.ts           # Video frame extraction (ffmpeg)
 ├── utils/
-│   ├── logger.ts
-│   └── media.ts
-└── index.ts               # Entry point (3 lines: import boot from core, call it)
+│   ├── logger.ts          # Scoped file logger (orchestrator, telegram, matrix)
+│   ├── media.ts           # Media ref extraction/dedup
+│   ├── errors.ts          # Error formatting
+│   └── lru-map.ts         # LruMap + TtlSet utilities
+└── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```
 
 ### Splitting rules
@@ -130,7 +158,7 @@ src/
   - `context.ts` : Room/thread history, reply context, sender resolution
 - Any file over **500 lines** is a candidate for extraction. Not automatic, but a signal.
 - `core/` avoids dependencies on `channels/`, `agent/`, `tools/` where possible. `router.ts` bridges `channels/` and `agent/` by design.
-- `mcp/` and `skills/` stay empty until the feature is activated. No `.gitkeep` clutter.
+- `skills/` contains the 3-tier skill system (registry, loader, sync). `subagents/` contains the sub-agent runner and registry.
 
 ### Workspace
 
