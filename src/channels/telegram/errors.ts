@@ -11,6 +11,20 @@ const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity
 
 const MAX_ERROR_ENTRIES = 500;
 
+const USER_FACING_MESSAGES: Record<string, string> = {
+  rate_limit: "Rate limited. Please wait a moment and try again.",
+  parse_error: "Failed to format the response. Retrying may help.",
+  network_error: "Network error. Please try again.",
+  agent_error: "Something went wrong while processing your message. Please try again.",
+  unknown: "An unexpected error occurred. Please try again.",
+};
+
+export function userFacingError(errorKey: string): string {
+  if (errorKey.startsWith("network_")) return USER_FACING_MESSAGES["network_error"]!;
+  if (errorKey.startsWith("telegram_")) return `Telegram error (${errorKey.slice(9)}). Please try again.`;
+  return USER_FACING_MESSAGES[errorKey] ?? USER_FACING_MESSAGES["unknown"]!;
+}
+
 export class ErrorReporter {
   private lastShown = new Map<string, number>();
 

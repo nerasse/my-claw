@@ -7,6 +7,18 @@ export interface MatrixErrorPolicyConfig {
 
 const MAX_ERROR_ENTRIES = 500;
 
+const USER_FACING_MESSAGES: Record<string, string> = {
+  rate_limit: "Rate limited. Please wait a moment and try again.",
+  network_error: "Network error. Please try again.",
+  matrix_forbidden: "Permission denied. The bot may lack access to this room.",
+  matrix_error: "Something went wrong while processing your message. Please try again.",
+  unknown: "An unexpected error occurred. Please try again.",
+};
+
+export function matrixUserFacingError(errorKey: string): string {
+  return USER_FACING_MESSAGES[errorKey] ?? USER_FACING_MESSAGES["unknown"]!;
+}
+
 export class MatrixErrorReporter {
   private lastShown = new Map<string, number>();
 

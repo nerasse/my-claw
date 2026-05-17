@@ -10,7 +10,7 @@ import { markdownToTelegramHtml, stripHtml } from "./format.ts";
 import { CHUNK_LIMIT, splitHtmlChunks, alignPlainTextChunks } from "./split.ts";
 import { registerCommands, getHelpText } from "./commands.ts";
 import { ReactionManager } from "./reactions.ts";
-import { ErrorReporter } from "./errors.ts";
+import { ErrorReporter, userFacingError } from "./errors.ts";
 import { MessageStreamer } from "./stream.ts";
 import { createTelegramUpdateDeduper, readTelegramUpdateOffset } from "./offset-store.ts";
 import {
@@ -638,7 +638,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (!this.errorReporter.shouldReport(errorKey)) return;
 
     await this.send(chatId, {
-      text: "An error occurred while processing your message.",
+      text: userFacingError(errorKey),
       replyToId,
     }).catch((sendErr) => {
       void telegramLog("error", "telegram error reporting failed", { chatId, error: String(sendErr) });

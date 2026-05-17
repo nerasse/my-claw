@@ -58,7 +58,7 @@ import { createMatrixInboundBuffer } from "./inbound-buffer.ts";
 import { createMatrixInboundEventDeduper, type MatrixInboundEventDeduper } from "./inbound-dedupe.ts";
 import { createMatrixSyncLifecycle, type MatrixSyncLifecycle } from "./sync-lifecycle.ts";
 import { getMatrixHelpText, parseMatrixCommand } from "./commands.ts";
-import { MatrixErrorReporter } from "./errors.ts";
+import { MatrixErrorReporter, matrixUserFacingError } from "./errors.ts";
 import {
   createMatrixRoomHistoryTracker,
   type PreparedMatrixRoomHistory,
@@ -963,7 +963,7 @@ export class MatrixAdapter implements ChannelAdapter {
     if (!this.errorReporter.shouldReport(errorKey)) return;
 
     await this.send(roomId, {
-      text: "An error occurred while processing your message.",
+      text: matrixUserFacingError(errorKey),
       replyToId,
       threadId,
       notice: true,
