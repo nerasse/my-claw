@@ -1,8 +1,6 @@
 ---
 name: voice
-description: |
-  Manage cloud/local voice mode for STT and TTS.
-  Integrated into the orchestrator — no external scripts.
+description: Manage cloud/local voice mode for STT and TTS, integrated into the orchestrator.
 ---
 
 # Voice Skill

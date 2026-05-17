@@ -1,9 +1,6 @@
 ---
 name: web-browsing
-description: |
-  Delegate web browsing tasks to a specialized subagent.
-  Use for filling forms, searching websites, checking accounts,
-  booking, or any multi-step web interaction.
+description: Delegate web browsing tasks (forms, searches, accounts, booking) to a specialized subagent.
 ---
 
 # Web Browsing

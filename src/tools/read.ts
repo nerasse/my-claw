@@ -14,7 +14,12 @@ export const readTool: Tool = {
     required: ["path"],
   },
   async execute(args): Promise<ToolResult> {
-    const resolved = resolveWorkspacePath(str(args, "path"), strOpt(args, "__workspaceDir"));
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(str(args, "path"), strOpt(args, "__workspaceDir"));
+    } catch (e) {
+      return { success: false, output: "", error: String((e as Error).message) };
+    }
     try {
       await access(resolved);
     } catch {

@@ -64,7 +64,7 @@ async function scanDir(dir: string, source: Skill["source"]): Promise<Skill[]> {
 
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const skillDir = join(dir, entry.name);
     const skillFile = join(skillDir, "SKILL.md");
     const skill = await loadSkillFromFile(skillFile);

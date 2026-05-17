@@ -47,8 +47,7 @@ import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs } from "./utils/media.ts";
 import { log } from "./utils/logger.ts";
-import { IterationBudget } from "./agent/iteration-budget.ts";
-import { resolveMaxIterations } from "./core/config.ts";
+
 
 async function main() {
   const config = await loadConfig();
@@ -92,8 +91,7 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
-  const orchestratorBudget = new IterationBudget(resolveMaxIterations(config, "orchestrator"));
-  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline, 0, undefined, orchestratorBudget);
+  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
   const router = new MessageRouter(config.whitelist, sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
@@ -279,6 +277,22 @@ async function main() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  let shutdownTriggered = false;
+  process.on("unhandledRejection", (reason) => {
+    log("error", "unhandled rejection", { error: String(reason) });
+    if (!shutdownTriggered) {
+      shutdownTriggered = true;
+      void shutdown().finally(() => process.exit(1));
+    }
+  });
+  process.on("uncaughtException", (err) => {
+    log("error", "uncaught exception", { error: String(err), stack: err?.stack });
+    if (!shutdownTriggered) {
+      shutdownTriggered = true;
+      void shutdown().finally(() => process.exit(1));
+    }
+  });
 }
 
 async function cleanupAttachments(attachments: Array<{ path?: string }>): Promise<void> {

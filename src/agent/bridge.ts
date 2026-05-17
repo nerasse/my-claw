@@ -65,7 +65,6 @@ export class AgentBridge {
     private ttsPipeline?: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
-    private iterationBudget?: IterationBudget,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
     this.preprocessor = new MessagePreprocessor(this.voiceManager!, this.sttPipeline!);
@@ -122,7 +121,7 @@ export class AgentBridge {
     let toolExecutions = 0;
 
     const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
-    const budget = this.iterationBudget ?? new IterationBudget(resolveMaxIterations(this.config, agentType));
+    const budget = new IterationBudget(resolveMaxIterations(this.config, agentType));
 
     void log("info", "agent run started", {
       ...runLogData(message, session),

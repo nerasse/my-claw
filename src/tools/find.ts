@@ -24,7 +24,12 @@ export const findTool: Tool = {
       return { success: false, output: "pattern is required and cannot be empty." };
     }
     const wsDir = strOpt(args, "__workspaceDir");
-    const resolved = resolveWorkspacePath(path, wsDir);
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(path, wsDir);
+    } catch (e) {
+      return { success: false, output: "", error: String((e as Error).message) };
+    }
     try {
       await access(resolved);
     } catch {

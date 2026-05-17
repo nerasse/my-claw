@@ -25,7 +25,12 @@ export const grepTool: Tool = {
       return { success: false, output: "path is required and cannot be empty." };
     }
     const wsDir = strOpt(args, "__workspaceDir");
-    const resolved = resolveWorkspacePath(path, wsDir);
+    let resolved: string;
+    try {
+      resolved = resolveWorkspacePath(path, wsDir);
+    } catch (e) {
+      return { success: false, output: "", error: String((e as Error).message) };
+    }
     try {
       await access(resolved);
     } catch {

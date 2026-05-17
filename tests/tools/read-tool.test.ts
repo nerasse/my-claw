@@ -34,14 +34,14 @@ test("read: nonexistent relative path returns not found", async () => {
   assert.ok(result.output.includes("not found"));
 });
 
-test("read: reads file with absolute path ignoring workspaceDir", async () => {
+test("read: rejects absolute path outside workspaceDir", async () => {
   await mkdir(TMP, { recursive: true });
   const file = join(TMP, "abs.txt");
   await writeFile(file, "absolute path content");
   try {
     const result = await readTool.execute({ path: file, __workspaceDir: "/some/other/dir" });
-    assert.equal(result.success, true);
-    assert.equal(result.output, "absolute path content");
+    assert.equal(result.success, false);
+    assert.ok(result.error?.includes("escapes workspace"));
   } finally {
     await rm(TMP, { recursive: true, force: true });
   }

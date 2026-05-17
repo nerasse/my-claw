@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, unlink, rename, readdir, rm, stat } from "node:fs/promises";
+import { readFile, writeFile, mkdir, unlink, rename as fsRename, readdir, rm, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 
@@ -61,8 +61,10 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
 
 export async function saveSession(sessionId: string, data: SessionData): Promise<void> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
+  const tmp = path + ".tmp";
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(data, null, 2));
+  await writeFile(tmp, JSON.stringify(data, null, 2));
+  await fsRename(tmp, path);
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -80,7 +82,7 @@ export async function archiveSession(sessionId: string): Promise<string | null> 
   const target = join(ARCHIVES_DIR, safe, `${archiveTimestamp()}.json`);
   try {
     await mkdir(dirname(target), { recursive: true });
-    await rename(source, target);
+    await fsRename(source, target);
     return target;
   } catch (err) {
     if (err && typeof err === "object" && (err as { code?: string }).code === "ENOENT") {

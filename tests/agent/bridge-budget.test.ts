@@ -1,6 +1,5 @@
 import { test, expect } from "bun:test";
 import { AgentBridge } from "../../src/agent/bridge.ts";
-import { IterationBudget } from "../../src/agent/iteration-budget.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager } from "../../src/voice/index.ts";
@@ -9,20 +8,24 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
 
-const baseConfig: MyClawConfig = {
-  whitelist: ["user1"],
-  blacklist: [],
-  channels: {},
-  llm: {
-    defaultProvider: "fireworks",
-    defaultModel: "test-model",
-    apiKey: "test-key",
-    providers: {
-      fireworks: { baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_API_KEY" },
+function configWithBudget(maxIterations: number): MyClawConfig {
+  return {
+    whitelist: ["user1"],
+    blacklist: [],
+    channels: {},
+    llm: {
+      defaultProvider: "fireworks",
+      defaultModel: "test-model",
+      apiKey: "test-key",
+      providers: {
+        fireworks: { baseUrl: "https://api.fireworks.ai/inference/v1", apiKeyEnv: "FIREWORKS_API_KEY" },
+      },
     },
-  },
-  agents: {},
-};
+    agents: {
+      orchestrator: { maxIterations },
+    },
+  };
+}
 
 function createMessage(): UnifiedMessage {
   return {
@@ -49,18 +52,16 @@ function createSession(): SessionData {
   };
 }
 
-function createBridge(registry: ToolRegistry, budget?: IterationBudget) {
-  const voiceManager = new VoiceManager(baseConfig);
+function createBridge(registry: ToolRegistry, maxIterations: number) {
+  const config = configWithBudget(maxIterations);
+  const voiceManager = new VoiceManager(config);
   return new AgentBridge(
-    baseConfig,
+    config,
     registry,
     new SkillRegistry([]),
     voiceManager,
     voiceManager.stt,
     voiceManager.tts,
-    0,
-    undefined,
-    budget,
   );
 }
 
@@ -75,8 +76,7 @@ test("AgentBridge requests summary when iteration budget is exhausted", async ()
     },
   });
 
-  const budget = new IterationBudget(2);
-  const bridge = createBridge(registry, budget);
+  const bridge = createBridge(registry, 2);
   const session = createSession();
 
   let callCount = 0;
@@ -127,8 +127,7 @@ test("AgentBridge requests summary when iteration budget is exhausted", async ()
 
 test("AgentBridge stops gracefully after budget with no tools in summary call", async () => {
   const registry = new ToolRegistry();
-  const budget = new IterationBudget(1);
-  const bridge = createBridge(registry, budget);
+  const bridge = createBridge(registry, 1);
   const session = createSession();
 
   let callCount = 0;
@@ -172,8 +171,7 @@ test("AgentBridge stops gracefully after budget with no tools in summary call", 
 
 test("AgentBridge returns plain response before budget is exhausted", async () => {
   const registry = new ToolRegistry();
-  const budget = new IterationBudget(10);
-  const bridge = createBridge(registry, budget);
+  const bridge = createBridge(registry, 10);
   const session = createSession();
 
   const fetchMock = mockFetch(async () =>

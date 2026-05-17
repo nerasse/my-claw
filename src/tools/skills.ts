@@ -206,7 +206,10 @@ export function createManageSkillsTool(
         }
 
         const lines = existing.split("\n");
-        const frontmatterEnd = lines.findIndex((line) => line.trim() === "---" && lines.indexOf(line) > 0);
+        let frontmatterEnd = -1;
+        for (let i = 1; i < lines.length; i++) {
+          if (lines[i]!.trim() === "---") { frontmatterEnd = i; break; }
+        }
         const header = frontmatterEnd >= 0 ? lines.slice(0, frontmatterEnd + 1).join("\n") : `---\nname: ${name}\n---`;
         const newContent = `${header}\n\n${instructions}\n`;
         await writeFile(skillFile, newContent);

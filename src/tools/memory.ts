@@ -21,7 +21,7 @@ export const memoryTool: Tool = {
   async execute(args): Promise<ToolResult> {
     const file = str(args, "file");
     const action = str(args, "action");
-    if (!file) {
+    if (!file || (file !== "MEMORY.md" && file !== "USER.md")) {
       return { success: false, output: "file is required. Must be 'MEMORY.md' or 'USER.md'." };
     }
     if (!action) {
