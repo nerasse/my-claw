@@ -62,6 +62,12 @@ export class BrowserSubagent {
     this.toolRegistry.register(createBrowserListTabsTool(this.service));
     this.toolRegistry.register(createBrowserFocusTabTool(this.service));
     this.toolRegistry.register(createBrowserCloseTabTool(this.service));
+    this.toolRegistry.register({
+      name: "browser_done",
+      description: "Signal that the task is complete. Provide a summary of what was accomplished.",
+      parameters: { type: "object", properties: { summary: { type: "string", description: "Summary of what was done" } }, required: ["summary"] },
+      async execute(args) { return { success: true, output: String(args["summary"] ?? "done") }; },
+    });
   }
 
   async run(task: string, startUrl?: string): Promise<BrowserSubagentResult> {
@@ -139,10 +145,11 @@ export class BrowserSubagent {
         };
       }
 
-      if (text.toLowerCase().includes("done") || text.toLowerCase().includes("complete")) {
+      const doneTool = toolCalls.find((t) => t.name === "browser_done");
+      if (doneTool) {
         return {
           success: true,
-          summary: text,
+          summary: String(doneTool.arguments["summary"] ?? text),
           current_url: currentUrl,
         };
       }
@@ -180,11 +187,12 @@ Available tools:
 - browser_click(ref): Click an element by its ref number.
 - browser_type(ref, text): Type text into a field by its ref number.
 - browser_screenshot(full_page?): Capture a screenshot. Use when stuck or to show the user the page.
+- browser_done(summary): Call this tool when the task is complete. Provide a summary.
 
 Rules:
 1. After EVERY action, call browser_snapshot to verify.
 2. Use only the ref numbers from the snapshot for click and type.
 3. If you see "captcha", "verify", "login", "2FA", "password", or similar, STOP and say you need human help.
 4. If stuck for 3 steps, STOP and ask for help.
-5. When done, say "Done" and summarize.`;
+5. When done, call browser_done with a summary of what was accomplished.`;
 }

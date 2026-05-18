@@ -183,10 +183,24 @@ export async function compactSession(
     });
 
     const summary = response.content.slice(0, MAX_SUMMARY_CHARS).trim();
-    if (!summary) {
+    if (!summary || summary.length < 50) {
       return {
         ok: false,
-        reason: "The model returned an empty summary.",
+        reason: summary ? "The model returned a summary that is too short." : "The model returned an empty summary.",
+        beforeCount: messages.length,
+        afterCount: messages.length,
+      };
+    }
+
+    const REFUSAL_PATTERNS = [
+      /^i (?:cannot|can't|won't|am unable to)/i,
+      /^sorry,? (?:i|but)/i,
+      /^as an ai/i,
+    ];
+    if (REFUSAL_PATTERNS.some((p) => p.test(summary))) {
+      return {
+        ok: false,
+        reason: "The model refused to generate a summary.",
         beforeCount: messages.length,
         afterCount: messages.length,
       };

@@ -1,5 +1,6 @@
 import { unlink } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
+import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR } from "./core/config.ts";
@@ -53,6 +54,7 @@ async function main() {
   const config = await loadConfig();
   pruneOldRecords();
   void pruneOldLogs();
+  void pruneOldSessions();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const modelPicker = new ModelPicker(config.llm.models ?? []);

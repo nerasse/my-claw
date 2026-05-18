@@ -116,7 +116,7 @@ test("compactSession summarizes middle and keeps head + tail", async () => {
   const session = makeSession(12);
   const fetchMock = mockFetch(async () =>
     new Response(
-      JSON.stringify({ choices: [{ message: { content: "Summary of earlier context." } }] }),
+      JSON.stringify({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never,
   );
@@ -160,7 +160,7 @@ test("compactSession passes instructions to the prompt", async () => {
       capturedBody = new TextDecoder().decode(body as ArrayBufferView);
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "Focused summary." } }] }),
+      JSON.stringify({ choices: [{ message: { content: "Focused summary of the conversation covering the main task and key decisions made." } }] }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
@@ -191,7 +191,7 @@ test("compactSession handles tool pairs without splitting them", async () => {
 
   const fetchMock = mockFetch(async () =>
     new Response(
-      JSON.stringify({ choices: [{ message: { content: "Summary." } }] }),
+      JSON.stringify({ choices: [{ message: { content: "Summary of the tool usage session covering main operations and their results in detail." } }] }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never,
   );
@@ -203,7 +203,7 @@ test("compactSession handles tool pairs without splitting them", async () => {
     // The tool pair should either be fully in head, fully in middle, or fully in tail
     // Since head is 3 and tail is 4, the pair at indices 3-4 is in the middle
     // But the tail boundary alignment should ensure nothing is split
-    const summaryIdx = session.messages.findIndex((m) => m.content.includes("Summary."));
+    const summaryIdx = session.messages.findIndex((m) => m.content.includes("Summary of the tool usage"));
     assert.ok(summaryIdx > 0);
 
     // Messages before summary should not have orphaned tool results

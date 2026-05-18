@@ -31,7 +31,14 @@ describe("BrowserSubagent", () => {
       requestBody = body;
 
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: "Done. Task complete." } }] }),
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: "",
+              tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"Task complete."}' } }],
+            },
+          }],
+        }),
         { status: 200 },
       ) as never;
     });
@@ -43,7 +50,7 @@ describe("BrowserSubagent", () => {
       assert.ok(requestBody, "Request body should have been captured");
       const tools = requestBody.tools as Array<Record<string, unknown>> | undefined;
       assert.ok(tools, "Tools should be present in request body");
-      assert.equal(tools.length, 8, "Should have 8 browser tools");
+      assert.equal(tools.length, 9, "Should have 9 browser tools (8 + browser_done)");
 
       for (const tool of tools) {
         assert.equal(tool.type, "function", "Each tool must have type 'function'");

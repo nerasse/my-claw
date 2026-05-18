@@ -1,20 +1,24 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, unlink } from "node:fs/promises";
+import { mkdtemp, unlink, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname as pathDirname } from "node:path";
 import { promisify } from "node:util";
 import type { VoiceManager } from "./manager.ts";
 import type { TTSResult } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
 
+const binaryCache = new Map<string, string>();
+
 /** Resolve absolute path to a binary via shell PATH, with known fallback paths. */
 async function resolveBinary(name: string): Promise<string> {
+  const cached = binaryCache.get(name);
+  if (cached) return cached;
   try {
     const proc = Bun.spawn(["which", name], { stdout: "pipe", stderr: "pipe" });
     const stdout = await new Response(proc.stdout).text();
     const exitCode = await proc.exited;
-    if (exitCode === 0 && stdout.trim()) return stdout.trim();
+    if (exitCode === 0 && stdout.trim()) return cacheAndReturn(name, stdout.trim());
   } catch {
     // which failed, fall through
   }
@@ -29,13 +33,18 @@ async function resolveBinary(name: string): Promise<string> {
   for (const candidate of candidates) {
     try {
       await execFileAsync(candidate, ["--version"]);
-      return candidate;
+      return cacheAndReturn(name, candidate);
     } catch {
       continue;
     }
   }
 
   throw new Error(`${name} not found in PATH or fallback locations`);
+}
+
+function cacheAndReturn(name: string, path: string): string {
+  binaryCache.set(name, path);
+  return path;
 }
 
 export class TtsPipeline {
@@ -121,5 +130,6 @@ export class TtsPipeline {
 
   private async cleanup(path: string): Promise<void> {
     await unlink(path).catch(() => {});
+    await rmdir(pathDirname(path)).catch(() => {});
   }
 }

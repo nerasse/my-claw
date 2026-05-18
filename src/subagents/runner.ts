@@ -152,6 +152,7 @@ export class SubAgentRunner {
       return { id, result };
     } finally {
       this.activeCount -= 1;
+      await deleteSession(id).catch(() => {});
     }
   }
 

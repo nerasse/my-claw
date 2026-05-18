@@ -225,6 +225,10 @@ export async function createMatrixInboundEventDeduper(params: {
 
   mkdirSync(claimsDir, { recursive: true });
 
+  // Load seen map into memory at creation to avoid sync file I/O on every claimEvent
+  const seenMap = readSeenMapSync(params.storagePath, ttlMs, maxEntries, nowMs());
+  let dirty = false;
+
   const claimPathForKey = (key: string): string => join(claimsDir, `${hashEventKey(key)}.json`);
 
   const releaseLocalClaim = (key: string): void => {
@@ -269,6 +273,17 @@ export async function createMatrixInboundEventDeduper(params: {
     }
   };
 
+  const persistSeenMap = async (): Promise<void> => {
+    if (!dirty) return;
+    await withStorageLock(() => {
+      writeJsonFileAtomicallySync(
+        params.storagePath,
+        toStoredState({ seen: seenMap, ttlMs, maxEntries, nowMs: nowMs() }),
+      );
+      dirty = false;
+    });
+  };
+
   return {
     claimEvent: ({ roomId, eventId }) => {
       const key = buildEventKey({ roomId, eventId });
@@ -279,8 +294,7 @@ export async function createMatrixInboundEventDeduper(params: {
         return false;
       }
 
-      const seen = readSeenMapSync(params.storagePath, ttlMs, maxEntries, nowMs());
-      if (seen.has(key)) {
+      if (seenMap.has(key)) {
         return false;
       }
 
@@ -316,21 +330,12 @@ export async function createMatrixInboundEventDeduper(params: {
       if (!key) {
         return;
       }
-      await withStorageLock(async () => {
-        const seen = readSeenMapSync(params.storagePath, ttlMs, maxEntries, nowMs());
-        seen.delete(key);
-        seen.set(key, nowMs());
-        writeJsonFileAtomicallySync(
-          params.storagePath,
-          toStoredState({
-            seen,
-            ttlMs,
-            maxEntries,
-            nowMs: nowMs(),
-          }),
-        );
-        releaseLocalClaim(key);
-      });
+      seenMap.delete(key);
+      seenMap.set(key, nowMs());
+      dirty = true;
+      releaseLocalClaim(key);
+      // Persist asynchronously without blocking the caller
+      void persistSeenMap();
     },
     releaseEvent: ({ roomId, eventId }) => {
       const key = buildEventKey({ roomId, eventId });
@@ -340,12 +345,13 @@ export async function createMatrixInboundEventDeduper(params: {
       releaseLocalClaim(key);
     },
     flush: async () => {
-      return;
+      await persistSeenMap();
     },
     stop: async () => {
       for (const key of [...localClaims.keys()]) {
         releaseLocalClaim(key);
       }
+      await persistSeenMap();
     },
   };
 }

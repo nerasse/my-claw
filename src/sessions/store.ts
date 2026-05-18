@@ -133,3 +133,42 @@ export async function purgeSessionArchives(options: {
   if (!all && beforeMs === null) return 0;
   return purgeArchiveDir(ARCHIVES_DIR, beforeMs, all);
 }
+
+const SESSION_STALE_DAYS = 30;
+
+export async function pruneOldSessions(): Promise<number> {
+  const cutoffMs = Date.now() - SESSION_STALE_DAYS * 86_400_000;
+  let removed = 0;
+  try {
+    const entries = await scanSessionFiles(SESSIONS_DIR);
+    for (const { path: filePath, mtimeMs } of entries) {
+      if (mtimeMs < cutoffMs) {
+        await rm(filePath, { force: true }).catch(() => {});
+        removed += 1;
+      }
+    }
+  } catch {
+    // sessions dir may not exist
+  }
+  return removed;
+}
+
+async function scanSessionFiles(dir: string): Promise<Array<{ path: string; mtimeMs: number }>> {
+  const results: Array<{ path: string; mtimeMs: number }> = [];
+  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...(await scanSessionFiles(full)));
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      const s = await stat(full).catch(() => null);
+      if (s) results.push({ path: full, mtimeMs: s.mtimeMs });
+    }
+  }
+  return results;
+}
