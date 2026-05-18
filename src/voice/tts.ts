@@ -45,6 +45,9 @@ export class TtsPipeline {
     text: string,
     overrides?: { forceCloud?: boolean; forceLocal?: boolean; voice?: string },
   ): Promise<TTSResult> {
+    if (text.length > 5000) {
+      throw new Error(`TTS text too long (${text.length} chars, max 5000). Shorten the text.`);
+    }
     const mode = this.voiceManager.resolveMode("tts", overrides);
     try {
       return mode === "cloud"

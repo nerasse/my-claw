@@ -1,4 +1,4 @@
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, stat, readdir as fsReaddir, unlink as fsUnlink } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 
@@ -282,4 +282,28 @@ export function installMatrixSdkRootLogger(rootLogger: unknown): void {
 
 export async function log(level: AppLogLevel, message: string, data?: unknown): Promise<void> {
   await orchestratorLogger(level, message, data);
+}
+
+const LOG_RETENTION_DAYS = 30;
+
+export async function pruneOldLogs(): Promise<void> {
+  try {
+    await mkdir(LOGS_DIR, { recursive: true });
+    const entries = await fsReaddir(LOGS_DIR);
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 86_400_000;
+    for (const name of entries) {
+      if (!name.endsWith(".log")) continue;
+      const filePath = join(LOGS_DIR, name);
+      try {
+        const s = await stat(filePath);
+        if (s.mtimeMs < cutoff) {
+          await fsUnlink(filePath);
+        }
+      } catch {
+        // skip
+      }
+    }
+  } catch {
+    // best-effort
+  }
 }

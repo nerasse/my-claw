@@ -1,5 +1,6 @@
 import { EventType, type MatrixClient } from "matrix-js-sdk";
 import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
+import { LruMap } from "../../utils/lru-map.ts";
 
 export type MatrixReactionState = "received" | "thinking" | "tool_use" | "done" | "error";
 
@@ -26,8 +27,10 @@ function buildReactionContent(eventId: string, emoji: string): Record<string, un
   };
 }
 
+const MAX_REACTION_ENTRIES = 2000;
+
 export class MatrixReactionManager {
-  private ownReactionIds = new Map<string, string>();
+  private ownReactionIds = new LruMap<string, string>(MAX_REACTION_ENTRIES);
 
   constructor(
     private client: MatrixClient,

@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { closeDb } from "./analytics/usage-db.ts";
+import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR } from "./core/config.ts";
@@ -46,11 +46,13 @@ import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs } from "./utils/media.ts";
-import { log } from "./utils/logger.ts";
+import { log, pruneOldLogs } from "./utils/logger.ts";
 
 
 async function main() {
   const config = await loadConfig();
+  pruneOldRecords();
+  void pruneOldLogs();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const modelPicker = new ModelPicker(config.llm.models ?? []);

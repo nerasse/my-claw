@@ -10,6 +10,41 @@ const LLM_STREAM_TIMEOUT_MS = 300_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
 
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 60_000;
+
+const circuitState = {
+  failures: 0,
+  openedAt: 0,
+};
+
+function checkCircuitBreaker(): void {
+  if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+    const elapsed = Date.now() - circuitState.openedAt;
+    if (elapsed < CIRCUIT_BREAKER_COOLDOWN_MS) {
+      throw new Error(`LLM circuit breaker open (${CIRCUIT_BREAKER_THRESHOLD} consecutive failures). Retry in ${Math.ceil((CIRCUIT_BREAKER_COOLDOWN_MS - elapsed) / 1000)}s.`);
+    }
+    circuitState.failures = 0;
+  }
+}
+
+function recordCircuitSuccess(): void {
+  circuitState.failures = 0;
+}
+
+function recordCircuitFailure(): void {
+  circuitState.failures += 1;
+  if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+    circuitState.openedAt = Date.now();
+    void log("warn", `LLM circuit breaker opened after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures`);
+  }
+}
+
+export function resetCircuitBreaker(): void {
+  circuitState.failures = 0;
+  circuitState.openedAt = 0;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -196,6 +231,8 @@ export async function chatCompletion(
   messages: ChatMessage[],
   tools?: unknown[],
 ): Promise<LlmResponse> {
+  checkCircuitBreaker();
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
@@ -231,6 +268,7 @@ export async function chatCompletion(
       const choice = data.choices[0];
       if (!choice?.message) throw new Error("No response from LLM");
 
+      recordCircuitSuccess();
       return {
         content: choice.message.content ?? "",
         toolCalls: parseToolCalls(choice.message.tool_calls),
@@ -247,12 +285,14 @@ export async function chatCompletion(
         await sleep(delay);
         continue;
       }
+      recordCircuitFailure();
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
+  recordCircuitFailure();
   throw lastErr;
 }
 
@@ -271,6 +311,8 @@ export async function chatCompletionStream(
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
 ): Promise<LlmResponse> {
+  checkCircuitBreaker();
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
@@ -384,6 +426,7 @@ export async function chatCompletionStream(
           arguments: safeJsonParse(toolCall.arguments, "streamed tool_call.arguments"),
         }));
 
+      recordCircuitSuccess();
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
@@ -400,11 +443,13 @@ export async function chatCompletionStream(
         await sleep(delay);
         continue;
       }
+      recordCircuitFailure();
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
+  recordCircuitFailure();
   throw lastErr;
 }

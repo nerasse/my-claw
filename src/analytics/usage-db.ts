@@ -104,6 +104,18 @@ export function recordApiCall(record: ApiCallRecord): void {
   }
 }
 
+const RETENTION_DAYS = 90;
+
+export function pruneOldRecords(): void {
+  try {
+    const d = getDb();
+    const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
+    d.run("DELETE FROM api_calls WHERE timestamp < ?", [cutoff]);
+  } catch {
+    // best-effort
+  }
+}
+
 export function closeDb(): void {
   if (insertStmt) {
     insertStmt.finalize();

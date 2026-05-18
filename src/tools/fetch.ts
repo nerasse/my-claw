@@ -45,11 +45,15 @@ export const fetchTool: Tool = {
       return { success: false, output: "", error: "Blocked: URL points to a private/internal network address." };
     }
     try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30_000);
       const response = await fetch(url, {
         method: strOpt(args, "method") ?? "GET",
         body: strOpt(args, "body"),
         redirect: "manual",
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (location && isPrivateUrl(location)) {

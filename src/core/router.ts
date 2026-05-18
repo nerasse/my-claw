@@ -40,6 +40,8 @@ function errorLogData(err: unknown): unknown {
 }
 
 export class MessageRouter {
+  private sessionLocks = new Map<string, Promise<unknown>>();
+
   constructor(
     private sessionManager: SessionManager,
     private agent: AgentBridge,
@@ -67,6 +69,27 @@ export class MessageRouter {
         sessionScope: message.sessionScope,
       },
     );
+
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {})
+      .then(() => this.routeInternal(message, sessionId, streaming, options));
+    this.sessionLocks.set(sessionId, current);
+    try {
+      return await current;
+    } finally {
+      if (this.sessionLocks.get(sessionId) === current) {
+        this.sessionLocks.delete(sessionId);
+      }
+    }
+  }
+
+  private async routeInternal(
+    message: UnifiedMessage,
+    sessionId: string,
+    streaming: boolean,
+    options: RouteOptions,
+  ): Promise<RouteResult | undefined> {
     const startedAt = Date.now();
 
     try {
