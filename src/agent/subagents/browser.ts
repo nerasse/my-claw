@@ -1,7 +1,7 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
-import { chatCompletion, type ChatMessage, type LlmResponse } from "../../llm/provider.ts";
+import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserPool } from "../../browser/pool.ts";
@@ -114,18 +114,15 @@ export class BrowserSubagent {
       const toolCalls = response.toolCalls ?? [];
 
       // Execute tool calls
-      const toolResults: string[] = [];
+      const toolResults: Array<{ tc: ToolCall; output: string }> = [];
       for (const tc of toolCalls) {
         const tool = this.toolRegistry.get(tc.name);
         if (!tool) {
-          toolResults.push(`Tool ${tc.name} not found.`);
+          toolResults.push({ tc, output: `Tool ${tc.name} not found.` });
           continue;
         }
         const result = await tool.execute(tc.arguments);
-        toolResults.push(`${tc.name}: ${result.success ? "OK" : "FAIL"} — ${result.output}${result.error ? ` (${result.error})` : ""}`);
-        if (result.attachments) {
-          // Forward attachments if any (e.g., screenshots)
-        }
+        toolResults.push({ tc, output: `${result.success ? "OK" : "FAIL"} — ${result.output}${result.error ? ` (${result.error})` : ""}` });
       }
 
       // Update current URL if navigate happened
@@ -134,7 +131,7 @@ export class BrowserSubagent {
         currentUrl = navCall.arguments["url"] as string;
       }
 
-      const combinedText = text + " " + toolResults.join(" ");
+      const combinedText = text + " " + toolResults.map((r) => r.output).join(" ");
 
       if (detectHumanBlocker(combinedText)) {
         return {
@@ -154,10 +151,21 @@ export class BrowserSubagent {
         };
       }
 
-      messages.push({ role: "assistant", content: text });
-      if (toolResults.length > 0) {
-        messages.push({ role: "user", content: `Tool results:\n${toolResults.join("\n")}\n\nContinue.` });
+      if (toolCalls.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: text,
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+        });
+        for (const { tc, output } of toolResults) {
+          messages.push({ role: "tool", tool_call_id: tc.id, content: output });
+        }
       } else {
+        messages.push({ role: "assistant", content: text });
         messages.push({ role: "user", content: "Continue." });
       }
     }

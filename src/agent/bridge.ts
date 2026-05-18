@@ -71,7 +71,7 @@ export class AgentBridge {
     private workspaceDir?: string,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
-    this.preprocessor = new MessagePreprocessor(this.voiceManager!, this.sttPipeline!);
+    this.preprocessor = new MessagePreprocessor(this.voiceManager, this.sttPipeline);
   }
 
   getEchoMessages(): OutgoingMessage[] {

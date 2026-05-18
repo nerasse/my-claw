@@ -212,9 +212,15 @@ export function createMatrixApprovalHandler(storagePath?: string): MatrixApprova
       return cancelled;
     },
 
-    async resolveAction({ data }) {
+    async resolveAction({ data, userId }) {
       const parsed = parseApprovalAction(data);
       if (!parsed) return undefined;
+      const pending = matrixApprovalStore.peek(parsed.id);
+      if (pending && pending.userId !== userId) {
+        return {
+          text: `Only the requesting user (${pending.userId}) can approve or deny this tool call.`,
+        };
+      }
       const resolved = matrixApprovalStore.resolve(parsed.id, parsed.decision);
       if (!resolved) {
         return {

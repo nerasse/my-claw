@@ -1,7 +1,7 @@
 import { type Tool, type ToolResult, str, num, bool } from "./types.ts";
 import type { BrowserService } from "../browser/service.ts";
 import type { Page } from "playwright-core";
-import { isPrivateUrl } from "./fetch.ts";
+import { resolveAndCheckUrl } from "./fetch.ts";
 
 // Track the current page across tool calls within a single agent turn
 let currentPage: Page | null = null;
@@ -17,7 +17,7 @@ function getPage(): Page {
   return currentPage;
 }
 
-function guardUrl(url: string): void {
+async function guardUrl(url: string): Promise<void> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -27,7 +27,7 @@ function guardUrl(url: string): void {
   if (parsed.protocol === "file:") {
     throw new Error("file:// protocol is blocked for security.");
   }
-  if (isPrivateUrl(url)) {
+  if (await resolveAndCheckUrl(url)) {
     throw new Error(`Navigation to ${parsed.hostname} is blocked: private/internal network address.`);
   }
 }
@@ -53,7 +53,7 @@ export function createBrowserNavigateTool(service: BrowserService): Tool {
     async execute(args): Promise<ToolResult> {
       const url = str(args, "url");
       try {
-        guardUrl(url);
+        await guardUrl(url);
         const result = await service.navigate(url);
         currentPage = result.page;
         return {

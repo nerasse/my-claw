@@ -116,6 +116,112 @@ export function pruneOldRecords(): void {
   }
 }
 
+export interface UsageSummary {
+  totalCalls: number;
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalDurationMs: number;
+  errorCount: number;
+}
+
+export function getSessionUsage(sessionId: string): UsageSummary | null {
+  try {
+    const d = getDb();
+    const row = d
+      .prepare(
+        `SELECT
+           COUNT(*)              AS total_calls,
+           SUM(total_tokens)     AS total_tokens,
+           SUM(prompt_tokens)    AS prompt_tokens,
+           SUM(completion_tokens) AS completion_tokens,
+           SUM(duration_ms)      AS total_duration_ms,
+           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
+         FROM api_calls WHERE session_id = ?`,
+      )
+      .get(sessionId) as Record<string, number> | null;
+    if (!row || row["total_calls"] === 0) return null;
+    return {
+      totalCalls: row["total_calls"]!,
+      totalTokens: row["total_tokens"]!,
+      promptTokens: row["prompt_tokens"]!,
+      completionTokens: row["completion_tokens"]!,
+      totalDurationMs: row["total_duration_ms"]!,
+      errorCount: row["error_count"]!,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface DailySummaryRow {
+  date: string;
+  calls: number;
+  totalTokens: number;
+  models: string;
+}
+
+export function getDailySummary(days = 30): DailySummaryRow[] {
+  try {
+    const d = getDb();
+    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const rows = d
+      .prepare(
+        `SELECT
+           DATE(timestamp) AS date,
+           COUNT(*)        AS calls,
+           SUM(total_tokens) AS total_tokens,
+           GROUP_CONCAT(DISTINCT model) AS models
+         FROM api_calls
+         WHERE DATE(timestamp) >= ?
+         GROUP BY DATE(timestamp)
+         ORDER BY date DESC`,
+      )
+      .all(cutoff) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      date: String(r["date"]),
+      calls: Number(r["calls"]),
+      totalTokens: Number(r["total_tokens"]),
+      models: String(r["models"]),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export interface ModelUsageRow {
+  model: string;
+  calls: number;
+  totalTokens: number;
+  avgDurationMs: number;
+}
+
+export function getModelUsage(): ModelUsageRow[] {
+  try {
+    const d = getDb();
+    const rows = d
+      .prepare(
+        `SELECT
+           model,
+           COUNT(*)           AS calls,
+           SUM(total_tokens)  AS total_tokens,
+           AVG(duration_ms)   AS avg_duration_ms
+         FROM api_calls
+         GROUP BY model
+         ORDER BY total_tokens DESC`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      model: String(r["model"]),
+      calls: Number(r["calls"]),
+      totalTokens: Number(r["total_tokens"]),
+      avgDurationMs: Math.round(Number(r["avg_duration_ms"])),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export function closeDb(): void {
   if (insertStmt) {
     insertStmt.finalize();

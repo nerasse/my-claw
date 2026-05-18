@@ -39,13 +39,30 @@ function errorLogData(err: unknown): unknown {
   return String(err);
 }
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 30;
+
 export class MessageRouter {
   private sessionLocks = new Map<string, Promise<unknown>>();
+  private rateBuckets = new Map<string, number[]>();
 
   constructor(
     private sessionManager: SessionManager,
     private agent: AgentBridge,
   ) {}
+
+  private checkRateLimit(userId: string): boolean {
+    const now = Date.now();
+    const timestamps = this.rateBuckets.get(userId) ?? [];
+    const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+    if (recent.length >= RATE_LIMIT_MAX) {
+      this.rateBuckets.set(userId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.rateBuckets.set(userId, recent);
+    return true;
+  }
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.agent.setApprovalHandler(handler);
@@ -53,6 +70,12 @@ export class MessageRouter {
 
   async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const streaming = Boolean(options.onToken);
+
+    if (!this.checkRateLimit(message.userId)) {
+      void log("warn", "rate limit exceeded", { userId: message.userId, platform: message.platform });
+      return { text: "Rate limit exceeded. Please wait a moment before sending more messages." };
+    }
+
     void log("info", "message received", {
       ...messageLogData(message),
       streaming,

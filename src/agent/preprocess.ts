@@ -13,8 +13,8 @@ export class MessagePreprocessor {
   private _inboundHadAudio = false;
 
   constructor(
-    private voiceManager: VoiceManager,
-    private sttPipeline: SttPipeline,
+    private voiceManager?: VoiceManager,
+    private sttPipeline?: SttPipeline,
   ) {}
 
   get inboundHadAudio(): boolean {
@@ -60,6 +60,13 @@ export class MessagePreprocessor {
     const audioAttachments = message.attachments.filter((a) => a.type === "audio");
     if (audioAttachments.length === 0) {
       return { text: "" };
+    }
+
+    if (!this.voiceManager || !this.sttPipeline) {
+      const existingText = message.text ? message.text.trim() : "";
+      const prefix = existingText ? `\n\n` : "";
+      message.text = `${existingText}${prefix}[Audio]: [voice/STT not configured]`;
+      return { text: "", error: "voice/STT not configured" };
     }
 
     this._inboundHadAudio = true;
