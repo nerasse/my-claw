@@ -1,5 +1,6 @@
 import { EventType, type MatrixClient } from "matrix-js-sdk";
 import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
+import { toSdkContent } from "./send.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 
 export type MatrixReactionState = "received" | "thinking" | "tool_use" | "done" | "error";
@@ -51,7 +52,7 @@ export class MatrixReactionManager {
       const result = await this.client.sendEvent(
         roomId,
         EventType.Reaction,
-        buildReactionContent(eventId, emoji) as never,
+        toSdkContent(buildReactionContent(eventId, emoji)),
       );
       this.ownReactionIds.set(key, result.event_id);
     } catch {
@@ -67,7 +68,7 @@ export class MatrixReactionManager {
         await this.client.sendEvent(
           roomId,
           EventType.Reaction,
-          buildReactionContent(eventId, emoji) as never,
+          toSdkContent(buildReactionContent(eventId, emoji)),
         );
       } catch {
         return;

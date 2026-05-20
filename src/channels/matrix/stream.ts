@@ -1,6 +1,7 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
 import { withMatrixRetry } from "./retry.ts";
+import { toSdkContent } from "./send.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
 import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
 import { matrixLog } from "../../utils/logger.ts";
@@ -166,7 +167,7 @@ export class MatrixMessageStreamer {
   private async sendMessage(content: Record<string, unknown>, prefix: string): Promise<{ event_id: string }> {
     const txnId = this.outboundTxnId(prefix);
     return await withMatrixRetry({
-      task: () => this.client.sendMessage(this.opts.roomId, content as never, txnId),
+      task: () => this.client.sendMessage(this.opts.roomId, toSdkContent(content), txnId),
       ...(this.opts.retry || {}),
     });
   }

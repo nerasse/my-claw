@@ -10,6 +10,12 @@ import type { MatrixCryptoFacade, MatrixEncryptedFile } from "./types.ts";
 import { withMatrixRetry } from "./retry.ts";
 import { chunkMatrixText } from "./text.ts";
 
+// Bridges Record<string, unknown> to Matrix SDK's strict content types.
+// Centralized here so the unavoidable SDK type gap lives in one place.
+export function toSdkContent<T = never>(content: Record<string, unknown>): T {
+  return content as T;
+}
+
 export function sendMatrixMessage(
   sdk: MatrixClient,
   roomId: string,
@@ -17,7 +23,7 @@ export function sendMatrixMessage(
   txnId?: string,
 ): Promise<{ event_id: string }> {
   return withMatrixRetry({
-    task: () => sdk.sendMessage(roomId, content as never, txnId),
+    task: () => sdk.sendMessage(roomId, toSdkContent(content), txnId),
   });
 }
 

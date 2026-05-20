@@ -322,6 +322,7 @@ export async function chatCompletionStream(
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
+  let tokensDelivered = false;
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
     const controller = new AbortController();
@@ -334,7 +335,7 @@ export async function chatCompletionStream(
         const detail = await readErrorBody(response);
         const err = new Error(`LLM stream request failed: HTTP ${response.status} — ${detail}`);
 
-        if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
+        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = retryDelay(attempt, parseRetryAfterMs(response));
           await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
           await sleep(delay);
@@ -363,6 +364,7 @@ export async function chatCompletionStream(
 
         if (typeof delta.content === "string" && delta.content.length > 0) {
           content += delta.content;
+          tokensDelivered = true;
           await onToken(delta.content);
         }
 
@@ -437,7 +439,7 @@ export async function chatCompletionStream(
       if (err instanceof DOMException && err.name === "AbortError") {
         lastErr = new Error(`LLM stream timed out after ${LLM_STREAM_TIMEOUT_MS}ms`);
       }
-      if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
+      if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && isTransientError(err)) {
         const delay = retryDelay(attempt);
         await log("warn", `LLM stream transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
         await sleep(delay);
