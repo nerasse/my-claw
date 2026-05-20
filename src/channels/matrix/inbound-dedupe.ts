@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeJsonFileAtomicallySync } from "../../utils/atomic-write.ts";
 
 const STORE_VERSION = 1;
 const DEFAULT_MAX_ENTRIES = 20_000;
@@ -160,13 +160,6 @@ function readSeenMapSync(storagePath: string, ttlMs: number, maxEntries: number,
   }
   pruneSeenEvents({ seen, ttlMs, maxEntries, nowMs });
   return seen;
-}
-
-function writeJsonFileAtomicallySync(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp`;
-  writeFileSync(tempPath, JSON.stringify(value));
-  renameSync(tempPath, path);
 }
 
 function isClaimStale(path: string, claimStaleMs: number, nowMs: number): boolean {

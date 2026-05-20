@@ -19,7 +19,7 @@
     "clean": "rm -rf dist/"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.3.13",
     "@types/markdown-it": "^14.1.2",
     "typescript": "^5"
   },

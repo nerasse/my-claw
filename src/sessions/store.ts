@@ -1,6 +1,7 @@
-import { readFile, writeFile, mkdir, unlink, rename as fsRename, readdir, rm, stat } from "node:fs/promises";
+import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, stat } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
+import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string }
@@ -61,10 +62,7 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
 
 export async function saveSession(sessionId: string, data: SessionData): Promise<void> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
-  const tmp = path + ".tmp";
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(tmp, JSON.stringify(data, null, 2));
-  await fsRename(tmp, path);
+  await writeJsonFileAtomically(path, data, true);
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {

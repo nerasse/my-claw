@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeJsonFileAtomicallySync } from "../../utils/atomic-write.ts";
 import { MY_CLAW_DIR } from "../../core/config.ts";
 
 const STORE_VERSION = 1;
@@ -128,13 +128,6 @@ function parseState(raw: string): TelegramUpdateOffsetState | null {
   }
 }
 
-function writeJsonFileAtomicallySync(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp`;
-  writeFileSync(tempPath, JSON.stringify(value, null, 2));
-  renameSync(tempPath, path);
-}
-
 function isClaimStale(path: string, claimStaleMs: number, nowMs: number): boolean {
   const claim = readJsonFileSync<Partial<StoredTelegramUpdateClaim>>(path);
   const createdAt = normalizeTimestamp(claim?.createdAt);
@@ -205,7 +198,7 @@ export async function writeTelegramUpdateOffset(token: string, updateId: number,
     version: STORE_VERSION,
     lastUpdateId: updateId,
     botId: extractBotIdFromToken(token),
-  } satisfies TelegramUpdateOffsetState);
+  } satisfies TelegramUpdateOffsetState, true);
 }
 
 export async function createTelegramUpdateDeduper(params: {

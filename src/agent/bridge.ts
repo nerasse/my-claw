@@ -11,6 +11,7 @@ import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
+import { errorLogData } from "../utils/errors.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
@@ -42,16 +43,6 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
   };
 }
 
-function errorLogData(err: unknown): unknown {
-  if (err instanceof Error) {
-    return {
-      name: err.name,
-      message: err.message,
-      stack: err.stack,
-    };
-  }
-  return String(err);
-}
 
 const MAX_SESSION_MESSAGES = 500;
 const MAX_SESSION_MESSAGES_KEEP = 50;

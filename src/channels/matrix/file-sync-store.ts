@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { rm } from "node:fs/promises";
+import { writeJsonFileAtomically } from "../../utils/atomic-write.ts";
 import {
   Category,
   MemoryStore,
@@ -107,13 +107,6 @@ function syncDataToSyncResponse(syncData: ISyncData): ISyncResponse {
     rooms: syncData.roomsData,
     account_data: { events: syncData.accountData },
   };
-}
-
-async function writeJsonFileAtomically(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp`;
-  await writeFile(tempPath, JSON.stringify(value));
-  await rename(tempPath, path);
 }
 
 export class FileBackedMatrixSyncStore extends MemoryStore {

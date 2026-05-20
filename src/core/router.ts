@@ -2,6 +2,7 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
+import { errorLogData } from "../utils/errors.ts";
 
 export interface RouteResult {
   text: string;
@@ -26,17 +27,6 @@ function messageLogData(message: UnifiedMessage): Record<string, unknown> {
     attachmentCount: message.attachments.length,
     textChars: message.text.length,
   };
-}
-
-function errorLogData(err: unknown): unknown {
-  if (err instanceof Error) {
-    return {
-      name: err.name,
-      message: err.message,
-      stack: err.stack,
-    };
-  }
-  return String(err);
 }
 
 const RATE_LIMIT_WINDOW_MS = 60_000;

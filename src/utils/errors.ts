@@ -1,3 +1,10 @@
+export function errorLogData(err: unknown): unknown {
+  if (err instanceof Error) {
+    return { name: err.name, message: err.message, stack: err.stack };
+  }
+  return String(err);
+}
+
 export function formatError(context: string, rawError: unknown): string {
   const msg = rawError instanceof Error ? rawError.message : String(rawError);
 
