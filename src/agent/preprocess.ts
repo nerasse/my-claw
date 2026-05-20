@@ -137,8 +137,9 @@ export class MessagePreprocessor {
     if (videoAttachments.length === 0) return;
 
     for (const att of videoAttachments) {
+      if (!att.path) continue;
       try {
-        const frames = await extractVideoFrames(att.path!, {
+        const frames = await extractVideoFrames(att.path, {
           fps: 1 / 3,
           maxFrames: 20,
           maxWidth: 1920,

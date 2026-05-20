@@ -66,7 +66,7 @@ export class BrowserService {
   async scroll(page: Page, direction: "up" | "down"): Promise<void> {
     this.pool.touchPage(page);
     const amount = direction === "up" ? -SCROLL_AMOUNT : SCROLL_AMOUNT;
-    await page.evaluate((amt: number) => { window.scrollBy(0, amt); }, amount);
+    await page.evaluate(`window.scrollBy(0, ${amount})`);
   }
 
   async back(page: Page): Promise<void> {

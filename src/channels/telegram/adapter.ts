@@ -665,7 +665,7 @@ export class TelegramAdapter implements ChannelAdapter {
     return {
       id: String(msg.message_id),
       platform: "telegram",
-      userId: String(msg.from!.id),
+      userId: String(msg.from?.id ?? msg.sender_chat?.id ?? "unknown"),
       chatId,
       chatType,
       text: this.normalizedMessageText(msg, textOverride),

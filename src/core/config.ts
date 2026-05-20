@@ -368,6 +368,8 @@ export async function loadConfig(): Promise<MyClawConfig> {
     config.agents.research.llm = migrateLegacyAgentLlmConfig(config.agents.research.llm);
   }
 
+  config.whitelist = config.whitelist ?? [];
+  config.blacklist = config.blacklist ?? [];
   applySecretOverrides(config);
   const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
   await mkdir(workspacePath, { recursive: true });

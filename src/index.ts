@@ -99,10 +99,12 @@ async function main() {
   const router = new MessageRouter(sessionManager, agent);
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
+  let telegramRef: TelegramAdapter | undefined;
 
   if (isTelegramChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist);
     const telegram = new TelegramAdapter(config.channels.telegram!, whitelist);
+    telegramRef = telegram;
     const commandHandler = createTelegramCommandHandler({
       config,
       sessionManager,
@@ -166,6 +168,18 @@ async function main() {
 
     telegram.onCommand(commandHandler);
     telegram.onCallbackQuery(callbackHandler);
+
+    if (!isMatrixChannelEnabled(config)) {
+      router.setApprovalHandler(async (request) => {
+        if (request.platform === "telegram") {
+          const args = JSON.stringify(request.args, null, 2).slice(0, 500);
+          const text = `Approval required for tool <b>${request.toolName}</b>\n\n<pre>${args}</pre>`;
+          const accepted = await telegram.confirm(request.chatId, text, request.messageId);
+          return accepted ? "allow-session" : "deny";
+        }
+        return "deny";
+      });
+    }
 
     try {
       await telegram.start();
@@ -264,10 +278,16 @@ async function main() {
     matrix.onCommand(commandHandler);
     matrix.onAction(actionHandler);
     router.setApprovalHandler(async (request) => {
-      if (request.platform !== "matrix") {
-        return "deny";
+      if (request.platform === "matrix") {
+        return await matrix.confirmTool(request, approvalHandler);
       }
-      return await matrix.confirmTool(request, approvalHandler);
+      if (request.platform === "telegram" && telegramRef) {
+        const args = JSON.stringify(request.args, null, 2).slice(0, 500);
+        const text = `Approval required for tool <b>${request.toolName}</b>\n\n<pre>${args}</pre>`;
+        const accepted = await telegramRef.confirm(request.chatId, text, request.messageId);
+        return accepted ? "allow-session" : "deny";
+      }
+      return "deny";
     });
     await approvalHandler.restorePendingApprovals();
     try {
