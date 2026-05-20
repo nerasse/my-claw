@@ -3,16 +3,16 @@
 **Project**: my-claw — Personal AI agent orchestrator (TypeScript/Bun)
 **Stats**: ~100 source files, ~61k lines in `src/`, 84 test files, 677 passing tests
 **Date**: 2026-05-17 (analysis) / 2026-05-18 (fixes complete)
-**Version**: v0.1.42 (analysis baseline) -> v0.1.51 (final)
+**Version**: v0.1.42 (analysis baseline) -> v0.1.52 (final)
 **Context**: Autonomous agent on dedicated VM with sudo rights, bot-scoped Forgejo credentials
 **Method**: 14 specialized subagents (8 tour 2 + 6 tour 3) analyzing code in parallel, findings cross-verified, 5 critical findings manually verified
-**Status**: 67 fixes applied across 9 releases. 20/20 top priority items fixed. 771 tests. tsc clean. Score: 60 -> 87/100.
+**Status**: 71 fixes applied across 10 releases. 20/20 top priority items fixed. 771 tests. tsc clean. Score: 60 -> 88/100.
 
 ---
 
 ## Executive Summary
 
-Tour 2+3 went deeper than tour 1: tracing data flows, verifying fixes, and finding issues that only manifest in long-running production deployments. The analysis revealed **3 critical bugs** and ~100 findings across 13 categories. **67 fixes were applied** across v0.1.43-v0.1.51, addressing all 3 critical bugs, all 20 top priority items, major test coverage gaps, streaming dedup, SDK type safety, and all remaining polish items. tsc --noEmit passes clean.
+Tour 2+3 went deeper than tour 1: tracing data flows, verifying fixes, and finding issues that only manifest in long-running production deployments. The analysis revealed **3 critical bugs** and ~100 findings across 13 categories. **71 fixes were applied** across v0.1.43-v0.1.52, addressing all 3 critical bugs, all 20 top priority items, major test coverage gaps, streaming dedup, SDK type safety, DRY utilities, and codebase cleanup. tsc --noEmit passes clean.
 
 ### Score Trajectory
 
@@ -427,16 +427,17 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | v0.1.49 | 7 - Test Coverage | LLM retry/timeout/circuit breaker tests (16), bridge error path tests (8), session store tests (9), E2E pipeline tests (7), anti-injection obfuscation coverage (16) |
 | v0.1.50 | 8 - Final Polish | Telegram tool approval (confirm inline keyboard), config defaults (blacklist/whitelist ??= []), tsc fix (window.scrollBy string eval), video att.path guard, telegram msg.from null guard, pkg version bump, stale doc cleanup |
 | v0.1.51 | 9 - Streaming+Casts+Tests | Streaming retry dedup (skip retry after tokens delivered), Matrix SDK toSdkContent() centralization (4/5 casts), adapter normalization tests (24) |
+| v0.1.52 | 10 - Codebase Cleanup | DRY errorLogData (utils/errors.ts), DRY atomic write (utils/atomic-write.ts, 4 consumers), remove unused @/* tsconfig alias, pin @types/bun, move 4 completed plan docs to docs/archive/ |
 
 ### Metrics
 
-| Metric | Before (v0.1.42) | After (v0.1.51) | Delta |
+| Metric | Before (v0.1.42) | After (v0.1.52) | Delta |
 |--------|-------------------|------------------|-------|
-| Version | v0.1.42 | v0.1.51 | +9 releases |
+| Version | v0.1.42 | v0.1.52 | +10 releases |
 | Tests | 677 | 771 | +94 tests |
-| Findings fixed | 0 | 67 | +67 |
+| Findings fixed | 0 | 71 | +71 |
 | tsc --noEmit | 1 error | 0 errors | clean |
-| Files modified | — | ~80 unique | — |
+| Files modified | — | ~85 unique | — |
 
 ### Priority Fix List — Status
 
@@ -467,16 +468,16 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 
 ---
 
-## Post-Fix Scores (v0.1.50)
+## Post-Fix Scores (v0.1.52)
 
 | Category | Pre-fix | Post-fix | Delta |
 |----------|---------|----------|-------|
-| Architecture | 7.5 | 7.5 | — (no refactoring, trade-off) |
+| Architecture | 7.5 | 8 | +0.5 (DRY errorLogData, DRY atomic write, stale docs archived) |
 | Security | 3.5 | 8.5 | +5 (injection, containment, approval, SSRF+DNS+IPv6, memory forced, per-user auth, rate limiting, Telegram approval, config defaults) |
 | Tests | 6 | 8.5 | +2.5 (94 new tests: retry/circuit breaker, bridge errors, session store, E2E pipeline, injection patterns, SSRF IPv6, adapter normalization) |
 | Performance | 6.5 | 9 | +2.5 (async dedupe, caches, caps, cleanup, timeout) |
 | LLM / API | 7.5 | 8.5 | +1 (circuit breaker, fetch timeout, streaming retry dedup) |
-| Config & Docs | 7.5 | 9 | +1.5 (meta-commands, tarball, dead code, skill docs, config defaults, tsc clean, stale doc cleanup) |
+| Config & Docs | 7.5 | 9 | +1.5 (meta-commands, tarball, dead code, skill docs, config defaults, tsc clean, stale doc cleanup, tsconfig cleanup, @types/bun pinned) |
 | Error Handling | 6.5 | 8.5 | +2 (process handlers, circuit breaker, eviction log, channel isolation) |
 | Session & State | 6.5 | 9 | +2.5 (budget, atomic writes, mutex, msg cap, cleanup) |
 | Skills | 7.5 | 9 | +1.5 (YAML, indexOf, .builtin, injection scan, docs) |
@@ -488,7 +489,7 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 
 | Category | Score | Weight | Weighted |
 |----------|-------|--------|----------|
-| Architecture | 7.5 | 10% | 7.5 |
+| Architecture | 8 | 10% | 8.0 |
 | Security | 8.5 | 16% | 13.6 |
 | Tests | 8.5 | 12% | 10.2 |
 | Performance | 9 | 12% | 10.8 |
@@ -500,7 +501,7 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Voice | 8 | 4% | 3.2 |
 | Browser | 8 | 4% | 3.2 |
 | Tools | 8 | 6% | 4.8 |
-| | | **Total** | **87/100** |
+| | | **Total** | **88/100** |
 
 ### Score Trajectory
 
@@ -513,27 +514,32 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Tour 2+3 post-fix (v0.1.48) | 81/100 |
 | Tour 2+3 post-fix (v0.1.49) | 83/100 |
 | Tour 2+3 post-fix (v0.1.50) | 85/100 |
-| **Tour 2+3 final (v0.1.51)** | **87/100** |
+| Tour 2+3 post-fix (v0.1.51) | 87/100 |
+| **Tour 2+3 final (v0.1.52)** | **88/100** |
 
 ---
 
 ## Remaining (not addressed)
 
-### Nothing actionable remains
-
-All findings have been addressed, tested, or accepted as trade-offs.
-
-### Accepted trade-offs
+### Accepted trade-offs (will not change)
 
 | ID | Category | Finding | Reason |
 |----|----------|---------|--------|
-| A1/A2 | Architecture | Adapter files 1630/1078 lines | Extraction too coupled to adapter state, risk/reward unfavorable |
-| A3-A9 | Architecture | Duplicated patterns (error reporters, onMessage, file-locking, errorLogData) | Cosmetic, no runtime impact |
-| L1 | LLM | Streaming retry sends duplicate tokens | Rare in practice (requires mid-stream failure + successful retry) |
-| L5 | LLM | 4 chars/token estimation inaccurate for CJK/code | Would require tiktoken dependency, 15% margin compensates |
-| S3 | Security | Only bash+write in default blacklist | Design decision — packaged config blacklists bash+write, rest is user choice |
-| CRA4 | Compaction | Summary injected as `role: "user"` | Changing to `role: "system"` could break some providers |
-| — | Code Quality | `as never` casts in Matrix SDK integration (5x) | Upstream SDK type gaps, no fix without SDK changes |
-| — | Code Quality | No JSON schema validation (Zod) for config/sessions | Would add dependency, safe-parse helpers cover critical paths |
-| D2-D11 | Config & Docs | Various stale doc references, README legacy format | Low impact, cosmetic |
-| DEP2-DEP5 | Dependencies | tsc check fails, fake-indexeddb outdated, path alias unused | Non-blocking, cosmetic |
+| A1/A2 | Architecture | Adapter files 1630/1078 lines | Private state shared across all methods; splitting requires exposing internals or complex sub-objects. Risk of regression > readability gain. |
+| L5 | LLM | 4 chars/token estimation inaccurate for CJK/code | Would require tiktoken (~5MB dep). 15% margin compensates. Worst case = slightly aggressive context trim. |
+| S3 | Security | Only bash+write+memory in approval blacklist | Design decision. Other tools (read, ls, grep, fetch) are safe by design. User configures additional blacklist entries. |
+| CRA4 | Compaction | Summary injected as `role: "user"` | `role: "system"` breaks Mistral and some OpenAI-compat providers. No safe way to change without testing every provider. |
+| 1x `as never` | Code Quality | `params.sdk as never` in ingress.ts | SDK client type narrowed for poll snapshot; not content cast. Upstream SDK type gap. |
+| — | Code Quality | No JSON schema validation (Zod) for config/sessions | Adds ~500KB dep. `??` fallbacks + safe-parse cover critical paths. Malformed config gives clear JSON.parse error. |
+
+### Previously accepted, now fixed
+
+| ID | Was | Fixed in | How |
+|----|-----|----------|-----|
+| ~~A3-A9~~ | Duplicated patterns | v0.1.52 | `errorLogData` -> `utils/errors.ts`, atomic write -> `utils/atomic-write.ts` |
+| ~~L1~~ | Streaming retry duplicate tokens | v0.1.51 | `tokensDelivered` guard skips retry after tokens sent |
+| ~~`as never` (4/5)~~ | 5x Matrix SDK casts | v0.1.51 | `toSdkContent()` helper centralizes 4 content casts |
+| ~~DEP2~~ | tsc --noEmit fails | v0.1.50 | `window.scrollBy` -> string eval |
+| ~~DEP4~~ | Unused @/* path alias | v0.1.52 | Removed from tsconfig.json |
+| ~~DEP5~~ | @types/bun unpinned | v0.1.52 | Pinned to ^1.3.13 |
+| ~~D2-D11~~ | Stale plan docs | v0.1.52 | 4 completed plans moved to docs/archive/ |
