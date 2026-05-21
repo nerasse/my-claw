@@ -186,3 +186,95 @@ test("zero tokens are valid", () => {
   assert.equal(row.completion_tokens, 0);
   assert.equal(row.total_tokens, 0);
 });
+
+test("getSessionUsage logic: aggregates calls, tokens, and errors per session", () => {
+  insertRow(db, { session_id: "s1", prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, duration_ms: 200, error: null });
+  insertRow(db, { session_id: "s1", prompt_tokens: 80, completion_tokens: 40, total_tokens: 120, duration_ms: 300, error: null });
+  insertRow(db, { session_id: "s1", prompt_tokens: 60, completion_tokens: 30, total_tokens: 90, duration_ms: 100, error: "HTTP 500" });
+  insertRow(db, { session_id: "s2", prompt_tokens: 999, completion_tokens: 999, total_tokens: 1998, duration_ms: 999, error: null });
+
+  const row = db.prepare(
+    `SELECT
+       COUNT(*)              AS total_calls,
+       SUM(total_tokens)     AS total_tokens,
+       SUM(prompt_tokens)    AS prompt_tokens,
+       SUM(completion_tokens) AS completion_tokens,
+       SUM(duration_ms)      AS total_duration_ms,
+       SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS error_count
+     FROM api_calls WHERE session_id = ?`
+  ).get("s1") as Record<string, number>;
+
+  assert.equal(row["total_calls"], 3);
+  assert.equal(row["prompt_tokens"], 240);
+  assert.equal(row["completion_tokens"], 120);
+  assert.equal(row["total_tokens"], 360);
+  assert.equal(row["total_duration_ms"], 600);
+  assert.equal(row["error_count"], 1);
+});
+
+test("getDailySummary logic: groups rows by date with distinct models", () => {
+  const day1 = "2025-06-01T10:00:00.000Z";
+  const day2 = "2025-06-02T14:00:00.000Z";
+
+  db.prepare(
+    `INSERT INTO api_calls (timestamp, session_id, platform, model, base_url, prompt_tokens, completion_tokens, total_tokens, duration_ms)
+     VALUES (?, 's1', 'telegram', 'model-a', 'https://api.example.com', 100, 50, 150, 200)`
+  ).run(day1);
+  db.prepare(
+    `INSERT INTO api_calls (timestamp, session_id, platform, model, base_url, prompt_tokens, completion_tokens, total_tokens, duration_ms)
+     VALUES (?, 's1', 'telegram', 'model-b', 'https://api.example.com', 200, 100, 300, 400)`
+  ).run(day1);
+  db.prepare(
+    `INSERT INTO api_calls (timestamp, session_id, platform, model, base_url, prompt_tokens, completion_tokens, total_tokens, duration_ms)
+     VALUES (?, 's2', 'matrix', 'model-a', 'https://api.example.com', 50, 25, 75, 100)`
+  ).run(day2);
+
+  const rows = db.prepare(
+    `SELECT
+       DATE(timestamp) AS date,
+       COUNT(*)        AS calls,
+       SUM(total_tokens) AS total_tokens,
+       GROUP_CONCAT(DISTINCT model) AS models
+     FROM api_calls
+     WHERE DATE(timestamp) >= ?
+     GROUP BY DATE(timestamp)
+     ORDER BY date DESC`
+  ).all("2025-01-01") as Array<Record<string, unknown>>;
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]!["date"], "2025-06-02");
+  assert.equal(rows[0]!["calls"], 1);
+  assert.equal(rows[0]!["total_tokens"], 75);
+  assert.equal(rows[1]!["date"], "2025-06-01");
+  assert.equal(rows[1]!["calls"], 2);
+  assert.equal(rows[1]!["total_tokens"], 450);
+  const day1Models = String(rows[1]!["models"]).split(",").sort();
+  assert.deepEqual(day1Models, ["model-a", "model-b"]);
+});
+
+test("getModelUsage logic: aggregates calls, tokens, and avg duration per model", () => {
+  insertRow(db, { model: "gpt-4", total_tokens: 200, duration_ms: 100 });
+  insertRow(db, { model: "gpt-4", total_tokens: 300, duration_ms: 200 });
+  insertRow(db, { model: "claude", total_tokens: 500, duration_ms: 150 });
+
+  const rows = db.prepare(
+    `SELECT
+       model,
+       COUNT(*)           AS calls,
+       SUM(total_tokens)  AS total_tokens,
+       AVG(duration_ms)   AS avg_duration_ms
+     FROM api_calls
+     GROUP BY model
+     ORDER BY total_tokens DESC`
+  ).all() as Array<Record<string, unknown>>;
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0]!["model"], "claude");
+  assert.equal(rows[0]!["calls"], 1);
+  assert.equal(rows[0]!["total_tokens"], 500);
+  assert.equal(Math.round(Number(rows[0]!["avg_duration_ms"])), 150);
+  assert.equal(rows[1]!["model"], "gpt-4");
+  assert.equal(rows[1]!["calls"], 2);
+  assert.equal(rows[1]!["total_tokens"], 500);
+  assert.equal(Math.round(Number(rows[1]!["avg_duration_ms"])), 150);
+});

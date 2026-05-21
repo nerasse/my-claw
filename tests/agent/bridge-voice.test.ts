@@ -79,9 +79,9 @@ describe("AgentBridge voice integration", () => {
       // Expected to fail due to mocked LLM.
     }
 
-    const echoes = bridge.getEchoMessages();
-    expect(echoes.length).toBeGreaterThanOrEqual(0);
-    // If STT fails, an error echo may be present.
+    const userMessage = session.messages.find((m) => m.role === "user");
+    expect(userMessage).toBeDefined();
+    expect(userMessage!.content).toContain("[Audio]:");
   });
 
   test("flags inbound audio correctly", async () => {

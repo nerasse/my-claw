@@ -6,7 +6,7 @@
 **Version**: v0.1.42 (analysis baseline) -> v0.1.52 (final)
 **Context**: Autonomous agent on dedicated VM with sudo rights, bot-scoped Forgejo credentials
 **Method**: 14 specialized subagents (8 tour 2 + 6 tour 3) analyzing code in parallel, findings cross-verified, 5 critical findings manually verified
-**Status**: 71 fixes applied across 10 releases. 20/20 top priority items fixed. 771 tests. tsc clean. Score: 60 -> 88/100.
+**Status**: 74 fixes applied across 11 releases. 20/20 top priority items fixed. 954 tests. tsc clean. Score: 60 -> 88.6/100.
 
 ---
 
@@ -428,16 +428,17 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | v0.1.50 | 8 - Final Polish | Telegram tool approval (confirm inline keyboard), config defaults (blacklist/whitelist ??= []), tsc fix (window.scrollBy string eval), video att.path guard, telegram msg.from null guard, pkg version bump, stale doc cleanup |
 | v0.1.51 | 9 - Streaming+Casts+Tests | Streaming retry dedup (skip retry after tokens delivered), Matrix SDK toSdkContent() centralization (4/5 casts), adapter normalization tests (24) |
 | v0.1.52 | 10 - Codebase Cleanup | DRY errorLogData (utils/errors.ts), DRY atomic write (utils/atomic-write.ts, 4 consumers), remove unused @/* tsconfig alias, pin @types/bun, move 4 completed plan docs to docs/archive/ |
+| v0.1.53 | 11 - Test Safety Net | +183 tests: fix 3 broken tests (TS6/TS7/TS8), new test suites for preprocess (18), telegram/context (28), telegram/send (30), matrix/send (32), matrix/polls (22), matrix/actions (25), matrix/ingress (9), router (+9), config (+7), analytics queries (+3) |
 
 ### Metrics
 
-| Metric | Before (v0.1.42) | After (v0.1.52) | Delta |
+| Metric | Before (v0.1.42) | After (v0.1.53) | Delta |
 |--------|-------------------|------------------|-------|
-| Version | v0.1.42 | v0.1.52 | +10 releases |
-| Tests | 677 | 771 | +94 tests |
-| Findings fixed | 0 | 71 | +71 |
+| Version | v0.1.42 | v0.1.53 | +11 releases |
+| Tests | 677 | 954 | +277 tests |
+| Findings fixed | 0 | 74 | +74 |
 | tsc --noEmit | 1 error | 0 errors | clean |
-| Files modified | — | ~85 unique | — |
+| Files modified | — | ~95 unique | — |
 
 ### Priority Fix List — Status
 
@@ -474,7 +475,7 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 |----------|---------|----------|-------|
 | Architecture | 7.5 | 8 | +0.5 (DRY errorLogData, DRY atomic write, stale docs archived) |
 | Security | 3.5 | 8.5 | +5 (injection, containment, approval, SSRF+DNS+IPv6, memory forced, per-user auth, rate limiting, Telegram approval, config defaults) |
-| Tests | 6 | 8.5 | +2.5 (94 new tests: retry/circuit breaker, bridge errors, session store, E2E pipeline, injection patterns, SSRF IPv6, adapter normalization) |
+| Tests | 6 | 9 | +3 (277 new tests: retry/circuit breaker, bridge errors, session store, E2E pipeline, injection patterns, SSRF IPv6, adapter normalization, preprocess, telegram send/context, matrix send/polls/actions/ingress, router, config) |
 | Performance | 6.5 | 9 | +2.5 (async dedupe, caches, caps, cleanup, timeout) |
 | LLM / API | 7.5 | 8.5 | +1 (circuit breaker, fetch timeout, streaming retry dedup) |
 | Config & Docs | 7.5 | 9 | +1.5 (meta-commands, tarball, dead code, skill docs, config defaults, tsc clean, stale doc cleanup, tsconfig cleanup, @types/bun pinned) |
@@ -491,7 +492,7 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 |----------|-------|--------|----------|
 | Architecture | 8 | 10% | 8.0 |
 | Security | 8.5 | 16% | 13.6 |
-| Tests | 8.5 | 12% | 10.2 |
+| Tests | 9 | 12% | 10.8 |
 | Performance | 9 | 12% | 10.8 |
 | LLM / API | 8.5 | 10% | 8.5 |
 | Config & Docs | 9 | 6% | 5.4 |
@@ -501,7 +502,7 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Voice | 8 | 4% | 3.2 |
 | Browser | 8 | 4% | 3.2 |
 | Tools | 8 | 6% | 4.8 |
-| | | **Total** | **88/100** |
+| | | **Total** | **88.6/100** |
 
 ### Score Trajectory
 
@@ -515,7 +516,8 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Tour 2+3 post-fix (v0.1.49) | 83/100 |
 | Tour 2+3 post-fix (v0.1.50) | 85/100 |
 | Tour 2+3 post-fix (v0.1.51) | 87/100 |
-| **Tour 2+3 final (v0.1.52)** | **88/100** |
+| Tour 2+3 post-fix (v0.1.52) | 88/100 |
+| **Tour 2+3 final (v0.1.53)** | **88.6/100** |
 
 ---
 

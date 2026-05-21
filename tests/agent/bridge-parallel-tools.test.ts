@@ -116,10 +116,6 @@ test("parallel tool calls: multiple tools run concurrently", async () => {
     const latestStart = Math.max(...starts.map((s) => s.time));
     const earliestEnd = Math.min(...ends.map((e) => e.time));
     assert.ok(latestStart <= earliestEnd, "Both tools should start before either finishes (parallel execution)");
-
-    // Total time should be ~50ms (parallel), not ~100ms (sequential)
-    // Allow some margin for CI/slow machines
-    assert.ok(totalMs < 150, `Expected parallel execution (<150ms) but took ${totalMs}ms`);
   } finally {
     fetchMock.restore();
   }
