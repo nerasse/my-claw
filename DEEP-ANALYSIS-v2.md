@@ -6,7 +6,7 @@
 **Version**: v0.1.42 (analysis baseline) -> v0.1.52 (final)
 **Context**: Autonomous agent on dedicated VM with sudo rights, bot-scoped Forgejo credentials
 **Method**: 14 specialized subagents (8 tour 2 + 6 tour 3) analyzing code in parallel, findings cross-verified, 5 critical findings manually verified
-**Status**: 92 fixes applied across 12 releases. 20/20 top priority items fixed. 955 tests. tsc clean. Score: 60 -> 89.4/100.
+**Status**: 107 fixes applied across 13 releases. 20/20 top priority items fixed. 955 tests. tsc clean. Score: 60 -> 90.2/100.
 
 ---
 
@@ -430,16 +430,17 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | v0.1.52 | 10 - Codebase Cleanup | DRY errorLogData (utils/errors.ts), DRY atomic write (utils/atomic-write.ts, 4 consumers), remove unused @/* tsconfig alias, pin @types/bun, move 4 completed plan docs to docs/archive/ |
 | v0.1.53 | 11 - Test Safety Net | +183 tests: fix 3 broken tests (TS6/TS7/TS8), new test suites for preprocess (18), telegram/context (28), telegram/send (30), matrix/send (32), matrix/polls (22), matrix/actions (25), matrix/ingress (9), router (+9), config (+7), analytics queries (+3) |
 | v0.1.54 | 12 - Runtime Bugs | 18 fixes: T1/T2 claimed update release on error, X1 stale claim 6h->1h, M4 approval restore with timer, M6 dead var, E5 log handler rejections, ST4 session rollback on crash, L2 head boundary loop, L7 video temp cleanup, BR5-8 browser pool/screenshot/networkidle/race/pageId, V5-V10 STT format/timeout/size + TTS timeout + multi-audio + file limit |
+| v0.1.55 | 13 - Dead Code + DRY | 15 fixes: M1 dead catch, M5 extract bufferItem, M7 semicolons, A7 DRY buildRelation, A8 DRY emojis const, TL6 find maxdepth+truncate, TL7 grep max-count+truncate, TL9 safe arg helpers, SK6 atomic sync, SK7 dir hash, SK8 YAML sanitize, SK9 recursive delete, CRA5/E8 analytics logging, E9 session corrupt log |
 
 ### Metrics
 
-| Metric | Before (v0.1.42) | After (v0.1.54) | Delta |
+| Metric | Before (v0.1.42) | After (v0.1.55) | Delta |
 |--------|-------------------|------------------|-------|
-| Version | v0.1.42 | v0.1.54 | +12 releases |
+| Version | v0.1.42 | v0.1.55 | +13 releases |
 | Tests | 677 | 955 | +278 tests |
-| Findings fixed | 0 | 92 | +92 |
+| Findings fixed | 0 | 107 | +107 |
 | tsc --noEmit | 1 error | 0 errors | clean |
-| Files modified | — | ~105 unique | — |
+| Files modified | — | ~115 unique | — |
 
 ### Priority Fix List — Status
 
@@ -482,10 +483,10 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Config & Docs | 7.5 | 9 | +1.5 (meta-commands, tarball, dead code, skill docs, config defaults, tsc clean, stale doc cleanup, tsconfig cleanup, @types/bun pinned) |
 | Error Handling | 6.5 | 8.5 | +2 (process handlers, circuit breaker, eviction log, channel isolation) |
 | Session & State | 6.5 | 9 | +2.5 (budget, atomic writes, mutex, msg cap, cleanup) |
-| Skills | 7.5 | 9 | +1.5 (YAML, indexOf, .builtin, injection scan, docs) |
+| Skills | 7.5 | 9.5 | +2 (YAML, indexOf, .builtin, injection scan, docs, atomic sync, dir hash, YAML sanitize, recursive delete) |
 | Voice | 6 | 9 | +3 (dead params, FR default, TTS limit, binary cache, optional voice/stt, format accept, fetch timeout, spawn timeout, multi-audio, size limit) |
 | Browser | 4.5 | 9 | +4.5 (disconnect, pages, browser_done, guardUrl+DNS, proper tool results, screenshot cleanup, networkidle fix, connection mutex, UUID pageId) |
-| Tools | 5.5 | 8 | +2.5 (containment, bash timeout, memory enum, fetch timeout) |
+| Tools | 5.5 | 9 | +3.5 (containment, bash timeout, memory enum, fetch timeout, find maxdepth, grep max-count, output truncation, safe arg casts) |
 
 ### Weighted Overall
 
@@ -499,11 +500,11 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Config & Docs | 9 | 6% | 5.4 |
 | Error Handling | 8.5 | 8% | 6.8 |
 | Session & State | 9 | 8% | 7.2 |
-| Skills | 9 | 4% | 3.6 |
+| Skills | 9.5 | 4% | 3.8 |
 | Voice | 9 | 4% | 3.6 |
 | Browser | 9 | 4% | 3.6 |
-| Tools | 8 | 6% | 4.8 |
-| | | **Total** | **89.4/100** |
+| Tools | 9 | 6% | 5.4 |
+| | | **Total** | **90.2/100** |
 
 ### Score Trajectory
 
@@ -519,7 +520,8 @@ All 5 critical/high findings from Tour 2 have been **manually verified** by read
 | Tour 2+3 post-fix (v0.1.51) | 87/100 |
 | Tour 2+3 post-fix (v0.1.52) | 88/100 |
 | Tour 2+3 post-fix (v0.1.53) | 88.6/100 |
-| **Tour 2+3 final (v0.1.54)** | **89.4/100** |
+| Tour 2+3 post-fix (v0.1.54) | 89.4/100 |
+| **Tour 2+3 final (v0.1.55)** | **90.2/100** |
 
 ---
 

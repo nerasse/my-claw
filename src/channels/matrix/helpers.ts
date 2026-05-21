@@ -50,39 +50,39 @@ export function resolveMatrixMessageAttachmentSummary(params: {
 }
 
 function looksLikeMatrixFilename(value: string): boolean {
-  const trimmed = value.trim()
+  const trimmed = value.trim();
   if (!trimmed || trimmed.includes("\n") || /\s/.test(trimmed)) {
-    return false
+    return false;
   }
-  const basename = trimmed.split(/[\\/]/).at(-1) ?? trimmed
+  const basename = trimmed.split(/[\\/]/).at(-1) ?? trimmed;
   if (basename !== trimmed) {
-    return false
+    return false;
   }
-  const dotIndex = trimmed.lastIndexOf(".")
-  return dotIndex > 0 && trimmed.length - dotIndex > 1
+  const dotIndex = trimmed.lastIndexOf(".");
+  return dotIndex > 0 && trimmed.length - dotIndex > 1;
 }
 
 export function resolveMatrixCaptionAndFilename(params: {
   body?: string;
   filename?: string;
 }): { caption?: string; filename?: string } {
-  const body = trimString(params.body)
-  const filename = trimString(params.filename)
+  const body = trimString(params.body);
+  const filename = trimString(params.filename);
 
   if (filename) {
     if (!body || body === filename) {
-      return { filename }
+      return { filename };
     }
-    return { caption: body, filename }
+    return { caption: body, filename };
   }
 
   if (!body) {
-    return {}
+    return {};
   }
   if (looksLikeMatrixFilename(body)) {
-    return { filename: body }
+    return { filename: body };
   }
-  return { caption: body }
+  return { caption: body };
 }
 
 export function extFromFilename(filename?: string): string {

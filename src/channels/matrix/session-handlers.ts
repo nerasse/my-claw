@@ -7,9 +7,9 @@ import { ModelPicker } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
+import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
 
 type MatrixChatType = "dm" | "group";
-const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
 
 interface MatrixActionContext {
   chatId: string;

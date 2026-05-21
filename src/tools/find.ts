@@ -37,12 +37,13 @@ export const findTool: Tool = {
     }
     try {
       const proc = Bun.spawn(
-        ["find", resolved, "-name", pattern],
+        ["find", resolved, "-maxdepth", "10", "-name", pattern],
         { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;
-      return { success: true, output: stdout || "No files found" };
+      const truncated = stdout.length > 100_000 ? stdout.slice(0, 100_000) + "\n[output truncated at 100KB]" : stdout;
+      return { success: true, output: truncated || "No files found" };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to find in "${resolved}"`, e) };
     }

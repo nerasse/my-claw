@@ -1,4 +1,4 @@
-import type { Tool, ToolResult } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt, bool } from "./types.ts";
 import type { TtsPipeline } from "../voice/tts.ts";
 
 export function createTtsTool(pipeline: TtsPipeline): Tool {
@@ -28,16 +28,16 @@ export function createTtsTool(pipeline: TtsPipeline): Tool {
       required: ["text"],
     },
     async execute(args): Promise<ToolResult> {
-      const text = args.text as string;
+      const text = str(args, "text");
       if (!text) {
         return { success: false, output: "", error: "text is required" };
       }
 
       try {
         const result = await pipeline.generate(text, {
-          voice: args.voice as string | undefined,
-          forceCloud: args.forceCloud as boolean | undefined,
-          forceLocal: args.forceLocal as boolean | undefined,
+          voice: strOpt(args, "voice"),
+          forceCloud: bool(args, "forceCloud", false),
+          forceLocal: bool(args, "forceLocal", false),
         });
         return {
           success: true,

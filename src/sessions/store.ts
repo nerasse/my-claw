@@ -2,6 +2,7 @@ import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, stat } from "
 import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
+import { log } from "../utils/logger.ts";
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string }
@@ -55,7 +56,9 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
   try {
     const raw = await readFile(path, "utf-8");
     return JSON.parse(raw) as SessionData;
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    void log("warn", "corrupt session file, treating as empty", { sessionId, error: String(err) });
     return null;
   }
 }

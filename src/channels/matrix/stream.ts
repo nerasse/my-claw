@@ -1,5 +1,6 @@
 import type { MatrixClient } from "matrix-js-sdk";
 import { buildMatrixFormattedText, prefixEditedMatrixFormattedBody } from "./format.ts";
+import { buildRelation, buildReplaceRelation } from "./helpers.ts";
 import { withMatrixRetry } from "./retry.ts";
 import { toSdkContent } from "./send.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
@@ -24,38 +25,6 @@ export interface MatrixStreamOptions {
     minDelayMs?: number;
     maxDelayMs?: number;
   };
-}
-
-function buildReplyRelation(replyToId?: string): Record<string, unknown> | undefined {
-  const eventId = replyToId?.trim();
-  if (!eventId) return undefined;
-  return { "m.in_reply_to": { event_id: eventId } };
-}
-
-function buildThreadRelation(threadId: string, replyToId?: string): Record<string, unknown> {
-  const relation: Record<string, unknown> = {
-    rel_type: "m.thread",
-    event_id: threadId,
-    is_falling_back: true,
-  };
-  relation["m.in_reply_to"] = { event_id: replyToId?.trim() || threadId };
-  return relation;
-}
-
-function buildRelation(threadId?: string, replyToId?: string): Record<string, unknown> | undefined {
-  if (threadId?.trim()) return buildThreadRelation(threadId.trim(), replyToId);
-  return buildReplyRelation(replyToId);
-}
-
-function buildReplaceRelation(originalEventId: string, threadId?: string): Record<string, unknown> {
-  const relation: Record<string, unknown> = {
-    rel_type: "m.replace",
-    event_id: originalEventId,
-  };
-  if (threadId?.trim()) {
-    relation["m.in_reply_to"] = { event_id: threadId.trim() };
-  }
-  return relation;
 }
 
 export class MatrixMessageStreamer {

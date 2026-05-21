@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { MY_CLAW_DIR } from "../core/config.ts";
+import { log } from "../utils/logger.ts";
 
 const DB_PATH = join(MY_CLAW_DIR, "analytics.db");
 
@@ -99,8 +100,8 @@ export function recordApiCall(record: ApiCallRecord): void {
       $duration_ms: record.durationMs,
       $error: record.error ?? null,
     });
-  } catch {
-    // analytics should never break the agent
+  } catch (err) {
+    void log("warn", "analytics recordApiCall failed", { error: String(err) });
   }
 }
 
@@ -111,8 +112,8 @@ export function pruneOldRecords(): void {
     const d = getDb();
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
     d.run("DELETE FROM api_calls WHERE timestamp < ?", [cutoff]);
-  } catch {
-    // best-effort
+  } catch (err) {
+    void log("warn", "analytics pruneOldRecords failed", { error: String(err) });
   }
 }
 
@@ -149,7 +150,8 @@ export function getSessionUsage(sessionId: string): UsageSummary | null {
       totalDurationMs: row["total_duration_ms"]!,
       errorCount: row["error_count"]!,
     };
-  } catch {
+  } catch (err) {
+    void log("warn", "analytics getSessionUsage failed", { error: String(err) });
     return null;
   }
 }
@@ -184,7 +186,8 @@ export function getDailySummary(days = 30): DailySummaryRow[] {
       totalTokens: Number(r["total_tokens"]),
       models: String(r["models"]),
     }));
-  } catch {
+  } catch (err) {
+    void log("warn", "analytics getDailySummary failed", { error: String(err) });
     return [];
   }
 }
@@ -217,7 +220,8 @@ export function getModelUsage(): ModelUsageRow[] {
       totalTokens: Number(r["total_tokens"]),
       avgDurationMs: Math.round(Number(r["avg_duration_ms"])),
     }));
-  } catch {
+  } catch (err) {
+    void log("warn", "analytics getModelUsage failed", { error: String(err) });
     return [];
   }
 }

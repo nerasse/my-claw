@@ -39,12 +39,13 @@ export const grepTool: Tool = {
     try {
       const flags = bool(args, "recursive", true) ? "-rn" : "-n";
       const proc = Bun.spawn(
-        ["grep", flags, pattern, resolved],
+        ["grep", flags, "--max-count=1000", "--binary-files=without-match", pattern, resolved],
         { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
       const stdout = await new Response(proc.stdout).text();
       await proc.exited;
-      return { success: true, output: stdout || "No matches found" };
+      const truncated = stdout.length > 100_000 ? stdout.slice(0, 100_000) + "\n[output truncated at 100KB]" : stdout;
+      return { success: true, output: truncated || "No matches found" };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to grep in "${resolved}"`, e) };
     }

@@ -788,61 +788,7 @@ export class MatrixAdapter implements ChannelAdapter {
       return false;
     }
     const batchKey = this.inboundBatchKey(message);
-    if (rootThreadId) {
-      if (message.replyToId && message.replyToId !== rootThreadId) {
-        return false;
-      }
-      if (message.attachments.length > 0) {
-        return true;
-      }
-      return message.text.trim().length > 0 || this.inboundBuffer.canCoalesce(batchKey, {
-        eventId: message.id,
-        senderId: message.userId,
-        chatType: message.chatType,
-        text: message.text,
-        content: {},
-        attachments: message.attachments,
-        threadId: message.threadId,
-        replyToId: message.replyToId,
-        mode: message.attachments.length > 0 ? "media" : "text",
-        timestampMs: Date.now(),
-      });
-    }
-    if (message.attachments.length > 0) {
-      return true;
-    }
-    if (message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD) {
-      return true;
-    }
-    if (message.mentionsBot) {
-      return this.inboundBuffer.canCoalesce(batchKey, {
-        eventId: message.id,
-        senderId: message.userId,
-        chatType: message.chatType,
-        text: message.text,
-        content: {},
-        attachments: message.attachments,
-        threadId: message.threadId,
-        replyToId: message.replyToId,
-        mode: message.attachments.length > 0 ? "media" : "text",
-        timestampMs: Date.now(),
-      });
-    }
-    if (this.pendingBufferedIngress.size > 0) {
-      return this.inboundBuffer.canCoalesce(batchKey, {
-        eventId: message.id,
-        senderId: message.userId,
-        chatType: message.chatType,
-        text: message.text,
-        content: {},
-        attachments: message.attachments,
-        threadId: message.threadId,
-        replyToId: message.replyToId,
-        mode: message.attachments.length > 0 ? "media" : "text",
-        timestampMs: Date.now(),
-      });
-    }
-    return this.inboundBuffer.shouldHold(batchKey, {
+    const bufferItem = {
       eventId: message.id,
       senderId: message.userId,
       chatType: message.chatType,
@@ -851,9 +797,31 @@ export class MatrixAdapter implements ChannelAdapter {
       attachments: message.attachments,
       threadId: message.threadId,
       replyToId: message.replyToId,
-      mode: message.attachments.length > 0 ? "media" : "text",
+      mode: (message.attachments.length > 0 ? "media" : "text") as "media" | "text",
       timestampMs: Date.now(),
-    });
+    };
+    if (rootThreadId) {
+      if (message.replyToId && message.replyToId !== rootThreadId) {
+        return false;
+      }
+      if (message.attachments.length > 0) {
+        return true;
+      }
+      return message.text.trim().length > 0 || this.inboundBuffer.canCoalesce(batchKey, bufferItem);
+    }
+    if (message.attachments.length > 0) {
+      return true;
+    }
+    if (message.text.length >= MATRIX_TEXT_BATCH_THRESHOLD) {
+      return true;
+    }
+    if (message.mentionsBot) {
+      return this.inboundBuffer.canCoalesce(batchKey, bufferItem);
+    }
+    if (this.pendingBufferedIngress.size > 0) {
+      return this.inboundBuffer.canCoalesce(batchKey, bufferItem);
+    }
+    return this.inboundBuffer.shouldHold(batchKey, bufferItem);
   }
 
   private inboundBatchKey(message: UnifiedMessage): string {
@@ -1336,53 +1304,49 @@ export class MatrixAdapter implements ChannelAdapter {
       true,
     ) ?? this.runtime.sdk.mxcUrlToHttp(mxcUrl, undefined, undefined, undefined, true) ?? undefined;
 
-    try {
-      let buffer: Buffer;
-      let resolvedMimeType = params.mimeType;
+    let buffer: Buffer;
+    let resolvedMimeType = params.mimeType;
 
-      if (params.encryptedFile) {
-        const crypto = this.resolveMatrixCrypto();
-        if (!crypto?.decryptMedia) {
-          throw new Error("Encrypted Matrix media decryption is unavailable");
-        }
-        buffer = await crypto.decryptMedia(params.encryptedFile, {
-          maxBytes: this.mediaMaxBytes(),
-          readIdleTimeoutMs: MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS,
-        });
-      } else {
-        const token = this.config.accessToken;
-        const response = await this.fetchWithTimeout(httpUrl ?? mxcUrl, {
-          headers: {
-            Accept: "*/*",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-        });
-        if (!response.ok) {
-          throw new Error(`Matrix media download failed: HTTP ${response.status}`);
-        }
-        buffer = Buffer.from(await response.arrayBuffer());
-        resolvedMimeType = resolvedMimeType ?? response.headers.get("content-type") ?? undefined;
+    if (params.encryptedFile) {
+      const crypto = this.resolveMatrixCrypto();
+      if (!crypto?.decryptMedia) {
+        throw new Error("Encrypted Matrix media decryption is unavailable");
       }
-
-      if (buffer.byteLength > this.mediaMaxBytes()) {
-        throw new Error("Matrix media exceeds size limit");
+      buffer = await crypto.decryptMedia(params.encryptedFile, {
+        maxBytes: this.mediaMaxBytes(),
+        readIdleTimeoutMs: MATRIX_MEDIA_DOWNLOAD_TIMEOUT_MS,
+      });
+    } else {
+      const token = this.config.accessToken;
+      const response = await this.fetchWithTimeout(httpUrl ?? mxcUrl, {
+        headers: {
+          Accept: "*/*",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Matrix media download failed: HTTP ${response.status}`);
       }
-
-      const extension =
-        extFromFilename(params.filename) ||
-        extFromMime(resolvedMimeType ?? "");
-      await mkdir(MATRIX_TMP_DIR, { recursive: true });
-      const localPath = `${MATRIX_TMP_DIR}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}${extension}`;
-      await writeFile(localPath, buffer);
-
-      return {
-        path: localPath,
-        httpUrl,
-        mimeType: resolvedMimeType,
-      };
-    } catch (err) {
-      throw err;
+      buffer = Buffer.from(await response.arrayBuffer());
+      resolvedMimeType = resolvedMimeType ?? response.headers.get("content-type") ?? undefined;
     }
+
+    if (buffer.byteLength > this.mediaMaxBytes()) {
+      throw new Error("Matrix media exceeds size limit");
+    }
+
+    const extension =
+      extFromFilename(params.filename) ||
+      extFromMime(resolvedMimeType ?? "");
+    await mkdir(MATRIX_TMP_DIR, { recursive: true });
+    const localPath = `${MATRIX_TMP_DIR}/${Date.now()}-${crypto.randomUUID().slice(0, 8)}${extension}`;
+    await writeFile(localPath, buffer);
+
+    return {
+      path: localPath,
+      httpUrl,
+      mimeType: resolvedMimeType,
+    };
   }
 
 

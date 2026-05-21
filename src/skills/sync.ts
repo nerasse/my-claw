@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, mkdir, copyFile, rm, access, stat } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, copyFile, rm, access, stat, rename } from "node:fs/promises";
 import { join, dirname, basename, relative } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -13,9 +13,19 @@ interface Manifest {
   syncedAt: string;
 }
 
-async function fileHash(path: string): Promise<string> {
-  const data = await readFile(path);
-  return createHash("sha256").update(data).digest("hex");
+async function dirHash(dirPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const entries = await readdir(dirPath, { withFileTypes: true, recursive: true });
+  const files = entries
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath ?? dirPath, e.name))
+    .sort();
+  for (const filePath of files) {
+    const data = await readFile(filePath);
+    hash.update(filePath.slice(dirPath.length));
+    hash.update(data);
+  }
+  return hash.digest("hex");
 }
 
 async function scanRepoSkills(repoDir: string): Promise<Map<string, { path: string; hash: string }>> {
@@ -32,7 +42,7 @@ async function scanRepoSkills(repoDir: string): Promise<Map<string, { path: stri
     const skillFile = join(repoDir, entry.name, "SKILL.md");
     try {
       await access(skillFile);
-      const hash = await fileHash(skillFile);
+      const hash = await dirHash(join(repoDir, entry.name));
       out.set(entry.name, { path: skillFile, hash });
     } catch {
       // skip
@@ -89,8 +99,16 @@ export async function syncBuiltIn(repoDir: string, builtinDir: string): Promise<
     if (!existing || existing.hash !== hash) {
       const srcDir = dirname(path);
       const destDir = join(builtinDir, name);
+      const tmpDir = destDir + ".tmp-" + Date.now();
+      await copyDirRecursive(srcDir, tmpDir);
       await rm(destDir, { recursive: true, force: true });
-      await copyDirRecursive(srcDir, destDir);
+      try {
+        await rename(tmpDir, destDir);
+      } catch {
+        await rm(destDir, { recursive: true, force: true });
+        await copyDirRecursive(tmpDir, destDir);
+        await rm(tmpDir, { recursive: true, force: true });
+      }
       changed.push(name);
     }
     newEntries.push({ name, hash, version: undefined });

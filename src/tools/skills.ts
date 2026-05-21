@@ -1,6 +1,6 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
-import { writeFile, mkdir, readFile, access, unlink } from "node:fs/promises";
+import { writeFile, mkdir, readFile, access, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { loadAllSkills } from "../skills/loader.ts";
@@ -164,7 +164,9 @@ export function createManageSkillsTool(
           return { success: false, output: formatError(`Failed to create skill directory "${name}"`, err) };
         }
 
-        const content = `---\nname: ${name}\ndescription: ${description}\n---\n\n${instructions}\n`;
+        const safeName = name.replace(/[\n\r]/g, " ").trim();
+        const safeDescription = description.replace(/[\n\r]/g, " ").trim();
+        const content = `---\nname: ${safeName}\ndescription: ${safeDescription}\n---\n\n${instructions}\n`;
         try {
           await writeFile(join(skillDir, "SKILL.md"), content);
         } catch (err) {
@@ -229,10 +231,10 @@ export function createManageSkillsTool(
         }
 
         const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customDir;
-        const skillFile = join(baseDir, name, "SKILL.md");
+        const skillDir = join(baseDir, name);
 
         try {
-          await unlink(skillFile);
+          await rm(skillDir, { recursive: true, force: true });
         } catch {
           return { success: false, output: `Failed to delete skill "${name}".` };
         }
