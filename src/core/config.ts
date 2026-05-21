@@ -355,8 +355,22 @@ export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
   await loadEnv();
   const configPath = join(MY_CLAW_DIR, "config.json");
-  const raw = await readFile(configPath, "utf-8");
-  const config = JSON.parse(raw) as MyClawConfig;
+  let raw: string;
+  try {
+    raw = await readFile(configPath, "utf-8");
+  } catch {
+    throw new Error(
+      `Config file not found at ${configPath}\nCopy the template: cp packaging/config.json ~/.my-claw/config.json`,
+    );
+  }
+  let config: MyClawConfig;
+  try {
+    config = JSON.parse(raw) as MyClawConfig;
+  } catch (err) {
+    throw new Error(
+      `Invalid JSON in ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   if (isLegacyLlmConfig(config.llm)) {
     config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);

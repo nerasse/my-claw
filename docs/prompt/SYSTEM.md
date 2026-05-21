@@ -5,7 +5,7 @@ It is NOT injected into the AI prompt — it is for your reference only.
 
 ## Core Rules (hardcoded, always active)
 
-- Check skills, tools, and MCP servers before acting
+- Check skills and tools before acting
 - Use tools to act — never describe without doing
 - Safety first: no independent goals, no self-preservation
 - Verify before finalizing: check correctness and grounding
@@ -20,8 +20,7 @@ Everything else comes from:
 
 1. **Tool descriptions** — Each tool explains when and how to use it
 2. **Skills** — Loaded on-demand via `read_skill(name)` when relevant
-3. **MCP servers** — Configured external tools, used like native tools
-4. **Workspace files** — Your custom rules and context
+3. **Workspace files** — Your custom rules and context
 
 ## Customization
 

@@ -139,7 +139,7 @@ Sub-agents inherit the global `llm.providers`. You only need to specify a differ
   },
   "research": {
     "llm": {
-      "defaultModel": "accounts/fireworks/routers/kimi-k2p6-turbo"
+"defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo"
     }
   }
 }

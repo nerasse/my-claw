@@ -47,6 +47,7 @@ src/
 │   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
 │   ├── blacklist.ts
+│   ├── preprocess.ts     # Message preprocessing (audio/video/attachments)
 │   ├── subagents/
 │   │   └── browser.ts
 │   └── prompt/
@@ -59,6 +60,7 @@ src/
 │   ├── types.ts           # UnifiedMessage, ChannelAdapter, shared types
 │   ├── model-picker.ts
 │   ├── context-visibility.ts
+│   ├── meta-commands.ts  # Meta-command filter (/help, /status, etc.)
 │   ├── telegram/
 │   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
 │   │   ├── send.ts        # All outgoing send/edit/delete methods
@@ -146,6 +148,7 @@ src/
 │   ├── logger.ts          # Scoped file logger (orchestrator, telegram, matrix)
 │   ├── media.ts           # Media ref extraction/dedup
 │   ├── errors.ts          # Error formatting
+│   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
 │   └── lru-map.ts         # LruMap + TtlSet utilities
 └── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```

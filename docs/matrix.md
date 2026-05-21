@@ -209,5 +209,5 @@ All commands are text-based (Matrix has no native command UI):
 
 ```bash
 bun run check
-node --experimental-transform-types --test tests/matrix-*.test.ts
+bun test tests/matrix-*.test.ts
 ```

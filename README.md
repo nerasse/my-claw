@@ -68,9 +68,12 @@ Skills may have their own dependencies (Python packages, CLIs, etc.). See indivi
 # Install deps
 bun install
 
-# Create config directory and file
+# Create config directory
 mkdir -p ~/.my-claw
-# Create ~/.my-claw/config.json (see Configuration section below)
+
+# Copy and edit the config template
+cp packaging/config.json ~/.my-claw/config.json
+# Edit ~/.my-claw/config.json with your API keys and tokens
 
 # Run
 bun run start
@@ -82,31 +85,31 @@ Config lives in `~/.my-claw/config.json`. Key sections:
 
 ```json
 {
-  "whitelist": ["@your_telegram_handle", "@you:matrix.org"],
-  "blacklist": [],
+  "whitelist": ["@your_telegram_handle"],
+  "blacklist": ["bash", "write"],
   "llm": {
-    "provider": "fireworks",
-    "baseUrl": "https://api.fireworks.ai/inference/v1",
-    "model": "accounts/fireworks/models/kimi-k2p6-turbo",
-    "apiKey": "YOUR_KEY",
-    "vision": true
+    "defaultProvider": "fireworks",
+    "defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo",
+    "vision": true,
+    "providers": {
+      "fireworks": {
+        "baseUrl": "https://api.fireworks.ai/inference/v1",
+        "apiKeyEnv": "FIREWORKS_API_KEY"
+      }
+    },
+    "limit": { "context": 128000, "output": 8192 }
   },
   "channels": {
     "telegram": {
       "enabled": true,
-      "token": "YOUR_BOT_TOKEN"
-    },
-    "matrix": {
-      "enabled": true,
-      "homeserver": "https://matrix.org",
-      "accessToken": "YOUR_TOKEN",
-      "userId": "@you:matrix.org"
+      "token": "YOUR_BOT_TOKEN",
+      "streaming": { "enabled": true }
     }
   },
   "voice": {
     "mode": "auto",
-    "stt": { "mode": "auto", "echoTranscript": true },
-    "tts": { "mode": "auto", "voice": "fr-FR-RemyMultilingualNeural" }
+    "stt": { "mode": "cloud", "echoTranscript": true },
+    "tts": { "mode": "cloud" }
   }
 }
 ```
