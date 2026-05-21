@@ -12,7 +12,7 @@ import { writeJsonFileAtomicallySync } from "../../utils/atomic-write.ts";
 const STORE_VERSION = 1;
 const DEFAULT_MAX_ENTRIES = 20_000;
 const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_CLAIM_STALE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_CLAIM_STALE_MS = 60 * 60 * 1000;
 const LOCK_STALE_MS = 60_000;
 const LOCK_RETRY_MS = 25;
 

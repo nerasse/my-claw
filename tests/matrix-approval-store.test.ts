@@ -53,7 +53,7 @@ test("matrix approval store expires pending requests", async () => {
   store.clear();
 });
 
-test("matrix approval handler restores pending approvals after restart as expired prompts", async () => {
+test("matrix approval handler restores non-expired approvals as actionable", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-approval-"));
   try {
     const storagePath = join(tempDir, "pending-approvals.json");
@@ -68,11 +68,37 @@ test("matrix approval handler restores pending approvals after restart as expire
       chatId: "!room:test",
       userId: "@u1:example.org",
       chatType: "group",
-    data: "apr:once:apr-restart",
-    messageId: "$approval",
-  });
+      data: "apr:once:apr-restart",
+      messageId: "$approval",
+    });
 
-    assert.match(resolved?.text ?? "", /expired/i);
+    assert.match(resolved?.text ?? "", /approved once/i);
+    await second.persistPendingApprovals();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("matrix approval handler skips already-expired approvals on restore", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-approval-"));
+  try {
+    const storagePath = join(tempDir, "pending-approvals.json");
+    await writeFile(
+      storagePath,
+      JSON.stringify([{ request: createRequest("apr-expired"), expiresAt: Date.now() - 1000 }], null, 2),
+    );
+
+    const second = createMatrixApprovalHandler(storagePath);
+    await second.restorePendingApprovals();
+    const resolved = await second.resolveAction({
+      chatId: "!room:test",
+      userId: "@u1:example.org",
+      chatType: "group",
+      data: "apr:once:apr-expired",
+      messageId: "$approval",
+    });
+
+    assert.match(resolved?.text ?? "", /expired or already resolved/i);
     await second.persistPendingApprovals();
   } finally {
     await rm(tempDir, { recursive: true, force: true });

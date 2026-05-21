@@ -1,4 +1,5 @@
-import { stat } from "node:fs/promises";
+import { stat, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { UnifiedMessage, OutgoingMessage, Attachment } from "../channels/types.ts";
 import type { ChatMessageContent } from "../llm/provider.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
@@ -11,6 +12,7 @@ export class MessagePreprocessor {
   private _echoMessages: OutgoingMessage[] = [];
   private _responseAttachments: NonNullable<OutgoingMessage["attachments"]> = [];
   private _inboundHadAudio = false;
+  private _tempDirs: string[] = [];
 
   constructor(
     private voiceManager?: VoiceManager,
@@ -52,8 +54,16 @@ export class MessagePreprocessor {
     this._echoMessages = [];
     this._responseAttachments = [];
     this._inboundHadAudio = false;
+    this._tempDirs = [];
     await this.preprocessAudio(message);
     await this.preprocessVideo(message);
+  }
+
+  async cleanupTempFiles(): Promise<void> {
+    for (const dir of this._tempDirs) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+    this._tempDirs = [];
   }
 
   private async preprocessAudio(message: UnifiedMessage): Promise<TranscriptionResult> {
@@ -70,66 +80,78 @@ export class MessagePreprocessor {
     }
 
     this._inboundHadAudio = true;
-    const att = audioAttachments[0]!;
+    const multi = audioAttachments.length > 1;
+    const transcriptions: string[] = [];
+    let lastError: string | undefined;
 
-    if (!att.path) {
-      const isEncrypted = att.summaryText?.includes("unavailable") ?? false;
-      const reason = isEncrypted
-        ? "This media is encrypted (E2EE) and inaccessible. Check my device in the room or send an unencrypted message."
-        : "Media not downloaded (unavailable or too large).";
+    for (let i = 0; i < audioAttachments.length; i++) {
+      const att = audioAttachments[i]!;
+      const label = multi ? `[Audio ${i + 1}]` : "[Audio]";
 
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: [unavailable — ${reason}]`;
+      if (!att.path) {
+        const isEncrypted = att.summaryText?.includes("unavailable") ?? false;
+        const reason = isEncrypted
+          ? "This media is encrypted (E2EE) and inaccessible. Check my device in the room or send an unencrypted message."
+          : "Media not downloaded (unavailable or too large).";
 
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this._echoMessages.push({
-          text: `[Warning] ${reason}`,
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
+        const existingText = message.text ? message.text.trim() : "";
+        const audioPrefix = existingText ? `\n\n` : "";
+        message.text = `${existingText}${audioPrefix}${label}: [unavailable — ${reason}]`;
+
+        const { enabled } = this.voiceManager.getEchoConfig();
+        if (enabled) {
+          this._echoMessages.push({
+            text: `[Warning] ${reason}`,
+            replyToId: message.id,
+            threadId: message.threadId,
+          });
+        }
+
+        lastError = reason;
+        continue;
       }
 
-      return { text: "", error: reason };
+      try {
+        const fileStat = await stat(att.path);
+        void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
+
+        const result = await this.sttPipeline.transcribe(att.path);
+        transcriptions.push(result.text);
+        const existingText = message.text ? message.text.trim() : "";
+        const audioPrefix = existingText ? `\n\n` : "";
+        message.text = `${existingText}${audioPrefix}${label}: "${result.text}"`;
+
+        const { enabled } = this.voiceManager.getEchoConfig();
+        if (enabled) {
+          this._echoMessages.push({
+            text: this.voiceManager.formatEcho(result.text),
+            replyToId: message.id,
+            threadId: message.threadId,
+          });
+        }
+      } catch (err) {
+        const errorMsg = String(err);
+        lastError = errorMsg;
+        const existingText = message.text ? message.text.trim() : "";
+        const audioPrefix = existingText ? `\n\n` : "";
+        message.text = `${existingText}${audioPrefix}${label}: [Transcription failed: ${errorMsg}]`;
+
+        const { enabled } = this.voiceManager.getEchoConfig();
+        if (enabled) {
+          this._echoMessages.push({
+            text: `[Warning] STT failed: ${errorMsg}`,
+            replyToId: message.id,
+            threadId: message.threadId,
+          });
+        }
+      }
     }
 
-    try {
-      const fileStat = await stat(att.path);
-      void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
-
-      const result = await this.sttPipeline.transcribe(att.path);
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: "${result.text}"`;
-
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this._echoMessages.push({
-          text: this.voiceManager.formatEcho(result.text),
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
-      }
-
-      return { text: result.text };
-    } catch (err) {
-      const errorMsg = String(err);
-      const existingText = message.text ? message.text.trim() : "";
-      const audioPrefix = existingText ? `\n\n` : "";
-      message.text = `${existingText}${audioPrefix}[Audio]: [Transcription failed: ${errorMsg}]`;
-
-      const { enabled } = this.voiceManager.getEchoConfig();
-      if (enabled) {
-        this._echoMessages.push({
-          text: `[Warning] STT failed: ${errorMsg}`,
-          replyToId: message.id,
-          threadId: message.threadId,
-        });
-      }
-
-      return { text: "", error: errorMsg };
+    const combinedText = transcriptions.join(" ");
+    if (combinedText) {
+      return { text: combinedText };
     }
+    return { text: "", error: lastError };
   }
 
   private async preprocessVideo(message: UnifiedMessage): Promise<void> {
@@ -144,6 +166,10 @@ export class MessagePreprocessor {
           maxFrames: 20,
           maxWidth: 1920,
         });
+
+        if (frames.length > 0) {
+          this._tempDirs.push(dirname(frames[0]!));
+        }
 
         for (const framePath of frames) {
           message.attachments.push({

@@ -127,6 +127,8 @@ export class AgentBridge {
       sessionMessageCount: session.messages.length,
     });
 
+    let messageCountBeforeLoop = session.messages.length;
+
     try {
       const systemPrompt = await buildSystemPrompt({
         platform: message.platform,
@@ -141,6 +143,7 @@ export class AgentBridge {
       const userContent = scanForInjection(rawUserContent, "user-message");
       const now = new Date().toISOString();
       session.messages.push({ role: "user", content: userContent, timestamp: now });
+      messageCountBeforeLoop = session.messages.length;
 
       const openaiTools = toOpenAiToolDefinitions(tools);
 
@@ -308,6 +311,7 @@ export class AgentBridge {
       }
       return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget);
     } catch (err) {
+      session.messages.length = messageCountBeforeLoop;
       void log("error", "agent run failed", {
         ...runLogData(message, session),
         model: llmConfig.model,
@@ -317,6 +321,8 @@ export class AgentBridge {
         error: errorLogData(err),
       });
       throw err;
+    } finally {
+      await this.preprocessor.cleanupTempFiles();
     }
   }
 

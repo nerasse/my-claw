@@ -93,26 +93,42 @@ describe("SttPipeline Groq upload fixes", () => {
     });
   });
 
-  describe("Ogg header validation", () => {
-    test("throws for non-Ogg files", async () => {
+  describe("multi-format support", () => {
+    test("accepts non-Ogg formats with correct MIME type", async () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
-      const filePath = join(tmpDir, "fake.mp3");
-      await writeFile(filePath, Buffer.from("not an ogg file"));
+      const filePath = join(tmpDir, "audio.mp3");
+      await writeFile(filePath, Buffer.from("fake mp3 content"));
 
       const config = createConfig({ voice: { mode: "cloud" } });
       const manager = new VoiceManager(config);
       const pipeline = new SttPipeline(manager);
 
+      const fetchCalls: Array<{ formData: FormData }> = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+        if (url.includes("groq.com")) {
+          const fd = init?.body as FormData;
+          fetchCalls.push({ formData: fd });
+          return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
+        }
+        return originalFetch(url, init);
+      });
+
       try {
         process.env.GROQ_API_KEY = "test-key";
-        await expect(pipeline.transcribe(filePath)).rejects.toThrow("not a valid Ogg/Opus file");
+        const result = await pipeline.transcribe(filePath);
+        expect(result.text).toBe("hello");
+        expect(fetchCalls.length).toBe(1);
+        const fileEntry = fetchCalls[0]!.formData.get("file") as File;
+        expect(fileEntry.type).toBe("audio/mpeg");
       } finally {
+        globalThis.fetch = originalFetch;
         delete process.env.GROQ_API_KEY;
         await unlink(filePath).catch(() => {});
       }
     });
 
-    test("accepts valid Ogg header", async () => {
+    test("accepts valid Ogg files", async () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
       const filePath = join(tmpDir, "voice.ogg");
       const oggHeader = Buffer.from([0x4F, 0x67, 0x67, 0x53, 0x00, 0x00, 0x00, 0x00]);

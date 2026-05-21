@@ -88,6 +88,7 @@ export function trimToContextWindow(
           break;
         }
       }
+      continue;
     }
     break;
   }

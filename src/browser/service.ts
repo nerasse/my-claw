@@ -1,4 +1,5 @@
 import type { Page, BrowserContext } from "playwright-core";
+import { unlink } from "node:fs/promises";
 import { BrowserPool } from "./pool.ts";
 import { injectRefLabels, removeRefLabels } from "./labels.ts";
 import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
@@ -9,6 +10,7 @@ const SCROLL_AMOUNT = 500;
 
 export class BrowserService {
   private context: BrowserContext | null = null;
+  private screenshots: string[] = [];
 
   constructor(private pool: BrowserPool, private viewport = DEFAULT_VIEWPORT) {}
 
@@ -17,7 +19,7 @@ export class BrowserService {
     const page = await context.newPage();
     this.pool.trackPage(page);
     this.attachDialogHandler(page);
-    await page.goto(url, { waitUntil: "networkidle" });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     const snapshot = await this.snapshot(page);
     return { page, snapshot, url: page.url() };
   }
@@ -49,17 +51,19 @@ export class BrowserService {
 
   async screenshot(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
     this.pool.touchPage(page);
-    const path = `${SCREENSHOT_DIR}/browser-${Date.now()}.png`;
+    const path = `${SCREENSHOT_DIR}/browser-${crypto.randomUUID()}.png`;
     await page.screenshot({ path, fullPage });
+    this.screenshots.push(path);
     return { type: "image", path, mimeType: "image/png" };
   }
 
   async screenshotWithLabels(page: Page, fullPage?: boolean): Promise<BrowserAttachment> {
     this.pool.touchPage(page);
-    const path = `${SCREENSHOT_DIR}/browser-${Date.now()}.png`;
+    const path = `${SCREENSHOT_DIR}/browser-${crypto.randomUUID()}.png`;
     await injectRefLabels(page);
     await page.screenshot({ path, fullPage });
     await removeRefLabels(page);
+    this.screenshots.push(path);
     return { type: "image", path, mimeType: "image/png" };
   }
 
@@ -71,7 +75,7 @@ export class BrowserService {
 
   async back(page: Page): Promise<void> {
     this.pool.touchPage(page);
-    await page.goBack({ waitUntil: "networkidle" });
+    await page.goBack({ waitUntil: "domcontentloaded", timeout: 30000 });
   }
 
   async listTabs(): Promise<BrowserTabInfo[]> {
@@ -128,6 +132,10 @@ export class BrowserService {
   }
 
   async cleanup(): Promise<void> {
+    for (const path of this.screenshots) {
+      await unlink(path).catch(() => undefined);
+    }
+    this.screenshots = [];
     await this.pool.disconnect();
     this.context = null;
   }

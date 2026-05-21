@@ -22,7 +22,7 @@ describe("BrowserPool", () => {
     assert.strictEqual(pool.isConnected(), false);
   });
 
-  test("throws when connecting twice concurrently", async () => {
+  test("concurrent connect calls share the same promise", async () => {
     const fakeBrowser = {
       isConnected: () => false,
       close: () => Promise.resolve(),
@@ -35,14 +35,16 @@ describe("BrowserPool", () => {
     const originalConnect = chromium.connectOverCDP;
     let resolveConnect: (b: typeof fakeBrowser) => void;
     const connectPromise = new Promise<typeof fakeBrowser>((r) => { resolveConnect = r; });
-    chromium.connectOverCDP = () => connectPromise as any;
+    let connectCalls = 0;
+    chromium.connectOverCDP = () => { connectCalls++; return connectPromise as any; };
 
     try {
       const p1 = pool.connect();
       const p2 = pool.connect();
-      await assert.rejects(p2, /already in progress/);
       resolveConnect!(fakeBrowser);
-      await p1;
+      const [b1, b2] = await Promise.all([p1, p2]);
+      assert.strictEqual(b1, b2);
+      assert.strictEqual(connectCalls, 1);
     } finally {
       chromium.connectOverCDP = originalConnect;
     }

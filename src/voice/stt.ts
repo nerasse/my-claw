@@ -36,21 +36,20 @@ export class SttPipeline {
     if (fileStat.size === 0) {
       throw new Error("Audio file is empty (0 bytes)");
     }
+    const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
+    if (fileStat.size > MAX_AUDIO_SIZE) {
+      throw new Error(`Audio file too large (${Math.round(fileStat.size / 1024 / 1024)}MB, max 25MB)`);
+    }
 
     const buffer = await readFile(filePath);
 
-    // Validate Ogg header (Telegram voice notes should start with "OggS")
-    const isOgg = buffer.length >= 4 && buffer[0] === 0x4F && buffer[1] === 0x67 && buffer[2] === 0x67 && buffer[3] === 0x53;
-    if (!isOgg && buffer.length > 0) {
-      throw new Error(`Audio file is not a valid Ogg/Opus file (header: ${buffer.slice(0, 4).toString("hex")})`);
-    }
-
     const formData = new FormData();
     const originalName = basename(filePath);
-    // Groq doesn't accept .oga (Telegram voice note extension), normalize to .ogg
     const uploadName = originalName.replace(/\.oga$/i, ".ogg");
-    // Force MIME type to audio/ogg so Groq recognises the file
-    const file = new File([buffer], uploadName, { type: "audio/ogg" });
+    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+    const mimeMap: Record<string, string> = { ogg: "audio/ogg", oga: "audio/ogg", mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", m4a: "audio/mp4" };
+    const mimeType = mimeMap[ext] ?? "audio/ogg";
+    const file = new File([buffer], uploadName, { type: mimeType });
     formData.append("file", file);
     formData.append("model", "whisper-large-v3");
     const language = this.voiceManager.getVoiceConfig()?.stt?.language;
@@ -62,6 +61,7 @@ export class SttPipeline {
         Authorization: `Bearer ${apiKey}`,
       },
       body: formData,
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!response.ok) {
@@ -79,12 +79,19 @@ export class SttPipeline {
   private async transcribeLocal(filePath: string): Promise<STTResult> {
     const endpoint = process.env.FASTER_WHISPER_ENDPOINT ?? "http://127.0.0.1:18792";
 
+    const fileStat = await stat(filePath);
+    const MAX_AUDIO_SIZE = 25 * 1024 * 1024;
+    if (fileStat.size > MAX_AUDIO_SIZE) {
+      throw new Error(`Audio file too large (${Math.round(fileStat.size / 1024 / 1024)}MB, max 25MB)`);
+    }
+
     const formData = new FormData();
     formData.append("file", Bun.file(filePath));
 
     const response = await fetch(`${endpoint}/transcribe`, {
       method: "POST",
       body: formData,
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!response.ok) {

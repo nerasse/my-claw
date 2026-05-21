@@ -105,11 +105,20 @@ export class TtsPipeline {
           "--output_file", outputPath,
         ]);
 
+        const timer = setTimeout(() => {
+          child.kill();
+          reject(new Error("Piper TTS timed out after 30s"));
+        }, 30_000);
+
         child.stdin?.write(text);
         child.stdin?.end();
 
-        child.on("error", reject);
+        child.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
         child.on("close", (code) => {
+          clearTimeout(timer);
           if (code === 0) {
             resolve();
           } else {

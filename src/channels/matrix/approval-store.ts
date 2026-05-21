@@ -14,8 +14,6 @@ export type PersistedPendingMatrixApproval = {
   expiresAt: number;
 };
 
-const pendingApprovals = new Map<string, PendingMatrixApproval>();
-
 export function createMatrixApprovalStore(
   timeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
   options?: { unrefTimers?: boolean },
@@ -82,14 +80,21 @@ export function createMatrixApprovalStore(
     },
 
     restore(entries: PersistedPendingMatrixApproval[]): void {
+      const now = Date.now();
       for (const entry of entries) {
-        if (!entry) {
-          continue;
-        }
+        if (!entry || entry.expiresAt <= now) continue;
+        let storedResolve: ((decision: ApprovalDecision) => void) | undefined;
+        const promise = new Promise<ApprovalDecision>((resolve) => {
+          storedResolve = resolve;
+        });
+        void promise;
+        const timer = armTimer(entry.request.id, entry.expiresAt, storedResolve!);
+        if (options?.unrefTimers === true) timer.unref?.();
         pendingApprovals.set(entry.request.id, {
           request: entry.request,
-          resolve: () => undefined,
-          expiresAt: 0,
+          resolve: storedResolve!,
+          expiresAt: entry.expiresAt,
+          timer,
         });
       }
     },

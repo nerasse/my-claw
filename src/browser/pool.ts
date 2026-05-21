@@ -7,7 +7,7 @@ interface PageActivity {
 
 export class BrowserPool {
   private browser: Browser | null = null;
-  private connecting = false;
+  private connectPromise: Promise<Browser> | null = null;
   private pages = new Map<string, PageActivity>();
   private sweepInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -20,22 +20,24 @@ export class BrowserPool {
     if (this.browser?.isConnected()) {
       return this.browser;
     }
-    if (this.connecting) {
-      throw new Error("Browser connection already in progress");
+    if (this.connectPromise) {
+      return this.connectPromise;
     }
-    this.connecting = true;
-    try {
-      this.browser = await chromium.connectOverCDP(this.cdpUrl);
-      this.browser.on("disconnected", () => {
-        this.pages.clear();
-        this.browser = null;
-        this.stopSweep();
-      });
-      this.startSweep();
-      return this.browser;
-    } finally {
-      this.connecting = false;
-    }
+    this.connectPromise = (async () => {
+      try {
+        this.browser = await chromium.connectOverCDP(this.cdpUrl);
+        this.browser.on("disconnected", () => {
+          this.pages.clear();
+          this.browser = null;
+          this.stopSweep();
+        });
+        this.startSweep();
+        return this.browser;
+      } finally {
+        this.connectPromise = null;
+      }
+    })();
+    return this.connectPromise;
   }
 
   async newContext(viewport?: { width: number; height: number }): Promise<BrowserContext> {
@@ -55,7 +57,7 @@ export class BrowserPool {
   }
 
   trackPage(page: Page): void {
-    const id = `${page.context().browser()?.version() ?? "unknown"}-${Date.now()}`;
+    const id = crypto.randomUUID();
     this.pages.set(id, { page, lastActive: Date.now() });
   }
 

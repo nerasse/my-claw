@@ -13,7 +13,7 @@ import { MY_CLAW_DIR } from "../../core/config.ts";
 const STORE_VERSION = 1;
 const LOCK_STALE_MS = 60_000;
 const LOCK_RETRY_MS = 25;
-const DEFAULT_CLAIM_STALE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_CLAIM_STALE_MS = 60 * 60 * 1000;
 
 type TelegramUpdateOffsetState = {
   version: number;

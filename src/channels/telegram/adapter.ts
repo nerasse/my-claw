@@ -608,6 +608,7 @@ export class TelegramAdapter implements ChannelAdapter {
       await this.commitProcessedUpdate(meta?.updateId);
       await this.reactions.set(chatId, messageId, "done");
     } catch (err) {
+      this.releaseClaimedUpdate(meta?.updateId);
       await this.reactions.set(chatId, messageId, "error");
       await telegramLog("error", "telegram message handling failed", { chatId, error: String(err) });
       await this.reportProcessingError(chatId, String(messageId), err);
@@ -962,9 +963,10 @@ export class TelegramAdapter implements ChannelAdapter {
     this.textBatches.delete(key);
 
     const combined = batch.messages.map((m) => m.text).join("");
-    this.processMessage(batch.firstMsg, combined, undefined, { updateId: batch.updateId }).catch((err) =>
-      telegramLog("error", "failed to process batched message", { error: String(err) }),
-    );
+    this.processMessage(batch.firstMsg, combined, undefined, { updateId: batch.updateId }).catch((err) => {
+      this.releaseClaimedUpdate(batch.updateId);
+      telegramLog("error", "failed to process batched message", { error: String(err) });
+    });
   }
 
   // ── Media group buffering ───────────────────────────────────
@@ -993,9 +995,10 @@ export class TelegramAdapter implements ChannelAdapter {
     const primary = group.messages.find((m) => m.caption) ?? group.messages[0]!;
     const others = group.messages.filter((m) => m !== primary);
 
-    this.processMessage(primary, undefined, others, { updateId: group.updateId }).catch((err) =>
-      telegramLog("error", "failed to process media group", { error: String(err) }),
-    );
+    this.processMessage(primary, undefined, others, { updateId: group.updateId }).catch((err) => {
+      this.releaseClaimedUpdate(group.updateId);
+      telegramLog("error", "failed to process media group", { error: String(err) });
+    });
   }
 
   // ── Typing indicator (ref-counted) ──────────────────────────

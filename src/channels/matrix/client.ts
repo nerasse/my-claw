@@ -401,7 +401,13 @@ export class MatrixClientRuntime {
   private emitTimelineHandlers(payload: MatrixTimelineEvent): void {
     void Promise.allSettled(
       [...this.timelineHandlers].map((handler) => Promise.resolve(handler(payload))),
-    );
+    ).then((results) => {
+      for (const result of results) {
+        if (result.status === "rejected") {
+          void matrixLog("error", "timeline handler rejected", { error: String(result.reason) });
+        }
+      }
+    });
   }
 
   private async handleFailedDecryption(failure: MatrixDecryptionFailure): Promise<void> {
