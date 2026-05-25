@@ -59,6 +59,7 @@ export class MessageRouter {
     this.agent.setApprovalHandler(handler);
   }
 
+  // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated
   async routeCron(message: UnifiedMessage, sessionId: string, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
     const current = previous

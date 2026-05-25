@@ -16,7 +16,7 @@
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
-| Hooks / Event System | Complete — 77 hooks, 3 patterns (void/gate/waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Hooks / Event System | Complete — 85 hooks (73 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |

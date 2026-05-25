@@ -159,20 +159,22 @@ async function main() {
         }
 
         if (response) {
-          const refs = extractMediaRefs(response.text);
-          const textHasMediaRefs = refs.length > 0;
-          if (!telegram.streamingEnabled()) {
-            const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "telegram", chatId: msg.chatId })).text;
-            await telegram.send(msg.chatId, { text: deliveryText, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
-            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
-          } else if (!textHasMediaRefs && response.attachments?.length) {
-            await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
-            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: response.attachments.length });
-          } else if (textHasMediaRefs) {
-            // Streaming already sent the text; send only the extracted files
-            const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
-            await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
-            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
+          const outGate = await hooks.check("gate:message:outgoing", { platform: "telegram", chatId: msg.chatId, text: response.text });
+          if (outGate.allowed) {
+            const refs = extractMediaRefs(response.text);
+            const textHasMediaRefs = refs.length > 0;
+            if (!telegram.streamingEnabled()) {
+              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "telegram", chatId: msg.chatId })).text;
+              await telegram.send(msg.chatId, { text: deliveryText, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
+              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
+            } else if (!textHasMediaRefs && response.attachments?.length) {
+              await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
+              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: response.attachments.length });
+            } else if (textHasMediaRefs) {
+              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
+              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
+            }
           }
         }
       } finally {
@@ -264,33 +266,35 @@ async function main() {
         }
 
         if (response) {
-          const refs = extractMediaRefs(response.text);
-          const textHasMediaRefs = refs.length > 0;
-          if (!matrix.streamingEnabled()) {
-            const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "matrix", chatId: msg.chatId })).text;
-            await matrix.send(msg.chatId, {
-              text: deliveryText,
-              attachments: textHasMediaRefs ? undefined : response.attachments,
-              replyToId: msg.id,
-              threadId: msg.threadId,
-            });
-            hooks.emit("message:delivered", { platform: "matrix", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
-          } else if (!textHasMediaRefs && response.attachments?.length) {
-            await matrix.send(msg.chatId, {
-              text: "",
-              attachments: response.attachments,
-              replyToId: msg.id,
-              threadId: msg.threadId,
-            });
-          } else if (textHasMediaRefs) {
-            // Streaming already sent the text; send only the extracted files
-            const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
-            await matrix.send(msg.chatId, {
-              text: "",
-              attachments: mediaAttachments,
-              replyToId: msg.id,
-              threadId: msg.threadId,
-            });
+          const outGate = await hooks.check("gate:message:outgoing", { platform: "matrix", chatId: msg.chatId, text: response.text });
+          if (outGate.allowed) {
+            const refs = extractMediaRefs(response.text);
+            const textHasMediaRefs = refs.length > 0;
+            if (!matrix.streamingEnabled()) {
+              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "matrix", chatId: msg.chatId })).text;
+              await matrix.send(msg.chatId, {
+                text: deliveryText,
+                attachments: textHasMediaRefs ? undefined : response.attachments,
+                replyToId: msg.id,
+                threadId: msg.threadId,
+              });
+              hooks.emit("message:delivered", { platform: "matrix", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
+            } else if (!textHasMediaRefs && response.attachments?.length) {
+              await matrix.send(msg.chatId, {
+                text: "",
+                attachments: response.attachments,
+                replyToId: msg.id,
+                threadId: msg.threadId,
+              });
+            } else if (textHasMediaRefs) {
+              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              await matrix.send(msg.chatId, {
+                text: "",
+                attachments: mediaAttachments,
+                replyToId: msg.id,
+                threadId: msg.threadId,
+              });
+            }
           }
         }
       } finally {
@@ -331,10 +335,15 @@ async function main() {
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
   hooks.emit("app:ready", { channels: Object.keys(config.channels) });
 
+  const activeChannels: string[] = [];
+  if (telegramRef) activeChannels.push("telegram");
+  if (matrixRef) activeChannels.push("matrix");
+
   const shutdown = async () => {
     log("info", "shutting down...");
     hooks.emit("app:shutdown", { signal: "SIGINT" });
     cronScheduler.stop();
+    for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
     await Promise.allSettled(adapters.map((a) => a.stop()));
     closeDb();
     process.exit(0);

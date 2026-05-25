@@ -117,9 +117,11 @@ export class CronScheduler {
         throw new Error("Agent returned empty response");
       }
 
-      await this.deliverResult(job, responseText);
+      const delivered = await this.deliverResult(job, responseText);
       hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: false, durationMs: Date.now() - jobStartedAt });
-      hooks.emit("cron:job:delivered", { jobId: job.id, platform: job.origin?.platform ?? "unknown", chatId: job.origin?.chatId ?? "" });
+      if (delivered) {
+        hooks.emit("cron:job:delivered", { jobId: job.id, platform: delivered.platform, chatId: delivered.chatId });
+      }
       void log("info", "cron job completed", { jobId: job.id, jobName: job.name });
     } catch (err) {
       hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err });
@@ -156,19 +158,20 @@ export class CronScheduler {
     return header + job.prompt;
   }
 
-  private async deliverResult(job: CronJob, result: string): Promise<void> {
+  private async deliverResult(job: CronJob, result: string): Promise<CronDeliveryTarget | null> {
     const target = this.resolveDeliveryTarget(job);
-    if (!target) return;
+    if (!target) return null;
 
     const adapter = this.adapters.get(target.platform);
     if (!adapter) {
       job.lastError = `No adapter for platform "${target.platform}"`;
       void log("warn", "cron delivery failed", { jobId: job.id, error: job.lastError });
-      return;
+      return null;
     }
 
     const text = `[Cron: ${job.name}]\n\n${result}`;
     await adapter.send(target.chatId, { text, threadId: target.threadId });
+    return target;
   }
 
   private resolveDeliveryTarget(job: CronJob): CronDeliveryTarget | null {

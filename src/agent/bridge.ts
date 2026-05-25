@@ -244,7 +244,8 @@ export class AgentBridge {
         hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length) });
 
         if (!response.toolCalls?.length) {
-          session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
+          const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
+          session.messages.push({ role: "assistant", content: transformedResponse, timestamp: new Date().toISOString() });
           const durationMs = Date.now() - startedAt;
           hooks.emit("agent:run:finish", {
             messageId: message.id,
@@ -252,7 +253,7 @@ export class AgentBridge {
             model: llmConfig.model,
             iterations: iteration,
             toolExecutions,
-            responseChars: response.content.length,
+            responseChars: transformedResponse.length,
             durationMs,
             usage: response.usage,
           });
@@ -263,7 +264,7 @@ export class AgentBridge {
             iteration,
             toolExecutions,
             maxIterations: budget.total,
-            responseChars: response.content.length,
+            responseChars: transformedResponse.length,
             sessionMessageCount: session.messages.length,
             durationMs,
             usage: response.usage,
@@ -274,7 +275,6 @@ export class AgentBridge {
             session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
             hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
           }
-          const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
           return transformedResponse;
         }
 
@@ -314,11 +314,12 @@ export class AgentBridge {
             sessionId: session.id,
           });
           if (!toolGate.allowed) {
-            hooks.emit("tool:execute:error", {
+            hooks.emit("tool:execute:end", {
               toolName: tc.name,
               toolCallId: tc.id,
               sessionId: session.id,
-              error: new Error(`Blocked by gate: ${toolGate.reason ?? "no reason"}`),
+              success: false,
+              outputChars: 0,
               durationMs: 0,
             });
             return { tc, result: { content: `Error: tool blocked by gate: ${toolGate.reason ?? "no reason"}`, success: false }, durationMs: 0 };
@@ -476,8 +477,26 @@ export class AgentBridge {
       durationMs: Date.now() - startedAt,
     });
 
+    hooks.emit("llm:call:start", {
+      model: llmConfig.model,
+      streaming: false,
+      messageCount: chatMessages.length,
+      toolCount: 0,
+      iteration: iteration + 1,
+    });
+
     const summaryStartedAt = Date.now();
     const summaryResponse = await chatCompletion(llmConfig, chatMessages);
+    const summaryDurationMs = Date.now() - summaryStartedAt;
+
+    hooks.emit("llm:call:end", {
+      model: llmConfig.model,
+      streaming: false,
+      durationMs: summaryDurationMs,
+      usage: summaryResponse.usage,
+      toolCallCount: 0,
+    });
+
     accumulateUsage(session, summaryResponse.usage);
     recordApiCall({
       sessionId: session.id,
@@ -491,12 +510,25 @@ export class AgentBridge {
       totalTokens: summaryResponse.usage?.totalTokens ?? 0,
       toolCalls: 0,
       iteration: iteration + 1,
-      durationMs: Date.now() - summaryStartedAt,
+      durationMs: summaryDurationMs,
     });
 
-    const finalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
+    const rawFinalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
+    const finalText = (await hooks.transform("transform:agent:response", { response: rawFinalText, sessionId: session.id, model: llmConfig.model })).response;
 
     session.messages.push({ role: "assistant", content: finalText, timestamp: new Date().toISOString() });
+
+    const durationMs = Date.now() - startedAt;
+    hooks.emit("agent:run:finish", {
+      messageId: message.id,
+      sessionId: session.id,
+      model: llmConfig.model,
+      iterations: iteration + 1,
+      toolExecutions,
+      responseChars: finalText.length,
+      durationMs,
+      usage: summaryResponse.usage,
+    });
 
     void log("info", "agent run finished with summary", {
       ...runLogData(message, session),
@@ -505,7 +537,7 @@ export class AgentBridge {
       toolExecutions,
       maxIterations: budget.total,
       responseChars: finalText.length,
-      durationMs: Date.now() - startedAt,
+      durationMs,
     });
 
     return finalText;

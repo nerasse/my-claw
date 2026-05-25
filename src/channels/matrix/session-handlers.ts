@@ -264,7 +264,7 @@ export function createMatrixCommandHandler({
   args: string,
   meta?: { roomId?: string; threadId?: string },
   ) => Promise<OutgoingMessage | string | undefined> {
-  return async (chatId, userId, chatType, command, args, meta) => {
+  const handler = async (chatId: string, userId: string, chatType: MatrixChatType, command: string, args: string, meta?: { roomId?: string; threadId?: string }): Promise<OutgoingMessage | string | undefined> => {
     hooks.emit("command:received", { command, args, platform: "matrix", userId });
     const sessionId = resolveMatrixSessionId({
       config,
@@ -407,6 +407,12 @@ export function createMatrixCommandHandler({
       default:
         return undefined;
     }
+  };
+  return async (chatId, userId, chatType, command, args, meta) => {
+    const result = await handler(chatId, userId, chatType, command, args, meta);
+    const responseText = typeof result === "string" ? result : typeof result === "object" && result?.text ? result.text : undefined;
+    hooks.emit("command:handled", { command, platform: "matrix", response: responseText });
+    return result;
   };
 }
 

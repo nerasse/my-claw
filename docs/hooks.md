@@ -2,7 +2,7 @@
 
 > WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
 > Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
-> 77 hooks instrument the entire lifecycle from app boot to message delivery.
+> 85 hooks (73 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
 
 ## Architecture
 
@@ -166,7 +166,7 @@ No `~/.my-claw/hooks/` directory. Single-dev = code directly in `src/`. Adding f
 ### No priorities
 Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs priorities because plugins from different authors can conflict.
 
-### 77 hooks, not 10
+### 85 hooks, not 10
 The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
 
 ### Fail-open gates
