@@ -169,5 +169,11 @@ Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs
 ### 85 hooks, not 10
 The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
 
+### Cron bypass incoming gate
+Cron jobs are synthetic, not user-originated. They skip `gate:message:incoming` and `gate:session:reset` by design. Blocking a scheduled job through an incoming-message gate would silently break scheduling.
+
+### Gate deny is not an error
+When `gate:tool:before` blocks a tool, `tool:execute:end` is emitted with `success: false`, not `tool:execute:error`. A policy deny is a deliberate decision, not a runtime failure. Monitoring needs to distinguish "blocked by policy" from "crashed".
+
 ### Fail-open gates
 If a gate handler crashes, the operation is allowed. This is the safe default for a single-tenant system where custom code is trusted.
