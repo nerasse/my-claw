@@ -34,6 +34,7 @@ interface TelegramSessionHandlerDeps {
   builtinDir?: string;
   customDir?: string;
   workspaceSkillsDir?: string;
+  listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
 }
 
 function resolveTelegramSessionId(params: {
@@ -60,6 +61,7 @@ export function createTelegramCommandHandler({
   builtinDir,
   customDir,
   workspaceSkillsDir,
+  listCronJobs,
 }: TelegramSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -182,6 +184,18 @@ export function createTelegramCommandHandler({
         const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
         skillRegistry.setAll(allSkills);
         return `Skills reloaded. ${allSkills.size} skills available.`;
+      }
+
+      case "cron": {
+        if (!listCronJobs) return "Cron not available.";
+        const jobs = await listCronJobs();
+        if (jobs.length === 0) return "No scheduled tasks.";
+        const lines = jobs.map((j) => {
+          const status = j.enabled ? j.state : "paused";
+          const next = j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-";
+          return `${j.id} | ${j.name} | ${j.schedule.display} | ${status} | next: ${next}`;
+        });
+        return lines.join("\n");
       }
 
       case "status": {

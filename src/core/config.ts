@@ -201,6 +201,13 @@ export interface AgentConfig {
   llm?: AgentLlmConfig;
 }
 
+export interface CronConfig {
+  enabled?: boolean;
+  tickIntervalMs?: number;
+  maxIterations?: number;
+  timeoutMs?: number;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -218,6 +225,7 @@ export interface MyClawConfig {
   webSearch?: WebSearchConfig;
   browser?: BrowserConfig;
   workspace?: string;
+  cron?: CronConfig;
 }
 
 export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;

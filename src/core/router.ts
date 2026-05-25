@@ -58,6 +58,21 @@ export class MessageRouter {
     this.agent.setApprovalHandler(handler);
   }
 
+  async routeCron(message: UnifiedMessage, sessionId: string, options: RouteOptions = {}): Promise<RouteResult | undefined> {
+    const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {})
+      .then(() => this.routeInternal(message, sessionId, false, options));
+    this.sessionLocks.set(sessionId, current);
+    try {
+      return await current;
+    } finally {
+      if (this.sessionLocks.get(sessionId) === current) {
+        this.sessionLocks.delete(sessionId);
+      }
+    }
+  }
+
   async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const streaming = Boolean(options.onToken);
 

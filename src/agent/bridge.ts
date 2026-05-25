@@ -109,7 +109,9 @@ export class AgentBridge {
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
-    const tools = this.toolRegistry.getForAgent(this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research");
+    const isCron = message.platform === "cron";
+    const agentToolType = isCron ? "cron" : this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research";
+    const tools = this.toolRegistry.getForAgent(agentToolType);
     const llmConfig = resolveLlmConfig(this.config.llm, session.modelOverride);
     const startedAt = Date.now();
     const streaming = Boolean(onToken);

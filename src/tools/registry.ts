@@ -1,9 +1,10 @@
 import type { Tool } from "./types.ts";
 
-type AgentType = "main" | "general" | "research";
+type AgentType = "main" | "general" | "research" | "cron";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_search"];
-const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory"];
+const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron"];
+const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory"];
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
@@ -22,6 +23,9 @@ export class ToolRegistry {
     }
     if (agentType === "general") {
       return Array.from(this.tools.values()).filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
+    }
+    if (agentType === "cron") {
+      return Array.from(this.tools.values()).filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name));
     }
     return Array.from(this.tools.values());
   }

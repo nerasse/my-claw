@@ -10,6 +10,7 @@ export const COMMANDS = [
   { command: "status", description: "Show current status" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
+  { command: "cron", description: "List scheduled tasks" },
   { command: "help", description: "List available commands" },
 ] as const;
 

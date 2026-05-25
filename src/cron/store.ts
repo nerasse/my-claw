@@ -1,0 +1,265 @@
+import { join } from "node:path";
+import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { MY_CLAW_DIR } from "../core/config.ts";
+import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
+import { log } from "../utils/logger.ts";
+import type { CronJob, CronJobsFile, CronSchedule, CronOrigin, CronDeliver } from "./types.ts";
+import { CronExpressionParser } from "cron-parser";
+
+const CRON_DIR = join(MY_CLAW_DIR, "cron");
+const JOBS_FILE = join(CRON_DIR, "jobs.json");
+const OUTPUT_DIR = join(CRON_DIR, "output");
+
+const EVERY_RE = /^every\s+(\d+)\s*(m|min|mins?|minutes?|h|hr|hrs?|hours?|d|days?)$/i;
+const DURATION_RE = /^(\d+)\s*(m|min|mins?|minutes?|h|hr|hrs?|hours?|d|days?)$/i;
+const CRON_RE = /^([\d*,/\-]+\s+){4}[\d*,/\-]+$/;
+
+function parseDurationMinutes(value: string, unit: string): number {
+  const n = parseInt(value, 10);
+  const u = unit.toLowerCase();
+  if (u.startsWith("h")) return n * 60;
+  if (u.startsWith("d")) return n * 1440;
+  return n;
+}
+
+export function parseSchedule(input: string): CronSchedule {
+  const trimmed = input.trim();
+
+  const everyMatch = EVERY_RE.exec(trimmed);
+  if (everyMatch) {
+    const minutes = parseDurationMinutes(everyMatch[1]!, everyMatch[2]!);
+    return { kind: "interval", minutes, display: trimmed };
+  }
+
+  if (CRON_RE.test(trimmed)) {
+    CronExpressionParser.parse(trimmed);
+    return { kind: "cron", expr: trimmed, display: trimmed };
+  }
+
+  if (trimmed.includes("T") || /^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    const date = new Date(trimmed);
+    if (isNaN(date.getTime())) throw new Error(`Invalid date: ${trimmed}`);
+    return { kind: "once", runAt: date.toISOString(), display: `once at ${trimmed}` };
+  }
+
+  const durationMatch = DURATION_RE.exec(trimmed);
+  if (durationMatch) {
+    const minutes = parseDurationMinutes(durationMatch[1]!, durationMatch[2]!);
+    const runAt = new Date(Date.now() + minutes * 60_000).toISOString();
+    return { kind: "once", runAt, display: `once in ${trimmed}` };
+  }
+
+  throw new Error(`Cannot parse schedule: "${trimmed}". Use cron expr, "every Xm/h/d", ISO timestamp, or bare duration.`);
+}
+
+export function computeNextRun(schedule: CronSchedule, lastRunAt?: string): string | null {
+  const now = new Date();
+
+  switch (schedule.kind) {
+    case "once":
+      if (lastRunAt) return null;
+      return schedule.runAt ?? null;
+
+    case "interval": {
+      const base = lastRunAt ? new Date(lastRunAt) : now;
+      return new Date(base.getTime() + (schedule.minutes ?? 0) * 60_000).toISOString();
+    }
+
+    case "cron": {
+      const base = lastRunAt ? new Date(lastRunAt) : now;
+      const interval = CronExpressionParser.parse(schedule.expr!, { currentDate: base });
+      return interval.next().toISOString();
+    }
+  }
+}
+
+function getSchedulePeriodMs(schedule: CronSchedule): number {
+  if (schedule.kind === "interval") return (schedule.minutes ?? 60) * 60_000;
+  if (schedule.kind === "cron") {
+    try {
+      const interval = CronExpressionParser.parse(schedule.expr!);
+      const next1 = interval.next().getTime();
+      const next2 = interval.next().getTime();
+      return next2 - next1;
+    } catch {
+      return 60 * 60_000;
+    }
+  }
+  return 60 * 60_000;
+}
+
+const MAX_GRACE_MS = 2 * 60 * 60_000;
+
+export function getDueJobs(jobs: CronJob[]): CronJob[] {
+  const now = Date.now();
+  return jobs.filter((job) => {
+    if (!job.enabled || job.state !== "scheduled" || !job.nextRunAt) return false;
+    const dueAt = new Date(job.nextRunAt).getTime();
+    if (dueAt > now) return false;
+
+    if (job.schedule.kind !== "once") {
+      const overdueMs = now - dueAt;
+      const periodMs = getSchedulePeriodMs(job.schedule);
+      const graceMs = Math.min(Math.max(periodMs / 2, 120_000), MAX_GRACE_MS);
+      if (overdueMs > graceMs) {
+        job.nextRunAt = computeNextRun(job.schedule, new Date().toISOString());
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+
+export function advanceNextRun(job: CronJob): void {
+  if (job.schedule.kind !== "once") {
+    job.nextRunAt = computeNextRun(job.schedule, new Date().toISOString());
+  }
+}
+
+export function markJobRun(job: CronJob, success: boolean, error?: string): void {
+  job.lastRunAt = new Date().toISOString();
+  job.lastStatus = success ? "ok" : "error";
+  job.lastError = error ?? null;
+  job.completedRuns += 1;
+
+  if (job.repeat !== null && job.completedRuns >= job.repeat) {
+    job.state = "completed";
+    job.enabled = false;
+    job.nextRunAt = null;
+    return;
+  }
+
+  if (job.schedule.kind !== "once") {
+    job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt);
+  } else {
+    job.nextRunAt = null;
+    if (job.repeat === null || job.completedRuns >= (job.repeat ?? 1)) {
+      job.state = "completed";
+      job.enabled = false;
+    }
+  }
+}
+
+export function parseDeliver(input: string, origin: CronOrigin | null): CronDeliver {
+  const trimmed = input.trim().toLowerCase();
+  if (trimmed === "origin") {
+    if (!origin) throw new Error("Cannot use 'origin' delivery without an origin chat. Specify a target: 'telegram:chatId' or 'matrix:roomId'.");
+    return "origin";
+  }
+  if (trimmed === "local") return "local";
+
+  const parts = trimmed.split(":");
+  if (parts.length < 2) throw new Error(`Invalid deliver target: "${input}". Use 'origin', 'local', or 'platform:chatId'.`);
+
+  const platform = parts[0] as "telegram" | "matrix";
+  if (platform !== "telegram" && platform !== "matrix") {
+    throw new Error(`Unknown platform: "${platform}". Use 'telegram' or 'matrix'.`);
+  }
+
+  if (platform === "matrix") {
+    const chatId = parts.slice(1).join(":");
+    return { platform, chatId };
+  }
+
+  const chatId = parts[1]!;
+  const threadId = parts[2];
+  return { platform, chatId, threadId };
+}
+
+export interface CreateJobParams {
+  name?: string;
+  prompt: string;
+  schedule: string;
+  origin: CronOrigin | null;
+  deliver?: string;
+  model?: string;
+}
+
+export function createJob(params: CreateJobParams): CronJob {
+  const schedule = parseSchedule(params.schedule);
+  const deliver = parseDeliver(params.deliver ?? "origin", params.origin);
+  const repeat = schedule.kind === "once" ? 1 : null;
+
+  return {
+    id: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+    name: params.name ?? params.prompt.slice(0, 50).trim(),
+    prompt: params.prompt,
+    schedule,
+    repeat,
+    completedRuns: 0,
+    enabled: true,
+    state: "scheduled",
+    origin: params.origin,
+    deliver,
+    model: params.model,
+    nextRunAt: computeNextRun(schedule),
+    lastRunAt: null,
+    lastStatus: null,
+    lastError: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export interface UpdateJobParams {
+  name?: string;
+  prompt?: string;
+  model?: string;
+  enabled?: boolean;
+  deliver?: string;
+  schedule?: string;
+}
+
+export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobParams): CronJob | null {
+  const job = jobs.find((j) => j.id === jobId);
+  if (!job) return null;
+
+  if (updates.name !== undefined) job.name = updates.name;
+  if (updates.prompt !== undefined) job.prompt = updates.prompt;
+  if (updates.model !== undefined) job.model = updates.model;
+  if (updates.enabled !== undefined) {
+    job.enabled = updates.enabled;
+    job.state = updates.enabled ? "scheduled" : "paused";
+  }
+  if (updates.deliver !== undefined) {
+    job.deliver = parseDeliver(updates.deliver, job.origin);
+  }
+  if (updates.schedule !== undefined) {
+    job.schedule = parseSchedule(updates.schedule);
+    job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);
+  }
+
+  return job;
+}
+
+export function removeJob(jobs: CronJob[], jobId: string): boolean {
+  const idx = jobs.findIndex((j) => j.id === jobId);
+  if (idx === -1) return false;
+  jobs.splice(idx, 1);
+  return true;
+}
+
+export async function loadJobs(): Promise<CronJob[]> {
+  try {
+    const raw = await readFile(JOBS_FILE, "utf-8");
+    const data = JSON.parse(raw) as CronJobsFile;
+    return data.jobs ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveJobs(jobs: CronJob[]): Promise<void> {
+  const data: CronJobsFile = { jobs, updatedAt: new Date().toISOString() };
+  await writeJsonFileAtomically(JOBS_FILE, data, true);
+}
+
+export async function saveJobOutput(jobId: string, output: string): Promise<void> {
+  const dir = join(OUTPUT_DIR, jobId);
+  await mkdir(dir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const path = join(dir, `${ts}.md`);
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, output);
+  await rename(tmp, path);
+}

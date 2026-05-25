@@ -39,6 +39,9 @@ import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { createDelegateBrowserTool } from "./tools/browser.ts";
+import { createCronTool } from "./tools/cron.ts";
+import { CronScheduler } from "./cron/scheduler.ts";
+import { loadJobs } from "./cron/store.ts";
 import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
@@ -97,9 +100,12 @@ async function main() {
   const sessionManager = new SessionManager();
   const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
   const router = new MessageRouter(sessionManager, agent);
+  const cronScheduler = new CronScheduler(router, sessionManager, config);
+  toolRegistry.register(createCronTool(cronScheduler));
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
   let telegramRef: TelegramAdapter | undefined;
+  let matrixRef: MatrixAdapter | undefined;
 
   if (isTelegramChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist);
@@ -113,6 +119,7 @@ async function main() {
       builtinDir,
       customDir,
       workspaceSkillsDir,
+      listCronJobs: () => loadJobs(),
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -192,6 +199,7 @@ async function main() {
   if (isMatrixChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist.map(normalizeMatrixUserId));
     const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
+    matrixRef = matrix;
     const matrixStoragePaths = matrix.runtimeStoragePaths();
     const commandHandler = createMatrixCommandHandler({
       config,
@@ -201,6 +209,7 @@ async function main() {
       builtinDir,
       customDir,
       workspaceSkillsDir,
+      listCronJobs: () => loadJobs(),
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
@@ -298,10 +307,15 @@ async function main() {
     }
   }
 
+  if (telegramRef) cronScheduler.adapters.set("telegram", telegramRef);
+  if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
+  cronScheduler.start();
+
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
 
   const shutdown = async () => {
     log("info", "shutting down...");
+    cronScheduler.stop();
     await Promise.allSettled(adapters.map((a) => a.stop()));
     closeDb();
     process.exit(0);
