@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { CronScheduler } from "../scheduler.ts";
 import { loadJobs, saveJobs, createJob } from "../store.ts";
+import { hooks } from "../../hooks/index.ts";
 import type { MessageRouter } from "../../core/router.ts";
 import type { SessionManager } from "../../sessions/manager.ts";
 import type { MyClawConfig } from "../../core/config.ts";
@@ -16,6 +17,7 @@ describe("cron scheduler", () => {
   const sentMessages: Array<{ chatId: string; text: string }> = [];
 
   beforeEach(() => {
+    hooks.clear();
     sentMessages.length = 0;
     adapterMock = {
       platform: "telegram",

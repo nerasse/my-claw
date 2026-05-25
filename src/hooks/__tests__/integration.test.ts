@@ -1,6 +1,6 @@
 /** @file Integration tests -- verify hooks fire at correct points in real code. */
 
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { hooks } from "../index.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { MessageRouter } from "../../core/router.ts";
@@ -9,6 +9,10 @@ import type { UnifiedMessage } from "../../channels/types.ts";
 function uniqId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+afterEach(() => {
+  hooks.clear();
+});
 
 describe("integration: session lifecycle", () => {
   beforeEach(() => {
