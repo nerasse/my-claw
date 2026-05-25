@@ -2,6 +2,7 @@ import { readFile, access } from "node:fs/promises";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 export const readTool: Tool = {
   name: "read",
@@ -27,6 +28,7 @@ export const readTool: Tool = {
     }
     try {
       const content = await readFile(resolved, "utf-8");
+      hooks.emit("tool:file:read", { path: resolved, size: content.length });
       return { success: true, output: content };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to read "${resolved}"`, e) };

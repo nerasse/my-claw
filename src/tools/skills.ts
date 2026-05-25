@@ -3,6 +3,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import { writeFile, mkdir, readFile, access, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 import { loadAllSkills } from "../skills/loader.ts";
 import { scanForInjection } from "../agent/prompt/anti-injection.ts";
 
@@ -81,6 +82,7 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
         }
       }
 
+      hooks.emit("skill:read", { name });
       const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
       return { success: true, output: scanForInjection(resolved, `skill:${name}`) };
     },
@@ -174,6 +176,7 @@ export function createManageSkillsTool(
         }
 
         await refreshRegistry();
+        hooks.emit("skill:created", { name });
         return { success: true, output: `Skill "${name}" created and registry refreshed.\nPath: ${skillDir}/SKILL.md\nTip: use write() to add references/ and examples/ files if needed.` };
       }
 
@@ -218,6 +221,7 @@ export function createManageSkillsTool(
         await writeFile(skillFile, newContent);
 
         await refreshRegistry();
+        hooks.emit("skill:updated", { name });
         return { success: true, output: `Skill "${name}" updated and registry refreshed.` };
       }
 
@@ -240,6 +244,7 @@ export function createManageSkillsTool(
         }
 
         await refreshRegistry();
+        hooks.emit("skill:deleted", { name });
         return { success: true, output: `Skill "${name}" deleted and registry refreshed.` };
       }
 

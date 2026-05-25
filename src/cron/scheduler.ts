@@ -12,6 +12,7 @@ import {
 } from "./store.ts";
 import type { CronJob, CronDeliveryTarget } from "./types.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 const SILENT_MARKER = "[SILENT]";
 
@@ -49,6 +50,7 @@ export class CronScheduler {
       const due = getDueJobs(allJobs);
       if (due.length === 0) return 0;
 
+      hooks.emit("cron:tick", { dueCount: due.length, totalJobs: allJobs.length });
       void log("info", "cron tick", { dueCount: due.length, totalJobs: allJobs.length });
 
       for (const job of due) {
@@ -82,30 +84,47 @@ export class CronScheduler {
   }
 
   private async processJob(job: CronJob): Promise<void> {
-    void log("info", "cron job started", { jobId: job.id, jobName: job.name });
-
-    const prompt = this.buildCronPrompt(job);
-    const synthMessage = this.buildSyntheticMessage(job, prompt);
-    const sessionId = `cron/${job.id}`;
-
-    const result = await this.router.routeCron(synthMessage, sessionId);
-    const responseText = result?.text ?? "";
-
-    await saveJobOutput(job.id, responseText).catch((err) => {
-      void log("warn", "cron output save failed", { jobId: job.id, error: String(err) });
-    });
-
-    if (responseText.startsWith(SILENT_MARKER)) {
-      void log("info", "cron job silent", { jobId: job.id, jobName: job.name });
+    const gate = await hooks.check("gate:cron:job:before", { jobId: job.id, jobName: job.name });
+    if (!gate.allowed) {
+      void log("info", "cron job blocked by gate", { jobId: job.id, reason: gate.reason });
       return;
     }
 
-    if (!responseText.trim()) {
-      throw new Error("Agent returned empty response");
-    }
+    const jobStartedAt = Date.now();
+    hooks.emit("cron:job:start", { jobId: job.id, jobName: job.name });
+    void log("info", "cron job started", { jobId: job.id, jobName: job.name });
 
-    await this.deliverResult(job, responseText);
-    void log("info", "cron job completed", { jobId: job.id, jobName: job.name });
+    try {
+      const prompt = this.buildCronPrompt(job);
+      const synthMessage = this.buildSyntheticMessage(job, prompt);
+      const sessionId = `cron/${job.id}`;
+
+      const result = await this.router.routeCron(synthMessage, sessionId);
+      const responseText = result?.text ?? "";
+
+      await saveJobOutput(job.id, responseText).catch((err) => {
+        void log("warn", "cron output save failed", { jobId: job.id, error: String(err) });
+      });
+
+      const silent = responseText.startsWith(SILENT_MARKER);
+      if (silent) {
+        hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: true, durationMs: Date.now() - jobStartedAt });
+        void log("info", "cron job silent", { jobId: job.id, jobName: job.name });
+        return;
+      }
+
+      if (!responseText.trim()) {
+        throw new Error("Agent returned empty response");
+      }
+
+      await this.deliverResult(job, responseText);
+      hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: false, durationMs: Date.now() - jobStartedAt });
+      hooks.emit("cron:job:delivered", { jobId: job.id, platform: job.origin?.platform ?? "unknown", chatId: job.origin?.chatId ?? "" });
+      void log("info", "cron job completed", { jobId: job.id, jobName: job.name });
+    } catch (err) {
+      hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err });
+      throw err;
+    }
   }
 
   private buildSyntheticMessage(job: CronJob, prompt: string): UnifiedMessage {

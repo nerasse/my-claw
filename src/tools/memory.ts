@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { type Tool, type ToolResult, str } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 const PROMPT_DIR = join(MY_CLAW_DIR, "prompt");
 
@@ -31,6 +32,7 @@ export const memoryTool: Tool = {
     try {
       if (action === "read") {
         const content = await readFile(filePath, "utf-8");
+        hooks.emit("memory:read", { file, contentLength: content.length });
         return { success: true, output: content };
       }
       if (action === "append") {
@@ -38,9 +40,14 @@ export const memoryTool: Tool = {
         if (!contentToAppend || !contentToAppend.trim()) {
           return { success: false, output: "content is required for append action and cannot be empty." };
         }
+        const gate = await hooks.check("gate:memory:write", { file, content: contentToAppend });
+        if (!gate.allowed) {
+          return { success: false, output: `Write blocked by gate: ${gate.reason ?? "no reason"}` };
+        }
         const existing = await readFile(filePath, "utf-8").catch(() => "");
         const newContent = existing.trimEnd() + "\n" + contentToAppend + "\n";
         await writeFile(filePath, newContent);
+        hooks.emit("memory:append", { file, appendLength: contentToAppend.length });
         return { success: true, output: `Appended to ${file}` };
       }
       return { success: false, output: `Invalid action: "${action}". Must be 'read' or 'append'.` };

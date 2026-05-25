@@ -1,0 +1,173 @@
+# Hooks / Event System
+
+> WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
+> Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
+> 77 hooks instrument the entire lifecycle from app boot to message delivery.
+
+## Architecture
+
+```
+src/hooks/
+  types.ts    -- typed event maps for all 77 hooks
+  bus.ts      -- HookBus with on/off/emit, gate/check, tap/transform
+  index.ts    -- exports hooks singleton + types
+```
+
+### Execution patterns
+
+| Pattern | When to use | Execution | Can modify? | Can cancel? |
+|---------|-------------|-----------|-------------|-------------|
+| **void** | Logging, analytics, side-effects | Parallel (`Promise.all`) | No | No |
+| **gate** | Rate limiting, approval, blocking | Sequential | No | Yes (short-circuit) |
+| **waterfall** | Transform prompts, redact output | Sequential | Yes (chain) | No |
+
+### Error handling
+
+All hooks are fail-safe. Errors are caught, logged, never propagated.
+- Gate errors = fail-open (operation allowed)
+- Waterfall errors = passthrough (value unchanged)
+- Void errors = other handlers continue
+
+## Usage
+
+```typescript
+import { hooks } from "./hooks/index.ts";
+
+// Observe
+hooks.on("agent:run:finish", (payload) => {
+  console.log(`Turn done: ${payload.iterations} iterations, ${payload.toolExecutions} tools`);
+});
+
+// Block
+hooks.gate("gate:tool:before", ({ toolName }) => {
+  if (toolName === "bash" && isWeekend()) {
+    return { allow: false, reason: "No shell commands on weekends" };
+  }
+  return { allow: true };
+});
+
+// Transform
+hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
+  return { prompt: prompt + "\n\n[Injected context for " + sessionId + "]", sessionId, model: "gpt-4" };
+});
+```
+
+## Event catalog
+
+### App lifecycle
+- `app:ready` -- all channels started
+- `app:shutdown` -- SIGINT/SIGTERM received
+- `app:error` -- unhandled rejection or uncaught exception
+
+### Message lifecycle
+- `message:received` -- raw message from channel adapter
+- `message:preprocessed` -- after audio/video processing
+- `message:route:start` -- before agent handle
+- `message:route:complete` -- after response generated
+- `message:route:error` -- routing threw exception
+- `message:delivered` -- response sent to channel
+
+### Agent lifecycle
+- `agent:run:start` -- before system prompt built
+- `agent:prompt:built` -- after buildSystemPrompt
+- `agent:turn:start` -- each LLM iteration begins
+- `agent:turn:end` -- each LLM iteration ends
+- `agent:run:finish` -- final text response ready
+- `agent:run:error` -- exception during agent loop
+- `agent:budget:exhausted` -- max iterations reached
+
+### LLM lifecycle
+- `llm:call:start` -- before fetch to LLM API
+- `llm:call:end` -- after LLM response parsed
+- `llm:call:error` -- retryable or final error
+- `llm:circuit:opened` -- 5 consecutive failures
+- `llm:circuit:closed` -- successful call resets failures
+
+### Tool lifecycle
+- `tool:execute:start` -- before tool.run()
+- `tool:execute:end` -- tool returned successfully
+- `tool:execute:error` -- tool threw or returned error
+- `tool:approval:check` -- approval decision made
+- `tool:bash:execute` -- bash command finished
+- `tool:file:write` -- file written
+- `tool:file:read` -- file read
+- `tool:fetch:request` -- HTTP request completed
+
+### Session lifecycle
+- `session:created` -- new session on disk
+- `session:loaded` -- existing session loaded from disk
+- `session:persisted` -- session saved to disk
+- `session:reset` -- /new command executed
+- `session:cleared` -- /clear command executed
+- `session:archived` -- session file moved to archive
+- `session:evicted` -- LRU cache eviction
+- `session:compact:start/end/error` -- context compaction
+- `session:messages:trimmed` -- overflow trim to 50
+- `session:model:changed` -- /model command
+
+### Memory lifecycle
+- `memory:read` -- read_memory tool
+- `memory:append` -- append_memory tool
+
+### Skill lifecycle
+- `skills:loaded` -- initial load on boot
+- `skills:reloaded` -- /reload command
+- `skill:read/created/updated/deleted` -- manage_skills tool
+
+### Subagent lifecycle
+- `subagent:spawn` -- new subagent created
+- `subagent:complete` -- subagent returned result
+- `subagent:error` -- subagent threw exception
+- `subagent:killed` -- kill_agent tool
+- `subagent:reset` -- reset_agent tool
+
+### Cron lifecycle
+- `cron:tick` -- scheduler tick
+- `cron:job:start/end/error` -- job execution
+- `cron:job:delivered` -- result sent to chat
+- `cron:job:created/updated/removed/paused/resumed/triggered` -- cron tool CRUD
+
+### Command lifecycle
+- `command:received` -- /foo parsed by session handler
+- `command:handled` -- command processed, response ready
+
+### Streaming lifecycle
+- `stream:start/finish/abort` -- Telegram/Matrix streaming
+
+### Channel lifecycle
+- `channel:started/stopped/error` -- adapter boot/shutdown
+
+## Gate events (can block)
+
+- `gate:message:incoming` -- drop message before routing
+- `gate:tool:before` -- deny tool execution
+- `gate:agent:before:reply` -- short-circuit agent run
+- `gate:message:outgoing` -- suppress delivery
+- `gate:session:reset` -- prevent /new
+- `gate:cron:job:before` -- skip scheduled job
+- `gate:memory:write` -- block MEMORY.md append
+
+## Waterfall events (transform data)
+
+- `transform:system:prompt` -- modify system prompt before LLM
+- `transform:user:content` -- modify user message before session
+- `transform:tool:result` -- modify tool result before LLM
+- `transform:agent:response` -- modify final response
+- `transform:outgoing:message` -- modify text before channel send
+
+## Decisions
+
+### One system, not three
+Hermes has plugin hooks + gateway events + shell hooks. OpenClaw has internal hooks + plugin hooks. MyClaw is single-tenant -- one `HookBus` covers everything.
+
+### No filesystem hooks
+No `~/.my-claw/hooks/` directory. Single-dev = code directly in `src/`. Adding filesystem loading later is 5 lines if needed.
+
+### No priorities
+Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs priorities because plugins from different authors can conflict.
+
+### 77 hooks, not 10
+The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
+
+### Fail-open gates
+If a gate handler crashes, the operation is allowed. This is the safe default for a single-tenant system where custom code is trusted.

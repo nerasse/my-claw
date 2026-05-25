@@ -1,5 +1,6 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
 const LLM_RETRY_BASE_MS = 500;
@@ -29,6 +30,9 @@ function checkCircuitBreaker(): void {
 }
 
 function recordCircuitSuccess(): void {
+  if (circuitState.failures > 0) {
+    hooks.emit("llm:circuit:closed", {});
+  }
   circuitState.failures = 0;
 }
 
@@ -36,6 +40,7 @@ function recordCircuitFailure(): void {
   circuitState.failures += 1;
   if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitState.openedAt = Date.now();
+    hooks.emit("llm:circuit:opened", { failures: circuitState.failures, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS });
     void log("warn", `LLM circuit breaker opened after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures`);
   }
 }
@@ -250,19 +255,21 @@ export async function chatCompletion(
     try {
       const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
 
-      if (!response.ok) {
-        const detail = await readErrorBody(response);
-        const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`);
+        if (!response.ok) {
+          const detail = await readErrorBody(response);
+          const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`);
 
-        if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
-          const delay = retryDelay(attempt, parseRetryAfterMs(response));
-          await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
-          await sleep(delay);
-          lastErr = err;
-          continue;
+          if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
+            const delay = retryDelay(attempt, parseRetryAfterMs(response));
+            hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: true });
+            await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
+            await sleep(delay);
+            lastErr = err;
+            continue;
+          }
+          hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: false });
+          throw err;
         }
-        throw err;
-      }
 
       const data = (await response.json()) as ChatCompletionResponse;
       const choice = data.choices[0];

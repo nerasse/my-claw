@@ -3,6 +3,7 @@ import { chatCompletion } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
+import { hooks } from "../hooks/index.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 const HEAD_KEEP = 3;
@@ -124,6 +125,7 @@ export async function compactSession(
   instructions?: string,
 ): Promise<CompactionResult> {
   const messages = session.messages;
+  hooks.emit("session:compact:start", { sessionId: session.id, messageCount: messages.length });
 
   if (messages.length < MIN_MESSAGES_TO_COMPACT) {
     return {
@@ -214,7 +216,12 @@ export async function compactSession(
 
     session.messages = [...head, summaryMessage, ...tail];
     session.lastActiveAt = new Date().toISOString();
-
+    hooks.emit("session:compact:end", {
+      sessionId: session.id,
+      beforeCount: messages.length,
+      afterCount: session.messages.length,
+      summaryLength: summary.length,
+    });
     return {
       ok: true,
       beforeCount: messages.length,
@@ -223,6 +230,7 @@ export async function compactSession(
     };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
+    hooks.emit("session:compact:error", { sessionId: session.id, reason: errorMsg });
     return {
       ok: false,
       reason: `Compaction error: ${errorMsg}`,

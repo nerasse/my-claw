@@ -5,6 +5,7 @@ import type { UnifiedMessage } from "../channels/types.ts";
 import { createJob, loadJobs, saveJobs, updateJob, removeJob, parseDeliver, computeNextRun } from "../cron/store.ts";
 import type { CronOrigin } from "../cron/types.ts";
 import type { CronScheduler } from "../cron/scheduler.ts";
+import { hooks } from "../hooks/index.ts";
 
 export function createCronTool(scheduler: CronScheduler): Tool {
   return {
@@ -64,6 +65,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           });
           jobs.push(job);
           await saveJobs(jobs);
+          hooks.emit("cron:job:created", { jobId: job.id, jobName: job.name });
           return { success: true, output: `Scheduled task created.\nID: ${job.id}\nName: ${job.name}\nSchedule: ${job.schedule.display}\nNext run: ${job.nextRunAt ?? "none"}` };
         }
 
@@ -111,6 +113,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           });
           if (!updated) return { success: false, output: `Job not found: ${jobId}` };
           await saveJobs(jobs);
+          hooks.emit("cron:job:updated", { jobId: jobId });
           return { success: true, output: `Updated job ${jobId}. Next run: ${updated.nextRunAt ?? "none"}` };
         }
 
@@ -123,6 +126,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           job.state = "paused";
           job.pausedReason = strOpt(args, "reason") ?? undefined;
           await saveJobs(jobs);
+          hooks.emit("cron:job:paused", { jobId });
           return { success: true, output: `Paused job ${jobId}: ${job.name}` };
         }
 
@@ -136,6 +140,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           job.pausedReason = undefined;
           job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);
           await saveJobs(jobs);
+          hooks.emit("cron:job:resumed", { jobId });
           return { success: true, output: `Resumed job ${jobId}: ${job.name}. Next run: ${job.nextRunAt ?? "none"}` };
         }
 
@@ -145,6 +150,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           const removed = removeJob(jobs, jobId);
           if (!removed) return { success: false, output: `Job not found: ${jobId}` };
           await saveJobs(jobs);
+          hooks.emit("cron:job:removed", { jobId });
           return { success: true, output: `Removed job ${jobId}.` };
         }
 
@@ -159,6 +165,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           }
           job.nextRunAt = new Date().toISOString();
           await saveJobs(jobs);
+          hooks.emit("cron:job:triggered", { jobId });
           void scheduler.tick();
           return { success: true, output: `Triggered job ${jobId}: ${job.name}. It will run on the next tick.` };
         }

@@ -11,6 +11,7 @@ import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 
@@ -65,7 +66,9 @@ export class SubAgentRunner {
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
     await saveSession(id, session);
 
+    hooks.emit("subagent:spawn", { id, displayName, type, mode });
     const result = await this.executeRun(id, type, workspaceDir, 0, parentMessage);
+    hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
   }
 
@@ -97,6 +100,7 @@ export class SubAgentRunner {
 
   async kill(id: string): Promise<string> {
     await deleteSession(id);
+    hooks.emit("subagent:killed", { id });
     return `Sub-agent ${id} deleted.`;
   }
 
@@ -108,6 +112,7 @@ export class SubAgentRunner {
     await archiveSession(id);
     const fresh = this.createSession(id, session.platform, session.chatType, session.meta);
     await saveSession(id, fresh);
+    hooks.emit("subagent:reset", { id });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
   }
 
@@ -202,8 +207,13 @@ export class SubAgentRunner {
       raw: null,
     };
 
-    const result = await bridge.handleMessage(subMessage, session);
-    return result;
+    try {
+      const result = await bridge.handleMessage(subMessage, session);
+      return result;
+    } catch (err) {
+      hooks.emit("subagent:error", { id: session.id, error: err });
+      throw err;
+    }
   }
 
   private createSession(id: string, platform: string, chatType: string, meta: SubAgentMeta | undefined): SessionData {

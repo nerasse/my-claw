@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string }
@@ -84,6 +85,7 @@ export async function archiveSession(sessionId: string): Promise<string | null> 
   try {
     await mkdir(dirname(target), { recursive: true });
     await fsRename(source, target);
+    hooks.emit("session:archived", { sessionId, archivePath: target });
     return target;
   } catch (err) {
     if (err && typeof err === "object" && (err as { code?: string }).code === "ENOENT") {

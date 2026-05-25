@@ -2,6 +2,7 @@ import type { UnifiedMessage } from "../channels/types.ts";
 import { loadSession, saveSession, deleteSession, archiveSession, purgeSessionArchives, type SessionData } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 const MAX_CACHED_SESSIONS = 100;
 
@@ -10,6 +11,7 @@ export class SessionManager {
 
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
+      hooks.emit("session:evicted", { sessionId: key });
       saveSession(key, value).catch((err) => {
         void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
       });
@@ -82,11 +84,13 @@ export class SessionManager {
     if (session) {
       session.lastActiveAt = new Date().toISOString();
       this.sessions.set(sessionId, session);
+      hooks.emit("session:loaded", { sessionId, messageCount: session.messages.length });
       return session;
     }
 
     session = this.createSession(sessionId, platform, chatType);
     this.sessions.set(sessionId, session);
+    hooks.emit("session:created", { sessionId, platform, chatType });
     return session;
   }
 
@@ -101,12 +105,15 @@ export class SessionManager {
   }
 
   async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
+    const gate = await hooks.check("gate:session:reset", { sessionId });
+    if (!gate.allowed) return;
     this.sessions.delete(sessionId);
     const archived = await archiveSession(sessionId);
     if (!archived) {
       await deleteSession(sessionId);
     }
     this.sessions.set(sessionId, this.createSession(sessionId, platform, chatType));
+    hooks.emit("session:reset", { sessionId, platform, archived: Boolean(archived) });
   }
 
   async purgeArchives(options: { before?: Date; all?: boolean }): Promise<number> {
@@ -116,8 +123,10 @@ export class SessionManager {
   clearHistory(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
+      const previousMessageCount = session.messages.length;
       session.messages = [];
       session.lastActiveAt = new Date().toISOString();
+      hooks.emit("session:cleared", { sessionId, previousMessageCount });
     }
   }
 
@@ -135,6 +144,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (session) {
       await saveSession(sessionId, session);
+      hooks.emit("session:persisted", { sessionId, messageCount: session.messages.length });
     }
   }
 }

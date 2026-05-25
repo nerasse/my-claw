@@ -1,5 +1,6 @@
 import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
@@ -21,6 +22,7 @@ export const bashTool: Tool = {
       return { success: false, output: "command is required and cannot be empty." };
     }
     const timeoutMs = num(args, "timeout", DEFAULT_TIMEOUT_MS);
+    const startedAt = Date.now();
     try {
       const proc = Bun.spawn(["bash", "-c", command], {
         stdout: "pipe",
@@ -41,6 +43,7 @@ export const bashTool: Tool = {
       if (output.length > MAX_OUTPUT_BYTES) {
         output = output.slice(0, MAX_OUTPUT_BYTES) + `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;
       }
+      hooks.emit("tool:bash:execute", { command, exitCode, durationMs: Date.now() - startedAt });
       if (exitCode === 0) {
         return { success: true, output };
       }

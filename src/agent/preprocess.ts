@@ -6,6 +6,7 @@ import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 export class MessagePreprocessor {
   private currentMessage?: UnifiedMessage;
@@ -46,6 +47,7 @@ export class MessagePreprocessor {
     this._inboundHadAudio = false;
     await this.preprocessAudio(message);
     await this.preprocessVideo(message);
+    hooks.emit("message:preprocessed", { message, transcription: message.text });
   }
 
   async preprocessForHandle(message: UnifiedMessage): Promise<void> {

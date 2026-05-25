@@ -17,6 +17,7 @@ import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 import { scanForInjection } from "./prompt/anti-injection.ts";
+import { hooks } from "../hooks/index.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!usage) return;
@@ -120,6 +121,14 @@ export class AgentBridge {
     const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
     const budget = new IterationBudget(resolveMaxIterations(this.config, agentType));
 
+    hooks.emit("agent:run:start", {
+      messageId: message.id,
+      sessionId: session.id,
+      model: llmConfig.model,
+      streaming,
+      maxIterations: budget.total,
+    });
+
     void log("info", "agent run started", {
       ...runLogData(message, session),
       model: llmConfig.model,
@@ -131,8 +140,13 @@ export class AgentBridge {
 
     let messageCountBeforeLoop = session.messages.length;
 
+    const gate = await hooks.check("gate:agent:before:reply", { sessionId: session.id, message });
+    if (!gate.allowed) {
+      return `Reply blocked by gate: ${gate.reason ?? "no reason"}`;
+    }
+
     try {
-      const systemPrompt = await buildSystemPrompt({
+      let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         channelId: message.chatId,
@@ -140,11 +154,14 @@ export class AgentBridge {
         tools,
         skills: this.skillRegistry.list(),
       });
+      hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
+      systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
 
       const rawUserContent = this.preprocessor.buildUserContent(message);
       const userContent = scanForInjection(rawUserContent, "user-message");
       const now = new Date().toISOString();
-      session.messages.push({ role: "user", content: userContent, timestamp: now });
+      const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
+      session.messages.push({ role: "user", content: transformedContent, timestamp: now });
       messageCountBeforeLoop = session.messages.length;
 
       const openaiTools = toOpenAiToolDefinitions(tools);
@@ -175,7 +192,17 @@ export class AgentBridge {
           chatMessages.push(...trimmed);
         }
 
+        hooks.emit("agent:turn:start", { sessionId: session.id, model: llmConfig.model, iteration });
+
         const llmStartedAt = Date.now();
+        hooks.emit("llm:call:start", {
+          model: llmConfig.model,
+          streaming,
+          messageCount: chatMessages.length,
+          toolCount: openaiTools.length,
+          iteration,
+        });
+
         const response = onToken
           ? await chatCompletionStream(
               llmConfig,
@@ -189,6 +216,14 @@ export class AgentBridge {
               openaiTools.length > 0 ? openaiTools : undefined,
             );
         const llmDurationMs = Date.now() - llmStartedAt;
+
+        hooks.emit("llm:call:end", {
+          model: llmConfig.model,
+          streaming,
+          durationMs: llmDurationMs,
+          usage: response.usage,
+          toolCallCount: response.toolCalls?.length ?? 0,
+        });
 
         accumulateUsage(session, response.usage);
         recordApiCall({
@@ -206,8 +241,21 @@ export class AgentBridge {
           durationMs: llmDurationMs,
         });
 
+        hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length) });
+
         if (!response.toolCalls?.length) {
           session.messages.push({ role: "assistant", content: response.content, timestamp: new Date().toISOString() });
+          const durationMs = Date.now() - startedAt;
+          hooks.emit("agent:run:finish", {
+            messageId: message.id,
+            sessionId: session.id,
+            model: llmConfig.model,
+            iterations: iteration,
+            toolExecutions,
+            responseChars: response.content.length,
+            durationMs,
+            usage: response.usage,
+          });
           void log("info", "agent run finished", {
             ...runLogData(message, session),
             model: llmConfig.model,
@@ -217,14 +265,17 @@ export class AgentBridge {
             maxIterations: budget.total,
             responseChars: response.content.length,
             sessionMessageCount: session.messages.length,
-            durationMs: Date.now() - startedAt,
+            durationMs,
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
           });
           if (session.messages.length > MAX_SESSION_MESSAGES) {
+            const beforeCount = session.messages.length;
             session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+            hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
           }
-          return response.content;
+          const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
+          return transformedResponse;
         }
 
         void log("info", "agent requested tool calls", {
@@ -257,7 +308,30 @@ export class AgentBridge {
         });
 
         const executeOne = async (tc: typeof response.toolCalls[number]) => {
+          const toolGate = await hooks.check("gate:tool:before", {
+            toolName: tc.name,
+            args: tc.arguments,
+            sessionId: session.id,
+          });
+          if (!toolGate.allowed) {
+            hooks.emit("tool:execute:error", {
+              toolName: tc.name,
+              toolCallId: tc.id,
+              sessionId: session.id,
+              error: new Error(`Blocked by gate: ${toolGate.reason ?? "no reason"}`),
+              durationMs: 0,
+            });
+            return { tc, result: { content: `Error: tool blocked by gate: ${toolGate.reason ?? "no reason"}`, success: false }, durationMs: 0 };
+          }
+
           const toolStartedAt = Date.now();
+          hooks.emit("tool:execute:start", {
+            toolName: tc.name,
+            toolCallId: tc.id,
+            sessionId: session.id,
+            iteration,
+            args: tc.arguments,
+          });
           void log("info", "tool execution started", {
             ...runLogData(message, session),
             model: llmConfig.model,
@@ -276,6 +350,25 @@ export class AgentBridge {
           });
 
           const durationMs = Date.now() - toolStartedAt;
+
+          if (result.success) {
+            hooks.emit("tool:execute:end", {
+              toolName: tc.name,
+              toolCallId: tc.id,
+              sessionId: session.id,
+              success: true,
+              outputChars: result.content.length,
+              durationMs,
+            });
+          } else {
+            hooks.emit("tool:execute:error", {
+              toolName: tc.name,
+              toolCallId: tc.id,
+              sessionId: session.id,
+              error: new Error(result.content),
+              durationMs,
+            });
+          }
 
           void log(result.success ? "info" : "warn", "tool execution finished", {
             ...runLogData(message, session),
@@ -299,8 +392,14 @@ export class AgentBridge {
         for (const { tc, result, durationMs } of settled) {
           toolExecutions += 1;
           toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
-          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: result.content });
-          session.messages.push({ role: "tool", toolCallId: tc.id, content: result.content, timestamp: new Date().toISOString() });
+          const transformedResult = (await hooks.transform("transform:tool:result", {
+            toolName: tc.name,
+            result: result.content,
+            sessionId: session.id,
+            toolCallId: tc.id,
+          })).result;
+          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: transformedResult });
+          session.messages.push({ role: "tool", toolCallId: tc.id, content: transformedResult, timestamp: new Date().toISOString() });
         }
 
         if (onToolUse) {
@@ -309,11 +408,27 @@ export class AgentBridge {
       }
 
       if (session.messages.length > MAX_SESSION_MESSAGES) {
+        const beforeCount = session.messages.length;
         session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+        hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
       }
+      hooks.emit("agent:budget:exhausted", {
+        sessionId: session.id,
+        iteration,
+        maxIterations: budget.total,
+        toolExecutions,
+      });
       return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget);
     } catch (err) {
       session.messages.length = messageCountBeforeLoop;
+      hooks.emit("agent:run:error", {
+        messageId: message.id,
+        sessionId: session.id,
+        model: llmConfig.model,
+        toolExecutions,
+        durationMs: Date.now() - startedAt,
+        error: err,
+      });
       void log("error", "agent run failed", {
         ...runLogData(message, session),
         model: llmConfig.model,
@@ -427,6 +542,7 @@ export class AgentBridge {
         threadId: params.message.threadId,
       },
     });
+    hooks.emit("tool:approval:check", { toolName: params.name, sessionId: params.session.id, decision: approvalDecision });
     if (approvalDecision === "deny") {
       return {
         success: false,

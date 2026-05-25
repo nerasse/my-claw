@@ -3,6 +3,7 @@ import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 export interface RouteResult {
   text: string;
@@ -76,6 +77,14 @@ export class MessageRouter {
   async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const streaming = Boolean(options.onToken);
 
+    const gate = await hooks.check("gate:message:incoming", { message });
+    if (!gate.allowed) {
+      void log("warn", "message blocked by gate", { reason: gate.reason, userId: message.userId });
+      return undefined;
+    }
+
+    hooks.emit("message:received", { message });
+
     if (!this.checkRateLimit(message.userId)) {
       void log("warn", "rate limit exceeded", { userId: message.userId, platform: message.platform });
       return { text: "Rate limit exceeded. Please wait a moment before sending more messages." };
@@ -122,6 +131,7 @@ export class MessageRouter {
 
     try {
       const session = await this.sessionManager.getOrCreate(sessionId, message);
+      hooks.emit("message:route:start", { message, sessionId });
       void log("info", "routing message", {
         ...messageLogData(message),
         sessionId,
@@ -136,6 +146,8 @@ export class MessageRouter {
       const attachments = this.agent.getResponseAttachments();
       await this.sessionManager.persist(sessionId);
 
+      const durationMs = Date.now() - startedAt;
+      hooks.emit("message:route:complete", { message, sessionId, response: text ?? "", durationMs });
       void log("info", "response completed", {
         ...messageLogData(message),
         sessionId,
@@ -143,16 +155,18 @@ export class MessageRouter {
         responseChars: text?.length ?? 0,
         attachmentCount: attachments?.length ?? 0,
         sessionMessageCount: session.messages.length,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
 
       return text === undefined ? undefined : { text, attachments };
     } catch (err) {
+      const durationMs = Date.now() - startedAt;
+      hooks.emit("message:route:error", { message, sessionId, error: err, durationMs });
       void log("error", "routing failed", {
         ...messageLogData(message),
         sessionId,
         streaming,
-        durationMs: Date.now() - startedAt,
+        durationMs,
         error: errorLogData(err),
       });
       throw err;

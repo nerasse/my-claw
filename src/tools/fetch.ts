@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 const BLOCKED_HOSTS = new Set(["metadata.google.internal", "metadata.goog"]);
 
@@ -121,6 +122,7 @@ export const fetchTool: Tool = {
         }
 
         const text = await response.text();
+        hooks.emit("tool:fetch:request", { url: currentUrl, method, status: response.status });
         if (response.ok) {
           return { success: true, output: text };
         }

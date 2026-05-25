@@ -8,6 +8,7 @@ import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
 import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
+import { hooks } from "../../hooks/index.ts";
 
 type MatrixChatType = "dm" | "group";
 
@@ -264,6 +265,7 @@ export function createMatrixCommandHandler({
   meta?: { roomId?: string; threadId?: string },
   ) => Promise<OutgoingMessage | string | undefined> {
   return async (chatId, userId, chatType, command, args, meta) => {
+    hooks.emit("command:received", { command, args, platform: "matrix", userId });
     const sessionId = resolveMatrixSessionId({
       config,
       chatId,
@@ -321,9 +323,11 @@ export function createMatrixCommandHandler({
           const session =
             existingSession ??
             (await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType));
+          const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
           session.modelOverride = match.id === (config.llm.defaultModel ?? config.llm.model) ? undefined : match.id;
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
+          hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
           return `Model changed to ${match.label}`;
         }
 
@@ -361,6 +365,7 @@ export function createMatrixCommandHandler({
         }
         const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
         skillRegistry.setAll(allSkills);
+        hooks.emit("skills:reloaded", { count: allSkills.size });
         return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 

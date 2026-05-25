@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
+import { hooks } from "../hooks/index.ts";
 
 export const writeTool: Tool = {
   name: "write",
@@ -23,7 +24,9 @@ export const writeTool: Tool = {
     try {
       const resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
       await mkdir(dirname(resolved), { recursive: true });
-      await writeFile(resolved, str(args, "content"));
+      const content = str(args, "content");
+      await writeFile(resolved, content);
+      hooks.emit("tool:file:write", { path: resolved, size: content.length });
       return { success: true, output: `Written to ${resolved}` };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to write "${path}"`, e) };

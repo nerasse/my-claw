@@ -51,7 +51,7 @@ import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs } from "./utils/media.ts";
 import { log, pruneOldLogs } from "./utils/logger.ts";
-
+import { hooks } from "./hooks/index.ts";
 
 async function main() {
   const config = await loadConfig();
@@ -90,6 +90,7 @@ async function main() {
 
   const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
   const skillRegistry = new SkillRegistry(allSkills);
+  hooks.emit("skills:loaded", { count: allSkills.size });
 
   const subAgentRegistry = new SubAgentRegistry();
   await subAgentRegistry.load();
@@ -139,15 +140,18 @@ async function main() {
 
         if (telegram.streamingEnabled()) {
           const streamer = telegram.createStreamer(msg);
+          hooks.emit("stream:start", { platform: "telegram", chatId: msg.chatId });
           try {
             response = await router.route(msg, {
               onToken: (token) => streamer.push(token),
               onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
             });
             await streamer.finish();
+            hooks.emit("stream:finish", { platform: "telegram", chatId: msg.chatId });
           } catch (err) {
             const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
             await streamer.abort(brief);
+            hooks.emit("stream:abort", { platform: "telegram", chatId: msg.chatId, error: err });
             throw err;
           }
         } else {
@@ -158,13 +162,17 @@ async function main() {
           const refs = extractMediaRefs(response.text);
           const textHasMediaRefs = refs.length > 0;
           if (!telegram.streamingEnabled()) {
-            await telegram.send(msg.chatId, { text: response.text, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
+            const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "telegram", chatId: msg.chatId })).text;
+            await telegram.send(msg.chatId, { text: deliveryText, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
+            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
           } else if (!textHasMediaRefs && response.attachments?.length) {
             await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
+            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: response.attachments.length });
           } else if (textHasMediaRefs) {
             // Streaming already sent the text; send only the extracted files
             const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
             await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
+            hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
           }
         }
       } finally {
@@ -191,8 +199,10 @@ async function main() {
     try {
       await telegram.start();
       adapters.push(telegram);
+      hooks.emit("channel:started", { platform: "telegram" });
     } catch (err) {
       log("error", "telegram adapter failed to start", { error: String(err) });
+      hooks.emit("channel:error", { platform: "telegram", error: err });
     }
   }
 
@@ -235,15 +245,18 @@ async function main() {
 
         if (matrix.streamingEnabled()) {
           const streamer = matrix.createStreamer(msg);
+          hooks.emit("stream:start", { platform: "matrix", chatId: msg.chatId });
           try {
             response = await router.route(msg, {
               onToken: (token) => streamer.push(token),
               onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
             });
             await streamer.finish();
+            hooks.emit("stream:finish", { platform: "matrix", chatId: msg.chatId });
           } catch (err) {
             const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
             await streamer.abort(brief);
+            hooks.emit("stream:abort", { platform: "matrix", chatId: msg.chatId, error: err });
             throw err;
           }
         } else {
@@ -254,12 +267,14 @@ async function main() {
           const refs = extractMediaRefs(response.text);
           const textHasMediaRefs = refs.length > 0;
           if (!matrix.streamingEnabled()) {
+            const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "matrix", chatId: msg.chatId })).text;
             await matrix.send(msg.chatId, {
-              text: response.text,
+              text: deliveryText,
               attachments: textHasMediaRefs ? undefined : response.attachments,
               replyToId: msg.id,
               threadId: msg.threadId,
             });
+            hooks.emit("message:delivered", { platform: "matrix", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
           } else if (!textHasMediaRefs && response.attachments?.length) {
             await matrix.send(msg.chatId, {
               text: "",
@@ -302,8 +317,10 @@ async function main() {
     try {
       await matrix.start();
       adapters.push(matrix);
+      hooks.emit("channel:started", { platform: "matrix" });
     } catch (err) {
       log("error", "matrix adapter failed to start", { error: String(err) });
+      hooks.emit("channel:error", { platform: "matrix", error: err });
     }
   }
 
@@ -312,9 +329,11 @@ async function main() {
   cronScheduler.start();
 
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
+  hooks.emit("app:ready", { channels: Object.keys(config.channels) });
 
   const shutdown = async () => {
     log("info", "shutting down...");
+    hooks.emit("app:shutdown", { signal: "SIGINT" });
     cronScheduler.stop();
     await Promise.allSettled(adapters.map((a) => a.stop()));
     closeDb();
@@ -327,6 +346,7 @@ async function main() {
   let shutdownTriggered = false;
   process.on("unhandledRejection", (reason) => {
     log("error", "unhandled rejection", { error: String(reason) });
+    hooks.emit("app:error", { error: reason, type: "rejection" });
     if (!shutdownTriggered) {
       shutdownTriggered = true;
       void shutdown().finally(() => process.exit(1));
@@ -334,6 +354,7 @@ async function main() {
   });
   process.on("uncaughtException", (err) => {
     log("error", "uncaught exception", { error: String(err), stack: err?.stack });
+    hooks.emit("app:error", { error: err, type: "exception" });
     if (!shutdownTriggered) {
       shutdownTriggered = true;
       void shutdown().finally(() => process.exit(1));

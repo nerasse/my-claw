@@ -5,6 +5,7 @@ import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
+import { hooks } from "../../hooks/index.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -71,6 +72,7 @@ export function createTelegramCommandHandler({
   meta?: TelegramSessionMeta,
 ) => Promise<OutgoingMessage | string | undefined> {
   return async (chatId, userId, chatType, command, args, meta) => {
+    hooks.emit("command:received", { command, args, platform: "telegram", userId });
     const sessionId = resolveTelegramSessionId({
       config,
       chatId,
@@ -124,9 +126,11 @@ export function createTelegramCommandHandler({
           const session =
             existingSession ??
             (await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType));
+          const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
           session.modelOverride = match.id === (config.llm.defaultModel ?? config.llm.model) ? undefined : match.id;
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
+          hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
           return `Model changed to ${modelPicker.labelFor(match.id)}`;
         }
 
@@ -183,6 +187,7 @@ export function createTelegramCommandHandler({
         }
         const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
         skillRegistry.setAll(allSkills);
+        hooks.emit("skills:reloaded", { count: allSkills.size });
         return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
