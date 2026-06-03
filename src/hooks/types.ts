@@ -178,8 +178,10 @@ export interface HookEventMap {
   };
 
   // === MEMORY LIFECYCLE ===
-  "memory:read": { file: string; contentLength: number };
-  "memory:append": { file: string; appendLength: number };
+  "memory:store": { id: number; category: string; decision: string };
+  "memory:recall": { query: string; hitCount: number; semantic: boolean };
+  "memory:consolidate": { categoriesProcessed: number; before: number; after: number };
+  "memory:backfill": { embedded: number };
 
   // === SKILL LIFECYCLE ===
   "skills:loaded": { count: number };
@@ -273,7 +275,7 @@ export interface GateEventMap {
   };
   "gate:session:reset": { sessionId: string };
   "gate:cron:job:before": { jobId: string; jobName: string };
-  "gate:memory:write": { file: string; content: string };
+  "gate:memory:write": { content: string; category: string };
 }
 
 export type GateEventName = keyof GateEventMap;

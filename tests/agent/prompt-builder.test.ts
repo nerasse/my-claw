@@ -84,11 +84,11 @@ test("workspace files are loaded into prompt", async () => {
   const dir = await mkdtemp(join(tmpdir(), "prompt-test-"));
   try {
     await writeFile(join(dir, "SOUL.md"), "I am the soul of this bot.");
-    await writeFile(join(dir, "MEMORY.md"), "Remember: user likes tea.");
+    await writeFile(join(dir, "USER.md"), "The user likes tea.");
     process.env["MY_CLAW_WORKSPACE"] = dir;
     const result = await buildSystemPrompt(makeCtx());
     assert.match(result, /I am the soul of this bot/);
-    assert.match(result, /Remember: user likes tea/);
+    assert.match(result, /The user likes tea/);
   } finally {
     if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
     else process.env["MY_CLAW_WORKSPACE"] = saved;

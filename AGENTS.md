@@ -114,6 +114,14 @@ src/
 │   └── compaction.ts      # Session context compaction (LLM summarization)
 ├── analytics/
 │   └── usage-db.ts        # SQLite analytics (per-API-call token tracking)
+├── memory/                # Active memory: SQLite store, hybrid recall, dedup, consolidation
+│   ├── db.ts              # SQLite (entries + FTS5), CRUD, soft-delete, purge
+│   ├── embedding.ts       # embed() local (transformers.js) / http, warm-up, cosine
+│   ├── dedup.ts           # hash + semantic dedup (add/skip/review)
+│   ├── recall.ts          # hybrid FTS5 + cosine retrieval
+│   ├── consolidate.ts     # per-category LLM merge (soft-delete old)
+│   ├── export.ts          # DB <-> MEMORY.md view, legacy migration
+│   ├── cache.ts, types.ts, index.ts  # recall cache, domain types, public API
 ├── tools/
 │   ├── types.ts           # Tool interface + safe arg helpers (str, num, bool)
 │   ├── registry.ts

@@ -208,6 +208,31 @@ export interface CronConfig {
   timeoutMs?: number;
 }
 
+export interface EmbeddingConfig {
+  backend?: "local" | "http";
+  model?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+  dimensions?: number;
+}
+
+export interface ConsolidationConfig {
+  enabled?: boolean;
+  every?: number;
+  model?: string;
+  provider?: string;
+}
+
+export interface MemoryConfig {
+  enabled?: boolean;
+  embedding?: EmbeddingConfig;
+  consolidation?: ConsolidationConfig;
+  recallMaxEntries?: number;
+  recallMaxChars?: number;
+  ftsCandidates?: number;
+  supersededRetentionDays?: number;
+}
+
 export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
@@ -226,6 +251,7 @@ export interface MyClawConfig {
   browser?: BrowserConfig;
   workspace?: string;
   cron?: CronConfig;
+  memory?: MemoryConfig;
 }
 
 export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;

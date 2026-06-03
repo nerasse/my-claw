@@ -3,7 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
@@ -27,7 +27,7 @@ import { fetchTool } from "./tools/fetch.ts";
 import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
 import { lsTool } from "./tools/ls.ts";
-import { memoryTool } from "./tools/memory.ts";
+import { createMemoryTool } from "./tools/memory.ts";
 import { createSpawnTool } from "./tools/spawn.ts";
 import { createSendTool } from "./tools/send.ts";
 import { createListAgentsTool } from "./tools/list-agents.ts";
@@ -50,8 +50,23 @@ import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs } from "./utils/media.ts";
+import { chatCompletion } from "./llm/provider.ts";
+import { resolveLlmConfig } from "./llm/resolver.ts";
+import {
+  warmupEmbedding,
+  backfillEmbeddings,
+  importHandEdits,
+  migrateLegacyFiles,
+  exportToMarkdown,
+  purgeOldMemory,
+  consolidateMemory,
+  closeMemoryDb,
+  type LlmCaller,
+} from "./memory/index.ts";
 import { log, pruneOldLogs } from "./utils/logger.ts";
 import { hooks } from "./hooks/index.ts";
+
+const DAY_MS = 86_400_000;
 
 async function main() {
   const config = await loadConfig();
@@ -60,6 +75,7 @@ async function main() {
   void pruneOldSessions();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
+  const memoryPurgeTimer = initMemory(config);
   const modelPicker = new ModelPicker(config.llm.models ?? []);
 
   const voiceManager = new VoiceManager(config);
@@ -67,7 +83,7 @@ async function main() {
   const ttsPipeline = new TtsPipeline(voiceManager);
 
   const toolRegistry = new ToolRegistry();
-  registerCoreTools(toolRegistry);
+  registerCoreTools(toolRegistry, config);
   registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
   if (config.webSearch?.baseUrl) {
     toolRegistry.register(createWebSearchTool(config.webSearch));
@@ -343,9 +359,11 @@ async function main() {
     log("info", "shutting down...");
     hooks.emit("app:shutdown", { signal: "SIGINT" });
     cronScheduler.stop();
+    if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
     await Promise.allSettled(adapters.map((a) => a.stop()));
     closeDb();
+    closeMemoryDb();
     process.exit(0);
   };
 
@@ -388,8 +406,55 @@ async function cleanupTtsTempFiles(attachments?: Array<{ path?: string }>): Prom
   }
 }
 
-function registerCoreTools(registry: ToolRegistry): void {
-  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, memoryTool]) {
+function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | undefined {
+  if (config.memory?.enabled === false) return undefined;
+  const memCfg = config.memory;
+
+  void (async () => {
+    try {
+      await migrateLegacyFiles(memCfg);
+      await importHandEdits(memCfg);
+      purgeOldMemory(memCfg);
+      await exportToMarkdown();
+      // Preload embeddings without blocking boot; recall falls back to FTS5 until ready.
+      // Once ready, backfill vectors for entries stored while FTS5-only.
+      await warmupEmbedding(memCfg?.embedding);
+      const n = await backfillEmbeddings(memCfg);
+      if (n > 0) void log("info", "memory embeddings backfilled", { embedded: n });
+    } catch (err) {
+      void log("warn", "memory init failed", { error: String(err) });
+    }
+  })();
+
+  if (memCfg?.consolidation?.enabled !== false) {
+    const every = memCfg?.consolidation?.every ?? 20;
+    const caller: LlmCaller = async (system, user) => {
+      const llmCfg = resolveLlmConfig(config.llm, memCfg?.consolidation?.model);
+      const res = await chatCompletion(llmCfg, [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ]);
+      return res.content;
+    };
+    let storeCount = 0;
+    let running = false;
+    hooks.on("memory:store", () => {
+      storeCount += 1;
+      if (storeCount >= every && !running) {
+        storeCount = 0;
+        running = true;
+        void consolidateMemory(caller, memCfg).finally(() => {
+          running = false;
+        });
+      }
+    });
+  }
+
+  return setInterval(() => purgeOldMemory(memCfg), DAY_MS);
+}
+
+function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
+  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, createMemoryTool(config)]) {
     registry.register(tool);
   }
 }

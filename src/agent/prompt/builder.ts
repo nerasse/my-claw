@@ -22,7 +22,7 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
 
   // Layer 1-4: Workspace files (scanned for injection)
   const files = await loadAllPromptFiles();
-  const fileOrder: Array<keyof typeof files> = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"];
+  const fileOrder: Array<keyof typeof files> = ["SOUL.md", "AGENTS.md", "USER.md"];
   for (const name of fileOrder) {
     const content = files[name];
     if (content) {

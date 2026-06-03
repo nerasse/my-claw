@@ -654,9 +654,10 @@ test("ls error on missing directory is clear", async () => {
   assert.ok(result.output.includes("not found"));
 });
 
-test("memory append without content is clear", async () => {
-  const { memoryTool } = await import("../src/tools/memory.ts");
-  const result = await memoryTool.execute({ file: "MEMORY.md", action: "append", content: "" });
+test("memory remember without content is clear", async () => {
+  const { createMemoryTool } = await import("../src/tools/memory.ts");
+  const tool = createMemoryTool({ memory: {} } as import("../src/core/config.ts").MyClawConfig);
+  const result = await tool.execute({ action: "remember", content: "" });
   assert.equal(result.success, false);
   assert.ok(result.output.includes("content is required"));
 });

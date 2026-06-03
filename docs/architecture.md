@@ -12,11 +12,12 @@
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
 | Tools (8 base + voice, browser, skill, subagent, search) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search |
-| System prompt builder | Complete (9-layer: hardcoded core + 4 workspace files + 4 dynamic) |
+| System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
-| Hooks / Event System | Complete — 85 hooks (73 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Hooks / Event System | Complete — 87 hooks (75 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
@@ -125,6 +126,7 @@
 │       └── <name>-<hex4>.json
 ├── sessions-archive/        # archived sessions (reset, clear)
 ├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
+├── memory.db                # SQLite — long-term memory: entries + FTS5 (WAL mode)
 └── logs/
 ```
 
@@ -202,11 +204,12 @@
 | 1 | Identity | SOUL.md (workspace) | Personality, tone, style |
 | 2 | Directives | AGENTS.md (workspace) | Workspace rules, red lines |
 | 3 | User context | USER.md (workspace) | User profile |
-| 4 | Memory | MEMORY.md (workspace) | Long-term memory |
-| 5 | Skills | Dynamic | Available skills index + `read_skill()` injonction |
-| 6 | Tools | Dynamic | Available tools with rich descriptions |
-| 7 | Platform hints | Dynamic | Telegram/Matrix formatting |
-| 8 | Runtime | Dynamic | Date, model, channel, session ID |
+| 4 | Skills | Dynamic | Available skills index + `read_skill()` injonction |
+| 5 | Tools | Dynamic | Available tools with rich descriptions |
+| 6 | Platform hints | Dynamic | Telegram/Matrix formatting |
+| 7 | Runtime | Dynamic | Date, model, channel, session ID |
+
+Long-term memory is no longer a prompt layer. Relevant entries are recalled per turn and injected into the user message (see `docs/memory.md`).
 
 #### Anti-injection
 

@@ -82,5 +82,9 @@
     "orchestrator": { "maxIterations": 90 },
     "general": { "maxIterations": 50 },
     "research": { "maxIterations": 50 }
+  },
+  "memory": {
+    "enabled": true,
+    "consolidation": { "enabled": true, "every": 20 }
   }
 }

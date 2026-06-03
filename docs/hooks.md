@@ -2,13 +2,13 @@
 
 > WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
 > Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
-> 85 hooks (73 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
+> 87 hooks (75 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
 
 ## Architecture
 
 ```
 src/hooks/
-  types.ts    -- typed event maps for all 77 hooks
+  types.ts    -- typed event maps for all 87 hooks
   bus.ts      -- HookBus with on/off/emit, gate/check, tap/transform
   index.ts    -- exports hooks singleton + types
 ```
@@ -106,8 +106,10 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `session:model:changed` -- /model command
 
 ### Memory lifecycle
-- `memory:read` -- read_memory tool
-- `memory:append` -- append_memory tool
+- `memory:store` -- a fact was stored (remember/update)
+- `memory:recall` -- memories retrieved for a query
+- `memory:consolidate` -- background merge pass completed
+- `memory:backfill` -- existing entries embedded after embeddings enabled
 
 ### Skill lifecycle
 - `skills:loaded` -- initial load on boot
@@ -145,7 +147,7 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `gate:message:outgoing` -- suppress delivery
 - `gate:session:reset` -- prevent /new
 - `gate:cron:job:before` -- skip scheduled job
-- `gate:memory:write` -- block MEMORY.md append
+- `gate:memory:write` -- block a memory write (remember/update)
 
 ## Waterfall events (transform data)
 

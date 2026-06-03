@@ -329,3 +329,20 @@ Additional Matrix fields:
 
 - `maxIterations` — max tool-calling loops before forcing a summary response.
 - `llm` — optional per-agent LLM config override (inherits providers from global `llm`).
+
+## Memory
+
+```json
+"memory": {
+  "enabled": true,
+  "consolidation": { "enabled": true, "every": 20 },
+  "embedding": { "backend": "local", "model": "Xenova/multilingual-e5-large" }
+}
+```
+
+- `enabled` — master switch (default: true).
+- `embedding` — optional. Omit for FTS5-only keyword recall (zero-config, no download/key). `backend: "local"` runs in-process via transformers.js; `backend: "http"` hits any OpenAI-compatible `/embeddings` endpoint (also set `baseUrl` and `apiKeyEnv`).
+- `consolidation.every` — writes between background merge passes (default: 20). `consolidation.model` overrides the merge LLM (default: main agent).
+- `recallMaxEntries` (5), `recallMaxChars` (2000), `ftsCandidates` (20), `supersededRetentionDays` (365).
+
+See `docs/memory.md` for design rationale.

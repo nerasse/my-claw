@@ -17,6 +17,7 @@ import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 import { scanForInjection } from "./prompt/anti-injection.ts";
+import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
@@ -180,6 +181,8 @@ export class AgentBridge {
           };
         }
       }
+
+      await this.injectMemory(message, chatMessages);
 
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
 
@@ -541,6 +544,34 @@ export class AgentBridge {
     });
 
     return finalText;
+  }
+
+  /**
+   * Inject relevant long-term memory into the current turn only (not session history),
+   * so it never accumulates and stays out of cached prefixes. Main agent only.
+   */
+  private async injectMemory(message: UnifiedMessage, chatMessages: ChatMessage[]): Promise<void> {
+    if (this.depth !== 0) return;
+    if (this.config.memory?.enabled === false) return;
+    try {
+      const mem = await recall(message.text, this.config.memory);
+      if (!mem.text) return;
+      const block =
+        "<memory-context>\n" +
+        "Relevant long-term memory (may be outdated; verify before relying on it):\n" +
+        `${mem.text}\n` +
+        "</memory-context>";
+      const lastIdx = chatMessages.length - 1;
+      const last = chatMessages[lastIdx];
+      if (!last || last.role !== "user") return;
+      if (typeof last.content === "string") {
+        chatMessages[lastIdx] = { role: "user", content: `${block}\n\n${last.content}` };
+      } else {
+        chatMessages[lastIdx] = { role: "user", content: [{ type: "text", text: block }, ...last.content] };
+      }
+    } catch (err) {
+      void log("warn", "memory recall failed", { error: String(err) });
+    }
   }
 
   private async executeTool(params: {

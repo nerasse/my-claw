@@ -16,5 +16,7 @@ export const CORE_PROMPT = [
   "Use manage_skills(action='reload') if you need to force a rescan.",
   "",
   "# Memory Rule",
-  "Only use the memory tool when the user explicitly asks you to save or remember something.",
+  "Use the memory tool to save durable facts proactively: user preferences and corrections, environment details, conventions, and lessons learned.",
+  "Write declarative facts (\"User prefers X\"), not instructions. Do not store task progress or session chatter.",
+  "Relevant memories are recalled and injected automatically; you do not need to read a memory file.",
 ].join("\n");

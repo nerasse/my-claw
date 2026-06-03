@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md"] as const;
 const CACHE_TTL_MS = 30_000;
 
 export type PromptFile = (typeof PROMPT_FILES)[number];

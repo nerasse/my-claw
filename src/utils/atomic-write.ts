@@ -9,6 +9,13 @@ export async function writeJsonFileAtomically(path: string, value: unknown, pret
   await rename(tmp, path);
 }
 
+export async function writeFileAtomically(path: string, content: string, tmpSuffix = ".tmp"): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}${tmpSuffix}`;
+  await writeFile(tmp, content);
+  await rename(tmp, path);
+}
+
 export function writeJsonFileAtomicallySync(path: string, value: unknown, pretty = false): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
