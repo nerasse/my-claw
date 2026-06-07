@@ -19,6 +19,8 @@ import { IterationBudget } from "./iteration-budget.ts";
 import { scanForInjection } from "./prompt/anti-injection.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
+import { AbortedError, isAbort } from "../core/aborted.ts";
+import { runRegistry } from "../core/run-registry.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!usage) return;
@@ -48,6 +50,10 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
 
 const MAX_SESSION_MESSAGES = 500;
 const MAX_SESSION_MESSAGES_KEEP = 50;
+
+// A tool result with no content confuses the model (it cannot tell "ran, nothing to show" from a
+// broken tool). Every tool result is normalized to a non-empty, explicit string.
+const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
 
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
@@ -86,8 +92,9 @@ export class AgentBridge {
   async handleMessage(
     message: UnifiedMessage,
     session: SessionData,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return this.handle(message, session);
+    return this.handle(message, session, undefined, undefined, signal);
   }
 
   async handleMessageStreaming(
@@ -95,8 +102,9 @@ export class AgentBridge {
     session: SessionData,
     onToken: (token: string) => Promise<void>,
     onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse);
+    return this.handle(message, session, onToken, onToolUse, signal);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -108,6 +116,7 @@ export class AgentBridge {
     session: SessionData,
     onToken?: (token: string) => Promise<void>,
     onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -121,6 +130,9 @@ export class AgentBridge {
 
     const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
     const budget = new IterationBudget(resolveMaxIterations(this.config, agentType));
+
+    const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
+    const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth) : undefined;
 
     hooks.emit("agent:run:start", {
       messageId: message.id,
@@ -188,6 +200,7 @@ export class AgentBridge {
 
       let iteration = 0;
       while (budget.consume()) {
+        if (signal?.aborted) throw new AbortedError();
         iteration++;
         const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context, toolSchemaTokens);
         if (trimmed !== chatMessages) {
@@ -212,11 +225,13 @@ export class AgentBridge {
               chatMessages,
               onToken,
               openaiTools.length > 0 ? openaiTools : undefined,
+              signal,
             )
           : await chatCompletion(
               llmConfig,
               chatMessages,
               openaiTools.length > 0 ? openaiTools : undefined,
+              signal,
             );
         const llmDurationMs = Date.now() - llmStartedAt;
 
@@ -351,6 +366,7 @@ export class AgentBridge {
             message,
             session,
             toolCallId: tc.id,
+            signal,
           });
 
           const durationMs = Date.now() - toolStartedAt;
@@ -422,8 +438,26 @@ export class AgentBridge {
         maxIterations: budget.total,
         toolExecutions,
       });
-      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget);
+      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget, signal);
     } catch (err) {
+      if (isAbort(err, signal)) {
+        this.sealDanglingToolCalls(session);
+        hooks.emit("agent:run:aborted", {
+          messageId: message.id,
+          sessionId: session.id,
+          model: llmConfig.model,
+          toolExecutions,
+          durationMs: Date.now() - startedAt,
+        });
+        void log("info", "agent run aborted", {
+          ...runLogData(message, session),
+          model: llmConfig.model,
+          streaming,
+          toolExecutions,
+          durationMs: Date.now() - startedAt,
+        });
+        throw new AbortedError();
+      }
       session.messages.length = messageCountBeforeLoop;
       hooks.emit("agent:run:error", {
         messageId: message.id,
@@ -443,7 +477,38 @@ export class AgentBridge {
       });
       throw err;
     } finally {
+      runNode?.exit();
       await this.preprocessor.cleanupTempFiles();
+    }
+  }
+
+  /**
+   * On abort we keep the full history but guarantee no assistant tool_call is left without a
+   * tool response (which would break the next turn's API call). Appends a synthetic result for
+   * any dangling tool_call id in the last assistant message.
+   */
+  private sealDanglingToolCalls(session: SessionData): void {
+    let lastAssistantIdx = -1;
+    for (let i = session.messages.length - 1; i >= 0; i--) {
+      if (session.messages[i]!.role === "assistant") {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (lastAssistantIdx < 0) return;
+    const assistant = session.messages[lastAssistantIdx]!;
+    if (assistant.role !== "assistant" || !assistant.toolCalls?.length) return;
+    const toolCalls = assistant.toolCalls;
+
+    const answered = new Set<string>();
+    for (let i = lastAssistantIdx + 1; i < session.messages.length; i++) {
+      const msg = session.messages[i]!;
+      if (msg.role === "tool" && msg.toolCallId) answered.add(msg.toolCallId);
+    }
+    for (const tc of toolCalls) {
+      if (!answered.has(tc.id)) {
+        session.messages.push({ role: "tool", toolCallId: tc.id, content: "[Stopped by user]", timestamp: new Date().toISOString() });
+      }
     }
   }
 
@@ -456,6 +521,7 @@ export class AgentBridge {
     toolExecutions: number,
     iteration: number,
     budget: IterationBudget,
+    signal?: AbortSignal,
   ): Promise<string> {
     const summaryPrompt =
       "You've reached the maximum number of tool-calling iterations allowed. " +
@@ -489,7 +555,7 @@ export class AgentBridge {
     });
 
     const summaryStartedAt = Date.now();
-    const summaryResponse = await chatCompletion(llmConfig, chatMessages);
+    const summaryResponse = await chatCompletion(llmConfig, chatMessages, undefined, signal);
     const summaryDurationMs = Date.now() - summaryStartedAt;
 
     hooks.emit("llm:call:end", {
@@ -580,7 +646,9 @@ export class AgentBridge {
     message: UnifiedMessage;
     session: SessionData;
     toolCallId: string;
+    signal?: AbortSignal;
   }): Promise<{ content: string; success: boolean }> {
+    if (params.signal?.aborted) throw new AbortedError();
     const tool = this.toolRegistry.get(params.name);
     if (!tool) {
       return {
@@ -619,8 +687,10 @@ export class AgentBridge {
         __depth: this.depth,
         __message: params.message,
         __workspaceDir: this.workspaceDir,
+        __signal: params.signal,
       };
       const result = await tool.execute(enrichedArgs);
+      if (params.signal?.aborted) throw new AbortedError();
       if (result.attachments?.length) {
         for (const att of result.attachments) {
           this.preprocessor.addResponseAttachment(att);
@@ -629,14 +699,16 @@ export class AgentBridge {
       if (result.success) {
         return {
           success: true,
-          content: result.output,
+          content: result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT,
         };
       }
+      const detail = (result.error ?? result.output).trim();
       return {
         success: false,
-        content: `Error: ${result.error ?? result.output}`,
+        content: `Error: ${detail.length > 0 ? detail : "tool failed with no message"}`,
       };
     } catch (err) {
+      if (isAbort(err, params.signal)) throw new AbortedError();
       void log("error", "tool execution failed", { tool: params.name, error: errorLogData(err) });
       return {
         success: false,

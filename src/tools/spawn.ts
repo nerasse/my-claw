@@ -3,6 +3,7 @@ import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
+import { rethrowIfAborted } from "../core/aborted.ts";
 
 export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegistry): Tool {
   return {
@@ -49,10 +50,12 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
           return { success: false, output: "", error: `Invalid mode '${mode}'` };
         }
 
+        const signal = args["__signal"] as AbortSignal | undefined;
         const existing = await registry.listExistingIds();
-        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e));
+        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
+        rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);
         return { success: false, output: "", error: String(e) };
       }
     },

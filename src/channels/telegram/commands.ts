@@ -8,6 +8,7 @@ export const COMMANDS = [
   { command: "reload", description: "Reload skills from disk" },
   { command: "verbose", description: "Toggle verbose tool output" },
   { command: "status", description: "Show current status" },
+  { command: "stop", description: "Stop the running agent and its sub-agents" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
   { command: "cron", description: "List scheduled tasks" },

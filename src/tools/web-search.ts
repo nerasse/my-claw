@@ -1,5 +1,6 @@
 import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
+import { rethrowIfAborted } from "../core/aborted.ts";
 import type { WebSearchConfig } from "../core/config.ts";
 
 const DEFAULT_TIMEOUT_MS = 20000;
@@ -34,6 +35,26 @@ function normalizeResult(value: unknown): { url: string; title: string; content?
     title: candidate.title,
     content: typeof candidate.content === "string" ? candidate.content : undefined,
   };
+}
+
+/**
+ * SearXNG returns HTTP 200 with an empty `results` array both when nothing is found AND when its
+ * engines are rate-limited/down (it lists them in `unresponsive_engines`). Without this, a throttled
+ * backend looks identical to "no results" and the agent keeps firing useless searches. Returns a
+ * human-readable degradation reason, or null if the backend is healthy (genuine empty).
+ */
+function describeUnresponsiveEngines(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const raw = (parsed as Record<string, unknown>).unresponsive_engines;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const parts = raw
+    .map((entry) => {
+      if (Array.isArray(entry)) return entry.filter((x) => typeof x === "string" && x).join(": ");
+      if (typeof entry === "string") return entry;
+      return JSON.stringify(entry);
+    })
+    .filter((s) => s.length > 0);
+  return parts.length > 0 ? parts.join("; ") : "all engines unavailable";
 }
 
 function formatResults(results: Array<{ url: string; title: string; content?: string }>): string {
@@ -104,14 +125,17 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
         headers["Authorization"] = `Bearer ${config.token}`;
       }
 
+      const signal = args["__signal"] as AbortSignal | undefined;
+      rethrowIfAborted(undefined, signal);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+      const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
       try {
         const response = await fetch(url, {
           method: "GET",
           headers,
-          signal: controller.signal,
+          signal: reqSignal,
         });
 
         if (!response.ok) {
@@ -147,9 +171,21 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
           }
         }
 
-        const output = formatResults(results);
-        return { success: true, output };
+        if (results.length === 0) {
+          const degraded = describeUnresponsiveEngines(parsed);
+          if (degraded) {
+            return {
+              success: false,
+              output: "",
+              error: `Web search backend degraded: ${degraded}. The search service is likely rate-limited or down -- do not retry the same search repeatedly; answer from your own knowledge or tell the user search is unavailable.`,
+            };
+          }
+          return { success: true, output: "No results found for this query." };
+        }
+
+        return { success: true, output: formatResults(results) };
       } catch (err) {
+        rethrowIfAborted(err, signal);
         if (err instanceof Error && err.name === "AbortError") {
           return { success: false, output: "", error: "Web search timed out after 20 seconds." };
         }

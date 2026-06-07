@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
+import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
 
 const BLOCKED_HOSTS = new Set(["metadata.google.internal", "metadata.goog"]);
@@ -93,6 +94,8 @@ export const fetchTool: Tool = {
     if (await resolveAndCheckUrl(url)) {
       return { success: false, output: "", error: "Blocked: URL points to a private/internal network address." };
     }
+    const signal = args["__signal"] as AbortSignal | undefined;
+    rethrowIfAborted(undefined, signal);
     try {
       const method = strOpt(args, "method") ?? "GET";
       const body = strOpt(args, "body");
@@ -102,11 +105,12 @@ export const fetchTool: Tool = {
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 30_000);
+        const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
         const response = await fetch(currentUrl, {
           method: hop === 0 ? method : "GET",
           body: hop === 0 ? body : undefined,
           redirect: "manual",
-          signal: controller.signal,
+          signal: reqSignal,
         });
         clearTimeout(timer);
 
@@ -135,6 +139,7 @@ export const fetchTool: Tool = {
 
       return { success: false, output: "", error: "Too many redirects." };
     } catch (e) {
+      rethrowIfAborted(e, signal);
       return { success: false, output: "", error: formatError(`Failed to fetch "${url}"`, e) };
     }
   },

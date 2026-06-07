@@ -6,6 +6,7 @@ import { ModelPicker } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
+import { runRegistry } from "../../core/run-registry.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -203,10 +204,19 @@ export function createTelegramCommandHandler({
         return lines.join("\n");
       }
 
+      case "stop":
+        return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
+
       case "status": {
         const session = await sessionManager.peek(sessionId);
         const currentModel = session?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-        if (!session) return `Model: ${currentModel}\nSession: none active`;
+        const live = runRegistry.list(sessionId);
+        const liveLine = live.length > 0
+          ? `Active run: ${live.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ")}`
+          : undefined;
+        if (!session) {
+          return [`Model: ${currentModel}`, "Session: none active", ...(liveLine ? [liveLine] : [])].join("\n");
+        }
         const lines = [
           `Model: ${currentModel}`,
           `Session: ${sessionId}`,
@@ -214,6 +224,7 @@ export function createTelegramCommandHandler({
           `Created: ${session.createdAt}`,
           `Last active: ${session.lastActiveAt}`,
         ];
+        if (liveLine) lines.push(liveLine);
         if (session.tokenUsage) {
           const u = session.tokenUsage;
           lines.push(`Tokens: ${u.totalTokens.toLocaleString()} (in: ${u.promptTokens.toLocaleString()}, out: ${u.completionTokens.toLocaleString()})`);

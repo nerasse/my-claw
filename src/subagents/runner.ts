@@ -12,6 +12,7 @@ import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { isAbort } from "../core/aborted.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
 
@@ -45,12 +46,13 @@ export class SubAgentRunner {
     parentMessage: UnifiedMessage,
     existingIds: Set<string>,
     generateId: (name: string, existing: Set<string>) => string,
+    signal?: AbortSignal,
   ): Promise<{ id: string; result: string }> {
     if (mode === "run") {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, workspaceDir, 0, parentMessage);
+      return this.runOneShot(type, task, workspaceDir, 0, parentMessage, signal);
     }
 
     const id = generateId(displayName, existingIds);
@@ -67,7 +69,7 @@ export class SubAgentRunner {
     await saveSession(id, session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
-    const result = await this.executeRun(id, type, workspaceDir, 0, parentMessage);
+    const result = await this.executeRun(id, type, workspaceDir, 0, parentMessage, signal);
     hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
   }
@@ -78,6 +80,7 @@ export class SubAgentRunner {
     attachments: Attachment[] | undefined,
     parentMessage: UnifiedMessage,
     registry: { enqueue: <T>(id: string, task: () => Promise<T>) => Promise<T>; isRunning: (id: string) => boolean },
+    signal?: AbortSignal,
   ): Promise<string> {
     return registry.enqueue(id, async () => {
       const session = await loadSession(id);
@@ -92,7 +95,7 @@ export class SubAgentRunner {
         session.messages = session.messages.slice(-MAX_MESSAGES_KEEP);
       }
 
-      const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage);
+      const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal);
       await saveSession(id, session);
       return result;
     });
@@ -146,6 +149,7 @@ export class SubAgentRunner {
     workspaceDir: string | undefined,
     parentDepth: number,
     parentMessage: UnifiedMessage,
+    signal?: AbortSignal,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, undefined);
@@ -153,7 +157,7 @@ export class SubAgentRunner {
 
     this.activeCount += 1;
     try {
-      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage);
+      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
       return { id, result };
     } finally {
       this.activeCount -= 1;
@@ -167,9 +171,10 @@ export class SubAgentRunner {
     workspaceDir: string | undefined,
     parentDepth: number,
     parentMessage: UnifiedMessage,
+    signal?: AbortSignal,
   ): Promise<string> {
     const session = (await loadSession(id))!;
-    return this.executeRunWithSession(session, type, workspaceDir, parentMessage);
+    return this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
   }
 
   private async executeRunWithSession(
@@ -177,6 +182,7 @@ export class SubAgentRunner {
     type: SubAgentType,
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
+    signal?: AbortSignal,
   ): Promise<string> {
     const depth = 1;
     const resolved = resolveAgentLlmConfig(this.config.agents[type]?.llm, this.config.llm);
@@ -208,9 +214,13 @@ export class SubAgentRunner {
     };
 
     try {
-      const result = await bridge.handleMessage(subMessage, session);
+      const result = await bridge.handleMessage(subMessage, session, signal);
       return result;
     } catch (err) {
+      if (isAbort(err, signal)) {
+        hooks.emit("subagent:aborted", { id: session.id });
+        throw err;
+      }
       hooks.emit("subagent:error", { id: session.id, error: err });
       throw err;
     }

@@ -78,6 +78,13 @@ export interface HookEventMap {
     durationMs: number;
     error: unknown;
   };
+  "agent:run:aborted": {
+    messageId: string;
+    sessionId: string;
+    model: string;
+    toolExecutions: number;
+    durationMs: number;
+  };
   "agent:budget:exhausted": {
     sessionId: string;
     iteration: number;
@@ -200,6 +207,7 @@ export interface HookEventMap {
   };
   "subagent:complete": { id: string; resultLength: number };
   "subagent:error": { id: string; error: unknown };
+  "subagent:aborted": { id: string };
   "subagent:killed": { id: string };
   "subagent:reset": { id: string };
 

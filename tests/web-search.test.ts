@@ -133,4 +133,41 @@ describe("web_search tool", () => {
       restore();
     }
   });
+
+  test("flags a rate-limited/degraded backend (200 + empty results + unresponsive_engines)", async () => {
+    const { restore } = mockFetch(async () => {
+      return new Response(
+        JSON.stringify({
+          results: [],
+          unresponsive_engines: [["google", "rate-limited"], ["bing", "timeout"]],
+        }),
+        { status: 200 },
+      );
+    });
+
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr" });
+      const result = await tool.execute({ query: "test" });
+      assert.equal(result.success, false);
+      assert.match(result.error ?? "", /degraded|rate-limited/i);
+      assert.match(result.error ?? "", /google: rate-limited/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("genuine empty (200 + empty results, no unresponsive engines) is a clear success", async () => {
+    const { restore } = mockFetch(async () => {
+      return new Response(JSON.stringify({ results: [], unresponsive_engines: [] }), { status: 200 });
+    });
+
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr" });
+      const result = await tool.execute({ query: "test" });
+      assert.equal(result.success, true);
+      assert.match(result.output, /No results found/i);
+    } finally {
+      restore();
+    }
+  });
 });

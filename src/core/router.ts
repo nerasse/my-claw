@@ -4,6 +4,8 @@ import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
+import { isAbort } from "./aborted.ts";
+import { runRegistry } from "./run-registry.ts";
 
 export interface RouteResult {
   text: string;
@@ -57,6 +59,10 @@ export class MessageRouter {
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.agent.setApprovalHandler(handler);
+  }
+
+  stop(sessionId: string): boolean {
+    return runRegistry.stop(sessionId);
   }
 
   // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated
@@ -129,6 +135,7 @@ export class MessageRouter {
     options: RouteOptions,
   ): Promise<RouteResult | undefined> {
     const startedAt = Date.now();
+    const { signal, end } = runRegistry.startRoot(sessionId);
 
     try {
       const session = await this.sessionManager.getOrCreate(sessionId, message);
@@ -142,8 +149,8 @@ export class MessageRouter {
       });
 
       const text = options.onToken
-        ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse)
-        : await this.agent.handleMessage(message, session);
+        ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse, signal)
+        : await this.agent.handleMessage(message, session, signal);
       const attachments = this.agent.getResponseAttachments();
       await this.sessionManager.persist(sessionId);
 
@@ -162,6 +169,11 @@ export class MessageRouter {
       return text === undefined ? undefined : { text, attachments };
     } catch (err) {
       const durationMs = Date.now() - startedAt;
+      if (isAbort(err, signal)) {
+        await this.sessionManager.persist(sessionId).catch(() => {});
+        void log("info", "run stopped by user", { ...messageLogData(message), sessionId, streaming, durationMs });
+        return undefined;
+      }
       hooks.emit("message:route:error", { message, sessionId, error: err, durationMs });
       void log("error", "routing failed", {
         ...messageLogData(message),
@@ -171,6 +183,8 @@ export class MessageRouter {
         error: errorLogData(err),
       });
       throw err;
+    } finally {
+      end();
     }
   }
 }

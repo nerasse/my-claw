@@ -16,7 +16,8 @@
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
-| Hooks / Event System | Complete — 87 hooks (75 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Hooks / Event System | Complete — 89 hooks (77 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Run control (`/stop`) | Complete — aborts the session run + all sub-agents via one shared AbortSignal, abortable LLM/bash/fetch/web_search, live run tree in `/status` — see `docs/stop.md` |
 | Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
@@ -46,7 +47,7 @@
 - Format: HTML parse mode with plain text fallback
 - Message split: 4000 chars, HTML-tag-aware
 - Text batching: 1s debounce for split messages
-- Commands (unified both platforms): /new, /model, /models, /compact, /reload, /verbose, /status, /clear, /archive, /help, /commands
+- Commands (unified both platforms): /new, /model, /models, /compact, /reload, /verbose, /status, /stop, /clear, /archive, /help, /commands
 - Inline buttons: accept/deny for blacklisted actions
 - Media: photo, voice, audio, video, document (in/out)
 - No dependency injection, no plugin SDK, no multi-account

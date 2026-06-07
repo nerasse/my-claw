@@ -16,7 +16,7 @@ src/channels/matrix/
 ├── send.ts             # All outbound: send, edit, upload, stream finalization
 ├── format.ts           # Mention resolution, text formatting, reply fallback strip
 ├── stream.ts           # Streaming previews via `m.replace`
-├── commands.ts         # `/new`, `/model`, `/status`, `/clear`, `/help`, `/archive`, `/reload-skills`
+├── commands.ts         # `/new`, `/model`, `/status`, `/stop`, `/clear`, `/help`, `/archive`, `/reload-skills`
 ├── session-handlers.ts # Model menus, approval prompts, status replies
 ├── actions.ts            # Reaction/text-reply action resolution
 ├── approval-store.ts     # Persisted approval prompts across restarts
@@ -135,7 +135,7 @@ contextVisibility: "all" | "allowlist" | "allowlist_quote"
 - `allowlist_quote`: same as `allowlist`, but reply quotes from non-allowlisted senders are still shown
 
 ### Meta-Command Filtering
-Commands (`/help`, `/status`, `/model`, `/compact`, `/reload-skills`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
+Commands (`/help`, `/status`, `/stop`, `/model`, `/compact`, `/reload-skills`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
 
 ## DM Detection
 
@@ -174,7 +174,8 @@ All commands are text-based (Matrix has no native command UI):
 | `/models` | List available models |
 | `/compact` | Compact session context (summarize middle, keep head+tail) |
 | `/reload-skills` | Rescan skills from disk and refresh registry |
-| `/status` | Show current model and stats |
+| `/status` | Show current model, stats, and live run tree |
+| `/stop` | Stop the running agent and all its sub-agents |
 | `/clear` | Clear session history |
 | `/archive` | Delete archived sessions |
 | `/help` / `/commands` | Show command list |

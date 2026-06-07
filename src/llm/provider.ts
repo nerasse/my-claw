@@ -1,4 +1,5 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
+import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 
@@ -235,6 +236,7 @@ export async function chatCompletion(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
   tools?: unknown[],
+  signal?: AbortSignal,
 ): Promise<LlmResponse> {
   checkCircuitBreaker();
 
@@ -249,11 +251,13 @@ export async function chatCompletion(
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw new AbortedError();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+      const response = await fetch(url, { method: "POST", headers, body, signal: fetchSignal });
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
@@ -282,6 +286,7 @@ export async function chatCompletion(
         usage: normalizeUsage(data.usage),
       };
     } catch (err) {
+      if (signal?.aborted) throw new AbortedError();
       lastErr = err;
       if (err instanceof DOMException && err.name === "AbortError") {
         lastErr = new Error(`LLM request timed out after ${LLM_TIMEOUT_MS}ms`);
@@ -317,6 +322,7 @@ export async function chatCompletionStream(
   messages: ChatMessage[],
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
+  signal?: AbortSignal,
 ): Promise<LlmResponse> {
   checkCircuitBreaker();
 
@@ -332,11 +338,13 @@ export async function chatCompletionStream(
   let tokensDelivered = false;
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw new AbortedError();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LLM_STREAM_TIMEOUT_MS);
+    const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+      const response = await fetch(url, { method: "POST", headers, body, signal: fetchSignal });
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
@@ -442,6 +450,7 @@ export async function chatCompletionStream(
         usage: streamUsage,
       };
     } catch (err) {
+      if (signal?.aborted) throw new AbortedError();
       lastErr = err;
       if (err instanceof DOMException && err.name === "AbortError") {
         lastErr = new Error(`LLM stream timed out after ${LLM_STREAM_TIMEOUT_MS}ms`);

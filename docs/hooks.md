@@ -2,13 +2,13 @@
 
 > WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
 > Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
-> 87 hooks (75 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
+> 89 hooks (77 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
 
 ## Architecture
 
 ```
 src/hooks/
-  types.ts    -- typed event maps for all 87 hooks
+  types.ts    -- typed event maps for all 89 hooks
   bus.ts      -- HookBus with on/off/emit, gate/check, tap/transform
   index.ts    -- exports hooks singleton + types
 ```
@@ -74,6 +74,7 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `agent:turn:end` -- each LLM iteration ends
 - `agent:run:finish` -- final text response ready
 - `agent:run:error` -- exception during agent loop
+- `agent:run:aborted` -- run stopped by user (`/stop`)
 - `agent:budget:exhausted` -- max iterations reached
 
 ### LLM lifecycle
@@ -120,6 +121,7 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `subagent:spawn` -- new subagent created
 - `subagent:complete` -- subagent returned result
 - `subagent:error` -- subagent threw exception
+- `subagent:aborted` -- subagent stopped by user (`/stop`)
 - `subagent:killed` -- kill_agent tool
 - `subagent:reset` -- reset_agent tool
 
@@ -168,7 +170,7 @@ No `~/.my-claw/hooks/` directory. Single-dev = code directly in `src/`. Adding f
 ### No priorities
 Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs priorities because plugins from different authors can conflict.
 
-### 85 hooks, not 10
+### 89 hooks, not 10
 The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
 
 ### Cron bypass incoming gate

@@ -2,6 +2,7 @@ import { type Tool, type ToolResult, str } from "./types.ts";
 import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
+import { rethrowIfAborted } from "../core/aborted.ts";
 
 export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistry): Tool {
   return {
@@ -36,9 +37,11 @@ export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistr
         if (!parentMessage) {
           return { success: false, output: "", error: "Missing parent message context" };
         }
-        const result = await runner.send(id, message, attachments, parentMessage, registry);
+        const signal = args["__signal"] as AbortSignal | undefined;
+        const result = await runner.send(id, message, attachments, parentMessage, registry, signal);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
+        rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);
         return { success: false, output: "", error: String(e) };
       }
     },
