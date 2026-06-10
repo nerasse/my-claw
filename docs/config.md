@@ -2,7 +2,10 @@
 
 ## `~/.my-claw/config.json`
 
-Single JSON file. jq-compatible. Loaded at boot.
+Single JSON file. jq-compatible. Loaded at boot, then **hot-reloaded** on change for safe sections
+(LLM, agents, allowlists, channel behavioral fields, browser, web search, injection). Connection,
+crypto, memory, voice, cron and workspace changes still require a restart. See
+`docs/config-hot-reload.md`.
 
 ## LLM (Multi-Provider)
 

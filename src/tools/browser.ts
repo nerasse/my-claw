@@ -148,7 +148,9 @@ export function createBrowserTypeTool(service: BrowserService): Tool {
 import { BrowserSubagent } from "../agent/subagents/browser.ts";
 import type { MyClawConfig } from "../core/config.ts";
 
-export function createDelegateBrowserTool(config: MyClawConfig, cdpUrl: string): Tool {
+export const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
+
+export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
     name: "delegate_browser_task",
     description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites.",
@@ -161,6 +163,11 @@ export function createDelegateBrowserTool(config: MyClawConfig, cdpUrl: string):
       required: ["url", "instructions"],
     },
     async execute(args): Promise<ToolResult> {
+      // Read enabled/cdpUrl live so the config hot-reload watcher can toggle them at runtime.
+      if (config.browser?.enabled === false) {
+        return { success: false, output: "", error: "Browser tool is disabled (browser.enabled = false in config.json)." };
+      }
+      const cdpUrl = config.browser?.cdpUrl ?? DEFAULT_CDP_URL;
       const url = str(args, "url");
       const instructions = str(args, "instructions");
       const subagent = new BrowserSubagent(config, cdpUrl);

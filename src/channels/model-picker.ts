@@ -12,6 +12,11 @@ function normalize(value: string): string {
 export class ModelPicker {
   constructor(private models: ModelOption[]) {}
 
+  /** Replace the model list at runtime (used by the config hot-reload watcher). */
+  setModels(models: ModelOption[]): void {
+    this.models = models;
+  }
+
   hasModels(): boolean {
     return this.models.length > 0;
   }

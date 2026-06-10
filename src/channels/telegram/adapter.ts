@@ -243,6 +243,31 @@ export class TelegramAdapter implements ChannelAdapter {
     await telegramLog("info", "telegram adapter stopped");
   }
 
+  /** Replace the access whitelist at runtime (used by the config hot-reload watcher). */
+  setWhitelist(whitelist: Set<string>): void {
+    this.whitelist = whitelist;
+  }
+
+  /**
+   * Re-sync sub-managers that snapshot config values at construction (reactions, errorPolicy).
+   * Behavioral fields (policy, streaming, history, etc.) are read live off `this.config`,
+   * which the watcher mutates in place, so they need no explicit refresh.
+   * Connection fields (token, mode, webhook) are NOT applied here -- they require a reboot.
+   */
+  applyConfigReload(): void {
+    this.reactions.setConfig({
+      enabled: this.config.reactions?.enabled ?? false,
+      emojis: {
+        received: this.config.reactions?.received,
+        thinking: this.config.reactions?.thinking,
+        tool_use: this.config.reactions?.toolUse,
+        done: this.config.reactions?.done,
+        error: this.config.reactions?.error,
+      },
+    });
+    this.errorReporter.setMode(this.config.errorPolicy ?? "always");
+  }
+
   async send(chatId: string, message: OutgoingMessage): Promise<void> {
     const mediaRefs = extractMediaRefs(message.text);
     const text = stripMediaRefs(message.text);

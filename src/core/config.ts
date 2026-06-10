@@ -403,24 +403,21 @@ function migrateLegacyAgentLlmConfig(agentLlm: unknown): AgentLlmConfig {
   };
 }
 
-export async function loadConfig(): Promise<MyClawConfig> {
-  await mkdir(MY_CLAW_DIR, { recursive: true });
-  await loadEnv();
-  const configPath = join(MY_CLAW_DIR, "config.json");
-  let raw: string;
-  try {
-    raw = await readFile(configPath, "utf-8");
-  } catch {
-    throw new Error(
-      `Config file not found at ${configPath}\nCopy the template: cp packaging/config.json ~/.my-claw/config.json`,
-    );
-  }
+export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
+
+/**
+ * Parse raw JSON config text into a normalized MyClawConfig.
+ * Runs legacy migrations, applies defaults, and overlays env secrets.
+ * Pure with respect to the filesystem (no mkdir/seed) so it is reusable for hot-reload.
+ * Throws on invalid JSON.
+ */
+export function parseConfig(raw: string): MyClawConfig {
   let config: MyClawConfig;
   try {
     config = JSON.parse(raw) as MyClawConfig;
   } catch (err) {
     throw new Error(
-      `Invalid JSON in ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+      `Invalid JSON in ${CONFIG_PATH}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -437,6 +434,31 @@ export async function loadConfig(): Promise<MyClawConfig> {
   config.whitelist = config.whitelist ?? [];
   config.blacklist = config.blacklist ?? [];
   applySecretOverrides(config);
+  return config;
+}
+
+/**
+ * Re-read config.json from disk and parse it, without any workspace side effects.
+ * Used by the hot-reload watcher. Re-runs loadEnv so newly added secrets are picked up.
+ */
+export async function readConfigFromDisk(): Promise<MyClawConfig> {
+  await loadEnv();
+  const raw = await readFile(CONFIG_PATH, "utf-8");
+  return parseConfig(raw);
+}
+
+export async function loadConfig(): Promise<MyClawConfig> {
+  await mkdir(MY_CLAW_DIR, { recursive: true });
+  await loadEnv();
+  let raw: string;
+  try {
+    raw = await readFile(CONFIG_PATH, "utf-8");
+  } catch {
+    throw new Error(
+      `Config file not found at ${CONFIG_PATH}\nCopy the template: cp packaging/config.json ~/.my-claw/config.json`,
+    );
+  }
+  const config = parseConfig(raw);
   const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
   await mkdir(workspacePath, { recursive: true });
   await seedWorkspaceTemplates(workspacePath);

@@ -24,6 +24,11 @@ export class MatrixErrorReporter {
 
   constructor(private config: MatrixErrorPolicyConfig) {}
 
+  /** Update the error-reporting policy at runtime (used by the config hot-reload watcher). */
+  setMode(mode: MatrixErrorPolicy): void {
+    this.config.mode = mode;
+  }
+
   shouldReport(errorKey: string): boolean {
     if (this.config.mode === "silent") return false;
     if (this.config.mode === "always") return true;

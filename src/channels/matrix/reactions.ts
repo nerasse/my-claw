@@ -38,6 +38,11 @@ export class MatrixReactionManager {
     private config: MatrixReactionConfig,
   ) {}
 
+  /** Replace the reaction config at runtime (used by the config hot-reload watcher). */
+  setConfig(config: MatrixReactionConfig): void {
+    this.config = config;
+  }
+
   async set(roomId: string, eventId: string, state: MatrixReactionState): Promise<void> {
     if (!this.config.enabled) return;
     const emoji = this.config.emojis[state] ?? DEFAULT_EMOJIS[state];

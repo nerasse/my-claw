@@ -30,6 +30,11 @@ export class ErrorReporter {
 
   constructor(private config: ErrorPolicyConfig) {}
 
+  /** Update the error-reporting policy at runtime (used by the config hot-reload watcher). */
+  setMode(mode: ErrorPolicy): void {
+    this.config.mode = mode;
+  }
+
   shouldReport(errorKey: string): boolean {
     if (this.config.mode === "silent") return false;
     if (this.config.mode === "always") return true;

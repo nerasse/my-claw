@@ -111,6 +111,11 @@ export class ReactionManager {
     private config: ReactionConfig,
   ) {}
 
+  /** Replace the reaction config at runtime (used by the config hot-reload watcher). */
+  setConfig(config: ReactionConfig): void {
+    this.config = config;
+  }
+
   async set(chatId: string, messageId: number, state: ReactionState): Promise<void> {
     if (!this.config.enabled) return;
 

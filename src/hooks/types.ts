@@ -12,6 +12,7 @@ export interface HookEventMap {
   "app:ready": { channels: string[] };
   "app:shutdown": { signal: string };
   "app:error": { error: unknown; type: "rejection" | "exception" };
+  "config:reloaded": { changed: string[]; rebootRequired: string[] };
 
   // === MESSAGE LIFECYCLE ===
   "message:received": { message: UnifiedMessage };

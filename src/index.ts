@@ -7,6 +7,7 @@ import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_D
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
+import { startConfigWatcher } from "./core/config-watcher.ts";
 import {
   createTelegramCommandHandler,
   createTelegramCallbackHandler,
@@ -102,13 +103,15 @@ async function main() {
   const toolRegistry = new ToolRegistry();
   registerCoreTools(toolRegistry, config);
   registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
-  if (config.webSearch?.baseUrl) {
-    toolRegistry.register(createWebSearchTool(config.webSearch));
-  }
-  if (config.browser?.enabled !== false) {
-    const cdpUrl = config.browser?.cdpUrl ?? "http://127.0.0.1:9222";
-    toolRegistry.register(createDelegateBrowserTool(config, cdpUrl));
-  }
+  // Registered via a reusable closure so the config hot-reload watcher can (re)register
+  // web_search when webSearch.baseUrl is added or changed at runtime.
+  const registerWebSearch = (): void => {
+    if (config.webSearch?.baseUrl) toolRegistry.register(createWebSearchTool(config.webSearch));
+  };
+  registerWebSearch();
+  // Always register: the tool reads config.browser.enabled/cdpUrl live and no-ops when disabled,
+  // so the hot-reload watcher can toggle the browser without a restart.
+  toolRegistry.register(createDelegateBrowserTool(config));
 
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const repoSkillsDir = join(repoRoot, "src", "skills");
@@ -377,6 +380,14 @@ async function main() {
   if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
   cronScheduler.start();
 
+  const stopConfigWatcher = startConfigWatcher(config, {
+    modelPicker,
+    getTelegram: () => telegramRef,
+    getMatrix: () => matrixRef,
+    normalizeMatrixUserId,
+    registerWebSearch,
+  });
+
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
   hooks.emit("app:ready", { channels: Object.keys(config.channels) });
 
@@ -387,6 +398,7 @@ async function main() {
   const shutdown = async () => {
     log("info", "shutting down...");
     hooks.emit("app:shutdown", { signal: "SIGINT" });
+    stopConfigWatcher();
     cronScheduler.stop();
     if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
