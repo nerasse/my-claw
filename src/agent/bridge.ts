@@ -1,5 +1,5 @@
 import type { MyClawConfig } from "../core/config.ts";
-import { resolveMaxIterations } from "../core/config.ts";
+import { resolveMaxIterations, resolveInjectionBudgetBonus } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
@@ -103,8 +103,9 @@ export class AgentBridge {
     onToken: (token: string) => Promise<void>,
     onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
     signal?: AbortSignal,
+    onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -117,6 +118,7 @@ export class AgentBridge {
     onToken?: (token: string) => Promise<void>,
     onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
     signal?: AbortSignal,
+    onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -130,6 +132,7 @@ export class AgentBridge {
 
     const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
     const budget = new IterationBudget(resolveMaxIterations(this.config, agentType));
+    const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
     const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth) : undefined;
@@ -201,6 +204,14 @@ export class AgentBridge {
       let iteration = 0;
       while (budget.consume()) {
         if (signal?.aborted) throw new AbortedError();
+        // Mid-run steering: pick up any message that arrived during the previous tool round and
+        // append it as a user turn before the next LLM call (only the root run owns the mailbox).
+        if (this.depth === 0) {
+          for (const injected of runRegistry.drainInjections(session.id)) {
+            budget.grant(injectionBonus);
+            await this.injectUserTurn(injected, chatMessages, session, onTurnSwitch);
+          }
+        }
         iteration++;
         const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context, toolSchemaTokens);
         if (trimmed !== chatMessages) {
@@ -264,6 +275,22 @@ export class AgentBridge {
         if (!response.toolCalls?.length) {
           const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
           session.messages.push({ role: "assistant", content: transformedResponse, timestamp: new Date().toISOString() });
+
+          // Mid-run steering: a message that arrived during this final call keeps the run going
+          // (drainOrClose atomically closes the mailbox when nothing is pending, so late arrivals
+          // after this point fall back to a fresh run instead of being lost).
+          if (this.depth === 0) {
+            const injected = runRegistry.drainOrClose(session.id);
+            if (injected.length > 0) {
+              chatMessages.push({ role: "assistant", content: transformedResponse });
+              for (const m of injected) {
+                budget.grant(injectionBonus);
+                await this.injectUserTurn(m, chatMessages, session, onTurnSwitch);
+              }
+              continue;
+            }
+          }
+
           const durationMs = Date.now() - startedAt;
           hooks.emit("agent:run:finish", {
             messageId: message.id,
@@ -480,6 +507,33 @@ export class AgentBridge {
       runNode?.exit();
       await this.preprocessor.cleanupTempFiles();
     }
+  }
+
+  /**
+   * Append a mid-run injected message as a fresh user turn (text + media), mirroring how the
+   * initial message is built. STT/video preprocessing already ran before routing, so we only
+   * rebuild the content here. The next LLM call sees it.
+   */
+  private async injectUserTurn(
+    injected: UnifiedMessage,
+    chatMessages: ChatMessage[],
+    session: SessionData,
+    onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
+  ): Promise<void> {
+    if (onTurnSwitch) await onTurnSwitch(injected);
+
+    const rawUserContent = this.preprocessor.buildUserContent(injected);
+    const userContent = scanForInjection(rawUserContent, "user-message");
+    const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
+    session.messages.push({ role: "user", content: transformedContent, timestamp: new Date().toISOString() });
+
+    if (this.config.llm.vision && injected.attachments.some((a) => a.type === "image" && a.path)) {
+      chatMessages.push({ role: "user", content: await this.preprocessor.buildImageContent(injected) });
+    } else {
+      chatMessages.push({ role: "user", content: transformedContent });
+    }
+
+    void log("info", "mid-run injection", { sessionId: session.id, messageId: injected.id, textChars: injected.text.length });
   }
 
   /**

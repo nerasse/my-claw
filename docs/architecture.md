@@ -18,6 +18,7 @@
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
 | Hooks / Event System | Complete — 89 hooks (77 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
 | Run control (`/stop`) | Complete — aborts the session run + all sub-agents via one shared AbortSignal, abortable LLM/bash/fetch/web_search, live run tree in `/status` — see `docs/stop.md` |
+| Mid-run injection (steering) | Complete — a message arriving during an active run is injected at the next iteration boundary (text + media), answered in its own threaded bubble, with correct reactions; per-session mailbox, cap + reroute fallback — see `docs/injection.md` |
 | Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |
 | Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
 | Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |

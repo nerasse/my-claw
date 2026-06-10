@@ -252,6 +252,24 @@ export interface MyClawConfig {
   workspace?: string;
   cron?: CronConfig;
   memory?: MemoryConfig;
+  injection?: InjectionConfig;
+}
+
+/** Mid-run message injection (steering). See `docs/injection.md`. */
+export interface InjectionConfig {
+  enabled?: boolean; // default true
+  budgetBonus?: number; // extra iterations granted per injected turn (default 8)
+}
+
+export const DEFAULT_INJECTION_BUDGET_BONUS = 8;
+
+export function injectionEnabled(config: MyClawConfig): boolean {
+  return config.injection?.enabled !== false;
+}
+
+export function resolveInjectionBudgetBonus(config: MyClawConfig): number {
+  const n = config.injection?.budgetBonus;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : DEFAULT_INJECTION_BUDGET_BONUS;
 }
 
 export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;

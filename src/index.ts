@@ -18,6 +18,8 @@ import {
 } from "./channels/matrix/session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
+import { RerouteSignal } from "./core/run-registry.ts";
+import type { UnifiedMessage } from "./channels/types.ts";
 import { AgentBridge } from "./agent/bridge.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";
@@ -68,6 +70,21 @@ import { hooks } from "./hooks/index.ts";
 
 const DAY_MS = 86_400_000;
 
+// A mid-run injected message whose run ended without addressing it (forced close) is rerouted
+// here as a fresh, non-injectable run so it is never lost.
+async function routeWithReroute(
+  router: MessageRouter,
+  msg: UnifiedMessage,
+  opts: Parameters<MessageRouter["route"]>[1],
+): Promise<RouteResult | undefined> {
+  try {
+    return await router.route(msg, opts);
+  } catch (err) {
+    if (err instanceof RerouteSignal) return await router.route(msg, { ...opts, noInject: true });
+    throw err;
+  }
+}
+
 async function main() {
   const config = await loadConfig();
   pruneOldRecords();
@@ -116,7 +133,7 @@ async function main() {
 
   const sessionManager = new SessionManager();
   const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
-  const router = new MessageRouter(sessionManager, agent);
+  const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
   toolRegistry.register(createCronTool(cronScheduler));
 
@@ -155,23 +172,29 @@ async function main() {
         }
 
         if (telegram.streamingEnabled()) {
-          const streamer = telegram.createStreamer(msg);
+          // `active` is the current output bubble; onTurnSwitch finalizes it and opens a fresh
+          // reply to a mid-run injected message so each message gets its own threaded answer.
+          let active = telegram.createStreamer(msg);
           hooks.emit("stream:start", { platform: "telegram", chatId: msg.chatId });
           try {
-            response = await router.route(msg, {
-              onToken: (token) => streamer.push(token),
-              onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
+            response = await routeWithReroute(router, msg, {
+              onToken: (token) => active.push(token),
+              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+              onTurnSwitch: async (injMsg) => {
+                await active.finish();
+                active = telegram.createStreamer(injMsg);
+              },
             });
-            await streamer.finish();
+            await active.finish();
             hooks.emit("stream:finish", { platform: "telegram", chatId: msg.chatId });
           } catch (err) {
             const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-            await streamer.abort(brief);
+            await active.abort(brief);
             hooks.emit("stream:abort", { platform: "telegram", chatId: msg.chatId, error: err });
             throw err;
           }
         } else {
-          response = await router.route(msg);
+          response = await routeWithReroute(router, msg, {});
         }
 
         if (response) {
@@ -262,23 +285,29 @@ async function main() {
         }
 
         if (matrix.streamingEnabled()) {
-          const streamer = matrix.createStreamer(msg);
+          // `active` is the current output bubble; onTurnSwitch finalizes it and opens a fresh
+          // reply to a mid-run injected message so each message gets its own threaded answer.
+          let active = matrix.createStreamer(msg);
           hooks.emit("stream:start", { platform: "matrix", chatId: msg.chatId });
           try {
-            response = await router.route(msg, {
-              onToken: (token) => streamer.push(token),
-              onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
+            response = await routeWithReroute(router, msg, {
+              onToken: (token) => active.push(token),
+              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+              onTurnSwitch: async (injMsg) => {
+                await active.finish();
+                active = matrix.createStreamer(injMsg);
+              },
             });
-            await streamer.finish();
+            await active.finish();
             hooks.emit("stream:finish", { platform: "matrix", chatId: msg.chatId });
           } catch (err) {
             const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-            await streamer.abort(brief);
+            await active.abort(brief);
             hooks.emit("stream:abort", { platform: "matrix", chatId: msg.chatId, error: err });
             throw err;
           }
         } else {
-          response = await router.route(msg);
+          response = await routeWithReroute(router, msg, {});
         }
 
         if (response) {

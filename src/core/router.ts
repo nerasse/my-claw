@@ -1,4 +1,6 @@
 import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
+import type { MyClawConfig } from "./config.ts";
+import { injectionEnabled } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBridge } from "../agent/bridge.ts";
 import { log } from "../utils/logger.ts";
@@ -15,6 +17,11 @@ export interface RouteResult {
 interface RouteOptions {
   onToken?: (token: string) => Promise<void>;
   onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>;
+  /** Called when the run switches to address a mid-run injected message, so the output layer
+   *  can finalize the current bubble and open a fresh reply to that message. */
+  onTurnSwitch?: (message: UnifiedMessage) => Promise<void>;
+  /** Force a normal new run, never inject (used when re-routing a rerouted injection). */
+  noInject?: boolean;
 }
 
 function messageLogData(message: UnifiedMessage): Record<string, unknown> {
@@ -42,6 +49,7 @@ export class MessageRouter {
   constructor(
     private sessionManager: SessionManager,
     private agent: AgentBridge,
+    private config?: MyClawConfig,
   ) {}
 
   private checkRateLimit(userId: string): boolean {
@@ -114,6 +122,19 @@ export class MessageRouter {
       },
     );
 
+    // Mid-run steering: if a run for this session is already in progress, inject this message into
+    // it (addressed at the next iteration boundary) instead of queueing a whole new run behind it.
+    // The returned promise resolves when the run finishes addressing it -> the adapter's existing
+    // reaction/typing/commit lifecycle (which awaits this) just works.
+    if (this.config && injectionEnabled(this.config) && !options.noInject && runRegistry.isRunning(sessionId)) {
+      const injected = runRegistry.enqueueInjection(sessionId, message);
+      if (injected) {
+        void log("info", "message injected into active run", { ...messageLogData(message), sessionId });
+        await injected;
+        return undefined;
+      }
+    }
+
     const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
     const current = previous
       .catch(() => {})
@@ -149,10 +170,11 @@ export class MessageRouter {
       });
 
       const text = options.onToken
-        ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse, signal)
+        ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse, signal, options.onTurnSwitch)
         : await this.agent.handleMessage(message, session, signal);
       const attachments = this.agent.getResponseAttachments();
       await this.sessionManager.persist(sessionId);
+      runRegistry.settleMailbox(sessionId, "resolve");
 
       const durationMs = Date.now() - startedAt;
       hooks.emit("message:route:complete", { message, sessionId, response: text ?? "", durationMs });
@@ -171,9 +193,11 @@ export class MessageRouter {
       const durationMs = Date.now() - startedAt;
       if (isAbort(err, signal)) {
         await this.sessionManager.persist(sessionId).catch(() => {});
+        runRegistry.settleMailbox(sessionId, "reject", err);
         void log("info", "run stopped by user", { ...messageLogData(message), sessionId, streaming, durationMs });
         return undefined;
       }
+      runRegistry.settleMailbox(sessionId, "reject", err);
       hooks.emit("message:route:error", { message, sessionId, error: err, durationMs });
       void log("error", "routing failed", {
         ...messageLogData(message),
