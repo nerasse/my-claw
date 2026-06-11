@@ -15,8 +15,8 @@ User → Main Agent → Browser Subagent → Playwright → Chromium (Xvfb :99)
 | Layer | Files | Role |
 |---|---|---|
 | CDP Client | `src/browser/pool.ts`, `service.ts`, `labels.ts` | Connect, navigate, snapshot, click, type, screenshot |
-| Tools | `src/tools/browser.ts` | 8 tools registered in `ToolRegistry` |
-| Subagent | `src/agent/subagents/browser.ts` | Loop + captcha detection + human-in-the-loop |
+| Tools | `src/tools/browser.ts` | 9 tools (8 in main registry + `browser_done` in subagent) |
+| Subagent | `src/agent/subagents/browser.ts` | Loop + captcha detection + human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
 
 ## Tools
 
@@ -30,7 +30,7 @@ User → Main Agent → Browser Subagent → Playwright → Chromium (Xvfb :99)
 | `browser_list_tabs()` | List open tabs |
 | `browser_focus_tab(index)` | Switch to tab |
 | `browser_close_tab(index)` | Close tab |
-| `delegate_browser_task(url, instructions)` | Main agent → subagent |
+| `delegate_browser_task(url, instructions)` | Main agent → subagent. Screenshots auto-attached to response |
 
 ## Human-in-the-Loop
 
@@ -43,7 +43,7 @@ Main agent asks user to open noVNC :6080, solve blocker, reply "continue".
 - **Dialog auto-dismiss**: `page.on('dialog', d => d.accept())` — no blocking alerts
 - **Idle cleanup**: Pages inactive >5min auto-closed (sweep every 60s)
 - **Tab isolation**: New tab per subagent task, cleaned on finish
-- **Scope**: Subagent only gets browser tools (no bash/read/write)
+- **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
 
 ## Config
 
@@ -72,8 +72,8 @@ Default `cdpUrl` = `http://127.0.0.1:9222` (reads from running `chromium-cdp.ser
 
 ## Tests
 
-- **Unit**: 24 tests in `tests/browser/`, `tests/tools/browser-tools.test.ts`, `tests/subagents/browser.test.ts`
-- **E2E**: `tests-e2e/browser/basic.test.ts` — requires `BROWSER_E2E=1` and real Chromium on :9222
+- **Unit**: 20 tests in `tests/subagents/browser.test.ts`, 10 in `tests/tools/browser-tools.test.ts`, 4 in `tests/browser/pool.test.ts`, 9 in `tests/browser/service.test.ts`
+- **E2E**: 8 in `tests/e2e/browser-delegation.test.ts`, 5 in `tests-e2e/browser/basic.test.ts` (requires `BROWSER_E2E=1`)
 
 ## Key Files
 
@@ -86,7 +86,7 @@ src/browser/
 src/tools/browser.ts
   # 8 tool factories + SSRF guard
 src/agent/subagents/browser.ts
-  # Subagent loop + human blocker detection
+  # Subagent loop + human blocker + attachment accumulation + shared prompt
 src/skills/web-browsing/SKILL.md
   # When to delegate, intervention rules
 docs/browser.md

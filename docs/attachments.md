@@ -53,3 +53,7 @@ return {
   ],
 };
 ```
+
+## Browser screenshots
+
+`delegate_browser_task` → subagent calls `browser_screenshot` → attachment flows through `BrowserSubagentResult.attachments` → `ToolResult.attachments` → bridge → router → adapter. The main agent does not need to handle the image; delivery is automatic.

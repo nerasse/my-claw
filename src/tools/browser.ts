@@ -153,7 +153,7 @@ export const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
     name: "delegate_browser_task",
-    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites.",
+    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. The subagent may take screenshots during the task; any captured images are automatically attached to the response and delivered to the user.",
     parameters: {
       type: "object",
       properties: {
