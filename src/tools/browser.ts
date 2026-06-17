@@ -149,6 +149,7 @@ import { BrowserSubagent } from "../agent/subagents/browser.ts";
 import type { MyClawConfig } from "../core/config.ts";
 
 export const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
+export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 
 export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
@@ -174,15 +175,16 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       try {
         const result = await subagent.run(instructions, url);
         if (result.needs_human) {
+          const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
           return {
             success: false,
-            output: `Browser subagent needs human help: ${result.hint}\nOpen noVNC at http://your-host:6080 to see the browser and solve the blocker. Then reply "continue".`,
+            output: `Browser task paused — a human must take over.\n${result.summary}\nOpen the live browser at ${novncUrl}, resolve the blocker, then reply "continue".`,
             attachments: result.attachments ?? [],
           };
         }
         return {
           success: true,
-          output: result.summary ?? "Task completed.",
+          output: result.summary || "Task completed.",
           attachments: result.attachments ?? [],
         };
       } catch (e) {

@@ -116,6 +116,43 @@ describe("E2E browser delegation", () => {
     }
   });
 
+  test("handoff surfaces the configurable noVNC URL to the main agent", async () => {
+    const cfg = { ...config, browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222", novncUrl: "https://vnc.example.com" } };
+    const registry = new ToolRegistry();
+    registry.register(createDelegateBrowserTool(cfg));
+    const router = makeRouter(registry, { browser: cfg.browser });
+
+    const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const mock = mockFetch(async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> };
+      bodies.push(body);
+      const tools = body.tools;
+      // Subagent loop: signal a handoff via browser_done(needs_human=true)
+      if (tools?.some((t) => t.function.name === "browser_done")) {
+        return llmResp({ content: "", tool_calls: [{ id: "tc_sub", function: { name: "browser_done", arguments: '{"summary":"hCaptcha is blocking the page","needs_human":true}' } }] });
+      }
+      // Main agent first call -> delegate; second call -> final answer
+      const delegated = bodies.some((b) => b.messages.some((m) => m.role === "tool"));
+      if (!delegated) {
+        return llmResp({ content: "", tool_calls: [{ id: "tc1", function: { name: "delegate_browser_task", arguments: '{"url":"https://example.com","instructions":"log in"}' } }] });
+      }
+      return llmResp({ content: "Please take over the browser" });
+    });
+
+    try {
+      const uniqueMsg: UnifiedMessage = { ...msg("log into example.com"), userId: `handoff-user-${Date.now()}` };
+      await router.route(uniqueMsg);
+      // The tool result fed back to the main agent must contain the configured noVNC URL
+      const toolMessages = bodies.flatMap((b) => b.messages).filter((m) => m.role === "tool");
+      const joined = toolMessages.map((m) => String(m.content)).join("\n");
+      expect(joined).toContain("https://vnc.example.com");
+      expect(joined.toLowerCase()).toContain("take over");
+      expect(joined).toContain("hCaptcha is blocking the page");
+    } finally {
+      mock.restore();
+    }
+  });
+
   test("delegate_browser_task description is visible to the LLM", async () => {
     const registry = new ToolRegistry();
     registry.register(createDelegateBrowserTool(config));

@@ -30,12 +30,23 @@ User → Main Agent → Browser Subagent → Playwright → Chromium (Xvfb :99)
 | `browser_list_tabs()` | List open tabs |
 | `browser_focus_tab(index)` | Switch to tab |
 | `browser_close_tab(index)` | Close tab |
+| `browser_done(summary, needs_human?)` | Finish task, or request human takeover |
 | `delegate_browser_task(url, instructions)` | Main agent → subagent. Screenshots auto-attached to response |
 
 ## Human-in-the-Loop
 
-Subagent detects `captcha`/`login`/`2FA` → returns `{ needs_human: true }`.
-Main agent asks user to open noVNC :6080, solve blocker, reply "continue".
+**LLM-driven, no keyword scan.** The subagent decides itself when it is genuinely
+blocked (real CAPTCHA / bot-check / 2FA-OTP it cannot solve) and calls
+`browser_done(summary, needs_human=true)`. It does NOT stop at ordinary login/password
+forms — it fills them in.
+
+When `needs_human` is set, `delegate_browser_task` returns a message pointing the user to
+the live browser (`config.browser.novncUrl`, default `http://localhost:6080`). The user
+solves the blocker and replies "continue".
+
+> Rationale (browser-use / BrowserAct / Skyvern): handoff is a structured signal decided by
+> the agent, never a regex on page text. Keyword scanning false-positives on normal login
+> pages. See `FIX-BROWSER-HANDOFF.md`.
 
 ## Guardrails
 
@@ -52,6 +63,7 @@ Main agent asks user to open noVNC :6080, solve blocker, reply "continue".
   "browser": {
     "enabled": true,
     "cdpUrl": "http://127.0.0.1:9222",
+    "novncUrl": "http://localhost:6080",
     "maxSteps": 30,
     "idleTimeoutMs": 300000
   }

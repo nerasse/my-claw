@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert";
-import { BrowserSubagent, detectHumanBlocker } from "../../src/agent/subagents/browser.ts";
+import { BrowserSubagent } from "../../src/agent/subagents/browser.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import type { Tool } from "../../src/tools/types.ts";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -22,13 +22,6 @@ describe("BrowserSubagent", () => {
 
   beforeEach(() => {
     subagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
-  });
-
-  test("detects human blocker keywords", () => {
-    assert.ok(detectHumanBlocker("Please complete the captcha"));
-    assert.ok(detectHumanBlocker("Enter your password to login"));
-    assert.ok(detectHumanBlocker("2FA code required"));
-    assert.ok(!detectHumanBlocker("Here is the search result"));
   });
 
   test("run sends tools in OpenAI format", async () => {
@@ -84,7 +77,8 @@ describe("BrowserSubagent", () => {
     try {
       const result = await subagent.run("test task");
       assert.equal(result.success, false);
-      assert.ok(result.hint, "Should provide a hint on failure");
+      assert.equal(result.needs_human, false, "Technical LLM failure is not a human handoff");
+      assert.ok(result.summary.includes("LLM call failed"), "Should explain the failure in summary");
     } finally {
       fetchMock.restore();
     }
@@ -521,7 +515,70 @@ describe("BrowserSubagent", () => {
     }
   });
 
-  test("human blocker path includes attachments collected before blocker", async () => {
+  test("browser_done with needs_human=true returns a handoff result", async () => {
+    const fetchMock = mockFetch(async () => {
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"Cloudflare bot-check is blocking me","needs_human":true}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("blocked task");
+      assert.equal(result.success, false);
+      assert.equal(result.needs_human, true);
+      assert.ok(result.summary.includes("Cloudflare"), "Summary should describe the blocker");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("browser_done without needs_human is a normal success", async () => {
+    const fetchMock = mockFetch(async () => {
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"All done"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("normal task");
+      assert.equal(result.success, true);
+      assert.equal(result.needs_human, false);
+      assert.equal(result.summary, "All done");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("a login form alone does NOT trigger a handoff (no keyword false-positive)", async () => {
+    let call = 0;
+    const fetchMock = mockFetch(async () => {
+      call++;
+      if (call === 1) {
+        // Page text mentions login/password/sign in — must NOT auto-stop
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "The page has a login form with a password field and a sign in button." } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"Logged in and read the dashboard"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("login and read dashboard");
+      assert.equal(result.success, true, "Login form must not auto-block");
+      assert.equal(result.needs_human, false);
+      assert.ok(call >= 2, "Subagent should keep going past the login page");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("handoff path includes attachments collected before the handoff", async () => {
     const shotTool: Tool = {
       name: "pre_blocker_shot",
       description: "returns attachment",
@@ -542,16 +599,16 @@ describe("BrowserSubagent", () => {
         ) as never;
       }
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: "Please complete the captcha to continue" } }] }),
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc2", function: { name: "browser_done", arguments: '{"summary":"captcha blocking","needs_human":true}' } }] } }] }),
         { status: 200 },
       ) as never;
     });
 
     try {
-      const result = await subagent.run("blocker test");
+      const result = await subagent.run("handoff test");
       assert.equal(result.success, false);
-      assert.ok(result.needs_human);
-      assert.ok(result.attachments, "Should have attachments even on human blocker");
+      assert.equal(result.needs_human, true);
+      assert.ok(result.attachments, "Should have attachments even on handoff");
       assert.equal(result.attachments.length, 1);
       assert.equal(result.attachments[0].path, "/tmp/before-blocker.png");
     } finally {
@@ -580,7 +637,8 @@ describe("BrowserSubagent", () => {
     try {
       const result = await subagent.run("endless test");
       assert.equal(result.success, false);
-      assert.ok(result.hint?.includes("maximum"), "Should mention max steps");
+      assert.equal(result.needs_human, false, "Max steps is a failure, not a human handoff");
+      assert.ok(result.summary.includes("maximum"), "Should mention max steps");
       assert.ok(result.attachments, "Should have attachments on max steps");
       assert.ok(result.attachments.length > 0, "Should have at least one attachment");
     } finally {

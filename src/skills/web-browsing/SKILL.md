@@ -20,24 +20,27 @@ For simple single-page reads, use `fetch` instead (faster).
 1. A browser subagent opens the URL in the remote Chromium instance (CDP :9222 on Xvfb :99)
 2. It navigates, clicks, types, and takes screenshots using Playwright over CDP
 3. After each action it snapshots the page to verify progress
-4. It returns a summary when done, or asks for human help if blocked
+4. It returns a summary when done, or calls `browser_done(needs_human=true)` if it hits a blocker it cannot pass
 
 ## Human intervention
 
-If the subagent encounters a CAPTCHA, login wall, or 2FA:
-- It stops and reports `needs_human: true`
-- You (the main agent) must ask the user to open noVNC at `http://<host>:6080`
-- The user sees the live browser, solves the blocker, then replies "continue"
+The subagent navigates autonomously and fills login/password forms itself. It only asks
+for help when it hits a barrier it genuinely cannot pass (real CAPTCHA, bot-check, or a
+2FA/OTP code it does not have). In that case `delegate_browser_task` returns a paused
+message with the live-browser URL.
+
+- When you get that paused message, relay it: ask the user to open the live browser at the
+  given URL, solve the blocker, then reply "continue"
 - The subagent resumes from the current page
 
 ## Rules
 
 - Never ask the subagent to handle banking PINs or critical passwords
-- If a site requires login credentials, ask the user first
+- If a site requires login credentials the agent does not have, ask the user first
 - The subagent only has browser tools (navigate, snapshot, click, type, screenshot)
 - It does NOT have bash/read/write/memory tools to prevent side effects
 - After every action, the subagent calls `browser_snapshot` to verify state
-- If stuck for 3 consecutive steps, it stops and asks for help
+- The handoff decision is the subagent's own judgment — there is no keyword auto-block
 
 ## Session persistence
 
@@ -61,9 +64,9 @@ User: "Book me a train ticket to Lyon tomorrow"
     url: "https://www.sncf-connect.com",
     instructions: "Find next train Paris-Lyon tomorrow morning, select 9am departure, fill passenger info with name John Doe, proceed to payment"
   )
--> Subagent navigates, fills form
--> If CAPTCHA appears -> returns needs_human
--> You ask user to open noVNC :6080
+-> Subagent navigates, fills form (including login)
+-> If a real CAPTCHA appears -> browser_done(needs_human=true)
+-> You relay the paused message: user opens the live browser URL
 -> User solves CAPTCHA, says "continue"
 -> Subagent finishes booking
 -> Returns summary with booking reference

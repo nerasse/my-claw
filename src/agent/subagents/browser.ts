@@ -23,25 +23,13 @@ import { scanForInjection } from "../prompt/anti-injection.ts";
 
 export interface BrowserSubagentResult {
   success: boolean;
-  summary?: string;
-  needs_human?: boolean;
-  hint?: string;
+  summary: string;
+  needs_human: boolean;
   current_url?: string;
   attachments?: Attachment[];
 }
 
 const DEFAULT_MAX_STEPS = 30;
-
-const HUMAN_BLOCKERS = [
-  "captcha", "recaptcha", "verify", "human verification",
-  "i'm not a robot", "login", "sign in", "password",
-  "2fa", "two-factor", "authentication code", "otp",
-];
-
-export function detectHumanBlocker(text: string): boolean {
-  const lower = text.toLowerCase();
-  return HUMAN_BLOCKERS.some((word) => lower.includes(word));
-}
 
 const BROWSER_PROMPT = `You are a web browsing assistant. Your job is to complete tasks on websites using the available browser tools.
 
@@ -54,15 +42,16 @@ Available tools:
 - browser_list_tabs(): List all open tabs with their index and URL.
 - browser_focus_tab(index): Switch to a different tab by its index (from browser_list_tabs).
 - browser_close_tab(index): Close a tab by its index.
-- browser_done(summary): Call this tool when the task is complete. Provide a summary.
+- browser_done(summary, needs_human?): Call this when the task is finished, or when you are blocked and need a human to take over.
 
 Rules:
 1. After EVERY action, call browser_snapshot to verify.
 2. Use only the ref numbers from the snapshot for click and type.
-3. If you see "captcha", "verify", "login", "2FA", "password", or similar, STOP and say you need human help.
-4. If stuck for 3 steps, STOP and ask for help.
-5. When done, call browser_done with a summary of what was accomplished.
-6. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user.`;
+3. Navigate autonomously. Do NOT stop at login forms, password fields, or sign-in pages — fill them in yourself if you have the needed information.
+4. Call browser_done with needs_human=true ONLY when you hit a barrier you genuinely cannot pass yourself: a CAPTCHA, a bot-check ("I'm not a robot", Cloudflare), or a 2FA/OTP code you do not have. Explain what is blocking in the summary. The user will take over the live browser, resolve it, and the task can resume.
+5. If you make no progress after 3 consecutive steps, call browser_done with needs_human=true describing what you tried.
+6. When the task is complete, call browser_done with a summary (needs_human defaults to false).
+7. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user.`;
 
 async function buildBrowserSystemPrompt(): Promise<string> {
   const layers: string[] = [];
@@ -106,8 +95,15 @@ export class BrowserSubagent {
     this.toolRegistry.register(createBrowserCloseTabTool(this.service));
     this.toolRegistry.register({
       name: "browser_done",
-      description: "Signal that the task is complete. Provide a summary of what was accomplished.",
-      parameters: { type: "object", properties: { summary: { type: "string", description: "Summary of what was done" } }, required: ["summary"] },
+      description: "Signal that the task is finished. Set needs_human=true only if you are blocked by something you cannot resolve yourself (CAPTCHA, bot-check, 2FA/OTP).",
+      parameters: {
+        type: "object",
+        properties: {
+          summary: { type: "string", description: "Summary of what was done, or what is blocking" },
+          needs_human: { type: "boolean", description: "True if a human must take over the live browser to resolve a blocker" },
+        },
+        required: ["summary"],
+      },
       async execute(args) { return { success: true, output: String(args["summary"] ?? "done") }; },
     });
   }
@@ -147,8 +143,8 @@ export class BrowserSubagent {
       } catch (e) {
         return {
           success: false,
-          needs_human: true,
-          hint: `LLM call failed: ${String(e)}`,
+          needs_human: false,
+          summary: `LLM call failed: ${String(e)}`,
           current_url: currentUrl,
           attachments: allAttachments,
         };
@@ -178,22 +174,12 @@ export class BrowserSubagent {
         currentUrl = navCall.arguments["url"] as string;
       }
 
-      const combinedText = text + " " + toolResults.map((r) => r.output).join(" ");
-
-      if (detectHumanBlocker(combinedText)) {
-        return {
-          success: false,
-          needs_human: true,
-          hint: "Detected potential human verification barrier (CAPTCHA, login, or 2FA).",
-          current_url: currentUrl,
-          attachments: allAttachments,
-        };
-      }
-
       const doneTool = toolCalls.find((t) => t.name === "browser_done");
       if (doneTool) {
+        const needsHuman = doneTool.arguments["needs_human"] === true;
         return {
-          success: true,
+          success: !needsHuman,
+          needs_human: needsHuman,
           summary: String(doneTool.arguments["summary"] ?? text),
           current_url: currentUrl,
           attachments: allAttachments,
@@ -221,8 +207,8 @@ export class BrowserSubagent {
 
     return {
       success: false,
-      needs_human: true,
-      hint: "Reached maximum number of steps without completing the task.",
+      needs_human: false,
+      summary: "Reached maximum number of steps without completing the task.",
       current_url: currentUrl,
       attachments: allAttachments,
     };
