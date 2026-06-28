@@ -153,6 +153,44 @@ describe("E2E browser delegation", () => {
     }
   });
 
+  test("delegate surfaces a technical failure (not a fake success) when the subagent fails", async () => {
+    // maxSteps=1 + a subagent LLM that never calls browser_done -> subagent returns
+    // { success:false, needs_human:false } -> delegate must map it to a tool error.
+    const cfg = { ...config, browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222", maxSteps: 1 } };
+    const registry = new ToolRegistry();
+    registry.register(createDelegateBrowserTool(cfg));
+    const router = makeRouter(registry, { browser: cfg.browser });
+
+    const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const mock = mockFetch(async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> };
+      bodies.push(body);
+      const tools = body.tools;
+      // Subagent call (has browser_done): return plain text, no tool calls -> hits max steps
+      if (tools?.some((t) => t.function.name === "browser_done")) {
+        return llmResp({ content: "still thinking, no action" });
+      }
+      // Main agent: delegate first, then a final answer once the tool result is back
+      const delegated = bodies.some((b) => b.messages.some((m) => m.role === "tool"));
+      if (!delegated) {
+        return llmResp({ content: "", tool_calls: [{ id: "tc1", function: { name: "delegate_browser_task", arguments: '{"url":"https://example.com","instructions":"do it"}' } }] });
+      }
+      return llmResp({ content: "The browser task did not complete." });
+    });
+
+    try {
+      const uniqueMsg: UnifiedMessage = { ...msg("do it"), userId: `fail-user-${Date.now()}` };
+      const result = await router.route(uniqueMsg);
+      const toolMessages = bodies.flatMap((b) => b.messages).filter((m) => m.role === "tool");
+      const joined = toolMessages.map((m) => String(m.content)).join("\n");
+      expect(joined).toContain("Error:");
+      expect(joined.toLowerCase()).toContain("maximum number of steps");
+      expect(result?.text).toBe("The browser task did not complete.");
+    } finally {
+      mock.restore();
+    }
+  });
+
   test("delegate_browser_task description is visible to the LLM", async () => {
     const registry = new ToolRegistry();
     registry.register(createDelegateBrowserTool(config));

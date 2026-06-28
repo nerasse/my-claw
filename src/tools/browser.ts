@@ -182,6 +182,14 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
             attachments: result.attachments ?? [],
           };
         }
+        if (!result.success) {
+          return {
+            success: false,
+            output: "",
+            error: result.summary || "Browser task failed.",
+            attachments: result.attachments ?? [],
+          };
+        }
         return {
           success: true,
           output: result.summary || "Task completed.",

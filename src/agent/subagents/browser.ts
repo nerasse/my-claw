@@ -4,7 +4,7 @@ import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
-import { BrowserPool } from "../../browser/pool.ts";
+import { type BrowserPool, getBrowserPool } from "../../browser/pool.ts";
 import { BrowserService } from "../../browser/service.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
 import {
@@ -71,6 +71,29 @@ async function buildBrowserSystemPrompt(): Promise<string> {
   return layers.filter(Boolean).join("\n\n");
 }
 
+/** CDP connection failures: the shared Chromium is unreachable. These are
+ *  infrastructure errors, NOT human-solvable blockers — never route them to a
+ *  noVNC handoff. Deliberately excludes generic page "timeout" (a slow site is
+ *  a normal tool failure the agent can retry, not an infra outage). */
+const INFRA_ERROR_SIGNATURES = [
+  "econnrefused",
+  "econnreset",
+  "ehostunreach",
+  "enetunreach",
+  "connectovercdp",
+  "websocket error",
+  "browser has been closed",
+  "target page, context or browser has been closed",
+  "browser is closed",
+  "connection closed",
+];
+
+export function isBrowserInfraError(error?: string): boolean {
+  if (!error) return false;
+  const lower = error.toLowerCase();
+  return INFRA_ERROR_SIGNATURES.some((s) => lower.includes(s));
+}
+
 export class BrowserSubagent {
   private pool: BrowserPool;
   private service: BrowserService;
@@ -82,7 +105,7 @@ export class BrowserSubagent {
     private cdpUrl: string,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
-    this.pool = new BrowserPool(cdpUrl, config.browser?.idleTimeoutMs);
+    this.pool = getBrowserPool(cdpUrl, config.browser?.idleTimeoutMs);
     this.service = new BrowserService(this.pool, config.browser?.viewport);
     this.toolRegistry = new ToolRegistry();
     this.toolRegistry.register(createBrowserNavigateTool(this.service));
@@ -165,6 +188,15 @@ export class BrowserSubagent {
         if (result.attachments?.length) {
           allAttachments.push(...result.attachments);
         }
+        if (!result.success && isBrowserInfraError(result.error)) {
+          return {
+            success: false,
+            needs_human: false,
+            summary: `Browser infrastructure is unavailable — the remote Chromium (CDP ${this.cdpUrl}) is not reachable: ${result.error}`,
+            current_url: currentUrl,
+            attachments: allAttachments,
+          };
+        }
         toolResults.push({ tc, output: `${result.success ? "OK" : "FAIL"} — ${result.output}${result.error ? ` (${result.error})` : ""}` });
       }
 
@@ -213,7 +245,7 @@ export class BrowserSubagent {
       attachments: allAttachments,
     };
     } finally {
-      await this.service.closeAllPages().catch(() => undefined);
+      await this.service.cleanup().catch(() => undefined);
     }
   }
 

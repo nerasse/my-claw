@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert";
-import { BrowserSubagent } from "../../src/agent/subagents/browser.ts";
+import { BrowserSubagent, isBrowserInfraError } from "../../src/agent/subagents/browser.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import type { Tool } from "../../src/tools/types.ts";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -809,6 +809,94 @@ describe("BrowserSubagent", () => {
       assert.ok(systemMessage.includes("delivered to the user"), "Prompt should mention screenshots are delivered to user");
     } finally {
       fetchMock.restore();
+    }
+  });
+
+  test("isBrowserInfraError detects CDP failures but not page timeouts", () => {
+    assert.ok(isBrowserInfraError("connect ECONNREFUSED 127.0.0.1:9222"));
+    assert.ok(isBrowserInfraError("browserType.connectOverCDP: WebSocket error: connect ECONNREFUSED"));
+    assert.ok(isBrowserInfraError("Target page, context or browser has been closed"));
+    assert.ok(!isBrowserInfraError("Timeout 30000ms exceeded navigating to https://slow.example.com"), "a slow page is not an infra outage");
+    assert.ok(!isBrowserInfraError("net::ERR_NAME_NOT_RESOLVED"), "a DNS failure of the target site is not a CDP outage");
+    assert.ok(!isBrowserInfraError(undefined));
+  });
+
+  test("CDP connection failure returns a technical failure, not a human handoff", async () => {
+    const infraTool: Tool = {
+      name: "flaky_nav",
+      description: "fails with a CDP connection error",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { success: false, output: "", error: "connect ECONNREFUSED 127.0.0.1:9222" };
+      },
+    };
+    subagent["toolRegistry"].register(infraTool);
+
+    const fetchMock = mockFetch(async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      const tools = body.tools as Array<{ function: { name: string } }> | undefined;
+      if (tools?.some((t) => t.function.name === "flaky_nav")) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "flaky_nav", arguments: "{}" } }] } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"x"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("infra test");
+      assert.equal(result.success, false);
+      assert.equal(result.needs_human, false, "infra failure must NOT be a human handoff");
+      assert.ok(result.summary.toLowerCase().includes("infrastructure"), "summary should flag infra");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("cleanup does NOT delete returned screenshot files (post-send owns them)", async () => {
+    const tmpFile = join(tmpdir(), `myclaw-shot-${Date.now()}.png`);
+    await writeFile(tmpFile, "fakepng", "utf-8");
+
+    const shotTool: Tool = {
+      name: "fake_shot",
+      description: "returns a real temp file as attachment",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { success: true, output: "shot", attachments: [{ type: "image" as const, path: tmpFile, mimeType: "image/png" }] };
+      },
+    };
+    subagent["toolRegistry"].register(shotTool);
+
+    const fetchMock = mockFetch(async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      const tools = body.tools as Array<{ function: { name: string } }> | undefined;
+      if (tools?.some((t) => t.function.name === "fake_shot")) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "fake_shot", arguments: "{}" } }, { id: "tc2", function: { name: "browser_done", arguments: '{"summary":"done"}' } }] } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"x"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("shot test");
+      await subagent.cleanup();
+      const { access } = await import("node:fs/promises");
+      let exists = true;
+      try { await access(tmpFile); } catch { exists = false; }
+      assert.ok(exists, "screenshot must survive cleanup (deleted post-send, not in the subagent)");
+      assert.equal(result.attachments?.[0]?.path, tmpFile);
+    } finally {
+      fetchMock.restore();
+      await rm(tmpFile, { force: true });
     }
   });
 

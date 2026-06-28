@@ -15,6 +15,11 @@ Call `delegate_browser_task(url, instructions)` when:
 
 For simple single-page reads, use `fetch` instead (faster).
 
+**Never run `chromium`/`playwright`/screenshot tools via `bash`.** The browser runs as a
+managed service (CDP on :9222). Always go through `delegate_browser_task`. If it returns an
+infrastructure error (CDP unreachable), report it to the user — do not improvise with raw
+`bash` chromium, which bypasses the sandbox and the managed browser.
+
 ## How it works
 
 1. A browser subagent opens the URL in the remote Chromium instance (CDP :9222 on Xvfb :99)

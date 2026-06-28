@@ -56,6 +56,25 @@ solves the blocker and replies "continue".
 - **Tab isolation**: New tab per subagent task, cleaned on finish
 - **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
 
+## Lifecycle (never kill the shared Chromium)
+
+The Chromium on :9222 is an **external systemd service** (`my-claw-chromium.service`). my-claw
+must never terminate it.
+
+- **Shared pool**: `getBrowserPool(cdpUrl)` returns a process-wide singleton per CDP URL. We
+  connect once and reuse the connection across every task — no per-task reconnect.
+- **`disconnect()` never calls `browser.close()`**: with `connectOverCDP`, `browser.close()`
+  sends a server-side `Browser.close` and kills the remote Chromium. We only close the pages
+  we opened and drop the local handle.
+- **Per-task cleanup** (`service.cleanup()`) closes only the tabs that task opened; it does not
+  disconnect the pool or delete screenshots (those are sent as attachments, then removed
+  post-send by the adapter).
+- **Self-healing**: if the external Chromium restarts (e.g. `myclaw update`), the pool's
+  `disconnected` event resets it and the next task reconnects.
+- **Infra vs blocker**: a CDP connection failure (`ECONNREFUSED`, websocket error, target
+  closed) returns a technical failure (`needs_human=false`), NOT a noVNC handoff. See
+  `isBrowserInfraError`. A real CAPTCHA/2FA is the only thing that triggers the human handoff.
+
 ## Config
 
 ```json

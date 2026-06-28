@@ -134,6 +134,53 @@ describe("BrowserService", () => {
     await service.closeTab(0);
     assert.strictEqual(mockClose.calls.length, 1);
   });
+
+  test("cleanup closes only the pages it opened and NEVER disconnects the shared pool", async () => {
+    const closeMock = createMock(() => Promise.resolve());
+    const ownPage = {
+      goto: createMock(() => Promise.resolve()),
+      url: createMock(() => "https://example.com"),
+      locator: createMock(() => ({ ariaSnapshot: createMock(() => Promise.resolve('x [__ref="1"]')) })),
+      close: closeMock,
+      on: createMock(() => undefined),
+    };
+    const ctx = { newPage: createMock(() => Promise.resolve(ownPage)), pages: createMock(() => [ownPage]) };
+    const disconnectMock = createMock(() => Promise.resolve());
+    const pool = {
+      newContext: createMock(() => Promise.resolve(ctx)),
+      disconnect: disconnectMock,
+      trackPage: createMock(() => undefined),
+      touchPage: createMock(() => undefined),
+      connect: createMock(() => Promise.resolve()),
+      isConnected: () => true,
+    } as unknown as BrowserPool;
+
+    const svc = new BrowserService(pool);
+    await svc.navigate("https://example.com");
+    await svc.cleanup();
+
+    assert.strictEqual(closeMock.calls.length, 1, "the tab this task opened must be closed");
+    assert.strictEqual(disconnectMock.calls.length, 0, "cleanup must NEVER disconnect the shared pool (would kill the external Chromium)");
+  });
+
+  test("cleanup does not close tabs it did not open", async () => {
+    const foreignClose = createMock(() => Promise.resolve());
+    const foreignPage = { close: foreignClose } as unknown as import("playwright-core").Page;
+    const ctx = { newPage: createMock(() => Promise.resolve(foreignPage)), pages: createMock(() => [foreignPage]) };
+    const pool = {
+      newContext: createMock(() => Promise.resolve(ctx)),
+      disconnect: createMock(() => Promise.resolve()),
+      trackPage: createMock(() => undefined),
+      touchPage: createMock(() => undefined),
+      connect: createMock(() => Promise.resolve()),
+      isConnected: () => true,
+    } as unknown as BrowserPool;
+
+    const svc = new BrowserService(pool);
+    // never navigated -> opened no pages of its own
+    await svc.cleanup();
+    assert.strictEqual(foreignClose.calls.length, 0, "cleanup must not touch pages from other tasks");
+  });
 });
 
 describe("extractRefs", () => {

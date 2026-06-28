@@ -1,5 +1,4 @@
 import type { Page, BrowserContext } from "playwright-core";
-import { unlink } from "node:fs/promises";
 import { BrowserPool } from "./pool.ts";
 import { injectRefLabels, removeRefLabels } from "./labels.ts";
 import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
@@ -10,13 +9,14 @@ const SCROLL_AMOUNT = 500;
 
 export class BrowserService {
   private context: BrowserContext | null = null;
-  private screenshots: string[] = [];
+  private ownPages: Page[] = [];
 
   constructor(private pool: BrowserPool, private viewport = DEFAULT_VIEWPORT) {}
 
   async navigate(url: string): Promise<BrowserResult> {
     const context = await this.ensureContext();
     const page = await context.newPage();
+    this.ownPages.push(page);
     this.pool.trackPage(page);
     this.attachDialogHandler(page);
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -53,7 +53,6 @@ export class BrowserService {
     this.pool.touchPage(page);
     const path = `${SCREENSHOT_DIR}/browser-${crypto.randomUUID()}.png`;
     await page.screenshot({ path, fullPage });
-    this.screenshots.push(path);
     return { type: "image", path, mimeType: "image/png" };
   }
 
@@ -63,7 +62,6 @@ export class BrowserService {
     await injectRefLabels(page);
     await page.screenshot({ path, fullPage });
     await removeRefLabels(page);
-    this.screenshots.push(path);
     return { type: "image", path, mimeType: "image/png" };
   }
 
@@ -131,12 +129,14 @@ export class BrowserService {
     }
   }
 
+  /** Close only the tabs this task opened. Does NOT disconnect the shared pool
+   *  (that connection is reused across tasks) and does NOT delete screenshots:
+   *  those are returned as attachments and removed post-send by the adapter. */
   async cleanup(): Promise<void> {
-    for (const path of this.screenshots) {
-      await unlink(path).catch(() => undefined);
+    for (const page of this.ownPages) {
+      await page.close().catch(() => undefined);
     }
-    this.screenshots = [];
-    await this.pool.disconnect();
+    this.ownPages = [];
     this.context = null;
   }
 

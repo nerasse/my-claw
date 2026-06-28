@@ -1,6 +1,6 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert";
-import { BrowserPool } from "../../src/browser/pool.ts";
+import { BrowserPool, getBrowserPool } from "../../src/browser/pool.ts";
 import { createMock } from "../helpers/mock.ts";
 
 describe("BrowserPool", () => {
@@ -60,6 +60,37 @@ describe("BrowserPool", () => {
     pool.trackPage(mockPage);
     pool.touchPage(mockPage);
     assert.ok(true);
+  });
+
+  test("disconnect does NOT close (kill) the shared CDP browser", async () => {
+    const closeMock = createMock(() => Promise.resolve());
+    const fakeBrowser = {
+      isConnected: () => true,
+      close: closeMock,
+      contexts: () => [],
+      on: () => {},
+    } as unknown as import("playwright-core").Browser;
+
+    const { chromium } = await import("playwright-core");
+    const originalConnect = chromium.connectOverCDP;
+    chromium.connectOverCDP = () => Promise.resolve(fakeBrowser) as any;
+
+    try {
+      await pool.connect();
+      await pool.disconnect();
+      assert.strictEqual(closeMock.calls.length, 0, "disconnect must never call browser.close() on a CDP-attached Chromium");
+      assert.strictEqual(pool.isConnected(), false);
+    } finally {
+      chromium.connectOverCDP = originalConnect;
+    }
+  });
+
+  test("getBrowserPool returns a singleton per cdpUrl", () => {
+    const a = getBrowserPool("http://127.0.0.1:9222");
+    const b = getBrowserPool("http://127.0.0.1:9222");
+    const c = getBrowserPool("http://127.0.0.1:9999");
+    assert.strictEqual(a, b, "same cdpUrl must reuse the same pool");
+    assert.notStrictEqual(a, c, "different cdpUrl must get a different pool");
   });
 
   test("idle sweeper tracks and sweeps pages", async () => {
