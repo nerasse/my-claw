@@ -1,0 +1,4 @@
+[test]
+# Redirect all filesystem roots to a temp dir before any module loads, so tests
+# never touch the real ~/.my-claw (sessions, workspace, config). See tests/setup.ts.
+preload = ["./tests/setup.ts"]

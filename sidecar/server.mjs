@@ -117,8 +117,53 @@ function extractRefs(snapshot) {
   return [...new Set(refs)].sort((a, b) => a - b);
 }
 
+const MAX_REFS = 200;
+
+// Playwright's ariaSnapshot({ ref: true }) emits no usable ref markers in this
+// build, so we assign our own: stamp every visible interactive element with a
+// __ref attribute (clicked via [__ref="N"], also used by the label overlay) and
+// list them. The aria tree is kept for readable page context.
 async function snapshotPage(page) {
-  const raw = await page.locator("body").ariaSnapshot({ ref: true });
+  const ariaTree = await page.locator("body").ariaSnapshot().catch(() => "");
+
+  const interactive = await page.evaluate((max) => {
+    const SELECTOR = [
+      "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
+      "[role=button]", "[role=link]", "[role=textbox]", "[role=checkbox]",
+      "[role=radio]", "[role=combobox]", "[role=menuitem]", "[role=tab]",
+      "[role=switch]", "[contenteditable='']", "[contenteditable=true]", "[onclick]",
+    ].join(",");
+    for (const el of Array.from(document.querySelectorAll("[__ref]"))) {
+      el.removeAttribute("__ref");
+    }
+    const lines = [];
+    let ref = 0;
+    for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
+      if (ref >= max) break;
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      if (rect.width === 0 || rect.height === 0) continue;
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      ref += 1;
+      el.setAttribute("__ref", String(ref));
+      const role = el.getAttribute("role") || el.tagName.toLowerCase();
+      const name = (
+        el.getAttribute("aria-label") ||
+        el.getAttribute("placeholder") ||
+        (typeof el.value === "string" ? el.value : "") ||
+        el.innerText ||
+        el.getAttribute("title") ||
+        el.getAttribute("name") ||
+        ""
+      ).replace(/\s+/g, " ").trim().slice(0, 80);
+      lines.push(`[__ref="${ref}"] ${role} "${name}"`);
+    }
+    return lines.join("\n");
+  }, MAX_REFS);
+
+  const raw = interactive
+    ? `${ariaTree}\n\nInteractive elements (click/type by ref):\n${interactive}`
+    : ariaTree;
   return { raw, refs: extractRefs(raw) };
 }
 

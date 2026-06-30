@@ -167,3 +167,26 @@ test("persist: saves to disk and new manager loads it back", async () => {
     await deleteSession(sid);
   }
 });
+
+// Guards the prod symptom: after a restart, a persisted session must reload with
+// its ORIGINAL createdAt and history, never a fresh session that overwrites it.
+test("restart simulation: a fresh manager reloads the session without resetting createdAt", async () => {
+  const sid = `test/manager/${Date.now()}/restart`;
+  try {
+    const mgr1 = new SessionManager();
+    const original = await mgr1.getOrCreateWithMeta(sid, "matrix", "group");
+    const createdAt = original.createdAt;
+    original.messages.push({ role: "user", content: "before restart", timestamp: new Date().toISOString() });
+    await mgr1.persist(sid);
+
+    // Simulate a process restart: brand-new manager, empty in-memory cache.
+    const mgr2 = new SessionManager();
+    const reloaded = await mgr2.getOrCreateWithMeta(sid, "matrix", "group");
+
+    assert.equal(reloaded.createdAt, createdAt, "createdAt must survive a restart (no history reset)");
+    assert.equal(reloaded.messages.length, 1);
+    assert.equal(reloaded.messages[0].content, "before restart");
+  } finally {
+    await deleteSession(sid);
+  }
+});

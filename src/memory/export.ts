@@ -1,6 +1,5 @@
 import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { MemoryConfig } from "../core/config.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
@@ -27,7 +26,7 @@ const HEADER =
   "deletions are ignored (use the memory tool to forget). -->";
 
 function workspaceDir(): string {
-  return process.env["MY_CLAW_WORKSPACE"] ?? join(homedir(), ".my-claw", "workspace");
+  return process.env["MY_CLAW_WORKSPACE"] ?? join(MY_CLAW_DIR, "workspace");
 }
 
 export function memoryFilePath(): string {

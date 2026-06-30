@@ -65,11 +65,12 @@ describe("Browser E2E", () => {
     server.stop();
   });
 
-  test("navigate returns a snapshot of the page", async () => {
+  test("navigate returns a snapshot with injected interactive refs", async () => {
     if (!E2E_ENABLED) return;
     const result = await client.navigate(`${baseUrl}/button`);
     assert.ok(result.pageId);
     assert.ok(result.snapshot.raw.includes("Click me"));
+    assert.ok(result.snapshot.refs.includes(1), "interactive elements must get refs");
     assert.ok(result.url.includes("/button"));
   });
 

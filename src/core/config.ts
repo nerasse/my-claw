@@ -285,7 +285,9 @@ export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" 
   return type === "orchestrator" ? DEFAULT_ORCHESTRATOR_MAX_ITERATIONS : DEFAULT_SUBAGENT_MAX_ITERATIONS;
 }
 
-export const MY_CLAW_DIR = join(homedir(), ".my-claw");
+// MY_CLAW_DIR env override exists so tests (and alternate deployments) never touch
+// the real ~/.my-claw. The test preload (bunfig.toml) points it at a temp dir.
+export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-claw");
 
 async function loadEnv(): Promise<void> {
   const envPath = join(MY_CLAW_DIR, ".env");
