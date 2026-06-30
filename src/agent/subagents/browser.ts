@@ -4,8 +4,7 @@ import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
-import { type BrowserPool, getBrowserPool } from "../../browser/pool.ts";
-import { BrowserService } from "../../browser/service.ts";
+import { BrowserClient } from "../../browser/client.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
 import {
   createBrowserNavigateTool,
@@ -71,8 +70,8 @@ async function buildBrowserSystemPrompt(): Promise<string> {
   return layers.filter(Boolean).join("\n\n");
 }
 
-/** CDP connection failures: the shared Chromium is unreachable. These are
- *  infrastructure errors, NOT human-solvable blockers — never route them to a
+/** Infrastructure failures: the browser sidecar or the shared Chromium behind it
+ *  is unreachable. These are NOT human-solvable blockers — never route them to a
  *  noVNC handoff. Deliberately excludes generic page "timeout" (a slow site is
  *  a normal tool failure the agent can retry, not an infra outage). */
 const INFRA_ERROR_SIGNATURES = [
@@ -80,6 +79,7 @@ const INFRA_ERROR_SIGNATURES = [
   "econnreset",
   "ehostunreach",
   "enetunreach",
+  "sidecar unreachable",
   "connectovercdp",
   "websocket error",
   "browser has been closed",
@@ -95,27 +95,25 @@ export function isBrowserInfraError(error?: string): boolean {
 }
 
 export class BrowserSubagent {
-  private pool: BrowserPool;
-  private service: BrowserService;
+  private client: BrowserClient;
   private toolRegistry: ToolRegistry;
   private maxSteps: number;
 
   constructor(
     private config: MyClawConfig,
-    private cdpUrl: string,
+    private sidecarUrl: string,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
-    this.pool = getBrowserPool(cdpUrl, config.browser?.idleTimeoutMs);
-    this.service = new BrowserService(this.pool, config.browser?.viewport);
+    this.client = new BrowserClient(sidecarUrl, config.browser?.viewport);
     this.toolRegistry = new ToolRegistry();
-    this.toolRegistry.register(createBrowserNavigateTool(this.service));
-    this.toolRegistry.register(createBrowserSnapshotTool(this.service));
-    this.toolRegistry.register(createBrowserClickTool(this.service));
-    this.toolRegistry.register(createBrowserTypeTool(this.service));
-    this.toolRegistry.register(createBrowserScreenshotTool(this.service));
-    this.toolRegistry.register(createBrowserListTabsTool(this.service));
-    this.toolRegistry.register(createBrowserFocusTabTool(this.service));
-    this.toolRegistry.register(createBrowserCloseTabTool(this.service));
+    this.toolRegistry.register(createBrowserNavigateTool(this.client));
+    this.toolRegistry.register(createBrowserSnapshotTool(this.client));
+    this.toolRegistry.register(createBrowserClickTool(this.client));
+    this.toolRegistry.register(createBrowserTypeTool(this.client));
+    this.toolRegistry.register(createBrowserScreenshotTool(this.client));
+    this.toolRegistry.register(createBrowserListTabsTool(this.client));
+    this.toolRegistry.register(createBrowserFocusTabTool(this.client));
+    this.toolRegistry.register(createBrowserCloseTabTool(this.client));
     this.toolRegistry.register({
       name: "browser_done",
       description: "Signal that the task is finished. Set needs_human=true only if you are blocked by something you cannot resolve yourself (CAPTCHA, bot-check, 2FA/OTP).",
@@ -192,7 +190,7 @@ export class BrowserSubagent {
           return {
             success: false,
             needs_human: false,
-            summary: `Browser infrastructure is unavailable — the remote Chromium (CDP ${this.cdpUrl}) is not reachable: ${result.error}`,
+            summary: `Browser infrastructure is unavailable — the browser sidecar (${this.sidecarUrl}) or its Chromium is not reachable: ${result.error}`,
             current_url: currentUrl,
             attachments: allAttachments,
           };
@@ -245,11 +243,11 @@ export class BrowserSubagent {
       attachments: allAttachments,
     };
     } finally {
-      await this.service.cleanup().catch(() => undefined);
+      await this.client.cleanup().catch(() => undefined);
     }
   }
 
   async cleanup(): Promise<void> {
-    await this.service.cleanup();
+    await this.client.cleanup();
   }
 }

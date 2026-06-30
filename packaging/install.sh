@@ -52,6 +52,11 @@ fi
 TARGET_HOME="$(eval echo "~$TARGET_USER")"
 BUN_PATH="$(command -v bun || true)"
 PYTHON_PATH="$(command -v python3 || command -v python || true)"
+# Node runs the browser sidecar (Playwright connectOverCDP hangs under Bun).
+NODE_PATH="$(command -v node || true)"
+if [ -z "$NODE_PATH" ]; then
+  NODE_PATH="$(ls -1 ${TARGET_HOME}/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true)"
+fi
 
 # If bun not in root PATH, check target user's home
 if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
@@ -144,6 +149,7 @@ for template in "${PROJECT_DIR}/templates/"*.service; do
   sed -e "s|{{USER}}|${TARGET_USER}|g" \
       -e "s|{{HOME}}|${TARGET_HOME}|g" \
       -e "s|{{BUN}}|${BUN_PATH}|g" \
+      -e "s|{{NODE}}|${NODE_PATH}|g" \
       -e "s|{{PYTHON}}|${PYTHON_PATH}|g" \
       -e "s|{{APP_DIR}}|${APP_DIR}|g" \
       "$template" > "/etc/systemd/system/${svc_name}"
@@ -173,6 +179,7 @@ systemctl daemon-reload
 # Enable services
 systemctl enable my-claw-xvfb.service
 systemctl enable my-claw-chromium.service
+systemctl enable my-claw-browser-sidecar.service
 systemctl enable my-claw-whisper.service
 systemctl enable my-claw-vnc.service
 systemctl enable my-claw-novnc.service

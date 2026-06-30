@@ -2,21 +2,28 @@
 
 ## Architecture
 
-Playwright `connectOverCDP("ws://127.0.0.1:9222")` attaches to the existing Chromium on Xvfb :99. No new browser.
+The app runs under **Bun**, but Playwright's `connectOverCDP` **hangs under Bun**
+(proven: works under Node, hangs under Bun even though the CDP HTTP/WebSocket endpoint
+is healthy). So all Playwright lives in a separate **Node sidecar** process; the Bun app
+drives it over loopback HTTP. Playwright `Page`/`Context` objects never cross the process
+boundary — they are referenced by opaque string ids. Screenshots are written to `/tmp`
+(shared FS) and only the path is returned. See `SIDECAR-BROWSER.md`.
 
 ```
-User → Main Agent → Browser Subagent → Playwright → Chromium (Xvfb :99)
-                                         ↓
-                                  noVNC :6080 (human view)
+User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Node sidecar → Playwright → Chromium (Xvfb :99)
+        (Bun)                           (Bun)        :9223      (Node)                       :9222
+                                                                                              ↓
+                                                                                       noVNC :6080 (human view)
 ```
 
-## 3 Layers
+## Layers
 
 | Layer | Files | Role |
 |---|---|---|
-| CDP Client | `src/browser/pool.ts`, `service.ts`, `labels.ts` | Connect, navigate, snapshot, click, type, screenshot |
+| Sidecar | `sidecar/server.mjs` (Node) | Owns Playwright: connect, navigate, snapshot, click, type, screenshot, label overlay, session/page registry |
+| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one session per task, pages addressed by id |
 | Tools | `src/tools/browser.ts` | 9 tools (8 in main registry + `browser_done` in subagent) |
-| Subagent | `src/agent/subagents/browser.ts` | Loop + captcha detection + human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
+| Subagent | `src/agent/subagents/browser.ts` | Loop + LLM-driven human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
 
 ## Tools
 
@@ -58,22 +65,22 @@ solves the blocker and replies "continue".
 
 ## Lifecycle (never kill the shared Chromium)
 
-The Chromium on :9222 is an **external systemd service** (`my-claw-chromium.service`). my-claw
-must never terminate it.
+Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
+(`my-claw-chromium.service`) are **external systemd services** with `Restart=always`. my-claw
+(Bun) is a stateless client to the sidecar and must never terminate Chromium.
 
-- **Shared pool**: `getBrowserPool(cdpUrl)` returns a process-wide singleton per CDP URL. We
-  connect once and reuse the connection across every task — no per-task reconnect.
-- **`disconnect()` never calls `browser.close()`**: with `connectOverCDP`, `browser.close()`
-  sends a server-side `Browser.close` and kills the remote Chromium. We only close the pages
-  we opened and drop the local handle.
-- **Per-task cleanup** (`service.cleanup()`) closes only the tabs that task opened; it does not
-  disconnect the pool or delete screenshots (those are sent as attachments, then removed
-  post-send by the adapter).
-- **Self-healing**: if the external Chromium restarts (e.g. `myclaw update`), the pool's
-  `disconnected` event resets it and the next task reconnects.
-- **Infra vs blocker**: a CDP connection failure (`ECONNREFUSED`, websocket error, target
-  closed) returns a technical failure (`needs_human=false`), NOT a noVNC handoff. See
-  `isBrowserInfraError`. A real CAPTCHA/2FA is the only thing that triggers the human handoff.
+- **One CDP connection**: the sidecar connects to Chromium once and reuses it across every
+  task. It never calls `browser.close()` (with `connectOverCDP` that would kill the external
+  Chromium); on `disconnected` it resets and reconnects on the next task.
+- **Per-task session**: each task gets a sidecar session; `cleanup` closes only the tabs that
+  session opened. Screenshots are not deleted here (sent as attachments, removed post-send by
+  the adapter).
+- **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
+  reconnects. A down sidecar fails fast (`ECONNREFUSED`).
+- **Infra vs blocker**: sidecar/CDP unreachability (`sidecar unreachable`, `ECONNREFUSED`,
+  websocket error, target closed) returns a technical failure (`needs_human=false`), NOT a
+  noVNC handoff. See `isBrowserInfraError`. A real CAPTCHA/2FA is the only thing that triggers
+  the human handoff.
 
 ## Config
 
@@ -82,6 +89,7 @@ must never terminate it.
   "browser": {
     "enabled": true,
     "cdpUrl": "http://127.0.0.1:9222",
+    "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
     "maxSteps": 30,
     "idleTimeoutMs": 300000
@@ -89,7 +97,9 @@ must never terminate it.
 }
 ```
 
-Default `cdpUrl` = `http://127.0.0.1:9222` (reads from running `chromium-cdp.service`).
+- `sidecarUrl` (default `http://127.0.0.1:9223`): where the Bun app reaches the Node sidecar.
+- `cdpUrl` (default `http://127.0.0.1:9222`): used by the **sidecar** (via `CDP_URL` env in its
+  systemd unit) to reach Chromium.
 
 ## Skill
 
@@ -103,21 +113,24 @@ Default `cdpUrl` = `http://127.0.0.1:9222` (reads from running `chromium-cdp.ser
 
 ## Tests
 
-- **Unit**: 20 tests in `tests/subagents/browser.test.ts`, 10 in `tests/tools/browser-tools.test.ts`, 4 in `tests/browser/pool.test.ts`, 9 in `tests/browser/service.test.ts`
-- **E2E**: 8 in `tests/e2e/browser-delegation.test.ts`, 5 in `tests-e2e/browser/basic.test.ts` (requires `BROWSER_E2E=1`)
+- **Unit**: `tests/subagents/browser.test.ts`, `tests/tools/browser-tools.test.ts` (mock client),
+  `tests/browser/client.test.ts` (HTTP client over mock fetch)
+- **E2E**: `tests/e2e/browser-delegation.test.ts`; `tests-e2e/browser/basic.test.ts` spawns the
+  real Node sidecar against a live Chromium (requires `BROWSER_E2E=1`, `NODE_BIN` optional)
 
 ## Key Files
 
 ```
+sidecar/server.mjs   # Node: Playwright over CDP, session/page registry, HTTP API
 src/browser/
-  pool.ts          # CDP connect + idle sweeper
-  service.ts       # navigate, click, type, screenshot, tabs
-  labels.ts        # DOM ref overlay injection
-  types.ts         # Snapshot, Attachment, TabInfo
+  client.ts          # Bun: HTTP client to the sidecar (pages = opaque ids)
+  types.ts           # Snapshot, Attachment, TabInfo, Result
 src/tools/browser.ts
-  # 8 tool factories + SSRF guard
+  # 8 tool factories + SSRF guard + delegate_browser_task
 src/agent/subagents/browser.ts
-  # Subagent loop + human blocker + attachment accumulation + shared prompt
+  # Subagent loop + human handoff + attachment accumulation + shared prompt
+packaging/templates/my-claw-browser-sidecar.service
+  # systemd unit (Node, Restart=always, CDP_URL+PORT env)
 src/skills/web-browsing/SKILL.md
   # When to delegate, intervention rules
 docs/browser.md

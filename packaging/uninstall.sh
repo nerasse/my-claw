@@ -29,7 +29,7 @@ fi
 echo "Uninstalling my-claw..."
 
 # Stop and disable services
-for svc in my-claw my-claw-whisper my-claw-chromium my-claw-xvfb my-claw-vnc my-claw-novnc; do
+for svc in my-claw my-claw-browser-sidecar my-claw-whisper my-claw-chromium my-claw-xvfb my-claw-vnc my-claw-novnc; do
   systemctl stop "${svc}.service" 2>/dev/null || true
   systemctl disable "${svc}.service" 2>/dev/null || true
 done

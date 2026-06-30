@@ -1,7 +1,8 @@
 [Unit]
 Description=my-claw - personal AI agent
-After=network.target my-claw-xvfb.service my-claw-chromium.service my-claw-whisper.service
+After=network.target my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service my-claw-whisper.service
 Requires=my-claw-xvfb.service my-claw-chromium.service
+Wants=my-claw-browser-sidecar.service
 
 [Service]
 Type=simple

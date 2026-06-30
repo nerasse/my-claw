@@ -103,7 +103,7 @@ if [ -f /etc/my-claw/config.json ]; then
 fi
 
 echo "Stopping services..."
-for svc in my-claw my-claw-whisper my-claw-chromium my-claw-vnc my-claw-novnc; do
+for svc in my-claw my-claw-browser-sidecar my-claw-whisper my-claw-chromium my-claw-vnc my-claw-novnc; do
   systemctl stop "${svc}.service" 2>/dev/null || true
 done
 
@@ -124,6 +124,11 @@ fi
 # Regenerate systemd services from templates
 BUN_PATH="$(command -v bun || true)"
 PYTHON_PATH="$(command -v python3 || command -v python || true)"
+# Node runs the browser sidecar (Playwright connectOverCDP hangs under Bun).
+NODE_PATH="$(command -v node || true)"
+if [ -z "$NODE_PATH" ]; then
+  NODE_PATH="$(ls -1 ${TARGET_HOME}/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true)"
+fi
 
 # If bun not in root PATH, check target user's home
 if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
@@ -136,6 +141,7 @@ for template in "${EXTRACT_DIR}/templates/"*.service; do
   sed -e "s|{{USER}}|${TARGET_USER}|g" \
       -e "s|{{HOME}}|${TARGET_HOME}|g" \
       -e "s|{{BUN}}|${BUN_PATH}|g" \
+      -e "s|{{NODE}}|${NODE_PATH}|g" \
       -e "s|{{PYTHON}}|${PYTHON_PATH}|g" \
       -e "s|{{APP_DIR}}|${APP_DIR}|g" \
       "$template" > "/etc/systemd/system/${svc_name}"
@@ -158,6 +164,7 @@ systemctl daemon-reload
 echo "Starting services..."
 systemctl start my-claw-xvfb.service
 systemctl start my-claw-chromium.service
+systemctl start my-claw-browser-sidecar.service
 systemctl start my-claw-whisper.service
 systemctl start my-claw-vnc.service
 systemctl start my-claw-novnc.service

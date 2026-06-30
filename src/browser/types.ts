@@ -1,12 +1,10 @@
-import type { Page, Browser, BrowserContext } from "playwright-core";
-
 export interface BrowserSnapshot {
   raw: string;
   refs: number[];
 }
 
 export interface BrowserResult {
-  page: Page;
+  pageId: string;
   snapshot: BrowserSnapshot;
   url: string;
 }

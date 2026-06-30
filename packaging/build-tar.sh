@@ -16,6 +16,8 @@ mkdir -p "${TAR_DIR}"
 
 # Copy project source
 cp -r "${PROJECT_ROOT}/src" "${TAR_DIR}/"
+# Browser sidecar (runs under Node; Playwright connectOverCDP hangs under Bun)
+cp -r "${PROJECT_ROOT}/sidecar" "${TAR_DIR}/"
 cp "${PROJECT_ROOT}/package.json" "${TAR_DIR}/"
 cp "${PROJECT_ROOT}/tsconfig.json" "${TAR_DIR}/"
 

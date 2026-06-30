@@ -74,6 +74,7 @@
   "browser": {
     "enabled": false,
     "cdpUrl": "http://127.0.0.1:9222",
+    "sidecarUrl": "http://127.0.0.1:9223",
     "viewport": { "width": 1920, "height": 1080 },
     "maxSteps": 30,
     "idleTimeoutMs": 300000

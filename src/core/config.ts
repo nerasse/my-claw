@@ -140,6 +140,7 @@ export interface WebSearchConfig {
 export interface BrowserConfig {
   enabled?: boolean;
   cdpUrl?: string;
+  sidecarUrl?: string;
   novncUrl?: string;
   viewport?: { width: number; height: number };
   maxSteps?: number;

@@ -1,20 +1,19 @@
 import { type Tool, type ToolResult, str, num, bool } from "./types.ts";
-import type { BrowserService } from "../browser/service.ts";
-import type { Page } from "playwright-core";
+import type { BrowserClient } from "../browser/client.ts";
 import { resolveAndCheckUrl } from "./fetch.ts";
 
-// Track the current page across tool calls within a single agent turn
-let currentPage: Page | null = null;
+// Track the current page id across tool calls within a single agent turn
+let currentPageId: string | null = null;
 
-export function setCurrentPage(page: Page | null): void {
-  currentPage = page;
+export function setCurrentPageId(pageId: string | null): void {
+  currentPageId = pageId;
 }
 
-function getPage(): Page {
-  if (!currentPage) {
+function getPageId(): string {
+  if (!currentPageId) {
     throw new Error("No active browser page. Call browser_navigate first.");
   }
-  return currentPage;
+  return currentPageId;
 }
 
 async function guardUrl(url: string): Promise<void> {
@@ -39,7 +38,7 @@ function formatSnapshot(snapshot: { raw: string; refs: number[] }): string {
   return header + snapshot.raw;
 }
 
-export function createBrowserNavigateTool(service: BrowserService): Tool {
+export function createBrowserNavigateTool(client: BrowserClient): Tool {
   return {
     name: "browser_navigate",
     description: "Open a URL in a new browser tab. Returns a snapshot of the page with interactive element refs.",
@@ -54,8 +53,8 @@ export function createBrowserNavigateTool(service: BrowserService): Tool {
       const url = str(args, "url");
       try {
         await guardUrl(url);
-        const result = await service.navigate(url);
-        currentPage = result.page;
+        const result = await client.navigate(url);
+        currentPageId = result.pageId;
         return {
           success: true,
           output: formatSnapshot(result.snapshot),
@@ -67,7 +66,7 @@ export function createBrowserNavigateTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserSnapshotTool(service: BrowserService): Tool {
+export function createBrowserSnapshotTool(client: BrowserClient): Tool {
   return {
     name: "browser_snapshot",
     description: "Capture the current page accessibility tree. Use after every action to verify state.",
@@ -77,7 +76,7 @@ export function createBrowserSnapshotTool(service: BrowserService): Tool {
     },
     async execute(): Promise<ToolResult> {
       try {
-        const snapshot = await service.snapshot(getPage());
+        const snapshot = await client.snapshot(getPageId());
         return {
           success: true,
           output: formatSnapshot(snapshot),
@@ -89,7 +88,7 @@ export function createBrowserSnapshotTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserClickTool(service: BrowserService): Tool {
+export function createBrowserClickTool(client: BrowserClient): Tool {
   return {
     name: "browser_click",
     description: "Click an interactive element by its ref number (e.g., 5).",
@@ -103,8 +102,9 @@ export function createBrowserClickTool(service: BrowserService): Tool {
     async execute(args): Promise<ToolResult> {
       const ref = num(args, "ref", 0);
       try {
-        await service.click(getPage(), ref);
-        const snapshot = await service.snapshot(getPage());
+        const pageId = getPageId();
+        await client.click(pageId, ref);
+        const snapshot = await client.snapshot(pageId);
         return {
           success: true,
           output: formatSnapshot(snapshot),
@@ -116,7 +116,7 @@ export function createBrowserClickTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserTypeTool(service: BrowserService): Tool {
+export function createBrowserTypeTool(client: BrowserClient): Tool {
   return {
     name: "browser_type",
     description: "Type text into a form field by its ref number.",
@@ -132,8 +132,9 @@ export function createBrowserTypeTool(service: BrowserService): Tool {
       const ref = num(args, "ref", 0);
       const text = str(args, "text");
       try {
-        await service.type(getPage(), ref, text);
-        const snapshot = await service.snapshot(getPage());
+        const pageId = getPageId();
+        await client.type(pageId, ref, text);
+        const snapshot = await client.snapshot(pageId);
         return {
           success: true,
           output: formatSnapshot(snapshot),
@@ -150,6 +151,7 @@ import type { MyClawConfig } from "../core/config.ts";
 
 export const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
+export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 
 export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
@@ -168,10 +170,10 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       if (config.browser?.enabled === false) {
         return { success: false, output: "", error: "Browser tool is disabled (browser.enabled = false in config.json)." };
       }
-      const cdpUrl = config.browser?.cdpUrl ?? DEFAULT_CDP_URL;
+      const sidecarUrl = config.browser?.sidecarUrl ?? DEFAULT_SIDECAR_URL;
       const url = str(args, "url");
       const instructions = str(args, "instructions");
-      const subagent = new BrowserSubagent(config, cdpUrl);
+      const subagent = new BrowserSubagent(config, sidecarUrl);
       try {
         const result = await subagent.run(instructions, url);
         if (result.needs_human) {
@@ -204,7 +206,7 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   };
 }
 
-export function createBrowserScreenshotTool(service: BrowserService): Tool {
+export function createBrowserScreenshotTool(client: BrowserClient): Tool {
   return {
     name: "browser_screenshot",
     description: "Capture a screenshot. Use when stuck or when the user asks to see the page.",
@@ -218,9 +220,10 @@ export function createBrowserScreenshotTool(service: BrowserService): Tool {
     async execute(args): Promise<ToolResult> {
       try {
         const useLabels = bool(args, "labels", false);
+        const pageId = getPageId();
         const attachment = useLabels
-          ? await service.screenshotWithLabels(getPage(), bool(args, "full_page", false))
-          : await service.screenshot(getPage(), bool(args, "full_page", false));
+          ? await client.screenshotWithLabels(pageId, bool(args, "full_page", false))
+          : await client.screenshot(pageId, bool(args, "full_page", false));
         return {
           success: true,
           output: "Screenshot captured.",
@@ -233,14 +236,14 @@ export function createBrowserScreenshotTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserListTabsTool(service: BrowserService): Tool {
+export function createBrowserListTabsTool(client: BrowserClient): Tool {
   return {
     name: "browser_list_tabs",
     description: "List all open browser tabs with their index and URL.",
     parameters: { type: "object", properties: {} },
     async execute(): Promise<ToolResult> {
       try {
-        const tabs = await service.listTabs();
+        const tabs = await client.listTabs();
         const lines = tabs.map((t, i) => `[${i}] ${t.url}`).join("\n");
         return { success: true, output: tabs.length > 0 ? lines : "No tabs open." };
       } catch (e) {
@@ -250,7 +253,7 @@ export function createBrowserListTabsTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserFocusTabTool(service: BrowserService): Tool {
+export function createBrowserFocusTabTool(client: BrowserClient): Tool {
   return {
     name: "browser_focus_tab",
     description: "Switch to a tab by its index number (from browser_list_tabs).",
@@ -264,9 +267,9 @@ export function createBrowserFocusTabTool(service: BrowserService): Tool {
     async execute(args): Promise<ToolResult> {
       const index = num(args, "index", 0);
       try {
-        const page = await service.focusTab(index);
-        currentPage = page;
-        const snapshot = await service.snapshot(page);
+        const pageId = await client.focusTab(index);
+        currentPageId = pageId;
+        const snapshot = await client.snapshot(pageId);
         return {
           success: true,
           output: `Switched to tab [${index}].\n${formatSnapshot(snapshot)}`,
@@ -278,7 +281,7 @@ export function createBrowserFocusTabTool(service: BrowserService): Tool {
   };
 }
 
-export function createBrowserCloseTabTool(service: BrowserService): Tool {
+export function createBrowserCloseTabTool(client: BrowserClient): Tool {
   return {
     name: "browser_close_tab",
     description: "Close a tab by its index number.",
@@ -292,7 +295,7 @@ export function createBrowserCloseTabTool(service: BrowserService): Tool {
     async execute(args): Promise<ToolResult> {
       const index = num(args, "index", 0);
       try {
-        await service.closeTab(index);
+        await client.closeTab(index);
         return { success: true, output: `Tab [${index}] closed.` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };

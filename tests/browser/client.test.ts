@@ -1,0 +1,198 @@
+import { test, describe } from "bun:test";
+import assert from "node:assert";
+import { BrowserClient } from "../../src/browser/client.ts";
+import { isBrowserInfraError } from "../../src/agent/subagents/browser.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
+
+interface Call {
+  path: string;
+  body: Record<string, unknown>;
+}
+
+/** Mock the sidecar: record every call and answer per-endpoint. */
+function mockSidecar(answers: Record<string, unknown>): { calls: Call[]; restore(): void } {
+  const calls: Call[] = [];
+  const handle = mockFetch(async (input, init) => {
+    const url = String(input);
+    const path = url.split("/").pop() ?? "";
+    const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+    calls.push({ path, body });
+    const answer = answers[path] ?? {};
+    return new Response(JSON.stringify(answer), { status: 200 }) as never;
+  });
+  return { calls, restore: handle.restore };
+}
+
+const SIDECAR = "http://127.0.0.1:9223";
+
+describe("BrowserClient", () => {
+  test("navigate creates a session first, then navigates", async () => {
+    const m = mockSidecar({
+      session: { sessionId: "s1" },
+      navigate: { pageId: "p1", snapshot: { raw: 'btn [__ref="5"]', refs: [5] }, url: "https://example.com" },
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const result = await client.navigate("https://example.com");
+      assert.strictEqual(result.pageId, "p1");
+      assert.strictEqual(result.url, "https://example.com");
+      assert.deepStrictEqual(result.snapshot.refs, [5]);
+      assert.strictEqual(m.calls[0]?.path, "session");
+      assert.strictEqual(m.calls[1]?.path, "navigate");
+      assert.strictEqual(m.calls[1]?.body.sessionId, "s1");
+      assert.strictEqual(m.calls[1]?.body.url, "https://example.com");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("the session is created once and reused across calls", async () => {
+    const m = mockSidecar({
+      session: { sessionId: "s1" },
+      navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
+      snapshot: { raw: "", refs: [] },
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.navigate("https://a.test");
+      await client.snapshot("p1");
+      await client.navigate("https://b.test");
+      const sessionCalls = m.calls.filter((c) => c.path === "session");
+      assert.strictEqual(sessionCalls.length, 1, "session must be created exactly once");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("click and type pass pageId, ref and text", async () => {
+    const m = mockSidecar({ session: { sessionId: "s1" }, click: {}, type: {} });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.click("p9", 5);
+      await client.type("p9", 3, "hello");
+      const click = m.calls.find((c) => c.path === "click");
+      const type = m.calls.find((c) => c.path === "type");
+      assert.deepStrictEqual({ pageId: click?.body.pageId, ref: click?.body.ref }, { pageId: "p9", ref: 5 });
+      assert.deepStrictEqual(
+        { pageId: type?.body.pageId, ref: type?.body.ref, text: type?.body.text },
+        { pageId: "p9", ref: 3, text: "hello" },
+      );
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("screenshot returns an image attachment", async () => {
+    const m = mockSidecar({ screenshot: { type: "image", path: "/tmp/browser-x.png", mimeType: "image/png" } });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const att = await client.screenshot("p1", true);
+      assert.strictEqual(att.type, "image");
+      assert.strictEqual(att.mimeType, "image/png");
+      assert.strictEqual(m.calls[0]?.body.fullPage, true);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("screenshotWithLabels sets labels=true on the same endpoint", async () => {
+    const m = mockSidecar({ screenshot: { type: "image", path: "/tmp/browser-y.png", mimeType: "image/png" } });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.screenshotWithLabels("p1", false);
+      assert.strictEqual(m.calls[0]?.path, "screenshot");
+      assert.strictEqual(m.calls[0]?.body.labels, true);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("listTabs, focusTab and closeTab carry the sessionId", async () => {
+    const m = mockSidecar({
+      session: { sessionId: "s1" },
+      tabs: { tabs: [{ id: "0", url: "https://a.test", title: "" }] },
+      "focus-tab": { pageId: "p2", url: "https://a.test" },
+      "close-tab": {},
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const tabs = await client.listTabs();
+      assert.strictEqual(tabs.length, 1);
+      const pageId = await client.focusTab(0);
+      assert.strictEqual(pageId, "p2");
+      await client.closeTab(0);
+      assert.strictEqual(m.calls.find((c) => c.path === "focus-tab")?.body.sessionId, "s1");
+      assert.strictEqual(m.calls.find((c) => c.path === "close-tab")?.body.index, 0);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("cleanup posts the sessionId once a session exists", async () => {
+    const m = mockSidecar({
+      session: { sessionId: "s1" },
+      navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
+      cleanup: {},
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.navigate("https://a.test");
+      await client.cleanup();
+      const cleanup = m.calls.find((c) => c.path === "cleanup");
+      assert.strictEqual(cleanup?.body.sessionId, "s1");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("cleanup is a no-op when no session was created", async () => {
+    const m = mockSidecar({ cleanup: {} });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.cleanup();
+      assert.strictEqual(m.calls.length, 0, "cleanup must not hit the sidecar if no session exists");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("an unreachable sidecar throws an infra-classified error", async () => {
+    const handle = mockFetch(async () => {
+      throw new Error("Unable to connect. ECONNREFUSED 127.0.0.1:9223");
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      let caught: string | undefined;
+      try {
+        await client.navigate("https://a.test");
+      } catch (e) {
+        caught = String(e);
+      }
+      assert.ok(caught?.includes("sidecar unreachable"), "error should name the sidecar");
+      assert.ok(isBrowserInfraError(caught), "an unreachable sidecar must be classified as infra (no human handoff)");
+    } finally {
+      handle.restore();
+    }
+  });
+
+  test("a sidecar error body surfaces the server message (and stays non-infra for page timeouts)", async () => {
+    const handle = mockFetch(async (input) => {
+      const path = String(input).split("/").pop();
+      if (path === "session") return new Response(JSON.stringify({ sessionId: "s1" }), { status: 200 }) as never;
+      return new Response(JSON.stringify({ error: "page.goto: Timeout 30000ms exceeded" }), { status: 500 }) as never;
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      let caught: string | undefined;
+      try {
+        await client.navigate("https://slow.test");
+      } catch (e) {
+        caught = String(e);
+      }
+      assert.ok(caught?.includes("Timeout 30000ms exceeded"), "server error message should surface");
+      assert.ok(!isBrowserInfraError(caught), "a page timeout is a normal failure, not an infra outage");
+    } finally {
+      handle.restore();
+    }
+  });
+});

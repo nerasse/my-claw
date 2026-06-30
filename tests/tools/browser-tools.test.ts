@@ -6,108 +6,88 @@ import {
   createBrowserClickTool,
   createBrowserTypeTool,
   createBrowserScreenshotTool,
-  setCurrentPage,
+  createBrowserListTabsTool,
+  createBrowserFocusTabTool,
+  createBrowserCloseTabTool,
+  setCurrentPageId,
 } from "../../src/tools/browser.ts";
-import { BrowserService } from "../../src/browser/service.ts";
+import type { BrowserClient } from "../../src/browser/client.ts";
 import { createMock } from "../helpers/mock.ts";
-import type { Page } from "playwright-core";
 
-function createMockService(): BrowserService {
-  const mockSnapshot = createMock(() => Promise.resolve({ raw: 'button "OK" [__ref="5"]', refs: [5] }));
-  const mockPage = {
-    goto: createMock(() => Promise.resolve()),
-    url: createMock(() => "https://example.com"),
-    locator: createMock(() => ({
-      click: createMock(() => Promise.resolve()),
-      fill: createMock(() => Promise.resolve()),
-      ariaSnapshot: createMock(() => Promise.resolve('button "OK" [__ref="5"]')),
-    })),
-    screenshot: createMock(() => Promise.resolve()),
-    close: createMock(() => Promise.resolve()),
-    evaluate: createMock(() => Promise.resolve()),
-    goBack: createMock(() => Promise.resolve()),
-    setViewportSize: createMock(() => Promise.resolve()),
-  };
-
-  const mockContext = {
-    newPage: createMock(() => Promise.resolve(mockPage)),
-    pages: createMock(() => [mockPage]),
-  };
-
-  const mockPool = {
-    newContext: createMock(() => Promise.resolve(mockContext)),
-    connect: createMock(() => Promise.resolve()),
-    disconnect: createMock(() => Promise.resolve()),
-    isConnected: () => true,
-  } as unknown as import("../../src/browser/pool.ts").BrowserPool;
-
-  const service = new BrowserService(mockPool);
-  service.snapshot = mockSnapshot;
-  service.navigate = createMock(() => Promise.resolve({
-    page: mockPage as unknown as Page,
-    snapshot: { raw: 'button "OK" [__ref="5"]', refs: [5] },
-    url: "https://example.com",
-  }));
-  service.click = createMock(() => Promise.resolve());
-  service.type = createMock(() => Promise.resolve());
-  service.screenshot = createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" }));
-  service.focusTab = createMock(() => Promise.resolve(mockPage as unknown as Page));
-  service.closeTab = createMock(() => Promise.resolve());
-
-  return service;
+function createMockClient(): BrowserClient {
+  const snapshot = { raw: 'button "OK" [__ref="5"]', refs: [5] };
+  return {
+    navigate: createMock(() => Promise.resolve({ pageId: "p1", snapshot, url: "https://example.com" })),
+    snapshot: createMock(() => Promise.resolve(snapshot)),
+    click: createMock(() => Promise.resolve()),
+    type: createMock(() => Promise.resolve()),
+    screenshot: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
+    screenshotWithLabels: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
+    listTabs: createMock(() => Promise.resolve([{ id: "0", url: "https://example.com", title: "" }])),
+    focusTab: createMock(() => Promise.resolve("p1")),
+    closeTab: createMock(() => Promise.resolve()),
+    cleanup: createMock(() => Promise.resolve()),
+  } as unknown as BrowserClient;
 }
 
 describe("browser tools", () => {
   test("navigate rejects localhost", async () => {
-    const tool = createBrowserNavigateTool(createMockService());
+    const tool = createBrowserNavigateTool(createMockClient());
     const result = await tool.execute({ url: "http://localhost:8080" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("blocked"));
   });
 
   test("navigate rejects file protocol", async () => {
-    const tool = createBrowserNavigateTool(createMockService());
+    const tool = createBrowserNavigateTool(createMockClient());
     const result = await tool.execute({ url: "file:///etc/passwd" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("blocked"));
   });
 
-  test("navigate succeeds with valid url", async () => {
-    const service = createMockService();
-    const tool = createBrowserNavigateTool(service);
+  test("navigate succeeds with valid url and sets the current page", async () => {
+    const tool = createBrowserNavigateTool(createMockClient());
     const result = await tool.execute({ url: "https://example.com" });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("OK"));
   });
 
   test("snapshot requires active page", async () => {
-    setCurrentPage(null);
-    const tool = createBrowserSnapshotTool(createMockService());
+    setCurrentPageId(null);
+    const tool = createBrowserSnapshotTool(createMockClient());
     const result = await tool.execute({});
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("No active browser page"));
   });
 
   test("click requires active page", async () => {
-    setCurrentPage(null);
-    const tool = createBrowserClickTool(createMockService());
+    setCurrentPageId(null);
+    const tool = createBrowserClickTool(createMockClient());
     const result = await tool.execute({ ref: 5 });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("No active browser page"));
   });
 
   test("type requires active page", async () => {
-    setCurrentPage(null);
-    const tool = createBrowserTypeTool(createMockService());
+    setCurrentPageId(null);
+    const tool = createBrowserTypeTool(createMockClient());
     const result = await tool.execute({ ref: 3, text: "hello" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("No active browser page"));
   });
 
+  test("click uses the current page id", async () => {
+    const client = createMockClient();
+    setCurrentPageId("p7");
+    const tool = createBrowserClickTool(client);
+    const result = await tool.execute({ ref: 5 });
+    assert.strictEqual(result.success, true);
+    assert.strictEqual((client.click as unknown as { calls: { arguments: unknown[] }[] }).calls[0]?.arguments[0], "p7");
+  });
+
   test("screenshot returns attachment", async () => {
-    const mockPage = { url: () => "" } as unknown as Page;
-    setCurrentPage(mockPage);
-    const tool = createBrowserScreenshotTool(createMockService());
+    setCurrentPageId("p1");
+    const tool = createBrowserScreenshotTool(createMockClient());
     const result = await tool.execute({ full_page: true });
     assert.strictEqual(result.success, true);
     assert.ok(result.attachments);
@@ -115,24 +95,20 @@ describe("browser tools", () => {
   });
 
   test("list_tabs returns tab list", async () => {
-    const { createBrowserListTabsTool } = await import("../../src/tools/browser.ts");
-    const tool = createBrowserListTabsTool(createMockService());
+    const tool = createBrowserListTabsTool(createMockClient());
     const result = await tool.execute({});
     assert.strictEqual(result.success, true);
   });
 
   test("focus_tab switches to tab", async () => {
-    const { createBrowserFocusTabTool } = await import("../../src/tools/browser.ts");
-    const tool = createBrowserFocusTabTool(createMockService());
-    const mockPage = { url: () => "" } as unknown as Page;
-    setCurrentPage(mockPage);
+    const tool = createBrowserFocusTabTool(createMockClient());
+    setCurrentPageId("p0");
     const result = await tool.execute({ index: 0 });
     assert.strictEqual(result.success, true);
   });
 
   test("close_tab closes tab", async () => {
-    const { createBrowserCloseTabTool } = await import("../../src/tools/browser.ts");
-    const tool = createBrowserCloseTabTool(createMockService());
+    const tool = createBrowserCloseTabTool(createMockClient());
     const result = await tool.execute({ index: 0 });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("closed"));
