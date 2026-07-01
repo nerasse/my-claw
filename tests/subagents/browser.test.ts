@@ -789,6 +789,14 @@ describe("BrowserSubagent", () => {
     assert.ok(tool.description.toLowerCase().includes("attached"), "Description should mention attachments");
   });
 
+  test("delegate_browser_task description tells the agent not to re-fetch screenshots", async () => {
+    const { createDelegateBrowserTool } = await import("../../src/tools/browser.ts");
+    const tool = createDelegateBrowserTool(makeConfig() as any);
+    const desc = tool.description.toLowerCase();
+    assert.ok(desc.includes("do not") || desc.includes("don't"), "Description should warn against manual handling");
+    assert.ok(desc.includes("media:"), "Description should tell the agent not to use MEDIA: for auto-attached screenshots");
+  });
+
   test("prompt mentions screenshot delivery to user", async () => {
     let systemMessage = "";
 

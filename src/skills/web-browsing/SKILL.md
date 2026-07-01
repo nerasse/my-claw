@@ -22,10 +22,23 @@ infrastructure error (CDP unreachable), report it to the user — do not improvi
 
 ## How it works
 
-1. A browser subagent opens the URL in the remote Chromium instance (CDP :9222 on Xvfb :99)
-2. It navigates, clicks, types, and takes screenshots using Playwright over CDP
+1. A browser subagent opens the URL in the remote Chromium instance (CDP :9222 on Xvfb :99),
+   driven by a Node sidecar (Playwright runs there, not in the main process)
+2. It navigates, clicks, types, and takes screenshots; each interactive element gets a ref number
 3. After each action it snapshots the page to verify progress
 4. It returns a summary when done, or calls `browser_done(needs_human=true)` if it hits a blocker it cannot pass
+
+## Results & screenshots
+
+Screenshots the subagent captures are **automatically attached to your response** and
+delivered to the user. You do NOT need to (and must NOT):
+
+- run `find`/`read`/`ls` to locate the screenshot files (they live in a temp dir outside
+  your workspace, so those tools will fail with an "escapes workspace" error), or
+- reference them with `MEDIA:` (they are already attached).
+
+Just use the summary returned by `delegate_browser_task` to describe the result in your reply.
+The images are sent for you.
 
 ## Human intervention
 
@@ -55,11 +68,11 @@ message with the live-browser URL.
 
 ## Common errors
 
-| Error | Cause | Severity |
+| Error | Cause | What to do |
 |---|---|---|
-| ALSA audio warnings | Headless Chromium without a sound card | Benign. Does not block rendering or navigation. |
-| "Opening in existing browser session" | Conflicting Chromium process already running in the background | Kill the existing process and relaunch in an isolated headless session. |
-| `delegate_browser_task` returns HTTP 400 | The subagent LLM call failed (not the browser itself) | Check that CDP, Xvfb, and noVNC are up. The browser infrastructure is usually fine; the failure is at the LLM delegation layer. |
+| ALSA audio warnings | Headless Chromium without a sound card | Benign. Ignore — does not block rendering or navigation. |
+| "Browser infrastructure is unavailable" | The sidecar or Chromium is unreachable (CDP/websocket) | Report it to the user. Never improvise with raw `bash` chromium — the managed browser self-heals. |
+| "escapes workspace directory" after a browse | You tried to `find`/`read` the screenshot in `/tmp` | Don't. Browser screenshots are auto-attached (see "Results & screenshots"). |
 
 ## Example flow
 

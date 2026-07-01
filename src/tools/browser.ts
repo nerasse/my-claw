@@ -156,7 +156,7 @@ export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
     name: "delegate_browser_task",
-    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. The subagent may take screenshots during the task; any captured images are automatically attached to the response and delivered to the user.",
+    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
     parameters: {
       type: "object",
       properties: {

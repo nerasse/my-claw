@@ -48,6 +48,19 @@ test("built-in subagent-workflow exists in repo and is valid", async () => {
   assert.ok(content.includes("kill_agent("), "Should mention kill_agent tool");
 });
 
+test("built-in web-browsing skill tells the agent screenshots are auto-attached", async () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const skillFile = join(repoRoot, "src", "skills", "web-browsing", "SKILL.md");
+  await access(skillFile);
+
+  const content = await readFile(skillFile, "utf-8");
+  assert.ok(content.includes("name: web-browsing"), "Missing name frontmatter");
+  assert.ok(content.includes("delegate_browser_task"), "Should mention the delegate tool");
+  assert.ok(/automatically attached/i.test(content), "Must state screenshots are auto-attached");
+  assert.ok(content.includes("MEDIA:"), "Must tell the agent not to use MEDIA: for browser screenshots");
+  assert.ok(/escapes workspace/i.test(content), "Must warn that finding screenshots in /tmp fails");
+});
+
 test("parse frontmatter with name and description", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "test-skill", "---\nname: test-skill\ndescription: A test skill\n---\n\nInstructions here.");
