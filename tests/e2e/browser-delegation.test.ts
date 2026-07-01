@@ -41,6 +41,20 @@ function llmResp(message: object): never {
   ) as never;
 }
 
+// The browser subagent queries the sidecar (session/tabs/cleanup) around its LLM
+// loop. Route those to sidecar-shaped responses so the LLM mock only sees LLM calls.
+function withSidecar(impl: typeof globalThis.fetch): { restore(): void } {
+  return mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("127.0.0.1:9223")) {
+      if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
+      if (url.endsWith("/tabs")) return new Response(JSON.stringify({ tabs: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+    return impl(input as never, init as never);
+  }) as typeof globalThis.fetch);
+}
+
 function makeRouter(reg: ToolRegistry, cfg?: Partial<MyClawConfig>): MessageRouter {
   const merged = { ...config, ...cfg };
   return new MessageRouter(new SessionManager(), new AgentBridge(merged, reg, new SkillRegistry()), merged);
@@ -58,7 +72,7 @@ describe("E2E browser delegation", () => {
 
     let bridgeCall = 0;
     let subagentCall = 0;
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
 
@@ -96,7 +110,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry, { browser: { enabled: false } });
 
     let bridgeCall = 0;
-    const mock = mockFetch(async () => {
+    const mock = withSidecar(async () => {
       bridgeCall++;
       if (bridgeCall === 1) {
         return llmResp({
@@ -123,7 +137,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry, { browser: cfg.browser });
 
     const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> };
       bodies.push(body);
       const tools = body.tools;
@@ -162,7 +176,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry, { browser: cfg.browser });
 
     const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> };
       bodies.push(body);
       const tools = body.tools;
@@ -197,7 +211,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let capturedTools: Array<{ function: { name: string; description: string } }> = [];
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       capturedTools = (body.tools ?? []) as Array<{ function: { name: string; description: string } }>;
       return llmResp({ content: "ok" });
@@ -219,7 +233,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let capturedTools: Array<{ function: { name: string; parameters: Record<string, unknown> } }> = [];
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       capturedTools = (body.tools ?? []) as Array<{ function: { name: string; parameters: Record<string, unknown> } }>;
       return llmResp({ content: "ok" });
@@ -253,7 +267,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let capturedToolNames: string[] = [];
-    const mock = mockFetch(async (_url, init) => {
+    const mock = withSidecar(async (_url, init) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       const tools = (body.tools ?? []) as Array<{ function: { name: string } }>;
       capturedToolNames = tools.map((t) => t.function.name);
@@ -283,7 +297,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let bridgeCall = 0;
-    const mock = mockFetch(async () => {
+    const mock = withSidecar(async () => {
       bridgeCall++;
       if (bridgeCall === 1) {
         return llmResp({
@@ -320,7 +334,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let bridgeCall = 0;
-    const mock = mockFetch(async () => {
+    const mock = withSidecar(async () => {
       bridgeCall++;
       if (bridgeCall === 1) {
         return llmResp({
@@ -363,7 +377,7 @@ describe("E2E browser delegation", () => {
     const router = makeRouter(registry);
 
     let bridgeCall = 0;
-    const mock = mockFetch(async () => {
+    const mock = withSidecar(async () => {
       bridgeCall++;
       if (bridgeCall === 1) {
         return llmResp({

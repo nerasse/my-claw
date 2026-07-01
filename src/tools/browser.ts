@@ -41,19 +41,24 @@ function formatSnapshot(snapshot: { raw: string; refs: number[] }): string {
 export function createBrowserNavigateTool(client: BrowserClient): Tool {
   return {
     name: "browser_navigate",
-    description: "Open a URL in a new browser tab. Returns a snapshot of the page with interactive element refs.",
+    description: "Navigate to a URL. Reuses the CURRENT tab by default (does not spawn a new tab per call). Set new_tab=true only when you deliberately want a separate tab. Returns a snapshot of the page with interactive element refs.",
     parameters: {
       type: "object",
       properties: {
         url: { type: "string", description: "URL to open" },
+        new_tab: { type: "boolean", description: "Open in a new tab instead of reusing the current one (default false)" },
       },
       required: ["url"],
     },
     async execute(args): Promise<ToolResult> {
       const url = str(args, "url");
+      const newTab = bool(args, "new_tab", false);
       try {
         await guardUrl(url);
-        const result = await client.navigate(url);
+        const result = await client.navigate(url, {
+          newTab,
+          reusePageId: newTab ? undefined : currentPageId ?? undefined,
+        });
         currentPageId = result.pageId;
         return {
           success: true,

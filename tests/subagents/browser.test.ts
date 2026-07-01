@@ -7,6 +7,21 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+// The subagent now talks to the browser sidecar (session/tabs/cleanup) around the
+// LLM loop. Route those calls to sidecar-shaped responses so the LLM mock (and its
+// call counters) only ever sees actual LLM requests.
+function mockLlm(impl: typeof globalThis.fetch): { restore(): void } {
+  return mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("127.0.0.1:9222")) {
+      if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "test-session" }), { status: 200 });
+      if (url.endsWith("/tabs")) return new Response(JSON.stringify({ tabs: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    }
+    return impl(input as never, init as never);
+  }) as typeof globalThis.fetch);
+}
+
 function makeConfig(overrides?: Record<string, unknown>) {
   return {
     whitelist: [],
@@ -27,7 +42,7 @@ describe("BrowserSubagent", () => {
   test("run sends tools in OpenAI format", async () => {
     let requestBody: Record<string, unknown> | null = null;
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       requestBody = body;
 
@@ -67,7 +82,7 @@ describe("BrowserSubagent", () => {
   });
 
   test("run handles LLM error gracefully", async () => {
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       return new Response(
         JSON.stringify({ error: "bad request" }),
         { status: 400 },
@@ -96,7 +111,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(testTool);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       const hasTestTool = tools?.some((t) => t.function.name === "test_screenshot");
@@ -144,7 +159,7 @@ describe("BrowserSubagent", () => {
   });
 
   test("returns empty attachments when no tools produce them", async () => {
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       return new Response(
         JSON.stringify({
           choices: [{
@@ -170,7 +185,7 @@ describe("BrowserSubagent", () => {
   test("system prompt includes all 9 tool names", async () => {
     let systemMessage = "";
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const messages = body.messages as Array<{ role: string; content: string }>;
       const sys = messages.find((m) => m.role === "system");
@@ -214,7 +229,7 @@ describe("BrowserSubagent", () => {
   test("system prompt includes CORE_PROMPT directives", async () => {
     let systemMessage = "";
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const messages = body.messages as Array<{ role: string; content: string }>;
       const sys = messages.find((m) => m.role === "system");
@@ -256,7 +271,7 @@ describe("BrowserSubagent", () => {
       const freshSubagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
       let systemMessage = "";
 
-      const fetchMock = mockFetch(async (_input, init) => {
+      const fetchMock = mockLlm(async (_input, init) => {
         const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
         const messages = body.messages as Array<{ role: string; content: string }>;
         const sys = messages.find((m) => m.role === "system");
@@ -305,7 +320,7 @@ describe("BrowserSubagent", () => {
       const freshSubagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
       let systemMessage = "";
 
-      const fetchMock = mockFetch(async (_input, init) => {
+      const fetchMock = mockLlm(async (_input, init) => {
         const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
         const messages = body.messages as Array<{ role: string; content: string }>;
         const sys = messages.find((m) => m.role === "system");
@@ -353,7 +368,7 @@ describe("BrowserSubagent", () => {
       const freshSubagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
       let systemMessage = "";
 
-      const fetchMock = mockFetch(async (_input, init) => {
+      const fetchMock = mockLlm(async (_input, init) => {
         const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
         const messages = body.messages as Array<{ role: string; content: string }>;
         const sys = messages.find((m) => m.role === "system");
@@ -404,7 +419,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(multiTool);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       if (tools?.some((t) => t.function.name === "multi_shot")) {
@@ -450,7 +465,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(stepTool);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       step++;
@@ -493,7 +508,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(earlyTool);
 
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       call++;
       if (call === 1) {
         return new Response(
@@ -516,7 +531,7 @@ describe("BrowserSubagent", () => {
   });
 
   test("browser_done with needs_human=true returns a handoff result", async () => {
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       return new Response(
         JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"Cloudflare bot-check is blocking me","needs_human":true}' } }] } }] }),
         { status: 200 },
@@ -534,7 +549,7 @@ describe("BrowserSubagent", () => {
   });
 
   test("browser_done without needs_human is a normal success", async () => {
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       return new Response(
         JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"All done"}' } }] } }] }),
         { status: 200 },
@@ -553,7 +568,7 @@ describe("BrowserSubagent", () => {
 
   test("a login form alone does NOT trigger a handoff (no keyword false-positive)", async () => {
     let call = 0;
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       call++;
       if (call === 1) {
         // Page text mentions login/password/sign in — must NOT auto-stop
@@ -590,7 +605,7 @@ describe("BrowserSubagent", () => {
     subagent["toolRegistry"].register(shotTool);
 
     let call = 0;
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       call++;
       if (call === 1) {
         return new Response(
@@ -627,7 +642,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(endlessTool);
 
-    const fetchMock = mockFetch(async () => {
+    const fetchMock = mockLlm(async () => {
       return new Response(
         JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "endless_shot", arguments: "{}" } }] } }] }),
         { status: 200 },
@@ -666,7 +681,7 @@ describe("BrowserSubagent", () => {
     subagent["toolRegistry"].register(withAtt);
     subagent["toolRegistry"].register(noAtt);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       if (tools?.some((t) => t.function.name === "with_att")) {
@@ -713,7 +728,7 @@ describe("BrowserSubagent", () => {
       const freshSubagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
       let systemMessage = "";
 
-      const fetchMock = mockFetch(async (_input, init) => {
+      const fetchMock = mockLlm(async (_input, init) => {
         const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
         const messages = body.messages as Array<{ role: string; content: string }>;
         const sys = messages.find((m) => m.role === "system");
@@ -752,7 +767,7 @@ describe("BrowserSubagent", () => {
       const freshSubagent = new BrowserSubagent(makeConfig() as any, "http://127.0.0.1:9222");
       let systemMessage = "";
 
-      const fetchMock = mockFetch(async (_input, init) => {
+      const fetchMock = mockLlm(async (_input, init) => {
         const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
         const messages = body.messages as Array<{ role: string; content: string }>;
         const sys = messages.find((m) => m.role === "system");
@@ -800,7 +815,7 @@ describe("BrowserSubagent", () => {
   test("prompt mentions screenshot delivery to user", async () => {
     let systemMessage = "";
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const messages = body.messages as Array<{ role: string; content: string }>;
       const sys = messages.find((m) => m.role === "system");
@@ -817,6 +832,33 @@ describe("BrowserSubagent", () => {
       assert.ok(systemMessage.includes("delivered to the user"), "Prompt should mention screenshots are delivered to user");
     } finally {
       fetchMock.restore();
+    }
+  });
+
+  test("open tabs are injected into the subagent system prompt with a reuse instruction", async () => {
+    let systemMessage = "";
+    const handle = mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("127.0.0.1:9222")) {
+        if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
+        if (url.endsWith("/tabs")) {
+          return new Response(JSON.stringify({ tabs: [{ id: "0", url: "https://mail.google.com", title: "Inbox" }] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
+      const sys = body.messages.find((m) => m.role === "system");
+      if (sys) systemMessage = sys.content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"done"}' } }] } }] }), { status: 200 });
+    }) as typeof globalThis.fetch);
+
+    try {
+      await subagent.run("reuse tabs test");
+      assert.ok(systemMessage.includes("Open browser tabs"), "prompt should list open tabs");
+      assert.ok(systemMessage.includes("mail.google.com"), "prompt should include the open tab URL");
+      assert.ok(systemMessage.toLowerCase().includes("reuse"), "prompt should instruct the agent to reuse tabs");
+    } finally {
+      handle.restore();
     }
   });
 
@@ -840,7 +882,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(infraTool);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       if (tools?.some((t) => t.function.name === "flaky_nav")) {
@@ -879,7 +921,7 @@ describe("BrowserSubagent", () => {
     };
     subagent["toolRegistry"].register(shotTool);
 
-    const fetchMock = mockFetch(async (_input, init) => {
+    const fetchMock = mockLlm(async (_input, init) => {
       const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
       if (tools?.some((t) => t.function.name === "fake_shot")) {

@@ -33,7 +33,7 @@ const DEFAULT_MAX_STEPS = 30;
 const BROWSER_PROMPT = `You are a web browsing assistant. Your job is to complete tasks on websites using the available browser tools.
 
 Available tools:
-- browser_navigate(url): Open a URL in a new tab. Always call this first.
+- browser_navigate(url, new_tab?): Go to a URL. Reuses the CURRENT tab by default — it does NOT open a new tab each call. Pass new_tab=true only when you genuinely need a separate tab.
 - browser_snapshot(): Get the page accessibility tree with ref numbers. ALWAYS call this after every navigate, click, or type to see the new state.
 - browser_click(ref): Click an element by its ref number.
 - browser_type(ref, text): Type text into a field by its ref number.
@@ -44,6 +44,7 @@ Available tools:
 - browser_done(summary, needs_human?): Call this when the task is finished, or when you are blocked and need a human to take over.
 
 Rules:
+0. REUSE OPEN TABS. The browser is shared and stays open between tasks; the tabs already open are listed below under "Open browser tabs". Before opening anything, check that list: if a relevant tab already exists, continue in it with browser_focus_tab instead of navigating a fresh one. Reuse tabs as much as possible, but cleanly — never clobber an unrelated tab, and do not open duplicates. Only create a new tab (new_tab=true) when no existing tab fits.
 1. After EVERY action, call browser_snapshot to verify.
 2. Use only the ref numbers from the snapshot for click and type.
 3. Navigate autonomously. Do NOT stop at login forms, password fields, or sign-in pages — fill them in yourself if you have the needed information.
@@ -130,8 +131,9 @@ export class BrowserSubagent {
   }
 
   async run(task: string, startUrl?: string): Promise<BrowserSubagentResult> {
+    const systemPrompt = `${await buildBrowserSystemPrompt()}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
-      { role: "system", content: await buildBrowserSystemPrompt() },
+      { role: "system", content: systemPrompt },
       { role: "user", content: `Task: ${task}${startUrl ? `\nStart URL: ${startUrl}` : ""}` },
     ];
 
@@ -245,6 +247,22 @@ export class BrowserSubagent {
     } finally {
       await this.client.cleanup().catch(() => undefined);
     }
+  }
+
+  /** Snapshot of the tabs already open in the shared browser, injected into the
+   *  system prompt so the subagent reuses them instead of opening duplicates. */
+  private async formatOpenTabs(): Promise<string> {
+    let tabs: Awaited<ReturnType<BrowserClient["listTabs"]>>;
+    try {
+      tabs = await this.client.listTabs();
+    } catch {
+      return "## Open browser tabs\n(could not read the current tabs)";
+    }
+    if (tabs.length === 0) {
+      return "## Open browser tabs\nNone yet — the browser has no open tabs.";
+    }
+    const lines = tabs.map((t, i) => `[${i}] ${t.title ? `${t.title} — ` : ""}${t.url}`);
+    return `## Open browser tabs\nThese are already open in the shared browser. Reuse a relevant one with browser_focus_tab; do not open duplicates or clobber unrelated tabs.\n${lines.join("\n")}`;
   }
 
   async cleanup(): Promise<void> {

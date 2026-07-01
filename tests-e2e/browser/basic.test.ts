@@ -60,9 +60,43 @@ describe("Browser E2E", () => {
 
   afterAll(async () => {
     if (!E2E_ENABLED) return;
+    // Tabs are never auto-closed now, so this test tidies up its own tabs (those
+    // pointing at the local test server) to avoid leaking them into the shared browser.
+    try {
+      const tabs = await client.listTabs();
+      for (let i = tabs.length - 1; i >= 0; i--) {
+        if (tabs[i]?.url.includes("localhost:")) await client.closeTab(i).catch(() => undefined);
+      }
+    } catch {
+      // sidecar may already be gone
+    }
     await client.cleanup().catch(() => undefined);
     sidecar?.kill();
     server.stop();
+  });
+
+  test("navigate reuses the same tab when reusePageId is given", async () => {
+    if (!E2E_ENABLED) return;
+    const first = await client.navigate(`${baseUrl}/button`, { newTab: true });
+    const reused = await client.navigate(`${baseUrl}/form`, { reusePageId: first.pageId });
+    assert.equal(reused.pageId, first.pageId, "same tab must be reused, not a new one");
+    assert.ok(reused.url.includes("/form"));
+    await client.closeTab((await client.listTabs()).findIndex((t) => t.url.includes("/form"))).catch(() => undefined);
+  });
+
+  test("cleanup leaves tabs open (persistent browser)", async () => {
+    if (!E2E_ENABLED) return;
+    const before = (await client.listTabs()).length;
+    await client.navigate(`${baseUrl}/button`, { newTab: true });
+    await client.cleanup();
+
+    // A fresh session on the same sidecar still sees the tab: it was NOT closed.
+    const fresh = new BrowserClient(SIDECAR_URL);
+    const after = await fresh.listTabs();
+    assert.ok(after.length >= before + 1, "cleanup must not close tabs");
+    const idx = after.findIndex((t) => t.url.includes("/button"));
+    if (idx >= 0) await fresh.closeTab(idx).catch(() => undefined);
+    await fresh.cleanup().catch(() => undefined);
   });
 
   test("navigate returns a snapshot with injected interactive refs", async () => {

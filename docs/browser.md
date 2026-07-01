@@ -59,8 +59,12 @@ solves the blocker and replies "continue".
 
 - **SSRF**: `browser_navigate` blocks `localhost`, `127.0.0.1`, `file://`
 - **Dialog auto-dismiss**: `page.on('dialog', d => d.accept())` — no blocking alerts
-- **Idle cleanup**: Pages inactive >5min auto-closed (sweep every 60s)
-- **Tab isolation**: New tab per subagent task, cleaned on finish
+- **Persistent tabs**: tabs are **never auto-closed** — the shared browser stays open so the
+  user can keep working on the same tabs across tasks. They close only on explicit
+  `browser_close_tab`, when the user closes them, or on a browser restart.
+- **Tab reuse**: `browser_navigate` reuses the current tab (no tab-per-action); the open-tabs
+  list is injected into the subagent prompt so it focuses an existing relevant tab instead of
+  opening duplicates. `new_tab=true` forces a separate tab.
 - **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
 
 ## Lifecycle (never kill the shared Chromium)
@@ -72,9 +76,9 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 - **One CDP connection**: the sidecar connects to Chromium once and reuses it across every
   task. It never calls `browser.close()` (with `connectOverCDP` that would kill the external
   Chromium); on `disconnected` it resets and reconnects on the next task.
-- **Per-task session**: each task gets a sidecar session; `cleanup` closes only the tabs that
-  session opened. Screenshots are not deleted here (sent as attachments, removed post-send by
-  the adapter).
+- **Per-task session**: each task gets a sidecar session; `cleanup` only drops that session's
+  bookkeeping — it **leaves all tabs open** so the browser persists for the next task.
+  Screenshots are not deleted here (sent as attachments, removed post-send by the adapter).
 - **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
   reconnects. A down sidecar fails fast (`ECONNREFUSED`).
 - **Infra vs blocker**: sidecar/CDP unreachability (`sidecar unreachable`, `ECONNREFUSED`,

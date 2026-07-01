@@ -48,9 +48,16 @@ export class BrowserClient {
     return this.sessionId;
   }
 
-  async navigate(url: string): Promise<BrowserResult> {
+  /** Navigates the given tab (reusePageId) in place unless newTab is set, so a
+   *  task can stay in one tab instead of opening a new one per navigation. */
+  async navigate(url: string, opts?: { reusePageId?: string; newTab?: boolean }): Promise<BrowserResult> {
     const sessionId = await this.ensureSession();
-    return this.call<BrowserResult>("navigate", { sessionId, url });
+    return this.call<BrowserResult>("navigate", {
+      sessionId,
+      url,
+      reusePageId: opts?.reusePageId,
+      newTab: opts?.newTab,
+    });
   }
 
   async snapshot(pageId: string): Promise<BrowserSnapshot> {

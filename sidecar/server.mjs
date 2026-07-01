@@ -13,7 +13,6 @@ import { chromium } from "playwright-core";
 const CDP_URL = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 9223);
 const HOST = process.env.HOST || "127.0.0.1";
-const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS || 300000);
 const SCREENSHOT_DIR = "/tmp";
 const SCROLL_AMOUNT = 500;
 
@@ -31,7 +30,6 @@ async function connect() {
         browser = null;
         sessions.clear();
         allPages.clear();
-        lastActive.clear();
       });
       return browser;
     } finally {
@@ -57,10 +55,13 @@ async function ensureContext(viewport) {
 }
 
 // --- session + page registries ---
-const sessions = new Map(); // sessionId -> { viewport, ownPageIds: Set<string> }
+const sessions = new Map(); // sessionId -> { viewport, currentPageId }
 const allPages = new Map(); // pageId -> Page
 const pageToId = new WeakMap(); // Page -> pageId
-const lastActive = new Map(); // pageId -> timestamp
+
+// Tabs are NEVER auto-closed: the shared browser stays open so the user can keep
+// working on the same tabs across tasks. Tabs only disappear on explicit close-tab
+// (the agent "tidying up"), when the user closes them, or on a browser restart.
 
 function idForPage(page) {
   let id = pageToId.get(page);
@@ -69,14 +70,12 @@ function idForPage(page) {
     pageToId.set(page, id);
     allPages.set(id, page);
   }
-  lastActive.set(id, Date.now());
   return id;
 }
 
 function getPage(pageId) {
   const page = allPages.get(pageId);
   if (!page) throw new Error(`Unknown pageId: ${pageId}`);
-  lastActive.set(pageId, Date.now());
   return page;
 }
 
@@ -90,21 +89,7 @@ function dropPage(pageId) {
   const page = allPages.get(pageId);
   if (page) pageToId.delete(page);
   allPages.delete(pageId);
-  lastActive.delete(pageId);
 }
-
-// Close pages idle beyond the timeout (safety net; tasks also clean up explicitly).
-setInterval(() => {
-  const now = Date.now();
-  for (const [pageId, ts] of lastActive) {
-    if (now - ts > IDLE_TIMEOUT_MS) {
-      const page = allPages.get(pageId);
-      if (page) page.close().catch(() => undefined);
-      dropPage(pageId);
-      for (const s of sessions.values()) s.ownPageIds.delete(pageId);
-    }
-  }
-}, 60000).unref();
 
 // --- snapshot helpers (ported from the Bun-side service) ---
 function extractRefs(snapshot) {
@@ -200,17 +185,24 @@ function screenshotPath() {
 const handlers = {
   async session(body) {
     const sessionId = crypto.randomUUID();
-    sessions.set(sessionId, { viewport: body.viewport, ownPageIds: new Set() });
+    sessions.set(sessionId, { viewport: body.viewport, currentPageId: null });
     return { sessionId };
   },
 
+  // Reuses the given tab (reusePageId) unless newTab is set, so a task navigating
+  // several times stays in ONE tab instead of spawning one per action.
   async navigate(body) {
     const session = getSession(body.sessionId);
     const ctx = await ensureContext(session.viewport);
-    const page = await ctx.newPage();
+    let page;
+    if (!body.newTab && body.reusePageId && allPages.has(body.reusePageId)) {
+      page = allPages.get(body.reusePageId);
+    } else {
+      page = await ctx.newPage();
+      page.on("dialog", (dialog) => void dialog.accept().catch(() => undefined));
+    }
     const pageId = idForPage(page);
-    session.ownPageIds.add(pageId);
-    page.on("dialog", (dialog) => void dialog.accept().catch(() => undefined));
+    session.currentPageId = pageId;
     await page.goto(body.url, { waitUntil: "domcontentloaded", timeout: 30000 });
     return { pageId, snapshot: await snapshotPage(page), url: page.url() };
   },
@@ -255,17 +247,25 @@ const handlers = {
 
   async tabs(body) {
     const ctx = await ensureContext(getSession(body.sessionId).viewport);
-    return {
-      tabs: ctx.pages().map((p, i) => ({ id: String(i), url: p.url(), title: "" })),
-    };
+    const tabs = await Promise.all(
+      ctx.pages().map(async (p, i) => ({
+        id: String(i),
+        url: p.url(),
+        title: await p.title().catch(() => ""),
+      })),
+    );
+    return { tabs };
   },
 
   async "focus-tab"(body) {
-    const ctx = await ensureContext(getSession(body.sessionId).viewport);
+    const session = getSession(body.sessionId);
+    const ctx = await ensureContext(session.viewport);
     const page = ctx.pages()[body.index];
     if (!page) throw new Error(`Tab ${body.index} not found.`);
     await page.bringToFront();
-    return { pageId: idForPage(page), url: page.url() };
+    const pageId = idForPage(page);
+    session.currentPageId = pageId;
+    return { pageId, url: page.url() };
   },
 
   async "close-tab"(body) {
@@ -274,25 +274,14 @@ const handlers = {
     if (!page) throw new Error(`Tab ${body.index} not found.`);
     await page.close();
     const pageId = pageToId.get(page);
-    if (pageId) {
-      dropPage(pageId);
-      getSession(body.sessionId).ownPageIds.delete(pageId);
-    }
+    if (pageId) dropPage(pageId);
     return {};
   },
 
-  // Close only the pages this session opened; never touches the shared CDP
-  // connection (it is reused across tasks and backs the external Chromium).
+  // Ends the task's session bookkeeping only. Tabs are intentionally LEFT OPEN so
+  // the shared browser persists for the next task/message; nothing is closed here.
   async cleanup(body) {
-    const session = sessions.get(body.sessionId);
-    if (session) {
-      for (const pageId of session.ownPageIds) {
-        const page = allPages.get(pageId);
-        if (page) await page.close().catch(() => undefined);
-        dropPage(pageId);
-      }
-      sessions.delete(body.sessionId);
-    }
+    sessions.delete(body.sessionId);
     return {};
   },
 

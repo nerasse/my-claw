@@ -59,6 +59,8 @@ test("built-in web-browsing skill tells the agent screenshots are auto-attached"
   assert.ok(/automatically attached/i.test(content), "Must state screenshots are auto-attached");
   assert.ok(content.includes("MEDIA:"), "Must tell the agent not to use MEDIA: for browser screenshots");
   assert.ok(/escapes workspace/i.test(content), "Must warn that finding screenshots in /tmp fails");
+  assert.ok(/persistent|stay open/i.test(content), "Must explain tabs are persistent/shared");
+  assert.ok(/reuse/i.test(content), "Must tell the agent to reuse open tabs");
 });
 
 test("parse frontmatter with name and description", async () => {

@@ -40,6 +40,19 @@ delivered to the user. You do NOT need to (and must NOT):
 Just use the summary returned by `delegate_browser_task` to describe the result in your reply.
 The images are sent for you.
 
+## Tabs are persistent and shared
+
+There is ONE shared browser (not a throwaway instance per task). Tabs stay OPEN
+between tasks — they are not closed when a task finishes. So the user can ask you to
+continue on a page you opened earlier, and you can.
+
+- The subagent is told which tabs are already open and reuses a relevant one instead of
+  opening duplicates.
+- To answer "how many tabs are open?" or "close/tidy the tabs", delegate it:
+  `delegate_browser_task(url, "List the open tabs; close the ones about X, keep Y")`.
+- Do NOT claim each task is an isolated instance, and do NOT inspect processes with `bash`
+  to count tabs — just delegate.
+
 ## Human intervention
 
 The subagent navigates autonomously and fills login/password forms itself. It only asks
