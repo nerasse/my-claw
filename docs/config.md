@@ -308,17 +308,21 @@ Additional Matrix fields:
 "browser": {
   "enabled": false,
   "cdpUrl": "http://127.0.0.1:9222",
+  "sidecarUrl": "http://127.0.0.1:9223",
+  "novncUrl": "http://localhost:6080",
   "viewport": { "width": 1920, "height": 1080 },
-  "maxSteps": 30,
-  "idleTimeoutMs": 300000
+  "maxSteps": 30
 }
 ```
 
 - `enabled` — enable the `delegate_browser_task` tool (default: true).
-- `cdpUrl` — Chrome DevTools Protocol endpoint.
+- `cdpUrl` — Chrome DevTools Protocol endpoint (used by the **sidecar** to reach Chromium).
+- `sidecarUrl` — where the app reaches the Node browser sidecar (default `http://127.0.0.1:9223`). Playwright runs in that sidecar because `connectOverCDP` hangs under Bun. See `browser.md`.
+- `novncUrl` — live-browser URL surfaced to the user on a human-handoff (default `http://localhost:6080`).
 - `viewport` — browser viewport size.
 - `maxSteps` — max LLM iterations for the browser sub-agent (default: 30).
-- `idleTimeoutMs` — close idle pages after this duration (default: 300000ms / 5min).
+
+Tabs are persistent and never auto-closed (the shared browser stays open for reuse across tasks).
 
 ## Agents
 

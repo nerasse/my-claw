@@ -141,7 +141,9 @@ my-claw-{VERSION}-linux-x64/
 
 Templates in `packaging/templates/` use `{{USER}}`, `{{HOME}}`, `{{BUN}}`, `{{PYTHON}}`, `{{APP_DIR}}`. Replaced at install/update time by `sed`.
 
-Services: `my-claw-xvfb`, `my-claw-chromium`, `my-claw-whisper`, `my-claw-vnc`, `my-claw-novnc`, `my-claw`.
+Services: `my-claw-xvfb`, `my-claw-chromium`, `my-claw-browser-sidecar`, `my-claw-whisper`, `my-claw-vnc`, `my-claw-novnc`, `my-claw`.
+
+`my-claw-browser-sidecar` runs Playwright under **Node** (`node sidecar/server.mjs`, `Restart=always`, `After=my-claw-chromium`). The main app (Bun) drives it over loopback HTTP because Playwright's `connectOverCDP` hangs under Bun. See `browser.md`.
 
 ### Stale process cleanup
 

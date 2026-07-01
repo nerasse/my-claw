@@ -144,7 +144,6 @@ export interface BrowserConfig {
   novncUrl?: string;
   viewport?: { width: number; height: number };
   maxSteps?: number;
-  idleTimeoutMs?: number;
 }
 
 export interface LlmProviderConfig {

@@ -95,8 +95,7 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
     "cdpUrl": "http://127.0.0.1:9222",
     "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
-    "maxSteps": 30,
-    "idleTimeoutMs": 300000
+    "maxSteps": 30
   }
 }
 ```

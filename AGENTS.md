@@ -19,6 +19,14 @@
 - Never decide on architecture, features, or design without explicit user approval
 - When in doubt, ask
 
+## Testing
+
+- `bun test` must never touch the real `~/.my-claw`. `bunfig.toml` preloads
+  `tests/setup.ts`, which points `MY_CLAW_DIR` at a throwaway temp dir before any
+  module loads. Read filesystem roots from `MY_CLAW_DIR` (never hardcode `homedir()`).
+- The browser sidecar (`sidecar/server.mjs`, Node) is exercised by the gated e2e in
+  `tests-e2e/browser/` (`BROWSER_E2E=1`); the Bun unit tests mock its HTTP endpoints.
+
 ## Git
 
 - Never commit unless the user asks
@@ -146,9 +154,10 @@ src/
 │   ├── tts.ts             # Text-to-speech (Edge TTS + Piper)
 │   └── types.ts
 ├── browser/
-│   ├── pool.ts            # CDP browser pool with idle timeout
-│   ├── service.ts         # Page navigation, snapshot, click, type
-│   └── labels.ts          # Element label overlay for screenshots
+│   ├── client.ts          # HTTP client to the Node browser sidecar (pages = opaque ids)
+│   └── types.ts           # Snapshot, Attachment, TabInfo, Result
+│   # NOTE: Playwright lives in the top-level sidecar/ (Node), not here — connectOverCDP
+│   # hangs under Bun. The sidecar owns navigate/snapshot/click/type/screenshot + tabs.
 ├── media/
 │   ├── image.ts           # Image resize + base64 conversion
 │   └── video.ts           # Video frame extraction (ffmpeg)
