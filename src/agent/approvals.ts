@@ -10,6 +10,9 @@ const FORCED_APPROVAL = new Set(["memory"]);
 
 export class ToolApprovalManager {
   private blacklist: ActionBlacklist;
+  // Concurrent approval prompts for the same tool+session are coalesced into one, so a
+  // parallel batch (e.g. 3 spawns at once) asks the user once instead of N times.
+  private pendingApprovals = new Map<string, Promise<ApprovalDecision>>();
 
   constructor(
     blacklistedActions: string[],
@@ -44,10 +47,28 @@ export class ToolApprovalManager {
       return "deny";
     }
 
-    const decision = await this.approvalHandler(params.request);
-    if (decision === "allow-session" && !ALWAYS_PER_INVOCATION.has(params.request.toolName)) {
+    // Per-invocation tools (bash, memory) must be reviewed one by one — never coalesce.
+    if (ALWAYS_PER_INVOCATION.has(params.request.toolName)) {
+      return await this.approvalHandler(params.request);
+    }
+
+    // Coalesce concurrent prompts for the same tool in the same session: firing N identical
+    // prompts and requiring N answers is a footgun — unanswered ones time out and kill the
+    // whole batch. One decision covers every in-flight call of that tool.
+    const key = `${params.session.id}::${params.request.toolName}`;
+    let inflight = this.pendingApprovals.get(key);
+    if (!inflight) {
+      inflight = Promise.resolve(this.approvalHandler(params.request)).finally(() => {
+        this.pendingApprovals.delete(key);
+      });
+      this.pendingApprovals.set(key, inflight);
+    }
+    const decision = await inflight;
+    if (decision === "allow-session") {
       const approvedTools = params.session.approvedTools ?? [];
-      params.session.approvedTools = [...approvedTools, params.request.toolName];
+      if (!approvedTools.includes(params.request.toolName)) {
+        params.session.approvedTools = [...approvedTools, params.request.toolName];
+      }
     }
     return decision;
   }

@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { ToolApprovalManager } from "../../src/agent/approvals.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
-import type { ToolApprovalRequest } from "../../src/channels/types.ts";
+import type { ApprovalDecision, ToolApprovalRequest } from "../../src/channels/types.ts";
 
 function createSession(): SessionData {
   return {
@@ -148,4 +148,71 @@ test("handler returning deny does not modify session", async () => {
   });
   assert.equal(decision, "deny");
   assert.equal(session.approvedTools, undefined);
+});
+
+test("concurrent prompts for the same tool are coalesced into one", async () => {
+  let callCount = 0;
+  let release!: (d: ApprovalDecision) => void;
+  const gate = new Promise<ApprovalDecision>((r) => {
+    release = r;
+  });
+  const mgr = new ToolApprovalManager(["spawn"], async () => {
+    callCount++;
+    return gate;
+  });
+  const session = createSession();
+  const p1 = mgr.decide({ session, request: createRequest("spawn") });
+  const p2 = mgr.decide({ session, request: createRequest("spawn") });
+  const p3 = mgr.decide({ session, request: createRequest("spawn") });
+  release("allow-once");
+  const [d1, d2, d3] = await Promise.all([p1, p2, p3]);
+  assert.equal(callCount, 1, "handler prompted only once for the parallel batch");
+  assert.equal(d1, "allow-once");
+  assert.equal(d2, "allow-once");
+  assert.equal(d3, "allow-once");
+});
+
+test("coalesced allow-session updates approvedTools exactly once", async () => {
+  let release!: (d: ApprovalDecision) => void;
+  const gate = new Promise<ApprovalDecision>((r) => {
+    release = r;
+  });
+  const mgr = new ToolApprovalManager(["spawn"], async () => gate);
+  const session = createSession();
+  const p1 = mgr.decide({ session, request: createRequest("spawn") });
+  const p2 = mgr.decide({ session, request: createRequest("spawn") });
+  release("allow-session");
+  await Promise.all([p1, p2]);
+  assert.deepEqual(session.approvedTools, ["spawn"]);
+});
+
+test("after a coalesced batch resolves, a later prompt asks again", async () => {
+  let callCount = 0;
+  const mgr = new ToolApprovalManager(["spawn"], async () => {
+    callCount++;
+    return "allow-once";
+  });
+  const session = createSession();
+  await mgr.decide({ session, request: createRequest("spawn") });
+  await mgr.decide({ session, request: createRequest("spawn") });
+  assert.equal(callCount, 2, "sequential (non-concurrent) prompts are not coalesced");
+});
+
+test("bash concurrent prompts are NOT coalesced (per-invocation)", async () => {
+  let callCount = 0;
+  let release!: (d: ApprovalDecision) => void;
+  const gate = new Promise<ApprovalDecision>((r) => {
+    release = r;
+  });
+  const mgr = new ToolApprovalManager(["bash"], async () => {
+    callCount++;
+    return gate;
+  });
+  const session = createSession();
+  const p1 = mgr.decide({ session, request: createRequest("bash") });
+  const p2 = mgr.decide({ session, request: createRequest("bash") });
+  const p3 = mgr.decide({ session, request: createRequest("bash") });
+  release("allow-once");
+  await Promise.all([p1, p2, p3]);
+  assert.equal(callCount, 3, "each bash command is reviewed individually");
 });

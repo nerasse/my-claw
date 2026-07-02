@@ -55,6 +55,16 @@ const MAX_SESSION_MESSAGES_KEEP = 50;
 // broken tool). Every tool result is normalized to a non-empty, explicit string.
 const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
 
+// Defense in depth: no single tool result should be able to poison the whole session context.
+// Individual tools (fetch, read, ...) apply their own limits; this is the last-resort ceiling
+// for any output that slips through. ~60K chars ≈ 15K tokens.
+const MAX_TOOL_OUTPUT_CHARS = 60_000;
+
+function capToolOutput(content: string): string {
+  if (content.length <= MAX_TOOL_OUTPUT_CHARS) return content;
+  return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[... tronqué : ${content.length} caractères au total, ${MAX_TOOL_OUTPUT_CHARS} conservés ...]`;
+}
+
 export class AgentBridge {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
@@ -753,13 +763,13 @@ export class AgentBridge {
       if (result.success) {
         return {
           success: true,
-          content: result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT,
+          content: capToolOutput(result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT),
         };
       }
       const detail = (result.error ?? result.output).trim();
       return {
         success: false,
-        content: `Error: ${detail.length > 0 ? detail : "tool failed with no message"}`,
+        content: capToolOutput(`Error: ${detail.length > 0 ? detail : "tool failed with no message"}`),
       };
     } catch (err) {
       if (isAbort(err, params.signal)) throw new AbortedError();

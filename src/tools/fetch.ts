@@ -1,10 +1,82 @@
 import { lookup } from "node:dns/promises";
-import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
+import { type Tool, type ToolResult, num, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
 
 const BLOCKED_HOSTS = new Set(["metadata.google.internal", "metadata.goog"]);
+
+// A raw HTML page (scripts, styles, inline CSS) can be hundreds of KB of noise that the
+// model never needs and that poisons the whole session context once stored. We convert
+// HTML to readable text and cap the size before it ever reaches the LLM.
+const MAX_FETCH_CHARS = 50_000;
+
+const HTML_ENTITIES: Record<string, string> = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'",
+  "&apos;": "'",
+  "&nbsp;": " ",
+};
+
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(script|style|head|noscript|svg|template)[\s\S]*?<\/\1>/gi, "")
+    .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|li|tr|h[1-6]|section|article|header|footer|ul|ol|table|blockquote)>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "- ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&[a-z#0-9]+;/gi, (m) => HTML_ENTITIES[m.toLowerCase()] ?? m)
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function looksLikeHtml(contentType: string | null, body: string): boolean {
+  if (contentType && /\b(text\/html|application\/xhtml\+xml)\b/i.test(contentType)) return true;
+  if (contentType && /\b(application\/json|text\/plain|text\/csv|application\/xml)\b/i.test(contentType)) {
+    return false;
+  }
+  return /<!doctype html|<html[\s>]|<body[\s>]/i.test(body.slice(0, 2000));
+}
+
+// Windowed output: each call is bounded (cost + context), but the model is never blind to
+// the rest — it can re-call fetch with a larger `offset` to page through the full content.
+export function processFetchBody(
+  body: string,
+  contentType: string | null,
+  offset = 0,
+  limit = MAX_FETCH_CHARS,
+): string {
+  const text = looksLikeHtml(contentType, body) ? htmlToText(body) : body;
+  const total = text.length;
+  const start = Math.max(0, Math.floor(offset));
+  const window = Math.min(Math.max(1, Math.floor(limit)), MAX_FETCH_CHARS);
+
+  if (start >= total && total > 0) {
+    return `[fin du contenu : offset ${start} >= total ${total} caractères. Rien de plus à lire.]`;
+  }
+
+  const end = Math.min(start + window, total);
+  const slice = text.slice(start, end);
+  if (start === 0 && end === total) return slice;
+
+  const header =
+    start > 0
+      ? `[suite : caractères ${start}–${end} sur ${total}]\n`
+      : "";
+  const footer =
+    end < total
+      ? `\n\n[... ${total - end} caractères restants. Pour lire la suite, rappelle fetch avec offset=${end} (même URL). ...]`
+      : "\n\n[fin du contenu]";
+  return `${header}${slice}${footer}`;
+}
 
 export function isPrivateIp(ip: string): boolean {
   if (ip.includes(":")) {
@@ -76,13 +148,20 @@ export async function resolveAndCheckUrl(raw: string): Promise<boolean> {
 
 export const fetchTool: Tool = {
   name: "fetch",
-  description: "Make an HTTP request",
+  description:
+    "Make an HTTP request. HTML responses are converted to readable text. Large responses " +
+    `are returned in windows of up to ${MAX_FETCH_CHARS} characters; if content remains, the ` +
+    "output ends with the exact `offset` to pass on a follow-up call to read the next window.",
   parameters: {
     type: "object",
     properties: {
       url: { type: "string", description: "URL to fetch" },
       method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE"], description: "HTTP method" },
       body: { type: "string", description: "Request body (for POST/PUT)" },
+      offset: {
+        type: "number",
+        description: "Character offset to start reading from (default 0). Use the value suggested in a previous truncated response to page through long content.",
+      },
     },
     required: ["url"],
   },
@@ -125,7 +204,8 @@ export const fetchTool: Tool = {
           continue;
         }
 
-        const text = await response.text();
+        const rawText = await response.text();
+        const text = processFetchBody(rawText, response.headers.get("content-type"), num(args, "offset", 0));
         hooks.emit("tool:fetch:request", { url: currentUrl, method, status: response.status });
         if (response.ok) {
           return { success: true, output: text };
