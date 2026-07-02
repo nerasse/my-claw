@@ -13,7 +13,12 @@ Call `delegate_browser_task(url, instructions)` when:
 - The user asks to check an account status on a web dashboard
 - The task requires more than 2 sequential web page interactions
 
-For simple single-page reads, use `fetch` instead (faster).
+For simple single-page reads, use `fetch` instead (faster and cheaper). `fetch` converts
+HTML to readable text and returns it in windows (~50K chars); if a page is long, page
+through it by re-calling `fetch` with the `offset` shown at the end of the output — do not
+assume the first window is the whole page. The browser sub-agent costs real time and
+tokens, so reach for `fetch`/`web_search` first and delegate to the browser only when they
+genuinely cannot get the info.
 
 **Never run `chromium`/`playwright`/screenshot tools via `bash`.** The browser runs as a
 managed service (CDP on :9222). Always go through `delegate_browser_task`. If it returns an

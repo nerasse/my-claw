@@ -20,6 +20,19 @@ Sub-agents are isolated LLM sessions with their own history. Use them to paralle
 - Single `read` or `bash` is sufficient
 - The task fits in your current context without bloat
 
+## Cost & economy
+
+Every sub-agent (and the browser sub-agent) is extra LLM calls — real time and real money.
+Spawn deliberately:
+
+- Prefer **1-2 focused sub-agents** over a swarm. Give each a precise, bounded task
+  ("find Instagram posts for clubs X, Y, Z"), not "get everything possible".
+- A parallel batch of the same tool asks the user for approval **once** (concurrent prompts
+  are coalesced into a single decision) — but still keep the batch small.
+- For large web pages, a sub-agent should page through `fetch` with `offset` (see the
+  web-browsing skill) instead of dumping whole raw pages into its context — a single huge
+  page poisons the session and inflates every later call.
+
 ## Types
 
 | Type | Tools | Use for |
