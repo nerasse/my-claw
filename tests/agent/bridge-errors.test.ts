@@ -238,10 +238,46 @@ describe("AgentBridge error handling", () => {
     }
   });
 
-  test("memory tool requires per-invocation approval (FORCED_APPROVAL)", async () => {
+  test("memory tool runs without approval when not blacklisted (full autonomy)", async () => {
     const memoryConfig: MyClawConfig = {
       ...config,
       blacklist: [],
+    };
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "memory",
+      description: "read/write memory",
+      parameters: {},
+      async execute() {
+        return { success: true, output: "memory write ok" };
+      },
+    });
+    const bridge = new AgentBridge(memoryConfig, registry, new SkillRegistry());
+    // No approval handler set: with an empty blacklist none is needed.
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount === 1) return toolCallResponse("memory") as never;
+      return okResponse("saved") as never;
+    });
+
+    try {
+      const session = createSession();
+      const result = await bridge.handleMessage(createMessage(), session);
+      expect(result).toBe("saved");
+      const toolMsg = session.messages.find((m) => m.role === "tool");
+      expect(toolMsg).toBeDefined();
+      expect(toolMsg!.content).toContain("memory write ok");
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("memory tool requires per-invocation approval when blacklisted", async () => {
+    const memoryConfig: MyClawConfig = {
+      ...config,
+      blacklist: ["memory"],
     };
     const registry = new ToolRegistry();
     registry.register({

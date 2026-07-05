@@ -38,6 +38,20 @@ test("non-blacklisted tool returns allow-once", async () => {
   assert.equal(decision, "allow-once");
 });
 
+test("memory is not force-approved: with an empty blacklist it runs freely", async () => {
+  let handlerCalled = false;
+  const mgr = new ToolApprovalManager([], async () => {
+    handlerCalled = true;
+    return "deny";
+  });
+  const decision = await mgr.decide({
+    session: createSession(),
+    request: createRequest("memory"),
+  });
+  assert.equal(decision, "allow-once");
+  assert.equal(handlerCalled, false, "approval is strictly blacklist-driven");
+});
+
 test("blacklisted tool with no handler returns deny", async () => {
   const mgr = new ToolApprovalManager(["bash"]);
   const decision = await mgr.decide({

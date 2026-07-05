@@ -205,7 +205,10 @@ sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM 
 ```
 
 - `whitelist` — User IDs allowed to interact. Telegram: numeric IDs. Matrix: `@user:server` format (auto-normalized at boot).
-- `blacklist` — Tool names requiring approval before execution. `bash` is always per-invocation (never session-cached).
+- `blacklist` — Tool names requiring approval before execution. Approval is **strictly opt-in**:
+  an empty blacklist means full autonomy (no tool ever asks, by design — the app runs in its own
+  encapsulated VM). When blacklisted, `bash` and `memory` are re-confirmed on every call
+  (never session-cached); other tools support "allow for session".
 
 ## Channels
 

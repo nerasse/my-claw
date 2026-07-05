@@ -2,11 +2,11 @@ import type { SessionData } from "../sessions/store.ts";
 import type { ApprovalDecision, ToolApprovalHandler, ToolApprovalRequest } from "../channels/types.ts";
 import { ActionBlacklist } from "./blacklist.ts";
 
+// Approval is strictly opt-in via config.blacklist — full autonomy by design (the app
+// runs in its own encapsulated VM). These two are only special IF the user blacklists
+// them: they are then re-confirmed on every call (never session-cached), because each
+// bash command / memory write is a distinct decision.
 const ALWAYS_PER_INVOCATION = new Set(["bash", "memory"]);
-
-// Tools that always require approval regardless of user blacklist config.
-// memory: LLM writes to MEMORY.md which persists in the system prompt across sessions.
-const FORCED_APPROVAL = new Set(["memory"]);
 
 export class ToolApprovalManager {
   private blacklist: ActionBlacklist;
@@ -29,10 +29,7 @@ export class ToolApprovalManager {
     session: SessionData;
     request: ToolApprovalRequest;
   }): Promise<ApprovalDecision> {
-    const needsConfirmation =
-      this.blacklist.requiresConfirmation(params.request.toolName) ||
-      FORCED_APPROVAL.has(params.request.toolName);
-    if (!needsConfirmation) {
+    if (!this.blacklist.requiresConfirmation(params.request.toolName)) {
       return "allow-once";
     }
 
