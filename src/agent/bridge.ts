@@ -62,7 +62,7 @@ const MAX_TOOL_OUTPUT_CHARS = 60_000;
 
 function capToolOutput(content: string): string {
   if (content.length <= MAX_TOOL_OUTPUT_CHARS) return content;
-  return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[... tronqué : ${content.length} caractères au total, ${MAX_TOOL_OUTPUT_CHARS} conservés ...]`;
+  return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[... truncated: ${content.length} chars total, ${MAX_TOOL_OUTPUT_CHARS} kept ...]`;
 }
 
 export class AgentBridge {
@@ -141,7 +141,11 @@ export class AgentBridge {
     let toolExecutions = 0;
 
     const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
-    const budget = new IterationBudget(resolveMaxIterations(this.config, agentType));
+    const cronMaxIter = this.config.cron?.maxIterations;
+    const maxIterations = isCron && cronMaxIter !== undefined && Number.isFinite(cronMaxIter) && cronMaxIter > 0
+      ? cronMaxIter
+      : resolveMaxIterations(this.config, agentType);
+    const budget = new IterationBudget(maxIterations);
     const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;

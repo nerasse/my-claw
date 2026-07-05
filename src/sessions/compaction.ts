@@ -198,6 +198,9 @@ export async function compactSession(
       /^i (?:cannot|can't|won't|am unable to)/i,
       /^sorry,? (?:i|but)/i,
       /^as an ai/i,
+      /^je (?:ne peux pas|ne pas|suis (?:incapable|désolé)|refuse)/i,
+      /^désolé,? (?:je|mais)/i,
+      /^en tant qu('|e )ia/i,
     ];
     if (REFUSAL_PATTERNS.some((p) => p.test(summary))) {
       return {

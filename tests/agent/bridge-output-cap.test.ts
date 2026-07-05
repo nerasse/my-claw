@@ -55,7 +55,7 @@ test("bridge: an oversized tool output is capped before entering the session", a
     assert.ok(toolMsg, "tool result recorded");
     assert.ok(toolMsg.content.length < huge.length, "output was capped");
     assert.ok(toolMsg.content.length <= 61_000, "capped near the ceiling");
-    assert.match(toolMsg.content, /tronqué/);
+    assert.match(toolMsg.content, /truncated/);
   } finally {
     fetchMock.restore();
   }

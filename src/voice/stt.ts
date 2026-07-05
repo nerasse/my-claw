@@ -77,7 +77,7 @@ export class SttPipeline {
   }
 
   private async transcribeLocal(filePath: string): Promise<STTResult> {
-    const endpoint = process.env.FASTER_WHISPER_ENDPOINT ?? "http://127.0.0.1:18792";
+    const endpoint = process.env.FASTER_WHISPER_ENDPOINT ?? "http://127.0.0.1:8000";
 
     const fileStat = await stat(filePath);
     const MAX_AUDIO_SIZE = 25 * 1024 * 1024;

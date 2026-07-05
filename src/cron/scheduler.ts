@@ -16,6 +16,10 @@ import { hooks } from "../hooks/index.ts";
 
 const SILENT_MARKER = "[SILENT]";
 
+// Safety net for runaway jobs, deliberately long so heavy/voluminous cron tasks
+// (deep research, many sub-agents) can finish. Override per install via cron.timeoutMs.
+const DEFAULT_CRON_TIMEOUT_MS = 30 * 60_000;
+
 export class CronScheduler {
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
@@ -99,7 +103,26 @@ export class CronScheduler {
       const synthMessage = this.buildSyntheticMessage(job, prompt);
       const sessionId = `cron/${job.id}`;
 
-      const result = await this.router.routeCron(synthMessage, sessionId);
+      const session = await this.sessionManager.getOrCreate(sessionId, synthMessage);
+      session.modelOverride = job.model || undefined;
+
+      const timeoutMs = this.config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS;
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        this.router.stop(sessionId);
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+
+      let result: Awaited<ReturnType<typeof this.router.routeCron>>;
+      try {
+        result = await this.router.routeCron(synthMessage, sessionId);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (timedOut) {
+        throw new Error(`Cron job timed out after ${Math.round(timeoutMs / 1000)}s (cron.timeoutMs)`);
+      }
       const responseText = result?.text ?? "";
 
       await saveJobOutput(job.id, responseText).catch((err) => {

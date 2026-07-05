@@ -81,7 +81,7 @@
 
 - **STT auto**: inbound audio transcribed automatically before agent processing
   - Cloud: Groq API (whisper-large-v3), requires GROQ_API_KEY
-  - Local: faster-whisper server on :18792
+  - Local: faster-whisper server on :8000 (matches the my-claw-whisper systemd unit; override via `FASTER_WHISPER_ENDPOINT`)
   - No fallback — error explicit if chosen mode fails
   - Echo transcript sent as visible message: `📝 "transcription"`
 - **TTS manual**: agent calls `tts` tool only when user asks for audio

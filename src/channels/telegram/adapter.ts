@@ -43,7 +43,6 @@ import {
   resolveReplyContext,
   resolveThreadRootContext,
   resolveRoomHistoryContext,
-  senderLabel,
   type TelegramHistoryEntry,
   type TelegramStoredMessageContext,
 } from "./context.ts";
@@ -401,6 +400,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/verbose(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "verbose"));
     this.bot.hears(/^\/status(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
     this.bot.hears(/^\/stop(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "stop"));
+    this.bot.hears(/^\/cron(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "cron"));
     this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
     this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
     this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
@@ -593,7 +593,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "clear", "model", "models", "compact", "reload", "verbose", "status", "archive", "help", "commands"].includes(command)) {
+      if (["new", "clear", "model", "models", "compact", "reload", "verbose", "status", "stop", "cron", "archive", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command);
         return;
       }

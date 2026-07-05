@@ -108,7 +108,6 @@ src/
 │       ├── storage.ts
 │       ├── stream.ts
 │       ├── sync-lifecycle.ts
-│       ├── sync-store.ts
 │       ├── text.ts
 │       └── types.ts
 ├── llm/

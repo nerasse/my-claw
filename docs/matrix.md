@@ -24,7 +24,7 @@ src/channels/matrix/
 ├── inbound-buffer.ts     # Fragmented burst coalescing
 ├── inbound-dedupe.ts     # Event claim/commit/release with persistence
 ├── sync-lifecycle.ts      # Cold-start backlog drop, clean-shutdown marker
-├── sync-store.ts          # File-backed sync token store
+├── file-sync-store.ts     # File-backed sync token store
 ├── polls.ts              # Poll event normalization to text
 ├── errors.ts             # Error classification and reporting
 ├── storage.ts            # Matrix account storage paths

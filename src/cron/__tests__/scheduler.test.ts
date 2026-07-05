@@ -35,15 +35,17 @@ describe("cron scheduler", () => {
       setApprovalHandler: () => {},
     } as unknown as MessageRouter;
 
+    const makeSession = () => ({
+      id: "test",
+      platform: "cron",
+      chatType: "dm",
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      messages: [],
+    });
     sessionManager = {
-      getOrCreateWithMeta: async () => ({
-        id: "test",
-        platform: "cron",
-        chatType: "dm",
-        createdAt: new Date().toISOString(),
-        lastActiveAt: new Date().toISOString(),
-        messages: [],
-      }),
+      getOrCreateWithMeta: async () => makeSession(),
+      getOrCreate: async () => makeSession(),
     } as unknown as SessionManager;
 
     config = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, agents: {}, cron: { enabled: true } } as MyClawConfig;
