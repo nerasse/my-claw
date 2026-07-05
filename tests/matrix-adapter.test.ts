@@ -333,6 +333,17 @@ function createEvent(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+// Poll until a condition holds (buffered/coalesced emits use real 25ms timers;
+// a fixed sleep is flaky on loaded CI). Resolves as soon as the predicate is true,
+// or gives up after `timeout` so the following assertions report the real state.
+async function waitFor(predicate: () => boolean, timeout = 2000, interval = 5): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeout) return;
+    await new Promise((r) => setTimeout(r, interval));
+  }
+}
+
 class TestMatrixAdapter extends MatrixAdapter {
   protected override bufferedIngressDelayMs(): number {
     return 25;
@@ -573,7 +584,7 @@ test("MatrixAdapter keeps short DM split turns immediate in per-user scope", asy
     room: createRoom({ roomId: "!dm-a:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
     event: createEvent({ id: "$dm2", content: { msgtype: "m.text", body: "again" } }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 2);
 
   assert.deepEqual(received, ["hello", "again"]);
 });
@@ -600,7 +611,7 @@ test("MatrixAdapter does not coalesce DM split turns across per-room sessions", 
     room: createRoom({ roomId: "!dm-b:test", inviter: "@u1:example.org", joinedMembers: ["@bot:example.org", "@u1:example.org"] }),
     event: createEvent({ id: "$dm-room-b", content: { msgtype: "m.text", body: "again" } }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 2);
 
   assert.deepEqual(received, [
     { chatId: "!dm-a:test", text: "hello" },
@@ -1209,7 +1220,7 @@ test("MatrixAdapter coalesces quick multi-event attachment bursts into one logic
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 1);
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 2);
@@ -1250,7 +1261,7 @@ test("MatrixAdapter rewrites trailing text bursts into media captions", async ()
       content: { msgtype: "m.text", body: "look at this" },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 1);
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 1);
@@ -1291,7 +1302,7 @@ test("MatrixAdapter rewrites short leading text bursts into media captions", asy
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 1);
 
   assert.equal(received.length, 1);
   assert.equal(received[0]?.attachmentCount, 1);
@@ -1325,7 +1336,7 @@ test("MatrixAdapter coalesces short room-root split turns that arrive quickly", 
     room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
     event: createEvent({ id: "$short-frag-2", content: { msgtype: "m.text", body: "part two" } }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 90));
+  await waitFor(() => received.length >= 1);
 
   assert.deepEqual(received, ["part one\npart two"]);
 });
@@ -1399,7 +1410,7 @@ test("MatrixAdapter coalesces fragmented group text bursts into one logical inbo
       content: { msgtype: "m.text", body: "b".repeat(180) },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 1);
 
   assert.deepEqual(received, [`${"a".repeat(180)}\n${"b".repeat(180)}`]);
 });
@@ -1440,7 +1451,7 @@ test("MatrixAdapter coalesces threaded split turns separately from the room root
     room: createRoom({ joinedMembers: ["@bot:example.org", "@u1:example.org", "@u2:example.org"] }),
     event: createEvent({ id: "$room-root-msg", content: { msgtype: "m.text", body: "root text" } }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 90));
+  await waitFor(() => received.length >= 2);
 
   assert.deepEqual(received, [
     { text: "root text", threadId: undefined },
@@ -1598,7 +1609,7 @@ test("MatrixAdapter does not coalesce fragmented group bursts across different r
       relation: { "m.in_reply_to": { event_id: "$reply-b" } },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 2);
 
   assert.equal(received.length, 2);
   assert.equal(received[0]?.replyToId, "$reply-a");
@@ -2405,7 +2416,7 @@ test("MatrixAdapter normalizes poll responses into text", async () => {
       },
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => received.length >= 1);
 
   assert.match(received[0] ?? "", /Lunch\?/);
   assert.match(received[0] ?? "", /Pizza \(1 vote\)/);
