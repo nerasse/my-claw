@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { imageToBase64 } from "../../src/media/image.ts";
-import { unlink, stat } from "node:fs/promises";
+import { unlink, stat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
@@ -49,6 +49,16 @@ describe("imageToBase64", () => {
 
   test("throws for nonexistent file", async () => {
     await expect(imageToBase64("/tmp/nonexistent-image-12345.jpg")).rejects.toThrow();
+  });
+
+  test("removes its temp dir after a resize", async () => {
+    const countImgDirs = async () =>
+      (await readdir(tmpdir())).filter((name) => name.startsWith("img-")).length;
+
+    const before = await countImgDirs();
+    const result = await imageToBase64(largeImagePath, { maxBytes: 50000 });
+    expect(result.wasResized).toBe(true);
+    expect(await countImgDirs()).toBe(before);
   });
 
   test("infers PNG mime type from extension", async () => {

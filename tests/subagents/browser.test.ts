@@ -7,11 +7,15 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+// Loose fetch shape for the test mock: the code under test only ever calls the
+// usual (input, init) signature and awaits a Response.
+type FetchImpl = (input?: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 // The subagent now talks to the browser sidecar (session/tabs/cleanup) around the
 // LLM loop. Route those calls to sidecar-shaped responses so the LLM mock (and its
 // call counters) only ever sees actual LLM requests.
-function mockLlm(impl: typeof globalThis.fetch): { restore(): void } {
-  return mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+function mockLlm(impl: FetchImpl): { restore(): void } {
+  return mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9222")) {
       if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "test-session" }), { status: 200 });
@@ -19,7 +23,7 @@ function mockLlm(impl: typeof globalThis.fetch): { restore(): void } {
       return new Response(JSON.stringify({}), { status: 200 });
     }
     return impl(input as never, init as never);
-  }) as typeof globalThis.fetch);
+  }) as FetchImpl);
 }
 
 function makeConfig(overrides?: Record<string, unknown>) {
@@ -64,7 +68,7 @@ describe("BrowserSubagent", () => {
       assert.ok(result.success);
 
       assert.ok(requestBody, "Request body should have been captured");
-      const tools = requestBody.tools as Array<Record<string, unknown>> | undefined;
+      const tools = (requestBody as Record<string, unknown>).tools as Array<Record<string, unknown>> | undefined;
       assert.ok(tools, "Tools should be present in request body");
       assert.equal(tools.length, 9, "Should have 9 browser tools (8 + browser_done)");
 
@@ -151,8 +155,8 @@ describe("BrowserSubagent", () => {
       assert.ok(result.success);
       assert.ok(result.attachments, "Result should have attachments");
       assert.equal(result.attachments.length, 1, "Should have 1 attachment");
-      assert.equal(result.attachments[0].type, "image");
-      assert.equal(result.attachments[0].path, "/tmp/test-screenshot.png");
+      assert.equal(result.attachments[0]!.type, "image");
+      assert.equal(result.attachments[0]!.path, "/tmp/test-screenshot.png");
     } finally {
       fetchMock.restore();
     }
@@ -524,7 +528,7 @@ describe("BrowserSubagent", () => {
       assert.equal(result.success, false);
       assert.ok(result.attachments, "Should have attachments even on error");
       assert.equal(result.attachments.length, 1, "Should have the 1 attachment from before the error");
-      assert.equal(result.attachments[0].path, "/tmp/before-error.png");
+      assert.equal(result.attachments[0]!.path, "/tmp/before-error.png");
     } finally {
       fetchMock.restore();
     }
@@ -625,7 +629,7 @@ describe("BrowserSubagent", () => {
       assert.equal(result.needs_human, true);
       assert.ok(result.attachments, "Should have attachments even on handoff");
       assert.equal(result.attachments.length, 1);
-      assert.equal(result.attachments[0].path, "/tmp/before-blocker.png");
+      assert.equal(result.attachments[0]!.path, "/tmp/before-blocker.png");
     } finally {
       fetchMock.restore();
     }
@@ -837,7 +841,7 @@ describe("BrowserSubagent", () => {
 
   test("open tabs are injected into the subagent system prompt with a reuse instruction", async () => {
     let systemMessage = "";
-    const handle = mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+    const handle = mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("127.0.0.1:9222")) {
         if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
@@ -850,7 +854,7 @@ describe("BrowserSubagent", () => {
       const sys = body.messages.find((m) => m.role === "system");
       if (sys) systemMessage = sys.content;
       return new Response(JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"done"}' } }] } }] }), { status: 200 });
-    }) as typeof globalThis.fetch);
+    }) as FetchImpl);
 
     try {
       await subagent.run("reuse tabs test");
@@ -947,6 +951,111 @@ describe("BrowserSubagent", () => {
     } finally {
       fetchMock.restore();
       await rm(tmpFile, { force: true });
+    }
+  });
+
+  test("run stops immediately when the signal is already aborted", async () => {
+    let llmCalls = 0;
+    const fetchMock = mockLlm(async () => {
+      llmCalls++;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"x"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const result = await subagent.run("test task", undefined, controller.signal);
+      assert.equal(result.success, false);
+      assert.equal(result.needs_human, false);
+      assert.equal(result.summary, "Stopped by user.");
+      assert.equal(llmCalls, 0, "No LLM call should happen after abort");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("abort mid-run stops before executing the next tool call", async () => {
+    const controller = new AbortController();
+    let toolExecutions = 0;
+    const trackedTool: Tool = {
+      name: "tracked_tool",
+      description: "counts executions",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        toolExecutions++;
+        return { success: true, output: "ok" };
+      },
+    };
+    subagent["toolRegistry"].register(trackedTool);
+
+    const fetchMock = mockLlm(async () => {
+      // Abort while the LLM "responds" with tool calls: the tool loop must bail out.
+      controller.abort();
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "t1", function: { name: "tracked_tool", arguments: "{}" } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await subagent.run("test task", undefined, controller.signal);
+      assert.equal(result.summary, "Stopped by user.");
+      assert.equal(toolExecutions, 0, "Tool must not execute after abort");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("trims oversized history before calling the LLM", async () => {
+    // Tight context budget: a huge assistant turn from step 1 must not be
+    // replayed verbatim to the LLM at step 2.
+    const tightConfig = makeConfig({
+      llm: { provider: "test", baseUrl: "http://test", model: "test", limit: { context: 2000 } },
+    });
+    const tightSubagent = new BrowserSubagent(tightConfig as any, "http://127.0.0.1:9222");
+
+    const hugeText = "x".repeat(400_000);
+    let step = 0;
+    let lastRequestSize = 0;
+
+    // Step 1: small turn (fills the protected head). Step 2: huge turn (lands in
+    // the droppable middle). Step 3: measure the request — the huge turn must be
+    // trimmed out before it reaches the LLM. Then finish.
+    const fetchMock = mockLlm(async (_input, init) => {
+      step++;
+      lastRequestSize = String((init as { body?: string }).body ?? "").length;
+      if (step === 1) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "small step" } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      if (step === 2) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: hugeText } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "d", function: { name: "browser_done", arguments: '{"summary":"done"}' } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await tightSubagent.run("test task");
+      assert.ok(result.success);
+      assert.equal(step, 3, "Should have reached the third LLM call");
+      assert.ok(
+        lastRequestSize < hugeText.length,
+        `Trimmed request (${lastRequestSize} chars) must be far smaller than the untrimmed huge turn (${hugeText.length} chars)`,
+      );
+    } finally {
+      fetchMock.restore();
+      await tightSubagent.cleanup().catch(() => undefined);
     }
   });
 

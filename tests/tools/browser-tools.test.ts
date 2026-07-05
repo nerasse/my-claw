@@ -91,7 +91,7 @@ describe("browser tools", () => {
     const result = await tool.execute({ full_page: true });
     assert.strictEqual(result.success, true);
     assert.ok(result.attachments);
-    assert.strictEqual(result.attachments![0].type, "image");
+    assert.strictEqual(result.attachments![0]!.type, "image");
   });
 
   test("list_tabs returns tab list", async () => {

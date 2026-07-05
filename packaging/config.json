@@ -73,7 +73,6 @@
   },
   "browser": {
     "enabled": false,
-    "cdpUrl": "http://127.0.0.1:9222",
     "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
     "viewport": { "width": 1920, "height": 1080 },

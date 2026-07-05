@@ -18,6 +18,10 @@ once, so every in-flight `fetch` (main + sub-agents + sub-sub-agents) rejects im
 There is no parent->child registry to walk: the shared signal *is* the cross-level link. This avoids the
 class of bug where bookkeeping diverges from the real abort (a run marked "killed" while it keeps running).
 
+The browser subagent runs its own loop (not an `AgentBridge`), so it takes the signal explicitly:
+`delegate_browser_task` reads the injected `__signal` and passes it to `BrowserSubagent.run`, which
+checks it at the top of each step, before each tool call, and hands it to `chatCompletion`.
+
 ### Scoped to the current session only
 
 `runRegistry.stop(sessionId)` aborts only that session's controller. Each chat/thread has its own

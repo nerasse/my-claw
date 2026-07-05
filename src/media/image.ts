@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, stat, mkdtemp, unlink } from "node:fs/promises";
+import { readFile, stat, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { promisify } from "node:util";
@@ -24,41 +24,41 @@ export async function imageToBase64(
 
   let processedPath = path;
   let wasResized = false;
-
-  if (needsResize) {
-    const tmpDir = await mkdtemp(join(tmpdir(), "img-"));
-    processedPath = join(tmpDir, `resized${extname(path) || ".jpg"}`);
-    wasResized = true;
-
-    try {
-      await execFileAsync("ffmpeg", [
-        "-i", path,
-        "-vf", `scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease`,
-        "-q:v", "2",
-        processedPath,
-      ]);
-    } catch (err) {
-      await unlink(processedPath).catch(() => {});
-      throw new Error(`Image resize failed: ${err}`);
-    }
-  }
+  let tmpDir: string | undefined;
 
   try {
-    const bytes = await readFile(processedPath);
+    if (needsResize) {
+      tmpDir = await mkdtemp(join(tmpdir(), "img-"));
+      processedPath = join(tmpDir, `resized${extname(path) || ".jpg"}`);
+      wasResized = true;
+
+      try {
+        await execFileAsync("ffmpeg", [
+          "-i", path,
+          "-vf", `scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease`,
+          "-q:v", "2",
+          processedPath,
+        ]);
+      } catch (err) {
+        throw new Error(`Image resize failed: ${err}`);
+      }
+    }
+
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(processedPath);
+    } catch (err) {
+      throw new Error(`Image read failed: ${err}`);
+    }
     const base64 = bytes.toString("base64");
     const mimeType = inferMimeType(path);
     const dataUrl = `data:${mimeType};base64,${base64}`;
 
-    if (wasResized && processedPath !== path) {
-      await unlink(processedPath).catch(() => {});
-    }
-
     return { dataUrl, wasResized };
-  } catch (err) {
-    if (wasResized && processedPath !== path) {
-      await unlink(processedPath).catch(() => {});
+  } finally {
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
-    throw new Error(`Image read failed: ${err}`);
   }
 }
 

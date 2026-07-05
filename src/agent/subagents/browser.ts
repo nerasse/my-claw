@@ -2,6 +2,7 @@ import type { MyClawConfig } from "../../core/config.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
+import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
 import { resolveLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserClient } from "../../browser/client.ts";
@@ -130,7 +131,7 @@ export class BrowserSubagent {
     });
   }
 
-  async run(task: string, startUrl?: string): Promise<BrowserSubagentResult> {
+  async run(task: string, startUrl?: string, signal?: AbortSignal): Promise<BrowserSubagentResult> {
     const systemPrompt = `${await buildBrowserSystemPrompt()}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
@@ -142,13 +143,26 @@ export class BrowserSubagent {
 
     try {
     for (let step = 0; step < this.maxSteps; step++) {
+      if (signal?.aborted) {
+        return {
+          success: false,
+          needs_human: false,
+          summary: "Stopped by user.",
+          current_url: currentUrl,
+          attachments: allAttachments,
+        };
+      }
+
       const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
       let response: LlmResponse;
       const llmConfig = resolveLlmConfig(this.config.llm);
+      // Snapshots are large; without trimming, a 30-step run can outgrow the model context.
+      const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+      const trimmed = trimToContextWindow(messages, llmConfig.limit?.context, toolSchemaTokens);
       const browserLlmStart = Date.now();
       try {
-        response = await chatCompletion(llmConfig, messages, openaiTools);
+        response = await chatCompletion(llmConfig, trimmed, openaiTools, signal);
         recordApiCall({
           sessionId: "browser-subagent",
           platform: "internal",
@@ -167,7 +181,7 @@ export class BrowserSubagent {
         return {
           success: false,
           needs_human: false,
-          summary: `LLM call failed: ${String(e)}`,
+          summary: signal?.aborted ? "Stopped by user." : `LLM call failed: ${String(e)}`,
           current_url: currentUrl,
           attachments: allAttachments,
         };
@@ -179,6 +193,15 @@ export class BrowserSubagent {
       // Execute tool calls
       const toolResults: Array<{ tc: ToolCall; output: string }> = [];
       for (const tc of toolCalls) {
+        if (signal?.aborted) {
+          return {
+            success: false,
+            needs_human: false,
+            summary: "Stopped by user.",
+            current_url: currentUrl,
+            attachments: allAttachments,
+          };
+        }
         const tool = this.toolRegistry.get(tc.name);
         if (!tool) {
           toolResults.push({ tc, output: `Tool ${tc.name} not found.` });
