@@ -6,7 +6,6 @@ import { AbortedError } from "../../src/core/aborted.ts";
 import type { ResolvedLlmConfig } from "../../src/core/config.ts";
 
 const config: ResolvedLlmConfig = {
-  provider: "x",
   baseUrl: "https://example.com",
   model: "m",
 };

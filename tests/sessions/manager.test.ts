@@ -162,7 +162,7 @@ test("persist: saves to disk and new manager loads it back", async () => {
     const mgr2 = new SessionManager();
     const loaded = await mgr2.getOrCreateWithMeta(sid, "matrix", "group");
     assert.equal(loaded.messages.length, 1);
-    assert.equal(loaded.messages[0].content, "persisted");
+    assert.equal(loaded.messages[0]!.content, "persisted");
   } finally {
     await deleteSession(sid);
   }
@@ -185,7 +185,7 @@ test("restart simulation: a fresh manager reloads the session without resetting 
 
     assert.equal(reloaded.createdAt, createdAt, "createdAt must survive a restart (no history reset)");
     assert.equal(reloaded.messages.length, 1);
-    assert.equal(reloaded.messages[0].content, "before restart");
+    assert.equal(reloaded.messages[0]!.content, "before restart");
   } finally {
     await deleteSession(sid);
   }

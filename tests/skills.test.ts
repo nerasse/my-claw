@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAllSkills } from "../src/skills/loader.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
+import { VoiceManager, SttPipeline, TtsPipeline } from "../src/voice/index.ts";
 import { syncBuiltIn } from "../src/skills/sync.ts";
 import {
   createListSkillsTool,
@@ -391,7 +392,10 @@ test("sub-agent receives same skills as main agent", async () => {
   };
 
   const toolRegistry = new ToolRegistry();
-  const runner = new SubAgentRunner(config as never, toolRegistry, skillRegistry);
+  const voiceManager = new VoiceManager(config as never);
+  const sttPipeline = new SttPipeline(voiceManager);
+  const ttsPipeline = new TtsPipeline(voiceManager);
+  const runner = new SubAgentRunner(config as never, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
 
   // Verify the runner has the skill registry
   assert.equal(skillRegistry.exists("shared"), true);

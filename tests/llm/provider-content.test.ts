@@ -11,7 +11,7 @@ const config = {
 describe("chatCompletion", () => {
   test("parses content and tool calls", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
+    globalThis.fetch = (async () =>
       new Response(
         JSON.stringify({
           choices: [
@@ -29,7 +29,7 @@ describe("chatCompletion", () => {
           ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      )) as unknown as typeof fetch;
 
     try {
       const result = await chatCompletion(config, [{ role: "user", content: "hi" }]);
@@ -43,7 +43,7 @@ describe("chatCompletion", () => {
   test("serializes array content with image_url", async () => {
     const capturedBodies: unknown[] = [];
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (_url: string, init: RequestInit) => {
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
       const body = JSON.parse(init.body as string);
       capturedBodies.push(body);
 
@@ -53,7 +53,7 @@ describe("chatCompletion", () => {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
-    };
+    }) as unknown as typeof fetch;
 
     try {
       const messages = [
@@ -103,8 +103,8 @@ describe("chatCompletionStream", () => {
     });
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })) as unknown as typeof fetch;
 
     try {
       const tokens: string[] = [];

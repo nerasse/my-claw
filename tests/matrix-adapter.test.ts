@@ -1784,7 +1784,7 @@ test("MatrixAdapter aborts plain media fetches that exceed timeout", async () =>
     }
   }
   const adapter = new TestMatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
-  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input?: string | URL | Request, init?: RequestInit) => {
     await new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
     });

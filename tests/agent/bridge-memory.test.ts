@@ -58,7 +58,7 @@ function createSession(): SessionData {
 async function runAndCaptureUser(config: MyClawConfig, text: string): Promise<string> {
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
   let userContent = "";
-  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
       messages: Array<{ role: string; content: string }>;
     };

@@ -79,7 +79,7 @@ test("AgentBridge executes tool calls and supports model override", async () => 
   const seenModels: string[] = [];
   let callCount = 0;
 
-  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input?: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
     seenModels.push(body.model ?? "");
 
@@ -130,7 +130,7 @@ test("AgentBridge includes reply thread and attachment context in user content",
   const bridge = new AgentBridge(config, registry, skillRegistry);
   let capturedBody = "";
 
-  const fetchMock = mockFetch(async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (_input?: string | URL | Request, init?: RequestInit) => {
     capturedBody = String(init?.body ?? "");
     return new Response(
       JSON.stringify({

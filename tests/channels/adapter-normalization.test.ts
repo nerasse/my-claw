@@ -82,14 +82,14 @@ describe("Matrix message normalization", () => {
 
   test("parseMatrixCommand parses /new", () => {
     const result = parseMatrixCommand("/new");
-    expect(result.command).toBe("new");
-    expect(result.args).toBe("");
+    expect(result!.command).toBe("new");
+    expect(result!.args).toBe("");
   });
 
   test("parseMatrixCommand parses /model with args", () => {
     const result = parseMatrixCommand("/model gpt-4");
-    expect(result.command).toBe("model");
-    expect(result.args).toBe("gpt-4");
+    expect(result!.command).toBe("model");
+    expect(result!.args).toBe("gpt-4");
   });
 
   test("parseMatrixCommand returns null for non-command text", () => {
@@ -99,7 +99,7 @@ describe("Matrix message normalization", () => {
 
   test("extractMatrixMentions finds @user:server mentions", () => {
     const result = extractMatrixMentions("hello @alice:example.org how are you");
-    expect(result.user_ids.length).toBeGreaterThanOrEqual(1);
+    expect(result.user_ids!.length).toBeGreaterThanOrEqual(1);
     expect(result.user_ids).toContain("@alice:example.org");
   });
 

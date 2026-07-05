@@ -169,7 +169,7 @@ test("chatCompletionStream: usage is undefined when provider does not include it
 test("chatCompletionStream: sends stream_options.include_usage in request body", async () => {
   let capturedBody: Record<string, unknown> | undefined;
 
-  const fetchMock = mockFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (input?: string | URL | Request, init?: RequestInit) => {
     capturedBody = JSON.parse(init?.body as string);
     return new Response(
       makeStreamBody([{ choices: [{ delta: { content: "ok" } }] }]),

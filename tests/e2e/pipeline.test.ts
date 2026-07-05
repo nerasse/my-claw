@@ -117,7 +117,7 @@ describe("E2E pipeline", () => {
 
     let requestCount = 0;
     let lastMessageCount = 0;
-    const mock = mockFetch(async (_url: string | URL | Request, init?: RequestInit) => {
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
       requestCount++;
       const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: unknown[] };
       lastMessageCount = body.messages?.length ?? 0;

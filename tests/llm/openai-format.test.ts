@@ -21,10 +21,10 @@ test("toOpenAiToolDefinitions: single tool has correct format", () => {
   const tool = fakeTool({ name: "my_fn", description: "does stuff", parameters: { type: "object" } });
   const result = toOpenAiToolDefinitions([tool]);
   assert.equal(result.length, 1);
-  assert.equal(result[0].type, "function");
-  assert.equal(result[0].function.name, "my_fn");
-  assert.equal(result[0].function.description, "does stuff");
-  assert.deepStrictEqual(result[0].function.parameters, { type: "object" });
+  assert.equal(result[0]!.type, "function");
+  assert.equal(result[0]!.function.name, "my_fn");
+  assert.equal(result[0]!.function.description, "does stuff");
+  assert.deepStrictEqual(result[0]!.function.parameters, { type: "object" });
 });
 
 test("toOpenAiToolDefinitions: multiple tools converted in order", () => {
@@ -35,9 +35,9 @@ test("toOpenAiToolDefinitions: multiple tools converted in order", () => {
   ];
   const result = toOpenAiToolDefinitions(tools);
   assert.equal(result.length, 3);
-  assert.equal(result[0].function.name, "alpha");
-  assert.equal(result[1].function.name, "beta");
-  assert.equal(result[2].function.name, "gamma");
+  assert.equal(result[0]!.function.name, "alpha");
+  assert.equal(result[1]!.function.name, "beta");
+  assert.equal(result[2]!.function.name, "gamma");
 });
 
 test("toOpenAiToolDefinitions: complex nested parameters passed through as-is", () => {
@@ -56,7 +56,7 @@ test("toOpenAiToolDefinitions: complex nested parameters passed through as-is", 
   };
   const tool = fakeTool({ parameters: params });
   const result = toOpenAiToolDefinitions([tool]);
-  assert.deepStrictEqual(result[0].function.parameters, params);
+  assert.deepStrictEqual(result[0]!.function.parameters, params);
 });
 
 test("toOpenAiToolDefinitions: every output has type function", () => {
@@ -76,15 +76,15 @@ test("toOpenAiToolCalls: object arguments get JSON.stringified", () => {
     { id: "call_1", name: "fn", arguments: { key: "value", n: 42 } },
   ]);
   assert.equal(result.length, 1);
-  assert.equal(result[0].id, "call_1");
-  assert.equal(result[0].function.name, "fn");
-  assert.equal(result[0].function.arguments, JSON.stringify({ key: "value", n: 42 }));
+  assert.equal(result[0]!.id, "call_1");
+  assert.equal(result[0]!.function.name, "fn");
+  assert.equal(result[0]!.function.arguments, JSON.stringify({ key: "value", n: 42 }));
 });
 
 test("toOpenAiToolCalls: string arguments passed as-is", () => {
   const raw = '{"already":"stringified"}';
   const result = toOpenAiToolCalls([{ id: "call_2", name: "fn", arguments: raw }]);
-  assert.equal(result[0].function.arguments, raw);
+  assert.equal(result[0]!.function.arguments, raw);
 });
 
 test("toOpenAiToolCalls: multiple calls preserve order", () => {
@@ -95,9 +95,9 @@ test("toOpenAiToolCalls: multiple calls preserve order", () => {
   ];
   const result = toOpenAiToolCalls(calls);
   assert.equal(result.length, 3);
-  assert.equal(result[0].id, "a");
-  assert.equal(result[1].id, "b");
-  assert.equal(result[2].id, "c");
+  assert.equal(result[0]!.id, "a");
+  assert.equal(result[1]!.id, "b");
+  assert.equal(result[2]!.id, "c");
 });
 
 test("toOpenAiToolCalls: every output has type function", () => {
@@ -112,5 +112,5 @@ test("toOpenAiToolCalls: every output has type function", () => {
 
 test("toOpenAiToolCalls: empty object arguments become empty JSON object string", () => {
   const result = toOpenAiToolCalls([{ id: "e", name: "fn", arguments: {} }]);
-  assert.equal(result[0].function.arguments, "{}");
+  assert.equal(result[0]!.function.arguments, "{}");
 });

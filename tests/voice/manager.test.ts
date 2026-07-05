@@ -7,6 +7,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
     whitelist: [],
     blacklist: [],
     channels: {},
+    agents: {},
     llm: { provider: "test", baseUrl: "http://test", model: "test" },
     ...overrides,
   } as MyClawConfig;

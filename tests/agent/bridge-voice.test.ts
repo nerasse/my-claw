@@ -14,6 +14,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
     whitelist: [],
     blacklist: [],
     channels: {},
+    agents: {},
     llm: { provider: "test", baseUrl: "http://test", model: "test", apiKey: "test" },
     ...overrides,
   } as MyClawConfig;
@@ -37,9 +38,11 @@ function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
 function createSession(): SessionData {
   return {
     id: "test-session",
+    platform: "telegram",
+    chatType: "dm",
     messages: [],
     createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    lastActiveAt: new Date().toISOString(),
   };
 }
 

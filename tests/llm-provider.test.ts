@@ -43,7 +43,7 @@ test("chatCompletion parses content and tool calls", async () => {
 test("chatCompletion sends custom headers", async () => {
   let capturedUrl = "";
   let capturedInit: RequestInit | undefined;
-  const fetchMock = mockFetch(async (url: string | Request, init?: RequestInit) => {
+  const fetchMock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
     capturedUrl = String(url);
     capturedInit = init;
     return new Response(

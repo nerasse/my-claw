@@ -17,7 +17,7 @@ const config: MyClawConfig = {
   llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
   agents: {},
   memory: { enabled: false },
-  browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222" },
+  browser: { enabled: true },
 };
 
 function msg(text: string): UnifiedMessage {
@@ -41,10 +41,14 @@ function llmResp(message: object): never {
   ) as never;
 }
 
+// Loose fetch shape for the test mock: the code under test only ever calls the
+// usual (input, init) signature and awaits a Response.
+type FetchImpl = (input?: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 // The browser subagent queries the sidecar (session/tabs/cleanup) around its LLM
 // loop. Route those to sidecar-shaped responses so the LLM mock only sees LLM calls.
-function withSidecar(impl: typeof globalThis.fetch): { restore(): void } {
-  return mockFetch((async (input: RequestInfo | URL, init?: RequestInit) => {
+function withSidecar(impl: FetchImpl): { restore(): void } {
+  return mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
       if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
@@ -52,7 +56,7 @@ function withSidecar(impl: typeof globalThis.fetch): { restore(): void } {
       return new Response(JSON.stringify({}), { status: 200 });
     }
     return impl(input as never, init as never);
-  }) as typeof globalThis.fetch);
+  }) as FetchImpl);
 }
 
 function makeRouter(reg: ToolRegistry, cfg?: Partial<MyClawConfig>): MessageRouter {
@@ -131,7 +135,7 @@ describe("E2E browser delegation", () => {
   });
 
   test("handoff surfaces the configurable noVNC URL to the main agent", async () => {
-    const cfg = { ...config, browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222", novncUrl: "https://vnc.example.com" } };
+    const cfg = { ...config, browser: { enabled: true, novncUrl: "https://vnc.example.com" } };
     const registry = new ToolRegistry();
     registry.register(createDelegateBrowserTool(cfg));
     const router = makeRouter(registry, { browser: cfg.browser });
@@ -170,7 +174,7 @@ describe("E2E browser delegation", () => {
   test("delegate surfaces a technical failure (not a fake success) when the subagent fails", async () => {
     // maxSteps=1 + a subagent LLM that never calls browser_done -> subagent returns
     // { success:false, needs_human:false } -> delegate must map it to a tool error.
-    const cfg = { ...config, browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222", maxSteps: 1 } };
+    const cfg = { ...config, browser: { enabled: true, maxSteps: 1 } };
     const registry = new ToolRegistry();
     registry.register(createDelegateBrowserTool(cfg));
     const router = makeRouter(registry, { browser: cfg.browser });
@@ -314,8 +318,8 @@ describe("E2E browser delegation", () => {
       expect(result!.text).toBe("Screenshot taken");
       expect(result!.attachments).toBeDefined();
       expect(result!.attachments!.length).toBe(1);
-      expect(result!.attachments![0].type).toBe("image");
-      expect(result!.attachments![0].path).toBe("/tmp/e2e-test.png");
+      expect(result!.attachments![0]!.type).toBe("image");
+      expect(result!.attachments![0]!.path).toBe("/tmp/e2e-test.png");
     } finally {
       mock.restore();
     }
@@ -396,8 +400,8 @@ describe("E2E browser delegation", () => {
       expect(result).toBeDefined();
       expect(result!.attachments).toBeDefined();
       expect(result!.attachments!.length).toBe(2);
-      expect(result!.attachments![0].path).toBe("/tmp/a.png");
-      expect(result!.attachments![1].path).toBe("/tmp/b.png");
+      expect(result!.attachments![0]!.path).toBe("/tmp/a.png");
+      expect(result!.attachments![1]!.path).toBe("/tmp/b.png");
     } finally {
       mock.restore();
     }

@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { compactSession } from "../src/sessions/compaction.ts";
 import type { SessionData } from "../src/sessions/store.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 
 function makeSession(messagesCount: number): SessionData {
@@ -21,7 +22,7 @@ function makeSession(messagesCount: number): SessionData {
   };
 }
 
-function makeConfig() {
+function makeConfig(): MyClawConfig {
   return {
     whitelist: [],
     blacklist: [],
@@ -129,20 +130,20 @@ test("compactSession summarizes middle and keeps head + tail", async () => {
     assert.equal(session.messages.length, 8);
 
     // Head preserved
-    assert.equal(session.messages[0].content, "Message 1");
-    assert.equal(session.messages[1].content, "Message 2");
-    assert.equal(session.messages[2].content, "Message 3");
+    assert.equal(session.messages[0]!.content, "Message 1");
+    assert.equal(session.messages[1]!.content, "Message 2");
+    assert.equal(session.messages[2]!.content, "Message 3");
 
     // Summary inserted
-    assert.ok(session.messages[3].content.includes("Summary of earlier context."));
-    assert.ok(session.messages[3].content.includes("Prior context summarized"));
-    assert.equal(session.messages[3].role, "user");
+    assert.ok(session.messages[3]!.content.includes("Summary of earlier context."));
+    assert.ok(session.messages[3]!.content.includes("Prior context summarized"));
+    assert.equal(session.messages[3]!.role, "user");
 
     // Tail preserved
-    assert.equal(session.messages[4].content, "Message 9");
-    assert.equal(session.messages[5].content, "Message 10");
-    assert.equal(session.messages[6].content, "Message 11");
-    assert.equal(session.messages[7].content, "Message 12");
+    assert.equal(session.messages[4]!.content, "Message 9");
+    assert.equal(session.messages[5]!.content, "Message 10");
+    assert.equal(session.messages[6]!.content, "Message 11");
+    assert.equal(session.messages[7]!.content, "Message 12");
   } finally {
     fetchMock.restore();
   }
@@ -157,7 +158,7 @@ test("compactSession passes instructions to the prompt", async () => {
     if (typeof body === "string") {
       capturedBody = body;
     } else if (body && typeof (body as ArrayBufferView).byteLength === "number") {
-      capturedBody = new TextDecoder().decode(body as ArrayBufferView);
+      capturedBody = new TextDecoder().decode(body as Uint8Array);
     }
     return new Response(
       JSON.stringify({ choices: [{ message: { content: "Focused summary of the conversation covering the main task and key decisions made." } }] }),
@@ -208,9 +209,10 @@ test("compactSession handles tool pairs without splitting them", async () => {
 
     // Messages before summary should not have orphaned tool results
     for (let i = 0; i < summaryIdx; i++) {
-      if (session.messages[i].role === "tool") {
+      const cur = session.messages[i]!;
+      if (cur.role === "tool") {
         const prev = session.messages[i - 1];
-        assert.ok(prev?.role === "assistant" && prev.toolCalls?.some((tc) => tc.id === session.messages[i].toolCallId));
+        assert.ok(prev?.role === "assistant" && prev.toolCalls?.some((tc) => tc.id === cur.toolCallId));
       }
     }
   } finally {

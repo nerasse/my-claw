@@ -70,11 +70,11 @@ describe("extractReactionAnnotation", () => {
 
 describe("resolveActionForReaction", () => {
   test("first emoji maps to first button action", () => {
-    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[0])).toBe("approve");
+    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[0]!)).toBe("approve");
   });
 
   test("second emoji maps to second button action", () => {
-    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[1])).toBe("deny");
+    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[1]!)).toBe("deny");
   });
 
   test("unknown emoji returns undefined", () => {
@@ -82,7 +82,7 @@ describe("resolveActionForReaction", () => {
   });
 
   test("emoji index beyond buttons length returns undefined", () => {
-    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[5])).toBeUndefined();
+    expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[5]!)).toBeUndefined();
   });
 });
 

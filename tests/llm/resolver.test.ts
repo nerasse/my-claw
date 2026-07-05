@@ -1,7 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { resolveLlmConfig, listAvailableModels } from "../../src/llm/resolver.ts";
-import type { LlmConfig } from "../src/core/config.ts";
+import type { LlmConfig } from "../../src/core/config.ts";
 
 const newFormatConfig: LlmConfig = {
   defaultProvider: "fireworks",

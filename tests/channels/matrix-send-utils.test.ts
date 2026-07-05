@@ -111,7 +111,7 @@ describe("outboundTxnId", () => {
 describe("toSdkContent", () => {
   test("passthrough cast returns same object", () => {
     const obj = { foo: "bar" };
-    expect(toSdkContent(obj)).toBe(obj);
+    expect(toSdkContent<typeof obj>(obj)).toBe(obj);
   });
 });
 

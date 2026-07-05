@@ -221,8 +221,8 @@ describe("rememberInboundContext", () => {
     const history = historyByScope.get(scopeKey);
     expect(history).toBeDefined();
     expect(history!.length).toBe(1);
-    expect(history![0].text).toBe("hello");
-    expect(history![0].senderLabel).toBe("@testuser");
+    expect(history![0]!.text).toBe("hello");
+    expect(history![0]!.senderLabel).toBe("@testuser");
 
     const ctxKey = messageContextKey("c1", "10");
     expect(messageContexts.has(ctxKey)).toBe(true);
@@ -245,7 +245,7 @@ describe("rememberInboundContext", () => {
 
     const history = historyByScope.get(historyScopeKey("c1"))!;
     expect(history.length).toBe(MAX_HISTORY_SCOPE_ENTRIES);
-    expect(history[0].text).toBe("msg-10");
+    expect(history[0]!.text).toBe("msg-10");
   });
 
   test("thread root stored only for first message in thread", () => {

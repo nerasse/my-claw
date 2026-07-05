@@ -11,6 +11,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
     whitelist: [],
     blacklist: [],
     channels: {},
+    agents: {},
     llm: { provider: "test", baseUrl: "http://test", model: "test" },
     ...overrides,
   } as MyClawConfig;
@@ -39,7 +40,7 @@ describe("SttPipeline Groq upload fixes", () => {
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
         return originalFetch(url, init);
-      });
+      }) as unknown as typeof fetch;
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -75,7 +76,7 @@ describe("SttPipeline Groq upload fixes", () => {
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
         return originalFetch(url, init);
-      });
+      }) as unknown as typeof fetch;
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -112,7 +113,7 @@ describe("SttPipeline Groq upload fixes", () => {
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
         return originalFetch(url, init);
-      });
+      }) as unknown as typeof fetch;
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -141,7 +142,7 @@ describe("SttPipeline Groq upload fixes", () => {
       const originalFetch = globalThis.fetch;
       globalThis.fetch = mock(async () => {
         return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
-      });
+      }) as unknown as typeof fetch;
 
       try {
         process.env.GROQ_API_KEY = "test-key";

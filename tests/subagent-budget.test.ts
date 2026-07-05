@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { SubAgentRunner } from "../src/subagents/runner.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
-import { VoiceManager } from "../src/voice/index.ts";
+import { VoiceManager, SttPipeline, TtsPipeline } from "../src/voice/index.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
@@ -41,13 +41,15 @@ function createParentMessage(): UnifiedMessage {
 
 function createRunner() {
   const voiceManager = new VoiceManager(baseConfig);
+  const sttPipeline = new SttPipeline(voiceManager);
+  const ttsPipeline = new TtsPipeline(voiceManager);
   return new SubAgentRunner(
     baseConfig,
     new ToolRegistry(),
-    new SkillRegistry([]),
+    new SkillRegistry(),
     voiceManager,
-    voiceManager.stt,
-    voiceManager.tts,
+    sttPipeline,
+    ttsPipeline,
   );
 }
 

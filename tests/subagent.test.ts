@@ -6,6 +6,7 @@ import { SubAgentRunner } from "../src/subagents/runner.ts";
 import { SubAgentRegistry } from "../src/subagents/registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
+import { VoiceManager, SttPipeline, TtsPipeline } from "../src/voice/index.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { deleteSession, loadSession } from "../src/sessions/store.ts";
@@ -31,10 +32,14 @@ const config: MyClawConfig = {
   llm: { provider: "x", baseUrl: "https://example.com", model: "base-model" },
   agents: {
     research: {
-      llm: { provider: "x", baseUrl: "https://example.com", model: "research-model" },
+      llm: { defaultModel: "research-model" },
     },
   },
 };
+
+const voiceManager = new VoiceManager(config);
+const sttPipeline = new SttPipeline(voiceManager);
+const ttsPipeline = new TtsPipeline(voiceManager);
 
 function createMessage(): UnifiedMessage {
   return {
@@ -52,7 +57,7 @@ function createMessage(): UnifiedMessage {
 
 test("SubAgentRunner spawns research agent one-shot", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -83,7 +88,7 @@ test("SubAgentRunner spawns research agent one-shot", async () => {
 
 test("SubAgentRunner spawns persistent session and sends message", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -138,7 +143,7 @@ test("SubAgentRegistry generates unique IDs", async () => {
 
 test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   const executionOrder: string[] = [];
@@ -193,7 +198,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
 test("SubAgentRunner queues three sends in order", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   const executionOrder: number[] = [];
@@ -233,7 +238,7 @@ test("SubAgentRunner queues three sends in order", async () => {
 
 test("SubAgentRunner kill and reset", async () => {
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -269,7 +274,7 @@ test("SubAgentRunner kill and reset", async () => {
 test("spawn tool with attachments", async () => {
   const { createSendTool } = await import("../src/tools/send.ts");
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, new SkillRegistry());
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
   const reg = new SubAgentRegistry();
 
   let callCount = 0;
@@ -315,7 +320,7 @@ test("sub-agent with workspaceDir receives same skills as main agent", async () 
   const skillRegistry = new SkillRegistry(skills);
 
   const registry = new ToolRegistry();
-  const runner = new SubAgentRunner(config, registry, skillRegistry);
+  const runner = new SubAgentRunner(config, registry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
 
   let capturedSystemPrompt = "";
   const fetchMock = mockFetch(async (_input, init) => {

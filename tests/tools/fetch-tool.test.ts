@@ -33,7 +33,7 @@ test("fetch: empty URL returns success false", async () => {
 test("fetch: POST with body sends correct method and body", async () => {
   let capturedMethod = "";
   let capturedBody = "";
-  const mock = mockFetch(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const mock = mockFetch(async (input?: string | URL | Request, init?: RequestInit) => {
     capturedMethod = init?.method ?? "GET";
     capturedBody = typeof init?.body === "string" ? init.body : "";
     return new Response("created", { status: 200 });
