@@ -28,7 +28,7 @@ export interface CronJob {
   repeat: number | null;
   completedRuns: number;
   enabled: boolean;
-  state: "scheduled" | "paused" | "completed" | "error";
+  state: "scheduled" | "paused" | "completed";
   pausedReason?: string;
   origin: CronOrigin | null;
   deliver: CronDeliver;

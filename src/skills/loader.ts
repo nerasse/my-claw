@@ -1,5 +1,5 @@
 import { readFile, readdir, access } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import type { Skill, SkillMeta } from "./types.ts";
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;

@@ -20,7 +20,7 @@ a section to a fresh reference. If it replaced `config.llm = {...}`, components 
 
 Two consumption patterns exist and both are covered:
 
-- **Live reads through the shared root config** (`this.config.llm`, `config.browser?.cdpUrl`, ...):
+- **Live reads through the shared root config** (`this.config.llm`, `config.browser?.enabled`, ...):
   picked up automatically on the next use once the contents are mutated.
 - **Boot-time snapshots** (ModelPicker's model list, the channel reaction/error managers, the adapter
   whitelist `Set`): these copy values out at construction, so a small setter is called by an *applier*
@@ -32,7 +32,7 @@ Hot-reloadable (applied in place, effective on the next message/call):
 
 - `llm.*` (defaultProvider, defaultModel, providers, limit, vision, models)
 - `agents.*` (maxIterations, llm)
-- `injection`, `browser` (enabled/cdpUrl/maxSteps/...), `webSearch`
+- `injection`, `browser` (enabled/sidecarUrl/maxSteps/...), `webSearch`
 - `whitelist`, `blacklist`
 - Telegram/Matrix **behavioral** fields: dm/group policy + allowFrom, groups, contextVisibility,
   historyLimit, streaming, replyToMode, threadReplies, reactions, errorPolicy, chunking, mediaMaxMb,
@@ -58,8 +58,8 @@ debounced (300ms) so editors that emit multiple writes trigger a single reload.
 ### Browser tool is always registered
 
 To make `browser.enabled` toggleable at runtime, `delegate_browser_task` is now always registered; its
-`execute` reads `config.browser.enabled`/`cdpUrl` live and no-ops with an error when disabled. The CDP
-pool is built per call, so a new `cdpUrl` takes effect on the next delegation with no reconnection logic.
+`execute` reads `config.browser.enabled` live and no-ops with an error when disabled. The sidecar client
+is built per call, so a new `sidecarUrl` takes effect on the next delegation with no reconnection logic.
 
 ### Web search (re)registration
 

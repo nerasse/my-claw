@@ -1,11 +1,10 @@
-import { readFile, writeFile, readdir, mkdir, copyFile, rm, access, stat, rename } from "node:fs/promises";
-import { join, dirname, basename, relative } from "node:path";
+import { readFile, writeFile, readdir, mkdir, copyFile, rm, access, rename } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 
 interface ManifestEntry {
   name: string;
   hash: string;
-  version?: string;
 }
 
 interface Manifest {
@@ -111,7 +110,7 @@ export async function syncBuiltIn(repoDir: string, builtinDir: string): Promise<
       }
       changed.push(name);
     }
-    newEntries.push({ name, hash, version: undefined });
+    newEntries.push({ name, hash });
   }
 
   for (const [name] of currentEntries) {

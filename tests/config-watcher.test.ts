@@ -38,7 +38,7 @@ function baseConfig(): MyClawConfig {
     },
     agents: { orchestrator: { maxIterations: 90 } },
     webSearch: { baseUrl: "https://search.example.com", language: "en" },
-    browser: { enabled: true, cdpUrl: "http://127.0.0.1:9222", maxSteps: 20 },
+    browser: { enabled: true, sidecarUrl: "http://127.0.0.1:9223", maxSteps: 20 },
     injection: { enabled: true, budgetBonus: 8 },
     memory: { enabled: true, recallMaxEntries: 5 },
   };
@@ -84,7 +84,7 @@ test("browser and injection changes are applied in place", () => {
   const browserRef = current.browser;
   const next = clone(current);
   next.browser!.enabled = false;
-  next.browser!.cdpUrl = "http://10.0.0.1:9222";
+  next.browser!.sidecarUrl = "http://10.0.0.1:9223";
   next.injection!.budgetBonus = 16;
 
   const result = applyHotReload(current, next);
@@ -93,7 +93,7 @@ test("browser and injection changes are applied in place", () => {
   assert.ok(result.changed.includes("injection"));
   assert.equal(current.browser, browserRef);
   assert.equal(current.browser?.enabled, false);
-  assert.equal(current.browser?.cdpUrl, "http://10.0.0.1:9222");
+  assert.equal(current.browser?.sidecarUrl, "http://10.0.0.1:9223");
   assert.equal(current.injection?.budgetBonus, 16);
 });
 

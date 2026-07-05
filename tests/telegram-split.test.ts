@@ -1,13 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { alignPlainTextChunks, splitHtmlChunks, splitPlainText } from "../src/channels/telegram/split.ts";
-
-test("splitPlainText splits long content", () => {
-  const chunks = splitPlainText("a".repeat(5000), 4000);
-  assert.equal(chunks.length, 2);
-  assert.equal(chunks[0]?.length, 4000);
-  assert.equal(chunks[1]?.length, 1000);
-});
+import { alignPlainTextChunks, splitHtmlChunks } from "../src/channels/telegram/split.ts";
 
 test("splitHtmlChunks keeps tags balanced across chunks", () => {
   const chunks = splitHtmlChunks(`<b>${"a".repeat(4500)}</b>`, 4000);

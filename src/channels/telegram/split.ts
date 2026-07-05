@@ -136,34 +136,6 @@ export function splitHtmlChunks(html: string, limit = CHUNK_LIMIT): string[] {
   return chunks.length > 0 ? chunks : [html];
 }
 
-export function splitPlainText(text: string, limit = CHUNK_LIMIT): string[] {
-  if (text.length <= limit) return [text];
-
-  const chunks: string[] = [];
-  let pos = 0;
-
-  while (pos < text.length) {
-    if (text.length - pos <= limit) {
-      chunks.push(text.slice(pos));
-      break;
-    }
-
-    let splitAt = text.lastIndexOf("\n", pos + limit);
-    if (splitAt <= pos) {
-      splitAt = text.lastIndexOf(" ", pos + limit);
-    }
-    if (splitAt <= pos) {
-      splitAt = pos + limit;
-    }
-
-    chunks.push(text.slice(pos, splitAt));
-    pos = splitAt;
-    if (text[pos] === "\n" || text[pos] === " ") pos++;
-  }
-
-  return chunks;
-}
-
 export function alignPlainTextChunks(plainText: string, htmlChunkCount: number, limit = CHUNK_LIMIT): string[] {
   if (htmlChunkCount <= 1) return [plainText];
 

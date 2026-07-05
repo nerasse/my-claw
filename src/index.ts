@@ -52,7 +52,7 @@ import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
-import { extractMediaRefs } from "./utils/media.ts";
+import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { resolveLlmConfig } from "./llm/resolver.ts";
 import {
@@ -109,7 +109,7 @@ async function main() {
     if (config.webSearch?.baseUrl) toolRegistry.register(createWebSearchTool(config.webSearch));
   };
   registerWebSearch();
-  // Always register: the tool reads config.browser.enabled/cdpUrl live and no-ops when disabled,
+  // Always register: the tool reads config.browser.enabled live and no-ops when disabled,
   // so the hot-reload watcher can toggle the browser without a restart.
   toolRegistry.register(createDelegateBrowserTool(config));
 
@@ -129,7 +129,6 @@ async function main() {
   hooks.emit("skills:loaded", { count: allSkills.size });
 
   const subAgentRegistry = new SubAgentRegistry();
-  await subAgentRegistry.load();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
   registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry);
   registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
@@ -221,7 +220,7 @@ async function main() {
         }
       } finally {
         await cleanupAttachments(msg.attachments);
-        await cleanupTtsTempFiles(response?.attachments);
+        await cleanupGeneratedTempFiles(response?.attachments);
       }
     });
 
@@ -347,7 +346,7 @@ async function main() {
         }
       } finally {
         await cleanupAttachments(msg.attachments);
-        await cleanupTtsTempFiles(response?.attachments);
+        await cleanupGeneratedTempFiles(response?.attachments);
       }
     });
 
@@ -433,15 +432,6 @@ async function main() {
 async function cleanupAttachments(attachments: Array<{ path?: string }>): Promise<void> {
   for (const att of attachments) {
     if (att.path) {
-      await unlink(att.path).catch(() => {});
-    }
-  }
-}
-
-async function cleanupTtsTempFiles(attachments?: Array<{ path?: string }>): Promise<void> {
-  if (!attachments?.length) return;
-  for (const att of attachments) {
-    if (att.path?.startsWith("/tmp/tts-")) {
       await unlink(att.path).catch(() => {});
     }
   }

@@ -4,11 +4,9 @@ import type { MatrixClient } from "matrix-js-sdk";
 import { MsgType } from "matrix-js-sdk";
 import type { MatrixChannelConfig } from "../../core/config.ts";
 import type { Attachment, OutgoingMessage, UnifiedMessage } from "../types.ts";
-import { buildMatrixFormattedText } from "./format.ts";
 import { buildRelation } from "./helpers.ts";
 import type { MatrixCryptoFacade, MatrixEncryptedFile } from "./types.ts";
 import { withMatrixRetry } from "./retry.ts";
-import { chunkMatrixText } from "./text.ts";
 
 // Bridges Record<string, unknown> to Matrix SDK's strict content types.
 // Centralized here so the unavoidable SDK type gap lives in one place.

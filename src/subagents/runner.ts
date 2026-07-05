@@ -52,7 +52,7 @@ export class SubAgentRunner {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, workspaceDir, 0, parentMessage, signal);
+      return this.runOneShot(type, task, workspaceDir, parentMessage, signal);
     }
 
     const id = generateId(displayName, existingIds);
@@ -69,7 +69,7 @@ export class SubAgentRunner {
     await saveSession(id, session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
-    const result = await this.executeRun(id, type, workspaceDir, 0, parentMessage, signal);
+    const result = await this.executeRun(id, type, workspaceDir, parentMessage, signal);
     hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
   }
@@ -147,7 +147,6 @@ export class SubAgentRunner {
     type: SubAgentType,
     task: string,
     workspaceDir: string | undefined,
-    parentDepth: number,
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
   ): Promise<{ id: string; result: string }> {
@@ -169,7 +168,6 @@ export class SubAgentRunner {
     id: string,
     type: SubAgentType,
     workspaceDir: string | undefined,
-    parentDepth: number,
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
   ): Promise<string> {

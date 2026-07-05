@@ -30,6 +30,17 @@ The agent can suppress delivery by starting its response with `[SILENT]`. Output
 
 Hermes uses a ThreadPoolExecutor for parallel cron jobs. MyClaw runs them sequentially. Rationale: Bun is single-threaded; the overhead of parallelism is not worth the complexity for a single-tenant bot. If a job is slow, it blocks the tick — acceptable for personal use.
 
+### Safety net for heavy jobs
+
+Because a slow job blocks the tick, a runaway job (e.g. an agent stuck in a loop) could stall all
+scheduling. Two config knobs cap that without getting in the way of legitimately long work:
+
+- `cron.timeoutMs` — hard wall-clock limit per job; on expiry the run is aborted (`router.stop`) and
+  the job is marked failed. Default is deliberately long (30 min) so heavy/voluminous jobs (deep
+  research, many sub-agents) can finish; it only kills genuine runaways.
+- `cron.maxIterations` — overrides the tool-calling loop budget for cron runs (defaults to the
+  orchestrator's 90). Raise it for jobs that legitimately need many steps.
+
 ### No file locking
 
 Hermes uses `fcntl.flock` for cross-process tick isolation. MyClaw has one process. File locking is unnecessary.

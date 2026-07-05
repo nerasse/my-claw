@@ -154,7 +154,6 @@ export function createBrowserTypeTool(client: BrowserClient): Tool {
 import { BrowserSubagent } from "../agent/subagents/browser.ts";
 import type { MyClawConfig } from "../core/config.ts";
 
-export const DEFAULT_CDP_URL = "http://127.0.0.1:9222";
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 
@@ -171,16 +170,17 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       required: ["url", "instructions"],
     },
     async execute(args): Promise<ToolResult> {
-      // Read enabled/cdpUrl live so the config hot-reload watcher can toggle them at runtime.
+      // Read enabled live so the config hot-reload watcher can toggle it at runtime.
       if (config.browser?.enabled === false) {
         return { success: false, output: "", error: "Browser tool is disabled (browser.enabled = false in config.json)." };
       }
       const sidecarUrl = config.browser?.sidecarUrl ?? DEFAULT_SIDECAR_URL;
       const url = str(args, "url");
       const instructions = str(args, "instructions");
+      const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const subagent = new BrowserSubagent(config, sidecarUrl);
       try {
-        const result = await subagent.run(instructions, url);
+        const result = await subagent.run(instructions, url, signal);
         if (result.needs_human) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
           return {

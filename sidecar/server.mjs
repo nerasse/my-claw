@@ -14,7 +14,6 @@ const CDP_URL = process.env.CDP_URL || "http://127.0.0.1:9222";
 const PORT = Number(process.env.PORT || 9223);
 const HOST = process.env.HOST || "127.0.0.1";
 const SCREENSHOT_DIR = "/tmp";
-const SCROLL_AMOUNT = 500;
 
 // --- shared CDP connection (one per process, reused across sessions) ---
 let browser = null;
@@ -232,17 +231,6 @@ const handlers = {
       await page.screenshot({ path, fullPage: body.fullPage });
     }
     return { type: "image", path, mimeType: "image/png" };
-  },
-
-  async scroll(body) {
-    const amount = body.direction === "up" ? -SCROLL_AMOUNT : SCROLL_AMOUNT;
-    await getPage(body.pageId).evaluate(`window.scrollBy(0, ${amount})`);
-    return {};
-  },
-
-  async back(body) {
-    await getPage(body.pageId).goBack({ waitUntil: "domcontentloaded", timeout: 30000 });
-    return {};
   },
 
   async tabs(body) {

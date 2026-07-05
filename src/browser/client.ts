@@ -80,14 +80,6 @@ export class BrowserClient {
     return this.call<BrowserAttachment>("screenshot", { pageId, fullPage, labels: true });
   }
 
-  async scroll(pageId: string, direction: "up" | "down"): Promise<void> {
-    await this.call("scroll", { pageId, direction });
-  }
-
-  async back(pageId: string): Promise<void> {
-    await this.call("back", { pageId });
-  }
-
   async listTabs(): Promise<BrowserTabInfo[]> {
     const sessionId = await this.ensureSession();
     const { tabs } = await this.call<{ tabs: BrowserTabInfo[] }>("tabs", { sessionId });

@@ -307,7 +307,6 @@ Additional Matrix fields:
 ```json
 "browser": {
   "enabled": false,
-  "cdpUrl": "http://127.0.0.1:9222",
   "sidecarUrl": "http://127.0.0.1:9223",
   "novncUrl": "http://localhost:6080",
   "viewport": { "width": 1920, "height": 1080 },
@@ -316,8 +315,7 @@ Additional Matrix fields:
 ```
 
 - `enabled` — enable the `delegate_browser_task` tool (default: true).
-- `cdpUrl` — Chrome DevTools Protocol endpoint (used by the **sidecar** to reach Chromium).
-- `sidecarUrl` — where the app reaches the Node browser sidecar (default `http://127.0.0.1:9223`). Playwright runs in that sidecar because `connectOverCDP` hangs under Bun. See `browser.md`.
+- `sidecarUrl` — where the app reaches the Node browser sidecar (default `http://127.0.0.1:9223`). Playwright runs in that sidecar because `connectOverCDP` hangs under Bun. See `browser.md`. The Chromium CDP endpoint itself is set via the sidecar's `CDP_URL` env, not here.
 - `novncUrl` — live-browser URL surfaced to the user on a human-handoff (default `http://localhost:6080`).
 - `viewport` — browser viewport size.
 - `maxSteps` — max LLM iterations for the browser sub-agent (default: 30).
@@ -336,6 +334,25 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 
 - `maxIterations` — max tool-calling loops before forcing a summary response.
 - `llm` — optional per-agent LLM config override (inherits providers from global `llm`).
+
+## Cron
+
+```json
+"cron": {
+  "enabled": true,
+  "tickIntervalMs": 60000,
+  "maxIterations": 90,
+  "timeoutMs": 1800000
+}
+```
+
+- `enabled` — run the scheduler (default: true).
+- `tickIntervalMs` — how often the scheduler checks for due jobs (default: 60000).
+- `timeoutMs` — hard wall-clock limit per job; on expiry the run is aborted and the job is
+  marked failed. Default is deliberately long (1800000 = 30 min) so heavy/voluminous jobs can
+  finish; it only kills genuine runaways. See `cron.md`.
+- `maxIterations` — tool-calling loop budget for cron runs (defaults to the orchestrator's 90).
+  Raise it for jobs that legitimately need many steps.
 
 ## Memory
 

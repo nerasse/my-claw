@@ -1,4 +1,4 @@
-import { readdir, access } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 
@@ -11,14 +11,6 @@ function randomHex(n: number): string {
 
 export class SubAgentRegistry {
   private queues = new Map<string, Promise<void>>();
-
-  async load(): Promise<void> {
-    try {
-      await access(SUBAGENT_DIR);
-    } catch {
-      return;
-    }
-  }
 
   generateId(displayName: string, existing: Set<string>): string {
     let id: string;

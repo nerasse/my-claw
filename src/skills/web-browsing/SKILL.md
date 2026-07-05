@@ -80,7 +80,7 @@ message with the live-browser URL.
 
 ## Session persistence
 
-**With `delegate_browser_task`:** YES. The CDP session stays alive during the entire subagent flow. You can navigate, click, scroll, and capture within a single continuous session.
+**With `delegate_browser_task`:** YES. The CDP session stays alive during the entire subagent flow. You can navigate, click, type, and capture within a single continuous session.
 
 **Without (bash direct):** NO. Each `bash` command spawns an isolated process. There is no state shared between separate tool calls.
 

@@ -66,6 +66,11 @@ solves the blocker and replies "continue".
   list is injected into the subagent prompt so it focuses an existing relevant tab instead of
   opening duplicates. `new_tab=true` forces a separate tab.
 - **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
+- **Cancellable**: the parent run's `AbortSignal` is threaded into the subagent loop (via the tool's
+  `__signal`). `/stop` interrupts it — it bails out before the next LLM call or tool execution and
+  returns "Stopped by user."
+- **Bounded context**: snapshots are large, so the loop runs `trimToContextWindow` before each LLM
+  call; a long (up to `maxSteps`) run cannot outgrow the model context window.
 
 ## Lifecycle (never kill the shared Chromium)
 
@@ -78,7 +83,8 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
   Chromium); on `disconnected` it resets and reconnects on the next task.
 - **Per-task session**: each task gets a sidecar session; `cleanup` only drops that session's
   bookkeeping — it **leaves all tabs open** so the browser persists for the next task.
-  Screenshots are not deleted here (sent as attachments, removed post-send by the adapter).
+  Screenshots are not deleted here (sent as attachments, then removed post-send by
+  `cleanupGeneratedTempFiles`, which sweeps `/tmp/browser-*` and `/tmp/tts-*`).
 - **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
   reconnects. A down sidecar fails fast (`ECONNREFUSED`).
 - **Infra vs blocker**: sidecar/CDP unreachability (`sidecar unreachable`, `ECONNREFUSED`,
@@ -92,7 +98,6 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 {
   "browser": {
     "enabled": true,
-    "cdpUrl": "http://127.0.0.1:9222",
     "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
     "maxSteps": 30
@@ -101,8 +106,8 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 ```
 
 - `sidecarUrl` (default `http://127.0.0.1:9223`): where the Bun app reaches the Node sidecar.
-- `cdpUrl` (default `http://127.0.0.1:9222`): used by the **sidecar** (via `CDP_URL` env in its
-  systemd unit) to reach Chromium.
+- The Chromium CDP endpoint is not a config knob: the **sidecar** reads it from the `CDP_URL`
+  env in its systemd unit (default `http://127.0.0.1:9222`).
 
 ## Skill
 
