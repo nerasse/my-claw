@@ -665,6 +665,75 @@ describe("BrowserSubagent", () => {
     }
   });
 
+  test("max steps salvages findings with a final tool-free summary call", async () => {
+    const shortSubagent = new BrowserSubagent(
+      makeConfig({ browser: { maxSteps: 2 } }) as any,
+      "http://127.0.0.1:9222",
+    );
+    const busyTool: Tool = {
+      name: "busy_tool",
+      description: "keeps the loop busy",
+      parameters: { type: "object", properties: {} },
+      async execute() {
+        return { success: true, output: "Event X announced for July 12 at Club Y." };
+      },
+    };
+    shortSubagent["toolRegistry"].register(busyTool);
+
+    const fetchMock = mockLlm(async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      if (!body.tools) {
+        // Tool-free call = the post-budget summarization pass.
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "Found Event X on July 12 at Club Y; login wall blocked the rest." } }] }),
+          { status: 200 },
+        ) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "busy_tool", arguments: "{}" } }] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await shortSubagent.run("find events");
+      assert.equal(result.success, false);
+      assert.ok(result.summary.includes("maximum"), "still flags the step budget");
+      assert.ok(result.summary.includes("Findings so far"), "should carry the salvage prefix");
+      assert.ok(result.summary.includes("Club Y"), "should include the salvaged findings");
+    } finally {
+      fetchMock.restore();
+      await shortSubagent.cleanup().catch(() => undefined);
+    }
+  });
+
+  test("max steps summary degrades cleanly when the final LLM call fails", async () => {
+    const shortSubagent = new BrowserSubagent(
+      makeConfig({ browser: { maxSteps: 1 } }) as any,
+      "http://127.0.0.1:9222",
+    );
+    const fetchMock = mockLlm(async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      if (!body.tools) {
+        return new Response(JSON.stringify({ error: "rate limited" }), { status: 429 }) as never;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "thinking..." } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await shortSubagent.run("find events");
+      assert.equal(result.success, false);
+      assert.ok(result.summary.includes("maximum"), "falls back to the plain max-steps message");
+      assert.ok(!result.summary.includes("Findings so far"), "no salvage prefix without findings");
+    } finally {
+      fetchMock.restore();
+      await shortSubagent.cleanup().catch(() => undefined);
+    }
+  });
+
   test("mixed tools: some with attachments, some without", async () => {
     const withAtt: Tool = {
       name: "with_att",

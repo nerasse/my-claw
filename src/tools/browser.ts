@@ -2,18 +2,22 @@ import { type Tool, type ToolResult, str, num, bool } from "./types.ts";
 import type { BrowserClient } from "../browser/client.ts";
 import { resolveAndCheckUrl } from "./fetch.ts";
 
-// Track the current page id across tool calls within a single agent turn
-let currentPageId: string | null = null;
-
-export function setCurrentPageId(pageId: string | null): void {
-  currentPageId = pageId;
+// Tracks the current page id across tool calls of ONE subagent run. This used to be a
+// module-level global: concurrent browser subagents clobbered each other's page id and
+// ended up clicking/snapshotting each other's tabs. Each subagent now owns its state.
+export interface BrowserPageState {
+  currentPageId: string | null;
 }
 
-function getPageId(): string {
-  if (!currentPageId) {
+export function createBrowserPageState(): BrowserPageState {
+  return { currentPageId: null };
+}
+
+function getPageId(state: BrowserPageState): string {
+  if (!state.currentPageId) {
     throw new Error("No active browser page. Call browser_navigate first.");
   }
-  return currentPageId;
+  return state.currentPageId;
 }
 
 async function guardUrl(url: string): Promise<void> {
@@ -38,7 +42,7 @@ function formatSnapshot(snapshot: { raw: string; refs: number[] }): string {
   return header + snapshot.raw;
 }
 
-export function createBrowserNavigateTool(client: BrowserClient): Tool {
+export function createBrowserNavigateTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_navigate",
     description: "Navigate to a URL. Reuses the CURRENT tab by default (does not spawn a new tab per call). Set new_tab=true only when you deliberately want a separate tab. Returns a snapshot of the page with interactive element refs.",
@@ -57,9 +61,9 @@ export function createBrowserNavigateTool(client: BrowserClient): Tool {
         await guardUrl(url);
         const result = await client.navigate(url, {
           newTab,
-          reusePageId: newTab ? undefined : currentPageId ?? undefined,
+          reusePageId: newTab ? undefined : state.currentPageId ?? undefined,
         });
-        currentPageId = result.pageId;
+        state.currentPageId = result.pageId;
         return {
           success: true,
           output: formatSnapshot(result.snapshot),
@@ -71,17 +75,17 @@ export function createBrowserNavigateTool(client: BrowserClient): Tool {
   };
 }
 
-export function createBrowserSnapshotTool(client: BrowserClient): Tool {
+export function createBrowserSnapshotTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_snapshot",
-    description: "Capture the current page accessibility tree. Use after every action to verify state.",
+    description: "Re-read the current page accessibility tree without acting. Note: navigate, click, and type already return a fresh snapshot — only call this when you need to re-check the page state on its own.",
     parameters: {
       type: "object",
       properties: {},
     },
     async execute(): Promise<ToolResult> {
       try {
-        const snapshot = await client.snapshot(getPageId());
+        const snapshot = await client.snapshot(getPageId(state));
         return {
           success: true,
           output: formatSnapshot(snapshot),
@@ -93,10 +97,10 @@ export function createBrowserSnapshotTool(client: BrowserClient): Tool {
   };
 }
 
-export function createBrowserClickTool(client: BrowserClient): Tool {
+export function createBrowserClickTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_click",
-    description: "Click an interactive element by its ref number (e.g., 5).",
+    description: "Click an interactive element by its ref number (e.g., 5). Returns a fresh snapshot of the page after the click.",
     parameters: {
       type: "object",
       properties: {
@@ -107,7 +111,7 @@ export function createBrowserClickTool(client: BrowserClient): Tool {
     async execute(args): Promise<ToolResult> {
       const ref = num(args, "ref", 0);
       try {
-        const pageId = getPageId();
+        const pageId = getPageId(state);
         await client.click(pageId, ref);
         const snapshot = await client.snapshot(pageId);
         return {
@@ -121,10 +125,10 @@ export function createBrowserClickTool(client: BrowserClient): Tool {
   };
 }
 
-export function createBrowserTypeTool(client: BrowserClient): Tool {
+export function createBrowserTypeTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_type",
-    description: "Type text into a form field by its ref number.",
+    description: "Type text into a form field by its ref number. Returns a fresh snapshot of the page after typing.",
     parameters: {
       type: "object",
       properties: {
@@ -137,7 +141,7 @@ export function createBrowserTypeTool(client: BrowserClient): Tool {
       const ref = num(args, "ref", 0);
       const text = str(args, "text");
       try {
-        const pageId = getPageId();
+        const pageId = getPageId(state);
         await client.type(pageId, ref, text);
         const snapshot = await client.snapshot(pageId);
         return {
@@ -157,10 +161,20 @@ import type { MyClawConfig } from "../core/config.ts";
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 
+// There is ONE shared Chromium behind the sidecar. Parallel browser tasks used to fight
+// over tabs/focus/refs and corrupt each other; tasks are therefore serialized here.
+let browserTaskQueue: Promise<unknown> = Promise.resolve();
+
+export function enqueueBrowserTask<T>(run: () => Promise<T>): Promise<T> {
+  const result = browserTaskQueue.then(run, run);
+  browserTaskQueue = result.catch(() => undefined);
+  return result;
+}
+
 export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   return {
     name: "delegate_browser_task",
-    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
+    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. There is ONE shared browser: tasks run strictly one at a time, and parallel calls are queued — prefer a single well-scoped task (or sequential calls) over a parallel batch. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
     parameters: {
       type: "object",
       properties: {
@@ -180,7 +194,7 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const subagent = new BrowserSubagent(config, sidecarUrl);
       try {
-        const result = await subagent.run(instructions, url, signal);
+        const result = await enqueueBrowserTask(() => subagent.run(instructions, url, signal));
         if (result.needs_human) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
           return {
@@ -211,7 +225,7 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
   };
 }
 
-export function createBrowserScreenshotTool(client: BrowserClient): Tool {
+export function createBrowserScreenshotTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_screenshot",
     description: "Capture a screenshot. Use when stuck or when the user asks to see the page.",
@@ -225,7 +239,7 @@ export function createBrowserScreenshotTool(client: BrowserClient): Tool {
     async execute(args): Promise<ToolResult> {
       try {
         const useLabels = bool(args, "labels", false);
-        const pageId = getPageId();
+        const pageId = getPageId(state);
         const attachment = useLabels
           ? await client.screenshotWithLabels(pageId, bool(args, "full_page", false))
           : await client.screenshot(pageId, bool(args, "full_page", false));
@@ -258,7 +272,7 @@ export function createBrowserListTabsTool(client: BrowserClient): Tool {
   };
 }
 
-export function createBrowserFocusTabTool(client: BrowserClient): Tool {
+export function createBrowserFocusTabTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_focus_tab",
     description: "Switch to a tab by its index number (from browser_list_tabs).",
@@ -273,7 +287,7 @@ export function createBrowserFocusTabTool(client: BrowserClient): Tool {
       const index = num(args, "index", 0);
       try {
         const pageId = await client.focusTab(index);
-        currentPageId = pageId;
+        state.currentPageId = pageId;
         const snapshot = await client.snapshot(pageId);
         return {
           success: true,

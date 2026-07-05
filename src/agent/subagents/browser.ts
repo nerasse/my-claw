@@ -16,6 +16,7 @@ import {
   createBrowserListTabsTool,
   createBrowserFocusTabTool,
   createBrowserCloseTabTool,
+  createBrowserPageState,
 } from "../../tools/browser.ts";
 import { loadAllPromptFiles } from "../prompt/loader.ts";
 import { CORE_PROMPT } from "../prompt/core-prompts.ts";
@@ -34,10 +35,10 @@ const DEFAULT_MAX_STEPS = 30;
 const BROWSER_PROMPT = `You are a web browsing assistant. Your job is to complete tasks on websites using the available browser tools.
 
 Available tools:
-- browser_navigate(url, new_tab?): Go to a URL. Reuses the CURRENT tab by default — it does NOT open a new tab each call. Pass new_tab=true only when you genuinely need a separate tab.
-- browser_snapshot(): Get the page accessibility tree with ref numbers. ALWAYS call this after every navigate, click, or type to see the new state.
-- browser_click(ref): Click an element by its ref number.
-- browser_type(ref, text): Type text into a field by its ref number.
+- browser_navigate(url, new_tab?): Go to a URL. Reuses the CURRENT tab by default — it does NOT open a new tab each call. Pass new_tab=true only when you genuinely need a separate tab. Returns a fresh snapshot of the page.
+- browser_snapshot(): Re-read the page accessibility tree with ref numbers WITHOUT acting. navigate/click/type already return a fresh snapshot — do NOT call this after them; use it only when you need to re-check the page on its own.
+- browser_click(ref): Click an element by its ref number. Returns a fresh snapshot.
+- browser_type(ref, text): Type text into a field by its ref number. Returns a fresh snapshot.
 - browser_screenshot(full_page?, labels?): Capture a screenshot. Use when stuck or to show the user the page. Set labels=true to overlay ref numbers on elements.
 - browser_list_tabs(): List all open tabs with their index and URL.
 - browser_focus_tab(index): Switch to a different tab by its index (from browser_list_tabs).
@@ -46,13 +47,14 @@ Available tools:
 
 Rules:
 0. REUSE OPEN TABS. The browser is shared and stays open between tasks; the tabs already open are listed below under "Open browser tabs". Before opening anything, check that list: if a relevant tab already exists, continue in it with browser_focus_tab instead of navigating a fresh one. Reuse tabs as much as possible, but cleanly — never clobber an unrelated tab, and do not open duplicates. Only create a new tab (new_tab=true) when no existing tab fits.
-1. After EVERY action, call browser_snapshot to verify.
-2. Use only the ref numbers from the snapshot for click and type.
-3. Navigate autonomously. Do NOT stop at login forms, password fields, or sign-in pages — fill them in yourself if you have the needed information.
-4. Call browser_done with needs_human=true ONLY when you hit a barrier you genuinely cannot pass yourself: a CAPTCHA, a bot-check ("I'm not a robot", Cloudflare), or a 2FA/OTP code you do not have. Explain what is blocking in the summary. The user will take over the live browser, resolve it, and the task can resume.
-5. If you make no progress after 3 consecutive steps, call browser_done with needs_human=true describing what you tried.
-6. When the task is complete, call browser_done with a summary (needs_human defaults to false).
-7. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user.`;
+1. DISMISS OVERLAYS FIRST. If a cookie/consent banner, GDPR popup, newsletter modal, or app-install prompt covers the page, close it BEFORE anything else (click "Accept", "Reject", "Continue", the X, ...). NEVER take a screenshot for the user while such an overlay is still covering the page.
+2. Every step costs budget. navigate/click/type already return the new page state — do NOT waste a step calling browser_snapshot right after them.
+3. Use only the ref numbers from the latest snapshot for click and type.
+4. Navigate autonomously. Do NOT stop at login forms, password fields, or sign-in pages — fill them in yourself if you have the needed information.
+5. Call browser_done with needs_human=true ONLY when you hit a barrier you genuinely cannot pass yourself: a CAPTCHA, a bot-check ("I'm not a robot", Cloudflare), or a 2FA/OTP code you do not have. Explain what is blocking in the summary. The user will take over the live browser, resolve it, and the task can resume.
+6. If you make no progress after 3 consecutive steps, call browser_done with needs_human=true describing what you tried.
+7. When the task is complete, call browser_done with a summary (needs_human defaults to false). Include everything useful you found — the summary is all the caller gets.
+8. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user. Only screenshot a page that is fully loaded and free of overlays.`;
 
 async function buildBrowserSystemPrompt(): Promise<string> {
   const layers: string[] = [];
@@ -108,13 +110,14 @@ export class BrowserSubagent {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
     this.client = new BrowserClient(sidecarUrl, config.browser?.viewport);
     this.toolRegistry = new ToolRegistry();
-    this.toolRegistry.register(createBrowserNavigateTool(this.client));
-    this.toolRegistry.register(createBrowserSnapshotTool(this.client));
-    this.toolRegistry.register(createBrowserClickTool(this.client));
-    this.toolRegistry.register(createBrowserTypeTool(this.client));
-    this.toolRegistry.register(createBrowserScreenshotTool(this.client));
+    const pageState = createBrowserPageState();
+    this.toolRegistry.register(createBrowserNavigateTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserSnapshotTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserClickTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserTypeTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserScreenshotTool(this.client, pageState));
     this.toolRegistry.register(createBrowserListTabsTool(this.client));
-    this.toolRegistry.register(createBrowserFocusTabTool(this.client));
+    this.toolRegistry.register(createBrowserFocusTabTool(this.client, pageState));
     this.toolRegistry.register(createBrowserCloseTabTool(this.client));
     this.toolRegistry.register({
       name: "browser_done",
@@ -260,15 +263,55 @@ export class BrowserSubagent {
       }
     }
 
+    // Out of budget: 30 steps of browsing still hold real findings — salvage them
+    // with one last tool-free LLM call instead of discarding everything.
+    const findings = await this.summarizeFindings(messages, signal);
     return {
       success: false,
       needs_human: false,
-      summary: "Reached maximum number of steps without completing the task.",
+      summary: findings
+        ? `Reached maximum number of steps without completing the task. Findings so far: ${findings}`
+        : "Reached maximum number of steps without completing the task.",
       current_url: currentUrl,
       attachments: allAttachments,
     };
     } finally {
       await this.client.cleanup().catch(() => undefined);
+    }
+  }
+
+  private async summarizeFindings(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) return "";
+    const llmConfig = resolveLlmConfig(this.config.llm);
+    const prompt: ChatMessage[] = [
+      ...messages,
+      {
+        role: "user",
+        content:
+          "You are out of steps and cannot use tools anymore. Summarize concisely everything relevant you actually found or observed so far for the task (facts, names, dates, URLs), and what remained blocked. Plain text only.",
+      },
+    ];
+    const trimmed = trimToContextWindow(prompt, llmConfig.limit?.context, 0);
+    const start = Date.now();
+    try {
+      const response = await chatCompletion(llmConfig, trimmed, undefined, signal);
+      recordApiCall({
+        sessionId: "browser-subagent",
+        platform: "internal",
+        model: llmConfig.model,
+        baseUrl: llmConfig.baseUrl,
+        streaming: false,
+        caller: "browser",
+        promptTokens: response.usage?.promptTokens ?? 0,
+        completionTokens: response.usage?.completionTokens ?? 0,
+        totalTokens: response.usage?.totalTokens ?? 0,
+        toolCalls: 0,
+        iteration: this.maxSteps,
+        durationMs: Date.now() - start,
+      });
+      return (response.content ?? "").trim();
+    } catch {
+      return "";
     }
   }
 

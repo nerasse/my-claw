@@ -203,6 +203,9 @@ const handlers = {
     const pageId = idForPage(page);
     session.currentPageId = pageId;
     await page.goto(body.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // SPAs (Instagram, TikTok...) are still blank at domcontentloaded: give the JS a
+    // chance to render before snapshotting, without hanging on never-idle pages.
+    await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
     return { pageId, snapshot: await snapshotPage(page), url: page.url() };
   },
 
@@ -222,6 +225,10 @@ const handlers = {
 
   async screenshot(body) {
     const page = getPage(body.pageId);
+    // Blank-screenshot guard: wait for the network to settle and give the compositor a
+    // beat before capturing; both bounded so a busy page cannot stall the capture.
+    await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => undefined);
+    await page.waitForTimeout(300);
     const path = screenshotPath();
     if (body.labels) {
       await injectRefLabels(page);
