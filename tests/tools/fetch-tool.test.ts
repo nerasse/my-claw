@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { fetchTool, htmlToText, processFetchBody } from "../../src/tools/fetch.ts";
+import { fetchTool, htmlToText, processFetchBody, isJsRenderedShell } from "../../src/tools/fetch.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 test("fetch: successful GET returns body", async () => {
@@ -145,4 +145,44 @@ test("processFetchBody: sniffs HTML without content-type", () => {
   const out = processFetchBody("<!doctype html><html><body><p>Hi</p></body></html>", null);
   assert.ok(!out.includes("<p>"));
   assert.ok(out.includes("Hi"));
+});
+
+test("isJsRenderedShell: detects a large SPA shell with no readable text", () => {
+  const shell = `<!doctype html><html><head><title>x</title></head><body><div id="root">-</div><script>${"x".repeat(20_000)}</script></body></html>`;
+  assert.equal(isJsRenderedShell(shell, "text/html"), true);
+});
+
+test("isJsRenderedShell: a real article page is not a shell", () => {
+  const article = `<!doctype html><html><body><article>${"Real readable words about events in the city. ".repeat(200)}</article></body></html>`;
+  assert.equal(isJsRenderedShell(article, "text/html"), false);
+});
+
+test("isJsRenderedShell: small pages and non-HTML are not shells", () => {
+  assert.equal(isJsRenderedShell("<html><body>-</body></html>", "text/html"), false, "small page");
+  assert.equal(isJsRenderedShell(`{"data":"${"x".repeat(10_000)}"}`, "application/json"), false, "json");
+});
+
+test("fetch: JS-rendered shell output carries the delegate_browser_task hint", async () => {
+  const shell = `<!doctype html><html><body><div id="app">- | -</div><script>${"y".repeat(30_000)}</script></body></html>`;
+  const mock = mockFetch(async () => new Response(shell, { status: 200, headers: { "content-type": "text/html" } }));
+  try {
+    const result = await fetchTool.execute({ url: "https://spa.example.com/profile" });
+    assert.equal(result.success, true);
+    assert.ok(result.output.includes("JavaScript-rendered"), "should flag the JS shell");
+    assert.ok(result.output.includes("delegate_browser_task"), "should point to the browser subagent");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: normal HTML page gets no JS-shell hint", async () => {
+  const page = `<!doctype html><html><body><p>${"Plenty of readable content here. ".repeat(300)}</p></body></html>`;
+  const mock = mockFetch(async () => new Response(page, { status: 200, headers: { "content-type": "text/html" } }));
+  try {
+    const result = await fetchTool.execute({ url: "https://example.com/article" });
+    assert.equal(result.success, true);
+    assert.ok(!result.output.includes("JavaScript-rendered"));
+  } finally {
+    mock.restore();
+  }
 });

@@ -46,6 +46,19 @@ function looksLikeHtml(contentType: string | null, body: string): boolean {
   return /<!doctype html|<html[\s>]|<body[\s>]/i.test(body.slice(0, 2000));
 }
 
+/** A JS-rendered SPA shell (Instagram, TikTok...) converts to near-empty text ("- | -"
+ *  junk); without a hint the model keeps re-fetching it. Detects a large HTML body whose
+ *  readable text is almost nothing. */
+export function isJsRenderedShell(body: string, contentType: string | null): boolean {
+  if (!looksLikeHtml(contentType, body)) return false;
+  if (body.length < 5000) return false;
+  const meaningful = htmlToText(body).replace(/[-|*•\s]/g, "");
+  return meaningful.length < 200;
+}
+
+const JS_SHELL_HINT =
+  "\n\n[Note: this page appears to be JavaScript-rendered — fetch cannot execute scripts, so there is almost no readable text here. Re-fetching will not help; use delegate_browser_task to read it in the real browser.]";
+
 // Windowed output: each call is bounded (cost + context), but the model is never blind to
 // the rest — it can re-call fetch with a larger `offset` to page through the full content.
 export function processFetchBody(
@@ -205,7 +218,11 @@ export const fetchTool: Tool = {
         }
 
         const rawText = await response.text();
-        const text = processFetchBody(rawText, response.headers.get("content-type"), num(args, "offset", 0));
+        const contentType = response.headers.get("content-type");
+        let text = processFetchBody(rawText, contentType, num(args, "offset", 0));
+        if (isJsRenderedShell(rawText, contentType)) {
+          text += JS_SHELL_HINT;
+        }
         hooks.emit("tool:fetch:request", { url: currentUrl, method, status: response.status });
         if (response.ok) {
           return { success: true, output: text };

@@ -170,4 +170,46 @@ describe("web_search tool", () => {
       restore();
     }
   });
+
+  test("degraded backend triggers a cooldown: next search is short-circuited without hitting SearXNG", async () => {
+    let backendCalls = 0;
+    const { restore } = mockFetch(async () => {
+      backendCalls++;
+      return new Response(
+        JSON.stringify({ results: [], unresponsive_engines: [["brave", "too many requests"]] }),
+        { status: 200 },
+      );
+    });
+
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr" });
+
+      const first = await tool.execute({ query: "events rabat" });
+      assert.equal(first.success, false);
+      assert.match(first.error ?? "", /degraded/i);
+      assert.equal(backendCalls, 1);
+
+      const second = await tool.execute({ query: "events rabat july" });
+      assert.equal(second.success, false);
+      assert.match(second.error ?? "", /cooldown/i, "second call should hit the cooldown");
+      assert.match(second.error ?? "", /Do NOT retry/i);
+      assert.equal(backendCalls, 1, "cooldown must not hit the backend again");
+    } finally {
+      restore();
+    }
+  });
+
+  test("cooldown is per tool instance (fresh tool starts clean)", async () => {
+    const { restore } = mockFetch(async () => {
+      return new Response(JSON.stringify({ results: [{ url: "https://a.com", title: "A" }] }), { status: 200 });
+    });
+
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr" });
+      const result = await tool.execute({ query: "test" });
+      assert.equal(result.success, true, "a fresh tool instance must not inherit a cooldown");
+    } finally {
+      restore();
+    }
+  });
 });

@@ -72,7 +72,13 @@ function formatResults(results: Array<{ url: string; title: string; content?: st
     .join("\n\n");
 }
 
+export const DEGRADED_COOLDOWN_MS = 60_000;
+
 export function createWebSearchTool(config?: WebSearchConfig): Tool {
+  // When SearXNG reports its engines rate-limited, hammering it again only makes the
+  // suspensions longer. Short-circuit further searches for a cooldown window.
+  let degradedUntil = 0;
+  let degradedReason = "";
   return {
     name: "web_search",
     description:
@@ -111,6 +117,15 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
       const query = str(args, "query").trim();
       if (!query) {
         return { success: false, output: "", error: "query is required and cannot be empty." };
+      }
+
+      if (Date.now() < degradedUntil) {
+        const waitS = Math.ceil((degradedUntil - Date.now()) / 1000);
+        return {
+          success: false,
+          output: "",
+          error: `Web search backend degraded (${degradedReason}); on cooldown for ${waitS}s more. Do NOT retry web_search now — answer from your own knowledge, use fetch on a known URL, or tell the user search is temporarily unavailable.`,
+        };
       }
 
       const count = Math.min(10, Math.max(1, Math.floor(num(args, "count", 5))));
@@ -174,6 +189,8 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
         if (results.length === 0) {
           const degraded = describeUnresponsiveEngines(parsed);
           if (degraded) {
+            degradedUntil = Date.now() + DEGRADED_COOLDOWN_MS;
+            degradedReason = degraded;
             return {
               success: false,
               output: "",
