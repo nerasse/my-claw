@@ -59,6 +59,17 @@ solves the blocker and replies "continue".
 
 - **SSRF**: `browser_navigate` blocks `localhost`, `127.0.0.1`, `file://`
 - **Dialog auto-dismiss**: `page.on('dialog', d => d.accept())` — no blocking alerts
+- **Serialized tasks**: there is ONE shared Chromium, so `delegate_browser_task` calls are
+  queued (`enqueueBrowserTask`) and run strictly one at a time. Parallel tasks used to
+  clobber each other's tabs/refs and fail with "browser has been closed" / max-steps.
+- **Per-subagent page state**: the "current page" pointer lives in a `BrowserPageState`
+  owned by each subagent, not in a module global — concurrent runs cannot cross-click.
+- **Render settle**: navigate waits `load` (bounded 8s) after `domcontentloaded`, and
+  screenshots wait `networkidle` (bounded 3s) + 300ms — SPAs no longer produce blank shots.
+- **Overlay hygiene**: the subagent prompt requires dismissing cookie/consent banners
+  before acting or screenshotting.
+- **Max-steps salvage**: when the step budget runs out, one final tool-free LLM call
+  summarizes what was actually found instead of discarding 30 steps of browsing.
 - **Persistent tabs**: tabs are **never auto-closed** — the shared browser stays open so the
   user can keep working on the same tabs across tasks. They close only on explicit
   `browser_close_tab`, when the user closes them, or on a browser restart.

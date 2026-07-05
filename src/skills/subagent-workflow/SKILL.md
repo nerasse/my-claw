@@ -32,6 +32,12 @@ Spawn deliberately:
 - For large web pages, a sub-agent should page through `fetch` with `offset` (see the
   web-browsing skill) instead of dumping whole raw pages into its context — a single huge
   page poisons the session and inflates every later call.
+- Do NOT fire several near-identical `web_search` calls in one batch: the search engines
+  behind SearXNG rate-limit fast, and one degraded batch suspends them for everyone. One
+  well-phrased query beats four variations. If `web_search` reports "backend degraded",
+  STOP searching (it enters a cooldown) — use what you already have or `fetch` known URLs.
+- `delegate_browser_task` runs on ONE shared browser: calls are serialized, never launch
+  them in parallel (see the web-browsing skill).
 
 ## Types
 

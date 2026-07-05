@@ -25,6 +25,23 @@ managed service (CDP on :9222). Always go through `delegate_browser_task`. If it
 infrastructure error (CDP unreachable), report it to the user — do not improvise with raw
 `bash` chromium, which bypasses the sandbox and the managed browser.
 
+## One task at a time
+
+There is ONE shared browser. **Never call `delegate_browser_task` several times in
+parallel** — parallel calls are queued and run one after the other anyway, so a "parallel
+batch" of 3 tasks is just 3x the wall-clock time with none of the benefit. Prefer a single
+well-scoped task ("check these 3 Instagram profiles and report events found on each"), or
+sequential calls if the targets are truly unrelated.
+
+## Login walls (Instagram, TikTok, Facebook...)
+
+The browser profile is **persistent** — cookies and logins survive across tasks and
+restarts. If a site blocks on a login wall and the info genuinely requires an account:
+propose to the user to log in ONCE via the live browser (noVNC); after that the browser
+stays logged in and future tasks pass. Do not burn steps retrying a login wall without
+credentials, and do not fall back to `fetch` on those sites — they are JavaScript-rendered
+and return nothing useful.
+
 ## How it works
 
 1. A browser subagent opens the URL in the remote Chromium instance (CDP :9222 on Xvfb :99),
@@ -75,7 +92,8 @@ message with the live-browser URL.
 - If a site requires login credentials the agent does not have, ask the user first
 - The subagent only has browser tools (navigate, snapshot, click, type, screenshot)
 - It does NOT have bash/read/write/memory tools to prevent side effects
-- After every action, the subagent calls `browser_snapshot` to verify state
+- Its actions (navigate/click/type) return a fresh page snapshot, and it dismisses
+  cookie/consent overlays before screenshotting
 - The handoff decision is the subagent's own judgment — there is no keyword auto-block
 
 ## Session persistence
