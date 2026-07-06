@@ -110,6 +110,12 @@ export class TtsPipeline {
           reject(new Error("Piper TTS timed out after 30s"));
         }, 30_000);
 
+        // If piper exits immediately (e.g. missing .onnx model), writing to its stdin emits EPIPE
+        // on a stream with no error listener -> uncaught exception crashing the whole process.
+        child.stdin?.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
         child.stdin?.write(text);
         child.stdin?.end();
 

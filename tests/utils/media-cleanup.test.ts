@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
-import { writeFile, access, unlink } from "node:fs/promises";
+import { writeFile, access, unlink, mkdtemp, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { cleanupGeneratedTempFiles } from "../../src/utils/media.ts";
 
 const exists = async (p: string) => {
@@ -37,6 +39,18 @@ test("cleanupGeneratedTempFiles removes generated /tmp files but leaves others a
     await unlink(ttsFile).catch(() => {});
     await unlink(browserFile).catch(() => {});
   }
+});
+
+test("cleanupGeneratedTempFiles removes the whole tts-* directory, not just the file", async () => {
+  // Real TTS output: mkdtemp(tmpdir()/tts-)/output.mp3 — the empty dir must not survive cleanup.
+  const dir = await mkdtemp(join(tmpdir(), "tts-"));
+  const file = join(dir, "output.mp3");
+  await writeFile(file, "audio");
+
+  await cleanupGeneratedTempFiles([{ path: file }]);
+
+  expect(await exists(file)).toBe(false);
+  expect(await exists(dir)).toBe(false);
 });
 
 test("cleanupGeneratedTempFiles tolerates empty input and missing files", async () => {

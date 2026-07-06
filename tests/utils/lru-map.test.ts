@@ -40,24 +40,6 @@ test("LruMap: set existing key moves to end", () => {
   assert.equal(map.has("b"), false);
 });
 
-test("LruMap: touch moves without changing value", () => {
-  const map = new LruMap<string, number>(3);
-  map.set("a", 1);
-  map.set("b", 2);
-  map.set("c", 3);
-  map.touch("a");
-  map.set("d", 4); // evicts b
-  assert.equal(map.get("a"), 1);
-  assert.equal(map.has("b"), false);
-});
-
-test("LruMap: touch on nonexistent key is no-op", () => {
-  const map = new LruMap<string, number>(3);
-  map.set("a", 1);
-  map.touch("z");
-  assert.equal(map.size, 1);
-});
-
 test("LruMap: onEvict callback fires on eviction", () => {
   const evicted: Array<[string, number]> = [];
   const map = new LruMap<string, number>(2, (k, v) => evicted.push([k, v]));

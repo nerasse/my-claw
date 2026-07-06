@@ -1,7 +1,7 @@
 /**
  * Simple LRU Map. Evicts oldest entries when maxSize is exceeded.
- * Relies on Map insertion order (ES2015+). A `get` or `touch` moves the
- * entry to the end (most-recently-used).
+ * Relies on Map insertion order (ES2015+). A `get` moves the entry to the end
+ * (most-recently-used).
  */
 export class LruMap<K, V> extends Map<K, V> {
   private readonly onEvict?: (key: K, value: V) => void;
@@ -34,14 +34,6 @@ export class LruMap<K, V> extends Map<K, V> {
     super.set(key, value);
     this.evict();
     return this;
-  }
-
-  touch(key: K): void {
-    const value = super.get(key);
-    if (value !== undefined) {
-      super.delete(key);
-      super.set(key, value);
-    }
   }
 
   private evict(): void {
