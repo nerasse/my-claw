@@ -5,8 +5,8 @@ set -uo pipefail
 # Usage: myclaw <command>
 # Commands: start, stop, restart, status, dev, update
 
-SERVICES="my-claw-xvfb my-claw-chromium my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
-APP_SERVICES="my-claw my-claw-whisper my-claw-chromium my-claw-vnc my-claw-novnc my-claw-xvfb"
+SERVICES="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
+APP_SERVICES="my-claw my-claw-whisper my-claw-browser-sidecar my-claw-chromium my-claw-vnc my-claw-novnc my-claw-xvfb"
 
 cmd="${1:-}"
 
@@ -124,7 +124,7 @@ show_status() {
 
 dev_mode() {
   MAIN="my-claw"
-  DEPS="my-claw-xvfb my-claw-chromium my-claw-whisper my-claw-vnc my-claw-novnc"
+  DEPS="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc"
   WAS_MAIN_ACTIVE=""
 
   # Stop main app if running

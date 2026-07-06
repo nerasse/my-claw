@@ -135,9 +135,19 @@ if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
   BUN_PATH="${TARGET_HOME}/.bun/bin/bun"
 fi
 
+if [ -z "$NODE_PATH" ]; then
+  echo "WARNING: node not found — the browser sidecar needs it; skipping the sidecar service." >&2
+  echo "         Install Node.js and re-run the update to enable browsing." >&2
+fi
+
+GENERATED_SERVICES=""
 for template in "${EXTRACT_DIR}/templates/"*.service; do
   [ -e "$template" ] || continue
   svc_name="$(basename "$template")"
+  # The sidecar unit is useless (and flaps under Restart=always) without node — skip it.
+  if [ "$svc_name" = "my-claw-browser-sidecar.service" ] && [ -z "$NODE_PATH" ]; then
+    continue
+  fi
   sed -e "s|{{USER}}|${TARGET_USER}|g" \
       -e "s|{{HOME}}|${TARGET_HOME}|g" \
       -e "s|{{BUN}}|${BUN_PATH}|g" \
@@ -146,11 +156,14 @@ for template in "${EXTRACT_DIR}/templates/"*.service; do
       -e "s|{{APP_DIR}}|${APP_DIR}|g" \
       "$template" > "/etc/systemd/system/${svc_name}"
   chmod 644 "/etc/systemd/system/${svc_name}"
+  GENERATED_SERVICES="${GENERATED_SERVICES} ${svc_name}"
 done
 
-# Re-install update script
-cp "${EXTRACT_DIR}/packaging/update.sh" /usr/local/bin/my-claw-update
-chmod 755 /usr/local/bin/my-claw-update
+# Re-install update script atomically: cp onto the SAME inode this running script is still being
+# read from can execute garbage mid-update once the file grows; write a temp then rename.
+cp "${EXTRACT_DIR}/packaging/update.sh" /usr/local/bin/my-claw-update.new
+chmod 755 /usr/local/bin/my-claw-update.new
+mv -f /usr/local/bin/my-claw-update.new /usr/local/bin/my-claw-update
 
 # Re-install CLI wrapper
 cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw
@@ -161,10 +174,16 @@ rm -rf "$TMP_DIR"
 
 systemctl daemon-reload
 
+# Enable regenerated units so a newly-added service template survives a reboot (previously a new
+# unit would start once but never be enabled).
+for svc in $GENERATED_SERVICES; do
+  systemctl enable "$svc" >/dev/null 2>&1 || true
+done
+
 echo "Starting services..."
 systemctl start my-claw-xvfb.service
 systemctl start my-claw-chromium.service
-systemctl start my-claw-browser-sidecar.service
+[ -n "$NODE_PATH" ] && systemctl start my-claw-browser-sidecar.service
 systemctl start my-claw-whisper.service
 systemctl start my-claw-vnc.service
 systemctl start my-claw-novnc.service

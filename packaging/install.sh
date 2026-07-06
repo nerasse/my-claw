@@ -74,6 +74,14 @@ if [ -z "$PYTHON_PATH" ]; then
   exit 1
 fi
 
+# Node is required for the browser sidecar (Playwright connectOverCDP hangs under Bun). Without it
+# {{NODE}} renders empty and the sidecar unit flaps forever under Restart=always. Warn loudly; the
+# service generation below skips the sidecar when node is absent.
+if [ -z "$NODE_PATH" ]; then
+  echo "WARNING: node not found — the browser sidecar will be skipped (browsing disabled)."
+  echo "         Install Node.js and re-run the installer to enable it."
+fi
+
 echo "Installing my-claw for user: ${TARGET_USER}"
 echo "Home directory: ${TARGET_HOME}"
 echo "Bun path: ${BUN_PATH}"
@@ -146,6 +154,9 @@ fi
 for template in "${PROJECT_DIR}/templates/"*.service; do
   [ -e "$template" ] || continue
   svc_name="$(basename "$template")"
+  if [ "$svc_name" = "my-claw-browser-sidecar.service" ] && [ -z "$NODE_PATH" ]; then
+    continue
+  fi
   sed -e "s|{{USER}}|${TARGET_USER}|g" \
       -e "s|{{HOME}}|${TARGET_HOME}|g" \
       -e "s|{{BUN}}|${BUN_PATH}|g" \
@@ -179,7 +190,7 @@ systemctl daemon-reload
 # Enable services
 systemctl enable my-claw-xvfb.service
 systemctl enable my-claw-chromium.service
-systemctl enable my-claw-browser-sidecar.service
+[ -n "$NODE_PATH" ] && systemctl enable my-claw-browser-sidecar.service
 systemctl enable my-claw-whisper.service
 systemctl enable my-claw-vnc.service
 systemctl enable my-claw-novnc.service

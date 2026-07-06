@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+env:
+  # Pin Bun so CI (and the tested behavior) can't drift when a new Bun ships mid-day.
+  BUN_VERSION: "1.3.13"
+
 jobs:
   lint:
     name: Lint & Type Check
@@ -17,16 +21,11 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl xz-utils
-
-      - name: Install ffmpeg
-        run: |
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" | tar -xJ --strip-components=2 -C /usr/local/bin/ "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg"
-          ffmpeg -version | head -1
+          apt-get install -y jq curl
 
       - name: Install Bun
         run: |
-          curl -fsSL https://bun.sh/install | bash
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
           echo "$HOME/.bun/bin" >> $GITHUB_PATH
           export PATH="$HOME/.bun/bin:$PATH"
           bun --version
@@ -34,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           export PATH="$HOME/.bun/bin:$PATH"
-          bun install
+          bun install --frozen-lockfile
 
       - name: Check types
         run: |
@@ -61,7 +60,7 @@ jobs:
 
       - name: Install Bun
         run: |
-          curl -fsSL https://bun.sh/install | bash
+          curl -fsSL https://bun.sh/install | bash -s "bun-v${BUN_VERSION}"
           echo "$HOME/.bun/bin" >> $GITHUB_PATH
           export PATH="$HOME/.bun/bin:$PATH"
           bun --version
@@ -69,7 +68,7 @@ jobs:
       - name: Install dependencies
         run: |
           export PATH="$HOME/.bun/bin:$PATH"
-          bun install
+          bun install --frozen-lockfile
 
       - name: Run tests
         run: |

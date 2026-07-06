@@ -72,7 +72,7 @@
     "language": "fr"
   },
   "browser": {
-    "enabled": false,
+    "enabled": true,
     "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
     "viewport": { "width": 1920, "height": 1080 },
@@ -82,6 +82,16 @@
     "orchestrator": { "maxIterations": 90 },
     "general": { "maxIterations": 50 },
     "research": { "maxIterations": 50 }
+  },
+  "cron": {
+    "enabled": true,
+    "tickIntervalMs": 60000,
+    "maxIterations": 90,
+    "timeoutMs": 1800000
+  },
+  "injection": {
+    "enabled": true,
+    "budgetBonus": 8
   },
   "memory": {
     "enabled": true,
