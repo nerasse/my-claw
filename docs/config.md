@@ -104,7 +104,7 @@ Runtime switch via channel commands:
 |---|---|
 | `/model` | Telegram, Matrix |
 | `/model <name>` | Telegram, Matrix |
-| `/models` | Matrix |
+| `/models` | Telegram, Matrix |
 
 Search works on `id`, `label`, and the tail segment after the last `/`.
 

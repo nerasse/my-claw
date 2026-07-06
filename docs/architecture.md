@@ -11,7 +11,7 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8 base + voice, browser, skill, subagent, search) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search |
+| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
@@ -20,7 +20,7 @@
 | Run control (`/stop`) | Complete — aborts the session run + all sub-agents via one shared AbortSignal, abortable LLM/bash/fetch/web_search, live run tree in `/status` — see `docs/stop.md` |
 | Mid-run injection (steering) | Complete — a message arriving during an active run is injected at the next iteration boundary (text + media), answered in its own threaded bubble, with correct reactions; per-session mailbox, cap + reroute fallback — see `docs/injection.md` |
 | Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |
-| Blacklist system | Scaffolded (`ActionBlacklist`), confirmation UI works |
+| Blacklist system | Complete — approval is purely blacklist-driven (empty by default = full autonomy); listed tools require an interactive accept/deny, everything else runs unconfirmed |
 | Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
 
@@ -108,11 +108,16 @@
 ```
 ~/.my-claw/
 ├── config.json              # global config (providers, models, whitelist, blacklist, voice, etc.)
-├── prompt/                  # system prompt files
-│   ├── SOUL.md
+├── workspace/               # agent's working directory (filesystem tools resolve here)
+│   ├── SOUL.md              # system prompt files (seeded from docs/prompt/ on first boot)
 │   ├── AGENTS.md
 │   ├── USER.md
-│   └── MEMORY.md
+│   ├── MEMORY.md            # human-readable memory view (source of truth is memory.db)
+│   └── skills/              # workspace-tier (agent-generated) skills
+├── skills/                  # custom (user-managed) skills; built-in live under skills/.builtin/
+├── cron/
+│   ├── jobs.json            # scheduled jobs (atomic writes)
+│   └── output/<jobId>/<timestamp>.md   # per-run execution history
 ├── sessions/
 │   ├── telegram/
 │   │   ├── dm/
@@ -129,8 +134,11 @@
 ├── sessions-archive/        # archived sessions (reset, clear)
 ├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
 ├── memory.db                # SQLite — long-term memory: entries + FTS5 (WAL mode)
+├── tmp/                     # transient media/temp files (cleaned on boot)
 └── logs/
 ```
+
+Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
 - Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`
 

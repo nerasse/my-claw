@@ -7,7 +7,7 @@ The app runs under **Bun**, but Playwright's `connectOverCDP` **hangs under Bun*
 is healthy). So all Playwright lives in a separate **Node sidecar** process; the Bun app
 drives it over loopback HTTP. Playwright `Page`/`Context` objects never cross the process
 boundary — they are referenced by opaque string ids. Screenshots are written to `/tmp`
-(shared FS) and only the path is returned. See `SIDECAR-BROWSER.md`.
+(shared FS) and only the path is returned.
 
 ```
 User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Node sidecar → Playwright → Chromium (Xvfb :99)
@@ -22,7 +22,7 @@ User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Nod
 |---|---|---|
 | Sidecar | `sidecar/server.mjs` (Node) | Owns Playwright: connect, navigate, snapshot, click, type, screenshot, label overlay, session/page registry |
 | Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one session per task, pages addressed by id |
-| Tools | `src/tools/browser.ts` | 9 tools (8 in main registry + `browser_done` in subagent) |
+| Tools | `src/tools/browser.ts` | Main registry: only `delegate_browser_task`. The 8 navigation tools + `browser_done` are registered inside the browser subagent |
 | Subagent | `src/agent/subagents/browser.ts` | Loop + LLM-driven human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
 
 ## Tools
@@ -53,7 +53,7 @@ solves the blocker and replies "continue".
 
 > Rationale (browser-use / BrowserAct / Skyvern): handoff is a structured signal decided by
 > the agent, never a regex on page text. Keyword scanning false-positives on normal login
-> pages. See `FIX-BROWSER-HANDOFF.md`.
+> pages.
 
 ## Guardrails
 

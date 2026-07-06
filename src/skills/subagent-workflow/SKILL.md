@@ -43,7 +43,7 @@ Spawn deliberately:
 
 | Type | Tools | Use for |
 |---|---|---|
-| `research` | read, grep, find, ls, fetch | Exploration, analysis, no filesystem changes |
+| `research` | read, grep, find, ls, fetch, web_search, list_skills, read_skill | Exploration, analysis, web research, no filesystem changes |
 | `general` | All tools (bash, write, memory...) | Execution, coding, modifications |
 
 ## Workflow
@@ -65,7 +65,7 @@ Spawn deliberately:
 ## Limits
 
 - Max **3 concurrent** one-shot runs globally
-- Max spawn **depth: 2** (you -> sub-agent -> sub-sub-agent)
+- **One level deep only**: you (main) spawn sub-agents; sub-agents have no `spawn` tool, so they cannot spawn further
 - Sub-agent sessions auto-truncate at **500 messages** (keeps last 50)
 - **Unlimited** persistent sub-agents on disk
 

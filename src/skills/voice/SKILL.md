@@ -44,7 +44,7 @@ The change is **runtime** — no reboot needed.
 | Mode | STT | TTS |
 |---|---|---|
 | Cloud | Groq whisper-large-v3 (~1-2s) | Edge TTS MP3 |
-| Local | faster-whisper :18792 (~5-7s) | Piper WAV |
+| Local | faster-whisper :8000 (~5-7s) | Piper WAV |
 
 ## Errors
 
@@ -56,6 +56,6 @@ explicitly:
 ## Overrides (priority)
 
 1. `forceCloud` / `forceLocal` in the tool call (per-call)
-2. `voice.features.<stt|tts>.mode` (per-feature)
+2. `voice.<stt|tts>.mode` (per-feature)
 3. `voice.mode` (global)
 4. `"auto"` -> cloud if credentials available, else local

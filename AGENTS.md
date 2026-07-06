@@ -48,7 +48,10 @@
 src/
 ├── core/
 │   ├── config.ts          # App configuration + types
-│   └── router.ts          # Message routing (router/ moved here)
+│   ├── config-watcher.ts  # Hot-reload of ~/.my-claw/config.json (fs.watch)
+│   ├── router.ts          # Message routing (router/ moved here)
+│   ├── run-registry.ts    # Live run tree (main + sub-agents) for /status and /stop
+│   └── aborted.ts         # rethrowIfAborted + shared abort helpers
 ├── agent/
 │   ├── bridge.ts          # LLM agent orchestration
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
@@ -57,7 +60,7 @@ src/
 │   ├── blacklist.ts
 │   ├── preprocess.ts     # Message preprocessing (audio/video/attachments)
 │   ├── subagents/
-│   │   └── browser.ts
+│   │   └── browser.ts     # delegate_browser_task sub-agent
 │   └── prompt/
 │       ├── builder.ts
 │       ├── loader.ts
@@ -137,6 +140,8 @@ src/
 │   ├── web-search.ts
 │   ├── browser.ts         # Browser navigation/interaction tools
 │   ├── skills.ts          # Skill management tools
+│   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
+│   ├── stt.ts, tts.ts, voice-mode.ts  # Manual voice tools (thin wrappers over voice/)
 │   └── spawn.ts, send.ts, list-agents.ts, kill-agent.ts, reset-agent.ts
 ├── subagents/
 │   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset)
@@ -146,6 +151,14 @@ src/
 │   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace)
 │   ├── loader.ts          # Skill file loader + YAML frontmatter parser
 │   ├── sync.ts            # Built-in skill auto-sync (SHA256 hash)
+│   └── types.ts
+├── cron/
+│   ├── scheduler.ts       # Tick loop, at-most-once dispatch, timeout wall
+│   ├── store.ts           # jobs.json CRUD, schedule parsing, next-run compute
+│   └── types.ts
+├── hooks/
+│   ├── bus.ts             # emit (void), check (gate), waterfall dispatch
+│   ├── index.ts           # Shared hooks singleton + registration
 │   └── types.ts
 ├── voice/
 │   ├── manager.ts         # Voice mode resolution (cloud/local/auto)
