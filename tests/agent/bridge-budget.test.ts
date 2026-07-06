@@ -171,6 +171,64 @@ test("AgentBridge stops gracefully after budget with no tools in summary call", 
   }
 });
 
+test("cron messages use config.cron.maxIterations, not the orchestrator budget", async () => {
+  // The cron runaway guard must cap the loop regardless of the (much larger) orchestrator budget.
+  const registry = new ToolRegistry();
+  registry.register({
+    name: "demo",
+    description: "demo tool",
+    parameters: {},
+    async execute() {
+      return { success: true, output: "ok" };
+    },
+  });
+
+  const config = configWithBudget(10); // orchestrator budget = 10
+  config.cron = { enabled: true, maxIterations: 1 }; // cron budget = 1
+  const voiceManager = new VoiceManager(config);
+  const bridge = new AgentBridge(
+    config,
+    registry,
+    new SkillRegistry(),
+    voiceManager,
+    new SttPipeline(voiceManager),
+    new TtsPipeline(voiceManager),
+  );
+
+  const cronMessage: UnifiedMessage = { ...createMessage(), platform: "cron" };
+  const session = createSession();
+
+  let callCount = 0;
+  const fetchMock = mockFetch(async (_input, init) => {
+    callCount++;
+    const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { tools?: unknown[] };
+    // Always ask for another tool call; only the budget can stop the loop.
+    if (body.tools !== undefined) {
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "", tool_calls: [{ id: `tc${callCount}`, function: { name: "demo", arguments: "{}" } }] } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ) as never;
+    }
+    // Grace/summary call (no tools) once the budget is spent.
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "cron summary" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    const response = await bridge.handleMessage(cronMessage, session);
+    expect(response).toBe("cron summary");
+    // budget 1 -> exactly one tool-calling round (call 1) + one grace call (call 2).
+    // Had it used the orchestrator budget of 10, callCount would be 11.
+    expect(callCount).toBe(2);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
 test("AgentBridge returns plain response before budget is exhausted", async () => {
   const registry = new ToolRegistry();
   const bridge = createBridge(registry, 10);

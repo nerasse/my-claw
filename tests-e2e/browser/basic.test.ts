@@ -13,14 +13,15 @@ const SIDECAR_PORT = Number(process.env.BROWSER_E2E_PORT || 9333);
 const SIDECAR_URL = `http://127.0.0.1:${SIDECAR_PORT}`;
 const NODE_BIN = process.env.NODE_BIN || "node";
 
-describe("Browser E2E", () => {
+// skipIf (not an early return): a disabled block is reported as skipped, not as
+// passing tests that asserted nothing.
+describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
   let client: BrowserClient;
   let sidecar: ReturnType<typeof Bun.spawn> | undefined;
   let server: ReturnType<typeof Bun.serve>;
   let baseUrl: string;
 
   beforeAll(async () => {
-    if (!E2E_ENABLED) return;
     server = Bun.serve({
       port: 0,
       routes: {
@@ -59,7 +60,6 @@ describe("Browser E2E", () => {
   });
 
   afterAll(async () => {
-    if (!E2E_ENABLED) return;
     // Tabs are never auto-closed now, so this test tidies up its own tabs (those
     // pointing at the local test server) to avoid leaking them into the shared browser.
     try {
@@ -76,7 +76,6 @@ describe("Browser E2E", () => {
   });
 
   test("navigate reuses the same tab when reusePageId is given", async () => {
-    if (!E2E_ENABLED) return;
     const first = await client.navigate(`${baseUrl}/button`, { newTab: true });
     const reused = await client.navigate(`${baseUrl}/form`, { reusePageId: first.pageId });
     assert.equal(reused.pageId, first.pageId, "same tab must be reused, not a new one");
@@ -85,7 +84,6 @@ describe("Browser E2E", () => {
   });
 
   test("cleanup leaves tabs open (persistent browser)", async () => {
-    if (!E2E_ENABLED) return;
     const before = (await client.listTabs()).length;
     await client.navigate(`${baseUrl}/button`, { newTab: true });
     await client.cleanup();
@@ -100,7 +98,6 @@ describe("Browser E2E", () => {
   });
 
   test("navigate returns a snapshot with injected interactive refs", async () => {
-    if (!E2E_ENABLED) return;
     const result = await client.navigate(`${baseUrl}/button`);
     assert.ok(result.pageId);
     assert.ok(result.snapshot.raw.includes("Click me"));
@@ -109,7 +106,6 @@ describe("Browser E2E", () => {
   });
 
   test("click changes page state", async () => {
-    if (!E2E_ENABLED) return;
     const result = await client.navigate(`${baseUrl}/button`);
     await client.click(result.pageId, 1);
     const snapshot = await client.snapshot(result.pageId);
@@ -117,7 +113,6 @@ describe("Browser E2E", () => {
   });
 
   test("type and submit form", async () => {
-    if (!E2E_ENABLED) return;
     const result = await client.navigate(`${baseUrl}/form`);
     await client.type(result.pageId, 1, "John");
     await client.click(result.pageId, 2);
@@ -126,7 +121,6 @@ describe("Browser E2E", () => {
   });
 
   test("screenshot produces file", async () => {
-    if (!E2E_ENABLED) return;
     const result = await client.navigate(`${baseUrl}/button`);
     const attachment = await client.screenshot(result.pageId);
     assert.strictEqual(attachment.type, "image");
@@ -137,7 +131,6 @@ describe("Browser E2E", () => {
   });
 
   test("multi-tab lifecycle: open two, focus one, close one", async () => {
-    if (!E2E_ENABLED) return;
     const before = (await client.listTabs()).length;
 
     await client.navigate(`${baseUrl}/button`);

@@ -33,6 +33,7 @@ describe("cron scheduler", () => {
       routeCron: async () => ({ text: "Test response" }),
       route: async () => ({ text: "" }),
       setApprovalHandler: () => {},
+      stop: () => {},
     } as unknown as MessageRouter;
 
     const makeSession = () => ({
@@ -167,6 +168,38 @@ describe("cron scheduler", () => {
       const result = await scheduler.tick();
       expect(result).toBe(2);
       expect(callCount).toBe(2);
+    });
+
+    test("cron.timeoutMs aborts a runaway job and marks it error", async () => {
+      // Without the wall-clock guard, a job that never returns would pin the tick forever.
+      config.cron = { enabled: true, timeoutMs: 10 };
+      scheduler = new CronScheduler(router, sessionManager, config);
+      scheduler.adapters.set("telegram", adapterMock);
+
+      const stopCalls: string[] = [];
+      router.stop = (sessionId: string) => { stopCalls.push(sessionId); return true; };
+      router.routeCron = async () => {
+        await new Promise((r) => setTimeout(r, 60));
+        return { text: "too late" };
+      };
+
+      const job = createJob({
+        prompt: "test",
+        schedule: "every 30m",
+        origin: { platform: "telegram", chatId: "123" },
+        deliver: "origin",
+      });
+      job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+      await saveJobs([job]);
+
+      const result = await scheduler.tick();
+      expect(result).toBe(0); // timed-out job is not counted as executed
+      expect(stopCalls).toContain(`cron/${job.id}`); // router.stop fired for this session
+      expect(sentMessages).toHaveLength(0); // nothing delivered
+
+      const jobs = await loadJobs();
+      expect(jobs[0]!.lastStatus).toBe("error");
+      expect(jobs[0]!.lastError).toContain("timed out");
     });
 
     test("guard against concurrent ticks", async () => {
