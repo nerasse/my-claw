@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeJsonFileAtomicallySync } from "../../utils/atomic-write.ts";
+import { matrixLog } from "../../utils/logger.ts";
 
 const STORE_VERSION = 1;
 const DEFAULT_MAX_ENTRIES = 20_000;
@@ -308,7 +309,10 @@ export async function createMatrixInboundEventDeduper(params: {
           return true;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-            return false;
+            // Fail-open on unexpected fs errors: dropping to false here would silently discard
+            // every inbound event if the claims dir/disk breaks.
+            void matrixLog("error", "matrix claim write failed, processing anyway", { key, error: String(error) });
+            return true;
           }
           if (isClaimStale(claimPath, claimStaleMs, nowMs())) {
             rmSync(claimPath, { force: true });
@@ -327,8 +331,11 @@ export async function createMatrixInboundEventDeduper(params: {
       seenMap.set(key, nowMs());
       dirty = true;
       releaseLocalClaim(key);
-      // Persist asynchronously without blocking the caller
-      void persistSeenMap();
+      // Persist asynchronously without blocking the caller. A transient fs error must not escape
+      // as an unhandled rejection (fatal in index.ts) — log and move on.
+      void persistSeenMap().catch((err) => {
+        void matrixLog("error", "inbound-dedupe persist failed", { error: String(err) });
+      });
     },
     releaseEvent: ({ roomId, eventId }) => {
       const key = buildEventKey({ roomId, eventId });

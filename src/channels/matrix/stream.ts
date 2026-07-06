@@ -302,6 +302,9 @@ export class MatrixMessageStreamer {
   }
 
   private async flushPreview(forceSend: boolean): Promise<void> {
+    // A throttled preview edit queued before finish must not run after it: it would overwrite the
+    // final formatted message with stale preview text and re-add the live marker.
+    if (this.finished) return;
     if (!this.previewText || this.mustFallbackToFinal) return;
 
     if (!this.sentEventId) {

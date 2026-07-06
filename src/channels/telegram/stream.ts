@@ -272,6 +272,9 @@ export class MessageStreamer {
   }
 
   private async editPreviewPart(index: number): Promise<void> {
+    // A throttled preview edit queued before finish must not run after it, or it overwrites the
+    // final formatted message with stale raw preview text.
+    if (this.finished) return;
     const messageId = this.messageIds[index];
     const text = this.previewParts[index] ?? "";
     if (messageId === null || messageId === undefined || !text) return;

@@ -9,6 +9,7 @@ import {
 import { dirname, join } from "node:path";
 import { writeJsonFileAtomicallySync } from "../../utils/atomic-write.ts";
 import { MY_CLAW_DIR } from "../../core/config.ts";
+import { telegramLog } from "../../utils/logger.ts";
 
 const STORE_VERSION = 1;
 const LOCK_STALE_MS = 60_000;
@@ -295,7 +296,10 @@ export async function createTelegramUpdateDeduper(params: {
           return true;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-            return false;
+            // An unexpected fs error (disk full, claims dir gone) must not silently drop every
+            // inbound message: log and fail-open so processing proceeds.
+            void telegramLog("error", "telegram claim write failed, processing anyway", { key, error: String(error) });
+            return true;
           }
           if (isClaimStale(claimPath, claimStaleMs, nowMs())) {
             rmSync(claimPath, { force: true });

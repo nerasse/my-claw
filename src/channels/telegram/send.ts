@@ -84,9 +84,11 @@ export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
       if (attempt === RETRY_ATTEMPTS) break;
 
       if (isRateLimitError(err)) {
-        const seconds = getRetryAfter(err);
-        await telegramLog("warn", `rate limited, waiting ${seconds}s`);
-        await sleep(seconds * 1000);
+        // Telegram can return a multi-minute retry_after during floods; cap it so one send does
+        // not stall the whole per-session pipeline (Matrix caps the same way).
+        const waitMs = Math.min(getRetryAfter(err) * 1000, RETRY_MAX_DELAY_MS);
+        await telegramLog("warn", `rate limited, waiting ${Math.round(waitMs / 1000)}s`);
+        await sleep(waitMs);
         continue;
       }
 

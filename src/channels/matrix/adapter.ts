@@ -750,7 +750,11 @@ export class MatrixAdapter implements ChannelAdapter {
       existing.releasers.push(params.releaseInboundEventIfClaimed);
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => {
-        void this.flushBufferedMessage(existing.batchKey, existing.eventId);
+        // A handler/LLM error here would otherwise escape as an unhandled rejection and take the
+        // whole process down (index.ts treats unhandledRejection as fatal). Contain it.
+        void this.flushBufferedMessage(existing.batchKey, existing.eventId).catch((err) => {
+          void matrixLog("error", "buffered flush failed", { batchKey: existing.batchKey, error: String(err) });
+        });
       }, this.bufferedIngressDelayForMessage(existing.message));
       this.pendingBufferedIngress.set(existing.eventId, existing);
       return true;
@@ -770,7 +774,9 @@ export class MatrixAdapter implements ChannelAdapter {
       committers: [params.commitInboundEventIfClaimed],
       releasers: [params.releaseInboundEventIfClaimed],
       timer: setTimeout(() => {
-        void this.flushBufferedMessage(batchKey, bufferedItem.eventId);
+        void this.flushBufferedMessage(batchKey, bufferedItem.eventId).catch((err) => {
+          void matrixLog("error", "buffered flush failed", { batchKey, error: String(err) });
+        });
       }, this.bufferedIngressDelayForMessage({
         ...params.message,
         id: bufferedItem.eventId,

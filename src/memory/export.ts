@@ -48,7 +48,7 @@ export async function exportToMarkdown(): Promise<void> {
 
     const content = sections.join("\n\n") + "\n";
     // Unique temp per call so overlapping background exports never race on rename.
-    await writeFileAtomically(memoryFilePath(), content, `.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+    await writeFileAtomically(memoryFilePath(), content);
   } catch (err) {
     void log("warn", "memory exportToMarkdown failed", { error: String(err) });
   }

@@ -409,9 +409,10 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.on("message", (ctx) => this.handleMessage(ctx));
   }
 
-  private async handleCommand(ctx: Context, command: string): Promise<void> {
-    const claimed = this.claimUpdate(ctx.update.update_id);
-    if (!claimed) return;
+  private async handleCommand(ctx: Context, command: string, alreadyClaimed = false): Promise<void> {
+    // When delegated from handleMessage the update is already claimed; re-claiming would fail
+    // (the key is in localClaims) and silently drop the fallback command.
+    if (!alreadyClaimed && !this.claimUpdate(ctx.update.update_id)) return;
 
     const msg = ctx.message;
     if (!msg?.from || !this.shouldProcessMessage(msg)) {
@@ -485,7 +486,21 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     const userId = String(ctx.from?.id);
-    if (!this.whitelist.has(userId)) {
+    // Authorize via the same policy as messages, not the raw whitelist: with an (intentionally)
+    // empty whitelist the raw check would reject every button — including tool-approval
+    // confirmations and the model picker — leaving approvals to time out as "deny".
+    const cbChat = ctx.callbackQuery?.message?.chat;
+    const cbChatType: TelegramChatType = cbChat?.type === "private" ? "dm" : "group";
+    const cbGroupConfig = cbChat ? resolveTelegramGroupConfig(this.config, String(cbChat.id), undefined) : null;
+    const authorized = isTelegramChatAllowed(this.config, cbGroupConfig, cbChatType)
+      && isTelegramAllowedByPolicy({
+        config: this.config,
+        whitelist: this.whitelist,
+        groupConfig: cbGroupConfig,
+        sender: ctx.from,
+        chatType: cbChatType,
+      });
+    if (!authorized) {
       await ctx.answerCallbackQuery({ text: "Not authorized. Contact the bot owner if you think this is an error." });
       this.releaseClaimedUpdate(ctx.update.update_id);
       return;
@@ -594,7 +609,7 @@ export class TelegramAdapter implements ChannelAdapter {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
       if (["new", "clear", "model", "models", "compact", "reload", "verbose", "status", "stop", "cron", "archive", "help", "commands"].includes(command)) {
-        await this.handleCommand(ctx, command);
+        await this.handleCommand(ctx, command, true);
         return;
       }
     }

@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { writeFileAtomically } from "../../utils/atomic-write.ts";
 
 type IdbKeyPath = string | string[] | null;
 
@@ -209,8 +208,9 @@ export async function persistIdbToDisk(snapshotPath: string, databasePrefix?: st
   if (snapshot.length === 0) {
     return;
   }
-  await mkdir(dirname(snapshotPath), { recursive: true });
-  await writeFile(snapshotPath, JSON.stringify(snapshot), { mode: 0o600 });
+  // Atomic + fsync: a crash mid-write must not corrupt the snapshot, or all Megolm keys are lost
+  // on restart and encrypted history becomes permanently undecryptable.
+  await writeFileAtomically(snapshotPath, JSON.stringify(snapshot), { mode: 0o600 });
 }
 
 export async function copyIdbSnapshotWithPrefix(params: {
@@ -232,7 +232,6 @@ export async function copyIdbSnapshotWithPrefix(params: {
       ? `${params.toPrefix}${database.name.slice(params.fromPrefix.length)}`
       : database.name,
   }));
-  await mkdir(dirname(params.targetPath), { recursive: true });
-  await writeFile(params.targetPath, JSON.stringify(rewritten), { mode: 0o600 });
+  await writeFileAtomically(params.targetPath, JSON.stringify(rewritten), { mode: 0o600 });
   return true;
 }
