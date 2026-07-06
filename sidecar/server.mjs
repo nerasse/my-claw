@@ -38,19 +38,19 @@ async function connect() {
   return connectPromise;
 }
 
+let contextPromise = null;
+
 async function ensureContext(viewport) {
   const b = await connect();
   const contexts = b.contexts();
   if (contexts.length > 0) {
-    const ctx = contexts[0];
-    if (viewport) {
-      for (const p of ctx.pages()) {
-        await p.setViewportSize(viewport).catch(() => undefined);
-      }
-    }
-    return ctx;
+    // Do NOT resize existing pages: they may be tabs the human is using in the shared browser.
+    return contexts[0];
   }
-  return b.newContext({ viewport });
+  // Memoize like connect(): two concurrent callers must not each create a context (the loser leaks).
+  if (contextPromise) return contextPromise;
+  contextPromise = b.newContext({ viewport }).finally(() => { contextPromise = null; });
+  return contextPromise;
 }
 
 // --- session + page registries ---
@@ -68,6 +68,10 @@ function idForPage(page) {
     id = crypto.randomUUID();
     pageToId.set(page, id);
     allPages.set(id, page);
+    // Prune closed tabs (user-closed or crashed) so a stale handle isn't reused and misreported
+    // as a sidecar outage; auto-accept dialogs on every adopted page, not just newly created ones.
+    page.on("close", () => dropPage(id));
+    page.on("dialog", (dialog) => void dialog.accept().catch(() => undefined));
   }
   return id;
 }
@@ -194,13 +198,14 @@ const handlers = {
     const session = getSession(body.sessionId);
     const ctx = await ensureContext(session.viewport);
     let page;
-    if (!body.newTab && body.reusePageId && allPages.has(body.reusePageId)) {
-      page = allPages.get(body.reusePageId);
+    const reuse = !body.newTab && body.reusePageId && allPages.get(body.reusePageId);
+    if (reuse && !reuse.isClosed()) {
+      page = reuse;
     } else {
+      // Reuse target vanished (user closed the tab): open a fresh one rather than throwing.
       page = await ctx.newPage();
-      page.on("dialog", (dialog) => void dialog.accept().catch(() => undefined));
     }
-    const pageId = idForPage(page);
+    const pageId = idForPage(page); // registers close/dialog handlers on first sight
     session.currentPageId = pageId;
     await page.goto(body.url, { waitUntil: "domcontentloaded", timeout: 30000 });
     // SPAs (Instagram, TikTok...) are still blank at domcontentloaded: give the JS a
@@ -232,8 +237,12 @@ const handlers = {
     const path = screenshotPath();
     if (body.labels) {
       await injectRefLabels(page);
-      await page.screenshot({ path, fullPage: body.fullPage });
-      await removeRefLabels(page);
+      // finally: if the screenshot throws, the red ref labels must not stay in the live page.
+      try {
+        await page.screenshot({ path, fullPage: body.fullPage });
+      } finally {
+        await removeRefLabels(page).catch(() => undefined);
+      }
     } else {
       await page.screenshot({ path, fullPage: body.fullPage });
     }
@@ -317,6 +326,20 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: String(e instanceof Error ? e.message : e) }));
+  }
+});
+
+// A stray rejection from playwright-core internals must not kill the sidecar (Restart=always
+// would then flap it); log and keep serving.
+process.on("unhandledRejection", (reason) => {
+  console.error("[sidecar] unhandled rejection:", reason);
+});
+
+server.on("error", (err) => {
+  console.error("[sidecar] server error:", err);
+  if (err && err.code === "EADDRINUSE") {
+    console.error(`[sidecar] ${HOST}:${PORT} already in use (stale sidecar?) — exiting.`);
+    process.exit(1);
   }
 });
 

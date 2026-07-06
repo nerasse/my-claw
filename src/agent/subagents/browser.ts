@@ -91,6 +91,9 @@ const INFRA_ERROR_SIGNATURES = [
   "browser is closed",
   "connection closed",
 ];
+// NB: a user-closed tab is handled at the sidecar (closed pages are pruned, so the next op returns
+// "Unknown pageId" — a normal tool failure the agent recovers from by navigating fresh — rather
+// than the Playwright "target closed" message that would land here).
 
 export function isBrowserInfraError(error?: string): boolean {
   if (!error) return false;

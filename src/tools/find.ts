@@ -40,8 +40,14 @@ export const findTool: Tool = {
         ["find", resolved, "-maxdepth", "10", "-name", pattern],
         { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
-      const stdout = await new Response(proc.stdout).text();
-      await proc.exited;
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      if (exitCode !== 0 && !stdout.trim()) {
+        return { success: false, output: "", error: `find failed (exit ${exitCode}): ${stderr.trim() || "unreadable path or bad pattern"}` };
+      }
       const truncated = stdout.length > 100_000 ? stdout.slice(0, 100_000) + "\n[output truncated at 100KB]" : stdout;
       return { success: true, output: truncated || "No files found" };
     } catch (e) {

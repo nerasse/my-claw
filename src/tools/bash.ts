@@ -40,16 +40,23 @@ export const bashTool: Tool = {
         try { process.kill(-proc.pid, sig); } catch { try { proc.kill(); } catch {} }
       };
 
-      const timer = setTimeout(() => killGroup("SIGTERM"), timeoutMs);
-      const onAbort = () => {
+      // SIGTERM alone hangs forever on a command that traps it (trap '' TERM) or is stuck in D
+      // state; escalate to SIGKILL after a grace period, same as the abort path.
+      const killWithEscalation = () => {
         killGroup("SIGTERM");
         setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref?.();
       };
+      const timer = setTimeout(killWithEscalation, timeoutMs);
+      const onAbort = killWithEscalation;
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      const stdout = await new Response(proc.stdout).text();
-      const stderr = await new Response(proc.stderr).text();
-      const exitCode = await proc.exited;
+      // Drain stdout and stderr concurrently: reading stdout to EOF first can deadlock a child
+      // that floods stderr past the pipe buffer.
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       rethrowIfAborted(undefined, signal);

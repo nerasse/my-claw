@@ -47,3 +47,24 @@ test("grep: non-existent path returns not found", async () => {
   assert.equal(result.success, false);
   assert.ok(result.output.includes("not found"));
 });
+
+test("grep: invalid regex reports failure instead of 'No matches found'", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "d2.txt");
+  await writeFile(file, "hello\n");
+  // Unbalanced parenthesis is an invalid BRE/ERE -> grep exits >=2.
+  const result = await grepTool.execute({ pattern: "a\\(b", path: file, __workspaceDir: TMP });
+  assert.equal(result.success, false);
+  assert.match(result.error ?? "", /grep failed/i);
+  await rm(TMP, { recursive: true, force: true });
+});
+
+test("grep: pattern starting with dash is not parsed as a flag", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "d3.txt");
+  await writeFile(file, "-v is here\nother\n");
+  const result = await grepTool.execute({ pattern: "-v", path: file, __workspaceDir: TMP });
+  assert.equal(result.success, true);
+  assert.match(result.output, /-v is here/);
+  await rm(TMP, { recursive: true, force: true });
+});

@@ -38,12 +38,20 @@ export const grepTool: Tool = {
     }
     try {
       const flags = bool(args, "recursive", true) ? "-rn" : "-n";
+      // "--" stops option parsing so a pattern starting with "-" is not treated as a flag.
       const proc = Bun.spawn(
-        ["grep", flags, "--max-count=1000", "--binary-files=without-match", pattern, resolved],
+        ["grep", flags, "--max-count=1000", "--binary-files=without-match", "--", pattern, resolved],
         { stdout: "pipe", stderr: "pipe", cwd: wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd() },
       );
-      const stdout = await new Response(proc.stdout).text();
-      await proc.exited;
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      // grep exit codes: 0 = matches, 1 = no matches (not an error), >=2 = real error.
+      if (exitCode >= 2) {
+        return { success: false, output: "", error: `grep failed (exit ${exitCode}): ${stderr.trim() || "invalid pattern or unreadable path"}` };
+      }
       const truncated = stdout.length > 100_000 ? stdout.slice(0, 100_000) + "\n[output truncated at 100KB]" : stdout;
       return { success: true, output: truncated || "No matches found" };
     } catch (e) {

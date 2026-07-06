@@ -43,7 +43,11 @@ function normalizeResult(value: unknown): { url: string; title: string; content?
  * backend looks identical to "no results" and the agent keeps firing useless searches. Returns a
  * human-readable degradation reason, or null if the backend is healthy (genuine empty).
  */
-function describeUnresponsiveEngines(parsed: unknown): string | null {
+// A single flaky engine while the rest returned a legitimate empty result must NOT trip the
+// cooldown; only a broad outage should. Report the reason and how many engines were down.
+const DEGRADED_ENGINE_THRESHOLD = 3;
+
+function describeUnresponsiveEngines(parsed: unknown): { reason: string; count: number } | null {
   if (!parsed || typeof parsed !== "object") return null;
   const raw = (parsed as Record<string, unknown>).unresponsive_engines;
   if (!Array.isArray(raw) || raw.length === 0) return null;
@@ -54,7 +58,7 @@ function describeUnresponsiveEngines(parsed: unknown): string | null {
       return JSON.stringify(entry);
     })
     .filter((s) => s.length > 0);
-  return parts.length > 0 ? parts.join("; ") : "all engines unavailable";
+  return { reason: parts.length > 0 ? parts.join("; ") : "all engines unavailable", count: raw.length };
 }
 
 function formatResults(results: Array<{ url: string; title: string; content?: string }>): string {
@@ -188,15 +192,16 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
 
         if (results.length === 0) {
           const degraded = describeUnresponsiveEngines(parsed);
-          if (degraded) {
+          if (degraded && degraded.count >= DEGRADED_ENGINE_THRESHOLD) {
             degradedUntil = Date.now() + DEGRADED_COOLDOWN_MS;
-            degradedReason = degraded;
+            degradedReason = degraded.reason;
             return {
               success: false,
               output: "",
-              error: `Web search backend degraded: ${degraded}. The search service is likely rate-limited or down -- do not retry the same search repeatedly; answer from your own knowledge or tell the user search is unavailable.`,
+              error: `Web search backend degraded: ${degraded.reason}. The search service is likely rate-limited or down -- do not retry the same search repeatedly; answer from your own knowledge or tell the user search is unavailable.`,
             };
           }
+          // Enough engines responded: this is a genuine empty result, not an outage.
           return { success: true, output: "No results found for this query." };
         }
 

@@ -46,3 +46,18 @@ test("read: rejects absolute path outside workspaceDir", async () => {
     await rm(TMP, { recursive: true, force: true });
   }
 });
+
+test("read: caps output at 100KB with a truncation notice", async () => {
+  const { readTool } = await import("../../src/tools/read.ts");
+  const { writeFile, mkdir, rm } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = "/tmp/opencode/my-claw-tests/read-cap";
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, "big.txt");
+  await writeFile(file, "x".repeat(250_000));
+  const result = await readTool.execute({ path: file, __workspaceDir: dir });
+  assert.equal(result.success, true);
+  assert.ok(result.output.length < 250_000, "output should be capped");
+  assert.match(result.output, /truncated at 100000 chars/);
+  await rm(dir, { recursive: true, force: true });
+});

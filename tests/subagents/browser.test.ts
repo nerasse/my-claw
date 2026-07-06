@@ -939,6 +939,7 @@ describe("BrowserSubagent", () => {
     assert.ok(isBrowserInfraError("connect ECONNREFUSED 127.0.0.1:9222"));
     assert.ok(isBrowserInfraError("browserType.connectOverCDP: WebSocket error: connect ECONNREFUSED"));
     assert.ok(isBrowserInfraError("Target page, context or browser has been closed"));
+    assert.ok(!isBrowserInfraError("Unknown pageId: abc123"), "a pruned/closed tab is a normal failure, not a sidecar outage");
     assert.ok(!isBrowserInfraError("Timeout 30000ms exceeded navigating to https://slow.example.com"), "a slow page is not an infra outage");
     assert.ok(!isBrowserInfraError("net::ERR_NAME_NOT_RESOLVED"), "a DNS failure of the target site is not a CDP outage");
     assert.ok(!isBrowserInfraError(undefined));

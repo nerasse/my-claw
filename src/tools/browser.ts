@@ -194,7 +194,22 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const subagent = new BrowserSubagent(config, sidecarUrl);
       try {
-        const result = await enqueueBrowserTask(() => subagent.run(instructions, url, signal));
+        const task = enqueueBrowserTask(() => subagent.run(instructions, url, signal));
+        // If /stop fires while this task is still queued behind another, return promptly instead
+        // of waiting for the whole queue to drain — the queued run no-ops at step 0 when aborted.
+        if (signal) {
+          const aborted = Symbol("aborted");
+          const abortPromise = new Promise<typeof aborted>((resolve) => {
+            if (signal.aborted) return resolve(aborted);
+            signal.addEventListener("abort", () => resolve(aborted), { once: true });
+          });
+          const raced = await Promise.race([task, abortPromise]);
+          if (raced === aborted) {
+            task.catch(() => undefined); // abandon: prevent an unhandled rejection
+            return { success: false, output: "", error: "Browser task stopped by user." };
+          }
+        }
+        const result = await task;
         if (result.needs_human) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
           return {

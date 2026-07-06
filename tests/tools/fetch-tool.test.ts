@@ -186,3 +186,53 @@ test("fetch: normal HTML page gets no JS-shell hint", async () => {
     mock.restore();
   }
 });
+
+test("fetch: 308 redirect preserves method and body (POST stays POST)", async () => {
+  const seen: Array<{ method: string; body: string | null }> = [];
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    seen.push({ method: (init as RequestInit)?.method ?? "GET", body: ((init as RequestInit)?.body as string) ?? null });
+    if (url.endsWith("/old")) {
+      return new Response(null, { status: 308, headers: { location: "https://example.com/new" } });
+    }
+    return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+  });
+  try {
+    const result = await fetchTool.execute({ url: "https://example.com/old", method: "POST", body: "payload" });
+    assert.equal(result.success, true);
+    // Second hop must still be POST with the body (308 preserves them).
+    assert.equal(seen[1]?.method, "POST");
+    assert.equal(seen[1]?.body, "payload");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: 302 redirect downgrades to GET and drops the body", async () => {
+  const seen: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    seen.push((init as RequestInit)?.method ?? "GET");
+    if (url.endsWith("/old")) {
+      return new Response(null, { status: 302, headers: { location: "https://example.com/new" } });
+    }
+    return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+  });
+  try {
+    await fetchTool.execute({ url: "https://example.com/old", method: "POST", body: "payload" });
+    assert.equal(seen[1], "GET");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: 3xx without Location returns a clear error (not 'too many redirects')", async () => {
+  const mock = mockFetch(async () => new Response(null, { status: 301 }));
+  try {
+    const result = await fetchTool.execute({ url: "https://example.com/x" });
+    assert.equal(result.success, false);
+    assert.match(result.error ?? "", /no Location header/i);
+  } finally {
+    mock.restore();
+  }
+});

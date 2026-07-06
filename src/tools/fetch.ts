@@ -11,6 +11,38 @@ const BLOCKED_HOSTS = new Set(["metadata.google.internal", "metadata.goog"]);
 // HTML to readable text and cap the size before it ever reaches the LLM.
 const MAX_FETCH_CHARS = 50_000;
 
+// Hard ceiling on bytes pulled into memory before windowing. response.text() would buffer the
+// whole body (hundreds of MB for a bad URL) before a single char is trimmed; stop reading early.
+const MAX_FETCH_BYTES = 8 * 1024 * 1024;
+
+async function readCapped(response: Response): Promise<string> {
+  const body = response.body;
+  if (!body) return await response.text();
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.byteLength;
+        if (total >= MAX_FETCH_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          break;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { merged.set(c, offset); offset += c.byteLength; }
+  return new TextDecoder().decode(merged);
+}
+
 const HTML_ENTITIES: Record<string, string> = {
   "&amp;": "&",
   "&lt;": "<",
@@ -189,18 +221,20 @@ export const fetchTool: Tool = {
     const signal = args["__signal"] as AbortSignal | undefined;
     rethrowIfAborted(undefined, signal);
     try {
-      const method = strOpt(args, "method") ?? "GET";
-      const body = strOpt(args, "body");
       const MAX_REDIRECTS = 5;
       let currentUrl = url;
+      // 301/302/303 conventionally become GET (drop the body); 307/308 MUST preserve the method
+      // and body, or a POST behind such a redirect silently turns into an empty GET.
+      let currentMethod = strOpt(args, "method") ?? "GET";
+      let currentBody = strOpt(args, "body");
 
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 30_000);
         const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
         const response = await fetch(currentUrl, {
-          method: hop === 0 ? method : "GET",
-          body: hop === 0 ? body : undefined,
+          method: currentMethod,
+          body: currentBody,
           redirect: "manual",
           signal: reqSignal,
         });
@@ -208,22 +242,28 @@ export const fetchTool: Tool = {
 
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
-          if (!location) break;
+          if (!location) {
+            return { success: false, output: "", error: `Redirect (HTTP ${response.status}) from ${currentUrl} with no Location header.` };
+          }
           const resolved = new URL(location, currentUrl).href;
           if (await resolveAndCheckUrl(resolved)) {
             return { success: false, output: "", error: "Blocked: redirect target points to a private/internal network address." };
+          }
+          if (response.status !== 307 && response.status !== 308) {
+            currentMethod = "GET";
+            currentBody = undefined;
           }
           currentUrl = resolved;
           continue;
         }
 
-        const rawText = await response.text();
+        const rawText = await readCapped(response);
         const contentType = response.headers.get("content-type");
         let text = processFetchBody(rawText, contentType, num(args, "offset", 0));
         if (isJsRenderedShell(rawText, contentType)) {
           text += JS_SHELL_HINT;
         }
-        hooks.emit("tool:fetch:request", { url: currentUrl, method, status: response.status });
+        hooks.emit("tool:fetch:request", { url: currentUrl, method: currentMethod, status: response.status });
         if (response.ok) {
           return { success: true, output: text };
         }
