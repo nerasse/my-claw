@@ -22,31 +22,15 @@ function isToolPairStart(msg: SessionMessage, next: SessionMessage | undefined):
   return msg.role === "assistant" && (msg.toolCalls?.length ?? 0) > 0 && next !== undefined;
 }
 
-function isToolPairEnd(msg: SessionMessage, prev: SessionMessage | undefined): boolean {
-  return msg.role === "tool" && prev?.role === "assistant" && (prev.toolCalls?.some((tc) => tc.id === msg.toolCallId) ?? false);
-}
-
 function alignTailBoundary(messages: SessionMessage[], tailStart: number): number {
   let idx = tailStart;
   if (idx <= 0) return 0;
 
-  // Walk backward to avoid splitting a tool pair
-  while (idx > 0) {
-    const prev = messages[idx - 1];
-    const curr = messages[idx];
-    if (prev && isToolPairStart(prev, curr)) {
-      // prev is assistant with tool_calls, curr is first tool result
-      // move idx back to include the assistant message
-      idx -= 1;
-      continue;
-    }
-    if (curr && isToolPairEnd(curr, prev)) {
-      // curr is a tool result whose assistant call is before prev
-      // keep walking back to include the assistant
-      idx -= 1;
-      continue;
-    }
-    break;
+  // Never start the tail inside a tool block. With parallel tool calls the tail can begin on the
+  // 2nd/3rd tool result, whose predecessor is another tool (not the assistant) — walking back over
+  // all contiguous tool results lands on their owning assistant, keeping the whole block together.
+  while (idx > 0 && messages[idx]?.role === "tool") {
+    idx -= 1;
   }
   return idx;
 }

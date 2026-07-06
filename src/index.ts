@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
+import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { startConfigWatcher } from "./core/config-watcher.ts";
@@ -168,7 +169,7 @@ async function main() {
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
         await agent.preprocessMessage(msg);
-        const echoes = agent.getEchoMessages();
+        const echoes = agent.getEchoMessages(msg.id);
         for (const echo of echoes) {
           await telegram.send(msg.chatId, { ...echo, replyToId: msg.id });
         }
@@ -230,8 +231,8 @@ async function main() {
     if (!isMatrixChannelEnabled(config)) {
       router.setApprovalHandler(async (request) => {
         if (request.platform === "telegram") {
-          const args = JSON.stringify(request.args, null, 2).slice(0, 500);
-          const text = `Approval required for tool <b>${request.toolName}</b>\n\n<pre>${args}</pre>`;
+          const args = escapeHtml(JSON.stringify(request.args, null, 2).slice(0, 500));
+          const text = `Approval required for tool <b>${escapeHtml(request.toolName)}</b>\n\n<pre>${args}</pre>`;
           const accepted = await telegram.confirm(request.chatId, text, request.messageId);
           return accepted ? "allow-session" : "deny";
         }
@@ -281,7 +282,7 @@ async function main() {
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
         await agent.preprocessMessage(msg);
-        const echoes = agent.getEchoMessages();
+        const echoes = agent.getEchoMessages(msg.id);
         for (const echo of echoes) {
           await matrix.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
         }
@@ -357,8 +358,8 @@ async function main() {
         return await matrix.confirmTool(request, approvalHandler);
       }
       if (request.platform === "telegram" && telegramRef) {
-        const args = JSON.stringify(request.args, null, 2).slice(0, 500);
-        const text = `Approval required for tool <b>${request.toolName}</b>\n\n<pre>${args}</pre>`;
+        const args = escapeHtml(JSON.stringify(request.args, null, 2).slice(0, 500));
+        const text = `Approval required for tool <b>${escapeHtml(request.toolName)}</b>\n\n<pre>${args}</pre>`;
         const accepted = await telegramRef.confirm(request.chatId, text, request.messageId);
         return accepted ? "allow-session" : "deny";
       }
@@ -474,9 +475,13 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
       if (storeCount >= every && !running) {
         storeCount = 0;
         running = true;
-        void consolidateMemory(caller, memCfg).finally(() => {
-          running = false;
-        });
+        // A rejection here (e.g. a SQLite error in supersedeEntry) would otherwise reach the
+        // process-level unhandledRejection handler and shut the whole assistant down.
+        void consolidateMemory(caller, memCfg)
+          .catch((err) => { void log("error", "memory consolidation failed", { error: String(err) }); })
+          .finally(() => {
+            running = false;
+          });
       }
     });
   }

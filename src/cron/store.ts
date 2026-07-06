@@ -254,6 +254,31 @@ export async function saveJobs(jobs: CronJob[]): Promise<void> {
   await writeJsonFileAtomically(JOBS_FILE, data, true);
 }
 
+/**
+ * A tick can run for a long time (jobs up to cron.timeoutMs). Writing the whole in-memory array
+ * back at the end would clobber any create/update/pause/remove the agent or user performed via the
+ * cron tool meanwhile. Instead, re-load the current file and merge ONLY the scheduling/run fields
+ * by id, so concurrent structural edits survive. Jobs removed concurrently are left removed.
+ */
+export async function persistJobRunUpdates(updated: CronJob[]): Promise<void> {
+  const current = await loadJobs();
+  const byId = new Map(current.map((j) => [j.id, j]));
+  let changed = false;
+  for (const job of updated) {
+    const target = byId.get(job.id);
+    if (!target) continue;
+    target.nextRunAt = job.nextRunAt;
+    target.lastRunAt = job.lastRunAt;
+    target.lastStatus = job.lastStatus;
+    target.lastError = job.lastError;
+    target.completedRuns = job.completedRuns;
+    target.state = job.state;
+    target.enabled = job.enabled;
+    changed = true;
+  }
+  if (changed) await saveJobs(current);
+}
+
 export async function saveJobOutput(jobId: string, output: string): Promise<void> {
   const dir = join(OUTPUT_DIR, jobId);
   await mkdir(dir, { recursive: true });

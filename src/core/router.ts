@@ -8,6 +8,7 @@ import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "./aborted.ts";
 import { runRegistry } from "./run-registry.ts";
+import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 
 export interface RouteResult {
   text: string;
@@ -172,7 +173,7 @@ export class MessageRouter {
       const text = options.onToken
         ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse, signal, options.onTurnSwitch)
         : await this.agent.handleMessage(message, session, signal);
-      const attachments = this.agent.getResponseAttachments();
+      const attachments = this.agent.getResponseAttachments(message.id);
       await this.sessionManager.persist(sessionId);
       runRegistry.settleMailbox(sessionId, "resolve");
 
@@ -191,6 +192,11 @@ export class MessageRouter {
       return text === undefined ? undefined : { text, attachments };
     } catch (err) {
       const durationMs = Date.now() - startedAt;
+      // The run may already have produced generated files (TTS/screenshots); on the error/abort
+      // path nothing delivers them, so drain and delete them here or they leak in /tmp and linger
+      // in the per-message buffer for a later run to mis-deliver.
+      const orphaned = this.agent.getResponseAttachments(message.id);
+      if (orphaned?.length) await cleanupGeneratedTempFiles(orphaned).catch(() => {});
       if (isAbort(err, signal)) {
         await this.sessionManager.persist(sessionId).catch(() => {});
         runRegistry.settleMailbox(sessionId, "reject", err);

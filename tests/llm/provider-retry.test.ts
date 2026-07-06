@@ -195,12 +195,30 @@ describe("LLM provider retry logic", () => {
 
   test("circuit breaker opens after 5 consecutive failures", async () => {
     resetCircuitBreaker();
-    const mock = mockFetch(async () => errorResponse(400, "bad") as never);
+    // 501 is a server error (counts toward the breaker) but not in RETRYABLE_STATUS, so each call
+    // fails immediately without retry backoff — fast and deterministic.
+    const mock = mockFetch(async () => errorResponse(501, "server") as never);
     try {
       for (let i = 0; i < 5; i++) {
         await chatCompletion(config, simpleMessages).catch(() => {});
       }
       await expect(chatCompletion(config, simpleMessages)).rejects.toThrow("circuit breaker");
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("circuit breaker ignores non-retryable 4xx client errors", async () => {
+    resetCircuitBreaker();
+    // A malformed request (400) is request-specific, not a provider outage: it must not push the
+    // breaker toward opening, or one bad tool call would block all LLM traffic.
+    const mock = mockFetch(async () => errorResponse(400, "bad request") as never);
+    try {
+      for (let i = 0; i < 6; i++) {
+        await chatCompletion(config, simpleMessages).catch(() => {});
+      }
+      // 7th call still reaches the backend (400), not blocked by an open breaker.
+      await expect(chatCompletion(config, simpleMessages)).rejects.toThrow("HTTP 400");
     } finally {
       mock.restore();
     }

@@ -10,6 +10,23 @@ export type SessionMessage =
   | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
+/**
+ * Slicing history to a fixed tail (keep the last N) can cut inside a tool block, leaving the
+ * kept head starting with orphan `tool` messages whose owning assistant `tool_calls` were
+ * dropped. OpenAI-compatible APIs reject that with HTTP 400, wedging the session on every
+ * subsequent turn. Dropping the leading orphan tool messages restores a valid boundary.
+ */
+export function dropLeadingOrphanToolMessages(messages: SessionMessage[]): SessionMessage[] {
+  let start = 0;
+  while (start < messages.length && messages[start]!.role === "tool") start++;
+  return start === 0 ? messages : messages.slice(start);
+}
+
+/** Trim to the last `keep` messages, then repair the boundary (see above). */
+export function trimSessionMessages(messages: SessionMessage[], keep: number): SessionMessage[] {
+  return dropLeadingOrphanToolMessages(messages.slice(-keep));
+}
+
 export interface SubAgentMeta {
   displayName: string;
   type: "general" | "research";

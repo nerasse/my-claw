@@ -1,7 +1,9 @@
-import type { MyClawConfig } from "../core/config.ts";
+import type { MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
 import { resolveMaxIterations, resolveInjectionBudgetBonus } from "../core/config.ts";
+import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
+import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { resolveLlmConfig } from "../llm/resolver.ts";
@@ -78,21 +80,26 @@ export class AgentBridge {
     private ttsPipeline?: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
+    // Sub-agent kind and its fully-resolved LLM config. Set by SubAgentRunner so a "research"
+    // sub-agent actually gets the read-only toolset + its own provider, instead of being
+    // inferred from depth (depth is always 1 for sub-agents, which collapsed to "general").
+    private agentKind?: SubAgentType,
+    private llmOverride?: ResolvedLlmConfig,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
     this.preprocessor = new MessagePreprocessor(this.voiceManager, this.sttPipeline);
   }
 
-  getEchoMessages(): OutgoingMessage[] {
-    return this.preprocessor.consumeEchoMessages();
+  getEchoMessages(messageId: string): OutgoingMessage[] {
+    return this.preprocessor.consumeEchoMessages(messageId);
   }
 
-  getResponseAttachments(): OutgoingMessage["attachments"] {
-    return this.preprocessor.consumeResponseAttachments();
+  getResponseAttachments(messageId: string): OutgoingMessage["attachments"] {
+    return this.preprocessor.consumeResponseAttachments(messageId);
   }
 
-  hadAudioInbound(): boolean {
-    return this.preprocessor.inboundHadAudio;
+  hadAudioInbound(messageId: string): boolean {
+    return this.preprocessor.inboundHadAudio(messageId);
   }
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
@@ -133,14 +140,18 @@ export class AgentBridge {
     await this.preprocessor.preprocessForHandle(message);
 
     const isCron = message.platform === "cron";
-    const agentToolType = isCron ? "cron" : this.depth === 0 ? "main" : this.depth === 1 ? "general" : "research";
+    const agentToolType = isCron
+      ? "cron"
+      : this.depth === 0
+        ? "main"
+        : this.agentKind === "research" ? "research" : "general";
     const tools = this.toolRegistry.getForAgent(agentToolType);
-    const llmConfig = resolveLlmConfig(this.config.llm, session.modelOverride);
+    const llmConfig = this.llmOverride ?? resolveLlmConfig(this.config.llm, session.modelOverride);
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     let toolExecutions = 0;
 
-    const agentType = this.depth === 0 ? "orchestrator" : this.depth === 1 ? "general" : "research";
+    const agentType = this.depth === 0 ? "orchestrator" : this.agentKind ?? "general";
     const cronMaxIter = this.config.cron?.maxIterations;
     const maxIterations = isCron && cronMaxIter !== undefined && Number.isFinite(cronMaxIter) && cronMaxIter > 0
       ? cronMaxIter
@@ -331,7 +342,7 @@ export class AgentBridge {
           });
           if (session.messages.length > MAX_SESSION_MESSAGES) {
             const beforeCount = session.messages.length;
-            session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+            session.messages = trimSessionMessages(session.messages, MAX_SESSION_MESSAGES_KEEP);
             hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
           }
           return transformedResponse;
@@ -470,7 +481,7 @@ export class AgentBridge {
 
       if (session.messages.length > MAX_SESSION_MESSAGES) {
         const beforeCount = session.messages.length;
-        session.messages = session.messages.slice(-MAX_SESSION_MESSAGES_KEEP);
+        session.messages = trimSessionMessages(session.messages, MAX_SESSION_MESSAGES_KEEP);
         hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
       }
       hooks.emit("agent:budget:exhausted", {
@@ -519,7 +530,7 @@ export class AgentBridge {
       throw err;
     } finally {
       runNode?.exit();
-      await this.preprocessor.cleanupTempFiles();
+      await this.preprocessor.cleanupTempFiles(message.id);
     }
   }
 
@@ -761,7 +772,7 @@ export class AgentBridge {
       if (params.signal?.aborted) throw new AbortedError();
       if (result.attachments?.length) {
         for (const att of result.attachments) {
-          this.preprocessor.addResponseAttachment(att);
+          this.preprocessor.addResponseAttachment(params.message.id, att);
         }
       }
       if (result.success) {
@@ -788,7 +799,9 @@ export class AgentBridge {
   private toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const out: ChatMessage[] = [];
 
-    for (const msg of messages) {
+    // Defense in depth: a session loaded from disk (or compacted elsewhere) may start with
+    // orphan tool messages; emitting them verbatim makes the LLM API reject the whole request.
+    for (const msg of dropLeadingOrphanToolMessages(messages)) {
       switch (msg.role) {
         case "user":
           out.push({ role: "user", content: msg.content });

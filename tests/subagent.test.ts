@@ -116,12 +116,18 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
     const session = await loadSession(id);
     assert.ok(session);
     assert.equal(session?.meta?.displayName, "persist");
+    // The first run's reply must be persisted (a session sub-agent remembers its own answer).
+    const firstRunReply = session?.messages.filter((m) => m.role === "assistant").at(-1);
+    assert.equal(firstRunReply?.content, "ack");
+    const lengthAfterSpawn = session!.messages.length;
 
     const sendResult = await runner.send(id, "second message", undefined, createMessage(), reg);
     assert.equal(sendResult, "ack");
 
     const session2 = await loadSession(id);
-    assert.equal(session2?.messages.length, 4);
+    // History grew (the send turn was appended on top of the persisted first run).
+    assert.ok((session2?.messages.length ?? 0) > lengthAfterSpawn);
+    assert.equal(session2?.messages.at(-1)?.content, "ack");
 
     await deleteSession(id);
   } finally {

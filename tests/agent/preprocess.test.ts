@@ -160,7 +160,7 @@ describe("MessagePreprocessor", () => {
   describe("consumeEchoMessages", () => {
     test("returns empty array initially", () => {
       const pp = new MessagePreprocessor();
-      expect(pp.consumeEchoMessages()).toEqual([]);
+      expect(pp.consumeEchoMessages("m0")).toEqual([]);
     });
 
     test("returns echoes and clears them on second call", async () => {
@@ -170,8 +170,8 @@ describe("MessagePreprocessor", () => {
         attachments: [{ type: "audio", path: "/tmp/a.ogg" }],
       });
       await pp.preprocessMessage(msg);
-      const first = pp.consumeEchoMessages();
-      const second = pp.consumeEchoMessages();
+      const first = pp.consumeEchoMessages(msg.id);
+      const second = pp.consumeEchoMessages(msg.id);
       expect(Array.isArray(first)).toBe(true);
       expect(second).toEqual([]);
     });
@@ -180,20 +180,34 @@ describe("MessagePreprocessor", () => {
   describe("consumeResponseAttachments", () => {
     test("returns empty array initially", () => {
       const pp = new MessagePreprocessor();
-      expect(pp.consumeResponseAttachments()).toEqual([]);
+      expect(pp.consumeResponseAttachments("m0")).toEqual([]);
     });
 
     test("after addResponseAttachment, returns the attachment and clears", () => {
       const pp = new MessagePreprocessor();
       const att: Attachment = { type: "image", path: "/tmp/result.png", mimeType: "image/png" };
-      pp.addResponseAttachment(att);
+      pp.addResponseAttachment("m1", att);
 
-      const first = pp.consumeResponseAttachments();
+      const first = pp.consumeResponseAttachments("m1");
       expect(first).toHaveLength(1);
       expect(first![0]).toEqual(att);
 
-      const second = pp.consumeResponseAttachments();
+      const second = pp.consumeResponseAttachments("m1");
       expect(second).toEqual([]);
+    });
+
+    test("attachments are isolated per message id (no cross-run leakage)", () => {
+      const pp = new MessagePreprocessor();
+      pp.addResponseAttachment("run-a", { type: "image", path: "/tmp/a.png", mimeType: "image/png" });
+      pp.addResponseAttachment("run-b", { type: "image", path: "/tmp/b.png", mimeType: "image/png" });
+
+      const a = pp.consumeResponseAttachments("run-a");
+      expect(a).toHaveLength(1);
+      expect(a![0]!.path).toBe("/tmp/a.png");
+      // run-b's bucket is untouched by consuming run-a.
+      const b = pp.consumeResponseAttachments("run-b");
+      expect(b).toHaveLength(1);
+      expect(b![0]!.path).toBe("/tmp/b.png");
     });
   });
 
@@ -202,7 +216,7 @@ describe("MessagePreprocessor", () => {
       const pp = new MessagePreprocessor();
       const msg = createMessage({ text: "just text" });
       await pp.preprocessMessage(msg);
-      expect(pp.inboundHadAudio).toBe(false);
+      expect(pp.inboundHadAudio(msg.id)).toBe(false);
       expect(msg.text).toBe("just text");
     });
 
@@ -213,7 +227,7 @@ describe("MessagePreprocessor", () => {
         attachments: [{ type: "audio", path: "/tmp/voice.ogg", mimeType: "audio/ogg" }],
       });
       await pp.preprocessMessage(msg);
-      expect(pp.inboundHadAudio).toBe(false);
+      expect(pp.inboundHadAudio(msg.id)).toBe(false);
       expect(msg.text).toContain("[Audio]: [voice/STT not configured]");
       expect(msg.text).toContain("check this");
     });
@@ -230,7 +244,7 @@ describe("MessagePreprocessor", () => {
         attachments: [{ type: "audio", mimeType: "audio/ogg" }],
       });
       await pp.preprocessMessage(msg);
-      expect(pp.inboundHadAudio).toBe(true);
+      expect(pp.inboundHadAudio(msg.id)).toBe(true);
       expect(msg.text).toContain("[Audio]: [unavailable");
     });
 

@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, type SessionData } from "../../src/sessions/store.ts";
+import { loadSession, saveSession, deleteSession, pruneOldSessions, trimSessionMessages, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
@@ -149,5 +149,29 @@ describe("session store", () => {
 
   test("delete non-existent session does not throw", async () => {
     await deleteSession("does-not-exist-at-all-" + Date.now());
+  });
+});
+
+describe("trim boundary repair (orphan tool messages)", () => {
+  const ts = new Date().toISOString();
+  const U = (c: string): SessionMessage => ({ role: "user", content: c, timestamp: ts });
+  const A = (c: string, ids?: string[]): SessionMessage => ({ role: "assistant", content: c, timestamp: ts, ...(ids ? { toolCalls: ids.map((id) => ({ id, name: "x", arguments: "{}" })) } : {}) });
+  const T = (id: string): SessionMessage => ({ role: "tool", toolCallId: id, content: "res", timestamp: ts });
+
+  test("dropLeadingOrphanToolMessages strips leading tool messages", () => {
+    const out = dropLeadingOrphanToolMessages([T("a"), T("b"), U("hi"), A("ok")]);
+    expect(out.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("keeps a clean head untouched", () => {
+    const msgs = [U("hi"), A("ok")];
+    expect(dropLeadingOrphanToolMessages(msgs)).toBe(msgs);
+  });
+
+  test("trimSessionMessages never starts on an orphan tool (parallel tool block cut)", () => {
+    // A block of parallel tool calls; slicing the last 2 would start on a tool result.
+    const full = [U("q"), A("", ["t1", "t2"]), T("t1"), T("t2"), A("done")];
+    const trimmed = trimSessionMessages(full, 2);
+    expect(trimmed[0]!.role).not.toBe("tool");
   });
 });

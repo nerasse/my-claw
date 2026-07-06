@@ -9,7 +9,7 @@ import { AgentBridge } from "../agent/bridge.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
+import { loadSession, saveSession, deleteSession, archiveSession, trimSessionMessages } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
@@ -92,7 +92,7 @@ export class SubAgentRunner {
       session.messages.push({ role: "user", content: userContent, timestamp: new Date().toISOString() });
 
       if (session.messages.length > MAX_MESSAGES) {
-        session.messages = session.messages.slice(-MAX_MESSAGES_KEEP);
+        session.messages = trimSessionMessages(session.messages, MAX_MESSAGES_KEEP);
       }
 
       const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal);
@@ -172,7 +172,11 @@ export class SubAgentRunner {
     signal?: AbortSignal,
   ): Promise<string> {
     const session = (await loadSession(id))!;
-    return this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
+    const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
+    // Persist the first run so a session-mode sub-agent remembers its own answer; without this
+    // the next send() reloads a history containing the task but not the reply.
+    await saveSession(id, session);
+    return result;
   }
 
   private async executeRunWithSession(
@@ -183,9 +187,11 @@ export class SubAgentRunner {
     signal?: AbortSignal,
   ): Promise<string> {
     const depth = 1;
-    const resolved = resolveAgentLlmConfig(this.config.agents[type]?.llm, this.config.llm);
-    const tools = this.toolRegistry.getForAgent(type === "research" ? "research" : "general");
+    const resolved = resolveAgentLlmConfig(this.config.agents?.[type]?.llm, this.config.llm);
 
+    // Record which model this sub-agent runs on (surfaced by list/status); the bridge uses the
+    // fully-resolved config below so the agent's provider (baseUrl/apiKey/headers) is honored,
+    // not just the model id round-tripped through modelOverride.
     session.modelOverride = resolved.model;
 
     const bridge = new AgentBridge(
@@ -197,6 +203,8 @@ export class SubAgentRunner {
       this.ttsPipeline,
       depth,
       workspaceDir,
+      type,
+      resolved,
     );
 
     const subMessage: UnifiedMessage = {

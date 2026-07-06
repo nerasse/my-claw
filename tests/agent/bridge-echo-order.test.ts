@@ -59,15 +59,15 @@ describe("AgentBridge echo ordering", () => {
     });
 
     // Before preprocessMessage: no echoes
-    expect(bridge.getEchoMessages().length).toBe(0);
+    expect(bridge.getEchoMessages(message.id).length).toBe(0);
 
     // After preprocessMessage: echoes generated
     await bridge.preprocessMessage(message);
-    const echoes = bridge.getEchoMessages();
+    const echoes = bridge.getEchoMessages(message.id);
 
     // Echoes should be present (or empty if STT fails in test env)
     // The key point: echoes are generated before handle() is called
-    expect(bridge.hadAudioInbound()).toBe(true);
+    expect(bridge.hadAudioInbound(message.id)).toBe(true);
     expect(message.text).toContain("[Audio]:");
   });
 
@@ -95,10 +95,10 @@ describe("AgentBridge echo ordering", () => {
     });
 
     await bridge.preprocessMessage(message);
-    const echoes1 = bridge.getEchoMessages();
+    const echoes1 = bridge.getEchoMessages(message.id);
 
     // Second call returns empty (cleared)
-    const echoes2 = bridge.getEchoMessages();
+    const echoes2 = bridge.getEchoMessages(message.id);
     expect(echoes2.length).toBe(0);
   });
 
@@ -126,11 +126,11 @@ describe("AgentBridge echo ordering", () => {
     });
 
     await bridge.preprocessMessage(message);
-    const echoes1 = bridge.getEchoMessages();
+    const echoes1 = bridge.getEchoMessages(message.id);
 
     // Second call with same message should not re-process
     await bridge.preprocessMessage(message);
-    const echoes2 = bridge.getEchoMessages();
+    const echoes2 = bridge.getEchoMessages(message.id);
 
     // Second call produced no new echoes (idempotent)
     expect(echoes2.length).toBe(0);

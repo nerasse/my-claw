@@ -4,15 +4,16 @@ import type { MessageRouter } from "../core/router.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import {
   loadJobs,
-  saveJobs,
   getDueJobs,
   advanceNextRun,
   markJobRun,
   saveJobOutput,
+  persistJobRunUpdates,
 } from "./store.ts";
 import type { CronJob, CronDeliveryTarget } from "./types.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 
 const SILENT_MARKER = "[SILENT]";
 
@@ -52,7 +53,12 @@ export class CronScheduler {
     try {
       const allJobs = await loadJobs();
       const due = getDueJobs(allJobs);
-      if (due.length === 0) return 0;
+      // getDueJobs may skip-ahead overdue jobs' nextRunAt even when none are due; persist that so
+      // it is not recomputed forever. Merge-by-id keeps concurrent tool edits intact.
+      if (due.length === 0) {
+        await persistJobRunUpdates(allJobs);
+        return 0;
+      }
 
       hooks.emit("cron:tick", { dueCount: due.length, totalJobs: allJobs.length });
       void log("info", "cron tick", { dueCount: due.length, totalJobs: allJobs.length });
@@ -62,7 +68,7 @@ export class CronScheduler {
           advanceNextRun(job);
         }
       }
-      await saveJobs(allJobs);
+      await persistJobRunUpdates(allJobs);
 
       let executed = 0;
       for (const job of due) {
@@ -77,7 +83,7 @@ export class CronScheduler {
         }
       }
 
-      await saveJobs(allJobs);
+      await persistJobRunUpdates(allJobs);
       return executed;
     } catch (err) {
       void log("error", "cron tick failed", { error: String(err) });
@@ -124,6 +130,7 @@ export class CronScheduler {
         throw new Error(`Cron job timed out after ${Math.round(timeoutMs / 1000)}s (cron.timeoutMs)`);
       }
       const responseText = result?.text ?? "";
+      const attachments = result?.attachments ?? [];
 
       await saveJobOutput(job.id, responseText).catch((err) => {
         void log("warn", "cron output save failed", { jobId: job.id, error: String(err) });
@@ -140,7 +147,14 @@ export class CronScheduler {
         throw new Error("Agent returned empty response");
       }
 
-      const delivered = await this.deliverResult(job, responseText);
+      let delivered: CronDeliveryTarget | null = null;
+      try {
+        delivered = await this.deliverResult(job, responseText, attachments);
+      } finally {
+        // Generated files (TTS/screenshots) are only cleaned by the channel send path on the
+        // user-facing flow; the cron path owns its own cleanup regardless of delivery outcome.
+        await cleanupGeneratedTempFiles(attachments).catch(() => {});
+      }
       hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: false, durationMs: Date.now() - jobStartedAt });
       if (delivered) {
         hooks.emit("cron:job:delivered", { jobId: job.id, platform: delivered.platform, chatId: delivered.chatId });
@@ -181,7 +195,11 @@ export class CronScheduler {
     return header + job.prompt;
   }
 
-  private async deliverResult(job: CronJob, result: string): Promise<CronDeliveryTarget | null> {
+  private async deliverResult(
+    job: CronJob,
+    result: string,
+    attachments: NonNullable<import("../channels/types.ts").OutgoingMessage["attachments"]> = [],
+  ): Promise<CronDeliveryTarget | null> {
     const target = this.resolveDeliveryTarget(job);
     if (!target) return null;
 
@@ -193,7 +211,7 @@ export class CronScheduler {
     }
 
     const text = `[Cron: ${job.name}]\n\n${result}`;
-    await adapter.send(target.chatId, { text, threadId: target.threadId });
+    await adapter.send(target.chatId, { text, threadId: target.threadId, attachments: attachments.length > 0 ? attachments : undefined });
     return target;
   }
 

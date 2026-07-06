@@ -8,67 +8,94 @@ import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 
+/** Per-run scratch state, keyed by message id. A single MessagePreprocessor instance is shared
+ *  by the one AgentBridge that serves telegram + matrix + cron, so concurrent runs (different
+ *  sessions/platforms) MUST NOT share these buffers — otherwise run B wipes or steals run A's
+ *  response attachments/echoes/temp dirs, and a voice note can be delivered to the wrong chat.
+ *  Keying by the (unique) message id isolates each run. */
+interface PreprocessRunState {
+  echoMessages: OutgoingMessage[];
+  responseAttachments: NonNullable<OutgoingMessage["attachments"]>;
+  tempDirs: string[];
+  hadAudio: boolean;
+}
+
 export class MessagePreprocessor {
-  private currentMessage?: UnifiedMessage;
-  private _echoMessages: OutgoingMessage[] = [];
-  private _responseAttachments: NonNullable<OutgoingMessage["attachments"]> = [];
-  private _inboundHadAudio = false;
-  private _tempDirs: string[] = [];
+  private processed = new Set<string>();
+  private runs = new Map<string, PreprocessRunState>();
 
   constructor(
     private voiceManager?: VoiceManager,
     private sttPipeline?: SttPipeline,
   ) {}
 
-  get inboundHadAudio(): boolean {
-    return this._inboundHadAudio;
+  private stateFor(messageId: string): PreprocessRunState {
+    let state = this.runs.get(messageId);
+    if (!state) {
+      state = { echoMessages: [], responseAttachments: [], tempDirs: [], hadAudio: false };
+      this.runs.set(messageId, state);
+    }
+    return state;
   }
 
-  consumeEchoMessages(): OutgoingMessage[] {
-    const echoes = [...this._echoMessages];
-    this._echoMessages = [];
+  inboundHadAudio(messageId: string): boolean {
+    return this.runs.get(messageId)?.hadAudio ?? false;
+  }
+
+  consumeEchoMessages(messageId: string): OutgoingMessage[] {
+    const state = this.runs.get(messageId);
+    if (!state) return [];
+    const echoes = [...state.echoMessages];
+    state.echoMessages = [];
     return echoes;
   }
 
-  consumeResponseAttachments(): OutgoingMessage["attachments"] {
-    const attachments = [...this._responseAttachments];
-    this._responseAttachments = [];
+  consumeResponseAttachments(messageId: string): OutgoingMessage["attachments"] {
+    const state = this.runs.get(messageId);
+    if (!state) return [];
+    const attachments = [...state.responseAttachments];
+    state.responseAttachments = [];
     return attachments;
   }
 
-  addResponseAttachment(att: Attachment): void {
-    this._responseAttachments.push(att);
+  addResponseAttachment(messageId: string, att: Attachment): void {
+    this.stateFor(messageId).responseAttachments.push(att);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
-    if (this.currentMessage?.id === message.id) return;
-    this.currentMessage = message;
-    this._echoMessages = [];
-    this._inboundHadAudio = false;
+    if (this.processed.has(message.id)) return;
+    this.processed.add(message.id);
     await this.preprocessAudio(message);
     await this.preprocessVideo(message);
     hooks.emit("message:preprocessed", { message, transcription: message.text });
   }
 
   async preprocessForHandle(message: UnifiedMessage): Promise<void> {
-    if (this.currentMessage?.id === message.id) return;
-    this.currentMessage = message;
-    this._echoMessages = [];
-    this._responseAttachments = [];
-    this._inboundHadAudio = false;
-    this._tempDirs = [];
+    if (this.processed.has(message.id)) return;
+    this.processed.add(message.id);
     await this.preprocessAudio(message);
     await this.preprocessVideo(message);
   }
 
-  async cleanupTempFiles(): Promise<void> {
-    for (const dir of this._tempDirs) {
+  /** Runs in the bridge's finally: drop this run's temp dirs and forget its scratch state.
+   *  Response attachments are consumed by the router AFTER handle() returns, so they are NOT
+   *  cleared here — the router's consumeResponseAttachments removes the bucket. */
+  async cleanupTempFiles(messageId: string): Promise<void> {
+    const state = this.runs.get(messageId);
+    this.processed.delete(messageId);
+    if (!state) return;
+    for (const dir of state.tempDirs) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
-    this._tempDirs = [];
+    state.tempDirs = [];
+    // Keep the bucket only if response attachments are still pending pickup by the router.
+    if (state.responseAttachments.length === 0 && state.echoMessages.length === 0) {
+      this.runs.delete(messageId);
+    }
   }
 
   private async preprocessAudio(message: UnifiedMessage): Promise<TranscriptionResult> {
+    const state = this.stateFor(message.id);
     const audioAttachments = message.attachments.filter((a) => a.type === "audio");
     if (audioAttachments.length === 0) {
       return { text: "" };
@@ -81,7 +108,7 @@ export class MessagePreprocessor {
       return { text: "", error: "voice/STT not configured" };
     }
 
-    this._inboundHadAudio = true;
+    state.hadAudio = true;
     const multi = audioAttachments.length > 1;
     const transcriptions: string[] = [];
     let lastError: string | undefined;
@@ -102,7 +129,7 @@ export class MessagePreprocessor {
 
         const { enabled } = this.voiceManager.getEchoConfig();
         if (enabled) {
-          this._echoMessages.push({
+          state.echoMessages.push({
             text: `[Warning] ${reason}`,
             replyToId: message.id,
             threadId: message.threadId,
@@ -125,7 +152,7 @@ export class MessagePreprocessor {
 
         const { enabled } = this.voiceManager.getEchoConfig();
         if (enabled) {
-          this._echoMessages.push({
+          state.echoMessages.push({
             text: this.voiceManager.formatEcho(result.text),
             replyToId: message.id,
             threadId: message.threadId,
@@ -140,7 +167,7 @@ export class MessagePreprocessor {
 
         const { enabled } = this.voiceManager.getEchoConfig();
         if (enabled) {
-          this._echoMessages.push({
+          state.echoMessages.push({
             text: `[Warning] STT failed: ${errorMsg}`,
             replyToId: message.id,
             threadId: message.threadId,
@@ -157,6 +184,7 @@ export class MessagePreprocessor {
   }
 
   private async preprocessVideo(message: UnifiedMessage): Promise<void> {
+    const state = this.stateFor(message.id);
     const videoAttachments = message.attachments.filter((a) => a.type === "video" && a.path);
     if (videoAttachments.length === 0) return;
 
@@ -170,7 +198,7 @@ export class MessagePreprocessor {
         });
 
         if (frames.length > 0) {
-          this._tempDirs.push(dirname(frames[0]!));
+          state.tempDirs.push(dirname(frames[0]!));
         }
 
         for (const framePath of frames) {

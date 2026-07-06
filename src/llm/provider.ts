@@ -51,6 +51,14 @@ export function resetCircuitBreaker(): void {
   circuitState.openedAt = 0;
 }
 
+// A non-retryable 4xx (e.g. one malformed request) is request-specific, not a provider outage:
+// counting it would let a single bad call push the breaker toward opening for ALL traffic.
+function countsTowardBreaker(err: unknown): boolean {
+  const status = (err as { status?: number } | undefined)?.status;
+  if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return false;
+  return true;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -261,7 +269,8 @@ export async function chatCompletion(
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
-          const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`);
+          const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
+          err.status = response.status;
 
           if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
             const delay = retryDelay(attempt, parseRetryAfterMs(response));
@@ -297,14 +306,14 @@ export async function chatCompletion(
         await sleep(delay);
         continue;
       }
-      recordCircuitFailure();
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure();
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  recordCircuitFailure();
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure();
   throw lastErr;
 }
 
@@ -348,7 +357,8 @@ export async function chatCompletionStream(
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
-        const err = new Error(`LLM stream request failed: HTTP ${response.status} — ${detail}`);
+        const err = new Error(`LLM stream request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
+        err.status = response.status;
 
         if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = retryDelay(attempt, parseRetryAfterMs(response));
@@ -461,13 +471,13 @@ export async function chatCompletionStream(
         await sleep(delay);
         continue;
       }
-      recordCircuitFailure();
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure();
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  recordCircuitFailure();
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure();
   throw lastErr;
 }

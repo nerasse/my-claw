@@ -111,7 +111,7 @@ describe("AgentBridge voice integration", () => {
     });
     const session = createSession();
 
-    expect(bridge.hadAudioInbound()).toBe(false);
+    expect(bridge.hadAudioInbound(message.id)).toBe(false);
 
     try {
       await bridge.handleMessage(message, session);
@@ -119,7 +119,7 @@ describe("AgentBridge voice integration", () => {
       // Expected.
     }
 
-    expect(bridge.hadAudioInbound()).toBe(true);
+    expect(bridge.hadAudioInbound(message.id)).toBe(true);
   });
 
   test("does not flag inbound audio when no audio attachments", async () => {
@@ -148,7 +148,7 @@ describe("AgentBridge voice integration", () => {
       // Expected.
     }
 
-    expect(bridge.hadAudioInbound()).toBe(false);
+    expect(bridge.hadAudioInbound(message.id)).toBe(false);
   });
 
   test("hides audio attachments from LLM prompt after transcription", async () => {
