@@ -139,7 +139,7 @@ describe("web_search tool", () => {
       return new Response(
         JSON.stringify({
           results: [],
-          unresponsive_engines: [["google", "rate-limited"], ["bing", "timeout"]],
+          unresponsive_engines: [["google", "rate-limited"], ["bing", "timeout"], ["brave", "suspended"]],
         }),
         { status: 200 },
       );
@@ -151,6 +151,20 @@ describe("web_search tool", () => {
       assert.equal(result.success, false);
       assert.match(result.error ?? "", /degraded|rate-limited/i);
       assert.match(result.error ?? "", /google: rate-limited/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("one flaky engine with empty results is a genuine empty, not a degraded outage", async () => {
+    const { restore } = mockFetch(async () => {
+      return new Response(JSON.stringify({ results: [], unresponsive_engines: [["bing", "timeout"]] }), { status: 200 });
+    });
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr" });
+      const result = await tool.execute({ query: "test" });
+      assert.equal(result.success, true, "a single engine down must not hard-fail search");
+      assert.match(result.output, /No results found/i);
     } finally {
       restore();
     }
@@ -176,7 +190,7 @@ describe("web_search tool", () => {
     const { restore } = mockFetch(async () => {
       backendCalls++;
       return new Response(
-        JSON.stringify({ results: [], unresponsive_engines: [["brave", "too many requests"]] }),
+        JSON.stringify({ results: [], unresponsive_engines: [["brave", "too many requests"], ["ddg", "captcha"], ["mojeek", "denied"]] }),
         { status: 200 },
       );
     });
