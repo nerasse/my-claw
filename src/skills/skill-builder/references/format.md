@@ -9,6 +9,10 @@ Required fields:
 Optional:
 - `version`: semantic version (e.g., 1.2.0)
 
+Parser constraint: the frontmatter is parsed line by line as simple `key: value`
+pairs — multi-line YAML values, lists, and nested mappings are NOT supported.
+Keep every field on a single line (a colon inside the value is fine).
+
 ```yaml
 ---
 name: deploy-docker

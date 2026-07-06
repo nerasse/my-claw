@@ -23,11 +23,15 @@ tts(text="Hello", forceCloud=true)    # Force cloud
 tts(text="Hello", forceLocal=true)    # Force local
 ```
 
+Limit: **5000 characters max** per call — longer text is rejected, shorten or split it.
+
 ## Manual STT
 
 ```tool
 stt(filePath="/tmp/audio.ogg")           # Transcribe a file
 ```
+
+Limit: **25 MB max** per audio file — compress/split longer recordings first.
 
 ## Mode Switch (runtime)
 
@@ -58,4 +62,4 @@ explicitly:
 1. `forceCloud` / `forceLocal` in the tool call (per-call)
 2. `voice.<stt|tts>.mode` (per-feature)
 3. `voice.mode` (global)
-4. `"auto"` -> cloud if credentials available, else local
+4. `"auto"` -> STT: cloud if GROQ_API_KEY is set, else local. TTS: always cloud (edge-tts needs no credentials).

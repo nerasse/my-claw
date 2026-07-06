@@ -44,14 +44,14 @@ Spawn deliberately:
 | Type | Tools | Use for |
 |---|---|---|
 | `research` | read, grep, find, ls, fetch, web_search, list_skills, read_skill | Exploration, analysis, web research, no filesystem changes |
-| `general` | All tools (bash, write, memory...) | Execution, coding, modifications |
+| `general` | All tools (bash, write, edit...) EXCEPT sub-agent management (spawn/send/list_agents/kill_agent/reset_agent), `manage_skills`, `memory`, `cron` | Execution, coding, modifications |
 
 ## Workflow
 
 1. **Spawn** : `spawn(name, type, mode, task, workspaceDir?)`
    - `mode: "run"` — one-shot, auto-deleted after. Use for simple isolated tasks.
    - `mode: "session"` — persistent, keeps history. Returns ID like `subagent/explorer-a7b3`.
-   - `workspaceDir` — optional absolute path. Sub-agent filesystem tools resolve here instead of shared workspace.
+   - `workspaceDir` — optional absolute path. Sub-agent filesystem tools resolve here instead of shared workspace. Must be inside the main workspace (paths outside are rejected).
 
 2. **Send** : `send(id, message, attachments?)`
    - Continues the conversation. Full history preserved.
