@@ -61,7 +61,6 @@ describe("AgentBridge voice integration", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({
@@ -101,7 +100,6 @@ describe("AgentBridge voice integration", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({
@@ -136,7 +134,6 @@ describe("AgentBridge voice integration", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({ text: "hello" });
@@ -165,7 +162,6 @@ describe("AgentBridge voice integration", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({
@@ -210,7 +206,6 @@ describe("AgentBridge voice integration", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({

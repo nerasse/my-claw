@@ -110,7 +110,7 @@ test("a message arriving during the final answer keeps the run going (onTurnSwit
 
 test("only the root run drains the mailbox (a sub-agent depth does not)", async () => {
   runRegistry.clear();
-  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, undefined, 1);
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, 1);
   const sess = session("telegram/dm/u1");
   const { signal, end } = runRegistry.startRoot(sess.id);
   void runRegistry.enqueueInjection(sess.id, msg("inj", "should stay pending"));

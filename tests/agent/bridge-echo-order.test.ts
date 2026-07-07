@@ -49,7 +49,6 @@ describe("AgentBridge echo ordering", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({
@@ -85,7 +84,6 @@ describe("AgentBridge echo ordering", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({
@@ -116,7 +114,6 @@ describe("AgentBridge echo ordering", () => {
       skillRegistry,
       voiceManager,
       sttPipeline,
-      ttsPipeline,
     );
 
     const message = createMessage({

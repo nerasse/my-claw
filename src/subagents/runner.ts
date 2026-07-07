@@ -14,7 +14,7 @@ import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
-import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
+import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 
 const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
@@ -30,7 +30,6 @@ export class SubAgentRunner {
     private skillRegistry: SkillRegistry,
     private voiceManager: VoiceManager,
     private sttPipeline: SttPipeline,
-    private ttsPipeline: TtsPipeline,
   ) {}
 
   canSpawn(depth: number): boolean {
@@ -200,7 +199,6 @@ export class SubAgentRunner {
       this.skillRegistry,
       this.voiceManager,
       this.sttPipeline,
-      this.ttsPipeline,
       depth,
       workspaceDir,
       type,

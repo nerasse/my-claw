@@ -6,7 +6,7 @@ import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
-import { resolveLlmConfig, resolveLlmConfigForMessage } from "../llm/resolver.ts";
+import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -15,7 +15,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { ToolApprovalManager } from "./approvals.ts";
-import type { VoiceManager, SttPipeline, TtsPipeline } from "../voice/index.ts";
+import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 import { scanForInjection } from "./prompt/anti-injection.ts";
@@ -77,7 +77,6 @@ export class AgentBridge {
     private skillRegistry: SkillRegistry,
     private voiceManager?: VoiceManager,
     private sttPipeline?: SttPipeline,
-    private ttsPipeline?: TtsPipeline,
     private depth: number = 0,
     private workspaceDir?: string,
     // Sub-agent kind and its fully-resolved LLM config. Set by SubAgentRunner so a "research"
@@ -602,7 +601,7 @@ export class AgentBridge {
     chatMessages: ChatMessage[],
     session: SessionData,
     message: UnifiedMessage,
-    llmConfig: ReturnType<typeof resolveLlmConfig>,
+    llmConfig: ResolvedLlmConfig,
     startedAt: number,
     toolExecutions: number,
     iteration: number,

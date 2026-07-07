@@ -63,7 +63,6 @@ function createBridge(registry: ToolRegistry, maxIterations: number) {
     new SkillRegistry(),
     voiceManager,
     sttPipeline,
-    ttsPipeline,
   );
 }
 
@@ -192,7 +191,6 @@ test("cron messages use config.cron.maxIterations, not the orchestrator budget",
     new SkillRegistry(),
     voiceManager,
     new SttPipeline(voiceManager),
-    new TtsPipeline(voiceManager),
   );
 
   const cronMessage: UnifiedMessage = { ...createMessage(), platform: "cron" };

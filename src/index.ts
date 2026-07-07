@@ -130,12 +130,12 @@ async function main() {
   hooks.emit("skills:loaded", { count: allSkills.size });
 
   const subAgentRegistry = new SubAgentRegistry();
-  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
   registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry);
   registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
-  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, ttsPipeline);
+  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
   toolRegistry.register(createCronTool(cronScheduler));
