@@ -173,6 +173,10 @@ export interface LlmConfig {
     output?: number;
   };
   models?: LlmModelConfig[];
+  // Model id to reroute a run to when the resolved model cannot take image input. Provider
+  // agnostic by design: the switch happens before the request instead of relying on
+  // proxy-side fallbacks.
+  visionFallback?: string;
 
   defaultProvider?: string;
   defaultModel?: string;

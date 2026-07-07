@@ -51,10 +51,17 @@ crypto, memory, voice, cron and workspace changes still require a restart. See
         "provider": "groq",
         "limit": { "context": 128000, "output": 32768 }
       }
-    ]
+    ],
+    "visionFallback": "accounts/fireworks/routers/kimi-k2p6-turbo"
   }
 }
 ```
+
+`visionFallback` (optional): model id to reroute a run to when the incoming message carries
+images and the resolved model (default or per-session override) has `vision: false`. The whole
+run uses the fallback model so it can see the image in context. The target must be a declared
+model with `vision: true`; otherwise the setting is ignored. Provider-agnostic: the switch
+happens in my-claw before the request, so it works with any backend (proxy, direct API, local).
 
 ### Legacy format (auto-migrated on boot)
 

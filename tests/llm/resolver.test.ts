@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { resolveLlmConfig, listAvailableModels } from "../../src/llm/resolver.ts";
+import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels } from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 
 const newFormatConfig: LlmConfig = {
@@ -176,4 +176,40 @@ test("resolveLlmConfig with custom provider", () => {
   const resolved = resolveLlmConfig(config);
   assert.equal(resolved.baseUrl, "http://192.168.1.50:8000/v1");
   assert.equal(resolved.headers?.["x-auth"], "secret");
+});
+
+const visionFallbackConfig: LlmConfig = {
+  ...newFormatConfig,
+  defaultModel: "llama-3.3-70b",
+  visionFallback: "accounts/fireworks/models/kimi-k2p6-turbo",
+};
+
+test("resolveLlmConfigForMessage keeps the resolved model when there is no image", () => {
+  const resolved = resolveLlmConfigForMessage(visionFallbackConfig, undefined, false);
+  assert.equal(resolved.model, "llama-3.3-70b");
+});
+
+test("resolveLlmConfigForMessage keeps a vision-capable resolved model with images", () => {
+  const resolved = resolveLlmConfigForMessage(visionFallbackConfig, "accounts/fireworks/models/kimi-k2p6-turbo", true);
+  assert.equal(resolved.model, "accounts/fireworks/models/kimi-k2p6-turbo");
+});
+
+test("resolveLlmConfigForMessage reroutes an image run from a text-only model to the fallback", () => {
+  const resolved = resolveLlmConfigForMessage(visionFallbackConfig, undefined, true);
+  assert.equal(resolved.model, "accounts/fireworks/models/kimi-k2p6-turbo");
+  assert.equal(resolved.vision, true);
+  assert.equal(resolved.baseUrl, "https://api.fireworks.ai/inference/v1");
+});
+
+test("resolveLlmConfigForMessage ignores a fallback that is not a declared vision model", () => {
+  const typo: LlmConfig = { ...visionFallbackConfig, visionFallback: "does-not-exist" };
+  assert.equal(resolveLlmConfigForMessage(typo, undefined, true).model, "llama-3.3-70b");
+
+  const textOnly: LlmConfig = { ...visionFallbackConfig, visionFallback: "llama-3.3-70b" };
+  assert.equal(resolveLlmConfigForMessage(textOnly, undefined, true).model, "llama-3.3-70b");
+});
+
+test("resolveLlmConfigForMessage without visionFallback keeps current behavior", () => {
+  const none: LlmConfig = { ...visionFallbackConfig, visionFallback: undefined };
+  assert.equal(resolveLlmConfigForMessage(none, undefined, true).model, "llama-3.3-70b");
 });

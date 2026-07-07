@@ -62,6 +62,27 @@ export function resolveLlmConfig(config: LlmConfig, modelId?: string): ResolvedL
   return resolveFromMerged(config, modelId);
 }
 
+/**
+ * Like resolveLlmConfig, but reroutes the run to `visionFallback` when the message carries
+ * images and the resolved model cannot take them. The fallback must be a declared,
+ * vision-capable model: a typo or a text-only target must never silently hijack the run.
+ */
+export function resolveLlmConfigForMessage(
+  config: LlmConfig,
+  modelId: string | undefined,
+  hasImages: boolean,
+): ResolvedLlmConfig {
+  const resolved = resolveLlmConfig(config, modelId);
+  if (!hasImages || resolved.vision) return resolved;
+
+  const fallbackId = config.visionFallback;
+  if (!fallbackId || fallbackId === resolved.model) return resolved;
+  const fallbackModel = findModel(config, fallbackId);
+  if (!fallbackModel?.vision) return resolved;
+
+  return resolveLlmConfig(config, fallbackId);
+}
+
 export function resolveAgentLlmConfig(
   agentConfig: AgentLlmConfig | undefined,
   globalConfig: LlmConfig,

@@ -6,7 +6,7 @@ import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
-import { resolveLlmConfig } from "../llm/resolver.ts";
+import { resolveLlmConfig, resolveLlmConfigForMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -146,7 +146,11 @@ export class AgentBridge {
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
     const tools = this.toolRegistry.getForAgent(agentToolType);
-    const llmConfig = this.llmOverride ?? resolveLlmConfig(this.config.llm, session.modelOverride);
+    const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
+      this.config.llm,
+      session.modelOverride,
+      message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+    );
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     let toolExecutions = 0;
