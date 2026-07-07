@@ -212,7 +212,9 @@ export class AgentBridge {
         ...this.toChatMessages(session.messages),
       ];
 
-      if (this.config.llm.vision && message.attachments.some((a) => a.type === "image" && a.path)) {
+      // Vision is resolved per model (resolver merges the model entry over the global flag):
+      // the global default may be a text-only model while another configured model has vision.
+      if (llmConfig.vision && message.attachments.some((a) => a.type === "image" && a.path)) {
         const lastIdx = chatMessages.length - 1;
         if (chatMessages[lastIdx]?.role === "user") {
           chatMessages[lastIdx] = {
@@ -234,7 +236,7 @@ export class AgentBridge {
         if (this.depth === 0) {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
-            await this.injectUserTurn(injected, chatMessages, session, onTurnSwitch);
+            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
           }
         }
         iteration++;
@@ -310,7 +312,7 @@ export class AgentBridge {
               chatMessages.push({ role: "assistant", content: transformedResponse });
               for (const m of injected) {
                 budget.grant(injectionBonus);
-                await this.injectUserTurn(m, chatMessages, session, onTurnSwitch);
+                await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
               }
               continue;
             }
@@ -543,6 +545,7 @@ export class AgentBridge {
     injected: UnifiedMessage,
     chatMessages: ChatMessage[],
     session: SessionData,
+    vision: boolean,
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<void> {
     if (onTurnSwitch) await onTurnSwitch(injected);
@@ -552,7 +555,7 @@ export class AgentBridge {
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformedContent, timestamp: new Date().toISOString() });
 
-    if (this.config.llm.vision && injected.attachments.some((a) => a.type === "image" && a.path)) {
+    if (vision && injected.attachments.some((a) => a.type === "image" && a.path)) {
       chatMessages.push({ role: "user", content: await this.preprocessor.buildImageContent(injected) });
     } else {
       chatMessages.push({ role: "user", content: transformedContent });
