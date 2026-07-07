@@ -15,6 +15,10 @@ Environment="PATH={{HOME}}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/
 ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
 Restart=always
 RestartSec=5
+# The agent spawns arbitrary children via its bash tool (ffmpeg, demucs, ML jobs...). When the
+# kernel OOM-kills such a child, the agent must survive to report the failure — the default
+# policy would tear the whole service down and lose any in-flight response.
+OOMPolicy=continue
 StandardOutput=append:/var/log/my-claw/my-claw.log
 StandardError=append:/var/log/my-claw/my-claw.log
 
