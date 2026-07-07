@@ -31,7 +31,7 @@ Two consumption patterns exist and both are covered:
 Hot-reloadable (applied in place, effective on the next message/call):
 
 - `llm.*` (defaultProvider, defaultModel, providers, limit, vision, models)
-- `agents.*` (maxIterations, llm)
+- `agents.*` (maxIterations, llm, nested.enabled/maxBytes)
 - `injection`, `browser` (enabled/sidecarUrl/maxSteps/...), `webSearch`
 - `whitelist`, `blacklist`
 - Telegram/Matrix **behavioral** fields: dm/group policy + allowFrom, groups, contextVisibility,

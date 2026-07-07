@@ -13,6 +13,7 @@
 | LLM provider | Complete — sync + streaming |
 | Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
+| Nested AGENTS.md | Complete — lazy per-tool discovery: the AGENTS.md chain from the git root down to a touched subtree is appended to the tool result (file tools via `path`, bash via `workdir`), scanned + byte-capped + deduped per run — see `docs/nested-agents.md` |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
@@ -221,9 +222,14 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
 Long-term memory is no longer a prompt layer. Relevant entries are recalled per turn and injected into the user message (see `docs/memory.md`).
 
+Layer 2 is only the **workspace-root** AGENTS.md. AGENTS.md files in subtrees the run
+touches are surfaced lazily, appended to the relevant tool result rather than preloaded
+here (see `docs/nested-agents.md`).
+
 #### Anti-injection
 
-- All workspace files scanned before injection
+- All workspace files scanned before injection, plus every nested AGENTS.md discovered in
+  a subtree (untrusted external content) -- see `docs/nested-agents.md`
 - 10 threat patterns + invisible unicode characters
 - Blocked files replaced with `[BLOCKED: potential prompt injection]`
 
