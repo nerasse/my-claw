@@ -205,6 +205,12 @@ export interface AgentConfig {
   llm?: AgentLlmConfig;
 }
 
+/** Lazy nested AGENTS.md discovery. See `docs/nested-agents.md`. */
+export interface NestedAgentsConfig {
+  enabled?: boolean; // default true
+  maxBytes?: number; // per-run cap on total injected nested bytes (default 32768)
+}
+
 export interface CronConfig {
   enabled?: boolean;
   tickIntervalMs?: number;
@@ -249,6 +255,7 @@ export interface MyClawConfig {
     orchestrator?: AgentConfig;
     general?: AgentConfig;
     research?: AgentConfig;
+    nested?: NestedAgentsConfig;
   };
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
@@ -278,6 +285,17 @@ export function resolveInjectionBudgetBonus(config: MyClawConfig): number {
 
 export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;
 export const DEFAULT_SUBAGENT_MAX_ITERATIONS = 50;
+
+export const DEFAULT_NESTED_AGENTS_MAX_BYTES = 32_768;
+
+export function nestedAgentsEnabled(config: MyClawConfig): boolean {
+  return config.agents?.nested?.enabled !== false;
+}
+
+export function resolveNestedAgentsMaxBytes(config: MyClawConfig): number {
+  const n = config.agents?.nested?.maxBytes;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : DEFAULT_NESTED_AGENTS_MAX_BYTES;
+}
 
 export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" | "general" | "research"): number {
   const agentCfg = config.agents?.[type];

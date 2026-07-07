@@ -30,3 +30,21 @@ test("bash: respects __workspaceDir for cwd", async () => {
   assert.ok(result.success);
   assert.ok(result.output.trim().startsWith("/tmp"));
 });
+
+test("bash: absolute workdir sets cwd", async () => {
+  const result = await bashTool.execute({ command: "pwd", workdir: "/tmp" });
+  assert.ok(result.success);
+  assert.ok(result.output.trim().startsWith("/tmp"));
+});
+
+test("bash: relative workdir resolves against workspace", async () => {
+  const result = await bashTool.execute({ command: "pwd", workdir: ".", __workspaceDir: "/tmp" });
+  assert.ok(result.success);
+  assert.ok(result.output.trim().startsWith("/tmp"));
+});
+
+test("bash: non-existent workdir fails cleanly", async () => {
+  const result = await bashTool.execute({ command: "pwd", workdir: "/no/such/dir/xyz" });
+  assert.equal(result.success, false);
+  assert.ok(result.error?.includes("does not exist"));
+});

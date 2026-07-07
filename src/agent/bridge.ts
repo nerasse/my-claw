@@ -1,5 +1,5 @@
 import type { MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
-import { resolveMaxIterations, resolveInjectionBudgetBonus } from "../core/config.ts";
+import { resolveMaxIterations, resolveInjectionBudgetBonus, nestedAgentsEnabled, resolveNestedAgentsMaxBytes } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
@@ -19,6 +19,7 @@ import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 import { scanForInjection } from "./prompt/anti-injection.ts";
+import { NestedAgentsCollector } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
@@ -183,6 +184,15 @@ export class AgentBridge {
     });
 
     let messageCountBeforeLoop = session.messages.length;
+
+    // Run-local (never persisted to session): tracks which nested AGENTS.md were already
+    // injected this run and the byte budget spent, so each file lands at most once.
+    const nestedAgents = nestedAgentsEnabled(this.config)
+      ? new NestedAgentsCollector(
+          this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+          resolveNestedAgentsMaxBytes(this.config),
+        )
+      : undefined;
 
     const gate = await hooks.check("gate:agent:before:reply", { sessionId: session.id, message });
     if (!gate.allowed) {
@@ -469,12 +479,15 @@ export class AgentBridge {
         for (const { tc, result, durationMs } of settled) {
           toolExecutions += 1;
           toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
-          const transformedResult = (await hooks.transform("transform:tool:result", {
+          let transformedResult = (await hooks.transform("transform:tool:result", {
             toolName: tc.name,
             result: result.content,
             sessionId: session.id,
             toolCallId: tc.id,
           })).result;
+          if (nestedAgents) {
+            transformedResult += nestedAgents.collect(tc.name, tc.arguments);
+          }
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: transformedResult });
           session.messages.push({ role: "tool", toolCallId: tc.id, content: transformedResult, timestamp: new Date().toISOString() });
         }

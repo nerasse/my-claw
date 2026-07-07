@@ -338,12 +338,19 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 "agents": {
   "orchestrator": { "maxIterations": 90 },
   "general": { "maxIterations": 50, "llm": { "defaultModel": "llama-3.3-70b" } },
-  "research": { "maxIterations": 50 }
+  "research": { "maxIterations": 50 },
+  "nested": { "enabled": true, "maxBytes": 32768 }
 }
 ```
 
 - `maxIterations` — max tool-calling loops before forcing a summary response.
 - `llm` — optional per-agent LLM config override (inherits providers from global `llm`).
+- `nested` — lazy nested `AGENTS.md` discovery. When a tool operates in a subtree (file
+  tools via their `path`, `bash` via its `workdir`), the `AGENTS.md` files from the git
+  root down to that directory are injected into that tool's result, closest last. The
+  workspace-root `AGENTS.md` is excluded (already in the system prompt) and external files
+  pass the anti-injection scan. `enabled` (default true) toggles it; `maxBytes` (default
+  32768) caps the total nested content injected per run. See `docs/nested-agents.md`.
 
 ## Cron
 
