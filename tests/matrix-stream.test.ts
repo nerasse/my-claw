@@ -237,7 +237,7 @@ test("MatrixMessageStreamer overflows to final-only fallback", async () => {
   assert.equal(deliveredFinal, "abcdef");
 });
 
-test("MatrixMessageStreamer redacts preview before final fallback when draft already exists", async () => {
+test("MatrixMessageStreamer redacts preview after final fallback delivery when draft already exists", async () => {
   const { client, calls } = createClientMock();
   let deliveredFinal: string | undefined;
   const streamer = new MatrixMessageStreamer(client as never, {
@@ -337,7 +337,7 @@ test("MatrixMessageStreamer falls back to final send when preview edit fails", a
   assert.equal(calls.some((call) => call.method === "redactEvent"), true);
 });
 
-test("MatrixMessageStreamer retries preview create edit final edit and redact paths", async () => {
+test("MatrixMessageStreamer retries preview create edit final edit paths; abort after finish is a no-op", async () => {
   const { client, calls } = createRetryingClientMock({
     failCreateAttempts: 1,
     failEditAttempts: 1,
@@ -356,7 +356,7 @@ test("MatrixMessageStreamer retries preview create edit final edit and redact pa
   await streamer.abort();
 
   assert.equal(calls.filter((call) => call.method === "sendMessage").length, 6);
-  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 2);
+  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 0);
 
   const createCalls = calls.filter(
     (call) => call.method === "sendMessage" && typeof call.args[2] === "string" && String(call.args[2]).startsWith("stream-preview-create-"),
@@ -371,6 +371,40 @@ test("MatrixMessageStreamer retries preview create edit final edit and redact pa
   assert.equal(createCalls.length, 2);
   assert.equal(editCalls.length, 2);
   assert.equal(finalEditCalls.length, 2);
+});
+
+test("MatrixMessageStreamer abort keeps the preview and annotates it in place", async () => {
+  const { client, calls } = createClientMock();
+  const streamer = new MatrixMessageStreamer(client as never, {
+    roomId: "!room:test",
+    minCharsBeforeSend: 1,
+    editThrottleMs: 0,
+  });
+
+  await streamer.push("partial answer");
+  await streamer.abort("LLM stream request failed");
+
+  assert.equal(calls.some((call) => call.method === "redactEvent"), false);
+  const lastSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.ok(lastSend);
+  const body = String((lastSend.args[1] as Record<string, unknown>)["body"] ?? "");
+  assert.ok(body.includes("partial answer"));
+  assert.ok(body.includes("[interrupted: LLM stream request failed]"));
+});
+
+test("MatrixMessageStreamer abort without preview sends nothing (adapter owns error reporting)", async () => {
+  const { client, calls } = createClientMock();
+  const streamer = new MatrixMessageStreamer(client as never, {
+    roomId: "!room:test",
+    minCharsBeforeSend: 50,
+    editThrottleMs: 0,
+  });
+
+  await streamer.push("hi");
+  await streamer.abort("boom");
+
+  assert.equal(calls.length, 0);
+  assert.equal(calls.some((call) => call.method === "redactEvent"), false);
 });
 
 test("MatrixMessageStreamer quiet mode omits live marker", async () => {

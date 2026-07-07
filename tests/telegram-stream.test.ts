@@ -78,12 +78,27 @@ test("MessageStreamer appendToolUse adds inline tool call to existing lane", asy
   assert.ok(html.includes("after tool"));
 });
 
-test("MessageStreamer abort deletes previews", async () => {
+test("MessageStreamer abort keeps the preview and annotates it in place", async () => {
   const { transport, calls } = createTransport();
   const streamer = new MessageStreamer({ chatId: "1", minCharsBeforeSend: 1, editThrottleMs: 0 }, transport);
 
   await streamer.push("hello");
-  await streamer.abort();
+  await streamer.abort("boom");
 
-  assert.equal(calls.at(-1)?.method, "deleteMessage");
+  assert.equal(calls.some((call) => call.method === "deleteMessage"), false);
+  const last = calls.at(-1);
+  assert.equal(last?.method, "editPlain");
+  const text = String(last?.args[2] ?? "");
+  assert.ok(text.includes("hello"));
+  assert.ok(text.includes("[interrupted: boom]"));
+});
+
+test("MessageStreamer abort without preview sends nothing (adapter owns error reporting)", async () => {
+  const { transport, calls } = createTransport();
+  const streamer = new MessageStreamer({ chatId: "1", minCharsBeforeSend: 50, editThrottleMs: 0 }, transport);
+
+  await streamer.push("hi");
+  await streamer.abort("boom");
+
+  assert.equal(calls.length, 0);
 });

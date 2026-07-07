@@ -198,24 +198,28 @@ export class MessageStreamer {
     this.finished = true;
     this.clearTimer();
 
-    const text = errorText?.trim();
-    if (text) {
-      const latestMessageId = [...this.messageIds].reverse().find((messageId) => messageId !== null && messageId !== undefined);
-      if (latestMessageId !== undefined) {
-        await this.transport.editPlain(this.opts.chatId, latestMessageId, text).catch((e) => { telegramLog("debug", "edit abort message failed", { error: String(e) }).catch(() => {}); });
-        return;
+    // Same reliability contract as the Matrix streamer: never delete previews and never send a
+    // standalone error on abort. Streamed text is content the user already saw, and the adapter's
+    // error reporter owns user-facing error delivery — this only annotates the preview in place.
+    let latest = -1;
+    for (let i = this.messageIds.length - 1; i >= 0; i--) {
+      if (this.messageIds[i] !== null && this.messageIds[i] !== undefined) {
+        latest = i;
+        break;
       }
-
-        await this.transport
-          .sendPlain(this.opts.chatId, text, {
-            threadId: this.opts.threadId,
-            replyToId: this.replyTargetForIndex(0),
-          })
-          .catch((e) => { telegramLog("debug", "send abort message failed", { error: String(e) }).catch(() => {}); });
-      return;
     }
+    if (latest < 0) return;
 
-    await this.deletePreviews();
+    const err = errorText?.trim();
+    const suffix = `\n\n[interrupted${err ? `: ${err}` : ""}]`;
+    const partial = (this.previewParts[latest] ?? "").trimEnd();
+    const head = partial.slice(0, Math.max(0, this.chunkLimit() - suffix.length));
+    const text = head ? `${head}${suffix}` : err;
+    if (!text) return;
+
+    await this.transport
+      .editPlain(this.opts.chatId, this.messageIds[latest] as number, text.slice(0, this.chunkLimit()))
+      .catch((e) => { telegramLog("debug", "edit abort message failed", { error: String(e) }).catch(() => {}); });
   }
 
   private async deletePreviews(): Promise<void> {

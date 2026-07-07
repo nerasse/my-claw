@@ -57,32 +57,32 @@ export class MatrixMessageStreamer {
 
   async abort(errorText?: string): Promise<void> {
     return this.enqueue(async () => {
+      // After a successful finish there is nothing to annotate — the final message was delivered
+      // and must not be touched (the previous code redacted it, deleting a delivered response).
+      if (this.finished) return;
       this.finished = true;
       this.clearTimer();
-      const text = errorText?.trim();
-      if (text && this.sentEventId) {
-        const formatted = buildMatrixFormattedText(text);
-        try {
-          await this.sendMessage(
-            this.editContent(this.sentEventId, {
-              body: formatted.body,
-              formatted_body: formatted.formatted_body,
-              mentions: formatted.mentions as Record<string, unknown> | undefined,
-            }, true),
-            "stream-abort-edit",
-          );
-          return;
-        } catch {
-          // fall through to redact
-        }
-      }
-      if (text && !this.sentEventId) {
-        await this.deliverFinalNormally(text);
-        return;
-      }
-      if (this.sentEventId) {
-        await this.redactEvent(this.sentEventId);
-      }
+      // Never redact and never send a standalone error here. Streamed preview text is content
+      // the user already saw — deleting it on failure turns an error into data loss (observed
+      // as "message deleted" in clients when a shutdown raced an active stream). The adapter's
+      // error reporter owns user-facing error delivery; this only annotates the preview in place.
+      if (!this.sentEventId) return;
+      const err = errorText?.trim();
+      const partial = this.previewText.trimEnd();
+      const text = partial ? `${partial}\n\n[interrupted${err ? `: ${err}` : ""}]` : err;
+      if (!text) return;
+      const formatted = buildMatrixFormattedText(text);
+      await this.sendMessage(
+        this.editContent(this.sentEventId, {
+          body: formatted.body,
+          formatted_body: formatted.formatted_body,
+          mentions: formatted.mentions as Record<string, unknown> | undefined,
+        }, true),
+        "stream-abort-edit",
+      ).catch((e) => {
+        // Edit can fail when the client is already tearing down; the raw preview beats nothing.
+        matrixLog("debug", "abort edit failed, leaving preview as-is", { error: String(e) }).catch(() => {});
+      });
     });
   }
 
@@ -263,17 +263,18 @@ export class MatrixMessageStreamer {
         );
         return;
       } catch {
-        await this.redactEvent(this.sentEventId);
-        this.sentEventId = null;
+        // fall through to a fresh send; the preview is only redacted once that send succeeded
       }
     }
 
-    if (this.sentEventId && this.mustFallbackToFinal) {
-      await this.redactEvent(this.sentEventId);
-      this.sentEventId = null;
-    }
-
+    // Redact the stale preview only AFTER the replacement is delivered: redact-first would
+    // destroy the streamed content if the final send then fails (crash, network, shutdown).
+    const stalePreviewId = this.sentEventId;
+    this.sentEventId = null;
     await this.deliverFinalNormally(text);
+    if (stalePreviewId) {
+      await this.redactEvent(stalePreviewId);
+    }
   }
 
   private async deliverFinalNormally(text: string): Promise<void> {
