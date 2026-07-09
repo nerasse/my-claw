@@ -352,6 +352,26 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
   pass the anti-injection scan. `enabled` (default true) toggles it; `maxBytes` (default
   32768) caps the total nested content injected per run. See `docs/nested-agents.md`.
 
+## Context
+
+```json
+"context": {
+  "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
+  "autoCompact": { "enabled": true, "thresholdRatio": 0.8 }
+}
+```
+
+Context weight management for long sessions (see `docs/context-pruning.md`). Both stages
+default to enabled; the whole section is optional and hot-reloadable.
+
+- `pruning` — at prompt-build time, tool results older than the last
+  `keepLastAssistantTurns` assistant turns (default 5) are replaced by their first
+  `headChars` chars (default 200) plus a marker. The persisted session keeps full outputs;
+  the agent can re-run a tool to recover anything pruned.
+- `autoCompact` — at run start (main agent only), if the estimated history exceeds
+  `thresholdRatio` (default 0.8) of the resolved model context limit, the session is
+  compacted with the same LLM summarization as `/compact`.
+
 ## Cron
 
 ```json

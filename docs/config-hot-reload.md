@@ -33,6 +33,7 @@ Hot-reloadable (applied in place, effective on the next message/call):
 - `llm.*` (defaultProvider, defaultModel, providers, limit, vision, models)
 - `agents.*` (maxIterations, llm, nested.enabled/maxBytes)
 - `injection`, `browser` (enabled/sidecarUrl/maxSteps/...), `webSearch`
+- `context` (pruning.enabled/keepLastAssistantTurns/headChars, autoCompact.enabled/thresholdRatio)
 - `whitelist`, `blacklist`
 - Telegram/Matrix **behavioral** fields: dm/group policy + allowFrom, groups, contextVisibility,
   historyLimit, streaming, replyToMode, threadReplies, reactions, errorPolicy, chunking, mediaMaxMb,
