@@ -264,6 +264,52 @@ export interface MyClawConfig {
   cron?: CronConfig;
   memory?: MemoryConfig;
   injection?: InjectionConfig;
+  context?: ContextConfig;
+}
+
+/** Context weight management (pruning + auto-compaction). See `docs/context-pruning.md`. */
+export interface ContextConfig {
+  pruning?: ContextPruningConfig;
+  autoCompact?: AutoCompactConfig;
+}
+
+export interface ContextPruningConfig {
+  enabled?: boolean; // default true
+  keepLastAssistantTurns?: number; // tool results inside this window are never pruned (default 5)
+  headChars?: number; // chars of the original output kept in the stub (default 200)
+}
+
+export interface AutoCompactConfig {
+  enabled?: boolean; // default true
+  thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
+}
+
+export const DEFAULT_PRUNING_KEEP_TURNS = 5;
+export const DEFAULT_PRUNING_HEAD_CHARS = 200;
+export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
+
+export function contextPruningEnabled(config: MyClawConfig): boolean {
+  return config.context?.pruning?.enabled !== false;
+}
+
+export function resolveContextPruning(config: MyClawConfig): { keepLastAssistantTurns: number; headChars: number } {
+  const p = config.context?.pruning;
+  const turns = p?.keepLastAssistantTurns;
+  const head = p?.headChars;
+  return {
+    keepLastAssistantTurns: typeof turns === "number" && Number.isFinite(turns) && turns > 0 ? Math.floor(turns) : DEFAULT_PRUNING_KEEP_TURNS,
+    headChars: typeof head === "number" && Number.isFinite(head) && head >= 0 ? Math.floor(head) : DEFAULT_PRUNING_HEAD_CHARS,
+  };
+}
+
+export function autoCompactEnabled(config: MyClawConfig): boolean {
+  return config.context?.autoCompact?.enabled !== false;
+}
+
+export function resolveAutoCompactThreshold(config: MyClawConfig): number {
+  const r = config.context?.autoCompact?.thresholdRatio;
+  // Above 1.0 the request would fail before compaction gets a chance to run.
+  return typeof r === "number" && Number.isFinite(r) && r > 0 && r <= 1 ? r : DEFAULT_AUTO_COMPACT_THRESHOLD;
 }
 
 /** Mid-run message injection (steering). See `docs/injection.md`. */

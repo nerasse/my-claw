@@ -1,5 +1,14 @@
 import type { MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
-import { resolveMaxIterations, resolveInjectionBudgetBonus, nestedAgentsEnabled, resolveNestedAgentsMaxBytes } from "../core/config.ts";
+import {
+  resolveMaxIterations,
+  resolveInjectionBudgetBonus,
+  nestedAgentsEnabled,
+  resolveNestedAgentsMaxBytes,
+  contextPruningEnabled,
+  resolveContextPruning,
+  autoCompactEnabled,
+  resolveAutoCompactThreshold,
+} from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
@@ -8,7 +17,9 @@ import { buildSystemPrompt } from "./prompt/builder.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
 import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
-import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
+import { trimToContextWindow, estimateTokens, estimateMessagesTokens, DEFAULT_CONTEXT_TOKENS } from "../llm/tokens.ts";
+import { pruneOldToolResults } from "./context-pruning.ts";
+import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
@@ -200,6 +211,12 @@ export class AgentBridge {
     }
 
     try {
+      // Run start is the only moment the session is guaranteed idle: compacting mid-run
+      // would race the tool loop, compacting post-run would race the next inbound message.
+      if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
+        await this.maybeAutoCompact(session, llmConfig);
+      }
+
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
@@ -253,6 +270,15 @@ export class AgentBridge {
           }
         }
         iteration++;
+        // Prompt-side only: session.messages keeps the full outputs. Re-applied every
+        // iteration so the protected window slides along long runs.
+        if (contextPruningEnabled(this.config)) {
+          const pruned = pruneOldToolResults(chatMessages, resolveContextPruning(this.config));
+          if (pruned !== chatMessages) {
+            chatMessages.length = 0;
+            chatMessages.push(...pruned);
+          }
+        }
         const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context, toolSchemaTokens);
         if (trimmed !== chatMessages) {
           chatMessages.length = 0;
@@ -812,6 +838,31 @@ export class AgentBridge {
         success: false,
         content: `Error: ${String(err)}`,
       };
+    }
+  }
+
+  // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
+  // fallback at the limit. A compaction failure must never block the run.
+  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig): Promise<void> {
+    const contextLimit = llmConfig.limit?.context ?? DEFAULT_CONTEXT_TOKENS;
+    const threshold = resolveAutoCompactThreshold(this.config);
+    const estimated = estimateMessagesTokens(this.toChatMessages(session.messages));
+    if (estimated <= contextLimit * threshold) return;
+
+    void log("info", "auto-compaction triggered", {
+      sessionId: session.id,
+      estimatedTokens: estimated,
+      contextLimit,
+      threshold,
+      messageCount: session.messages.length,
+    });
+    try {
+      const result = await compactSession(this.config, session);
+      if (!result.ok) {
+        void log("warn", "auto-compaction skipped", { sessionId: session.id, reason: result.reason });
+      }
+    } catch (err) {
+      void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
     }
   }
 

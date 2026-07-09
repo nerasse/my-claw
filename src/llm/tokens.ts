@@ -4,7 +4,7 @@ import { log } from "../utils/logger.ts";
 const CHARS_PER_TOKEN = 4;
 const MESSAGE_OVERHEAD_TOKENS = 4;
 const SAFETY_MARGIN = 1.15;
-const DEFAULT_CONTEXT_TOKENS = 128_000;
+export const DEFAULT_CONTEXT_TOKENS = 128_000;
 const HEAD_KEEP = 3;
 
 export function estimateTokens(text: string): number {

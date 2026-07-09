@@ -26,7 +26,7 @@ const MATRIX_REBOOT_FIELDS = [
 const REBOOT_SECTIONS = ["memory", "voice", "cron", "workspace"] as const;
 
 // Object sections read live through the shared root config object on every use.
-const HOT_OBJECT_SECTIONS = ["llm", "agents", "injection", "browser", "webSearch"] as const;
+const HOT_OBJECT_SECTIONS = ["llm", "agents", "injection", "browser", "webSearch", "context"] as const;
 // Array sections whose identity must be preserved (consumers hold the same array reference).
 const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
 
