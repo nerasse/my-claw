@@ -56,6 +56,9 @@ export interface SessionData {
   approvedTools?: string[];
   meta?: SubAgentMeta;
   tokenUsage?: TokenUsage;
+  // Claude Agent SDK session to resume on the claude-sdk backend. The SDK owns that
+  // history; `messages` is only a mirror for UI/commands/archives on that path.
+  sdkSessionId?: string;
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

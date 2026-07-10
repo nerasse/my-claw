@@ -22,7 +22,7 @@ import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal } from "./core/run-registry.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
-import { AgentBridge } from "./agent/bridge.ts";
+import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";
 import { readTool } from "./tools/read.ts";
@@ -135,7 +135,7 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
-  const agent = new AgentBridge(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
+  const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
   toolRegistry.register(createCronTool(cronScheduler));

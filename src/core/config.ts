@@ -146,9 +146,15 @@ export interface BrowserConfig {
 }
 
 export interface LlmProviderConfig {
-  baseUrl: string;
+  // "openai" (default) = OpenAI-compatible HTTP endpoint driven by the home agent loop.
+  // "claude-sdk" = runs delegated to the Claude Agent SDK (subscription auth, own loop).
+  // See docs/claude-sdk-backend.md.
+  type?: "openai" | "claude-sdk";
+  baseUrl?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
+  // claude-sdk only: automatic failover model if the primary errors out.
+  fallbackModel?: string;
 }
 
 export interface LlmModelConfig {
@@ -184,6 +190,9 @@ export interface LlmConfig {
 }
 
 export interface ResolvedLlmConfig {
+  // Which agent engine runs this model. Absent = "openai" (home loop). The dispatcher
+  // routes on this before any HTTP/SDK specifics come into play.
+  backend?: "openai" | "claude-sdk";
   baseUrl: string;
   model: string;
   apiKey?: string;
@@ -193,6 +202,7 @@ export interface ResolvedLlmConfig {
     context?: number;
     output?: number;
   };
+  fallbackModel?: string;
 }
 
 export interface AgentLlmConfig {

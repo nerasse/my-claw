@@ -48,8 +48,20 @@ function resolveFromMerged(
     throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(merged.providers ?? {}).join(", ")}`);
   }
 
+  if (provider.type === "claude-sdk") {
+    return {
+      backend: "claude-sdk",
+      // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
+      baseUrl: "claude-sdk",
+      model: effectiveModelId,
+      vision: model?.vision ?? merged.vision,
+      limit: model?.limit ?? merged.limit,
+      fallbackModel: provider.fallbackModel,
+    };
+  }
+
   return {
-    baseUrl: provider.baseUrl,
+    baseUrl: provider.baseUrl ?? "",
     model: effectiveModelId,
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
