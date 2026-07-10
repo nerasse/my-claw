@@ -53,7 +53,13 @@ src/
 │   ├── run-registry.ts    # Live run tree (main + sub-agents) for /status and /stop
 │   └── aborted.ts         # rethrowIfAborted + shared abort helpers
 ├── agent/
-│   ├── bridge.ts          # LLM agent orchestration
+│   ├── backend.ts         # AgentBackend interface (router/channels depend on this, not on a concrete engine)
+│   ├── dispatcher.ts      # BackendDispatcher: routes each run to the engine of its resolved model
+│   ├── claude-sdk/        # Claude Agent SDK backend (subscription auth) — docs/claude-sdk-backend.md
+│   │   ├── backend.ts     # ClaudeSdkBackend: run lifecycle, streaming, injections, usage
+│   │   ├── tools.ts       # Per-run in-process MCP server factory (closures = run context)
+│   │   └── schema.ts      # JSON Schema -> Zod conversion for tool()
+│   ├── bridge.ts          # LLM agent orchestration (home OpenAI-compatible loop)
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
 │   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
