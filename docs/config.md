@@ -63,6 +63,30 @@ run uses the fallback model so it can see the image in context. The target must 
 model with `vision: true`; otherwise the setting is ignored. Provider-agnostic: the switch
 happens in my-claw before the request, so it works with any backend (proxy, direct API, local).
 
+### Claude SDK provider (subscription)
+
+A provider with `"type": "claude-sdk"` runs its models through the Claude Agent SDK on
+the owner's Claude subscription instead of an OpenAI-compatible endpoint (full design:
+`docs/claude-sdk-backend.md`). No `baseUrl`; auth comes from `CLAUDE_CODE_OAUTH_TOKEN`
+in `~/.my-claw/.env` (mint it with `claude setup-token`, valid 1 year).
+
+```json
+"providers": {
+  "anthropic": { "type": "claude-sdk", "fallbackModel": "claude-haiku-4" }
+},
+"models": [
+  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic", "vision": true }
+]
+```
+
+- The engine follows the model: `/model claude-sonnet-5` moves a chat to the SDK,
+  `/model <litellm model>` moves it back. Cron jobs (`model` on the job) and sub-agents
+  (`model` on `spawn`) pick per run.
+- On SDK-backed sessions the SDK owns the history (`/compact` maps to the SDK's own
+  compaction; `/reset` starts a fresh SDK session). Home context pruning/auto-compaction
+  do not apply there.
+- `fallbackModel` (optional): SDK-side automatic failover if the primary model errors.
+
 ### Legacy format (auto-migrated on boot)
 
 ```json

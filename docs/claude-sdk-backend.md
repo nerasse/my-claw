@@ -192,6 +192,15 @@ The subprocess runs hermetic — my-claw is the only source of behavior:
 - Phase 3 — parity: sub-agents and cron on SDK, model list in `spawn`,
   analytics, hooks mapping, `/compact`//`/reset` mapping, `/status` token
   usage, inbound vision (image blocks in streamed user messages), docs.
+  **Done (2026-07-11).** `spawn` takes an optional `model` (live enum from
+  config via a parameters getter — both engines rebuild tool definitions per
+  run, so hot-reload follows); the runner picks the engine from the resolved
+  model and `send()` sticks to the spawn-time model via `modelOverride`. Cron
+  needed no code: `job.model` already flows through the dispatcher (only the
+  `cron.maxIterations` parity was added). `/compact` on an SDK session sends
+  the native `/compact` (detected via `compact_boundary`); `/reset` drops the
+  SDK session by recreating the session object. Inbound images ride as base64
+  blocks when the model has `vision: true`.
 
 ### Rejected alternatives
 
