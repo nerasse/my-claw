@@ -2,7 +2,7 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "./config.ts";
 import { injectionEnabled } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import type { AgentBridge } from "../agent/bridge.ts";
+import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
@@ -16,11 +16,11 @@ export interface RouteResult {
 }
 
 interface RouteOptions {
-  onToken?: (token: string) => Promise<void>;
-  onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>;
+  onToken?: TokenCallback;
+  onToolUse?: ToolUseCallback;
   /** Called when the run switches to address a mid-run injected message, so the output layer
    *  can finalize the current bubble and open a fresh reply to that message. */
-  onTurnSwitch?: (message: UnifiedMessage) => Promise<void>;
+  onTurnSwitch?: TurnSwitchCallback;
   /** Force a normal new run, never inject (used when re-routing a rerouted injection). */
   noInject?: boolean;
 }
@@ -49,7 +49,7 @@ export class MessageRouter {
 
   constructor(
     private sessionManager: SessionManager,
-    private agent: AgentBridge,
+    private agent: AgentBackend,
     private config?: MyClawConfig,
   ) {}
 

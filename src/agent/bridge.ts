@@ -35,6 +35,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
+import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!usage) return;
@@ -79,7 +80,7 @@ function capToolOutput(content: string): string {
   return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[... truncated: ${content.length} chars total, ${MAX_TOOL_OUTPUT_CHARS} kept ...]`;
 }
 
-export class AgentBridge {
+export class AgentBridge implements AgentBackend {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
 
@@ -96,9 +97,12 @@ export class AgentBridge {
     // inferred from depth (depth is always 1 for sub-agents, which collapsed to "general").
     private agentKind?: SubAgentType,
     private llmOverride?: ResolvedLlmConfig,
+    // Injected by the dispatcher so both backends share one echo/attachment store; a
+    // preprocessed message must be retrievable no matter which backend runs it.
+    sharedPreprocessor?: MessagePreprocessor,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
-    this.preprocessor = new MessagePreprocessor(this.voiceManager, this.sttPipeline);
+    this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(this.voiceManager, this.sttPipeline);
   }
 
   getEchoMessages(messageId: string): OutgoingMessage[] {
@@ -128,10 +132,10 @@ export class AgentBridge {
   async handleMessageStreaming(
     message: UnifiedMessage,
     session: SessionData,
-    onToken: (token: string) => Promise<void>,
-    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
+    onToken: TokenCallback,
+    onToolUse?: ToolUseCallback,
     signal?: AbortSignal,
-    onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
+    onTurnSwitch?: TurnSwitchCallback,
   ): Promise<string> {
     return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch);
   }
