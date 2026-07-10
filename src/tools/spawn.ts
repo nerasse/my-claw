@@ -5,24 +5,33 @@ import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 
-export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegistry): Tool {
+export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegistry, listModelIds?: () => string[]): Tool {
   return {
     name: "spawn",
     description:
       "Spawn a sub-agent. mode='run' = one-shot (deleted after run). mode='session' = persistent on disk, reusable via send(). " +
       "Types: 'research' (read-only tools) or 'general' (full tools). " +
       "Provide workspaceDir to isolate the sub-agent's filesystem. " +
+      "Optionally pick the sub-agent's model from the listed ones (default: the configured sub-agent model). " +
       "Max 3 concurrent runs, max depth 2.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Display name for the sub-agent (e.g. 'researcher', 'coder')" },
-        type: { type: "string", enum: ["general", "research"], description: "Sub-agent type" },
-        mode: { type: "string", enum: ["run", "session"], description: "'run' = one-shot, 'session' = persistent" },
-        task: { type: "string", description: "Task description for the sub-agent" },
-        workspaceDir: { type: "string", description: "Optional absolute workspace directory for the sub-agent" },
-      },
-      required: ["name", "type", "mode", "task"],
+    // Getter on purpose: both engines rebuild tool definitions per run, so the model enum
+    // follows config hot-reloads instead of freezing at boot.
+    get parameters() {
+      const models = listModelIds?.() ?? [];
+      return {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Display name for the sub-agent (e.g. 'researcher', 'coder')" },
+          type: { type: "string", enum: ["general", "research"], description: "Sub-agent type" },
+          mode: { type: "string", enum: ["run", "session"], description: "'run' = one-shot, 'session' = persistent" },
+          task: { type: "string", description: "Task description for the sub-agent" },
+          workspaceDir: { type: "string", description: "Optional absolute workspace directory for the sub-agent" },
+          ...(models.length > 0
+            ? { model: { type: "string", enum: models, description: "Optional model for this sub-agent" } }
+            : {}),
+        },
+        required: ["name", "type", "mode", "task"],
+      };
     },
     async execute(args): Promise<ToolResult> {
       try {
@@ -31,6 +40,13 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         const mode = str(args, "mode") || "run";
         const task = str(args, "task");
         const workspaceDir = strOpt(args, "workspaceDir");
+        const model = strOpt(args, "model");
+        if (model) {
+          const known = listModelIds?.() ?? [];
+          if (!known.includes(model)) {
+            return { success: false, output: "", error: `Unknown model "${model}". Available: ${known.join(", ") || "none"}` };
+          }
+        }
         const mainWorkspace = process.env["MY_CLAW_WORKSPACE"];
         if (workspaceDir && mainWorkspace) {
           const resolved = resolve(workspaceDir);
@@ -52,7 +68,7 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
 
         const signal = args["__signal"] as AbortSignal | undefined;
         const existing = await registry.listExistingIds();
-        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal);
+        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal, model);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);

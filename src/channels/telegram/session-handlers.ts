@@ -37,6 +37,8 @@ interface TelegramSessionHandlerDeps {
   customDir?: string;
   workspaceSkillsDir?: string;
   listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
+  // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
+  sdkCompact?: (session: import("../../sessions/store.ts").SessionData) => Promise<string>;
 }
 
 function resolveTelegramSessionId(params: {
@@ -64,6 +66,7 @@ export function createTelegramCommandHandler({
   customDir,
   workspaceSkillsDir,
   listCronJobs,
+  sdkCompact,
 }: TelegramSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -174,6 +177,11 @@ export function createTelegramCommandHandler({
 
       case "compact": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+        if (session.sdkSessionId && sdkCompact) {
+          const outcome = await sdkCompact(session);
+          await sessionManager.persist(sessionId);
+          return outcome;
+        }
         const result = await compactSession(config, session, args.trim() || undefined);
         if (!result.ok) {
           return result.reason ?? "Compaction failed.";

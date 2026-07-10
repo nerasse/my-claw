@@ -67,9 +67,13 @@ interface SdkStreamMessage {
   };
 }
 
+type SdkContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
 interface SdkUserMessage {
   type: "user";
-  message: { role: "user"; content: string };
+  message: { role: "user"; content: string | SdkContentBlock[] };
   parent_tool_use_id: null;
 }
 
@@ -146,6 +150,53 @@ export class ClaudeSdkBackend implements AgentBackend {
     return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch);
   }
 
+  /**
+   * Maps the /compact meta-command to the SDK's own compaction: the history lives in
+   * the SDK session, so summarizing the my-claw mirror would change nothing the model
+   * sees. Sends the native `/compact` slash command into the resumed session.
+   */
+  async compact(session: SessionData): Promise<string> {
+    if (!session.sdkSessionId) {
+      return "Nothing to compact yet on this session.";
+    }
+    let finished = false;
+    async function* one(): AsyncGenerator<SdkUserMessage> {
+      yield { type: "user", message: { role: "user", content: "/compact" }, parent_tool_use_id: null };
+      while (!finished) await new Promise((r) => setTimeout(r, 100));
+    }
+    let compacted = false;
+    let resultText = "";
+    try {
+      const q = this.queryFn({
+        prompt: one(),
+        options: {
+          resume: session.sdkSessionId,
+          maxTurns: 1,
+          tools: [],
+          settingSources: [],
+          skills: [],
+          env: {
+            ...process.env,
+            CLAUDE_CODE_ENABLE_TASKS: "0",
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+            CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
+          },
+        },
+      });
+      for await (const msg of q) {
+        if (msg.type === "system" && msg.subtype === "compact_boundary") compacted = true;
+        if (msg.type === "result") {
+          if (typeof msg.result === "string") resultText = msg.result;
+          finished = true;
+        }
+      }
+    } finally {
+      finished = true;
+    }
+    if (compacted) return "Context compacted (SDK session summarized).";
+    return resultText.trim() || "Compaction did not run.";
+  }
+
   private async handle(
     message: UnifiedMessage,
     session: SessionData,
@@ -171,7 +222,10 @@ export class ClaudeSdkBackend implements AgentBackend {
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     const agentType = this.depth === 0 ? "orchestrator" : this.agentKind ?? "general";
-    const maxTurns = resolveMaxIterations(this.config, agentType);
+    const cronMaxIter = this.config.cron?.maxIterations;
+    const maxTurns = isCron && cronMaxIter !== undefined && Number.isFinite(cronMaxIter) && cronMaxIter > 0
+      ? cronMaxIter
+      : resolveMaxIterations(this.config, agentType);
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
     const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth) : undefined;
 
@@ -215,7 +269,8 @@ export class ClaudeSdkBackend implements AgentBackend {
       systemPrompt += OWNER_STEERING_NOTE;
 
       const userContent = await this.buildUserTurn(message, session);
-      const initialContent = await this.prefixMemory(message, userContent);
+      const initialText = await this.prefixMemory(message, userContent);
+      const initialContent = await this.withImageBlocks(message, initialText, Boolean(llmConfig.vision));
 
       const abortController = new AbortController();
       const onAbort = () => abortController.abort();
@@ -251,7 +306,8 @@ export class ClaudeSdkBackend implements AgentBackend {
           const drained = [...lateInjections.splice(0), ...runRegistry.drainInjections(session.id)];
           for (const injected of drained) {
             if (onTurnSwitch) await onTurnSwitch(injected);
-            const content = await self.buildUserTurn(injected, session);
+            const text = await self.buildUserTurn(injected, session);
+            const content = await self.withImageBlocks(injected, text, Boolean(llmConfig.vision));
             void log("info", "mid-run injection (claude-sdk)", { sessionId: session.id, messageId: injected.id });
             yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
           }
@@ -467,6 +523,23 @@ export class ClaudeSdkBackend implements AgentBackend {
     const transformed = (await hooks.transform("transform:user:content", { content: scanned, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformed, timestamp: new Date().toISOString() });
     return transformed;
+  }
+
+  /**
+   * Inbound vision: images ride along as Anthropic base64 blocks when the resolved model
+   * takes them. The preprocessor already produces data URLs for the OpenAI path; this
+   * re-packs them instead of re-reading the files.
+   */
+  private async withImageBlocks(message: UnifiedMessage, text: string, vision: boolean): Promise<string | SdkContentBlock[]> {
+    if (!vision || !message.attachments.some((a) => a.type === "image" && a.path)) return text;
+    const blocks: SdkContentBlock[] = [{ type: "text", text }];
+    for (const part of await this.preprocessor.buildImageContent(message)) {
+      if (typeof part === "object" && part.type === "image_url") {
+        const match = /^data:([^;]+);base64,(.+)$/.exec(part.image_url.url);
+        if (match) blocks.push({ type: "image", source: { type: "base64", media_type: match[1]!, data: match[2]! } });
+      }
+    }
+    return blocks.length > 1 ? blocks : text;
   }
 
   /** Memory lands in the outgoing turn only, never in the mirror: it must not accumulate. */

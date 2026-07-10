@@ -72,6 +72,11 @@ export class BackendDispatcher implements AgentBackend {
     this.sdk.setApprovalHandler(handler);
   }
 
+  /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact). */
+  compactSdkSession(session: SessionData): Promise<string> {
+    return this.sdk.compact(session);
+  }
+
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
     return this.backendFor(message, session).handleMessage(message, session, signal);
   }

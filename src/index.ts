@@ -131,7 +131,7 @@ async function main() {
 
   const subAgentRegistry = new SubAgentRegistry();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
-  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry);
+  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config);
   registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
@@ -157,6 +157,7 @@ async function main() {
       customDir,
       workspaceSkillsDir,
       listCronJobs: () => loadJobs(),
+      sdkCompact: (session) => agent.compactSdkSession(session),
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -264,6 +265,7 @@ async function main() {
       customDir,
       workspaceSkillsDir,
       listCronJobs: () => loadJobs(),
+      sdkCompact: (session) => agent.compactSdkSession(session),
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
@@ -502,9 +504,9 @@ function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPi
 }
 
 function registerSubAgentTools(
-  registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry,
+  registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry, config: MyClawConfig,
 ): void {
-  registry.register(createSpawnTool(runner, subRegistry));
+  registry.register(createSpawnTool(runner, subRegistry, () => (config.llm.models ?? []).map((m) => m.id)));
   registry.register(createSendTool(runner, subRegistry));
   registry.register(createListAgentsTool(runner, subRegistry));
   registry.register(createKillAgentTool(runner));

@@ -6,6 +6,8 @@ import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
+import { ClaudeSdkBackend } from "../agent/claude-sdk/backend.ts";
+import type { AgentBackend } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
@@ -46,12 +48,13 @@ export class SubAgentRunner {
     existingIds: Set<string>,
     generateId: (name: string, existing: Set<string>) => string,
     signal?: AbortSignal,
+    model?: string,
   ): Promise<{ id: string; result: string }> {
     if (mode === "run") {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, workspaceDir, parentMessage, signal);
+      return this.runOneShot(type, task, workspaceDir, parentMessage, signal, model);
     }
 
     const id = generateId(displayName, existingIds);
@@ -68,7 +71,7 @@ export class SubAgentRunner {
     await saveSession(id, session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
-    const result = await this.executeRun(id, type, workspaceDir, parentMessage, signal);
+    const result = await this.executeRun(id, type, workspaceDir, parentMessage, signal, model);
     hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
   }
@@ -148,6 +151,7 @@ export class SubAgentRunner {
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
+    model?: string,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, undefined);
@@ -155,7 +159,7 @@ export class SubAgentRunner {
 
     this.activeCount += 1;
     try {
-      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
+      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
       return { id, result };
     } finally {
       this.activeCount -= 1;
@@ -169,9 +173,10 @@ export class SubAgentRunner {
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
+    model?: string,
   ): Promise<string> {
     const session = (await loadSession(id))!;
-    const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal);
+    const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
     // Persist the first run so a session-mode sub-agent remembers its own answer; without this
     // the next send() reloads a history containing the task but not the reply.
     await saveSession(id, session);
@@ -184,26 +189,43 @@ export class SubAgentRunner {
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
+    model?: string,
   ): Promise<string> {
     const depth = 1;
-    const resolved = resolveAgentLlmConfig(this.config.agents?.[type]?.llm, this.config.llm);
+    // Explicit spawn model wins; a session sub-agent then sticks to it across send()
+    // via the modelOverride recorded on the first run.
+    const resolved = resolveAgentLlmConfig(this.config.agents?.[type]?.llm, this.config.llm, model ?? session.modelOverride);
 
-    // Record which model this sub-agent runs on (surfaced by list/status); the bridge uses the
+    // Record which model this sub-agent runs on (surfaced by list/status); the engine uses the
     // fully-resolved config below so the agent's provider (baseUrl/apiKey/headers) is honored,
     // not just the model id round-tripped through modelOverride.
     session.modelOverride = resolved.model;
 
-    const bridge = new AgentBridge(
-      this.config,
-      this.toolRegistry,
-      this.skillRegistry,
-      this.voiceManager,
-      this.sttPipeline,
-      depth,
-      workspaceDir,
-      type,
-      resolved,
-    );
+    // The engine follows the model: a claude-sdk model runs its own SDK loop, anything
+    // else runs the home loop. Same contract either way (AgentBackend).
+    const bridge: AgentBackend = resolved.backend === "claude-sdk"
+      ? new ClaudeSdkBackend(
+          this.config,
+          this.toolRegistry,
+          this.skillRegistry,
+          this.voiceManager,
+          this.sttPipeline,
+          depth,
+          workspaceDir,
+          type,
+          resolved,
+        )
+      : new AgentBridge(
+          this.config,
+          this.toolRegistry,
+          this.skillRegistry,
+          this.voiceManager,
+          this.sttPipeline,
+          depth,
+          workspaceDir,
+          type,
+          resolved,
+        );
 
     const subMessage: UnifiedMessage = {
       id: `subagent-${session.id}`,
