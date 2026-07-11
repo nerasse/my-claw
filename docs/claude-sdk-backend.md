@@ -41,7 +41,8 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   a main on SDK can spawn a haiku sub-agent (SDK, nested `query()`) or a mimo one
   (home loop) — and vice versa.
 - SDK-backed sub-agents map naturally: own `query()` with own session;
-  `send` = resume, `kill` = interrupt, `reset` = drop the stored SDK session id.
+  `send` = resume, `kill` = delete the sub-agent session (an active run stops
+  through the shared abort signal), `reset` = drop the stored SDK session id.
 - The SDK-native `Agent` tool and `agents` option stay disabled: native subagents
   are ephemeral and Anthropic-only, which conflicts with both the persistence
   semantics and the mixed catalog. One delegation mechanism visible to the model.
@@ -72,11 +73,11 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   the run context. Cheap: in-process object, no subprocess, no I/O.
 - The closed-over signal is the same one wired to the `query()` abortController:
   `/stop` and the cron timeout wall cut both the SDK run and the running tool.
-- SDK built-in tools are removed from the request entirely with bare-name
-  `disallowedTools` (Bash, Read, Edit, Write, Glob, Grep, WebSearch, WebFetch,
-  Agent, Skill, Task*...): one filesystem/permission model, one workspace
+- SDK built-in tools are removed from the request entirely with `tools: []`
+  (the documented off switch): one filesystem/permission model, one workspace
   resolution, one blacklist, one delegation mechanism.
-- `getForAgent` filtering maps to `allowedTools` (`mcp__myclaw__<name>`).
+- `getForAgent` filtering happens at MCP-server build time: only the tools the
+  agent type may use are mounted; every call still flows through `canUseTool`.
 - Read-only registry tools (read, ls, find, grep, fetch...) carry
   `annotations.readOnlyHint: true` so the SDK runs them in parallel, matching
   the home loop's parallel tool execution.
@@ -88,8 +89,10 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   injection mailbox while the run is live. Messages streamed mid-loop are
   consumed by the ongoing run and seen by the model at the next tool boundary —
   the same semantics as the home loop's injection drain.
-- A message queued when a turn ends at the max-turns limit starts its own turn
-  with a fresh limit: the native equivalent of `IterationBudget.grant`.
+- A message queued when the run has already ended is rerouted as a fresh run
+  (`RerouteSignal`, unchanged). Unlike the home loop there is no
+  `IterationBudget.grant` equivalent mid-run: `maxTurns` is fixed for the whole
+  run, so a heavily-injected run hits `error_max_turns` earlier.
 - Streaming input is also a hard requirement for the `canUseTool` approval
   callback, so approvals and injections come from the same mode.
 - SDK pinned >= 2.1.205: before that, a message arriving on the loop's final
@@ -103,8 +106,10 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
 - Fallback: with the env var absent the SDK reads the interactive login
   credentials (`~/.claude/.credentials.json`) and auto-refreshes — convenient,
   documented, not relied upon.
-- Auth failures map to an explicit channel error naming `claude setup-token`;
-  the backend checks auth at boot instead of failing on the first message.
+- Auth failures map to an explicit channel error naming `claude setup-token`
+  (typed `authentication_failed` discriminant, string sniffing as fallback).
+  The token is read from the environment at each run; rotating it requires a
+  service restart (`.env` is loaded at boot).
 - Reimplementing the OAuth flow (the banned OpenCode/OpenClaw path) is
   rejected: ToS violation, account ban risk.
 
@@ -143,9 +148,9 @@ The subprocess runs hermetic — my-claw is the only source of behavior:
   batches share one `message.id`, so calls are deduped by id — this is the
   per-API-call granularity `api_calls` already stores, recorded with
   `baseUrl: "claude-sdk"`.
-- `ResultMessage` adds `modelUsage` (per-model breakdown) and `total_cost_usd`
-  (client-side estimate, reported even on OAuth) for `/status` and session
-  `tokenUsage`. Cache-read tokens land in analytics: cache efficiency becomes
+- Session `tokenUsage` (shown by `/status`) accumulates from the same per-call
+  usage. `ResultMessage.modelUsage`/`total_cost_usd` are available but unused
+  so far. Cache-read tokens land in analytics: cache efficiency becomes
   measurable, which is the point of letting the SDK own the history.
 - Optional deep observability: the CLI exports OpenTelemetry natively
   (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, OTLP traces/metrics/logs) — off by
