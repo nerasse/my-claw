@@ -234,6 +234,13 @@ The subprocess runs hermetic — my-claw is the only source of behavior:
 - File checkpointing and structured outputs are not used: our tools are MCP
   (checkpointing only tracks native Write/Edit), and channel replies are
   free-form text.
+- SDK session files (JSONL under `$MY_CLAW_DIR/claude-sdk/projects/`) accumulate;
+  one-shot sub-agent runs skip persistence (`persistSession: false`), the rest
+  has no purge yet (home sessions purge at 30 days; SDK-side equivalent TBD).
+- Resume is keyed to a stable `cwd`: the SDK silently starts a fresh session if
+  the working directory changes between runs (ours is the fixed workspace dir).
+- /stop uses the hard `abortController` (subprocess cleanup), not the soft
+  `interrupt()`: same semantics as the home loop's AbortSignal.
 
 ## Where
 
