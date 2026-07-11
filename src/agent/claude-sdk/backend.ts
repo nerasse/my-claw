@@ -1,4 +1,4 @@
-import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { query as sdkQuery, type Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
 import { MY_CLAW_DIR, resolveMaxIterations } from "../../core/config.ts";
 import { join } from "node:path";
@@ -39,14 +39,21 @@ const AUTH_FAILURE_HINT =
   "Claude subscription auth failed — regenerate the token with `claude setup-token` " +
   "and update CLAUDE_CODE_OAUTH_TOKEN in ~/.my-claw/.env";
 
-// Minimal structural views of the SDK message stream. The SDK exports richer types, but
-// depending only on the fields we read keeps the fake query used in tests trivial.
+// Minimal structural view of the SDK message stream. The SDK exports richer types, but
+// depending only on the fields we read keeps the fake query used in tests trivial. The
+// *options* side, in contrast, is typed against the real SDK `Options` so a key typo can
+// never be silently ignored (audited finding: `as unknown as` had disabled that check).
 interface SdkStreamMessage {
   type: string;
   subtype?: string;
   session_id?: string;
   result?: string;
+  errors?: string[];
+  parent_tool_use_id?: string | null;
+  compact_result?: string;
+  compact_error?: string;
   event?: { type?: string; delta?: { type?: string; text?: string } };
+  error?: string;
   message?: {
     id?: string;
     content?: Array<{
@@ -67,9 +74,14 @@ interface SdkStreamMessage {
   };
 }
 
+// The Anthropic API only takes these media types; anything else must be dropped rather
+// than sent (guaranteed 400 otherwise).
+const IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
+type ImageMediaType = (typeof IMAGE_MEDIA_TYPES)[number];
+
 type SdkContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+  | { type: "image"; source: { type: "base64"; media_type: ImageMediaType; data: string } };
 
 interface SdkUserMessage {
   type: "user";
@@ -79,7 +91,7 @@ interface SdkUserMessage {
 
 export type SdkQueryFn = (params: {
   prompt: AsyncGenerator<SdkUserMessage>;
-  options: Record<string, unknown>;
+  options: SdkOptions;
 }) => AsyncIterable<SdkStreamMessage>;
 
 function accumulateUsage(session: SessionData, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
@@ -112,6 +124,9 @@ export class ClaudeSdkBackend implements AgentBackend {
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(voiceManager, sttPipeline);
+    // The cast only bridges the *stream* side (our structural read-view vs the SDK's
+    // exact union); the options side stays fully checked because every literal we build
+    // is typed `SdkOptions`.
     this.queryFn = queryFn ?? (sdkQuery as unknown as SdkQueryFn);
   }
 
@@ -165,26 +180,28 @@ export class ClaudeSdkBackend implements AgentBackend {
       while (!finished) await new Promise((r) => setTimeout(r, 100));
     }
     let compacted = false;
+    let compactError: string | undefined;
     let resultText = "";
     try {
-      const q = this.queryFn({
-        prompt: one(),
-        options: {
-          resume: session.sdkSessionId,
-          maxTurns: 1,
-          tools: [],
-          settingSources: [],
-          skills: [],
-          env: {
-            ...process.env,
-            CLAUDE_CODE_ENABLE_TASKS: "0",
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-            CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
-          },
+      const compactOptions: SdkOptions = {
+        resume: session.sdkSessionId,
+        maxTurns: 1,
+        tools: [],
+        settingSources: [],
+        skills: [],
+        strictMcpConfig: true,
+        executable: "bun",
+        env: {
+          ...process.env,
+          CLAUDE_CODE_ENABLE_TASKS: "0",
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
         },
-      });
+      };
+      const q = this.queryFn({ prompt: one(), options: compactOptions });
       for await (const msg of q) {
         if (msg.type === "system" && msg.subtype === "compact_boundary") compacted = true;
+        if (msg.compact_result === "failed") compactError = msg.compact_error ?? "unknown";
         if (msg.type === "result") {
           if (typeof msg.result === "string") resultText = msg.result;
           finished = true;
@@ -193,6 +210,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     } finally {
       finished = true;
     }
+    if (compactError) return `Compaction failed: ${compactError}`;
     if (compacted) return "Context compacted (SDK session summarized).";
     return resultText.trim() || "Compaction did not run.";
   }
@@ -293,6 +311,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       let finished = false;
       let finalText: string | undefined;
       let resultSubtype: string | undefined;
+      let resultErrors: string[] = [];
       // Messages drained by drainOrClose at a result boundary; the generator picks them
       // up on its next tick so the run continues instead of ending.
       const lateInjections: UnifiedMessage[] = [];
@@ -314,34 +333,48 @@ export class ClaudeSdkBackend implements AgentBackend {
         }
       }
 
-      const q = this.queryFn({
-        prompt: userMessages(),
-        options: {
-          model: llmConfig.model,
-          fallbackModel: llmConfig.fallbackModel,
-          maxTurns,
-          systemPrompt,
-          cwd: this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
-          resume: session.sdkSessionId,
-          abortController,
-          includePartialMessages: streaming,
-          mcpServers: { myclaw: server },
-          // Hermetic subprocess: my-claw is the only source of tools and behavior.
-          // See docs/claude-sdk-backend.md "Environment isolation".
-          tools: [],
-          settingSources: [],
-          skills: [],
-          env: {
-            ...process.env,
-            CLAUDE_CODE_ENABLE_TASKS: "0",
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-            CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
-          },
-          canUseTool: async (toolName: string, input: Record<string, unknown>) => {
-            const decision = await this.approvalManager.decide({
+      // Typed against the real SDK Options: a key typo here is a compile error, never a
+      // silently ignored setting.
+      const queryOptions: SdkOptions = {
+        model: llmConfig.model,
+        fallbackModel: llmConfig.fallbackModel,
+        maxTurns,
+        systemPrompt,
+        cwd: this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+        resume: session.sdkSessionId,
+        abortController,
+        includePartialMessages: streaming,
+        mcpServers: { myclaw: server },
+        // Hermetic subprocess: my-claw is the only source of tools and behavior.
+        // See docs/claude-sdk-backend.md "Environment isolation".
+        tools: [],
+        settingSources: [],
+        skills: [],
+        strictMcpConfig: true,
+        executable: "bun",
+        // One-shot sub-agents never resume: skip writing their SDK session files.
+        persistSession: session.id.startsWith("subagent/run-") ? false : undefined,
+        stderr: (data: string) => {
+          const line = data.trim();
+          if (line) void log("warn", "claude-sdk cli stderr", { line: line.slice(0, 500) });
+        },
+        env: {
+          ...process.env,
+          CLAUDE_CODE_ENABLE_TASKS: "0",
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
+        },
+        canUseTool: async (toolName, input, canUseOpts) => {
+          // The SDK aborts this signal when the run dies: without the race, an approval
+          // prompt awaiting a human answer would leave the promise dangling forever.
+          const aborted = new Promise<"deny">((resolve) => {
+            canUseOpts?.signal?.addEventListener("abort", () => resolve("deny"), { once: true });
+          });
+          const decision = await Promise.race([
+            this.approvalManager.decide({
               session,
               request: {
-                id: `${message.id}-${toolName}-${Date.now()}`,
+                id: canUseOpts?.toolUseID ?? `${message.id}-${toolName}-${Date.now()}`,
                 platform: message.platform,
                 chatId: message.chatId,
                 userId: message.userId,
@@ -353,20 +386,23 @@ export class ClaudeSdkBackend implements AgentBackend {
                 replyToId: message.replyToId,
                 threadId: message.threadId,
               },
-            });
-            hooks.emit("tool:approval:check", { toolName, sessionId: session.id, decision });
-            if (decision === "deny") {
-              return { behavior: "deny" as const, message: "Tool denied by approval policy" };
-            }
-            return { behavior: "allow" as const, updatedInput: input };
-          },
+            }),
+            aborted,
+          ]);
+          hooks.emit("tool:approval:check", { toolName, sessionId: session.id, decision });
+          if (decision === "deny") {
+            return { behavior: "deny" as const, message: "Tool denied by approval policy" };
+          }
+          return { behavior: "allow" as const, updatedInput: input };
         },
-      });
+      };
+      const q = this.queryFn({ prompt: userMessages(), options: queryOptions });
 
       const seenUsageIds = new Set<string>();
       let iteration = 0;
       let lastAssistantText = "";
       let llmWindowStart = Date.now();
+      let lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
 
       try {
         for await (const msg of q) {
@@ -374,6 +410,11 @@ export class ClaudeSdkBackend implements AgentBackend {
             session.sdkSessionId = msg.session_id;
             continue;
           }
+
+          // Nested-agent traffic (parent_tool_use_id set) must not leak into the channel
+          // stream or the session mirror. None expected with the Agent tool disabled,
+          // defense in depth.
+          if (msg.parent_tool_use_id) continue;
 
           if (msg.type === "stream_event") {
             const delta = msg.event?.delta;
@@ -383,11 +424,15 @@ export class ClaudeSdkBackend implements AgentBackend {
             continue;
           }
 
+          if (msg.type === "assistant" && msg.error === "authentication_failed") {
+            throw new Error(AUTH_FAILURE_HINT);
+          }
+
           if (msg.type === "assistant" && msg.message) {
-            this.recordAssistantUsage(msg, session, message, llmConfig, streaming, seenUsageIds, () => {
+            lastUsage = this.recordAssistantUsage(msg, session, message, llmConfig, streaming, seenUsageIds, () => {
               iteration += 1;
               return iteration;
-            }, llmWindowStart);
+            }, llmWindowStart) ?? lastUsage;
             llmWindowStart = Date.now();
             this.mirrorAssistantMessage(msg, session);
             const text = (msg.message.content ?? [])
@@ -405,6 +450,7 @@ export class ClaudeSdkBackend implements AgentBackend {
 
           if (msg.type === "result") {
             resultSubtype = msg.subtype;
+            resultErrors = msg.errors ?? [];
             if (msg.subtype === "success" && typeof msg.result === "string") {
               finalText = msg.result;
             }
@@ -437,7 +483,8 @@ export class ClaudeSdkBackend implements AgentBackend {
           hooks.emit("agent:budget:exhausted", { sessionId: session.id, iteration, maxIterations: maxTurns, toolExecutions });
           finalText = lastAssistantText.trim() || "I reached the maximum number of turns before finishing.";
         } else {
-          throw new Error(`claude-sdk run failed (${resultSubtype})`);
+          const detail = resultErrors.length > 0 ? `: ${resultErrors.join("; ").slice(0, 500)}` : "";
+          throw new Error(`claude-sdk run failed (${resultSubtype})${detail}`);
         }
       }
 
@@ -472,7 +519,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         toolExecutions,
         responseChars: response.length,
         durationMs,
-        usage: undefined,
+        usage: lastUsage,
       });
       void log("info", "claude-sdk run finished", {
         sessionId: session.id,
@@ -536,7 +583,14 @@ export class ClaudeSdkBackend implements AgentBackend {
     for (const part of await this.preprocessor.buildImageContent(message)) {
       if (typeof part === "object" && part.type === "image_url") {
         const match = /^data:([^;]+);base64,(.+)$/.exec(part.image_url.url);
-        if (match) blocks.push({ type: "image", source: { type: "base64", media_type: match[1]!, data: match[2]! } });
+        const mediaType = match?.[1];
+        if (!match || !mediaType) continue;
+        if (!(IMAGE_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
+          // The API only accepts jpeg/png/gif/webp; sending anything else is a guaranteed 400.
+          void log("warn", "image dropped: unsupported media type for claude-sdk", { mediaType });
+          continue;
+        }
+        blocks.push({ type: "image", source: { type: "base64", media_type: mediaType as ImageMediaType, data: match[2]! } });
       }
     }
     return blocks.length > 1 ? blocks : text;
@@ -571,12 +625,12 @@ export class ClaudeSdkBackend implements AgentBackend {
     seenIds: Set<string>,
     nextIteration: () => number,
     windowStart: number,
-  ): void {
+  ): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
     const m = msg.message;
-    if (!m?.usage) return;
+    if (!m?.usage) return undefined;
     // Parallel tool batches share one API message id; dedupe so a call is counted once.
     const id = m.id ?? `no-id-${Date.now()}`;
-    if (seenIds.has(id)) return;
+    if (seenIds.has(id)) return undefined;
     seenIds.add(id);
     const promptTokens = (m.usage.input_tokens ?? 0) + (m.usage.cache_read_input_tokens ?? 0) + (m.usage.cache_creation_input_tokens ?? 0);
     const completionTokens = m.usage.output_tokens ?? 0;
@@ -597,6 +651,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       iteration: nextIteration(),
       durationMs: Date.now() - windowStart,
     });
+    return usage;
   }
 
   private mirrorAssistantMessage(msg: SdkStreamMessage, session: SessionData): void {
