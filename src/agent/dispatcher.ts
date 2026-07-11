@@ -6,6 +6,8 @@ import { AgentBridge } from "./bridge.ts";
 import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
+import { runRegistry } from "../core/run-registry.ts";
+import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
@@ -43,11 +45,31 @@ export class BackendDispatcher implements AgentBackend {
   }
 
   private backendFor(message: UnifiedMessage, session: SessionData): AgentBackend {
-    const resolved = resolveLlmConfigForMessage(
-      this.config.llm,
-      session.modelOverride,
-      message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
-    );
+    const hasImages = message.attachments.some((a) => a.type === "image" && Boolean(a.path));
+    // Stale per-session override after a config edit: a removed *model* falls through the
+    // resolver silently (default provider + unknown id sent to the API), a removed
+    // *provider* throws on every message. Both self-heal to the default model.
+    const models = this.config.llm.models;
+    if (session.modelOverride && models?.length && !models.some((m) => m.id === session.modelOverride)) {
+      void log("warn", "session modelOverride no longer in config; falling back to default", {
+        sessionId: session.id,
+        modelOverride: session.modelOverride,
+      });
+      delete session.modelOverride;
+    }
+    let resolved;
+    try {
+      resolved = resolveLlmConfigForMessage(this.config.llm, session.modelOverride, hasImages);
+    } catch (err) {
+      if (!session.modelOverride) throw err;
+      void log("warn", "session modelOverride no longer resolves; falling back to default", {
+        sessionId: session.id,
+        modelOverride: session.modelOverride,
+        error: String(err),
+      });
+      delete session.modelOverride;
+      resolved = resolveLlmConfigForMessage(this.config.llm, undefined, hasImages);
+    }
     return resolved.backend === "claude-sdk" ? this.sdk : this.home;
   }
 
@@ -73,7 +95,12 @@ export class BackendDispatcher implements AgentBackend {
   }
 
   /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact). */
-  compactSdkSession(session: SessionData): Promise<string> {
+  async compactSdkSession(session: SessionData): Promise<string> {
+    // Meta-commands bypass the router's session lock; two CLI processes resuming the same
+    // SDK session would race on its file.
+    if (runRegistry.isRunning(session.id)) {
+      return "A run is active on this session — try again once it finishes (or /stop first).";
+    }
     return this.sdk.compact(session);
   }
 

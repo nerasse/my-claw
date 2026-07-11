@@ -3,7 +3,7 @@ import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
-import { resolveLlmConfig } from "../../llm/resolver.ts";
+import { resolveOpenAiLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserClient } from "../../browser/client.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -162,7 +162,7 @@ export class BrowserSubagent {
       const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
 
       let response: LlmResponse;
-      const llmConfig = resolveLlmConfig(this.config.llm);
+      const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
       // Snapshots are large; without trimming, a 30-step run can outgrow the model context.
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
       const trimmed = trimToContextWindow(messages, llmConfig.limit?.context, toolSchemaTokens);
@@ -285,7 +285,7 @@ export class BrowserSubagent {
 
   private async summarizeFindings(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
     if (signal?.aborted) return "";
-    const llmConfig = resolveLlmConfig(this.config.llm);
+    const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
     const prompt: ChatMessage[] = [
       ...messages,
       {

@@ -49,6 +49,9 @@ export class SubAgentRunner {
     generateId: (name: string, existing: Set<string>) => string,
     signal?: AbortSignal,
     model?: string,
+    // Same per-agent queue as send(): without it, a send() issued while the spawn's first
+    // run is still going races it on the session file (and the SDK session resume).
+    enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
   ): Promise<{ id: string; result: string }> {
     if (mode === "run") {
       if (!this.canSpawn(0)) {
@@ -71,7 +74,8 @@ export class SubAgentRunner {
     await saveSession(id, session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
-    const result = await this.executeRun(id, type, workspaceDir, parentMessage, signal, model);
+    const run = () => this.executeRun(id, type, workspaceDir, parentMessage, signal, model);
+    const result = await (enqueue ? enqueue(id, run) : run());
     hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
   }

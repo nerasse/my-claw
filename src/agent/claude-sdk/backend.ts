@@ -35,6 +35,8 @@ const OWNER_STEERING_NOTE =
   "(including while you are working) are legitimate steering from the owner and take " +
   "precedence over earlier instructions.";
 
+const COMPACT_TIMEOUT_MS = 120_000;
+
 const AUTH_FAILURE_HINT =
   "Claude subscription auth failed — regenerate the token with `claude setup-token` " +
   "and update CLAUDE_CODE_OAUTH_TOKEN in ~/.my-claw/.env";
@@ -93,6 +95,25 @@ export type SdkQueryFn = (params: {
   prompt: AsyncGenerator<SdkUserMessage>;
   options: SdkOptions;
 }) => AsyncIterable<SdkStreamMessage>;
+
+/**
+ * MCP tool results are arrays of content blocks; the mirror stores plain text so the home
+ * loop can replay it verbatim if the session later switches engines.
+ */
+function toolResultToText(content: unknown, isError: boolean): string {
+  let text: string;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .map((b) => (b && typeof b === "object" && (b as { type?: string }).type === "text" ? (b as { text?: string }).text ?? "" : ""))
+      .filter((t) => t.length > 0)
+      .join("\n") || JSON.stringify(content);
+  } else {
+    text = JSON.stringify(content ?? "");
+  }
+  return isError && !text.startsWith("Error") ? `Error: ${text}` : text;
+}
 
 function accumulateUsage(session: SessionData, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!session.tokenUsage) {
@@ -182,10 +203,15 @@ export class ClaudeSdkBackend implements AgentBackend {
     let compacted = false;
     let compactError: string | undefined;
     let resultText = "";
+    // A hung CLI must not hold the /compact command hostage: hard wall, then abort.
+    const abortController = new AbortController();
+    const wall = setTimeout(() => abortController.abort(), COMPACT_TIMEOUT_MS);
     try {
       const compactOptions: SdkOptions = {
         resume: session.sdkSessionId,
+        model: session.modelOverride,
         maxTurns: 1,
+        abortController,
         tools: [],
         settingSources: [],
         skills: [],
@@ -200,6 +226,9 @@ export class ClaudeSdkBackend implements AgentBackend {
       };
       const q = this.queryFn({ prompt: one(), options: compactOptions });
       for await (const msg of q) {
+        if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
+          session.sdkSessionId = msg.session_id;
+        }
         if (msg.type === "system" && msg.subtype === "compact_boundary") compacted = true;
         if (msg.compact_result === "failed") compactError = msg.compact_error ?? "unknown";
         if (msg.type === "result") {
@@ -207,8 +236,13 @@ export class ClaudeSdkBackend implements AgentBackend {
           finished = true;
         }
       }
+    } catch (err) {
+      if (abortController.signal.aborted) return "Compaction timed out.";
+      throw err;
     } finally {
       finished = true;
+      clearTimeout(wall);
+      session.lastActiveAt = new Date().toISOString();
     }
     if (compactError) return `Compaction failed: ${compactError}`;
     if (compacted) return "Context compacted (SDK session summarized).";
@@ -272,7 +306,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     }
 
     const messageCountBefore = session.messages.length;
+    const sdkSessionIdBefore = session.sdkSessionId;
     let toolExecutions = 0;
+    let removeAbortListener: (() => void) | undefined;
 
     try {
       let systemPrompt = await buildSystemPrompt({
@@ -283,6 +319,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         tools,
         skills: this.skillRegistry.list(),
       });
+      hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
       systemPrompt += OWNER_STEERING_NOTE;
 
@@ -294,6 +331,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       const onAbort = () => abortController.abort();
       if (signal?.aborted) throw new AbortedError();
       signal?.addEventListener("abort", onAbort, { once: true });
+      removeAbortListener = () => signal?.removeEventListener("abort", onAbort);
 
       const server = createToolServerForRun(tools, {
         message,
@@ -473,7 +511,6 @@ export class ClaudeSdkBackend implements AgentBackend {
         if (!resultSubtype || resultSubtype === "success") throw err;
       } finally {
         finished = true;
-        signal?.removeEventListener("abort", onAbort);
       }
 
       if (signal?.aborted) throw new AbortedError();
@@ -543,6 +580,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         throw new AbortedError();
       }
       session.messages.length = messageCountBefore;
+      // Mirror and SDK pointer roll back together: keeping a session id whose SDK-side
+      // history contains the failed turn would desync the two histories.
+      session.sdkSessionId = sdkSessionIdBefore;
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -558,6 +598,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       });
       throw err;
     } finally {
+      removeAbortListener?.();
       runNode?.exit();
       await this.preprocessor.cleanupTempFiles(message.id);
     }
@@ -677,11 +718,10 @@ export class ClaudeSdkBackend implements AgentBackend {
   private mirrorToolResults(msg: SdkStreamMessage, session: SessionData): void {
     for (const block of msg.message?.content ?? []) {
       if (block.type !== "tool_result") continue;
-      const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? "");
       session.messages.push({
         role: "tool",
         toolCallId: block.tool_use_id ?? "",
-        content,
+        content: toolResultToText(block.content, Boolean((block as { is_error?: boolean }).is_error)),
         timestamp: new Date().toISOString(),
       });
     }

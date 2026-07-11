@@ -111,3 +111,32 @@ export function resolveAgentLlmConfig(
 export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {
   return config.models ?? [];
 }
+
+/**
+ * True when this model id (or the default) resolves to the claude-sdk backend. Resolution
+ * failures (stale override after a config edit) count as "not SDK" so callers fall back to
+ * paths that surface a proper error.
+ */
+export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
+  try {
+    return resolveLlmConfig(config, modelId).backend === "claude-sdk";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve a config guaranteed to target an OpenAI-compatible endpoint. Utility LLM callers
+ * (compaction summarizer, memory consolidation, browser sub-agent) speak chat-completions
+ * directly and would send HTTP to the placeholder "claude-sdk" baseUrl if the requested or
+ * default model lives on the SDK backend; they fall back to the first openai model instead.
+ */
+export function resolveOpenAiLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
+  const resolved = resolveLlmConfig(config, modelId);
+  if (resolved.backend !== "claude-sdk") return resolved;
+  for (const model of config.models ?? []) {
+    const candidate = resolveLlmConfig(config, model.id);
+    if (candidate.backend !== "claude-sdk") return candidate;
+  }
+  throw new Error("No OpenAI-compatible model configured (all models are claude-sdk backed)");
+}

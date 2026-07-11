@@ -68,7 +68,7 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
 
         const signal = args["__signal"] as AbortSignal | undefined;
         const existing = await registry.listExistingIds();
-        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal, model);
+        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal, model, (i, task2) => registry.enqueue(i, task2));
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);

@@ -1,6 +1,7 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
+import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
@@ -177,7 +178,7 @@ export function createTelegramCommandHandler({
 
       case "compact": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-        if (session.sdkSessionId && sdkCompact) {
+        if (isSdkBackedModel(config.llm, session.modelOverride) && sdkCompact) {
           const outcome = await sdkCompact(session);
           await sessionManager.persist(sessionId);
           return outcome;

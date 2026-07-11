@@ -11,10 +11,6 @@ import { errorLogData } from "../../utils/errors.ts";
 
 export const MCP_SERVER_NAME = "myclaw";
 
-export function mcpToolName(name: string): string {
-  return `mcp__${MCP_SERVER_NAME}__${name}`;
-}
-
 // Mirrors the home loop's tool-result hygiene (bridge.ts): the model must never see an
 // empty result, and no single output may poison the whole context.
 const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";

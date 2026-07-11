@@ -1,6 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { chatCompletion } from "../llm/provider.ts";
-import { resolveLlmConfig } from "../llm/resolver.ts";
+import { resolveOpenAiLlmConfig } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
@@ -141,7 +141,7 @@ export async function compactSession(
   const serialized = serializeForCompaction(middle);
   const prompt = buildCompactionPrompt(serialized, instructions);
 
-  const llmConfig = resolveLlmConfig(config.llm, session.modelOverride);
+  const llmConfig = resolveOpenAiLlmConfig(config.llm, session.modelOverride);
 
   try {
     const compactionStartedAt = Date.now();

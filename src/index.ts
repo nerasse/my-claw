@@ -55,7 +55,7 @@ import { syncBuiltIn } from "./skills/sync.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
-import { resolveLlmConfig } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig } from "./llm/resolver.ts";
 import {
   warmupEmbedding,
   backfillEmbeddings,
@@ -463,7 +463,7 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
   if (memCfg?.consolidation?.enabled !== false) {
     const every = memCfg?.consolidation?.every ?? 20;
     const caller: LlmCaller = async (system, user) => {
-      const llmCfg = resolveLlmConfig(config.llm, memCfg?.consolidation?.model);
+      const llmCfg = resolveOpenAiLlmConfig(config.llm, memCfg?.consolidation?.model);
       const res = await chatCompletion(llmCfg, [
         { role: "system", content: system },
         { role: "user", content: user },

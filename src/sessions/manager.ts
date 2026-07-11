@@ -125,6 +125,9 @@ export class SessionManager {
     if (session) {
       const previousMessageCount = session.messages.length;
       session.messages = [];
+      // On the claude-sdk backend the real history lives in the SDK session; keeping the
+      // id would silently resume everything the user just asked to clear.
+      delete session.sdkSessionId;
       session.lastActiveAt = new Date().toISOString();
       hooks.emit("session:cleared", { sessionId, previousMessageCount });
     }
