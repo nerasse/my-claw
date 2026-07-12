@@ -365,7 +365,19 @@ export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" 
 // the real ~/.my-claw. The test preload (bunfig.toml) points it at a temp dir.
 export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-claw");
 
-async function loadEnv(): Promise<void> {
+/**
+ * Load ~/.my-claw/.env into process.env.
+ *
+ * At boot (forceRefresh=false) the shell/systemd environment wins: a key already
+ * present is left alone. On hot-reload (forceRefresh=true) the file becomes
+ * authoritative so an edited secret overwrites the stale in-memory value —
+ * without this, a rotated token would survive until the next process restart.
+ * Only secrets read fresh per run (CLAUDE_CODE_OAUTH_TOKEN, consumed by the
+ * Claude SDK backend which rebuilds env + respawns the CLI every run) take
+ * effect immediately; channel tokens update process.env but the live Telegram/
+ * Matrix client keeps its old connection until reboot.
+ */
+async function loadEnv(forceRefresh = false): Promise<void> {
   const envPath = join(MY_CLAW_DIR, ".env");
   try {
     const text = await readFile(envPath, "utf-8");
@@ -376,7 +388,7 @@ async function loadEnv(): Promise<void> {
       if (eq === -1) continue;
       const key = trimmed.slice(0, eq).trim();
       const value = trimmed.slice(eq + 1).trim();
-      if (key && value && process.env[key] === undefined) {
+      if (key && value && (forceRefresh || process.env[key] === undefined)) {
         process.env[key] = value;
       }
     }
@@ -519,10 +531,11 @@ export function parseConfig(raw: string): MyClawConfig {
 
 /**
  * Re-read config.json from disk and parse it, without any workspace side effects.
- * Used by the hot-reload watcher. Re-runs loadEnv so newly added secrets are picked up.
+ * Used by the hot-reload watcher. Force-refreshes loadEnv so a rotated secret in
+ * .env overwrites the stale in-memory value instead of surviving until restart.
  */
 export async function readConfigFromDisk(): Promise<MyClawConfig> {
-  await loadEnv();
+  await loadEnv(true);
   const raw = await readFile(CONFIG_PATH, "utf-8");
   return parseConfig(raw);
 }

@@ -123,6 +123,32 @@ describe("E2E config hot-reload", () => {
     expect(config.memory!.recallMaxEntries).toBe(5);
   });
 
+  test("editing .env beside config.json triggers a reload cycle", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
+    const file = join(dir, "config.json");
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+
+    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
+    // The .env already exists in production; a rotation modifies it in place.
+    const envFile = join(dir, ".env");
+    await writeFile(envFile, "TOKEN=first\n");
+    const config = parseConfig(await Bun.file(file).text());
+
+    // read() is where loadEnv force-refreshes process.env; proving it runs on a bare
+    // .env edit proves a secret rotation is picked up without touching config.json.
+    let reads = 0;
+    const stop = startConfigWatcher(config, {}, {
+      path: file,
+      read: async () => { reads += 1; return parseConfig(await Bun.file(file).text()); },
+      debounceMs: 20,
+    });
+    cleanups.push(() => stop());
+
+    await writeFile(envFile, "TOKEN=rotated\n");
+    for (let i = 0; i < 50 && reads === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(reads).toBeGreaterThan(0);
+  });
+
   test("invalid JSON is skipped and the running config is preserved", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
     const file = join(dir, "config.json");

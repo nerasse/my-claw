@@ -229,7 +229,12 @@ export function startConfigWatcher(
     }
 
     const result = applyHotReload(config, next);
-    if (result.changed.length === 0 && result.rebootRequired.length === 0) return;
+    if (result.changed.length === 0 && result.rebootRequired.length === 0) {
+      // read() already force-refreshed process.env; a bare .env rotation lands here
+      // with no config-section diff. Confirm it so a token rotation is observable.
+      void log("info", "config watcher fired with no section changes (env refreshed)");
+      return;
+    }
 
     try {
       runReloadAppliers(result.changed, config, ctx);
@@ -249,7 +254,12 @@ export function startConfigWatcher(
 
   try {
     watcher = watch(dir, (_event, filename) => {
-      if (filename && basename(filename.toString()) !== file) return;
+      // .env lives beside config.json; a secret rotation there must trigger a reload
+      // too (readConfigFromDisk force-refreshes process.env as a side effect).
+      if (filename) {
+        const name = basename(filename.toString());
+        if (name !== file && name !== ".env") return;
+      }
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void reload(), debounceMs);
     });

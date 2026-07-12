@@ -1,9 +1,15 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
   isMatrixChannelEnabled,
   isTelegramChannelEnabled,
   resolveMaxIterations,
+  readConfigFromDisk,
+  loadConfig,
+  MY_CLAW_DIR,
+  CONFIG_PATH,
   DEFAULT_ORCHESTRATOR_MAX_ITERATIONS,
   DEFAULT_SUBAGENT_MAX_ITERATIONS,
   type MyClawConfig,
@@ -101,4 +107,47 @@ test("resolveMaxIterations returns defaults when agents config is empty", () => 
   assert.equal(resolveMaxIterations(config, "orchestrator"), DEFAULT_ORCHESTRATOR_MAX_ITERATIONS);
   assert.equal(resolveMaxIterations(config, "general"), DEFAULT_SUBAGENT_MAX_ITERATIONS);
   assert.equal(resolveMaxIterations(config, "research"), DEFAULT_SUBAGENT_MAX_ITERATIONS);
+});
+
+// ── .env hot-reload of secrets ───────────────────────────────────────────────
+
+const ENV_PATH = join(MY_CLAW_DIR, ".env");
+const MIN_CONFIG = JSON.stringify({
+  whitelist: [], blacklist: [], channels: {},
+  llm: { provider: "p", baseUrl: "https://e.com", model: "m" }, agents: {},
+});
+
+test("readConfigFromDisk force-refreshes a rotated secret from .env", async () => {
+  const key = "TEST_HOTRELOAD_SECRET";
+  writeFileSync(CONFIG_PATH, MIN_CONFIG);
+  writeFileSync(ENV_PATH, `${key}=first\n`);
+  try {
+    delete process.env[key];
+    await readConfigFromDisk();
+    assert.equal(process.env[key], "first");
+    // Rotate the file: a hot reload must overwrite the stale in-memory value,
+    // otherwise a rotated OAuth token survives until the next process restart.
+    writeFileSync(ENV_PATH, `${key}=second\n`);
+    await readConfigFromDisk();
+    assert.equal(process.env[key], "second");
+  } finally {
+    delete process.env[key];
+    rmSync(ENV_PATH, { force: true });
+    rmSync(CONFIG_PATH, { force: true });
+  }
+});
+
+test("loadConfig (boot) keeps an env var already set by the shell/systemd", async () => {
+  const key = "TEST_HOTRELOAD_BOOT";
+  writeFileSync(CONFIG_PATH, MIN_CONFIG);
+  writeFileSync(ENV_PATH, `${key}=from-file\n`);
+  try {
+    process.env[key] = "from-shell";
+    await loadConfig();
+    assert.equal(process.env[key], "from-shell", "boot must not let .env override the live env");
+  } finally {
+    delete process.env[key];
+    rmSync(ENV_PATH, { force: true });
+    rmSync(CONFIG_PATH, { force: true });
+  }
 });

@@ -7,9 +7,9 @@ reference everywhere. Changing a model, a limit, an allowlist or a reaction emoj
 whole process -- which on Matrix re-inits the E2E crypto session and re-warms embeddings, i.e. a heavy,
 disruptive operation for a trivial change.
 
-Hot-reload watches `~/.my-claw/config.json` and applies the **safe** subset of changes in place, with no
-restart. Fields that genuinely cannot be swapped on a live process (channel identity/crypto, tokens,
-boot-wired timers) are detected, skipped, and reported as `rebootRequired`.
+Hot-reload watches `~/.my-claw/config.json` (and the sibling `.env`, see below) and applies the **safe**
+subset of changes in place, with no restart. Fields that genuinely cannot be swapped on a live process
+(channel identity/crypto, boot-wired timers) are detected, skipped, and reported as `rebootRequired`.
 
 ## The golden rule: mutate in place, never replace the reference
 
@@ -47,6 +47,25 @@ Reboot-only (detected, **not** applied, reported in `rebootRequired`):
   once; recreating it risks losing inbound Megolm sessions (undecryptable history)
 - Adding/removing a channel entirely
 - Top-level `memory`, `voice`, `cron`, `workspace` (boot-wired timers, clients, env)
+
+## Secrets in `.env` (hot-refreshed alongside config.json)
+
+The watcher watches the whole `$MY_CLAW_DIR` directory, so it now also reacts to edits of
+`$MY_CLAW_DIR/.env` (not only `config.json`). On any reload, `readConfigFromDisk` calls
+`loadEnv(forceRefresh=true)`: the file becomes authoritative and overwrites the in-memory
+`process.env` value of every key it defines. At **boot** (`loadConfig`) the old first-wins rule
+still holds -- the shell/systemd environment beats the file -- so start-up precedence is unchanged.
+
+Effectiveness depends on how the secret is consumed:
+
+- `CLAUDE_CODE_OAUTH_TOKEN`: **fully hot**. The Claude SDK backend rebuilds `env` from
+  `process.env` and respawns the CLI on every run, so a rotated token is used by the next run
+  with no restart. In-flight runs keep the token their subprocess already received.
+- Telegram/Matrix tokens: `process.env` (and the parsed config) update, but the already-connected
+  client keeps its session until reboot (still listed under reboot-only above).
+
+A bare `.env` edit produces no config-section diff, so the reload short-circuits before the
+appliers and logs `config watcher fired with no section changes (env refreshed)` for observability.
 
 ## Decisions
 
@@ -88,4 +107,6 @@ single source of truth for "what took effect" vs "what still needs a restart".
 - `tests/config-watcher.test.ts` -- diff classification, in-place identity preservation, reboot-field
   skipping, appliers
 - `tests/e2e/config-hot-reload.test.ts` -- real `fs.watch` end-to-end edit -> reload, plus invalid-JSON
-  is skipped
+  is skipped, plus a bare `.env` edit triggers a reload cycle
+- `tests/config.test.ts` -- `readConfigFromDisk` force-refreshes a rotated secret; `loadConfig` (boot)
+  keeps a value already set by the shell/systemd

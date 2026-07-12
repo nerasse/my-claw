@@ -86,6 +86,11 @@ in `~/.my-claw/.env` (mint it with `claude setup-token`, valid 1 year).
   compaction; `/reset` starts a fresh SDK session). Home context pruning/auto-compaction
   do not apply there.
 - `fallbackModel` (optional): SDK-side automatic failover if the primary model errors.
+- Token rotation is hot: edit `CLAUDE_CODE_OAUTH_TOKEN` in `~/.my-claw/.env` and the
+  next run uses it — no restart. The config watcher watches `.env` and a hot reload
+  makes the file authoritative for `process.env` (at boot the shell/systemd env still
+  wins). Channel tokens (Telegram/Matrix) also refresh in `process.env` but the live
+  client keeps its connection until reboot.
 
 ### Legacy format (auto-migrated on boot)
 

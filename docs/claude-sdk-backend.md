@@ -108,8 +108,12 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   documented, not relied upon.
 - Auth failures map to an explicit channel error naming `claude setup-token`
   (typed `authentication_failed` discriminant, string sniffing as fallback).
-  The token is read from the environment at each run; rotating it requires a
-  service restart (`.env` is loaded at boot).
+- Token rotation is hot: the backend rebuilds `env` from `process.env` and
+  respawns the CLI on every run, so editing `CLAUDE_CODE_OAUTH_TOKEN` in
+  `$MY_CLAW_DIR/.env` is picked up by the next run without a restart. The config
+  watcher also watches `.env`, and `readConfigFromDisk` force-refreshes
+  `process.env` from it (boot keeps shell/systemd precedence; only reload lets
+  the file win). In-flight runs keep the token their subprocess already has.
 - Reimplementing the OAuth flow (the banned OpenCode/OpenClaw path) is
   rejected: ToS violation, account ban risk.
 
