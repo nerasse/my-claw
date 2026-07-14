@@ -191,6 +191,12 @@ export interface HookEventMap {
   "memory:consolidate": { categoriesProcessed: number; before: number; after: number };
   "memory:backfill": { embedded: number };
 
+  // === MCP LIFECYCLE ===
+  "mcp:synced": { servers: string[]; toolCount: number };
+
+  // === TOOL PLUGIN LIFECYCLE ===
+  "tools:pluginsReloaded": { count: number };
+
   // === SKILL LIFECYCLE ===
   "skills:loaded": { count: number };
   "skills:reloaded": { count: number };

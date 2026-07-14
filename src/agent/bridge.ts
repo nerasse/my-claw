@@ -160,7 +160,7 @@ export class AgentBridge implements AgentBackend {
       : this.depth === 0
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
-    const tools = this.toolRegistry.getForAgent(agentToolType);
+    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled);
     const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
       this.config.llm,
       session.modelOverride,

@@ -10,26 +10,46 @@ const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
+  private dynamicProvider?: () => Tool[];
 
   register(tool: Tool): void {
     this.tools.set(tool.name, tool);
   }
 
   get(name: string): Tool | undefined {
-    return this.tools.get(name);
+    // Fall through to dynamic tools (MCP, plugins) so the home loop can execute a tool call by
+    // name; built-ins win on a clash (MCP is namespaced mcp__*, plugins are collision-checked).
+    return this.tools.get(name) ?? this.dynamicProvider?.().find((t) => t.name === name);
   }
 
-  getForAgent(agentType: AgentType): Tool[] {
+  /** Names of the statically-registered (built-in) tools, for plugin collision checks. */
+  staticNames(): string[] {
+    return [...this.tools.keys()];
+  }
+
+  // Live source of extra tools discovered at runtime (external MCP servers). Read on every
+  // getForAgent call so hot-reloaded connections are reflected on the next run. Both backends
+  // build their tool set from getForAgent, so a single provider feeds home + SDK.
+  setDynamicProvider(fn: () => Tool[]): void {
+    this.dynamicProvider = fn;
+  }
+
+  // `disabled` is the config denylist, read live per run so a hot-reload toggle takes
+  // effect on the next call. Applied on top of the per-agent exclusion lists.
+  getForAgent(agentType: AgentType, disabled: readonly string[] = []): Tool[] {
+    // External MCP tools go to acting agents only, never the read-only research agent.
+    const dynamic = agentType === "research" ? [] : (this.dynamicProvider?.() ?? []);
+    let set: Tool[];
     if (agentType === "research") {
-      return this.getByNames(READ_ONLY_TOOLS);
+      set = this.getByNames(READ_ONLY_TOOLS);
+    } else if (agentType === "general") {
+      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
+    } else if (agentType === "cron") {
+      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name));
+    } else {
+      set = [...this.tools.values(), ...dynamic];
     }
-    if (agentType === "general") {
-      return Array.from(this.tools.values()).filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
-    }
-    if (agentType === "cron") {
-      return Array.from(this.tools.values()).filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name));
-    }
-    return Array.from(this.tools.values());
+    return disabled.length ? set.filter((t) => !disabled.includes(t.name)) : set;
   }
 
   private getByNames(names: string[]): Tool[] {

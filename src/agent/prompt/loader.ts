@@ -1,5 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { CORE_PROMPT } from "./core-prompts.ts";
+import { scanForInjection } from "./anti-injection.ts";
 
 const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md"] as const;
 const CACHE_TTL_MS = 30_000;
@@ -18,7 +20,7 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-export async function loadPromptFile(name: PromptFile): Promise<string> {
+export async function loadPromptFile(name: string): Promise<string> {
   const path = join(promptDir(), name);
   const now = Date.now();
   const cached = cache.get(path);
@@ -47,4 +49,16 @@ export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> 
     PROMPT_FILES.map(async (name) => [name, await loadPromptFile(name)] as const),
   );
   return Object.fromEntries(entries) as Record<PromptFile, string>;
+}
+
+/**
+ * Layer 0 core directives. Read live from the workspace CORE.md (mtime cache, hot like the
+ * other prompt files) and scanned for injection since it is owner-editable. Falls back to
+ * the hardcoded CORE_PROMPT when the file is missing or blank, so the structural prompt can
+ * never be silently emptied. OWNER_STEERING/anti-injection stay in code by design.
+ */
+export async function loadCorePrompt(): Promise<string> {
+  const content = (await loadPromptFile("CORE.md")).trim();
+  if (!content) return CORE_PROMPT;
+  return scanForInjection(content, "CORE.md");
 }

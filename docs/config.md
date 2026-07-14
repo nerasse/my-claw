@@ -106,6 +106,53 @@ in `~/.my-claw/.env` (mint it with `claude setup-token`, valid 1 year).
 
 Migrates automatically to the new format internally. No manual action needed.
 
+## Tool gating (`tools`)
+
+```json
+"tools": { "disabled": ["browser", "cron"], "pluginsEnabled": false }
+```
+
+- `disabled`: denylist of tool names filtered out of every agent's tool set. Absent or empty
+  means everything is on, so new built-in tools are enabled by default. Hot-reloadable (read
+  live per run); disabling a tool takes effect on the next message. Only toggles
+  already-registered tools. MCP tools can be disabled by their full namespaced name
+  (`mcp__<server>__<tool>`).
+- `pluginsEnabled` (default `false`): load owner-authored tool modules from
+  `$MY_CLAW_DIR/tools.d/` at runtime. Off by default because loading arbitrary code is an
+  in-process RCE surface. Each module exports `tool` (or `default`) as
+  `{ name, description, parameters?, execute(args) }`; the shape is validated, names that
+  collide with a built-in are skipped, and a throwing plugin is isolated (never crashes the
+  process). Editing a file in `tools.d/` hot-reloads it. See `docs/hot-reload-extensions.md` (A5).
+
+## External MCP servers (`mcp`)
+
+Declare external [Model Context Protocol](https://modelcontextprotocol.io) servers; their
+tools become available to the agent on both backends (home loop and Claude SDK), exposed
+as `mcp__<server>__<tool>`. See `docs/hot-reload-extensions.md`.
+
+```json
+"mcp": {
+  "filesystem": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+    "env": { "FOO": "bar" }
+  },
+  "weather": {
+    "transport": "http",
+    "url": "https://mcp.example.com/mcp",
+    "headers": { "Authorization": "Bearer ..." }
+  }
+}
+```
+
+- `transport`: `stdio` (spawn a child process via `command`/`args`/`env`), `sse`, or
+  `http` (Streamable HTTP; `url`/`headers`).
+- `enabled` (optional): set `false` to declare but not connect a server.
+- Hot-reloadable: adding, removing, disabling, or re-wiring a server (re)connects it on
+  the next config save — no restart. A stdio server is spawned once and shared by both
+  backends. External MCP tools are not exposed to the read-only `research` sub-agent.
+
 ### API Key Resolution
 
 Env vars are loaded from `~/.my-claw/.env` at boot. Use the same name in `.env` as in `config.json` `apiKeyEnv`.

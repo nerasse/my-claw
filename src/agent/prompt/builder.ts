@@ -1,8 +1,7 @@
 import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
-import { loadAllPromptFiles } from "./loader.ts";
+import { loadAllPromptFiles, loadCorePrompt } from "./loader.ts";
 import { getPlatformHint } from "./platform-hints.ts";
-import { CORE_PROMPT } from "./core-prompts.ts";
 import { scanForInjection } from "./anti-injection.ts";
 
 export interface PromptContext {
@@ -17,8 +16,8 @@ export interface PromptContext {
 export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   const layers: string[] = [];
 
-  // Layer 0: Core directives (hardcoded, incassable)
-  layers.push(CORE_PROMPT);
+  // Layer 0: Core directives. Owner-editable via workspace CORE.md, hardcoded fallback.
+  layers.push(await loadCorePrompt());
 
   // Layer 1-4: Workspace files (scanned for injection)
   const files = await loadAllPromptFiles();

@@ -275,6 +275,41 @@ export interface MyClawConfig {
   memory?: MemoryConfig;
   injection?: InjectionConfig;
   context?: ContextConfig;
+  tools?: ToolsConfig;
+  mcp?: Record<string, McpServerConfig>;
+}
+
+/** Tool gating. Denylist so new in-tree tools are on by default; hot-reloadable. */
+export interface ToolsConfig {
+  /** Tool names filtered out of every agent's tool set. Read live per run. */
+  disabled?: string[];
+  /**
+   * Load owner-authored tool modules from `$MY_CLAW_DIR/tools.d/` at runtime. Off by
+   * default: loading arbitrary code is an in-process RCE surface. See
+   * `docs/hot-reload-extensions.md`.
+   */
+  pluginsEnabled?: boolean;
+}
+
+/**
+ * External MCP server declared in config, exposed to the agent as tools.
+ * `transport` selects the wire: a stdio child process, or a remote SSE/HTTP URL.
+ * See `docs/hot-reload-extensions.md`.
+ */
+export interface McpServerConfig {
+  transport: "stdio" | "sse" | "http";
+  /** stdio: executable to spawn. */
+  command?: string;
+  /** stdio: arguments passed to `command`. */
+  args?: string[];
+  /** stdio: extra env vars merged over the inherited environment. */
+  env?: Record<string, string>;
+  /** sse/http: server endpoint URL. */
+  url?: string;
+  /** sse/http: extra request headers (e.g. Authorization). */
+  headers?: Record<string, string>;
+  /** Set false to declare but not connect a server. Defaults to enabled. */
+  enabled?: boolean;
 }
 
 /** Context weight management (pruning + auto-compaction). See `docs/context-pruning.md`. */
@@ -426,7 +461,7 @@ export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
 }
 
-const PROMPT_TEMPLATES = ["SYSTEM.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+const PROMPT_TEMPLATES = ["SYSTEM.md", "CORE.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
 
 async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));

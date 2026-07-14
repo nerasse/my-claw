@@ -34,3 +34,12 @@ So `web_search` inspects `unresponsive_engines`:
 
 Limitation: this relies on SearXNG populating `unresponsive_engines`. An instance that returns a clean
 empty body while throttled would still look like a genuine "no results".
+
+## Tool availability
+
+`ToolRegistry.getForAgent(agentType, disabled)` builds each agent's tool set: per-agent exclusion lists
+(research is read-only; sub-agents and cron drop orchestration tools), then the config denylist
+`tools.disabled` (hot-reloadable), applied last. `setDynamicProvider` injects runtime tools -- external
+MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp__<server>__<tool>`. Both
+backends build from `getForAgent`, so the denylist and MCP tools apply uniformly to the home loop and the
+Claude SDK. See `docs/config.md` and `docs/hot-reload-extensions.md`.

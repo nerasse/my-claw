@@ -72,6 +72,14 @@ At startup, my-claw compares the skills in `src/skills/` (repo) against the cach
 
 Built-in skills are **read-only** for the agent. The agent cannot modify or delete them.
 
+## Live Reload (no restart)
+
+An `fs.watch` (`src/skills/watcher.ts`) watches the custom and workspace skill tiers: dropping in a new
+`SKILL.md`, editing one, or deleting a skill refreshes the registry automatically, effective on the next
+run. The agent can also force a rescan with `manage_skills(action='reload')`. The built-in tier is synced
+at boot only. Bun's recursive watch is unreliable on Linux, so the watcher tracks each tier dir plus every
+skill subdir. See `docs/hot-reload-extensions.md`.
+
 ## Prompt Injection
 
 Only the **skill index** (name + description) is injected into the system prompt on every run. The full skill content is loaded on-demand via the `read_skill` tool. This keeps the context window light while making all skills discoverable.

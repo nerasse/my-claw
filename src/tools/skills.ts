@@ -4,7 +4,7 @@ import { writeFile, mkdir, readFile, access, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
-import { loadAllSkills } from "../skills/loader.ts";
+import { reloadSkills } from "../skills/reload.ts";
 import { scanForInjection } from "../agent/prompt/anti-injection.ts";
 
 const MAX_NAME_LENGTH = 64;
@@ -96,8 +96,7 @@ export function createManageSkillsTool(
   workspaceSkillsDir: string,
 ): Tool {
   async function refreshRegistry(): Promise<void> {
-    const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
-    skillRegistry.setAll(allSkills);
+    await reloadSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir }, skillRegistry);
   }
 
   return {

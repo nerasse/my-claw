@@ -18,8 +18,7 @@ import {
   createBrowserCloseTabTool,
   createBrowserPageState,
 } from "../../tools/browser.ts";
-import { loadAllPromptFiles } from "../prompt/loader.ts";
-import { CORE_PROMPT } from "../prompt/core-prompts.ts";
+import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
 import { scanForInjection } from "../prompt/anti-injection.ts";
 
 export interface BrowserSubagentResult {
@@ -59,7 +58,7 @@ Rules:
 async function buildBrowserSystemPrompt(): Promise<string> {
   const layers: string[] = [];
 
-  layers.push(CORE_PROMPT);
+  layers.push(await loadCorePrompt());
 
   const files = await loadAllPromptFiles();
   for (const name of ["SOUL.md", "USER.md"] as const) {
@@ -159,7 +158,7 @@ export class BrowserSubagent {
         };
       }
 
-      const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general"));
+      const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general", this.config.tools?.disabled));
 
       let response: LlmResponse;
       const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
