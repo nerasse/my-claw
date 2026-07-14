@@ -48,7 +48,7 @@ function waitForReload(timeoutMs = 3000): Promise<{ changed: string[]; rebootReq
 }
 
 describe("E2E config hot-reload", () => {
-  test("editing config.json on disk hot-reloads LLM + whitelist + telegram, flags reboot fields", async () => {
+  test("editing config.json on disk hot-reloads LLM + whitelist + memory, recreates telegram on token change", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
     const file = join(dir, "config.json");
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -57,11 +57,11 @@ describe("E2E config hot-reload", () => {
     const config = parseConfig(await Bun.file(file).text());
 
     const picker = new ModelPicker(config.llm.models!.map((m) => ({ id: m.id, label: m.label })));
-    let tgReloads = 0;
     let tgWhitelist: Set<string> | undefined;
+    let recreatedTg = 0;
     const telegram = {
       setWhitelist: (s: Set<string>) => { tgWhitelist = s; },
-      applyConfigReload: () => { tgReloads += 1; },
+      applyConfigReload: () => { /* behavioral-only reload path, unused here */ },
     };
 
     const llmRef = config.llm;
@@ -73,6 +73,7 @@ describe("E2E config hot-reload", () => {
         modelPicker: picker,
         getTelegram: () => telegram,
         normalizeMatrixUserId: (id) => id.toLowerCase(),
+        recreateTelegram: () => { recreatedTg += 1; },
       },
       {
         path: file,
@@ -84,7 +85,7 @@ describe("E2E config hot-reload", () => {
 
     const reloaded = waitForReload();
 
-    // Mutate the file: hot fields + a reboot-only field (telegram.token) + reboot section (memory).
+    // Mutate the file: hot fields + a recreate field (telegram.token) + a now-hot section (memory).
     const next = initialConfig();
     next.llm.defaultModel = "model-b";
     next.llm.models = [
@@ -102,9 +103,9 @@ describe("E2E config hot-reload", () => {
     // Hook payload classification.
     expect(payload.changed).toContain("llm");
     expect(payload.changed).toContain("whitelist");
-    expect(payload.changed).toContain("channels.telegram");
-    expect(payload.rebootRequired).toContain("channels.telegram.token");
-    expect(payload.rebootRequired).toContain("memory");
+    expect(payload.changed).toContain("memory");
+    // A telegram identity change is a recreate, not a plain "changed" apply.
+    expect(payload.changed).not.toContain("channels.telegram");
 
     // In-place mutation preserved object identity.
     expect(config.llm).toBe(llmRef);
@@ -112,15 +113,16 @@ describe("E2E config hot-reload", () => {
 
     // Hot fields applied.
     expect(config.llm.defaultModel).toBe("model-b");
-    expect(config.channels.telegram!.historyLimit).toBe(42);
     expect(picker.find("model-b")?.id).toBe("model-b");
-    expect(tgReloads).toBe(1);
     expect(tgWhitelist?.has("u1")).toBe(true);
     expect(tgWhitelist?.has("@Bob:HS")).toBe(true);
 
-    // Reboot-only fields NOT applied live.
-    expect(config.channels.telegram!.token).toBe("tok-123");
-    expect(config.memory!.recallMaxEntries).toBe(5);
+    // Telegram identity recreate: applied in place (token + behavioral) and the applier fired.
+    expect(config.channels.telegram!.token).toBe("ROTATED");
+    expect(config.channels.telegram!.historyLimit).toBe(42);
+    expect(recreatedTg).toBe(1);
+    // memory is now hot: recall knobs apply in place.
+    expect(config.memory!.recallMaxEntries).toBe(99);
   });
 
   test("editing .env beside config.json triggers a reload cycle", async () => {

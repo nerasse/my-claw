@@ -148,16 +148,48 @@ test("telegram behavioral change is applied in place", () => {
   assert.deepEqual(result.rebootRequired, []);
 });
 
-test("telegram token change is reboot-required and NOT applied", () => {
+test("telegram token change triggers a live recreate (applied in place, not reboot)", () => {
   const current = baseConfig();
   const next = clone(current);
   next.channels.telegram!.token = "new-token";
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.rebootRequired.includes("channels.telegram.token"));
-  assert.ok(!result.changed.includes("channels.telegram"));
-  assert.equal(current.channels.telegram?.token, "tok-123", "token must remain unchanged until reboot");
+  assert.ok(result.recreate.includes("channels.telegram"));
+  assert.ok(!result.rebootRequired.includes("channels.telegram.token"));
+  assert.equal(current.channels.telegram?.token, "new-token", "token applied so the factory reads it");
+});
+
+test("telegram mode change also triggers a recreate, carrying behavioral fields along", () => {
+  const current = baseConfig();
+  const next = clone(current);
+  next.channels.telegram!.mode = "webhook";
+  next.channels.telegram!.historyLimit = 77;
+
+  const result = applyHotReload(current, next);
+
+  assert.ok(result.recreate.includes("channels.telegram"));
+  assert.equal(current.channels.telegram?.mode, "webhook");
+  assert.equal(current.channels.telegram?.historyLimit, 77);
+});
+
+test("recreate list drives the recreateTelegram applier", () => {
+  const config = baseConfig();
+  let recreated = 0;
+  runReloadAppliers([], config, { recreateTelegram: () => { recreated += 1; } }, ["channels.telegram"]);
+  assert.equal(recreated, 1);
+});
+
+test("telegram behavioral-only change stays a hot apply, not a recreate", () => {
+  const current = baseConfig();
+  const next = clone(current);
+  next.channels.telegram!.historyLimit = 42;
+
+  const result = applyHotReload(current, next);
+
+  assert.ok(result.changed.includes("channels.telegram"));
+  assert.ok(!result.recreate.includes("channels.telegram"));
+  assert.equal(current.channels.telegram?.historyLimit, 42);
 });
 
 test("matrix crypto/identity changes are reboot-required and NOT applied", () => {
@@ -201,16 +233,18 @@ test("removing a channel entirely is reboot-required", () => {
 
 // ── applyHotReload: reboot-only top-level sections ───────────────────────────
 
-test("memory change is reboot-required and NOT applied", () => {
+test("memory change is now hot-applied in place (recall knobs read live)", () => {
   const current = baseConfig();
+  const ref = current.memory;
   const next = clone(current);
   next.memory!.recallMaxEntries = 99;
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.rebootRequired.includes("memory"));
-  assert.ok(!result.changed.includes("memory"));
-  assert.equal(current.memory?.recallMaxEntries, 5);
+  assert.ok(result.changed.includes("memory"));
+  assert.ok(!result.rebootRequired.includes("memory"));
+  assert.equal(current.memory, ref, "memory identity preserved for live reads");
+  assert.equal(current.memory?.recallMaxEntries, 99);
 });
 
 test("no changes yields empty result", () => {
@@ -282,6 +316,70 @@ test("webSearch applier invokes registerWebSearch", () => {
   let registered = 0;
   runReloadAppliers(["webSearch"], config, { registerWebSearch: () => { registered += 1; } });
   assert.equal(registered, 1);
+});
+
+test("mcp applier invokes syncMcp with the live config.mcp", () => {
+  const config = baseConfig();
+  config.mcp = { weather: { transport: "http", url: "https://example.com/mcp" } };
+  let received: unknown;
+  runReloadAppliers(["mcp"], config, { syncMcp: (mcp) => { received = mcp; } });
+  assert.deepEqual(received, config.mcp);
+});
+
+// ── Block B: voice / cron / memory are now hot ───────────────────────────────
+
+test("voice hot-reloads in place and is not reboot-only", () => {
+  const current = baseConfig();
+  current.voice = { mode: "auto" };
+  const ref = current.voice;
+  const next = baseConfig();
+  next.voice = { mode: "cloud" };
+
+  const result = applyHotReload(current, next);
+  assert.ok(result.changed.includes("voice"));
+  assert.ok(!result.rebootRequired.includes("voice"));
+  assert.equal(current.voice, ref, "voice identity preserved for live reads");
+  assert.equal(current.voice.mode, "cloud");
+});
+
+test("cron hot-reloads and drives the reloadCron applier", () => {
+  const current = baseConfig();
+  current.cron = { tickIntervalMs: 60_000 };
+  const next = baseConfig();
+  next.cron = { tickIntervalMs: 30_000 };
+
+  const result = applyHotReload(current, next);
+  assert.ok(result.changed.includes("cron"));
+  assert.ok(!result.rebootRequired.includes("cron"));
+  assert.equal(current.cron.tickIntervalMs, 30_000);
+
+  let restarts = 0;
+  runReloadAppliers(["cron"], current, { reloadCron: () => { restarts += 1; } });
+  assert.equal(restarts, 1);
+});
+
+test("memory hot-reloads and drives the reloadMemory applier with live config.memory", () => {
+  const current = baseConfig();
+  current.memory = { enabled: true, recallMaxEntries: 5 };
+  const next = baseConfig();
+  next.memory = { enabled: true, recallMaxEntries: 9, embedding: { model: "new-model" } };
+
+  const result = applyHotReload(current, next);
+  assert.ok(result.changed.includes("memory"));
+  assert.ok(!result.rebootRequired.includes("memory"));
+  assert.equal(current.memory.recallMaxEntries, 9);
+
+  let received: unknown;
+  runReloadAppliers(["memory"], current, { reloadMemory: (m) => { received = m; } });
+  assert.deepEqual(received, current.memory);
+});
+
+test("workspace remains the only reboot-only top-level section", () => {
+  const current = baseConfig();
+  const next = baseConfig();
+  next.workspace = "/new/workspace/path";
+  const result = applyHotReload(current, next);
+  assert.ok(result.rebootRequired.includes("workspace"));
 });
 
 test("appliers are no-ops when nothing relevant changed", () => {

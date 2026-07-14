@@ -47,6 +47,14 @@ export class CronScheduler {
     }
   }
 
+  // Re-arm the tick timer to pick up a hot-reloaded cron.enabled / cron.tickIntervalMs
+  // (both are captured at start(); timeoutMs is already read live per tick). Safe to call
+  // repeatedly: stop() clears any existing timer first.
+  restart(): void {
+    this.stop();
+    this.start();
+  }
+
   async tick(): Promise<number> {
     if (this.ticking) return 0;
     this.ticking = true;

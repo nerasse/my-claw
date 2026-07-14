@@ -23,10 +23,16 @@ const MATRIX_REBOOT_FIELDS = [
 ];
 
 // Top-level sections wired at boot (timers, clients, env) that need a restart to re-apply.
-const REBOOT_SECTIONS = ["memory", "voice", "cron", "workspace"] as const;
+// Only `workspace` remains: changing the path would require re-seeding templates and
+// re-resolving every tool's cwd. memory/voice/cron are hot (see appliers below).
+const REBOOT_SECTIONS = ["workspace"] as const;
 
 // Object sections read live through the shared root config object on every use.
-const HOT_OBJECT_SECTIONS = ["llm", "agents", "injection", "browser", "webSearch", "context"] as const;
+// `voice` is pure live-read (VoiceManager reads config.voice per call, no applier).
+// `mcp`/`cron`/`memory` are applied in place too but also drive side-effecting appliers.
+const HOT_OBJECT_SECTIONS = [
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "mcp", "voice", "cron", "memory",
+] as const;
 // Array sections whose identity must be preserved (consumers hold the same array reference).
 const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
 
@@ -35,6 +41,8 @@ export interface ReloadResult {
   changed: string[];
   /** Fields that changed but require a reboot; left untouched. */
   rebootRequired: string[];
+  /** Sections whose identity changed and are applied in place but need a live recreate (e.g. a channel adapter). */
+  recreate: string[];
 }
 
 interface ChannelTarget {
@@ -48,6 +56,10 @@ export interface ConfigReloadContext {
   getMatrix?: () => ChannelTarget | undefined;
   normalizeMatrixUserId?: (id: string) => string;
   registerWebSearch?: () => void;
+  syncMcp?: (mcp: MyClawConfig["mcp"]) => void;
+  reloadCron?: () => void;
+  reloadMemory?: (memory: MyClawConfig["memory"]) => void;
+  recreateTelegram?: () => void;
 }
 
 export interface ConfigWatcherOptions {
@@ -129,14 +141,28 @@ function applyChannelReload(
   rebootFields: string[],
   changed: string[],
   rebootRequired: string[],
+  recreate: string[],
+  supportsRecreate: boolean,
 ): void {
   const cur = current.channels?.[name] as Record<string, unknown> | undefined;
   const nxt = next.channels?.[name] as Record<string, unknown> | undefined;
 
   if (!cur && !nxt) return;
   if (!cur || !nxt) {
-    // Channel added or removed entirely -> needs adapter (re)creation.
+    // Adding/removing a channel entirely still needs a reboot (adapter instantiation/teardown
+    // + approval-handler wiring); rarer and riskier than an identity swap.
     rebootRequired.push(`channels.${name}`);
+    return;
+  }
+
+  const identityChanged = rebootFields.some((f) => !eq(cur[f], nxt[f]));
+
+  if (supportsRecreate && identityChanged) {
+    // Sequential adapter recreate: apply the whole section in place (incl. identity) so the
+    // factory reads the new token/mode, and signal a recreate. stop-old-before-start-new
+    // avoids the concurrent-instance hazards (Telegram 409, Matrix crypto store contention).
+    replaceContents(cur, nxt);
+    recreate.push(`channels.${name}`);
     return;
   }
 
@@ -158,6 +184,7 @@ function applyChannelReload(
 export function applyHotReload(current: MyClawConfig, next: MyClawConfig): ReloadResult {
   const changed: string[] = [];
   const rebootRequired: string[] = [];
+  const recreate: string[] = [];
   const rec = current as unknown as Record<string, unknown>;
   const nextRec = next as unknown as Record<string, unknown>;
 
@@ -171,14 +198,16 @@ export function applyHotReload(current: MyClawConfig, next: MyClawConfig): Reloa
     changed.push(key);
   }
 
-  applyChannelReload("telegram", current, next, TELEGRAM_REBOOT_FIELDS, changed, rebootRequired);
-  applyChannelReload("matrix", current, next, MATRIX_REBOOT_FIELDS, changed, rebootRequired);
+  // Telegram supports a live identity recreate (grammy bot.stop() is clean; a sequential swap
+  // avoids the 409). Matrix stays reboot-only until its live-homeserver Megolm test passes.
+  applyChannelReload("telegram", current, next, TELEGRAM_REBOOT_FIELDS, changed, rebootRequired, recreate, true);
+  applyChannelReload("matrix", current, next, MATRIX_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
 
   for (const key of REBOOT_SECTIONS) {
     if (!eq(rec[key], nextRec[key])) rebootRequired.push(key);
   }
 
-  return { changed, rebootRequired };
+  return { changed, rebootRequired, recreate };
 }
 
 /** Run the side-effecting appliers for sections that snapshot config at boot. */
@@ -186,7 +215,10 @@ export function runReloadAppliers(
   changed: string[],
   config: MyClawConfig,
   ctx: ConfigReloadContext,
+  recreate: string[] = [],
 ): void {
+  // Identity recreate: stop the old adapter and start a fresh one with the new config.
+  if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
   if (changed.includes("llm") && ctx.modelPicker) {
     ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label })));
   }
@@ -198,7 +230,13 @@ export function runReloadAppliers(
   if (changed.includes("channels.telegram")) ctx.getTelegram?.()?.applyConfigReload();
   if (changed.includes("channels.matrix")) ctx.getMatrix?.()?.applyConfigReload();
   if (changed.includes("webSearch")) ctx.registerWebSearch?.();
-  // agents, injection, browser, blacklist are read live through the shared config; no applier.
+  // mcp is applied in place for live reads, but connections must be (re)opened/closed too.
+  if (changed.includes("mcp")) ctx.syncMcp?.(config.mcp);
+  // cron: enabled/tickIntervalMs are captured at start(), so re-arm the tick timer.
+  if (changed.includes("cron")) ctx.reloadCron?.();
+  // memory: recall knobs are live, but a changed embedding model needs a re-warm + backfill.
+  if (changed.includes("memory")) ctx.reloadMemory?.(config.memory);
+  // agents, injection, browser, tools, voice, blacklist are read live through the shared config; no applier.
 }
 
 /**
@@ -229,7 +267,7 @@ export function startConfigWatcher(
     }
 
     const result = applyHotReload(config, next);
-    if (result.changed.length === 0 && result.rebootRequired.length === 0) {
+    if (result.changed.length === 0 && result.rebootRequired.length === 0 && result.recreate.length === 0) {
       // read() already force-refreshed process.env; a bare .env rotation lands here
       // with no config-section diff. Confirm it so a token rotation is observable.
       void log("info", "config watcher fired with no section changes (env refreshed)");
@@ -237,7 +275,7 @@ export function startConfigWatcher(
     }
 
     try {
-      runReloadAppliers(result.changed, config, ctx);
+      runReloadAppliers(result.changed, config, ctx, result.recreate);
     } catch (err) {
       void log("error", "config reload appliers failed", { error: String(err) });
     }
@@ -245,6 +283,7 @@ export function startConfigWatcher(
     void log("info", "config reloaded", {
       changed: result.changed,
       rebootRequired: result.rebootRequired,
+      recreate: result.recreate,
     });
     if (result.rebootRequired.length > 0) {
       void log("warn", "config changes require a reboot to take effect", { fields: result.rebootRequired });

@@ -52,6 +52,10 @@ import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
+import { startSkillsWatcher } from "./skills/watcher.ts";
+import { McpManager } from "./mcp/manager.ts";
+import { PluginLoader } from "./tools/plugins.ts";
+import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
@@ -102,6 +106,14 @@ async function main() {
   const ttsPipeline = new TtsPipeline(voiceManager);
 
   const toolRegistry = new ToolRegistry();
+  // External MCP servers (config.mcp) feed both backends through one manager: the registry's
+  // dynamic provider surfaces their tools to getForAgent, which the home loop and the SDK
+  // in-process tool server both build from. Connected at boot, re-synced on hot-reload.
+  const mcpManager = new McpManager();
+  // Optional owner-authored tool plugins (tools.d/), created after registration below.
+  let pluginLoader: PluginLoader | undefined;
+  toolRegistry.setDynamicProvider(() => [...mcpManager.getTools(), ...(pluginLoader?.getTools() ?? [])]);
+  await mcpManager.sync(config.mcp);
   registerCoreTools(toolRegistry, config);
   registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
   // Registered via a reusable closure so the config hot-reload watcher can (re)register
@@ -144,7 +156,10 @@ async function main() {
   let telegramRef: TelegramAdapter | undefined;
   let matrixRef: MatrixAdapter | undefined;
 
-  if (isTelegramChannelEnabled(config)) {
+  // Factory so the channel can be recreated on an identity/token change (A6b) without a
+  // restart: reads config.channels.telegram live, wires all handlers, starts, sets telegramRef.
+  const startTelegramChannel = async (): Promise<void> => {
+    if (!isTelegramChannelEnabled(config)) return;
     const whitelist = new Set(config.whitelist);
     const telegram = new TelegramAdapter(config.channels.telegram!, whitelist);
     telegramRef = telegram;
@@ -249,7 +264,8 @@ async function main() {
       log("error", "telegram adapter failed to start", { error: String(err) });
       hooks.emit("channel:error", { platform: "telegram", error: err });
     }
-  }
+  };
+  await startTelegramChannel();
 
   if (isMatrixChannelEnabled(config)) {
     const whitelist = new Set(config.whitelist.map(normalizeMatrixUserId));
@@ -388,7 +404,41 @@ async function main() {
     getMatrix: () => matrixRef,
     normalizeMatrixUserId,
     registerWebSearch,
+    syncMcp: (mcp) => void mcpManager.sync(mcp),
+    reloadCron: () => cronScheduler.restart(),
+    reloadMemory: (memory) => void reloadMemoryEmbedding(memory),
+    recreateTelegram: () => void recreateTelegramChannel(),
   });
+
+  // Sequential recreate (stop old before start new) via the shared orchestration helper, then
+  // re-point the cron adapters map that captured the concrete instance.
+  async function recreateTelegramChannel(): Promise<void> {
+    await recreateChannelAdapter({
+      current: telegramRef,
+      adapters,
+      build: async () => {
+        telegramRef = undefined;
+        await startTelegramChannel();
+        return telegramRef;
+      },
+      repoint: (next) => { if (next) cronScheduler.adapters.set("telegram", next); },
+      label: "telegram",
+    });
+    log("info", "telegram channel recreated after identity change");
+  }
+
+  const stopSkillsWatcher = startSkillsWatcher(
+    { builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir },
+    skillRegistry,
+  );
+
+  // Opt-in tool-code plugins. Created after all built-ins are registered so the collision
+  // check knows the reserved names. The composed dynamic provider (set above) picks them up.
+  if (config.tools?.pluginsEnabled) {
+    pluginLoader = new PluginLoader(join(MY_CLAW_DIR, "tools.d"), new Set(toolRegistry.staticNames()));
+    await pluginLoader.start();
+    log("info", "tool plugins enabled", { count: pluginLoader.getTools().length });
+  }
 
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
   hooks.emit("app:ready", { channels: Object.keys(config.channels) });
@@ -401,6 +451,9 @@ async function main() {
     log("info", "shutting down...");
     hooks.emit("app:shutdown", { signal: "SIGINT" });
     stopConfigWatcher();
+    stopSkillsWatcher();
+    pluginLoader?.stop();
+    await mcpManager.stop().catch(() => undefined);
     cronScheduler.stop();
     if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
@@ -489,6 +542,20 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
   }
 
   return setInterval(() => purgeOldMemory(memCfg), DAY_MS);
+}
+
+// Applier for a hot-reloaded `memory` section. Recall knobs are read live per call, so the
+// only side effect needed is re-warming the embedding model: cheap when unchanged (warmup is
+// cached by model name and backfill only re-embeds rows whose stored model signature differs).
+async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<void> {
+  if (memory?.enabled === false) return;
+  try {
+    await warmupEmbedding(memory?.embedding);
+    const n = await backfillEmbeddings(memory);
+    if (n > 0) void log("info", "memory embeddings re-backfilled after config reload", { embedded: n });
+  } catch (err) {
+    void log("warn", "memory reload failed", { error: String(err) });
+  }
 }
 
 function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {

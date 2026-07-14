@@ -34,19 +34,30 @@ Hot-reloadable (applied in place, effective on the next message/call):
 - `agents.*` (maxIterations, llm, nested.enabled/maxBytes)
 - `injection`, `browser` (enabled/sidecarUrl/maxSteps/...), `webSearch`
 - `context` (pruning.enabled/keepLastAssistantTurns/headChars, autoCompact.enabled/thresholdRatio)
+- `tools.disabled` (denylist read live per run)
+- `mcp` (external MCP servers; the applier reconnects added/changed/removed servers)
+- `voice` (read live by VoiceManager, no applier)
+- `cron` (`enabled`/`tickIntervalMs` re-arm the tick timer via `reloadCron`)
+- `memory` (recall knobs live; an embedding-model change triggers a re-warm + backfill applier)
 - `whitelist`, `blacklist`
 - Telegram/Matrix **behavioral** fields: dm/group policy + allowFrom, groups, contextVisibility,
   historyLimit, streaming, replyToMode, threadReplies, reactions, errorPolicy, chunking, mediaMaxMb,
   displayName, autoJoin, ...
 
+Recreate (identity applied in place, adapter torn down + rebuilt via a `recreate` applier):
+
+- `channels.telegram`: `token`, `mode`, `webhook`, `enabled` -- `bot.stop()` is clean and a
+  sequential swap avoids the Telegram 409; the adapter is rebuilt from a factory and refs
+  (cron adapters map, approval handler) are re-pointed. See `docs/hot-reload-extensions.md` (A6b).
+
 Reboot-only (detected, **not** applied, reported in `rebootRequired`):
 
-- `channels.telegram`: `token`, `mode`, `webhook`, `enabled` (the Grammy Bot + polling loop bake these in)
 - `channels.matrix`: `homeserver`, `accessToken`, `userId`, `password`, `deviceId`, `encryption`,
-  `initialSyncLimit` -- the Rust E2E crypto store is keyed by `sha256(accessToken)` and initialized
-  once; recreating it risks losing inbound Megolm sessions (undecryptable history)
-- Adding/removing a channel entirely
-- Top-level `memory`, `voice`, `cron`, `workspace` (boot-wired timers, clients, env)
+  `initialSyncLimit` -- an in-process recreate is feasible (source: `olmMachine.close()` releases the
+  IndexedDB handle on `stopClient()`), but the mechanism is gated on a live-homeserver Megolm test that
+  cannot run in CI, so it stays reboot-only for now (see A6). The store is keyed by `sha256(accessToken)`.
+- Adding/removing a channel entirely (adapter instantiation/teardown + approval wiring)
+- Top-level `workspace` (would need re-seeding templates + re-resolving every tool cwd)
 
 ## Secrets in `.env` (hot-refreshed alongside config.json)
 
@@ -87,10 +98,24 @@ is built per call, so a new `sidecarUrl` takes effect on the next delegation wit
 applier re-registers the tool (the registry overwrites by name). The tool already reads
 `config.webSearch` live, so changing `baseUrl`/`language`/`token` needs no re-registration.
 
+### External MCP servers
+
+`mcp` is applied in place for live reads, but connections must also be opened/closed, so the applier calls
+`McpManager.sync(config.mcp)`. `sync` diffs the map: it connects added servers, reconnects those whose
+wiring changed, and drops removed/disabled ones. See `docs/hot-reload-extensions.md`.
+
+### Skills watcher (separate from config)
+
+Skills are not in `config.json`, so they have their own `fs.watch` (`src/skills/watcher.ts`): dropping or
+editing a `SKILL.md` under the custom/workspace tiers refreshes the registry live, no restart. Bun's
+recursive watch is unreliable on Linux, so it watches each tier dir plus every skill subdir. The built-in
+tier stays boot-only (repo-synced). See `docs/hot-reload-extensions.md`.
+
 ### Observability
 
 Each reload emits `config:reloaded` with `{ changed, rebootRequired }` and logs both lists. This is the
-single source of truth for "what took effect" vs "what still needs a restart".
+single source of truth for "what took effect" vs "what still needs a restart". Skills and MCP emit
+`skills:reloaded` and `mcp:synced` respectively.
 
 ## Code map
 
