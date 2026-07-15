@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EffortLevel, LlmConfig, LlmModelConfig } from "../core/config.ts";
+import type { EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig } from "../core/config.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
@@ -28,6 +28,21 @@ export function mergeModels(base: LlmModelConfig[], discovered: LlmModelConfig[]
   const seen = new Set(base.map((m) => m.id));
   const extra = discovered.filter((m) => !seen.has(m.id));
   return [...base, ...extra];
+}
+
+/**
+ * Provider-first menu: a model without an explicit `group` inherits its provider's `group`, so
+ * the picker root shows one entry per provider instead of a flat list of every model.
+ */
+export function applyProviderGroups(
+  models: LlmModelConfig[],
+  providers: Record<string, LlmProviderConfig>,
+): LlmModelConfig[] {
+  return models.map((m) => {
+    if (m.group || !m.provider) return m;
+    const group = providers[m.provider]?.group;
+    return group ? { ...m, group } : m;
+  });
 }
 
 async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {

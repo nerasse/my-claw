@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { ModelCatalog, mergeModels } from "../../src/llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups } from "../../src/llm/catalog.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 
@@ -24,6 +24,23 @@ test("mergeModels: config wins on id collision, appends extras in order", () => 
   assert.deepEqual(merged.map((m) => m.id), ["mimo", "shared", "sonnet"]);
   // curated entry preserved (not overwritten by discovery)
   assert.equal(merged.find((m) => m.id === "shared")?.label, "Shared (curated)");
+});
+
+test("applyProviderGroups: ungrouped models inherit their provider's group", () => {
+  const providers = {
+    litellm: { baseUrl: "x", group: "LiteLLM" },
+    anthropic: { type: "claude-sdk" as const, group: "Claude" },
+    groq: { baseUrl: "y" },
+  };
+  const models: LlmModelConfig[] = [
+    { id: "mimo", label: "MiMo", provider: "litellm" },
+    { id: "sonnet", label: "Sonnet", provider: "anthropic", group: "Claude/Sonnet" },
+    { id: "llama", label: "Llama", provider: "groq" },
+  ];
+  const out = applyProviderGroups(models, providers);
+  assert.equal(out.find((m) => m.id === "mimo")?.group, "LiteLLM"); // inherited
+  assert.equal(out.find((m) => m.id === "sonnet")?.group, "Claude/Sonnet"); // explicit kept
+  assert.equal(out.find((m) => m.id === "llama")?.group, undefined); // provider has no group
 });
 
 function makeConfig(): LlmConfig {

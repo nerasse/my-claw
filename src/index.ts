@@ -8,7 +8,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
-import { ModelCatalog, mergeModels } from "./llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups } from "./llm/catalog.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher } from "./core/config-watcher.ts";
 import {
@@ -109,7 +109,9 @@ async function main() {
   let baseModels = [...(config.llm.models ?? [])];
   const modelCatalog = new ModelCatalog(() => config.llm, discoverSdkModels);
   const applyModelCatalog = () => {
-    config.llm.models = mergeModels(baseModels, modelCatalog.discovered());
+    const merged = mergeModels(baseModels, modelCatalog.discovered());
+    // Provider-first: models with no explicit group nest under their provider's group label.
+    config.llm.models = applyProviderGroups(merged, config.llm.providers ?? {});
     modelPicker.setModels(config.llm.models.map((m) => ({ id: m.id, label: m.label, group: m.group })));
     modelPicker.setEffortOptions(effortOptionsFor(config.llm));
   };
