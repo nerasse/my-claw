@@ -252,6 +252,24 @@ sent as `reasoning_effort` to OpenAI-compatible providers **only** when the mode
 }
 ```
 
+### Model discovery
+
+Set `discover: true` on a provider to auto-populate its models at runtime instead of listing
+them by hand. `type: "claude-sdk"` providers use the SDK's `supportedModels()` (subscription
+OAuth); OpenAI-compatible providers use `GET {baseUrl}/models`. Discovered models merge with
+`config.models` (config wins on id collision) and land under the provider's `group` label.
+
+```json
+"providers": {
+  "litellm":   { "baseUrl": "https://litellm.example/v1", "apiKeyEnv": "LITELLM_API_KEY", "discover": true, "group": "LiteLLM" },
+  "anthropic": { "type": "claude-sdk", "discover": true, "group": "Claude (abo)" }
+}
+```
+
+Discovery is cached to `~/.my-claw/model-catalog.json`, refreshed at boot + every 6h + on config
+edit, and falls back to the last known list when a provider is unreachable. Full details in
+`docs/model-discovery.md`.
+
 ### Provider-Specific Headers
 
 Add custom headers per provider:

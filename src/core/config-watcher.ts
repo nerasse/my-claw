@@ -56,6 +56,9 @@ export interface ConfigReloadContext {
     setModels(models: { id: string; label: string; group?: string }[]): void;
     setEffortOptions(effort: { enabled: boolean; levels: import("./config.ts").EffortLevel[] }): void;
   };
+  // Owns the base/discovered merge into config.llm.models + the picker sync. When provided it
+  // supersedes the built-in modelPicker sync (which only knows the curated config models).
+  syncModels?: () => void;
   getTelegram?: () => ChannelTarget | undefined;
   getMatrix?: () => ChannelTarget | undefined;
   normalizeMatrixUserId?: (id: string) => string;
@@ -223,9 +226,13 @@ export function runReloadAppliers(
 ): void {
   // Identity recreate: stop the old adapter and start a fresh one with the new config.
   if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
-  if (changed.includes("llm") && ctx.modelPicker) {
-    ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group })));
-    ctx.modelPicker.setEffortOptions(effortOptionsFor(config.llm));
+  if (changed.includes("llm")) {
+    if (ctx.syncModels) {
+      ctx.syncModels();
+    } else if (ctx.modelPicker) {
+      ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group })));
+      ctx.modelPicker.setEffortOptions(effortOptionsFor(config.llm));
+    }
   }
   if (changed.includes("whitelist")) {
     ctx.getTelegram?.()?.setWhitelist(new Set(config.whitelist));

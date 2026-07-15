@@ -8,6 +8,8 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
+import { ModelCatalog, mergeModels } from "./llm/catalog.ts";
+import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher } from "./core/config-watcher.ts";
 import {
   createTelegramCommandHandler,
@@ -100,6 +102,22 @@ async function main() {
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const memoryPurgeTimer = initMemory(config);
   const modelPicker = new ModelPicker(config.llm.models ?? [], effortOptionsFor(config.llm));
+
+  // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
+  // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,
+  // so the merge writes there; baseModels is the curated disk set re-merged on each refresh.
+  let baseModels = [...(config.llm.models ?? [])];
+  const modelCatalog = new ModelCatalog(() => config.llm, discoverSdkModels);
+  const applyModelCatalog = () => {
+    config.llm.models = mergeModels(baseModels, modelCatalog.discovered());
+    modelPicker.setModels(config.llm.models.map((m) => ({ id: m.id, label: m.label, group: m.group })));
+    modelPicker.setEffortOptions(effortOptionsFor(config.llm));
+  };
+  modelCatalog.onUpdate(applyModelCatalog);
+  applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)
+  if (modelCatalog.enabled()) void modelCatalog.refresh();
+  const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
+  modelCatalogTimer.unref?.();
 
   const voiceManager = new VoiceManager(config);
   const sttPipeline = new SttPipeline(voiceManager);
@@ -400,6 +418,13 @@ async function main() {
 
   const stopConfigWatcher = startConfigWatcher(config, {
     modelPicker,
+    // On an llm config edit, re-snapshot the curated base and re-merge discovered models
+    // (config.llm.models was just reset to the disk value by the watcher).
+    syncModels: () => {
+      baseModels = [...(config.llm.models ?? [])];
+      applyModelCatalog();
+      void modelCatalog.refresh();
+    },
     getTelegram: () => telegramRef,
     getMatrix: () => matrixRef,
     normalizeMatrixUserId,
@@ -455,6 +480,7 @@ async function main() {
     pluginLoader?.stop();
     await mcpManager.stop().catch(() => undefined);
     cronScheduler.stop();
+    clearInterval(modelCatalogTimer);
     if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
     await Promise.allSettled(adapters.map((a) => a.stop()));

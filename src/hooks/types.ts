@@ -191,6 +191,9 @@ export interface HookEventMap {
   "memory:consolidate": { categoriesProcessed: number; before: number; after: number };
   "memory:backfill": { embedded: number };
 
+  // === MODEL CATALOG ===
+  "models:discovered": { count: number; anyFailed: boolean };
+
   // === MCP LIFECYCLE ===
   "mcp:synced": { servers: string[]; toolCount: number };
 

@@ -155,6 +155,12 @@ export interface LlmProviderConfig {
   headers?: Record<string, string>;
   // claude-sdk only: automatic failover model if the primary errors out.
   fallbackModel?: string;
+  // Auto-discover this provider's models at runtime (claude-sdk: query.supportedModels();
+  // openai-compatible: GET {baseUrl}/models). Discovered models merge with config.models
+  // (config wins on id collision). See docs/model-discovery.md.
+  discover?: boolean;
+  // Submenu group label applied to this provider's discovered models in the picker.
+  group?: string;
 }
 
 // Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as
