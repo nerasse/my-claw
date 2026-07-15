@@ -59,7 +59,7 @@ import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig, effortOptionsFor } from "./llm/resolver.ts";
 import {
   warmupEmbedding,
   backfillEmbeddings,
@@ -99,7 +99,7 @@ async function main() {
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   const memoryPurgeTimer = initMemory(config);
-  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const modelPicker = new ModelPicker(config.llm.models ?? [], effortOptionsFor(config.llm));
 
   const voiceManager = new VoiceManager(config);
   const sttPipeline = new SttPipeline(voiceManager);

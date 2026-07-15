@@ -270,6 +270,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       this.config.llm,
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+      session.effortOverride,
     );
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
@@ -376,6 +377,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       const queryOptions: SdkOptions = {
         model: llmConfig.model,
         fallbackModel: llmConfig.fallbackModel,
+        effort: llmConfig.effort,
         maxTurns,
         systemPrompt,
         cwd: this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),

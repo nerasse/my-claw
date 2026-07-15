@@ -219,6 +219,39 @@ The root menu shows `MiMo v2.5 Pro` and a `Claude (abo) >` entry; tapping it ope
 The Claude Agent SDK accepts both aliases (`sonnet`, `opus`, `haiku`, `fable`) and full ids
 (`claude-sonnet-5`, `claude-opus-4-8`); availability depends on your subscription.
 
+A `"/"`-separated `group` nests submenus, e.g. a version picker `Claude > Opus > [Latest / 4.8]`:
+
+```json
+"models": [
+  { "id": "opus",            "label": "Latest", "provider": "anthropic", "group": "Claude/Opus" },
+  { "id": "claude-opus-4-8", "label": "4.8",    "provider": "anthropic", "group": "Claude/Opus" },
+  { "id": "sonnet",          "label": "Latest", "provider": "anthropic", "group": "Claude/Sonnet" },
+  { "id": "haiku",           "label": "Haiku",  "provider": "anthropic", "group": "Claude" }
+]
+```
+
+### Reasoning effort
+
+Effort controls how much the model thinks. Native on the Claude Agent SDK (query `effort`);
+sent as `reasoning_effort` to OpenAI-compatible providers **only** when the model sets
+`supportsEffort: true` (avoids 400s on providers that reject the param).
+
+- Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only).
+- Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
+- The `/model` menu shows an `Effort: <level> >` entry (a submenu) whenever effort can take
+  effect (any claude-sdk model, any `supportsEffort` model, or a global `llm.effort`). `/effort`
+  and `/effort <level>` work on Telegram and Matrix.
+
+```json
+"llm": {
+  "effort": "high",
+  "models": [
+    { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic" },
+    { "id": "grok-reasoner", "label": "Grok", "provider": "litellm", "supportsEffort": true, "effort": "medium" }
+  ]
+}
+```
+
 ### Provider-Specific Headers
 
 Add custom headers per provider:

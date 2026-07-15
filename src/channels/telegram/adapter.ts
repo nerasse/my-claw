@@ -395,6 +395,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/new(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "new"));
     this.bot.hears(/^\/model(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "model"));
     this.bot.hears(/^\/models(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "models"));
+    this.bot.hears(/^\/effort(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "effort"));
     this.bot.hears(/^\/compact(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "compact"));
     this.bot.hears(/^\/reload(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "reload"));
     this.bot.hears(/^\/verbose(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "verbose"));
@@ -432,7 +433,12 @@ export class TelegramAdapter implements ChannelAdapter {
     if (this.commandHandler) {
       const chatId = String(ctx.chat?.id);
       const chatType = ctx.chat?.type === "private" ? "dm" as const : "group" as const;
-      const args = typeof ctx.match === "string" ? ctx.match : "";
+      // hears() regex only captures the trailing separator, so pull args from the raw text
+      // after the command token (enables e.g. `/effort high`, `/model 70b`).
+      const rawText = (typeof msg.text === "string" ? msg.text : msg.caption) ?? "";
+      const args = (typeof ctx.match === "string" && ctx.match.trim())
+        ? ctx.match
+        : rawText.replace(/^\/\S+\s*/, "");
       const messageId = ctx.message?.message_id;
       const threadId = ctx.message?.message_thread_id;
 
@@ -608,7 +614,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "clear", "model", "models", "compact", "reload", "verbose", "status", "stop", "cron", "archive", "help", "commands"].includes(command)) {
+      if (["new", "clear", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "archive", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command, true);
         return;
       }

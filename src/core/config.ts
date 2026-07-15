@@ -157,13 +157,24 @@ export interface LlmProviderConfig {
   fallbackModel?: string;
 }
 
+// Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as
+// `reasoning_effort` to OpenAI-compatible providers only when the model opts in via
+// `supportsEffort` (avoids 400s on providers that reject the param).
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface LlmModelConfig {
   id: string;
   label: string;
   provider?: string;
   // Optional submenu grouping for the model picker: models sharing a `group` value are
-  // collapsed behind a single "<group> >" entry in /model. Ungrouped models stay at root.
+  // collapsed behind a single "<group> >" entry in /model. A "/"-separated value nests
+  // submenus (e.g. "Claude/Opus"). Ungrouped models stay at root.
   group?: string;
+  // Per-model default effort (overrides the global llm.effort). Session /effort wins over both.
+  effort?: EffortLevel;
+  // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Ignored for
+  // claude-sdk models (they always accept effort natively).
+  supportsEffort?: boolean;
   vision?: boolean;
   limit?: {
     context?: number;
@@ -182,6 +193,8 @@ export interface LlmConfig {
     output?: number;
   };
   models?: LlmModelConfig[];
+  // Global default reasoning effort applied when a model/session does not set its own.
+  effort?: EffortLevel;
   // Model id to reroute a run to when the resolved model cannot take image input. Provider
   // agnostic by design: the switch happens before the request instead of relying on
   // proxy-side fallbacks.
@@ -206,6 +219,9 @@ export interface ResolvedLlmConfig {
     output?: number;
   };
   fallbackModel?: string;
+  // Resolved effort to apply for this run. Only set when it should actually be sent
+  // (claude-sdk always; openai-compatible only when the model opts in via supportsEffort).
+  effort?: EffortLevel;
 }
 
 export interface AgentLlmConfig {

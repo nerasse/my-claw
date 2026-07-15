@@ -82,6 +82,44 @@ test("telegram model submenu navigates without changing the session, then select
   assert.match(String(afterSelect), /claude-opus-4-8/);
 });
 
+test("telegram effort: menu, callback set, and /effort arg persist to session", async () => {
+  const effortConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      effort: "high",
+      providers: { anthropic: { type: "claude-sdk" } },
+      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] });
+  const commandHandler = createTelegramCommandHandler({ config: effortConfig, sessionManager, modelPicker });
+  const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
+
+  // /model root shows an effort entry.
+  const menu = await commandHandler("c1", "u1", "dm", "model", "");
+  assert.ok((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"));
+
+  // Open effort menu, then set via callback.
+  const opened = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effm" });
+  assert.ok(opened?.buttons?.some((b) => b.action === "eff:max"));
+  const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:max" });
+  assert.match(set?.text ?? "", /max/);
+
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, "max");
+
+  // /effort low via text arg.
+  const viaArg = await commandHandler("c1", "u1", "dm", "effort", "low");
+  assert.match(String(viaArg), /Effort set to low/);
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, "low");
+
+  // Unknown level rejected.
+  const bad = await commandHandler("c1", "u1", "dm", "effort", "bogus");
+  assert.match(String(bad), /Unknown effort/);
+});
+
 test("telegram /new resets the DM session", async () => {
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? []);

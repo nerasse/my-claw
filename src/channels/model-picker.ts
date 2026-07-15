@@ -1,25 +1,44 @@
 import type { ConfirmationButton } from "./types.ts";
+import type { EffortLevel } from "../core/config.ts";
 
 export interface ModelOption {
   id: string;
   label: string;
+  // "/"-separated path; each segment is one submenu level (e.g. "Claude/Opus").
   group?: string;
 }
 
-// A picker callback is either a direct model selection or a submenu navigation step. Kept as a
-// discriminated union so the channel handlers branch on intent instead of re-parsing strings.
+export interface EffortOptions {
+  enabled: boolean;
+  levels: EffortLevel[];
+}
+
+// A picker callback is a model selection, a submenu navigation step, or an effort change.
 export type PickerCallback =
   | { kind: "select"; modelId: string }
   | { kind: "openGroup"; groupIndex: number }
-  | { kind: "back" };
+  | { kind: "back" }
+  | { kind: "openEffort" }
+  | { kind: "setEffort"; level: EffortLevel };
+
+const EFFORT_ACTION = "effm";
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+function mark(label: string, selected: boolean): string {
+  return selected ? `${label} [selected]` : label;
+}
+
+function splitGroup(group?: string): string[] {
+  return group ? group.split("/").map((s) => s.trim()).filter(Boolean) : [];
+}
+
 /**
  * Text listing (for /models) with grouped models under headings. Numbers stay the global
- * 1-based position in the config array so they line up with the interactive picker.
+ * 1-based position in the config array so they line up with the interactive picker; nested
+ * groups render their full "A / B" path as the heading.
  */
 export function formatGroupedModelList(
   models: readonly ModelOption[],
@@ -38,7 +57,7 @@ export function formatGroupedModelList(
     if (m.group && !groups.includes(m.group)) groups.push(m.group);
   }
   for (const group of groups) {
-    lines.push(`${group}:`);
+    lines.push(`${splitGroup(group).join(" / ")}:`);
     models.forEach((m, index) => {
       if (m.group === group) lines.push(line(m, index, true));
     });
@@ -46,27 +65,41 @@ export function formatGroupedModelList(
   return lines;
 }
 
-function mark(label: string, selected: boolean): string {
-  return selected ? `${label} [selected]` : label;
-}
-
 export class ModelPicker {
-  constructor(private models: ModelOption[]) {}
+  constructor(
+    private models: ModelOption[],
+    private effort: EffortOptions = { enabled: false, levels: [] },
+  ) {}
 
   /** Replace the model list at runtime (used by the config hot-reload watcher). */
   setModels(models: ModelOption[]): void {
     this.models = models;
   }
 
+  setEffortOptions(effort: EffortOptions): void {
+    this.effort = effort;
+  }
+
   hasModels(): boolean {
     return this.models.length > 0;
   }
 
-  /** Distinct group labels in first-appearance order; groupIndex indexes into this. */
+  effortLevels(): EffortLevel[] {
+    return this.effort.enabled ? this.effort.levels : [];
+  }
+
+  /**
+   * Every distinct group node path (including intermediate prefixes) as "/"-joined strings,
+   * in first-appearance order. groupIndex in callbacks indexes into this list.
+   */
   groupOrder(): string[] {
     const seen: string[] = [];
     for (const model of this.models) {
-      if (model.group && !seen.includes(model.group)) seen.push(model.group);
+      const segments = splitGroup(model.group);
+      for (let depth = 1; depth <= segments.length; depth++) {
+        const path = segments.slice(0, depth).join("/");
+        if (!seen.includes(path)) seen.push(path);
+      }
     }
     return seen;
   }
@@ -75,40 +108,102 @@ export class ModelPicker {
     return this.groupOrder().length > 0;
   }
 
-  /** Root menu: ungrouped models as direct picks + one submenu entry per group. */
-  buildButtons(currentModelId: string): ConfirmationButton[] {
-    const buttons: ConfirmationButton[] = [];
+  private childrenOf(pathSegments: string[]): {
+    models: Array<{ model: ModelOption; index: number }>;
+    subgroups: string[];
+  } {
+    const prefix = pathSegments.join("/");
+    const models: Array<{ model: ModelOption; index: number }> = [];
+    const subgroups: string[] = [];
     this.models.forEach((model, index) => {
-      if (model.group) return; // grouped models live behind their submenu entry
+      const segments = splitGroup(model.group);
+      const modelPath = segments.join("/");
+      if (modelPath === prefix) {
+        models.push({ model, index });
+        return;
+      }
+      // Immediate subgroup one level below this node.
+      if (segments.length > pathSegments.length && segments.slice(0, pathSegments.length).join("/") === prefix) {
+        const childPath = segments.slice(0, pathSegments.length + 1).join("/");
+        if (!subgroups.includes(childPath)) subgroups.push(childPath);
+      }
+    });
+    return { models, subgroups };
+  }
+
+  private pathContainsModel(path: string, modelId: string): boolean {
+    return this.models.some((m) => {
+      if (m.id !== modelId) return false;
+      const mp = splitGroup(m.group).join("/");
+      return mp === path || mp.startsWith(`${path}/`);
+    });
+  }
+
+  private nodeButtons(pathSegments: string[], currentModelId: string): ConfirmationButton[] {
+    const { models, subgroups } = this.childrenOf(pathSegments);
+    const buttons: ConfirmationButton[] = [];
+    for (const { model, index } of models) {
       buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${index}` });
-    });
-    this.groupOrder().forEach((group, groupIndex) => {
-      const containsCurrent = this.models.some((m) => m.group === group && m.id === currentModelId);
-      buttons.push({ label: mark(`${group} >`, containsCurrent), action: `mdlg:${groupIndex}` });
-    });
+    }
+    const paths = this.groupOrder();
+    for (const childPath of subgroups) {
+      const groupIndex = paths.indexOf(childPath);
+      const lastSegment = childPath.split("/").pop() ?? childPath;
+      buttons.push({
+        label: mark(`${lastSegment} >`, this.pathContainsModel(childPath, currentModelId)),
+        action: `mdlg:${groupIndex}`,
+      });
+    }
     return buttons;
   }
 
-  /** Submenu: the models of one group + a back entry to the root menu. */
+  /** Root menu: ungrouped models + top-level group entries + (optional) effort entry. */
+  buildButtons(currentModelId: string, currentEffort?: EffortLevel): ConfirmationButton[] {
+    const buttons = this.nodeButtons([], currentModelId);
+    if (this.effort.enabled && this.effort.levels.length > 0) {
+      buttons.push({ label: `Effort: ${currentEffort ?? "default"} >`, action: EFFORT_ACTION });
+    }
+    return buttons;
+  }
+
+  /** Submenu at a group path: its models + subgroups + a back entry to its parent. */
   buildGroupButtons(groupIndex: number, currentModelId: string): ConfirmationButton[] {
-    const group = this.groupOrder()[groupIndex];
-    if (group === undefined) return this.buildButtons(currentModelId);
-    const buttons: ConfirmationButton[] = [];
-    this.models.forEach((model, index) => {
-      if (model.group !== group) return;
-      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${index}` });
-    });
+    const path = this.groupOrder()[groupIndex];
+    if (path === undefined) return this.buildButtons(currentModelId);
+    const segments = path.split("/");
+    const buttons = this.nodeButtons(segments, currentModelId);
+    const parent = segments.slice(0, -1);
+    const backAction = parent.length === 0 ? "mdlb" : `mdlg:${this.groupOrder().indexOf(parent.join("/"))}`;
+    buttons.push({ label: "< Back", action: backAction });
+    return buttons;
+  }
+
+  /** Effort submenu: one entry per level + back to root. */
+  buildEffortButtons(currentEffort?: EffortLevel): ConfirmationButton[] {
+    const buttons: ConfirmationButton[] = this.effort.levels.map((level) => ({
+      label: mark(level, level === currentEffort),
+      action: `eff:${level}`,
+    }));
     buttons.push({ label: "< Back", action: "mdlb" });
     return buttons;
   }
 
   groupLabel(groupIndex: number): string | undefined {
-    return this.groupOrder()[groupIndex];
+    const path = this.groupOrder()[groupIndex];
+    return path?.split("/").pop();
   }
 
-  /** Full callback intent (selection or navigation). */
+  /** Full callback intent (selection, navigation, or effort). */
   parseCallbackAction(data: string): PickerCallback | null {
     if (data === "mdlb") return { kind: "back" };
+    if (data === EFFORT_ACTION) return { kind: "openEffort" };
+
+    const effort = /^eff:(.+)$/.exec(data);
+    if (effort) {
+      const level = effort[1] as EffortLevel;
+      return this.effort.levels.includes(level) ? { kind: "setEffort", level } : null;
+    }
+
     const group = /^mdlg:(\d+)$/.exec(data);
     if (group) {
       const groupIndex = Number(group[1]);
@@ -117,6 +212,7 @@ export class ModelPicker {
       }
       return null;
     }
+
     const modelId = this.parseCallback(data);
     return modelId ? { kind: "select", modelId } : null;
   }
@@ -157,4 +253,10 @@ export class ModelPicker {
   labelFor(modelId: string): string {
     return this.models.find((model) => model.id === modelId)?.label ?? modelId;
   }
+}
+
+/** Parse a /effort argument into a valid level, or null. */
+export function parseEffortArg(arg: string, levels: EffortLevel[]): EffortLevel | null {
+  const normalized = arg.trim().toLowerCase();
+  return levels.includes(normalized as EffortLevel) ? (normalized as EffortLevel) : null;
 }

@@ -169,3 +169,84 @@ test("no groups keeps a flat root menu", () => {
   assert.equal(picker.hasGroups(), false);
   assert.deepEqual(picker.buildButtons("a"), [{ label: "A [selected]", action: "mdl:0" }]);
 });
+
+// --- Nested groups (2-level version submenu) ---
+
+const nested = [
+  { id: "mimo", label: "MiMo" },
+  { id: "claude-sonnet-5", label: "Sonnet", group: "Claude" },
+  { id: "claude-opus-4-8", label: "Opus 4.8", group: "Claude/Opus" },
+  { id: "claude-opus-4-5", label: "Opus 4.5", group: "Claude/Opus" },
+];
+
+test("nested: groupOrder includes intermediate paths", () => {
+  const picker = new ModelPicker(nested);
+  assert.deepEqual(picker.groupOrder(), ["Claude", "Claude/Opus"]);
+});
+
+test("nested: root shows ungrouped model + top-level group only", () => {
+  const picker = new ModelPicker(nested);
+  assert.deepEqual(picker.buildButtons("mimo"), [
+    { label: "MiMo [selected]", action: "mdl:0" },
+    { label: "Claude >", action: "mdlg:0" },
+  ]);
+});
+
+test("nested: Claude node shows its model + Opus subgroup + back-to-root", () => {
+  const picker = new ModelPicker(nested);
+  const buttons = picker.buildGroupButtons(0, "claude-opus-4-8");
+  assert.deepEqual(buttons, [
+    { label: "Sonnet", action: "mdl:1" },
+    { label: "Opus > [selected]", action: "mdlg:1" },
+    { label: "< Back", action: "mdlb" },
+  ]);
+});
+
+test("nested: Opus node lists versions + back-to-parent-group", () => {
+  const picker = new ModelPicker(nested);
+  const buttons = picker.buildGroupButtons(1, "claude-opus-4-5");
+  assert.deepEqual(buttons, [
+    { label: "Opus 4.8", action: "mdl:2" },
+    { label: "Opus 4.5 [selected]", action: "mdl:3" },
+    { label: "< Back", action: "mdlg:0" },
+  ]);
+});
+
+// --- Effort menu ---
+
+const effortPicker = () =>
+  new ModelPicker([{ id: "a", label: "A" }], { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] });
+
+test("effort: root appends an effort entry when enabled", () => {
+  const buttons = effortPicker().buildButtons("a", "high");
+  assert.deepEqual(buttons.at(-1), { label: "Effort: high >", action: "effm" });
+});
+
+test("effort: root shows default when no effort set", () => {
+  assert.deepEqual(effortPicker().buildButtons("a").at(-1), { label: "Effort: default >", action: "effm" });
+});
+
+test("effort: no effort entry when disabled", () => {
+  const picker = new ModelPicker([{ id: "a", label: "A" }]);
+  assert.equal(picker.buildButtons("a").some((b) => b.action === "effm"), false);
+  assert.deepEqual(picker.effortLevels(), []);
+});
+
+test("effort: submenu marks current level + back to root", () => {
+  const buttons = effortPicker().buildEffortButtons("medium");
+  assert.deepEqual(buttons, [
+    { label: "low", action: "eff:low" },
+    { label: "medium [selected]", action: "eff:medium" },
+    { label: "high", action: "eff:high" },
+    { label: "xhigh", action: "eff:xhigh" },
+    { label: "max", action: "eff:max" },
+    { label: "< Back", action: "mdlb" },
+  ]);
+});
+
+test("effort: parseCallbackAction handles openEffort and setEffort", () => {
+  const picker = effortPicker();
+  assert.deepEqual(picker.parseCallbackAction("effm"), { kind: "openEffort" });
+  assert.deepEqual(picker.parseCallbackAction("eff:xhigh"), { kind: "setEffort", level: "xhigh" });
+  assert.equal(picker.parseCallbackAction("eff:bogus"), null);
+});

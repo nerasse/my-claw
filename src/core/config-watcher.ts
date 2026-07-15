@@ -5,6 +5,7 @@ import { dirname, basename } from "node:path";
 import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
 import { CONFIG_PATH, readConfigFromDisk, type MyClawConfig } from "./config.ts";
+import { effortOptionsFor } from "../llm/resolver.ts";
 
 const DEBOUNCE_MS = 300;
 
@@ -51,7 +52,10 @@ interface ChannelTarget {
 }
 
 export interface ConfigReloadContext {
-  modelPicker?: { setModels(models: { id: string; label: string }[]): void };
+  modelPicker?: {
+    setModels(models: { id: string; label: string; group?: string }[]): void;
+    setEffortOptions(effort: { enabled: boolean; levels: import("./config.ts").EffortLevel[] }): void;
+  };
   getTelegram?: () => ChannelTarget | undefined;
   getMatrix?: () => ChannelTarget | undefined;
   normalizeMatrixUserId?: (id: string) => string;
@@ -221,6 +225,7 @@ export function runReloadAppliers(
   if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
   if (changed.includes("llm") && ctx.modelPicker) {
     ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group })));
+    ctx.modelPicker.setEffortOptions(effortOptionsFor(config.llm));
   }
   if (changed.includes("whitelist")) {
     ctx.getTelegram?.()?.setWhitelist(new Set(config.whitelist));

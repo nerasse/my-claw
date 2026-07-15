@@ -15,7 +15,7 @@ Use `bot.hears(/^\/new(?:@\w+)?(\s|$)/)` which checks raw message text with a re
 ignoring entity presence entirely. The `(?:@\w+)?` group also accepts the optional
 `@botname` suffix that Telegram appends in groups or that some clients include.
 Applied to all commands:
-`/new`, `/clear`, `/model`, `/models`, `/compact`, `/reload`, `/verbose`, `/status`, `/stop`,
+`/new`, `/clear`, `/model`, `/models`, `/effort`, `/compact`, `/reload`, `/verbose`, `/status`, `/stop`,
 `/cron`, `/archive`, `/help`, `/commands`.
 
 A defensive fallback in `handleMessage` strips `@botname` before matching, so

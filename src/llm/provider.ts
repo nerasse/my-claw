@@ -175,6 +175,10 @@ function buildRequestBody(
   if (config.limit?.output) {
     body["max_tokens"] = config.limit.output;
   }
+  // Only set when the resolver decided this model should receive it (see supportsEffort).
+  if (config.effort) {
+    body["reasoning_effort"] = config.effort;
+  }
 
   return body;
 }

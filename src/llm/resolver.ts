@@ -1,4 +1,4 @@
-import type { AgentLlmConfig, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
+import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -23,9 +23,27 @@ function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefin
   return config.models?.find((m) => m.id === modelId);
 }
 
+/**
+ * Effective effort for a run: session override > per-model default > global default. Only
+ * emitted when it should actually be sent — claude-sdk accepts it natively; openai-compatible
+ * providers get it only when the model opts in via `supportsEffort`.
+ */
+function computeEffort(
+  merged: LlmConfig,
+  model: LlmModelConfig | undefined,
+  isSdk: boolean,
+  effortOverride?: EffortLevel,
+): EffortLevel | undefined {
+  const chosen = effortOverride ?? model?.effort ?? merged.effort;
+  if (!chosen) return undefined;
+  if (isSdk) return chosen;
+  return model?.supportsEffort ? chosen : undefined;
+}
+
 function resolveFromMerged(
   merged: LlmConfig,
   modelId?: string,
+  effortOverride?: EffortLevel,
 ): ResolvedLlmConfig {
   const effectiveModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
 
@@ -57,6 +75,7 @@ function resolveFromMerged(
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       fallbackModel: provider.fallbackModel,
+      effort: computeEffort(merged, model, true, effortOverride),
     };
   }
 
@@ -67,11 +86,12 @@ function resolveFromMerged(
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,
     limit: model?.limit ?? merged.limit,
+    effort: computeEffort(merged, model, false, effortOverride),
   };
 }
 
-export function resolveLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
-  return resolveFromMerged(config, modelId);
+export function resolveLlmConfig(config: LlmConfig, modelId?: string, effortOverride?: EffortLevel): ResolvedLlmConfig {
+  return resolveFromMerged(config, modelId, effortOverride);
 }
 
 /**
@@ -83,8 +103,9 @@ export function resolveLlmConfigForMessage(
   config: LlmConfig,
   modelId: string | undefined,
   hasImages: boolean,
+  effortOverride?: EffortLevel,
 ): ResolvedLlmConfig {
-  const resolved = resolveLlmConfig(config, modelId);
+  const resolved = resolveLlmConfig(config, modelId, effortOverride);
   if (!hasImages || resolved.vision) return resolved;
 
   const fallbackId = config.visionFallback;
@@ -92,7 +113,7 @@ export function resolveLlmConfigForMessage(
   const fallbackModel = findModel(config, fallbackId);
   if (!fallbackModel?.vision) return resolved;
 
-  return resolveLlmConfig(config, fallbackId);
+  return resolveLlmConfig(config, fallbackId, effortOverride);
 }
 
 export function resolveAgentLlmConfig(
@@ -110,6 +131,26 @@ export function resolveAgentLlmConfig(
 
 export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {
   return config.models ?? [];
+}
+
+const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Whether the effort UI should be offered, and the levels to show. Enabled when any model can
+ * actually honor effort (claude-sdk backend or an opt-in `supportsEffort`) or a global default
+ * is set — otherwise the menu entry would be a no-op.
+ */
+export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels: EffortLevel[] } {
+  const models = config.models ?? [];
+  const anySdk = models.some((m) => {
+    try {
+      return resolveLlmConfig(config, m.id).backend === "claude-sdk";
+    } catch {
+      return false;
+    }
+  });
+  const anySupports = models.some((m) => m.supportsEffort);
+  return { enabled: anySdk || anySupports || config.effort !== undefined, levels: EFFORT_LEVELS };
 }
 
 /**

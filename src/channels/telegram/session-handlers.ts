@@ -3,7 +3,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
-import { ModelPicker, formatGroupedModelList } from "../model-picker.ts";
+import { ModelPicker, formatGroupedModelList, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -145,7 +145,28 @@ export function createTelegramCommandHandler({
 
         return {
           text: `Current model: ${modelPicker.labelFor(currentModel)}`,
-          buttons: modelPicker.buildButtons(currentModel),
+          buttons: modelPicker.buildButtons(currentModel, existingSession?.effortOverride ?? config.llm.effort),
+        };
+      }
+
+      case "effort": {
+        const levels = modelPicker.effortLevels();
+        if (levels.length === 0) return "Effort control is not enabled.";
+        const existingSession = await sessionManager.peek(sessionId);
+        const currentEffort = existingSession?.effortOverride ?? config.llm.effort;
+        const requested = args.trim();
+        if (requested) {
+          const level = parseEffortArg(requested, levels);
+          if (!level) return `Unknown effort: ${requested}. Options: ${levels.join(", ")}.`;
+          const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+          session.effortOverride = level;
+          session.lastActiveAt = new Date().toISOString();
+          await sessionManager.persist(sessionId);
+          return `Effort set to ${level}`;
+        }
+        return {
+          text: `Effort — current: ${currentEffort ?? "default"}`,
+          buttons: modelPicker.buildEffortButtons(currentEffort),
         };
       }
 
@@ -271,10 +292,11 @@ export function createTelegramCallbackHandler({
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
 
-    // Navigation steps re-render the menu without touching the session (no model change yet).
-    if (action.kind === "openGroup" || action.kind === "back") {
+    // Navigation / effort menu re-render without touching the model (no selection yet).
+    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
+      const currentEffort = existing?.effortOverride ?? config.llm.effort;
       if (action.kind === "openGroup") {
         return {
           text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}`,
@@ -282,10 +304,29 @@ export function createTelegramCallbackHandler({
           answerText: modelPicker.groupLabel(action.groupIndex),
         };
       }
+      if (action.kind === "openEffort") {
+        return {
+          text: `Effort — current: ${currentEffort ?? "default"}`,
+          buttons: modelPicker.buildEffortButtons(currentEffort),
+          answerText: "Effort",
+        };
+      }
       return {
         text: `Current model: ${modelPicker.labelFor(currentModel)}`,
-        buttons: modelPicker.buildButtons(currentModel),
+        buttons: modelPicker.buildButtons(currentModel, currentEffort),
         answerText: "Back",
+      };
+    }
+
+    if (action.kind === "setEffort") {
+      const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+      session.effortOverride = action.level;
+      session.lastActiveAt = new Date().toISOString();
+      await sessionManager.persist(sessionId);
+      return {
+        text: `Effort set to ${action.level}`,
+        buttons: modelPicker.buildButtons(session.modelOverride ?? defaultModel, action.level),
+        answerText: `Effort: ${action.level}`,
       };
     }
 
@@ -297,7 +338,7 @@ export function createTelegramCallbackHandler({
 
     return {
       text: `Model changed to ${modelPicker.labelFor(modelId)}`,
-      buttons: modelPicker.hasModels() ? modelPicker.buildButtons(modelId) : undefined,
+      buttons: modelPicker.hasModels() ? modelPicker.buildButtons(modelId, session.effortOverride ?? config.llm.effort) : undefined,
       answerText: "Model updated",
     };
   };

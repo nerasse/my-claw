@@ -2,6 +2,7 @@ export const MATRIX_COMMANDS = [
   { command: "new", description: "Start a fresh session" },
   { command: "model", description: "Show model menu or change current model" },
   { command: "models", description: "List available models" },
+  { command: "effort", description: "Show or set reasoning effort" },
   { command: "compact", description: "Compact session context" },
   { command: "reload", description: "Reload skills from disk" },
   { command: "reload-skills", description: "Reload skills from disk" },

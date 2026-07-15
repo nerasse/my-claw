@@ -50,6 +50,7 @@ export interface SessionData {
   lastActiveAt: string;
   messages: SessionMessage[];
   modelOverride?: string;
+  effortOverride?: import("../core/config.ts").EffortLevel;
   roomId?: string;
   threadId?: string;
   verbose?: boolean;

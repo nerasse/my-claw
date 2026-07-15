@@ -165,6 +165,7 @@ export class AgentBridge implements AgentBackend {
       this.config.llm,
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+      session.effortOverride,
     );
     const startedAt = Date.now();
     const streaming = Boolean(onToken);

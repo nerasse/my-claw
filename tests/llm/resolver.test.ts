@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels } from "../../src/llm/resolver.ts";
+import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels, effortOptionsFor } from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 
 const newFormatConfig: LlmConfig = {
@@ -212,4 +212,61 @@ test("resolveLlmConfigForMessage ignores a fallback that is not a declared visio
 test("resolveLlmConfigForMessage without visionFallback keeps current behavior", () => {
   const none: LlmConfig = { ...visionFallbackConfig, visionFallback: undefined };
   assert.equal(resolveLlmConfigForMessage(none, undefined, true).model, "llama-3.3-70b");
+});
+
+// --- Effort ---
+
+const effortConfig: LlmConfig = {
+  defaultProvider: "litellm",
+  defaultModel: "mimo",
+  effort: "high",
+  providers: {
+    litellm: { baseUrl: "https://x/v1" },
+    anthropic: { type: "claude-sdk" },
+  },
+  models: [
+    { id: "mimo", label: "MiMo", provider: "litellm" },
+    { id: "grok-reasoner", label: "Grok", provider: "litellm", supportsEffort: true },
+    { id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" },
+  ],
+};
+
+test("effort: SDK model always carries effort", () => {
+  assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5").effort, "high");
+});
+
+test("effort: home model without supportsEffort never carries it", () => {
+  assert.equal(resolveLlmConfig(effortConfig, "mimo").effort, undefined);
+});
+
+test("effort: home model with supportsEffort carries the global default", () => {
+  assert.equal(resolveLlmConfig(effortConfig, "grok-reasoner").effort, "high");
+});
+
+test("effort: session override beats global and per-model", () => {
+  assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5", "max").effort, "max");
+  // gating still applies to home models
+  assert.equal(resolveLlmConfig(effortConfig, "mimo", "max").effort, undefined);
+});
+
+test("effort: per-model default applies when no override", () => {
+  const cfg: LlmConfig = {
+    ...effortConfig,
+    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", effort: "low" }],
+    effort: undefined,
+  };
+  assert.equal(resolveLlmConfig(cfg, "claude-sonnet-5").effort, "low");
+});
+
+test("effortOptionsFor enabled when any SDK model, supportsEffort, or global effort", () => {
+  assert.equal(effortOptionsFor(effortConfig).enabled, true);
+  assert.deepEqual(effortOptionsFor(effortConfig).levels, ["low", "medium", "high", "xhigh", "max"]);
+
+  const plain: LlmConfig = {
+    defaultProvider: "litellm",
+    defaultModel: "mimo",
+    providers: { litellm: { baseUrl: "https://x/v1" } },
+    models: [{ id: "mimo", label: "MiMo", provider: "litellm" }],
+  };
+  assert.equal(effortOptionsFor(plain).enabled, false);
 });

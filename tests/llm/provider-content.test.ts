@@ -40,6 +40,28 @@ describe("chatCompletion", () => {
     }
   });
 
+  test("sends reasoning_effort only when config.effort is set", async () => {
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      capturedBodies.push(JSON.parse(init.body as string));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      await chatCompletion(config, [{ role: "user", content: "hi" }]);
+      expect(capturedBodies[0]!.reasoning_effort).toBeUndefined();
+
+      await chatCompletion({ ...config, effort: "xhigh" }, [{ role: "user", content: "hi" }]);
+      expect(capturedBodies[1]!.reasoning_effort).toBe("xhigh");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("serializes array content with image_url", async () => {
     const capturedBodies: unknown[] = [];
     const originalFetch = globalThis.fetch;
