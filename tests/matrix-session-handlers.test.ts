@@ -141,9 +141,9 @@ test("matrix session handlers list models and improve unknown-model guidance", a
   const commandHandler = createMatrixCommandHandler({ config, sessionManager, modelPicker });
 
   const models = await commandHandler("!room:test", "@u1:example.org", "dm", "models", "");
-  assert.match(String(models), /Available models:/);
-  assert.match(String(models), /1\. Base/);
-  assert.match(String(models), /2\. Alt/);
+  assert.match(String(models), /Available models by group:/);
+  assert.match(String(models), /- Base/);
+  assert.match(String(models), /- Alt/);
 
   const invalid = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "missing-model");
   assert.match(String(invalid), /Unknown model: missing-model/);

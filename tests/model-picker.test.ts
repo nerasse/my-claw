@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { ModelPicker, formatGroupedModelList } from "../src/channels/model-picker.ts";
+import { ModelPicker, formatModelGroupSummary } from "../src/channels/model-picker.ts";
 
 const models = [
   { id: "accounts/fireworks/models/kimi-k2p6-turbo", label: "Kimi K2.6 Turbo" },
@@ -151,16 +151,25 @@ test("buildGroupButtons falls back to root for an out-of-range group", () => {
   assert.deepEqual(picker.buildGroupButtons(9, "mimo"), picker.buildButtons("mimo"));
 });
 
-test("formatGroupedModelList groups under headings with global indices", () => {
-  const lines = formatGroupedModelList(grouped, "claude-sonnet-5");
+test("formatModelGroupSummary: one line per top-level group with counts + current marker", () => {
+  const lines = formatModelGroupSummary(grouped, "claude-sonnet-5");
   assert.deepEqual(lines, [
-    "1. MiMo (mimo)",
-    "2. Qwen (qwen)",
-    "Claude:",
-    "  3. sonnet (claude-sonnet-5) [selected]",
-    "  4. opus (claude-opus-4-8)",
-    "Google:",
-    "  5. Gemini (gemini)",
+    "- Claude: 2 models (current here)",
+    "- Google: 1 model",
+    "- MiMo",
+    "- Qwen",
+  ]);
+});
+
+test("formatModelGroupSummary: nested groups count under their top-level segment", () => {
+  const nested = [
+    { id: "a", label: "A", group: "Claude/Sonnet" },
+    { id: "b", label: "B", group: "Claude/Opus" },
+    { id: "c", label: "C", group: "LiteLLM" },
+  ];
+  assert.deepEqual(formatModelGroupSummary(nested, "b"), [
+    "- Claude: 2 models (current here)",
+    "- LiteLLM: 1 model",
   ]);
 });
 

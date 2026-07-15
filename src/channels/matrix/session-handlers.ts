@@ -4,7 +4,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
-import { ModelPicker, formatGroupedModelList, parseEffortArg } from "../model-picker.ts";
+import { ModelPicker, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
@@ -182,10 +182,10 @@ function buildMatrixModelsList(params: {
 
   return [
     `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
-    "Available models:",
-    ...formatGroupedModelList(models, params.currentModel),
+    "Available models by group:",
+    ...formatModelGroupSummary(models, params.currentModel),
     "",
-    "Use `/model <number|name>` to switch, or `/model` to reopen the interactive menu.",
+    "Use `/model` to open the interactive menu, or `/model <name>` to switch.",
   ].join("\n");
 }
 

@@ -3,7 +3,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
-import { ModelPicker, formatGroupedModelList, parseEffortArg } from "../model-picker.ts";
+import { ModelPicker, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -179,10 +179,10 @@ export function createTelegramCommandHandler({
         }
         return [
           `Current model: ${modelPicker.labelFor(currentModel)}`,
-          "Available models:",
-          ...formatGroupedModelList(models, currentModel),
+          "Available models by group:",
+          ...formatModelGroupSummary(models, currentModel),
           "",
-          "Use /model <number|name> to switch.",
+          "Use /model to open the menu, or /model <name> to switch.",
         ].join("\n");
       }
 

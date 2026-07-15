@@ -36,31 +36,34 @@ function splitGroup(group?: string): string[] {
 }
 
 /**
- * Text listing (for /models) with grouped models under headings. Numbers stay the global
- * 1-based position in the config array so they line up with the interactive picker; nested
- * groups render their full "A / B" path as the heading.
+ * Compact provider-first summary for /models: one line per top-level group with its model count
+ * (+ a marker when the current model lives there), then any ungrouped models individually. Keeps
+ * the reference short and points to the interactive /model menu instead of dumping every model.
  */
-export function formatGroupedModelList(
+export function formatModelGroupSummary(
   models: readonly ModelOption[],
   currentModelId: string,
 ): string[] {
-  const line = (m: ModelOption, index: number, indent: boolean) =>
-    `${indent ? "  " : ""}${index + 1}. ${m.label} (${m.id})${m.id === currentModelId ? " [selected]" : ""}`;
-
-  const lines: string[] = [];
-  models.forEach((m, index) => {
-    if (!m.group) lines.push(line(m, index, false));
-  });
-
-  const groups: string[] = [];
+  const order: string[] = [];
+  const counts = new Map<string, number>();
+  const ungrouped: ModelOption[] = [];
   for (const m of models) {
-    if (m.group && !groups.includes(m.group)) groups.push(m.group);
+    const top = splitGroup(m.group)[0];
+    if (!top) {
+      ungrouped.push(m);
+      continue;
+    }
+    if (!order.includes(top)) order.push(top);
+    counts.set(top, (counts.get(top) ?? 0) + 1);
   }
-  for (const group of groups) {
-    lines.push(`${splitGroup(group).join(" / ")}:`);
-    models.forEach((m, index) => {
-      if (m.group === group) lines.push(line(m, index, true));
-    });
+
+  const currentTop = splitGroup(models.find((m) => m.id === currentModelId)?.group)[0];
+  const lines = order.map((group) => {
+    const n = counts.get(group) ?? 0;
+    return `- ${group}: ${n} model${n > 1 ? "s" : ""}${group === currentTop ? " (current here)" : ""}`;
+  });
+  for (const m of ungrouped) {
+    lines.push(`- ${m.label}${m.id === currentModelId ? " [selected]" : ""}`);
   }
   return lines;
 }
