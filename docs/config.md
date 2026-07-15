@@ -198,6 +198,27 @@ Examples:
 /model 70b
 ```
 
+### Grouping models into a submenu
+
+Give models an optional `group` label to collapse them behind a single submenu entry in
+`/model` (keeps the root menu short when a provider exposes many models). Models without a
+`group` stay at the root; `/model <name>` and `/models` still reach every model directly.
+
+```json
+"models": [
+  { "id": "mimo-v2.5-pro", "label": "MiMo v2.5 Pro", "provider": "litellm" },
+  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic", "group": "Claude (abo)" },
+  { "id": "opus",  "label": "Opus",  "provider": "anthropic", "group": "Claude (abo)" },
+  { "id": "haiku", "label": "Haiku", "provider": "anthropic", "group": "Claude (abo)" },
+  { "id": "fable", "label": "Fable", "provider": "anthropic", "group": "Claude (abo)" }
+]
+```
+
+The root menu shows `MiMo v2.5 Pro` and a `Claude (abo) >` entry; tapping it opens the group
+(with a `< Back` entry). On Matrix the same levels work via reactions and number/name replies.
+The Claude Agent SDK accepts both aliases (`sonnet`, `opus`, `haiku`, `fable`) and full ids
+(`claude-sonnet-5`, `claude-opus-4-8`); availability depends on your subscription.
+
 ### Provider-Specific Headers
 
 Add custom headers per provider:

@@ -3,7 +3,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
-import { ModelPicker } from "../model-picker.ts";
+import { ModelPicker, formatGroupedModelList } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -159,10 +159,7 @@ export function createTelegramCommandHandler({
         return [
           `Current model: ${modelPicker.labelFor(currentModel)}`,
           "Available models:",
-          ...models.map((m, i) => {
-            const suffix = m.id === currentModel ? " [selected]" : "";
-            return `${i + 1}. ${m.label} (${m.id})${suffix}`;
-          }),
+          ...formatGroupedModelList(models, currentModel),
           "",
           "Use /model <number|name> to switch.",
         ].join("\n");
@@ -262,8 +259,8 @@ export function createTelegramCallbackHandler({
   ctx: TelegramCallbackContext,
 ) => Promise<TelegramCallbackResponse | undefined> {
   return async ({ chatId, userId, chatType, data, threadId }) => {
-    const modelId = modelPicker.parseCallback(data);
-    if (!modelId) return undefined;
+    const action = modelPicker.parseCallbackAction(data);
+    if (!action) return undefined;
 
     const sessionId = resolveTelegramSessionId({
       config,
@@ -272,8 +269,29 @@ export function createTelegramCallbackHandler({
       chatType,
       threadId,
     });
+    const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+
+    // Navigation steps re-render the menu without touching the session (no model change yet).
+    if (action.kind === "openGroup" || action.kind === "back") {
+      const existing = await sessionManager.peek(sessionId);
+      const currentModel = existing?.modelOverride ?? defaultModel;
+      if (action.kind === "openGroup") {
+        return {
+          text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}`,
+          buttons: modelPicker.buildGroupButtons(action.groupIndex, currentModel),
+          answerText: modelPicker.groupLabel(action.groupIndex),
+        };
+      }
+      return {
+        text: `Current model: ${modelPicker.labelFor(currentModel)}`,
+        buttons: modelPicker.buildButtons(currentModel),
+        answerText: "Back",
+      };
+    }
+
+    const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-    session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
+    session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
 

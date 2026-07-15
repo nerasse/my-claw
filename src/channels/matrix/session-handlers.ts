@@ -4,7 +4,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel } from "../../llm/resolver.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
-import { ModelPicker } from "../model-picker.ts";
+import { ModelPicker, formatGroupedModelList } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
@@ -85,6 +85,30 @@ function resolveMatrixModelSelection(
   return match ? { id: match.id, label: match.label } : null;
 }
 
+// Renders any menu level (root or group) from its button list. Reaction emojis / number replies
+// map to button positions, so deriving the text from the buttons keeps them in sync per level.
+function buildMatrixMenuFromButtons(params: {
+  modelPicker: ModelPicker;
+  currentModel: string;
+  buttons: ConfirmationButton[];
+  heading?: string;
+}): OutgoingMessage {
+  const { buttons } = params;
+  const instruction =
+    buttons.length > MATRIX_REACTION_BUTTON_EMOJIS.length
+      ? "Reply with a number/name for any option, react to this message for the first 10, or send `/model <number|name>`:"
+      : "Reply with a number/name, react to this message, or send `/model <number|name>`:";
+  return {
+    text: [
+      ...(params.heading ? [params.heading, ""] : []),
+      `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
+      instruction,
+      ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
+    ].join("\n"),
+    buttons,
+  };
+}
+
 function buildMatrixModelMenu(params: {
   config: MyClawConfig;
   modelPicker: ModelPicker;
@@ -94,23 +118,12 @@ function buildMatrixModelMenu(params: {
   if (!params.modelPicker.hasModels()) {
     return `${params.heading ? `${params.heading}\n` : ""}Current model: ${params.modelPicker.labelFor(params.currentModel)}`.trim();
   }
-
-  const models = params.config.llm.models ?? [];
-  return {
-    text: [
-      ...(params.heading ? [params.heading, ""] : []),
-      `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
-      models.length > MATRIX_REACTION_BUTTON_EMOJIS.length
-        ? "Reply with a number/name for any option, react to this message for the first 10, or send `/model <number|name>`:"
-        : "Reply with a number/name, react to this message, or send `/model <number|name>`:",
-      ...models.map((model, index) => {
-        const prefix = MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`;
-        const suffix = model.id === params.currentModel ? " [selected]" : "";
-        return `${prefix} ${model.label}${suffix}`;
-      }),
-    ].join("\n"),
+  return buildMatrixMenuFromButtons({
+    modelPicker: params.modelPicker,
+    currentModel: params.currentModel,
     buttons: params.modelPicker.buildButtons(params.currentModel),
-  };
+    heading: params.heading,
+  });
 }
 
 export function buildMatrixApprovalMenu(params: {
@@ -169,10 +182,7 @@ function buildMatrixModelsList(params: {
   return [
     `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
     "Available models:",
-    ...models.map((model, index) => {
-      const suffix = model.id === params.currentModel ? " [selected]" : "";
-      return `${index + 1}. ${model.label} (${model.id})${suffix}`;
-    }),
+    ...formatGroupedModelList(models, params.currentModel),
     "",
     "Use `/model <number|name>` to switch, or `/model` to reopen the interactive menu.",
   ].join("\n");
@@ -457,8 +467,8 @@ export function createMatrixActionHandler({
       return approval;
     }
 
-    const modelId = modelPicker.parseCallback(data);
-    if (!modelId) return undefined;
+    const action = modelPicker.parseCallbackAction(data);
+    if (!action) return undefined;
 
     const sessionId = resolveMatrixSessionId({
       config,
@@ -468,8 +478,27 @@ export function createMatrixActionHandler({
       roomId: chatId,
       threadId,
     });
+    const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+
+    // Navigation re-renders the menu level without changing the session's model.
+    if (action.kind === "openGroup" || action.kind === "back") {
+      const existing = await sessionManager.peek(sessionId);
+      const currentModel = existing?.modelOverride ?? defaultModel;
+      const buttons =
+        action.kind === "openGroup"
+          ? modelPicker.buildGroupButtons(action.groupIndex, currentModel)
+          : modelPicker.buildButtons(currentModel);
+      return buildMatrixMenuFromButtons({
+        modelPicker,
+        currentModel,
+        buttons,
+        heading: action.kind === "openGroup" ? modelPicker.groupLabel(action.groupIndex) : undefined,
+      });
+    }
+
+    const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-    session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
+    session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
 

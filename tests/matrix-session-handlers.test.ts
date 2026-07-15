@@ -57,6 +57,50 @@ test("matrix session handlers manage model and status", async () => {
   assert.equal(cleared, "History cleared.");
 });
 
+test("matrix model submenu navigates and selects within a group", async () => {
+  const groupedConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      models: [
+        { id: "base-model", label: "Base" },
+        { id: "claude-sonnet-5", label: "sonnet", group: "Claude" },
+        { id: "claude-opus-4-8", label: "opus", group: "Claude" },
+      ],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(groupedConfig.llm.models ?? []);
+  const actionHandler = createMatrixActionHandler({ config: groupedConfig, sessionManager, modelPicker });
+  const commandHandler = createMatrixCommandHandler({ config: groupedConfig, sessionManager, modelPicker });
+
+  const root = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
+  assert.ok((root as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "mdlg:0"));
+
+  const opened = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "mdlg:0",
+    messageId: "$menu",
+  });
+  assert.match(opened?.text ?? "", /Claude/);
+  assert.ok(opened?.buttons?.some((b) => b.action === "mdlb"));
+  const afterOpen = await commandHandler("!r:test", "@u1:example.org", "dm", "status", "");
+  assert.match(String(afterOpen), /base-model/);
+
+  const selected = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "mdl:2",
+    messageId: "$menu",
+  });
+  assert.match(selected?.text ?? "", /Model changed to opus/);
+  const afterSelect = await commandHandler("!r:test", "@u1:example.org", "dm", "status", "");
+  assert.match(String(afterSelect), /claude-opus-4-8/);
+});
+
 test("matrix help text includes command discoverability tips", () => {
   const help = getMatrixHelpText();
   assert.match(help, /Matrix commands:/);

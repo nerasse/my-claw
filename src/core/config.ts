@@ -161,6 +161,9 @@ export interface LlmModelConfig {
   id: string;
   label: string;
   provider?: string;
+  // Optional submenu grouping for the model picker: models sharing a `group` value are
+  // collapsed behind a single "<group> >" entry in /model. Ungrouped models stay at root.
+  group?: string;
   vision?: boolean;
   limit?: {
     context?: number;

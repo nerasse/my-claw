@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { ModelPicker } from "../src/channels/model-picker.ts";
+import { ModelPicker, formatGroupedModelList } from "../src/channels/model-picker.ts";
 
 const models = [
   { id: "accounts/fireworks/models/kimi-k2p6-turbo", label: "Kimi K2.6 Turbo" },
@@ -92,4 +92,80 @@ test("find prefers exact match over partial", () => {
   ]);
   const result = picker.find("abc");
   assert.equal(result?.id, "abc");
+});
+
+// --- Submenu grouping ---
+
+const grouped = [
+  { id: "mimo", label: "MiMo" },
+  { id: "qwen", label: "Qwen" },
+  { id: "claude-sonnet-5", label: "sonnet", group: "Claude" },
+  { id: "claude-opus-4-8", label: "opus", group: "Claude" },
+  { id: "gemini", label: "Gemini", group: "Google" },
+];
+
+test("groupOrder lists distinct groups in first-appearance order", () => {
+  const picker = new ModelPicker(grouped);
+  assert.deepEqual(picker.groupOrder(), ["Claude", "Google"]);
+  assert.equal(picker.hasGroups(), true);
+});
+
+test("root buttons show ungrouped models then one entry per group", () => {
+  const picker = new ModelPicker(grouped);
+  const buttons = picker.buildButtons("mimo");
+  assert.deepEqual(buttons, [
+    { label: "MiMo [selected]", action: "mdl:0" },
+    { label: "Qwen", action: "mdl:1" },
+    { label: "Claude >", action: "mdlg:0" },
+    { label: "Google >", action: "mdlg:1" },
+  ]);
+});
+
+test("root marks the group containing the current model", () => {
+  const picker = new ModelPicker(grouped);
+  const buttons = picker.buildButtons("claude-opus-4-8");
+  assert.equal(buttons.find((b) => b.action === "mdlg:0")?.label, "Claude > [selected]");
+});
+
+test("group buttons list the group models by absolute index + a back entry", () => {
+  const picker = new ModelPicker(grouped);
+  const buttons = picker.buildGroupButtons(0, "claude-opus-4-8");
+  assert.deepEqual(buttons, [
+    { label: "sonnet", action: "mdl:2" },
+    { label: "opus [selected]", action: "mdl:3" },
+    { label: "< Back", action: "mdlb" },
+  ]);
+});
+
+test("parseCallbackAction distinguishes select / openGroup / back", () => {
+  const picker = new ModelPicker(grouped);
+  assert.deepEqual(picker.parseCallbackAction("mdl:3"), { kind: "select", modelId: "claude-opus-4-8" });
+  assert.deepEqual(picker.parseCallbackAction("mdlg:1"), { kind: "openGroup", groupIndex: 1 });
+  assert.deepEqual(picker.parseCallbackAction("mdlb"), { kind: "back" });
+  assert.equal(picker.parseCallbackAction("mdlg:9"), null);
+  assert.equal(picker.parseCallbackAction("nope"), null);
+});
+
+test("buildGroupButtons falls back to root for an out-of-range group", () => {
+  const picker = new ModelPicker(grouped);
+  assert.deepEqual(picker.buildGroupButtons(9, "mimo"), picker.buildButtons("mimo"));
+});
+
+test("formatGroupedModelList groups under headings with global indices", () => {
+  const lines = formatGroupedModelList(grouped, "claude-sonnet-5");
+  assert.deepEqual(lines, [
+    "1. MiMo (mimo)",
+    "2. Qwen (qwen)",
+    "Claude:",
+    "  3. sonnet (claude-sonnet-5) [selected]",
+    "  4. opus (claude-opus-4-8)",
+    "Google:",
+    "  5. Gemini (gemini)",
+  ]);
+});
+
+test("no groups keeps a flat root menu", () => {
+  const picker = new ModelPicker([{ id: "a", label: "A" }]);
+  assert.equal(picker.hasGroups(), false);
+  assert.deepEqual(picker.buildButtons("a"), [{ label: "A [selected]", action: "mdl:0" }]);
 });

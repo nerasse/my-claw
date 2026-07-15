@@ -46,6 +46,42 @@ test("telegram session handlers manage model and status", async () => {
   assert.equal(cleared, "History cleared.");
 });
 
+test("telegram model submenu navigates without changing the session, then selects", async () => {
+  const groupedConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      models: [
+        { id: "base-model", label: "Base" },
+        { id: "claude-sonnet-5", label: "sonnet", group: "Claude" },
+        { id: "claude-opus-4-8", label: "opus", group: "Claude" },
+      ],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(groupedConfig.llm.models ?? []);
+  const callbackHandler = createTelegramCallbackHandler({ config: groupedConfig, sessionManager, modelPicker });
+  const commandHandler = createTelegramCommandHandler({ config: groupedConfig, sessionManager, modelPicker });
+
+  // Open the Claude submenu: menu re-renders, model unchanged (still default).
+  const opened = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdlg:0" });
+  assert.match(opened?.text ?? "", /Claude/);
+  assert.ok(opened?.buttons?.some((b) => b.action === "mdl:2"));
+  assert.ok(opened?.buttons?.some((b) => b.action === "mdlb"));
+  const afterOpen = await commandHandler("c1", "u1", "dm", "status", "");
+  assert.match(String(afterOpen), /base-model/);
+
+  // Back to root: still unchanged.
+  const back = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdlb" });
+  assert.ok(back?.buttons?.some((b) => b.action === "mdlg:0"));
+
+  // Select opus from within the group.
+  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:2" });
+  assert.match(selected?.text ?? "", /opus/);
+  const afterSelect = await commandHandler("c1", "u1", "dm", "status", "");
+  assert.match(String(afterSelect), /claude-opus-4-8/);
+});
+
 test("telegram /new resets the DM session", async () => {
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? []);

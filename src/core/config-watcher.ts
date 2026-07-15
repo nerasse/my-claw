@@ -220,7 +220,7 @@ export function runReloadAppliers(
   // Identity recreate: stop the old adapter and start a fresh one with the new config.
   if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
   if (changed.includes("llm") && ctx.modelPicker) {
-    ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label })));
+    ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group })));
   }
   if (changed.includes("whitelist")) {
     ctx.getTelegram?.()?.setWhitelist(new Set(config.whitelist));
