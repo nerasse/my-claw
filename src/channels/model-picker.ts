@@ -6,6 +6,9 @@ export interface ModelOption {
   label: string;
   // "/"-separated path; each segment is one submenu level (e.g. "Claude/Opus").
   group?: string;
+  // Per-model supported effort levels (from SDK discovery). When present, the effort submenu
+  // shows only these levels for this model; when absent, falls back to the global levels.
+  supportedEffortLevels?: EffortLevel[];
 }
 
 export interface EffortOptions {
@@ -92,6 +95,14 @@ export class ModelPicker {
 
   effortLevels(): EffortLevel[] {
     return this.effort.enabled ? this.effort.levels : [];
+  }
+
+  /** Effort levels for a specific model (falls back to global when the model has no override). */
+  effortLevelsFor(modelId: string): EffortLevel[] {
+    if (!this.effort.enabled) return [];
+    const model = this.models.find((m) => m.id === modelId);
+    const levels = model?.supportedEffortLevels;
+    return levels && levels.length > 0 ? levels : this.effort.levels;
   }
 
   /**
@@ -197,9 +208,11 @@ export class ModelPicker {
    * Effort submenu: one entry per level, then either a back entry (standalone /effort menu
    * or the Effort > entry from the root) or a "keep current" entry (chained right after a
    * model selection, where going back to the model menu would defeat the point of the chain).
+   * When `currentModelId` is provided, only levels that model supports are shown.
    */
-  buildEffortButtons(currentEffort?: EffortLevel, opts?: { chained?: boolean }): ConfirmationButton[] {
-    const buttons: ConfirmationButton[] = this.effort.levels.map((level) => ({
+  buildEffortButtons(currentEffort?: EffortLevel, opts?: { chained?: boolean; currentModelId?: string }): ConfirmationButton[] {
+    const levels = opts?.currentModelId ? this.effortLevelsFor(opts.currentModelId) : this.effort.levels;
+    const buttons: ConfirmationButton[] = levels.map((level) => ({
       label: mark(level, level === currentEffort),
       action: `eff:${level}`,
     }));

@@ -278,4 +278,42 @@ test("effort: parseCallbackAction handles keepEffort", () => {
   assert.deepEqual(effortPicker().parseCallbackAction("effk"), { kind: "keepEffort" });
 });
 
+test("effort: effortLevelsFor falls back to global when model has no override", () => {
+  const picker = effortPicker();
+  assert.deepEqual(picker.effortLevelsFor("a"), ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(picker.effortLevelsFor("unknown"), ["low", "medium", "high", "xhigh", "max"]);
+});
+
+test("effort: effortLevelsFor returns per-model levels when set", () => {
+  const picker = new ModelPicker(
+    [
+      { id: "full", label: "Full", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "limited", label: "Limited", supportedEffortLevels: ["high", "max"] },
+      { id: "none", label: "None" },
+    ],
+    { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] },
+  );
+  assert.deepEqual(picker.effortLevelsFor("full"), ["low", "medium", "high", "xhigh", "max"]);
+  assert.deepEqual(picker.effortLevelsFor("limited"), ["high", "max"]);
+  assert.deepEqual(picker.effortLevelsFor("none"), ["low", "medium", "high", "xhigh", "max"]);
+});
+
+test("effort: buildEffortButtons filters levels per model when currentModelId given", () => {
+  const picker = new ModelPicker(
+    [
+      { id: "full", label: "Full", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "limited", label: "Limited", supportedEffortLevels: ["high", "max"] },
+    ],
+    { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] },
+  );
+  const fullButtons = picker.buildEffortButtons(undefined, { currentModelId: "full" });
+  assert.deepEqual(fullButtons.map((b) => b.action), ["eff:low", "eff:medium", "eff:high", "eff:xhigh", "eff:max", "mdlb"]);
+
+  const limitedButtons = picker.buildEffortButtons(undefined, { currentModelId: "limited" });
+  assert.deepEqual(limitedButtons.map((b) => b.action), ["eff:high", "eff:max", "mdlb"]);
+
+  const chainedLimited = picker.buildEffortButtons("max", { chained: true, currentModelId: "limited" });
+  assert.deepEqual(chainedLimited.map((b) => b.action), ["eff:high", "eff:max", "effk"]);
+});
+
 

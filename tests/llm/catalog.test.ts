@@ -92,6 +92,8 @@ test("refresh discovers SDK + OpenAI models, groups them, skips default alias", 
     assert.equal(sonnet?.provider, "anthropic");
     assert.equal(sonnet?.group, "Claude (abo)");
     assert.equal(sonnet?.vision, true);
+    assert.equal(sonnet?.supportsEffort, true);
+    assert.deepEqual(sonnet?.supportedEffortLevels, ["low", "high"]);
 
     const qwen = catalog.discovered().find((m) => m.id === "qwen-72b");
     assert.equal(qwen?.provider, "litellm");

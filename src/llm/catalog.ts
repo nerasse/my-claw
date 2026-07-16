@@ -127,7 +127,15 @@ export class ModelCatalog {
           for (const m of models) {
             // "default" is a redundant alias (resolves to another listed model).
             if (m.value === "default") continue;
-            next.push({ id: m.value, label: m.displayName || m.value, provider: name, group: provider.group, vision: true });
+            next.push({
+              id: m.value,
+              label: m.displayName || m.value,
+              provider: name,
+              group: provider.group,
+              supportsEffort: m.supportsEffort,
+              supportedEffortLevels: m.supportedEffortLevels,
+              vision: true,
+            });
           }
         } else {
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;

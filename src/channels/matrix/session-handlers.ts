@@ -383,7 +383,7 @@ export function createMatrixCommandHandler({
         return buildMatrixMenuFromButtons({
           modelPicker,
           currentModel: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "",
-          buttons: modelPicker.buildEffortButtons(currentEffort),
+          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "" }),
           currentEffort,
           heading: `Effort (current: ${currentEffort ?? "default"})`,
         });
@@ -526,7 +526,7 @@ export function createMatrixActionHandler({
           ...buildMatrixMenuFromButtons({
             modelPicker,
             currentModel,
-            buttons: modelPicker.buildEffortButtons(currentEffort),
+            buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: currentModel }),
             currentEffort,
             heading: `Effort (current: ${currentEffort ?? "default"})`,
           }),
@@ -586,7 +586,7 @@ export function createMatrixActionHandler({
         ...buildMatrixMenuFromButtons({
           modelPicker,
           currentModel: modelId,
-          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true, currentModelId: modelId }),
           currentEffort,
           heading: `Model changed to ${label} — now choose reasoning effort:`,
         }),

@@ -181,6 +181,9 @@ export interface LlmModelConfig {
   // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Ignored for
   // claude-sdk models (they always accept effort natively).
   supportsEffort?: boolean;
+  // Per-model supported effort levels (SDK discovery provides these). When set, the effort
+  // submenu only shows these levels instead of the full global list.
+  supportedEffortLevels?: EffortLevel[];
   vision?: boolean;
   limit?: {
     context?: number;

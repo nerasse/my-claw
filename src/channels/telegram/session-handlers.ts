@@ -167,7 +167,7 @@ export function createTelegramCommandHandler({
         }
         return {
           text: `Effort — current: ${currentEffort ?? "default"}`,
-          buttons: modelPicker.buildEffortButtons(currentEffort),
+          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "" }),
         };
       }
 
@@ -310,7 +310,7 @@ export function createTelegramCallbackHandler({
       if (action.kind === "openEffort") {
         return {
           text: `Effort — current: ${currentEffort ?? "default"}`,
-          buttons: modelPicker.buildEffortButtons(currentEffort),
+          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: currentModel }),
           answerText: "Effort",
         };
       }
@@ -359,7 +359,7 @@ export function createTelegramCallbackHandler({
     if (levels.length > 0) {
       return {
         text: `Model changed to ${label} — now choose reasoning effort (current: ${currentEffort ?? "default"})`,
-        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true, currentModelId: modelId }),
         answerText: "Model updated",
       };
     }

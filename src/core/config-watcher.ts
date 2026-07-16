@@ -230,7 +230,7 @@ export function runReloadAppliers(
     if (ctx.syncModels) {
       ctx.syncModels();
     } else if (ctx.modelPicker) {
-      ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group })));
+      ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group, supportedEffortLevels: m.supportedEffortLevels })));
       ctx.modelPicker.setEffortOptions(effortOptionsFor(config.llm));
     }
   }

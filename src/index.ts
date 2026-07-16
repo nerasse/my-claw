@@ -112,7 +112,7 @@ async function main() {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
     // Provider-first: models with no explicit group nest under their provider's group label.
     config.llm.models = applyProviderGroups(merged, config.llm.providers ?? {});
-    modelPicker.setModels(config.llm.models.map((m) => ({ id: m.id, label: m.label, group: m.group })));
+    modelPicker.setModels(config.llm.models.map((m) => ({ id: m.id, label: m.label, group: m.group, supportedEffortLevels: m.supportedEffortLevels })));
     modelPicker.setEffortOptions(effortOptionsFor(config.llm));
   };
   modelCatalog.onUpdate(applyModelCatalog);
