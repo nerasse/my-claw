@@ -313,7 +313,8 @@ export function createTelegramCallbackHandler({
       };
     }
 
-    // Terminal steps close the menu (text without keyboard) instead of bouncing back to root.
+    // Terminal steps close the menu (text without keyboard). Effort is changed only via /effort
+    // (a quick shortcut), never forced into model selection.
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
       session.effortOverride = action.level;
@@ -326,37 +327,13 @@ export function createTelegramCallbackHandler({
       };
     }
 
-    if (action.kind === "keepEffort") {
-      const existing = await sessionManager.peek(sessionId);
-      const model = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
-      return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
-        answerText: "Effort kept",
-      };
-    }
-
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
-    const label = modelPicker.labelFor(modelId);
-
-    // Chain into the effort choice so model + effort is a single flow; /effort stays available
-    // as the quick standalone path.
-    const levels = modelPicker.effortLevels();
-    if (levels.length > 0) {
-      const currentEffort = session.effortOverride ?? config.llm.effort;
-      return {
-        text: `Model changed to ${label} — now choose reasoning effort (current: ${currentEffort ?? "default"})`,
-        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
-        answerText: "Model updated",
-      };
-    }
-
     return {
-      text: `Model changed to ${label}`,
+      text: `Model changed to ${modelPicker.labelFor(modelId)}`,
       answerText: "Model updated",
     };
   };

@@ -538,6 +538,7 @@ export function createMatrixActionHandler({
     }
 
     // Terminal steps: text-only responses edit the menu message in place and drop its reactions.
+    // Effort is changed only via /effort (a quick shortcut), never forced into model selection.
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
       session.effortOverride = action.level;
@@ -547,39 +548,11 @@ export function createMatrixActionHandler({
       return { text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}` };
     }
 
-    if (action.kind === "keepEffort") {
-      const existing = await sessionManager.peek(sessionId);
-      const model = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
-      return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
-      };
-    }
-
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
-    const label = modelPicker.labelFor(modelId);
-
-    // Chain straight into the effort choice so switching model + effort is one flow, no
-    // back-and-forth through the root menu. /effort stays available for quick changes.
-    const levels = modelPicker.effortLevels();
-    if (levels.length > 0) {
-      const currentEffort = session.effortOverride ?? config.llm.effort;
-      return {
-        ...buildMatrixMenuFromButtons({
-          modelPicker,
-          currentModel: modelId,
-          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
-          currentEffort,
-          heading: `Model changed to ${label} — now choose reasoning effort:`,
-        }),
-        supersededText: `Model changed to ${label}`,
-      };
-    }
-
-    return { text: `Model changed to ${label}` };
+    return { text: `Model changed to ${modelPicker.labelFor(modelId)}` };
   };
 }

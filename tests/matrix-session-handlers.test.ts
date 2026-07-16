@@ -102,7 +102,7 @@ test("matrix model submenu navigates and selects within a group", async () => {
   assert.match(String(afterSelect), /claude-opus-4-8/);
 });
 
-test("matrix menu steps carry breadcrumbs and chain model selection into effort", async () => {
+test("matrix effort lives on the header line; model selection is terminal (no chaining)", async () => {
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? [], {
     enabled: true,
@@ -116,7 +116,7 @@ test("matrix menu steps carry breadcrumbs and chain model selection into effort"
   assert.match(String((menu as { text?: string }).text ?? ""), /Current model:.*— Effort: default/);
   assert.equal((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"), false);
 
-  // Selecting a model chains straight into the effort choice as a new step.
+  // Selecting a model is terminal: text only, no effort chaining, menu closes.
   const selected = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",
@@ -124,13 +124,13 @@ test("matrix menu steps carry breadcrumbs and chain model selection into effort"
     data: "mdl:1",
     messageId: "$menu",
   });
-  assert.equal(selected?.supersededText, "Model changed to Alt");
-  assert.match(selected?.text ?? "", /Model changed to Alt — now choose reasoning effort/);
-  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
-  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
-  assert.equal(selected?.buttons?.some((b) => b.action === "mdlb"), false);
+  assert.equal(selected?.buttons, undefined);
+  assert.equal(selected?.supersededText, undefined);
+  assert.match(selected?.text ?? "", /^Model changed to Alt$/);
 
-  // setEffort is terminal: text only, menu closes.
+  // Effort is changed only via /effort, whose submenu still sets it (terminal).
+  const effortMenu = await commandHandler("!r:test", "@u1:example.org", "dm", "effort", "");
+  assert.ok((effortMenu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "eff:high"));
   const set = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",
@@ -140,17 +140,6 @@ test("matrix menu steps carry breadcrumbs and chain model selection into effort"
   });
   assert.equal(set?.buttons, undefined);
   assert.match(set?.text ?? "", /Effort set to high — model: Alt/);
-
-  // keepEffort is terminal too and leaves the override untouched.
-  const kept = await actionHandler({
-    chatId: "!r:test",
-    userId: "@u1:example.org",
-    chatType: "dm",
-    data: "effk",
-    messageId: "$menu",
-  });
-  assert.equal(kept?.buttons, undefined);
-  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
 });
 
 test("matrix help text includes command discoverability tips", () => {

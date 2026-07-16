@@ -121,7 +121,7 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
   assert.match(String(bad), /Unknown effort/);
 });
 
-test("telegram model selection chains into effort and terminal steps close the menu", async () => {
+test("telegram model selection is terminal (no effort chaining); effort via /effort only", async () => {
   const effortConfig: MyClawConfig = {
     ...config,
     llm: {
@@ -133,22 +133,19 @@ test("telegram model selection chains into effort and terminal steps close the m
   };
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "high"] });
+  const commandHandler = createTelegramCommandHandler({ config: effortConfig, sessionManager, modelPicker });
   const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
 
-  // Selecting a model chains into the effort keyboard with a keep-current entry.
+  // Selecting a model closes the menu: text only, no effort keyboard.
   const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:0" });
-  assert.match(selected?.text ?? "", /Model changed to Sonnet — now choose reasoning effort/);
-  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
-  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
-
-  // keepEffort closes the menu without touching the session's effort.
-  const kept = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effk" });
-  assert.equal(kept?.buttons, undefined);
-  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
+  assert.equal(selected?.buttons, undefined);
+  assert.match(selected?.text ?? "", /^Model changed to Sonnet$/);
   const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
   assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
 
-  // setEffort closes the menu (no keyboard bounce back to root).
+  // Effort is changed only via /effort, whose submenu sets it and closes.
+  const effortMenu = await commandHandler("c1", "u1", "dm", "effort", "");
+  assert.ok((effortMenu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "eff:low"));
   const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:low" });
   assert.equal(set?.buttons, undefined);
   assert.match(set?.text ?? "", /Effort set to low — model: Sonnet/);
