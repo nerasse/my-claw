@@ -136,16 +136,21 @@ test("telegram model selection is terminal (no effort chaining); effort via /eff
   const commandHandler = createTelegramCommandHandler({ config: effortConfig, sessionManager, modelPicker });
   const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
 
-  // Selecting a model closes the menu: text only, no effort keyboard.
+  // Selecting a model chains into the effort keyboard with a keep-current entry.
   const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:0" });
-  assert.equal(selected?.buttons, undefined);
-  assert.match(selected?.text ?? "", /^Model changed to Sonnet$/);
+  assert.match(selected?.text ?? "", /Model changed to Sonnet — now choose reasoning effort/);
+  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
+  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
   const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
   assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
 
-  // Effort is changed only via /effort, whose submenu sets it and closes.
-  const effortMenu = await commandHandler("c1", "u1", "dm", "effort", "");
-  assert.ok((effortMenu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "eff:low"));
+  // keepEffort closes the menu without touching the session's effort.
+  const kept = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effk" });
+  assert.equal(kept?.buttons, undefined);
+  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
+
+  // setEffort closes the menu (no keyboard bounce back to root).
   const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:low" });
   assert.equal(set?.buttons, undefined);
   assert.match(set?.text ?? "", /Effort set to low — model: Sonnet/);

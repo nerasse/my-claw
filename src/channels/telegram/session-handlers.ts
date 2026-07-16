@@ -321,8 +321,7 @@ export function createTelegramCallbackHandler({
       };
     }
 
-    // Terminal steps close the menu (text without keyboard). Effort is changed only via /effort
-    // (a quick shortcut), never forced into model selection.
+    // Terminal steps close the menu (text without keyboard).
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
       session.effortOverride = action.level;
@@ -335,13 +334,38 @@ export function createTelegramCallbackHandler({
       };
     }
 
+    if (action.kind === "keepEffort") {
+      const existing = await sessionManager.peek(sessionId);
+      const model = existing?.modelOverride ?? defaultModel;
+      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      return {
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+        answerText: "Effort kept",
+      };
+    }
+
+    // Selecting a model chains into the effort choice so you can set it in one flow.
+    // /effort also works as a standalone shortcut and the Effort > entry in the root menu
+    // opens the effort submenu without re-selecting a model.
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+    const currentEffort = session.effortOverride ?? config.llm.effort;
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
+    const label = modelPicker.labelFor(modelId);
+
+    const levels = modelPicker.effortLevels();
+    if (levels.length > 0) {
+      return {
+        text: `Model changed to ${label} — now choose reasoning effort (current: ${currentEffort ?? "default"})`,
+        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+        answerText: "Model updated",
+      };
+    }
+
     return {
-      text: `Model changed to ${modelPicker.labelFor(modelId)}`,
+      text: `Model changed to ${label}`,
       answerText: "Model updated",
     };
   };

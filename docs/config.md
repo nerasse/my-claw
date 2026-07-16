@@ -241,10 +241,11 @@ sent as `reasoning_effort` to OpenAI-compatible providers **only** when the mode
 - The `/model` menu shows the active effort on the **header line** next to the model
   (`Current model: X — Effort: high`) whenever effort can take effect (any claude-sdk model,
   any `supportsEffort` model, or a global `llm.effort`) — it is not a menu button.
-- Selecting a model in `/model` is terminal — it closes the menu (`Model changed to X`) and
-  never forces an effort choice. The `/model` menu also shows an `Effort >` entry to adjust
-  effort without re-selecting a model; alternatively, `/effort` and `/effort <level>` work
-  as a quick shortcut from anywhere. The active effort is shown on the `/model` header line.
+- Selecting a model in `/model` chains straight into the effort choice (levels + a
+  `Keep current` entry), so model + effort is one flow with no back-and-forth. The root
+  `/model` menu also shows an `Effort >` entry to adjust effort without re-selecting a model;
+  alternatively, `/effort` and `/effort <level>` work as a quick standalone shortcut. The active
+  effort is shown on the `/model` header line.
 
 ```json
 "llm": {

@@ -551,7 +551,6 @@ export function createMatrixActionHandler({
     }
 
     // Terminal steps: text-only responses edit the menu message in place and drop its reactions.
-    // Effort is changed only via /effort (a quick shortcut), never forced into model selection.
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
       session.effortOverride = action.level;
@@ -561,11 +560,40 @@ export function createMatrixActionHandler({
       return { text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}` };
     }
 
+    if (action.kind === "keepEffort") {
+      const existing = await sessionManager.peek(sessionId);
+      const model = existing?.modelOverride ?? defaultModel;
+      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      return {
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+      };
+    }
+
+    // Selecting a model chains into the effort choice so you can set it in one flow.
+    // /effort also works as a standalone shortcut and the Effort > entry in the root menu
+    // opens the effort submenu without re-selecting a model.
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
+    const currentEffort = session.effortOverride ?? config.llm.effort;
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
-    return { text: `Model changed to ${modelPicker.labelFor(modelId)}` };
+    const label = modelPicker.labelFor(modelId);
+
+    const levels = modelPicker.effortLevels();
+    if (levels.length > 0) {
+      return {
+        ...buildMatrixMenuFromButtons({
+          modelPicker,
+          currentModel: modelId,
+          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+          currentEffort,
+          heading: `Model changed to ${label} — now choose reasoning effort:`,
+        }),
+        supersededText: `Model changed to ${label}`,
+      };
+    }
+
+    return { text: `Model changed to ${label}` };
   };
 }

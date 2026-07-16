@@ -191,10 +191,12 @@ All commands are text-based (Matrix has no native command UI):
   with an emoji they already used, and an edited message keeps the old reaction count — so
   editing menus in place broke re-selection and left submenus with too few reactions. The
   superseded menu collapses to a one-line breadcrumb and its bot reactions are redacted.
-- **Effort as status + shortcut entry**: the active effort is shown on the menu header line
-  next to the model, and the `/model` menu offers an `Effort >` entry to adjust it without
-  re-selecting a model. Selecting a model is terminal (edits the message in place and drops
-  its reactions); effort can also be changed standalone via `/effort` or `/effort <level>`.
+- **Model -> effort chaining**: the active effort is shown on the menu header line next to
+  the model, and the `/model` menu offers an `Effort >` entry to adjust it without
+  re-selecting a model. Selecting a model chains straight into the reasoning-effort choice
+  (with a `Keep current` entry); `/effort` and `/effort <level>` also work as quick standalone
+  shortcuts. Terminal steps (set/keep effort) edit the menu message in place and drop its
+  reactions.
 - **Read receipts**: `m.read` sent on processed events
 - **Typing**: Supported by protocol, not yet wired in adapter
 - **Text chunking**: `textChunkLimit` + `chunkMode: length | newline`

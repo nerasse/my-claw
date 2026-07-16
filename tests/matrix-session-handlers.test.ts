@@ -127,7 +127,7 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
   assert.equal(openedEffort?.supersededText, "Model menu > Effort");
   assert.ok(openedEffort?.buttons?.some((b) => b.action === "eff:high"));
 
-  // Selecting a model is terminal: text only, no effort chaining, menu closes.
+  // Selecting a model chains into the effort choice as a new step.
   const selected = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",
@@ -135,9 +135,11 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
     data: "mdl:1",
     messageId: "$menu",
   });
-  assert.equal(selected?.buttons, undefined);
-  assert.equal(selected?.supersededText, undefined);
-  assert.match(selected?.text ?? "", /^Model changed to Alt$/);
+  assert.equal(selected?.supersededText, "Model changed to Alt");
+  assert.match(selected?.text ?? "", /Model changed to Alt — now choose reasoning effort/);
+  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
+  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
+  assert.equal(selected?.buttons?.some((b) => b.action === "mdlb"), false);
 
   // Setting effort from the submenu is terminal.
   const set = await actionHandler({
