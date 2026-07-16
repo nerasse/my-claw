@@ -236,7 +236,7 @@ Effort controls how much the model thinks. Native on the Claude Agent SDK (query
 sent as `reasoning_effort` to OpenAI-compatible providers **only** when the model sets
 `supportsEffort: true` (avoids 400s on providers that reject the param).
 
-- Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only).
+- Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only). When a model is selected, the effort submenu shows only the levels that model actually supports (SDK discovery provides `supportedEffortLevels` per model); models without a per-model override show the full global list.
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
 - The `/model` menu shows the active effort on the **header line** next to the model
   (`Current model: X — Effort: high`) whenever effort can take effect (any claude-sdk model,
