@@ -120,6 +120,39 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
   assert.match(String(bad), /Unknown effort/);
 });
 
+test("telegram model selection chains into effort and terminal steps close the menu", async () => {
+  const effortConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      effort: "high",
+      providers: { anthropic: { type: "claude-sdk" } },
+      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "high"] });
+  const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
+
+  // Selecting a model chains into the effort keyboard with a keep-current entry.
+  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:0" });
+  assert.match(selected?.text ?? "", /Model changed to Sonnet — now choose reasoning effort/);
+  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
+  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
+
+  // keepEffort closes the menu without touching the session's effort.
+  const kept = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effk" });
+  assert.equal(kept?.buttons, undefined);
+  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
+
+  // setEffort closes the menu (no keyboard bounce back to root).
+  const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:low" });
+  assert.equal(set?.buttons, undefined);
+  assert.match(set?.text ?? "", /Effort set to low — model: Sonnet/);
+});
+
 test("telegram /new resets the DM session", async () => {
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? []);

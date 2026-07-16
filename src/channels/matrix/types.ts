@@ -27,6 +27,9 @@ export type MatrixActionHandler = (ctx: {
       text?: string;
       buttons?: ConfirmationButton[];
       answerText?: string;
+      // When buttons are present, the next menu step is sent as a NEW message (fresh
+      // reactions); the old menu message is collapsed to this breadcrumb line.
+      supersededText?: string;
     }
   | undefined
 >;
@@ -45,6 +48,9 @@ export type PendingMatrixAction = {
   threadId?: string;
   expiresAt: number;
   stateKey?: string;
+  // Bot's own seeded numbered reactions, so they can be redacted when the menu is resolved
+  // or superseded (stale numbers on a dead menu were confusing users).
+  reactionEventIds?: string[];
 };
 export type IngressTail = Promise<void>;
 export type MatrixMediaInfo = {

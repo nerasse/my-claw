@@ -65,19 +65,29 @@ export class MatrixReactionManager {
     }
   }
 
-  async seedChoices(roomId: string, eventId: string, count: number): Promise<void> {
-    if (!this.config.enabled) return;
+  /** Returns the event ids of the seeded reactions so callers can redact them later. */
+  async seedChoices(roomId: string, eventId: string, count: number): Promise<string[]> {
+    if (!this.config.enabled) return [];
 
+    const eventIds: string[] = [];
     for (const emoji of MATRIX_REACTION_BUTTON_EMOJIS.slice(0, Math.max(0, count))) {
       try {
-        await this.client.sendEvent(
+        const result = await this.client.sendEvent(
           roomId,
           EventType.Reaction,
           toSdkContent(buildReactionContent(eventId, emoji)),
         );
+        eventIds.push(result.event_id);
       } catch {
-        return;
+        return eventIds;
       }
+    }
+    return eventIds;
+  }
+
+  async redactMany(roomId: string, eventIds: readonly string[]): Promise<void> {
+    for (const eventId of eventIds) {
+      await this.client.redactEvent(roomId, eventId).catch(() => {});
     }
   }
 }

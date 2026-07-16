@@ -318,15 +318,26 @@ export function createTelegramCallbackHandler({
       };
     }
 
+    // Terminal steps close the menu (text without keyboard) instead of bouncing back to root.
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
       session.effortOverride = action.level;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
+      const model = session.modelOverride ?? defaultModel;
       return {
-        text: `Effort set to ${action.level}`,
-        buttons: modelPicker.buildButtons(session.modelOverride ?? defaultModel, action.level),
+        text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}`,
         answerText: `Effort: ${action.level}`,
+      };
+    }
+
+    if (action.kind === "keepEffort") {
+      const existing = await sessionManager.peek(sessionId);
+      const model = existing?.modelOverride ?? defaultModel;
+      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      return {
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+        answerText: "Effort kept",
       };
     }
 
@@ -335,10 +346,22 @@ export function createTelegramCallbackHandler({
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
+    const label = modelPicker.labelFor(modelId);
+
+    // Chain into the effort choice so model + effort is a single flow; /effort stays available
+    // as the quick standalone path.
+    const levels = modelPicker.effortLevels();
+    if (levels.length > 0) {
+      const currentEffort = session.effortOverride ?? config.llm.effort;
+      return {
+        text: `Model changed to ${label} — now choose reasoning effort (current: ${currentEffort ?? "default"})`,
+        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+        answerText: "Model updated",
+      };
+    }
 
     return {
-      text: `Model changed to ${modelPicker.labelFor(modelId)}`,
-      buttons: modelPicker.hasModels() ? modelPicker.buildButtons(modelId, session.effortOverride ?? config.llm.effort) : undefined,
+      text: `Model changed to ${label}`,
       answerText: "Model updated",
     };
   };

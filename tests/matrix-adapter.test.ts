@@ -664,14 +664,7 @@ test("MatrixAdapter handles reaction-driven matrix actions", async () => {
     ],
   }));
   adapter.onAction(async ({ data }) => ({
-    text:
-      data === "mdl:1"
-        ? "Model changed to Alt\n\nCurrent model: Alt\nReact to this message or send `/model <number|name>`:\n1️⃣ Base\n2️⃣ Alt [selected]"
-        : "Current model: Base",
-    buttons: [
-      { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
-      { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
-    ],
+    text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
   }));
 
   await adapter.start();
@@ -702,8 +695,77 @@ test("MatrixAdapter handles reaction-driven matrix actions", async () => {
 
   assert.equal(relation["rel_type"], "m.replace");
   assert.equal(relation["event_id"], "$evt1");
-  assert.match(String(editPayload["formatted_body"] ?? ""), /^\* /);
+  assert.match(String(editPayload["body"] ?? ""), /^\* /);
   assert.match(String(newContent["body"] ?? ""), /Model changed to Alt/);
+
+  // Terminal step: the bot's seeded numbered reactions are redacted so the resolved
+  // menu does not keep stale choice reactions.
+  const redactCalls = calls.filter((call) => call.method === "redactEvent");
+  assert.equal(redactCalls.length, 2);
+});
+
+test("MatrixAdapter sends the next menu step as a new message with fresh reactions", async () => {
+  const { runtime, calls } = createRuntimeMock();
+  const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), runtime as never);
+
+  adapter.onCommand(async () => ({
+    text: "Current model: Base\n1️⃣ LiteLLM >\n2️⃣ Claude >",
+    buttons: [
+      { label: "LiteLLM >", action: "mdlg:0" },
+      { label: "Claude >", action: "mdlg:1" },
+    ],
+  }));
+  adapter.onAction(async () => ({
+    text: "Claude\n1️⃣ Sonnet\n2️⃣ Opus\n3️⃣ Haiku\n4️⃣ < Back",
+    buttons: [
+      { label: "Sonnet", action: "mdl:0" },
+      { label: "Opus", action: "mdl:1" },
+      { label: "Haiku", action: "mdl:2" },
+      { label: "< Back", action: "mdlb" },
+    ],
+    supersededText: "Model menu > Claude",
+  }));
+
+  await adapter.start();
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({ content: { msgtype: "m.text", body: "/model" } }),
+  });
+  const seedsBefore = calls.filter(
+    (call) => call.method === "sendEvent" && (call.args[1] as string) === "m.reaction",
+  ).length;
+  assert.equal(seedsBefore, 2);
+
+  await runtime.emitTimeline({
+    room: createRoom(),
+    event: createEvent({
+      type: "m.reaction",
+      id: "$reaction-nav",
+      content: {
+        "m.relates_to": { rel_type: "m.annotation", event_id: "$evt1", key: "2️⃣" },
+      },
+    }),
+  });
+
+  const sendCalls = calls.filter((call) => call.method === "sendMessage");
+  // The old menu collapses to a breadcrumb edit...
+  const edit = sendCalls
+    .map((call) => call.args[1] as Record<string, unknown>)
+    .find((payload) => (payload["m.relates_to"] as Record<string, unknown>)?.["rel_type"] === "m.replace");
+  assert.ok(edit);
+  assert.match(String((edit["m.new_content"] as Record<string, unknown>)["body"] ?? ""), /Model menu > Claude/);
+
+  // ...the new step is a FRESH message (not an edit) carrying the submenu...
+  const fresh = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
+  assert.equal((fresh["m.relates_to"] as Record<string, unknown> | undefined)?.["rel_type"], undefined);
+  assert.match(String(fresh["body"] ?? ""), /Sonnet/);
+
+  // ...with its own full set of seeded reactions (4 options) and the old seeds redacted.
+  const seedsAfter = calls.filter(
+    (call) => call.method === "sendEvent" && (call.args[1] as string) === "m.reaction",
+  ).length;
+  assert.equal(seedsAfter, seedsBefore + 4);
+  assert.equal(calls.filter((call) => call.method === "redactEvent").length, 2);
 });
 
 test("MatrixAdapter handles text-reply matrix actions", async () => {
@@ -718,14 +780,7 @@ test("MatrixAdapter handles text-reply matrix actions", async () => {
     ],
   }));
   adapter.onAction(async ({ data }) => ({
-    text:
-      data === "mdl:1"
-        ? "Model changed to Alt\n\nCurrent model: Alt\nReply with a number/name, react to this message, or send `/model <number|name>`:\n1️⃣ Base\n2️⃣ Alt [selected]"
-        : "Current model: Base",
-    buttons: [
-      { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
-      { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
-    ],
+    text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
   }));
 
   await adapter.start();
@@ -769,10 +824,6 @@ test("MatrixAdapter handles text-reply matrix actions beyond ten options", async
   }));
   adapter.onAction(async ({ data }) => ({
     text: data === "mdl:11" ? "Model changed to Model 12" : `Selected ${data}`,
-    buttons: Array.from({ length: 12 }, (_, index) => ({
-      label: `Model ${index + 1}${data === `mdl:${index}` ? " [selected]" : ""}`,
-      action: `mdl:${index}`,
-    })),
   }));
 
   await adapter.start();
@@ -1708,10 +1759,6 @@ test("MatrixAdapter restores pending action menus after restart", async () => {
     }));
     firstAdapter.onAction(async ({ data }) => ({
       text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
-      buttons: [
-        { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
-        { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
-      ],
     }));
 
     await firstAdapter.start();
@@ -1730,10 +1777,6 @@ test("MatrixAdapter restores pending action menus after restart", async () => {
 
     secondAdapter.onAction(async ({ data }) => ({
       text: data === "mdl:1" ? "Model changed to Alt" : "Current model: Base",
-      buttons: [
-        { label: data === "mdl:1" ? "Base" : "Base [selected]", action: "mdl:0" },
-        { label: data === "mdl:1" ? "Alt [selected]" : "Alt", action: "mdl:1" },
-      ],
     }));
 
     await secondAdapter.start();

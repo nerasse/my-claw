@@ -14,14 +14,17 @@ export interface EffortOptions {
 }
 
 // A picker callback is a model selection, a submenu navigation step, or an effort change.
+// keepEffort finalizes the chained model->effort flow without touching the session's effort.
 export type PickerCallback =
   | { kind: "select"; modelId: string }
   | { kind: "openGroup"; groupIndex: number }
   | { kind: "back" }
   | { kind: "openEffort" }
-  | { kind: "setEffort"; level: EffortLevel };
+  | { kind: "setEffort"; level: EffortLevel }
+  | { kind: "keepEffort" };
 
 const EFFORT_ACTION = "effm";
+const KEEP_EFFORT_ACTION = "effk";
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -181,13 +184,21 @@ export class ModelPicker {
     return buttons;
   }
 
-  /** Effort submenu: one entry per level + back to root. */
-  buildEffortButtons(currentEffort?: EffortLevel): ConfirmationButton[] {
+  /**
+   * Effort submenu: one entry per level, then either a back entry (standalone /effort menu)
+   * or a "keep current" entry (chained right after a model selection, where going back to the
+   * model menu would defeat the point of the chain).
+   */
+  buildEffortButtons(currentEffort?: EffortLevel, opts?: { chained?: boolean }): ConfirmationButton[] {
     const buttons: ConfirmationButton[] = this.effort.levels.map((level) => ({
       label: mark(level, level === currentEffort),
       action: `eff:${level}`,
     }));
-    buttons.push({ label: "< Back", action: "mdlb" });
+    if (opts?.chained) {
+      buttons.push({ label: `Keep current (${currentEffort ?? "default"})`, action: KEEP_EFFORT_ACTION });
+    } else {
+      buttons.push({ label: "< Back", action: "mdlb" });
+    }
     return buttons;
   }
 
@@ -200,6 +211,7 @@ export class ModelPicker {
   parseCallbackAction(data: string): PickerCallback | null {
     if (data === "mdlb") return { kind: "back" };
     if (data === EFFORT_ACTION) return { kind: "openEffort" };
+    if (data === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
 
     const effort = /^eff:(.+)$/.exec(data);
     if (effort) {

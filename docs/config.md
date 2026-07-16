@@ -241,6 +241,10 @@ sent as `reasoning_effort` to OpenAI-compatible providers **only** when the mode
 - The `/model` menu shows an `Effort: <level> >` entry (a submenu) whenever effort can take
   effect (any claude-sdk model, any `supportsEffort` model, or a global `llm.effort`). `/effort`
   and `/effort <level>` work on Telegram and Matrix.
+- Selecting a model in `/model` chains straight into the effort choice (levels + a
+  `Keep current` entry), so model + effort is one flow with no back-and-forth; `/effort`
+  stays as the quick standalone path. Terminal steps close the menu instead of re-rendering
+  the root.
 
 ```json
 "llm": {

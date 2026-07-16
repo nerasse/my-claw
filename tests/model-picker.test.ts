@@ -259,3 +259,16 @@ test("effort: parseCallbackAction handles openEffort and setEffort", () => {
   assert.deepEqual(picker.parseCallbackAction("eff:xhigh"), { kind: "setEffort", level: "xhigh" });
   assert.equal(picker.parseCallbackAction("eff:bogus"), null);
 });
+
+test("effort: chained submenu replaces back with a keep-current entry", () => {
+  const buttons = effortPicker().buildEffortButtons("medium", { chained: true });
+  assert.deepEqual(buttons.at(-1), { label: "Keep current (medium)", action: "effk" });
+  assert.equal(buttons.some((b) => b.action === "mdlb"), false);
+
+  const noEffort = effortPicker().buildEffortButtons(undefined, { chained: true });
+  assert.deepEqual(noEffort.at(-1), { label: "Keep current (default)", action: "effk" });
+});
+
+test("effort: parseCallbackAction handles keepEffort", () => {
+  assert.deepEqual(effortPicker().parseCallbackAction("effk"), { kind: "keepEffort" });
+});

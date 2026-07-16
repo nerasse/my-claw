@@ -97,8 +97,64 @@ test("matrix model submenu navigates and selects within a group", async () => {
     messageId: "$menu",
   });
   assert.match(selected?.text ?? "", /Model changed to opus/);
+  assert.equal(selected?.buttons, undefined);
   const afterSelect = await commandHandler("!r:test", "@u1:example.org", "dm", "status", "");
   assert.match(String(afterSelect), /claude-opus-4-8/);
+});
+
+test("matrix menu steps carry breadcrumbs and chain model selection into effort", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? [], {
+    enabled: true,
+    levels: ["low", "high"],
+  });
+  const actionHandler = createMatrixActionHandler({ config, sessionManager, modelPicker });
+
+  const openedEffort = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "effm",
+    messageId: "$menu",
+  });
+  assert.equal(openedEffort?.supersededText, "Model menu > Effort");
+  assert.ok(openedEffort?.buttons?.some((b) => b.action === "eff:high"));
+
+  // Selecting a model chains straight into the effort choice as a new step.
+  const selected = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "mdl:1",
+    messageId: "$menu",
+  });
+  assert.equal(selected?.supersededText, "Model changed to Alt");
+  assert.match(selected?.text ?? "", /Model changed to Alt — now choose reasoning effort/);
+  assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
+  assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
+  assert.equal(selected?.buttons?.some((b) => b.action === "mdlb"), false);
+
+  // setEffort is terminal: text only, menu closes.
+  const set = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "eff:high",
+    messageId: "$menu",
+  });
+  assert.equal(set?.buttons, undefined);
+  assert.match(set?.text ?? "", /Effort set to high — model: Alt/);
+
+  // keepEffort is terminal too and leaves the override untouched.
+  const kept = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "effk",
+    messageId: "$menu",
+  });
+  assert.equal(kept?.buttons, undefined);
+  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
 });
 
 test("matrix help text includes command discoverability tips", () => {

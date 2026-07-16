@@ -13,6 +13,7 @@ import {
   applyActionResponse as applyMatrixActionResponse,
   editPendingActionMessage as editMatrixPendingActionMessage,
   extractReactionAnnotation as extractMatrixReactionAnnotation,
+  pendingActionKey as matrixPendingActionKey,
   rememberPendingAction as rememberMatrixPendingAction,
   resolveActionForReaction as resolveMatrixActionForReaction,
   resolveActionForTextReply as resolveMatrixActionForTextReply,
@@ -134,6 +135,7 @@ type PersistedPendingMatrixAction = {
   buttons: ConfirmationButton[];
   threadId?: string;
   stateKey?: string;
+  reactionEventIds?: string[];
   expiresAt: number;
 };
 
@@ -316,7 +318,14 @@ export class MatrixAdapter implements ChannelAdapter {
 
     if (actionAnchorEventId && message.buttons?.length) {
       this.rememberPendingAction(chatId, actionAnchorEventId, message.buttons, message.threadId, message.stateKey);
-      await this.reactions.seedChoices(chatId, actionAnchorEventId, message.buttons.length);
+      const reactionEventIds = await this.reactions.seedChoices(chatId, actionAnchorEventId, message.buttons.length);
+      if (reactionEventIds.length > 0) {
+        const pending = this.pendingActions.get(matrixPendingActionKey(chatId, actionAnchorEventId));
+        if (pending) {
+          pending.reactionEventIds = reactionEventIds;
+          void this.persistPendingActions().catch(() => undefined);
+        }
+      }
     }
 
     if (!hasMedia) return;
@@ -1061,6 +1070,7 @@ export class MatrixAdapter implements ChannelAdapter {
           params.threadId,
           params.notice || stateKey === "confirm",
         ),
+      redactReactions: (roomId, eventIds) => this.reactions.redactMany(roomId, eventIds),
       ttlMs: MATRIX_PENDING_ACTION_TTL_MS,
       limit: MATRIX_PENDING_ACTION_LIMIT,
     });
@@ -1080,6 +1090,7 @@ export class MatrixAdapter implements ChannelAdapter {
         buttons: pending.buttons,
         threadId: pending.threadId,
         stateKey: pending.stateKey,
+        reactionEventIds: pending.reactionEventIds,
         expiresAt: pending.expiresAt,
       });
     }
@@ -1103,6 +1114,7 @@ export class MatrixAdapter implements ChannelAdapter {
         buttons: entry.buttons,
         threadId: entry.threadId,
         stateKey: entry.stateKey,
+        reactionEventIds: entry.reactionEventIds,
         ttlMs: Math.max(1, entry.expiresAt - now),
         limit: MATRIX_PENDING_ACTION_LIMIT,
       });

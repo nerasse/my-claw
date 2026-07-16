@@ -27,6 +27,8 @@ interface MatrixActionResponse {
   text?: string;
   buttons?: ConfirmationButton[];
   answerText?: string;
+  // Breadcrumb the old menu message collapses to when the next step is sent as a new message.
+  supersededText?: string;
 }
 
 export interface MatrixApprovalHandler {
@@ -509,42 +511,56 @@ export function createMatrixActionHandler({
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
 
-    // Navigation / effort menu re-renders the level without changing the session's model.
+    // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
+    // reactions and collapses the previous menu to the supersededText breadcrumb.
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const currentEffort = existing?.effortOverride ?? config.llm.effort;
       if (action.kind === "openEffort") {
-        return buildMatrixMenuFromButtons({
-          modelPicker,
-          currentModel,
-          buttons: modelPicker.buildEffortButtons(currentEffort),
-          heading: `Effort (current: ${currentEffort ?? "default"})`,
-        });
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildEffortButtons(currentEffort),
+            heading: `Effort (current: ${currentEffort ?? "default"})`,
+          }),
+          supersededText: "Model menu > Effort",
+        };
       }
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupIndex, currentModel)
           : modelPicker.buildButtons(currentModel, currentEffort);
-      return buildMatrixMenuFromButtons({
-        modelPicker,
-        currentModel,
-        buttons,
-        heading: action.kind === "openGroup" ? modelPicker.groupLabel(action.groupIndex) : undefined,
-      });
+      const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupIndex) : undefined;
+      return {
+        ...buildMatrixMenuFromButtons({
+          modelPicker,
+          currentModel,
+          buttons,
+          heading: groupLabel,
+        }),
+        supersededText: groupLabel ? `Model menu > ${groupLabel}` : "Model menu",
+      };
     }
 
+    // Terminal steps: text-only responses edit the menu message in place and drop its reactions.
     if (action.kind === "setEffort") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
       session.effortOverride = action.level;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      return buildMatrixMenuFromButtons({
-        modelPicker,
-        currentModel: session.modelOverride ?? defaultModel,
-        buttons: modelPicker.buildButtons(session.modelOverride ?? defaultModel, action.level),
-        heading: `Effort set to ${action.level}`,
-      });
+      const model = session.modelOverride ?? defaultModel;
+      return { text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}` };
+    }
+
+    if (action.kind === "keepEffort") {
+      const existing = await sessionManager.peek(sessionId);
+      const model = existing?.modelOverride ?? defaultModel;
+      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      return {
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+      };
     }
 
     const modelId = action.modelId;
@@ -552,12 +568,24 @@ export function createMatrixActionHandler({
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
+    const label = modelPicker.labelFor(modelId);
 
-    return buildMatrixModelMenu({
-      config,
-      modelPicker,
-      currentModel: modelId,
-      heading: `Model changed to ${modelPicker.labelFor(modelId)}`,
-    }) as OutgoingMessage;
+    // Chain straight into the effort choice so switching model + effort is one flow, no
+    // back-and-forth through the root menu. /effort stays available for quick changes.
+    const levels = modelPicker.effortLevels();
+    if (levels.length > 0) {
+      const currentEffort = session.effortOverride ?? config.llm.effort;
+      return {
+        ...buildMatrixMenuFromButtons({
+          modelPicker,
+          currentModel: modelId,
+          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+          heading: `Model changed to ${label} — now choose reasoning effort:`,
+        }),
+        supersededText: `Model changed to ${label}`,
+      };
+    }
+
+    return { text: `Model changed to ${label}` };
   };
 }

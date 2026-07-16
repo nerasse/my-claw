@@ -63,6 +63,7 @@ export function rememberPendingAction(params: {
   buttons: ConfirmationButton[];
   threadId?: string;
   stateKey?: string;
+  reactionEventIds?: string[];
   ttlMs: number;
   limit: number;
 }): void {
@@ -79,6 +80,7 @@ export function rememberPendingAction(params: {
     buttons: params.buttons,
     threadId: params.threadId,
     stateKey: params.stateKey,
+    reactionEventIds: params.reactionEventIds,
     expiresAt: Date.now() + params.ttlMs,
   });
 
@@ -162,7 +164,7 @@ export async function applyActionResponse(params: {
   eventId: string;
   threadId: string | undefined;
   stateKey?: string;
-  response: { text?: string; buttons?: ConfirmationButton[]; answerText?: string };
+  response: { text?: string; buttons?: ConfirmationButton[]; answerText?: string; supersededText?: string };
   send: (chatId: string, message: OutgoingMessage) => Promise<void>;
   editPendingActionMessage: (params: {
     roomId: string;
@@ -171,9 +173,41 @@ export async function applyActionResponse(params: {
     threadId?: string;
     notice?: boolean;
   }) => Promise<void>;
+  redactReactions?: (roomId: string, eventIds: readonly string[]) => Promise<void>;
   ttlMs: number;
   limit: number;
 }): Promise<void> {
+  const key = pendingActionKey(params.roomId, params.eventId);
+  const previousReactionIds = params.pendingActions.get(key)?.reactionEventIds ?? [];
+  const cleanupReactions = async () => {
+    if (previousReactionIds.length > 0) {
+      await params.redactReactions?.(params.roomId, previousReactionIds).catch(() => undefined);
+    }
+  };
+
+  // Next menu step: send a NEW message so the user gets fresh, untapped reactions
+  // (re-reacting with an already-used emoji is impossible on an edited message, and the
+  // seeded reaction count would no longer match the options). The old menu collapses to a
+  // one-line breadcrumb and loses its numbered reactions.
+  if (params.response.buttons?.length) {
+    params.pendingActions.delete(key);
+    await params.editPendingActionMessage({
+      roomId: params.roomId,
+      eventId: params.eventId,
+      text: params.response.supersededText ?? "Menu continued below.",
+      threadId: params.threadId,
+      notice: params.stateKey === "approval",
+    });
+    await params.send(params.roomId, {
+      text: params.response.text ?? "",
+      buttons: params.response.buttons,
+      threadId: params.threadId,
+      stateKey: params.stateKey,
+    });
+    await cleanupReactions();
+    return;
+  }
+
   if (params.response.text?.trim()) {
     await params.editPendingActionMessage({
         roomId: params.roomId,
@@ -191,19 +225,6 @@ export async function applyActionResponse(params: {
     });
   }
 
-  if (params.response.buttons?.length) {
-    rememberPendingAction({
-      pendingActions: params.pendingActions,
-      roomId: params.roomId,
-      eventId: params.eventId,
-      buttons: params.response.buttons,
-      threadId: params.threadId,
-      stateKey: params.stateKey,
-      ttlMs: params.ttlMs,
-      limit: params.limit,
-    });
-    return;
-  }
-
-  params.pendingActions.delete(pendingActionKey(params.roomId, params.eventId));
+  params.pendingActions.delete(key);
+  await cleanupReactions();
 }
