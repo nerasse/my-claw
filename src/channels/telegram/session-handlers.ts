@@ -294,7 +294,7 @@ export function createTelegramCallbackHandler({
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
 
     // Navigation re-render without touching the model (no selection yet).
-    if (action.kind === "openGroup" || action.kind === "back") {
+    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const currentEffort = existing?.effortOverride ?? config.llm.effort;
@@ -304,6 +304,14 @@ export function createTelegramCallbackHandler({
           text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
           buttons: modelPicker.buildGroupButtons(action.groupIndex, currentModel),
           answerText: modelPicker.groupLabel(action.groupIndex),
+        };
+      }
+      // Effort submenu, reachable without re-selecting a model.
+      if (action.kind === "openEffort") {
+        return {
+          text: `Effort — current: ${currentEffort ?? "default"}`,
+          buttons: modelPicker.buildEffortButtons(currentEffort),
+          answerText: "Effort",
         };
       }
       return {

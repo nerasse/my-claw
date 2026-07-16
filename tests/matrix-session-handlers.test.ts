@@ -102,7 +102,7 @@ test("matrix model submenu navigates and selects within a group", async () => {
   assert.match(String(afterSelect), /claude-opus-4-8/);
 });
 
-test("matrix effort lives on the header line; model selection is terminal (no chaining)", async () => {
+test("matrix effort: header status, an Effort menu entry, and terminal model selection", async () => {
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? [], {
     enabled: true,
@@ -111,10 +111,21 @@ test("matrix effort lives on the header line; model selection is terminal (no ch
   const actionHandler = createMatrixActionHandler({ config, sessionManager, modelPicker });
   const commandHandler = createMatrixCommandHandler({ config, sessionManager, modelPicker });
 
-  // /model shows the effort on the header line, not as a menu button.
+  // /model shows effort on the header line AND offers an Effort entry to adjust it.
   const menu = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
   assert.match(String((menu as { text?: string }).text ?? ""), /Current model:.*— Effort: default/);
-  assert.equal((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"), false);
+  assert.ok((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"));
+
+  // Opening the Effort entry shows the level submenu without touching the model.
+  const openedEffort = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "effm",
+    messageId: "$menu",
+  });
+  assert.equal(openedEffort?.supersededText, "Model menu > Effort");
+  assert.ok(openedEffort?.buttons?.some((b) => b.action === "eff:high"));
 
   // Selecting a model is terminal: text only, no effort chaining, menu closes.
   const selected = await actionHandler({
@@ -128,9 +139,7 @@ test("matrix effort lives on the header line; model selection is terminal (no ch
   assert.equal(selected?.supersededText, undefined);
   assert.match(selected?.text ?? "", /^Model changed to Alt$/);
 
-  // Effort is changed only via /effort, whose submenu still sets it (terminal).
-  const effortMenu = await commandHandler("!r:test", "@u1:example.org", "dm", "effort", "");
-  assert.ok((effortMenu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "eff:high"));
+  // Setting effort from the submenu is terminal.
   const set = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",

@@ -516,10 +516,23 @@ export function createMatrixActionHandler({
 
     // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
     // reactions and collapses the previous menu to the supersededText breadcrumb.
-    if (action.kind === "openGroup" || action.kind === "back") {
+    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      // Effort submenu, reachable without re-selecting a model.
+      if (action.kind === "openEffort") {
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildEffortButtons(currentEffort),
+            currentEffort,
+            heading: `Effort (current: ${currentEffort ?? "default"})`,
+          }),
+          supersededText: "Model menu > Effort",
+        };
+      }
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupIndex, currentModel)

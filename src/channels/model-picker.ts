@@ -18,7 +18,10 @@ export type PickerCallback =
   | { kind: "select"; modelId: string }
   | { kind: "openGroup"; groupIndex: number }
   | { kind: "back" }
+  | { kind: "openEffort" }
   | { kind: "setEffort"; level: EffortLevel };
+
+const EFFORT_ACTION = "effm";
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -158,12 +161,16 @@ export class ModelPicker {
   }
 
   /**
-   * Root menu: ungrouped models + top-level group entries. Effort is NOT a menu entry — it is
-   * shown on the header line next to the model and changed via the chained step after a model
-   * pick or the standalone /effort command.
+   * Root menu: ungrouped models + top-level group entries + an `Effort >` entry (when enabled)
+   * to adjust effort without re-selecting a model. The active effort level is also shown on the
+   * header line; selecting a model never forces the effort step.
    */
   buildButtons(currentModelId: string): ConfirmationButton[] {
-    return this.nodeButtons([], currentModelId);
+    const buttons = this.nodeButtons([], currentModelId);
+    if (this.effortLevels().length > 0) {
+      buttons.push({ label: "Effort >", action: EFFORT_ACTION });
+    }
+    return buttons;
   }
 
   /** Header suffix showing the active effort, only when effort control is enabled. */
@@ -201,6 +208,7 @@ export class ModelPicker {
   /** Full callback intent (selection, navigation, or effort). */
   parseCallbackAction(data: string): PickerCallback | null {
     if (data === "mdlb") return { kind: "back" };
+    if (data === EFFORT_ACTION) return { kind: "openEffort" };
 
     const effort = /^eff:(.+)$/.exec(data);
     if (effort) {
