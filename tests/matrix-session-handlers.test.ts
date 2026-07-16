@@ -109,16 +109,12 @@ test("matrix menu steps carry breadcrumbs and chain model selection into effort"
     levels: ["low", "high"],
   });
   const actionHandler = createMatrixActionHandler({ config, sessionManager, modelPicker });
+  const commandHandler = createMatrixCommandHandler({ config, sessionManager, modelPicker });
 
-  const openedEffort = await actionHandler({
-    chatId: "!r:test",
-    userId: "@u1:example.org",
-    chatType: "dm",
-    data: "effm",
-    messageId: "$menu",
-  });
-  assert.equal(openedEffort?.supersededText, "Model menu > Effort");
-  assert.ok(openedEffort?.buttons?.some((b) => b.action === "eff:high"));
+  // /model shows the effort on the header line, not as a menu button.
+  const menu = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
+  assert.match(String((menu as { text?: string }).text ?? ""), /Current model:.*— Effort: default/);
+  assert.equal((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"), false);
 
   // Selecting a model chains straight into the effort choice as a new step.
   const selected = await actionHandler({

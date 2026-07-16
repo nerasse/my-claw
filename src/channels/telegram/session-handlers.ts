@@ -143,9 +143,10 @@ export function createTelegramCommandHandler({
           return `Current model: ${currentModel}`;
         }
 
+        const effort = existingSession?.effortOverride ?? config.llm.effort;
         return {
-          text: `Current model: ${modelPicker.labelFor(currentModel)}`,
-          buttons: modelPicker.buildButtons(currentModel, existingSession?.effortOverride ?? config.llm.effort),
+          text: `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`,
+          buttons: modelPicker.buildButtons(currentModel),
         };
       }
 
@@ -292,28 +293,22 @@ export function createTelegramCallbackHandler({
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
 
-    // Navigation / effort menu re-render without touching the model (no selection yet).
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
+    // Navigation re-render without touching the model (no selection yet).
+    if (action.kind === "openGroup" || action.kind === "back") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      const suffix = modelPicker.effortHeaderSuffix(currentEffort);
       if (action.kind === "openGroup") {
         return {
-          text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}`,
+          text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
           buttons: modelPicker.buildGroupButtons(action.groupIndex, currentModel),
           answerText: modelPicker.groupLabel(action.groupIndex),
         };
       }
-      if (action.kind === "openEffort") {
-        return {
-          text: `Effort — current: ${currentEffort ?? "default"}`,
-          buttons: modelPicker.buildEffortButtons(currentEffort),
-          answerText: "Effort",
-        };
-      }
       return {
-        text: `Current model: ${modelPicker.labelFor(currentModel)}`,
-        buttons: modelPicker.buildButtons(currentModel, currentEffort),
+        text: `Current model: ${modelPicker.labelFor(currentModel)}${suffix}`,
+        buttons: modelPicker.buildButtons(currentModel),
         answerText: "Back",
       };
     }

@@ -226,18 +226,19 @@ test("nested: Opus node lists versions + back-to-parent-group", () => {
 const effortPicker = () =>
   new ModelPicker([{ id: "a", label: "A" }], { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] });
 
-test("effort: root appends an effort entry when enabled", () => {
-  const buttons = effortPicker().buildButtons("a", "high");
-  assert.deepEqual(buttons.at(-1), { label: "Effort: high >", action: "effm" });
+test("effort: root menu has no effort button (effort lives on the header line)", () => {
+  const buttons = effortPicker().buildButtons("a");
+  assert.equal(buttons.some((b) => b.action === "effm"), false);
 });
 
-test("effort: root shows default when no effort set", () => {
-  assert.deepEqual(effortPicker().buildButtons("a").at(-1), { label: "Effort: default >", action: "effm" });
+test("effort: header suffix reflects current level when enabled", () => {
+  assert.equal(effortPicker().effortHeaderSuffix("high"), " — Effort: high");
+  assert.equal(effortPicker().effortHeaderSuffix(), " — Effort: default");
 });
 
-test("effort: no effort entry when disabled", () => {
+test("effort: no header suffix when disabled", () => {
   const picker = new ModelPicker([{ id: "a", label: "A" }]);
-  assert.equal(picker.buildButtons("a").some((b) => b.action === "effm"), false);
+  assert.equal(picker.effortHeaderSuffix("high"), "");
   assert.deepEqual(picker.effortLevels(), []);
 });
 
@@ -253,11 +254,11 @@ test("effort: submenu marks current level + back to root", () => {
   ]);
 });
 
-test("effort: parseCallbackAction handles openEffort and setEffort", () => {
+test("effort: parseCallbackAction handles setEffort and ignores the retired effm", () => {
   const picker = effortPicker();
-  assert.deepEqual(picker.parseCallbackAction("effm"), { kind: "openEffort" });
   assert.deepEqual(picker.parseCallbackAction("eff:xhigh"), { kind: "setEffort", level: "xhigh" });
   assert.equal(picker.parseCallbackAction("eff:bogus"), null);
+  assert.equal(picker.parseCallbackAction("effm"), null);
 });
 
 test("effort: chained submenu replaces back with a keep-current entry", () => {

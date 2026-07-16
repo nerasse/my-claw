@@ -97,13 +97,14 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
   const commandHandler = createTelegramCommandHandler({ config: effortConfig, sessionManager, modelPicker });
   const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
 
-  // /model root shows an effort entry.
+  // /model root shows the effort on the header line, not as a menu button.
   const menu = await commandHandler("c1", "u1", "dm", "model", "");
-  assert.ok((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"));
+  assert.match(String((menu as { text?: string }).text ?? ""), /Effort: high/);
+  assert.equal((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"), false);
 
-  // Open effort menu, then set via callback.
-  const opened = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effm" });
-  assert.ok(opened?.buttons?.some((b) => b.action === "eff:max"));
+  // Open effort menu via /effort command, then set via callback.
+  const opened = await commandHandler("c1", "u1", "dm", "effort", "");
+  assert.ok((opened as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "eff:max"));
   const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:max" });
   assert.match(set?.text ?? "", /max/);
 

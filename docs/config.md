@@ -238,13 +238,13 @@ sent as `reasoning_effort` to OpenAI-compatible providers **only** when the mode
 
 - Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only).
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
-- The `/model` menu shows an `Effort: <level> >` entry (a submenu) whenever effort can take
-  effect (any claude-sdk model, any `supportsEffort` model, or a global `llm.effort`). `/effort`
-  and `/effort <level>` work on Telegram and Matrix.
+- The `/model` menu shows the active effort on the **header line** next to the model
+  (`Current model: X — Effort: high`) whenever effort can take effect (any claude-sdk model,
+  any `supportsEffort` model, or a global `llm.effort`) — it is not a menu button.
 - Selecting a model in `/model` chains straight into the effort choice (levels + a
   `Keep current` entry), so model + effort is one flow with no back-and-forth; `/effort`
-  stays as the quick standalone path. Terminal steps close the menu instead of re-rendering
-  the root.
+  and `/effort <level>` stay as the quick standalone path. Terminal steps close the menu
+  instead of re-rendering the root.
 
 ```json
 "llm": {

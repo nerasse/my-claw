@@ -94,6 +94,7 @@ function buildMatrixMenuFromButtons(params: {
   currentModel: string;
   buttons: ConfirmationButton[];
   heading?: string;
+  currentEffort?: EffortLevel;
 }): OutgoingMessage {
   const { buttons } = params;
   const instruction =
@@ -103,7 +104,7 @@ function buildMatrixMenuFromButtons(params: {
   return {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
-      `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
+      `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.currentEffort)}`,
       instruction,
       ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
     ].join("\n"),
@@ -124,8 +125,9 @@ function buildMatrixModelMenu(params: {
   return buildMatrixMenuFromButtons({
     modelPicker: params.modelPicker,
     currentModel: params.currentModel,
-    buttons: params.modelPicker.buildButtons(params.currentModel, params.currentEffort),
+    buttons: params.modelPicker.buildButtons(params.currentModel),
     heading: params.heading,
+    currentEffort: params.currentEffort,
   });
 }
 
@@ -382,6 +384,7 @@ export function createMatrixCommandHandler({
           modelPicker,
           currentModel: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "",
           buttons: modelPicker.buildEffortButtons(currentEffort),
+          currentEffort,
           heading: `Effort (current: ${currentEffort ?? "default"})`,
         });
       }
@@ -513,25 +516,14 @@ export function createMatrixActionHandler({
 
     // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
     // reactions and collapses the previous menu to the supersededText breadcrumb.
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
+    if (action.kind === "openGroup" || action.kind === "back") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const currentEffort = existing?.effortOverride ?? config.llm.effort;
-      if (action.kind === "openEffort") {
-        return {
-          ...buildMatrixMenuFromButtons({
-            modelPicker,
-            currentModel,
-            buttons: modelPicker.buildEffortButtons(currentEffort),
-            heading: `Effort (current: ${currentEffort ?? "default"})`,
-          }),
-          supersededText: "Model menu > Effort",
-        };
-      }
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupIndex, currentModel)
-          : modelPicker.buildButtons(currentModel, currentEffort);
+          : modelPicker.buildButtons(currentModel);
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupIndex) : undefined;
       return {
         ...buildMatrixMenuFromButtons({
@@ -539,6 +531,7 @@ export function createMatrixActionHandler({
           currentModel,
           buttons,
           heading: groupLabel,
+          currentEffort,
         }),
         supersededText: groupLabel ? `Model menu > ${groupLabel}` : "Model menu",
       };
@@ -580,6 +573,7 @@ export function createMatrixActionHandler({
           modelPicker,
           currentModel: modelId,
           buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true }),
+          currentEffort,
           heading: `Model changed to ${label} — now choose reasoning effort:`,
         }),
         supersededText: `Model changed to ${label}`,

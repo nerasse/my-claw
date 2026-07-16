@@ -191,7 +191,8 @@ All commands are text-based (Matrix has no native command UI):
   with an emoji they already used, and an edited message keeps the old reaction count — so
   editing menus in place broke re-selection and left submenus with too few reactions. The
   superseded menu collapses to a one-line breadcrumb and its bot reactions are redacted.
-- **Model -> effort chaining**: selecting a model chains straight into the reasoning-effort
+- **Model -> effort chaining**: the active effort is shown on the menu header line next to
+  the model (not as a button); selecting a model chains straight into the reasoning-effort
   choice (with a `Keep current` entry) so switching both is one flow; `/effort` remains the
   quick standalone path. Terminal steps (set/keep effort, model selected without effort
   enabled) edit the menu message in place and drop its reactions.
