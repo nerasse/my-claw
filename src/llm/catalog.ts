@@ -5,6 +5,7 @@ import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 
 export interface DiscoveredSdkModel {
   value: string;
@@ -57,6 +58,67 @@ async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<stri
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as { data?: Array<{ id?: string }> };
     return (body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+interface CodexDiscoveredModel {
+  id: string;
+  label: string;
+  vision: boolean;
+  supportedEffortLevels?: EffortLevel[];
+}
+
+const EFFORT_SET = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
+// The backend lists helper models (e.g. auto-review) that are not general chat targets.
+const CODEX_MODEL_DENYLIST = new Set(["codex-auto-review"]);
+
+/**
+ * List models exposed by the Codex backend for the logged-in ChatGPT subscription, with their
+ * display name, vision support and per-model reasoning levels. Requires a valid OAuth token;
+ * before `codex login` this throws and the catalog keeps its curated set.
+ */
+async function fetchCodexModels(baseUrl: string): Promise<CodexDiscoveredModel[]> {
+  const { accessToken, accountId } = await getCodexAccessToken();
+  const url = `${(baseUrl || CODEX_BASE_URL).replace(/\/+$/, "")}/codex/models?client_version=1.0.0`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVER_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "chatgpt-account-id": accountId,
+        originator: "codex_cli_rs",
+        "User-Agent": "codex_cli_rs/0.0.0 (my-claw)",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as {
+      models?: Array<{
+        slug?: string;
+        id?: string;
+        display_name?: string;
+        input_modalities?: string[];
+        supported_reasoning_levels?: Array<{ effort?: string }>;
+      }>;
+    };
+    const out: CodexDiscoveredModel[] = [];
+    for (const m of body.models ?? []) {
+      const id = m.slug ?? m.id;
+      if (!id || CODEX_MODEL_DENYLIST.has(id)) continue;
+      const levels = (m.supported_reasoning_levels ?? [])
+        .map((r) => r.effort)
+        .filter((e): e is EffortLevel => typeof e === "string" && EFFORT_SET.has(e as EffortLevel));
+      out.push({
+        id,
+        label: m.display_name || id,
+        vision: (m.input_modalities ?? []).includes("image"),
+        supportedEffortLevels: levels.length > 0 ? levels : undefined,
+      });
+    }
+    return out;
   } finally {
     clearTimeout(timer);
   }
@@ -135,6 +197,19 @@ export class ModelCatalog {
               supportsEffort: m.supportsEffort,
               supportedEffortLevels: m.supportedEffortLevels,
               vision: true,
+            });
+          }
+        } else if (provider.type === "codex") {
+          const models = await fetchCodexModels(provider.baseUrl ?? "");
+          for (const m of models) {
+            next.push({
+              id: m.id,
+              label: m.label,
+              provider: name,
+              group: provider.group,
+              supportsEffort: true,
+              supportedEffortLevels: m.supportedEffortLevels,
+              vision: m.vision,
             });
           }
         } else {

@@ -15,6 +15,9 @@ live list from the source of truth so `/model` always reflects what the account 
     any model turn runs.
   - OpenAI-compatible → `GET {baseUrl}/models` (bearer from `apiKeyEnv`). Standard endpoint,
     works with LiteLLM.
+  - `type: "codex"` → `GET {baseUrl}/codex/models` on the ChatGPT subscription (bearer + account
+    id from the stored OAuth token; requires a prior `codex login`). Best-effort: before login or
+    on failure the curated/last-known set is kept. See `docs/codex-backend.md`.
 - **Config wins.** Discovered models merge into `config.llm.models`; on an id collision the
   curated config entry is kept, so the owner can override a discovered model's label / group /
   limit / vision by declaring the same id. Everything downstream (resolver backend routing,

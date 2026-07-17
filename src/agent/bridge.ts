@@ -14,7 +14,8 @@ import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../ch
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
-import { chatCompletion, chatCompletionStream, type ChatMessage } from "../llm/provider.ts";
+import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse } from "../llm/provider.ts";
+import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens, estimateMessagesTokens, DEFAULT_CONTEXT_TOKENS } from "../llm/tokens.ts";
@@ -36,6 +37,32 @@ import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+
+// The home loop is provider-agnostic except for these two transport calls: codex-backed models
+// speak the OpenAI Responses API (docs/codex-backend.md), everything else chat/completions. Both
+// share the ChatMessage[] in / LlmResponse out contract so the loop is untouched.
+function completeStream(
+  config: ResolvedLlmConfig,
+  messages: ChatMessage[],
+  onToken: (token: string) => Promise<void> | void,
+  tools?: unknown[],
+  signal?: AbortSignal,
+): Promise<LlmResponse> {
+  return config.backend === "codex"
+    ? codexResponseStream(config, messages, onToken, tools, signal)
+    : chatCompletionStream(config, messages, onToken, tools, signal);
+}
+
+function complete(
+  config: ResolvedLlmConfig,
+  messages: ChatMessage[],
+  tools?: unknown[],
+  signal?: AbortSignal,
+): Promise<LlmResponse> {
+  return config.backend === "codex"
+    ? codexResponse(config, messages, tools, signal)
+    : chatCompletion(config, messages, tools, signal);
+}
 
 function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
   if (!usage) return;
@@ -302,14 +329,14 @@ export class AgentBridge implements AgentBackend {
         });
 
         const response = onToken
-          ? await chatCompletionStream(
+          ? await completeStream(
               llmConfig,
               chatMessages,
               onToken,
               openaiTools.length > 0 ? openaiTools : undefined,
               signal,
             )
-          : await chatCompletion(
+          : await complete(
               llmConfig,
               chatMessages,
               openaiTools.length > 0 ? openaiTools : undefined,
@@ -684,7 +711,7 @@ export class AgentBridge implements AgentBackend {
     });
 
     const summaryStartedAt = Date.now();
-    const summaryResponse = await chatCompletion(llmConfig, chatMessages, undefined, signal);
+    const summaryResponse = await complete(llmConfig, chatMessages, undefined, signal);
     const summaryDurationMs = Date.now() - summaryStartedAt;
 
     hooks.emit("llm:call:end", {

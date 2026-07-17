@@ -25,18 +25,18 @@ function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefin
 
 /**
  * Effective effort for a run: session override > per-model default > global default. Only
- * emitted when it should actually be sent — claude-sdk accepts it natively; openai-compatible
- * providers get it only when the model opts in via `supportsEffort`.
+ * emitted when it should actually be sent — claude-sdk and codex accept it natively; other
+ * openai-compatible providers get it only when the model opts in via `supportsEffort`.
  */
 function computeEffort(
   merged: LlmConfig,
   model: LlmModelConfig | undefined,
-  isSdk: boolean,
+  nativeEffort: boolean,
   effortOverride?: EffortLevel,
 ): EffortLevel | undefined {
   const chosen = effortOverride ?? model?.effort ?? merged.effort;
   if (!chosen) return undefined;
-  if (isSdk) return chosen;
+  if (nativeEffort) return chosen;
   return model?.supportsEffort ? chosen : undefined;
 }
 
@@ -75,6 +75,20 @@ function resolveFromMerged(
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       fallbackModel: provider.fallbackModel,
+      effort: computeEffort(merged, model, true, effortOverride),
+    };
+  }
+
+  if (provider.type === "codex") {
+    return {
+      backend: "codex",
+      // ChatGPT subscription via the Codex Responses backend; auth is the stored OAuth token,
+      // fetched by the transport (no apiKey here). See docs/codex-backend.md.
+      baseUrl: provider.baseUrl ?? "https://chatgpt.com/backend-api",
+      model: effectiveModelId,
+      headers: provider.headers,
+      vision: model?.vision ?? merged.vision,
+      limit: model?.limit ?? merged.limit,
       effort: computeEffort(merged, model, true, effortOverride),
     };
   }
@@ -142,15 +156,16 @@ const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
  */
 export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels: EffortLevel[] } {
   const models = config.models ?? [];
-  const anySdk = models.some((m) => {
+  const anyNative = models.some((m) => {
     try {
-      return resolveLlmConfig(config, m.id).backend === "claude-sdk";
+      const backend = resolveLlmConfig(config, m.id).backend;
+      return backend === "claude-sdk" || backend === "codex";
     } catch {
       return false;
     }
   });
   const anySupports = models.some((m) => m.supportsEffort);
-  return { enabled: anySdk || anySupports || config.effort !== undefined, levels: EFFORT_LEVELS };
+  return { enabled: anyNative || anySupports || config.effort !== undefined, levels: EFFORT_LEVELS };
 }
 
 /**
@@ -167,17 +182,18 @@ export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
 }
 
 /**
- * Resolve a config guaranteed to target an OpenAI-compatible endpoint. Utility LLM callers
- * (compaction summarizer, memory consolidation, browser sub-agent) speak chat-completions
- * directly and would send HTTP to the placeholder "claude-sdk" baseUrl if the requested or
- * default model lives on the SDK backend; they fall back to the first openai model instead.
+ * Resolve a config guaranteed to target an OpenAI-compatible chat/completions endpoint. Utility
+ * LLM callers (compaction summarizer, memory consolidation, browser sub-agent) speak
+ * chat-completions directly and would break on the non-HTTP claude-sdk path or the Responses-only
+ * codex path; they fall back to the first plain openai model instead.
  */
 export function resolveOpenAiLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
+  const isChatCompletions = (c: ResolvedLlmConfig): boolean => c.backend !== "claude-sdk" && c.backend !== "codex";
   const resolved = resolveLlmConfig(config, modelId);
-  if (resolved.backend !== "claude-sdk") return resolved;
+  if (isChatCompletions(resolved)) return resolved;
   for (const model of config.models ?? []) {
     const candidate = resolveLlmConfig(config, model.id);
-    if (candidate.backend !== "claude-sdk") return candidate;
+    if (isChatCompletions(candidate)) return candidate;
   }
-  throw new Error("No OpenAI-compatible model configured (all models are claude-sdk backed)");
+  throw new Error("No OpenAI-compatible model configured (all models are claude-sdk or codex backed)");
 }

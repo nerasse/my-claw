@@ -61,6 +61,7 @@ import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
+import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, effortOptionsFor } from "./llm/resolver.ts";
 import {
   warmupEmbedding,
@@ -617,7 +618,57 @@ function registerSkillTools(
   registry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
 }
 
-main().catch((err) => {
-  console.error("Fatal:", err);
-  process.exit(1);
-});
+// CLI subcommands for the Codex (ChatGPT subscription) backend. Device-code login is the only
+// flow: it needs no local browser, so it works over SSH on the headless VPS. See
+// docs/codex-backend.md.
+async function runCodexCli(args: string[]): Promise<number> {
+  const cmd = args[0];
+  if (cmd === "login") {
+    try {
+      const cred = await codexLoginDeviceCode((prompt) => {
+        console.log("\nTo authorize my-claw with your ChatGPT account:");
+        console.log(`  1. Open: ${prompt.verificationUri}`);
+        console.log(`  2. Enter code: ${prompt.userCode}`);
+        console.log(`\nWaiting for approval (expires in ${Math.round(prompt.expiresInSeconds / 60)} min)...`);
+      });
+      console.log(`\nLogged in. ChatGPT account id: ${cred.accountId}`);
+      return 0;
+    } catch (err) {
+      console.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+  }
+  if (cmd === "status") {
+    const cred = await loadCodexCredential();
+    if (!cred) {
+      console.log("Not logged in to Codex. Run: my-claw codex login");
+      return 1;
+    }
+    const mins = Math.round((cred.expires - Date.now()) / 60000);
+    console.log(`Logged in. account id: ${cred.accountId}`);
+    console.log(`Access token ${mins > 0 ? `expires in ~${mins} min` : "expired (will refresh on next use)"}.`);
+    return 0;
+  }
+  if (cmd === "logout") {
+    await codexLogout();
+    console.log("Logged out of Codex.");
+    return 0;
+  }
+  console.log("Usage: my-claw codex <login|status|logout>");
+  return cmd ? 1 : 0;
+}
+
+const cliArgs = process.argv.slice(2);
+if (cliArgs[0] === "codex") {
+  runCodexCli(cliArgs.slice(1))
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error("Fatal:", err);
+      process.exit(1);
+    });
+} else {
+  main().catch((err) => {
+    console.error("Fatal:", err);
+    process.exit(1);
+  });
+}

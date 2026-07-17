@@ -92,6 +92,34 @@ in `~/.my-claw/.env` (mint it with `claude setup-token`, valid 1 year).
   wins). Channel tokens (Telegram/Matrix) also refresh in `process.env` but the live
   client keeps its connection until reboot.
 
+### Codex provider (ChatGPT subscription)
+
+A provider with `"type": "codex"` runs its models on the owner's ChatGPT Plus/Pro
+subscription through the OpenAI Codex Responses backend, instead of a per-token API key
+(full design: `docs/codex-backend.md`). It reuses the home agent loop with a Codex
+transport; no `baseUrl` or `apiKeyEnv` needed (auth is the stored OAuth token).
+
+```json
+"providers": {
+  "chatgpt": { "type": "codex", "discover": true, "group": "ChatGPT (abo)" }
+},
+"models": [
+  { "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "provider": "chatgpt" }
+]
+```
+
+- Login (device-code, headless-friendly): `my-claw codex login` — open the shown URL,
+  enter the code. Also `my-claw codex status` and `my-claw codex logout`. Tokens are
+  stored in `~/.my-claw/codex/auth.json` (mode `0600`) and auto-refreshed; a login done
+  by the CLI is picked up by the running service on the next request (no restart).
+- The engine follows the model, exactly like the Claude SDK path: `/model gpt-5.6-sol`
+  moves a chat onto Codex, `/model <other>` moves it back. Effort is native (reasoning
+  models): `/effort high` sends `reasoning.effort`.
+- `discover: true` lists the subscription's models from the Codex backend (best-effort;
+  requires a prior login), with their display names and per-model reasoning levels.
+  ChatGPT-account model slugs are e.g. `gpt-5.6-sol`, `gpt-5.5`, `gpt-5.4` (not the
+  API-only `gpt-5-codex`). Curated `models[]` entries work without discovery.
+
 ### Legacy format (auto-migrated on boot)
 
 ```json
@@ -232,9 +260,10 @@ A `"/"`-separated `group` nests submenus, e.g. a version picker `Claude > Opus >
 
 ### Reasoning effort
 
-Effort controls how much the model thinks. Native on the Claude Agent SDK (query `effort`);
-sent as `reasoning_effort` to OpenAI-compatible providers **only** when the model sets
-`supportsEffort: true` (avoids 400s on providers that reject the param).
+Effort controls how much the model thinks. Native on the Claude Agent SDK (query `effort`)
+and on Codex models (sent as `reasoning.effort`); sent as `reasoning_effort` to other
+OpenAI-compatible providers **only** when the model sets `supportsEffort: true` (avoids 400s
+on providers that reject the param).
 
 - Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only). When a model is selected, the effort submenu shows only the levels that model actually supports (SDK discovery provides `supportedEffortLevels` per model); models without a per-model override show the full global list.
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
