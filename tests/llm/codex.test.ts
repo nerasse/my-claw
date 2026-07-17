@@ -1,6 +1,6 @@
 import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { MY_CLAW_DIR, type ResolvedLlmConfig } from "../../src/core/config.ts";
 import { codexResponse, codexResponseStream } from "../../src/llm/codex.ts";
@@ -28,6 +28,9 @@ function sseResponse(events: unknown[]): Response {
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  // MY_CLAW_DIR is shared across test files; leaking a codex credential breaks
+  // other suites that assume a fresh (logged-out) state.
+  rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
 });
 
 const config: ResolvedLlmConfig = {

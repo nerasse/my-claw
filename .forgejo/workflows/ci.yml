@@ -73,28 +73,4 @@ jobs:
       - name: Run tests
         run: |
           export PATH="$HOME/.bun/bin:$PATH"
-          set -o pipefail
-          bun test 2>&1 | tee /tmp/testlog.txt
-
-      # TEMP DIAGNOSTIC: the runner fails tests that pass locally and in a
-      # debian:bookworm container, and Forgejo 14 does not expose job logs via API.
-      # Post the failing output + environment as an issue we can read, then remove this.
-      - name: Report failure log
-        if: failure()
-        run: |
-          {
-            echo "## env"
-            uname -a || true
-            cat /etc/os-release 2>/dev/null || true
-            echo "nproc: $(nproc)"
-            echo "ffmpeg: $(command -v ffmpeg) -> $(ffmpeg -version 2>&1 | head -1)"
-            df -h / /tmp 2>/dev/null || true
-            echo "## test tail"
-            tail -c 12000 /tmp/testlog.txt 2>/dev/null || echo "no testlog"
-          } > /tmp/report.txt
-          BODY=$(jq -Rs . < /tmp/report.txt)
-          curl -sS -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues" \
-            -d "{\"title\":\"CI diag ${{ github.sha }}\",\"body\":${BODY}}" | jq '.number'
+          bun test

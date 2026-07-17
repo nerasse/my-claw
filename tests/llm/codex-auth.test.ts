@@ -1,6 +1,6 @@
 import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { getCodexAccessToken, loadCodexCredential, codexLogout } from "../../src/llm/codex-auth.ts";
@@ -26,6 +26,9 @@ function writeAuth(cred: Record<string, unknown>): void {
 const realFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = realFetch;
+  // MY_CLAW_DIR is shared across test files; leaking a codex credential breaks
+  // other suites that assume a fresh (logged-out) state.
+  rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
 });
 
 test("getCodexAccessToken returns the stored token when not near expiry", async () => {

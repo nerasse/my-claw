@@ -1,9 +1,18 @@
-import { test, afterEach } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { handleAuthCommand } from "../../src/channels/auth-commands.ts";
 import { loadClaudeToken, clearClaudeToken } from "../../src/llm/claude-auth.ts";
 
 const noop = () => {};
+// MY_CLAW_DIR is shared across test files, so another suite may leave a codex
+// credential behind. Clear it before each test so "fresh install" holds
+// regardless of file execution order.
+beforeEach(() => {
+  rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
+});
 afterEach(async () => {
   await clearClaudeToken();
 });
