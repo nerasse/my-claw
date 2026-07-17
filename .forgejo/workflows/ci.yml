@@ -51,18 +51,12 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl xz-utils
-
-      - name: Install ffmpeg
-        run: |
-          # Download to a file with retries before extracting: piping a 126MB stream
-          # straight into tar turns any transient truncation into an unrecoverable job
-          # failure (tar can't retry a half-read pipe). Download-then-extract lets curl
-          # retry and fails loudly only if the archive is genuinely unusable.
-          url="https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-          curl -fL --retry 5 --retry-all-errors --retry-delay 5 -o /tmp/ffmpeg.tar.xz "$url"
-          tar -xJf /tmp/ffmpeg.tar.xz --strip-components=2 -C /usr/local/bin/ "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg"
-          ffmpeg -version | head -1
+          # ffmpeg from the distro matches the runner's glibc and is stable. The old
+          # BtbN rolling "latest" GPL build silently broke CI: a republished binary
+          # that would not run on the runner, masked by "ffmpeg -version | head -1"
+          # (pipe exit is head's 0), left ffmpeg unusable and only the media tests failed.
+          apt-get install -y jq curl ffmpeg
+          ffmpeg -version
 
       - name: Install Bun
         run: |
