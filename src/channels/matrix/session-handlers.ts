@@ -11,6 +11,7 @@ import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "
 import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
+import { handleAuthCommand } from "../auth-commands.ts";
 
 type MatrixChatType = "dm" | "group";
 
@@ -51,6 +52,8 @@ interface MatrixSessionHandlerDeps {
   listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
   // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
   sdkCompact?: (session: import("../../sessions/store.ts").SessionData) => Promise<string>;
+  // Push an unsolicited message to a room/thread later (Codex device-code login completion).
+  postMessage?: (roomId: string, text: string, threadId?: string) => Promise<void>;
 }
 
 function resolveMatrixSessionId(params: {
@@ -276,6 +279,7 @@ export function createMatrixCommandHandler({
   workspaceSkillsDir,
   listCronJobs,
   sdkCompact,
+  postMessage,
 }: MatrixSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -466,6 +470,17 @@ export function createMatrixCommandHandler({
           lines.push(`API calls: ${u.apiCalls}`);
         }
         return lines.join("\n");
+      }
+
+      case "codex":
+      case "claude": {
+        const roomId = meta?.roomId ?? chatId;
+        return handleAuthCommand({
+          provider: command,
+          args,
+          isDm: chatType === "dm",
+          postFollowUp: (text) => { void postMessage?.(roomId, text, meta?.threadId); },
+        });
       }
 
       default:

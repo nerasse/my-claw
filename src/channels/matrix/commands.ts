@@ -12,6 +12,8 @@ export const MATRIX_COMMANDS = [
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
   { command: "cron", description: "List scheduled tasks" },
+  { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },
+  { command: "claude", description: "Claude subscription: login|set-token|status|logout" },
   { command: "help", description: "List available commands" },
   { command: "commands", description: "List available commands" },
 ] as const;

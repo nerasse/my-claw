@@ -67,8 +67,15 @@ happens in my-claw before the request, so it works with any backend (proxy, dire
 
 A provider with `"type": "claude-sdk"` runs its models through the Claude Agent SDK on
 the owner's Claude subscription instead of an OpenAI-compatible endpoint (full design:
-`docs/claude-sdk-backend.md`). No `baseUrl`; auth comes from `CLAUDE_CODE_OAUTH_TOKEN`
-in `~/.my-claw/.env` (mint it with `claude setup-token`, valid 1 year).
+`docs/claude-sdk-backend.md`). No `baseUrl`; auth is the `claude setup-token` token
+(valid ~1 year). Manage it like Codex:
+- Terminal: `myclaw claude login` wraps `claude setup-token` (browser/TTY) and stores the
+  token; `myclaw claude status` / `logout`; `myclaw claude set-token <token>` to paste a
+  token generated elsewhere.
+- In-chat (DM only): `/claude set-token <token>`, `/claude status`, `/claude logout`.
+  `/claude login` cannot run a browser OAuth from chat, so it replies with instructions.
+The token is stored in `~/.my-claw/claude/auth.json` (mode `0600`) and injected into the
+SDK subprocess per run (survives restarts; wins over any `CLAUDE_CODE_OAUTH_TOKEN` env).
 
 ```json
 "providers": {
@@ -108,10 +115,14 @@ transport; no `baseUrl` or `apiKeyEnv` needed (auth is the stored OAuth token).
 ]
 ```
 
-- Login (device-code, headless-friendly): `my-claw codex login` — open the shown URL,
-  enter the code. Also `my-claw codex status` and `my-claw codex logout`. Tokens are
-  stored in `~/.my-claw/codex/auth.json` (mode `0600`) and auto-refreshed; a login done
-  by the CLI is picked up by the running service on the next request (no restart).
+- Login (device-code, headless-friendly). Two ways:
+  - Terminal: `myclaw codex login` (or `bun run <entry> codex login`) — open the shown
+    URL, enter the code. Also `myclaw codex status` / `logout`.
+  - In-chat (DM only): `/codex login` — the bot posts the URL + code and confirms in the
+    same chat once approved. Also `/codex status`, `/codex logout`.
+  Tokens are stored in `~/.my-claw/codex/auth.json` (mode `0600`) and auto-refreshed; a
+  login done in the terminal is picked up by the running service on the next request (no
+  restart, the token file is read fresh).
 - The engine follows the model, exactly like the Claude SDK path: `/model gpt-5.6-sol`
   moves a chat onto Codex, `/model <other>` moves it back. Effort is native (reasoning
   models): `/effort high` sends `reasoning.effort`.

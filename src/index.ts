@@ -62,6 +62,7 @@ import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
+import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, effortOptionsFor } from "./llm/resolver.ts";
 import {
   warmupEmbedding,
@@ -194,6 +195,7 @@ async function main() {
       workspaceSkillsDir,
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
+      postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -303,6 +305,7 @@ async function main() {
       workspaceSkillsDir,
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
+      postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
@@ -658,9 +661,53 @@ async function runCodexCli(args: string[]): Promise<number> {
   return cmd ? 1 : 0;
 }
 
+// CLI subcommands for the Claude (subscription) backend. `login` wraps the official
+// `claude setup-token` (browser/TTY); `set-token` stores a token generated anywhere. Tokens live
+// in ~/.my-claw/claude/auth.json and are injected per run by the SDK backend.
+async function runClaudeCli(args: string[]): Promise<number> {
+  const cmd = args[0];
+  if (cmd === "login") {
+    const r = await runClaudeSetupToken();
+    console.log(`\n${r.message}`);
+    return r.ok ? 0 : 1;
+  }
+  if (cmd === "set-token") {
+    const token = args.slice(1).join(" ").trim();
+    if (!token) {
+      console.log("Usage: my-claw claude set-token <token>   (generate one with: claude setup-token)");
+      return 1;
+    }
+    try {
+      await setClaudeToken(token);
+      console.log("Claude token stored in ~/.my-claw/claude/auth.json.");
+      return 0;
+    } catch (err) {
+      console.error(`Failed to store token: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+  }
+  if (cmd === "status") {
+    const st = await claudeTokenStatus();
+    if (!st.present) {
+      console.log("Not logged in to Claude. Run: my-claw claude login");
+      return 1;
+    }
+    console.log(`Logged in to Claude (source: ${st.source}, ${st.masked}).`);
+    return 0;
+  }
+  if (cmd === "logout") {
+    await clearClaudeToken();
+    console.log("Cleared the my-claw Claude token.");
+    return 0;
+  }
+  console.log("Usage: my-claw claude <login|set-token <token>|status|logout>");
+  return cmd ? 1 : 0;
+}
+
 const cliArgs = process.argv.slice(2);
-if (cliArgs[0] === "codex") {
-  runCodexCli(cliArgs.slice(1))
+if (cliArgs[0] === "codex" || cliArgs[0] === "claude") {
+  const runner = cliArgs[0] === "codex" ? runCodexCli : runClaudeCli;
+  runner(cliArgs.slice(1))
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error("Fatal:", err);

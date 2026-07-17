@@ -9,6 +9,7 @@ import { trimSessionMessages } from "../../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { resolveLlmConfigForMessage } from "../../llm/resolver.ts";
+import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
@@ -125,6 +126,19 @@ function accumulateUsage(session: SessionData, usage: { promptTokens: number; co
   session.tokenUsage.apiCalls += 1;
 }
 
+// Shared env for every SDK subprocess: hermetic flags + isolated config dir, with the
+// subscription token from the my-claw store injected when present (else the ambient env token
+// from process.env is inherited).
+function sdkBaseEnv(claudeToken: string | null): Record<string, string | undefined> {
+  return {
+    ...process.env,
+    ...(claudeToken ? { CLAUDE_CODE_OAUTH_TOKEN: claudeToken } : {}),
+    CLAUDE_CODE_ENABLE_TASKS: "0",
+    CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
+  };
+}
+
 export class ClaudeSdkBackend implements AgentBackend {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
@@ -217,12 +231,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         skills: [],
         strictMcpConfig: true,
         executable: "bun",
-        env: {
-          ...process.env,
-          CLAUDE_CODE_ENABLE_TASKS: "0",
-          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-          CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
-        },
+        env: sdkBaseEnv(await loadClaudeToken()),
       };
       const q = this.queryFn({ prompt: one(), options: compactOptions });
       for await (const msg of q) {
@@ -398,12 +407,7 @@ export class ClaudeSdkBackend implements AgentBackend {
           const line = data.trim();
           if (line) void log("warn", "claude-sdk cli stderr", { line: line.slice(0, 500) });
         },
-        env: {
-          ...process.env,
-          CLAUDE_CODE_ENABLE_TASKS: "0",
-          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-          CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
-        },
+        env: sdkBaseEnv(await loadClaudeToken()),
         canUseTool: async (toolName, input, canUseOpts) => {
           // The SDK aborts this signal when the run dies: without the race, an approval
           // prompt awaiting a human answer would leave the promise dangling forever.

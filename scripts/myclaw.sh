@@ -32,6 +32,46 @@ resolve_bun() {
 
 BUN_BIN="$(resolve_bun)"
 
+resolve_target_user() {
+  local u=""
+  if [ -f /etc/my-claw/.install-meta ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in USER) u="$value" ;; esac
+    done < /etc/my-claw/.install-meta
+  fi
+  echo "$u"
+}
+
+resolve_entry() {
+  if [ -f /opt/my-claw/src/index.ts ]; then
+    echo "/opt/my-claw/src/index.ts"
+  elif [ -f "$(pwd)/src/index.ts" ]; then
+    echo "$(pwd)/src/index.ts"
+  else
+    echo "/opt/my-claw/src/index.ts"
+  fi
+}
+
+# Forward `myclaw codex ...` / `myclaw claude ...` to the app entrypoint. Auth tokens must be
+# owned by the service user, so when invoked as root we drop to that user (su preserves the TTY
+# for the interactive `claude login`).
+run_auth() {
+  local provider="$1"; shift
+  local entry; entry="$(resolve_entry)"
+  if [ "$EUID" -eq 0 ]; then
+    local user; user="$(resolve_target_user)"
+    if [ -z "$user" ]; then
+      echo "Error: cannot determine the service user; run 'myclaw $provider ...' as that user (not root)."
+      exit 1
+    fi
+    local ubun="/home/${user}/.bun/bin/bun"
+    [ -x "$ubun" ] || ubun="bun"
+    exec su - "$user" -c "'$ubun' run '$entry' $provider $*"
+  fi
+  local bun_bin="$BUN_BIN"; [ -n "$bun_bin" ] || bun_bin="bun"
+  exec "$bun_bin" run "$entry" "$provider" "$@"
+}
+
 usage() {
   echo "Usage: myclaw <command>"
   echo ""
@@ -42,11 +82,15 @@ usage() {
   echo "  status    Show status of my-claw service"
   echo "  dev       Stop services and run development mode (bun --watch)"
   echo "  update    Update to latest release"
+  echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
+  echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
   echo ""
   echo "Examples:"
   echo "  myclaw start"
   echo "  myclaw status"
   echo "  sudo myclaw restart"
+  echo "  myclaw codex login"
+  echo "  myclaw claude login"
   exit 1
 }
 
@@ -236,6 +280,14 @@ case "$cmd" in
     ;;
   update)
     run_update
+    ;;
+  codex)
+    shift
+    run_auth codex "$@"
+    ;;
+  claude)
+    shift
+    run_auth claude "$@"
     ;;
   *)
     usage

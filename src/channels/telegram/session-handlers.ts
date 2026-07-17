@@ -8,6 +8,7 @@ import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
+import { handleAuthCommand } from "../auth-commands.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -40,6 +41,8 @@ interface TelegramSessionHandlerDeps {
   listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
   // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
   sdkCompact?: (session: import("../../sessions/store.ts").SessionData) => Promise<string>;
+  // Push an unsolicited message to a chat/thread later (Codex device-code login completion).
+  postMessage?: (chatId: string, text: string, threadId?: string) => Promise<void>;
 }
 
 function resolveTelegramSessionId(params: {
@@ -68,6 +71,7 @@ export function createTelegramCommandHandler({
   workspaceSkillsDir,
   listCronJobs,
   sdkCompact,
+  postMessage,
 }: TelegramSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -260,6 +264,15 @@ export function createTelegramCommandHandler({
         }
         return lines.join("\n");
       }
+
+      case "codex":
+      case "claude":
+        return handleAuthCommand({
+          provider: command,
+          args,
+          isDm: chatType === "dm",
+          postFollowUp: (text) => { void postMessage?.(chatId, text, meta?.threadId); },
+        });
 
       default:
         return undefined;

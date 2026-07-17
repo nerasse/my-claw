@@ -78,8 +78,12 @@ sink.
 
 - Login is the OAuth **device-code** flow (`auth.openai.com/codex/device` + a user
   code). Chosen because the deployment is a headless systemd service on a VPS: no
-  browser loopback on `localhost:1455` is practical. Trigger:
-  `bun run src/index.ts codex login` (also `codex status`, `codex logout`).
+  browser loopback on `localhost:1455` is practical. Triggers:
+  - CLI: `my-claw codex login` (also `status`, `logout`) — via the `myclaw` wrapper
+    (`myclaw codex login`) or `bun run <entry> codex login`.
+  - In-chat (DM): `/codex login` posts the URL + code and, when a background poll
+    confirms approval minutes later, posts a follow-up via `adapter.send` to the
+    same chat/thread. `/codex status`, `/codex logout` too.
 - Tokens persist at `$MY_CLAW_DIR/codex/auth.json` (mode `0600`, atomic write):
   `{ access, refresh, expires, accountId }`. `accountId` is decoded from the
   access-token JWT claim `https://api.openai.com/auth.chatgpt_account_id`.
@@ -110,5 +114,3 @@ Codex models are effort-native like claude-sdk models.
 - No browser loopback login (device-code only).
 - No reasoning-item replay / encrypted reasoning continuity across turns.
 - No WebSocket transport (SSE only; pi's `wss` variant is not ported).
-- No in-chat `/codex login` command yet (CLI only) — natural follow-up given the
-  device-code flow.

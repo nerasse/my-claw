@@ -2,6 +2,7 @@ import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../core/config.ts";
 import type { EffortLevel } from "../../core/config.ts";
+import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { log } from "../../utils/logger.ts";
 
 export interface DiscoveredSdkModel {
@@ -23,6 +24,7 @@ const DISCOVER_TIMEOUT_MS = 30_000;
 export async function discoverSdkModels(): Promise<DiscoveredSdkModel[]> {
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), DISCOVER_TIMEOUT_MS);
+  const claudeToken = await loadClaudeToken();
   try {
     const q = sdkQuery({
       prompt: "noop",
@@ -32,6 +34,7 @@ export async function discoverSdkModels(): Promise<DiscoveredSdkModel[]> {
         settingSources: [],
         env: {
           ...process.env,
+          ...(claudeToken ? { CLAUDE_CODE_OAUTH_TOKEN: claudeToken } : {}),
           CLAUDE_CODE_ENABLE_TASKS: "0",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
           CLAUDE_CONFIG_DIR: join(MY_CLAW_DIR, "claude-sdk"),
