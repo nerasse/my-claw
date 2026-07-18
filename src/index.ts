@@ -1,9 +1,10 @@
-import { unlink } from "node:fs/promises";
+import { unlink, readFile } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { writeJsonFileAtomically } from "./utils/atomic-write.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
@@ -123,6 +124,37 @@ async function main() {
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
 
+  // `/codex login` only stores a token; without a codex provider, discovery is a no-op and the
+  // ChatGPT models never reach /model. After a login/logout we ensure the provider exists (added
+  // to config, persisted for restarts) and re-run discovery now that a token is available.
+  const CODEX_PROVIDER_GROUP = "ChatGPT (abo)";
+  const hasCodexProvider = (providers?: Record<string, { type?: string }>): boolean =>
+    Object.values(providers ?? {}).some((p) => p.type === "codex");
+  const ensureCodexProvider = async (): Promise<void> => {
+    const providers = (config.llm.providers ??= {});
+    if (hasCodexProvider(providers)) return;
+    // Update the live config first so the immediate refresh below can see the provider.
+    providers.chatgpt = { type: "codex", discover: true, group: CODEX_PROVIDER_GROUP };
+    // Persist into the raw on-disk config. Never serialize the in-memory config (it holds
+    // runtime-merged models) nor readConfigFromDisk() (it overlays env secrets we must not
+    // write back); read and edit the raw file instead.
+    try {
+      const disk = JSON.parse(await readFile(CONFIG_PATH, "utf-8")) as MyClawConfig;
+      disk.llm ??= {};
+      disk.llm.providers ??= {};
+      if (!hasCodexProvider(disk.llm.providers)) {
+        disk.llm.providers.chatgpt = { type: "codex", discover: true, group: CODEX_PROVIDER_GROUP };
+        await writeJsonFileAtomically(CONFIG_PATH, disk, true);
+      }
+    } catch (err) {
+      void log("warn", "could not persist codex provider to config.json", { error: String(err) });
+    }
+  };
+  const onCodexAuthChanged = async (): Promise<void> => {
+    await ensureCodexProvider();
+    await modelCatalog.refresh();
+  };
+
   const voiceManager = new VoiceManager(config);
   const sttPipeline = new SttPipeline(voiceManager);
   const ttsPipeline = new TtsPipeline(voiceManager);
@@ -196,6 +228,7 @@ async function main() {
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
+      onCodexAuthChanged,
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -306,6 +339,7 @@ async function main() {
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
+      onCodexAuthChanged,
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({

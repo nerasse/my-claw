@@ -9,6 +9,10 @@ export interface AuthCommandParams {
   args: string;
   isDm: boolean;
   postFollowUp: (text: string) => void;
+  // Called after a successful Codex login/logout so the host can ensure the codex provider
+  // exists and re-run model discovery — otherwise the ChatGPT models only appear in /model
+  // after a restart or the next 6h refresh.
+  onCodexAuthChanged?: () => void | Promise<void>;
 }
 
 function errMsg(err: unknown): string {
@@ -34,16 +38,20 @@ async function handleCodex(sub: string, p: AuthCommandParams): Promise<string> {
     case "logout":
       if (!p.isDm) return DM_ONLY;
       await codexLogout();
+      await p.onCodexAuthChanged?.();
       return "Codex : déconnecté.";
     case "login":
       if (!p.isDm) return DM_ONLY;
-      return startCodexLogin(p.postFollowUp);
+      return startCodexLogin(p.postFollowUp, p.onCodexAuthChanged);
     default:
       return "Usage : `/codex login` | `/codex status` | `/codex logout`";
   }
 }
 
-async function startCodexLogin(postFollowUp: (text: string) => void): Promise<string> {
+async function startCodexLogin(
+  postFollowUp: (text: string) => void,
+  onCodexAuthChanged?: () => void | Promise<void>,
+): Promise<string> {
   try {
     let prompted = false;
     const prompt = await new Promise<DeviceCodePrompt>((resolve, reject) => {
@@ -51,7 +59,12 @@ async function startCodexLogin(postFollowUp: (text: string) => void): Promise<st
         prompted = true;
         resolve(pr);
       })
-        .then((cred) => postFollowUp(`Codex : connecté (compte ${cred.accountId}).`))
+        .then(async (cred) => {
+          // Discovery needs the token that only just landed; run it before telling the user,
+          // so the ChatGPT models are already in /model when they get the confirmation.
+          await Promise.resolve(onCodexAuthChanged?.()).catch(() => {});
+          postFollowUp(`Codex : connecté (compte ${cred.accountId}). Les modèles ChatGPT sont dans /model.`);
+        })
         // A failure before the code was shown is surfaced as the immediate reply; a failure
         // after (poll timeout/denied) can only be reported via the follow-up.
         .catch((err) => {

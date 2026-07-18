@@ -32,6 +32,19 @@ test("codex unknown subcommand shows usage", async () => {
   assert.match(out, /\/codex login/);
 });
 
+test("codex logout triggers onCodexAuthChanged so discovery reruns", async () => {
+  let called = 0;
+  await handleAuthCommand({ provider: "codex", args: "logout", isDm: true, postFollowUp: noop, onCodexAuthChanged: () => { called += 1; } });
+  assert.equal(called, 1);
+});
+
+test("codex logout refused outside a DM does not fire onCodexAuthChanged", async () => {
+  let called = 0;
+  const out = await handleAuthCommand({ provider: "codex", args: "logout", isDm: false, postFollowUp: noop, onCodexAuthChanged: () => { called += 1; } });
+  assert.match(out, /message privé/);
+  assert.equal(called, 0);
+});
+
 test("claude set-token stores the token and is DM-gated", async () => {
   const denied = await handleAuthCommand({ provider: "claude", args: "set-token sk-ant-xyz", isDm: false, postFollowUp: noop });
   assert.match(denied, /message privé/);

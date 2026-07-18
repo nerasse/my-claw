@@ -54,6 +54,8 @@ interface MatrixSessionHandlerDeps {
   sdkCompact?: (session: import("../../sessions/store.ts").SessionData) => Promise<string>;
   // Push an unsolicited message to a room/thread later (Codex device-code login completion).
   postMessage?: (roomId: string, text: string, threadId?: string) => Promise<void>;
+  // Ensure the codex provider exists + re-run model discovery after a Codex login/logout.
+  onCodexAuthChanged?: () => void | Promise<void>;
 }
 
 function resolveMatrixSessionId(params: {
@@ -280,6 +282,7 @@ export function createMatrixCommandHandler({
   listCronJobs,
   sdkCompact,
   postMessage,
+  onCodexAuthChanged,
 }: MatrixSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -480,6 +483,7 @@ export function createMatrixCommandHandler({
           args,
           isDm: chatType === "dm",
           postFollowUp: (text) => { void postMessage?.(roomId, text, meta?.threadId); },
+          onCodexAuthChanged,
         });
       }
 
