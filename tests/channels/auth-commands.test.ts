@@ -32,17 +32,29 @@ test("codex unknown subcommand shows usage", async () => {
   assert.match(out, /\/codex login/);
 });
 
-test("codex logout triggers onCodexAuthChanged so discovery reruns", async () => {
-  let called = 0;
-  await handleAuthCommand({ provider: "codex", args: "logout", isDm: true, postFollowUp: noop, onCodexAuthChanged: () => { called += 1; } });
-  assert.equal(called, 1);
+test("codex logout triggers onAuthChanged so discovery reruns", async () => {
+  const kinds: string[] = [];
+  await handleAuthCommand({ provider: "codex", args: "logout", isDm: true, postFollowUp: noop, onAuthChanged: (k) => { kinds.push(k); } });
+  assert.deepEqual(kinds, ["codex"]);
 });
 
-test("codex logout refused outside a DM does not fire onCodexAuthChanged", async () => {
+test("codex logout refused outside a DM does not fire onAuthChanged", async () => {
   let called = 0;
-  const out = await handleAuthCommand({ provider: "codex", args: "logout", isDm: false, postFollowUp: noop, onCodexAuthChanged: () => { called += 1; } });
+  const out = await handleAuthCommand({ provider: "codex", args: "logout", isDm: false, postFollowUp: noop, onAuthChanged: () => { called += 1; } });
   assert.match(out, /message privé/);
   assert.equal(called, 0);
+});
+
+test("claude set-token triggers onAuthChanged so Claude discovery reruns", async () => {
+  const kinds: string[] = [];
+  await handleAuthCommand({ provider: "claude", args: "set-token sk-ant-oat01-secret", isDm: true, postFollowUp: noop, onAuthChanged: (k) => { kinds.push(k); } });
+  assert.deepEqual(kinds, ["claude"]);
+});
+
+test("claude logout triggers onAuthChanged", async () => {
+  const kinds: string[] = [];
+  await handleAuthCommand({ provider: "claude", args: "logout", isDm: true, postFollowUp: noop, onAuthChanged: (k) => { kinds.push(k); } });
+  assert.deepEqual(kinds, ["claude"]);
 });
 
 test("claude set-token stores the token and is DM-gated", async () => {

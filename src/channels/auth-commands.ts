@@ -9,10 +9,10 @@ export interface AuthCommandParams {
   args: string;
   isDm: boolean;
   postFollowUp: (text: string) => void;
-  // Called after a successful Codex login/logout so the host can ensure the codex provider
-  // exists and re-run model discovery — otherwise the ChatGPT models only appear in /model
-  // after a restart or the next 6h refresh.
-  onCodexAuthChanged?: () => void | Promise<void>;
+  // Called after a successful login/logout (or Claude set-token) so the host can ensure the
+  // provider exists and re-run model discovery — otherwise the provider's models only appear
+  // in /model after a restart or the next 6h refresh.
+  onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
 }
 
 function errMsg(err: unknown): string {
@@ -38,11 +38,11 @@ async function handleCodex(sub: string, p: AuthCommandParams): Promise<string> {
     case "logout":
       if (!p.isDm) return DM_ONLY;
       await codexLogout();
-      await p.onCodexAuthChanged?.();
+      await p.onAuthChanged?.("codex");
       return "Codex : déconnecté.";
     case "login":
       if (!p.isDm) return DM_ONLY;
-      return startCodexLogin(p.postFollowUp, p.onCodexAuthChanged);
+      return startCodexLogin(p.postFollowUp, () => p.onAuthChanged?.("codex"));
     default:
       return "Usage : `/codex login` | `/codex status` | `/codex logout`";
   }
@@ -50,7 +50,7 @@ async function handleCodex(sub: string, p: AuthCommandParams): Promise<string> {
 
 async function startCodexLogin(
   postFollowUp: (text: string) => void,
-  onCodexAuthChanged?: () => void | Promise<void>,
+  onChanged?: () => void | Promise<void>,
 ): Promise<string> {
   try {
     let prompted = false;
@@ -62,7 +62,7 @@ async function startCodexLogin(
         .then(async (cred) => {
           // Discovery needs the token that only just landed; run it before telling the user,
           // so the ChatGPT models are already in /model when they get the confirmation.
-          await Promise.resolve(onCodexAuthChanged?.()).catch(() => {});
+          await Promise.resolve(onChanged?.()).catch(() => {});
           postFollowUp(`Codex : connecté (compte ${cred.accountId}). Les modèles ChatGPT sont dans /model.`);
         })
         // A failure before the code was shown is surfaced as the immediate reply; a failure
@@ -98,11 +98,13 @@ async function handleClaude(sub: string, parts: string[], p: AuthCommandParams):
       const token = parts.slice(1).join(" ").trim();
       if (!token) return "Usage : `/claude set-token <token>` (génère-le avec `claude setup-token`).";
       await setClaudeToken(token);
-      return "Claude : token enregistré. Pense à supprimer le message contenant le token.";
+      await p.onAuthChanged?.("claude");
+      return "Claude : token enregistré (modèles dans /model). Pense à supprimer le message contenant le token.";
     }
     case "logout":
       if (!p.isDm) return DM_ONLY;
       await clearClaudeToken();
+      await p.onAuthChanged?.("claude");
       return "Claude : token supprimé.";
     case "login":
       return [

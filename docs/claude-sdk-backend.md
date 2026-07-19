@@ -116,6 +116,16 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   the file win). In-flight runs keep the token their subprocess already has.
 - Reimplementing the OAuth flow (the banned OpenCode/OpenClaw path) is
   rejected: ToS violation, account ban risk.
+- In-chat `/claude set-token <token>` (and `/claude logout`) fire
+  `onAuthChanged("claude")` (wired in `index.ts`, shared with Codex): it
+  **auto-creates an `anthropic` `claude-sdk` provider** (`discover: true`,
+  `group: "Claude (abo)"`) in `config.json` if none exists, then re-runs
+  `ModelCatalog.refresh()`. Discovery (`discoverSdkModels`) injects
+  `loadClaudeToken()`, so the fresh token lists the account's models
+  immediately — no restart. Without this, the token would be stored but
+  `/model` would stay empty until boot/6h refresh (and only if a `claude-sdk`
+  provider already existed). The provider is written to the raw on-disk config,
+  never with env secrets overlaid.
 
 ### Environment isolation (nothing leaks in, nothing leaks out)
 

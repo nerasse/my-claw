@@ -84,14 +84,16 @@ sink.
   - In-chat (DM): `/codex login` posts the URL + code and, when a background poll
     confirms approval minutes later, posts a follow-up via `adapter.send` to the
     same chat/thread. `/codex status`, `/codex logout` too.
-- Login/logout fire `onCodexAuthChanged` (wired in `index.ts`), which **auto-creates
+- Login/logout fire `onAuthChanged("codex")` (wired in `index.ts`), which **auto-creates
   a `chatgpt` codex provider** (`type: "codex", discover: true, group: "ChatGPT (abo)"`)
   in `config.json` if none exists, then re-runs `ModelCatalog.refresh()`. Without
   this, a fresh login would store a token but leave `/model` empty until a restart
   (discovery only runs at boot + every 6h, and is a no-op with no codex provider).
   The provider is written to the **raw** on-disk config (not the runtime-merged
   in-memory config, and not `readConfigFromDisk()` which overlays env secrets), so
-  no secret is ever persisted back.
+  no secret is ever persisted back. The same callback handles Claude
+  (`/claude set-token` -> auto-creates an `anthropic` `claude-sdk` provider); see
+  `docs/claude-sdk-backend.md`.
 - Tokens persist at `$MY_CLAW_DIR/codex/auth.json` (mode `0600`, atomic write):
   `{ access, refresh, expires, accountId }`. `accountId` is decoded from the
   access-token JWT claim `https://api.openai.com/auth.chatgpt_account_id`.

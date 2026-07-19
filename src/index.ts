@@ -124,17 +124,27 @@ async function main() {
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
 
-  // `/codex login` only stores a token; without a codex provider, discovery is a no-op and the
-  // ChatGPT models never reach /model. After a login/logout we ensure the provider exists (added
-  // to config, persisted for restarts) and re-run discovery now that a token is available.
-  const CODEX_PROVIDER_GROUP = "ChatGPT (abo)";
-  const hasCodexProvider = (providers?: Record<string, { type?: string }>): boolean =>
-    Object.values(providers ?? {}).some((p) => p.type === "codex");
-  const ensureCodexProvider = async (): Promise<void> => {
-    const providers = (config.llm.providers ??= {});
-    if (hasCodexProvider(providers)) return;
+  // `/codex login` and `/claude set-token` only store a token; without a matching provider,
+  // discovery is a no-op and the subscription's models never reach /model. After an auth change
+  // we ensure the provider exists (added to config, persisted for restarts) and re-run discovery
+  // now that a token is available. Provider spec per auth kind:
+  const AUTH_PROVIDER: Record<"codex" | "claude", { type: "codex" | "claude-sdk"; key: string; group: string }> = {
+    codex: { type: "codex", key: "chatgpt", group: "ChatGPT (abo)" },
+    claude: { type: "claude-sdk", key: "anthropic", group: "Claude (abo)" },
+  };
+  const hasProviderType = (providers: Record<string, { type?: string }> | undefined, type: string): boolean =>
+    Object.values(providers ?? {}).some((p) => p.type === type);
+  // A free key so we never clobber an existing provider that happens to share the preferred name.
+  const freeKey = (providers: Record<string, unknown>, preferred: string): string => {
+    if (!(preferred in providers)) return preferred;
+    for (let i = 2; ; i++) if (!(`${preferred}${i}` in providers)) return `${preferred}${i}`;
+  };
+  const ensureAuthProvider = async (kind: "codex" | "claude"): Promise<void> => {
+    const spec = AUTH_PROVIDER[kind];
+    const live = (config.llm.providers ??= {});
+    if (hasProviderType(live, spec.type)) return;
     // Update the live config first so the immediate refresh below can see the provider.
-    providers.chatgpt = { type: "codex", discover: true, group: CODEX_PROVIDER_GROUP };
+    live[freeKey(live, spec.key)] = { type: spec.type, discover: true, group: spec.group };
     // Persist into the raw on-disk config. Never serialize the in-memory config (it holds
     // runtime-merged models) nor readConfigFromDisk() (it overlays env secrets we must not
     // write back); read and edit the raw file instead.
@@ -142,16 +152,16 @@ async function main() {
       const disk = JSON.parse(await readFile(CONFIG_PATH, "utf-8")) as MyClawConfig;
       disk.llm ??= {};
       disk.llm.providers ??= {};
-      if (!hasCodexProvider(disk.llm.providers)) {
-        disk.llm.providers.chatgpt = { type: "codex", discover: true, group: CODEX_PROVIDER_GROUP };
+      if (!hasProviderType(disk.llm.providers, spec.type)) {
+        disk.llm.providers[freeKey(disk.llm.providers, spec.key)] = { type: spec.type, discover: true, group: spec.group };
         await writeJsonFileAtomically(CONFIG_PATH, disk, true);
       }
     } catch (err) {
-      void log("warn", "could not persist codex provider to config.json", { error: String(err) });
+      void log("warn", "could not persist provider to config.json", { kind, error: String(err) });
     }
   };
-  const onCodexAuthChanged = async (): Promise<void> => {
-    await ensureCodexProvider();
+  const onAuthChanged = async (kind: "codex" | "claude"): Promise<void> => {
+    await ensureAuthProvider(kind);
     await modelCatalog.refresh();
   };
 
@@ -228,7 +238,7 @@ async function main() {
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
-      onCodexAuthChanged,
+      onAuthChanged,
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -339,7 +349,7 @@ async function main() {
       listCronJobs: () => loadJobs(),
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
-      onCodexAuthChanged,
+      onAuthChanged,
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
