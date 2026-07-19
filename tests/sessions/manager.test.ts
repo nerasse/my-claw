@@ -168,6 +168,33 @@ test("persist: saves to disk and new manager loads it back", async () => {
   }
 });
 
+test("resetSession clears history while preserving the selected model", async () => {
+  const sid = `test/manager/${Date.now()}/reset-model`;
+  try {
+    const firstManager = new SessionManager();
+    const session = await firstManager.getOrCreateWithMeta(sid, "telegram", "dm");
+    session.messages.push({ role: "user", content: "before reset", timestamp: new Date().toISOString() });
+    session.modelOverride = "alt-model";
+    session.sdkSessionId = "sdk-history";
+    await firstManager.persist(sid);
+
+    const resetManager = new SessionManager();
+    await resetManager.resetSession(sid, "telegram", "dm");
+
+    const reset = await resetManager.peek(sid);
+    assert.ok(reset);
+    assert.equal(reset.messages.length, 0);
+    assert.equal(reset.modelOverride, "alt-model");
+    assert.equal(reset.sdkSessionId, undefined);
+
+    const reloadedManager = new SessionManager();
+    const reloaded = await reloadedManager.peek(sid);
+    assert.equal(reloaded?.modelOverride, "alt-model");
+  } finally {
+    await deleteSession(sid);
+  }
+});
+
 // Guards the prod symptom: after a restart, a persisted session must reload with
 // its ORIGINAL createdAt and history, never a fresh session that overwrites it.
 test("restart simulation: a fresh manager reloads the session without resetting createdAt", async () => {

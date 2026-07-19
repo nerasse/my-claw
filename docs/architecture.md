@@ -72,6 +72,7 @@
 - One file per actual session
 - Sessions persist across restarts
 - Sessions stored in `~/.my-claw/sessions/`
+- `/new` archives and clears conversation state while preserving an explicitly selected model
 
 ### Auth & access
 

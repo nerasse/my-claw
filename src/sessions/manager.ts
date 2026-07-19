@@ -107,12 +107,18 @@ export class SessionManager {
   async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
     const gate = await hooks.check("gate:session:reset", { sessionId });
     if (!gate.allowed) return;
+    const previous = this.sessions.get(sessionId) ?? await loadSession(sessionId);
     this.sessions.delete(sessionId);
     const archived = await archiveSession(sessionId);
     if (!archived) {
       await deleteSession(sessionId);
     }
-    this.sessions.set(sessionId, this.createSession(sessionId, platform, chatType));
+    const session = this.createSession(sessionId, platform, chatType);
+    if (previous?.modelOverride !== undefined) {
+      session.modelOverride = previous.modelOverride;
+    }
+    this.sessions.set(sessionId, session);
+    await saveSession(sessionId, session);
     hooks.emit("session:reset", { sessionId, platform, archived: Boolean(archived) });
   }
 
