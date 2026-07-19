@@ -8,7 +8,7 @@ import { SessionManager } from "../../src/sessions/manager.ts";
 import { deleteSession } from "../../src/sessions/store.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
-import { mockFetch } from "../../tests/helpers/mock-fetch.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 const config: MyClawConfig = {
