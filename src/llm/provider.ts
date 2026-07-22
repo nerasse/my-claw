@@ -154,6 +154,52 @@ interface ChatCompletionStreamChunk {
   };
 }
 
+const EPHEMERAL_CACHE = { type: "ephemeral" as const };
+
+type WireMessage = Record<string, unknown>;
+
+// Flatten a ChatMessage to the wire object, preserving role-specific fields.
+function toWireMessage(msg: ChatMessage): WireMessage {
+  const w: WireMessage = { role: msg.role, content: msg.content };
+  if (msg.role === "tool") w["tool_call_id"] = msg.tool_call_id;
+  if (msg.role === "assistant" && msg.tool_calls) w["tool_calls"] = msg.tool_calls;
+  return w;
+}
+
+// Attach a cache breakpoint to a message's content. cache_control lives on a content *part*,
+// so a string is promoted to a single text part; an array gets the marker on its last part.
+// An empty string cannot carry a breakpoint (no block to cache) — left untouched.
+function markCacheBreakpoint(w: WireMessage): void {
+  const content = w["content"];
+  if (typeof content === "string") {
+    if (content.length === 0) return;
+    w["content"] = [{ type: "text", text: content, cache_control: EPHEMERAL_CACHE }];
+    return;
+  }
+  if (Array.isArray(content) && content.length > 0) {
+    const parts = content.map((p) => ({ ...(p as Record<string, unknown>) }));
+    parts[parts.length - 1]!["cache_control"] = EPHEMERAL_CACHE;
+    w["content"] = parts;
+  }
+}
+
+/**
+ * Add Anthropic-style prompt-cache breakpoints for proxies that honor them (LiteLLM, OpenRouter).
+ * Two breakpoints (well under Anthropic's max of 4): the first system message — the big stable
+ * prefix (core + skills + tool list), built once per run so it is identical across every tool
+ * iteration — and the last message, so the growing conversation is cached incrementally. Endpoints
+ * that don't support caching ignore the extra `cache_control` field; gate it per provider because
+ * some strict ones reject unknown fields in content.
+ */
+export function applyPromptCache(messages: ChatMessage[]): WireMessage[] {
+  const wire = messages.map(toWireMessage);
+  const sysIdx = wire.findIndex((m) => m["role"] === "system");
+  if (sysIdx >= 0) markCacheBreakpoint(wire[sysIdx]!);
+  const lastIdx = wire.length - 1;
+  if (lastIdx >= 0 && lastIdx !== sysIdx) markCacheBreakpoint(wire[lastIdx]!);
+  return wire;
+}
+
 function buildRequestBody(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
@@ -162,7 +208,7 @@ function buildRequestBody(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: config.model,
-    messages,
+    messages: config.promptCache ? applyPromptCache(messages) : messages,
   };
 
   if (tools && tools.length > 0) {

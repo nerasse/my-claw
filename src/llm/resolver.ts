@@ -101,6 +101,7 @@ function resolveFromMerged(
     vision: model?.vision ?? merged.vision,
     limit: model?.limit ?? merged.limit,
     effort: computeEffort(merged, model, false, effortOverride),
+    promptCache: provider.promptCache,
   };
 }
 

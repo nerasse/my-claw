@@ -162,6 +162,12 @@ export interface LlmProviderConfig {
   discover?: boolean;
   // Submenu group label applied to this provider's discovered models in the picker.
   group?: string;
+  // OpenAI-compatible providers only: send Anthropic-style `cache_control` breakpoints so
+  // proxies that support it (LiteLLM, OpenRouter) cache the stable system+tools prefix.
+  // Opt-in per provider: some strict endpoints reject unknown fields in message content.
+  // Ignored on the claude-sdk (SDK caches itself) and codex (subscription) backends.
+  // See docs/prompt-caching.md.
+  promptCache?: boolean;
 }
 
 // Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as
@@ -233,6 +239,9 @@ export interface ResolvedLlmConfig {
   // Resolved effort to apply for this run. Only set when it should actually be sent
   // (claude-sdk always; openai-compatible only when the model opts in via supportsEffort).
   effort?: EffortLevel;
+  // Send Anthropic-style `cache_control` breakpoints on the OpenAI-compatible request
+  // (propagated from the provider's `promptCache`). See docs/prompt-caching.md.
+  promptCache?: boolean;
 }
 
 export interface AgentLlmConfig {

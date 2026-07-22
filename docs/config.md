@@ -315,6 +315,23 @@ Discovery is cached to `~/.my-claw/model-catalog.json`, refreshed at boot + ever
 edit, and falls back to the last known list when a provider is unreachable. Full details in
 `docs/model-discovery.md`.
 
+### Prompt caching
+
+Set `promptCache: true` on an OpenAI-compatible provider whose endpoint honors Anthropic-style
+`cache_control` (proxies like LiteLLM and OpenRouter) to cache the stable system+tools prefix and
+cut input-token cost on long tool-calling runs. Opt-in per provider because some strict endpoints
+reject unknown fields in message content; ignored on `claude-sdk` (SDK caches itself) and `codex`
+(subscription) backends.
+
+```json
+"providers": {
+  "litellm":    { "baseUrl": "https://litellm.example/v1", "apiKeyEnv": "LITELLM_API_KEY", "promptCache": true },
+  "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKeyEnv": "OPENROUTER_API_KEY", "promptCache": true }
+}
+```
+
+Full details (breakpoint placement, what actually gets cached, cost model) in `docs/prompt-caching.md`.
+
 ### Provider-Specific Headers
 
 Add custom headers per provider:
