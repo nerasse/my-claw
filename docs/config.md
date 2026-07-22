@@ -163,6 +163,25 @@ Migrates automatically to the new format internally. No manual action needed.
   collide with a built-in are skipped, and a throwing plugin is isolated (never crashes the
   process). Editing a file in `tools.d/` hot-reloads it. See `docs/hot-reload-extensions.md` (A5).
 
+## Skills (`skills`)
+
+```json
+"skills": { "suggest": { "enabled": true, "minScore": 0.35, "topK": 5 } }
+```
+
+On top of the always-present skill catalog in the system prompt, `suggest` appends a short soft
+"possibly relevant" reminder at the very end of the prompt for the skills that best match the
+incoming message (semantic ranking via `memory.embedding` when configured and warm, keyword
+fallback otherwise). Hot-reloadable (read live per run).
+
+- `enabled` (default `true`) — keyword fallback needs no embedding setup.
+- `minScore` (default `0.35`) — minimum cosine similarity in semantic mode; ignored by the keyword
+  fallback.
+- `topK` — omit for a dynamic cap that scales with the registry (`clamp(round(N*0.5), 5, 15)`), or
+  pin an explicit ceiling.
+
+Full details in `docs/skill-suggestions.md`.
+
 ## External MCP servers (`mcp`)
 
 Declare external [Model Context Protocol](https://modelcontextprotocol.io) servers; their

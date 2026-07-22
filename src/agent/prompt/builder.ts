@@ -11,6 +11,9 @@ export interface PromptContext {
   sessionId: string;
   tools: Tool[];
   skills: SkillInfo[];
+  // Skills the retrieval layer flagged as likely relevant to this message; rendered as a soft
+  // reminder at the very end so it never mutates the cacheable prefix (see docs/skill-suggestions.md).
+  suggestedSkills?: SkillInfo[];
 }
 
 export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
@@ -61,6 +64,19 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   layers.push(
     `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
   );
+
+  // Layer 9: Soft skill reminder. Placed last (after the already-dynamic runtime line) so it
+  // never busts the cacheable prefix. Complements, not overrides, the "MUST read_skill" catalog.
+  if (ctx.suggestedSkills && ctx.suggestedSkills.length > 0) {
+    const hints = ctx.suggestedSkills
+      .map((s) => `- ${s.name}: ${s.description}`)
+      .join("\n");
+    layers.push(
+      `# Skills possibly relevant to this request\n\n${hints}\n\n` +
+        `These look related to the current request. If one fits, call read_skill(name) to load ` +
+        `its full instructions. Treat this as a hint, not an order.`,
+    );
+  }
 
   return layers.filter(Boolean).join("\n\n");
 }

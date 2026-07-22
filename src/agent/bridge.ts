@@ -14,6 +14,7 @@ import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../ch
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
+import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse } from "../llm/provider.ts";
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
@@ -249,13 +250,20 @@ export class AgentBridge implements AgentBackend {
         await this.maybeAutoCompact(session, llmConfig);
       }
 
+      const allSkills = this.skillRegistry.list();
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         channelId: message.chatId,
         sessionId: session.id,
         tools,
-        skills: this.skillRegistry.list(),
+        skills: allSkills,
+        suggestedSkills: await selectRelevantSkills(
+          allSkills,
+          message.text,
+          this.config.memory?.embedding,
+          this.config.skills?.suggest,
+        ),
       });
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;

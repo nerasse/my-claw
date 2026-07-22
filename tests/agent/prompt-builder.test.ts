@@ -131,3 +131,22 @@ test("layers are ordered: core before skills before tools before runtime", async
   assert.ok(skillsIdx < toolsIdx, "skills before tools");
   assert.ok(toolsIdx < runtimeIdx, "tools before runtime");
 });
+
+test("suggested skills render a soft reminder after the runtime line", async () => {
+  const result = await buildSystemPrompt(
+    makeCtx({
+      skills: [makeSkill("deploy"), makeSkill("video")],
+      suggestedSkills: [makeSkill("video")],
+    }),
+  );
+  const runtimeIdx = result.indexOf("Runtime:");
+  const suggestIdx = result.indexOf("# Skills possibly relevant to this request");
+  assert.ok(suggestIdx >= 0, "soft reminder present");
+  assert.ok(runtimeIdx < suggestIdx, "reminder comes after runtime (keeps cacheable prefix stable)");
+  assert.match(result, /Treat this as a hint, not an order/);
+});
+
+test("no suggested skills means no reminder section", async () => {
+  const result = await buildSystemPrompt(makeCtx({ skills: [makeSkill("deploy")] }));
+  assert.ok(!result.includes("# Skills possibly relevant to this request"));
+});

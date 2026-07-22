@@ -8,6 +8,7 @@ import type { SessionData } from "../../sessions/store.ts";
 import { trimSessionMessages } from "../../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
+import { selectRelevantSkills } from "../../skills/retrieval.ts";
 import { resolveLlmConfigForMessage } from "../../llm/resolver.ts";
 import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
@@ -321,13 +322,20 @@ export class ClaudeSdkBackend implements AgentBackend {
     let removeAbortListener: (() => void) | undefined;
 
     try {
+      const allSkills = this.skillRegistry.list();
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         channelId: message.chatId,
         sessionId: session.id,
         tools,
-        skills: this.skillRegistry.list(),
+        skills: allSkills,
+        suggestedSkills: await selectRelevantSkills(
+          allSkills,
+          message.text,
+          this.config.memory?.embedding,
+          this.config.skills?.suggest,
+        ),
       });
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;

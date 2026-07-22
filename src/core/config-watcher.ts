@@ -32,7 +32,7 @@ const REBOOT_SECTIONS = ["workspace"] as const;
 // `voice` is pure live-read (VoiceManager reads config.voice per call, no applier).
 // `mcp`/`cron`/`memory` are applied in place too but also drive side-effecting appliers.
 const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "mcp", "voice", "cron", "memory",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
 ] as const;
 // Array sections whose identity must be preserved (consumers hold the same array reference).
 const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
@@ -248,7 +248,7 @@ export function runReloadAppliers(
   if (changed.includes("cron")) ctx.reloadCron?.();
   // memory: recall knobs are live, but a changed embedding model needs a re-warm + backfill.
   if (changed.includes("memory")) ctx.reloadMemory?.(config.memory);
-  // agents, injection, browser, tools, voice, blacklist are read live through the shared config; no applier.
+  // agents, injection, browser, tools, skills, voice, blacklist are read live through the shared config; no applier.
 }
 
 /**

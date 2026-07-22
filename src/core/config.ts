@@ -315,7 +315,31 @@ export interface MyClawConfig {
   injection?: InjectionConfig;
   context?: ContextConfig;
   tools?: ToolsConfig;
+  skills?: SkillsConfig;
   mcp?: Record<string, McpServerConfig>;
+}
+
+/** Skill system knobs; hot-reloadable (read live per run). */
+export interface SkillsConfig {
+  /**
+   * Soft relevance reminder: on top of the always-present skill catalog, append a short
+   * "possibly relevant" hint at the very end of the system prompt for the skills that best
+   * match the incoming message. Ranking uses the memory embedding model when configured and
+   * warm, otherwise a keyword fallback. See docs/skill-suggestions.md.
+   */
+  suggest?: SkillSuggestConfig;
+}
+
+export interface SkillSuggestConfig {
+  /** Master switch. Default on (keyword fallback works with zero setup). */
+  enabled?: boolean;
+  /** Minimum cosine similarity for a skill to be suggested (embedding mode only). Default 0.35. */
+  minScore?: number;
+  /**
+   * Hard cap on suggestions. When omitted it scales with the registry size:
+   * clamp(round(N * 0.5), 5, 15). Set an explicit value to override the curve.
+   */
+  topK?: number;
 }
 
 /** Tool gating. Denylist so new in-tree tools are on by default; hot-reloadable. */
