@@ -409,7 +409,17 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.hears(/^\/commands(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.on("callback_query:data", (ctx) => this.handleCallbackQuery(ctx));
-    this.bot.on("message", (ctx) => this.handleMessage(ctx));
+    // Keep grammY's sequential polling loop free so a later /stop can interrupt a running task.
+    this.bot.on("message", (ctx) => {
+      const processing = this.handleMessage(ctx);
+      if (this.bot.isRunning?.()) {
+        void processing.catch((err) => {
+          void telegramLog("error", "telegram update processing error", { error: String(err) });
+        });
+        return;
+      }
+      return processing;
+    });
   }
 
   private async handleCommand(ctx: Context, command: string, alreadyClaimed = false): Promise<void> {
