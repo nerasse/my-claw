@@ -33,12 +33,20 @@ User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Nod
 | `browser_snapshot()` | Accessibility tree with `[__ref=N]` |
 | `browser_click(ref)` | Click element by ref |
 | `browser_type(ref, text)` | Fill field by ref |
+| `browser_select_option(ref, value)` | Pick a value in a native `<select>` **or** a custom combobox (options have no clickable ref of their own) |
+| `browser_upload_file(path, ref?)` | Upload a local file through the native OS dialog. `ref` optional: a file input is usually hidden, so it is located in the page |
+| `browser_press_key(key, ref?)` | Enter/Tab/Escape/Arrow... — often the only way to drive a custom dropdown |
+| `browser_scroll(direction?, amount?, ref?)` | Scroll the page or bring an element into view (needed for `(offscreen)` refs) |
 | `browser_screenshot(labels?)` | Screenshot. `labels=true` overlays red ref tags |
 | `browser_list_tabs()` | List open tabs |
 | `browser_focus_tab(index)` | Switch to tab |
 | `browser_close_tab(index)` | Close tab |
 | `browser_done(summary, needs_human?)` | Finish task, or request human takeover |
 | `delegate_browser_task(url, instructions)` | Main agent → subagent. Screenshots auto-attached to response |
+
+This surface is being extended so the subagent can finish tasks that currently end in a human
+handoff (uploads, custom comboboxes, elements without a ref). Spec, phases and security model:
+**`docs/browser-autonomy.md`**.
 
 ## Human-in-the-Loop
 
@@ -82,6 +90,15 @@ solves the blocker and replies "continue".
   returns "Stopped by user."
 - **Bounded context**: snapshots are large, so the loop runs `trimToContextWindow` before each LLM
   call; a long (up to `maxSteps`) run cannot outgrow the model context window.
+- **Ref coverage**: the stamping selector includes `role=option/listbox/menuitem*/treeitem/slider/
+  spinbutton`, `label`, `summary` and `[tabindex]`, so custom (React) dropdown options are
+  clickable instead of merely visible in the aria tree.
+- **Viewport-first refs**: with a 400-ref cap, visible elements are numbered first and off-screen
+  ones are flagged `(offscreen — scroll to reach)`, so page chrome can never crowd out the
+  element the agent is working on.
+- **No mechanical handoff**: the subagent prompt makes `needs_human` exclusive to human barriers
+  (CAPTCHA, 2FA, payment, user decision) and requires walking an escalation ladder
+  (fresh ref -> select_option -> upload -> keyboard -> scroll -> labelled screenshot) first.
 
 ## Lifecycle (never kill the shared Chromium)
 
@@ -135,7 +152,10 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 - **Unit**: `tests/subagents/browser.test.ts`, `tests/tools/browser-tools.test.ts` (mock client),
   `tests/browser/client.test.ts` (HTTP client over mock fetch)
 - **E2E**: `tests/e2e/browser-delegation.test.ts`; `tests-e2e/browser/basic.test.ts` spawns the
-  real Node sidecar against a live Chromium (requires `BROWSER_E2E=1`, `NODE_BIN` optional)
+  real Node sidecar against a live Chromium (requires `BROWSER_E2E=1`, `NODE_BIN` optional).
+  Its `/combobox`, `/upload` and `/tall` fixtures reproduce the two real-world blockers
+  (portal-rendered `role=option` list, hidden file input behind a button) offline — no
+  dependency on a third-party site.
 
 ## Key Files
 
