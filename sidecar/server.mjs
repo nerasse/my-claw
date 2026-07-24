@@ -105,7 +105,7 @@ function extractRefs(snapshot) {
   return [...new Set(refs)].sort((a, b) => a - b);
 }
 
-const MAX_REFS = 200;
+const MAX_REFS = 400;
 
 // Playwright's ariaSnapshot({ ref: true }) emits no usable ref markers in this
 // build, so we assign our own: stamp every visible interactive element with a
@@ -115,23 +115,45 @@ async function snapshotPage(page) {
   const ariaTree = await page.locator("body").ariaSnapshot().catch(() => "");
 
   const interactive = await page.evaluate((max) => {
+    // role=option/listbox/menuitemradio/treeitem are load-bearing: custom React
+    // comboboxes render their options as plain divs carrying those roles. Without them
+    // in this list the options appear in the aria tree but get no ref, so the agent can
+    // see them and still be unable to click any of them.
     const SELECTOR = [
       "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
-      "[role=button]", "[role=link]", "[role=textbox]", "[role=checkbox]",
-      "[role=radio]", "[role=combobox]", "[role=menuitem]", "[role=tab]",
-      "[role=switch]", "[contenteditable='']", "[contenteditable=true]", "[onclick]",
+      "[role=button]", "[role=link]", "[role=textbox]", "[role=searchbox]",
+      "[role=checkbox]", "[role=radio]", "[role=combobox]", "[role=listbox]",
+      "[role=option]", "[role=menuitem]", "[role=menuitemcheckbox]",
+      "[role=menuitemradio]", "[role=treeitem]", "[role=tab]", "[role=switch]",
+      "[role=slider]", "[role=spinbutton]",
+      "label", "summary", '[tabindex]:not([tabindex="-1"])',
+      "[contenteditable='']", "[contenteditable=true]", "[onclick]",
     ].join(",");
     for (const el of Array.from(document.querySelectorAll("[__ref]"))) {
       el.removeAttribute("__ref");
     }
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    const candidates = [];
+    for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const style = window.getComputedStyle(el);
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      const inViewport =
+        rect.bottom > 0 && rect.top < viewportHeight && rect.right > 0 && rect.left < viewportWidth;
+      candidates.push({ el, inViewport });
+    }
+    // Viewport-first: the ref budget is capped, so off-screen page chrome (footers, hidden
+    // menus) must never consume the budget before the element the agent is looking at.
+    const ordered = [
+      ...candidates.filter((c) => c.inViewport),
+      ...candidates.filter((c) => !c.inViewport),
+    ];
     const lines = [];
     let ref = 0;
-    for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
+    for (const { el, inViewport } of ordered) {
       if (ref >= max) break;
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      if (rect.width === 0 || rect.height === 0) continue;
-      if (style.visibility === "hidden" || style.display === "none") continue;
       ref += 1;
       el.setAttribute("__ref", String(ref));
       const role = el.getAttribute("role") || el.tagName.toLowerCase();
@@ -144,7 +166,7 @@ async function snapshotPage(page) {
         el.getAttribute("name") ||
         ""
       ).replace(/\s+/g, " ").trim().slice(0, 80);
-      lines.push(`[__ref="${ref}"] ${role} "${name}"`);
+      lines.push(`[__ref="${ref}"] ${role} "${name}"${inViewport ? "" : " (offscreen — scroll to reach)"}`);
     }
     return lines.join("\n");
   }, MAX_REFS);
