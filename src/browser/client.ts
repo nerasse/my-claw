@@ -1,4 +1,10 @@
-import type { BrowserAttachment, BrowserResult, BrowserSnapshot, BrowserTabInfo } from "./types.ts";
+import type {
+  BrowserActionInfo,
+  BrowserAttachment,
+  BrowserResult,
+  BrowserSnapshot,
+  BrowserTabInfo,
+} from "./types.ts";
 
 const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
 const CALL_TIMEOUT_MS = 90000;
@@ -70,6 +76,24 @@ export class BrowserClient {
 
   async type(pageId: string, ref: number, text: string): Promise<void> {
     await this.call("type", { pageId, ref, text });
+  }
+
+  /** ref is optional on purpose: a file input is usually hidden and therefore has no ref,
+   *  so the sidecar locates it in the page itself. */
+  async uploadFile(pageId: string, paths: string[], ref?: number): Promise<BrowserActionInfo> {
+    return this.call<BrowserActionInfo>("upload", { pageId, paths, ref });
+  }
+
+  async selectOption(pageId: string, ref: number, value: string): Promise<BrowserActionInfo> {
+    return this.call<BrowserActionInfo>("select-option", { pageId, ref, value });
+  }
+
+  async pressKey(pageId: string, key: string, ref?: number): Promise<void> {
+    await this.call("press-key", { pageId, key, ref });
+  }
+
+  async scroll(pageId: string, direction: string, amount?: number, ref?: number): Promise<void> {
+    await this.call("scroll", { pageId, direction, amount, ref });
   }
 
   async screenshot(pageId: string, fullPage?: boolean): Promise<BrowserAttachment> {

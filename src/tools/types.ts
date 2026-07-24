@@ -39,6 +39,17 @@ export function num(args: Record<string, unknown>, key: string, fallback: number
   return fallback;
 }
 
+export function numOpt(args: Record<string, unknown>, key: string): number | undefined {
+  const v = args[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
 export function bool(args: Record<string, unknown>, key: string, fallback: boolean): boolean {
   const v = args[key];
   if (typeof v === "boolean") return v;

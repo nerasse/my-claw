@@ -250,6 +250,116 @@ const handlers = {
     return {};
   },
 
+  // Sites open uploads through a NATIVE OS file dialog, which DOM automation cannot touch.
+  // Playwright can, three ways, tried in order of reliability. Note that a file input is
+  // almost always hidden (opacity:0 / display:none), so it usually carries no ref at all —
+  // hence ref is optional and the page-wide input lookup is the workhorse, not the fallback.
+  async upload(body) {
+    const page = getPage(body.pageId);
+    const paths = body.paths;
+    const tried = [];
+
+    if (body.ref !== undefined && body.ref !== null) {
+      const target = page.locator(`[__ref="${body.ref}"]`);
+      const kind = await target
+        .evaluate((el) => `${el.tagName.toLowerCase()}|${el.getAttribute("type") || ""}`)
+        .catch(() => "");
+      if (kind === "input|file") {
+        await target.setInputFiles(paths);
+        return { via: "ref-input" };
+      }
+      // The ref is a trigger (button/div): clicking it opens the native picker, which the
+      // filechooser listener intercepts before the OS dialog ever becomes a problem.
+      tried.push(`ref ${body.ref} is "${kind || "unknown"}", not a file input`);
+      try {
+        const [chooser] = await Promise.all([
+          page.waitForEvent("filechooser", { timeout: 8000 }),
+          target.click(),
+        ]);
+        await chooser.setFiles(paths);
+        return { via: "filechooser" };
+      } catch (e) {
+        tried.push(`clicking it opened no file chooser (${e instanceof Error ? e.message : String(e)})`);
+      }
+    }
+
+    const inputs = page.locator('input[type="file"]');
+    const count = await inputs.count();
+    if (count === 0) {
+      tried.push("no input[type=file] found in the page");
+      throw new Error(`Upload failed. Tried: ${tried.join("; ")}.`);
+    }
+    await inputs.first().setInputFiles(paths);
+    return { via: "page-input", fileInputs: count };
+  },
+
+  // Native <select> and custom comboboxes are two different problems wearing the same hat.
+  async "select-option"(body) {
+    const page = getPage(body.pageId);
+    const target = page.locator(`[__ref="${body.ref}"]`);
+    const value = String(body.value);
+    const tag = await target.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
+
+    if (tag === "select") {
+      try {
+        await target.selectOption({ label: value });
+      } catch {
+        await target.selectOption(value);
+      }
+      return { via: "native-select" };
+    }
+
+    // Custom combobox: open it first. Options are searched page-wide because React renders
+    // them in a portal at the end of <body>, not inside the trigger element.
+    await target.click();
+    await page.waitForTimeout(200);
+    for (const role of ["option", "menuitemradio", "menuitemcheckbox", "menuitem", "treeitem"]) {
+      for (const exact of [true, false]) {
+        const candidate = page.getByRole(role, { name: value, exact });
+        if ((await candidate.count()) > 0) {
+          await candidate.first().click();
+          return { via: `role=${role}${exact ? "" : "~"}` };
+        }
+      }
+    }
+    const byText = page.getByText(value, { exact: true });
+    if ((await byText.count()) > 0) {
+      await byText.first().click();
+      return { via: "text" };
+    }
+    // Last rung: many comboboxes filter as you type and commit on Enter.
+    await page.keyboard.type(value);
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Enter");
+    return { via: "keyboard" };
+  },
+
+  async "press-key"(body) {
+    const page = getPage(body.pageId);
+    if (body.ref !== undefined && body.ref !== null) {
+      await page.locator(`[__ref="${body.ref}"]`).press(String(body.key));
+    } else {
+      await page.keyboard.press(String(body.key));
+    }
+    return {};
+  },
+
+  async scroll(body) {
+    const page = getPage(body.pageId);
+    if (body.ref !== undefined && body.ref !== null) {
+      await page.locator(`[__ref="${body.ref}"]`).scrollIntoViewIfNeeded();
+    } else {
+      const amount = Number(body.amount ?? 600);
+      const dir = String(body.direction ?? "down");
+      const dx = dir === "right" ? amount : dir === "left" ? -amount : 0;
+      const dy = dir === "down" ? amount : dir === "up" ? -amount : 0;
+      await page.mouse.wheel(dx, dy);
+    }
+    // Lazy-loaded lists render on scroll; snapshotting immediately would miss them.
+    await page.waitForTimeout(300);
+    return {};
+  },
+
   async screenshot(body) {
     const page = getPage(body.pageId);
     // Blank-screenshot guard: wait for the network to settle and give the compositor a

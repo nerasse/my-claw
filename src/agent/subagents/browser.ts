@@ -12,6 +12,10 @@ import {
   createBrowserSnapshotTool,
   createBrowserClickTool,
   createBrowserTypeTool,
+  createBrowserSelectOptionTool,
+  createBrowserUploadFileTool,
+  createBrowserPressKeyTool,
+  createBrowserScrollTool,
   createBrowserScreenshotTool,
   createBrowserListTabsTool,
   createBrowserFocusTabTool,
@@ -38,6 +42,10 @@ Available tools:
 - browser_snapshot(): Re-read the page accessibility tree with ref numbers WITHOUT acting. navigate/click/type already return a fresh snapshot — do NOT call this after them; use it only when you need to re-check the page on its own.
 - browser_click(ref): Click an element by its ref number. Returns a fresh snapshot.
 - browser_type(ref, text): Type text into a field by its ref number. Returns a fresh snapshot.
+- browser_select_option(ref, value): Choose a value in a dropdown, passing the ref OF THE DROPDOWN and the visible label of the option. Works for native <select> and for custom comboboxes whose options you cannot click directly. Always prefer this over clicking an option yourself.
+- browser_upload_file(path, ref?): Upload a local file (profile photo, attachment, document). This is what handles the native OS file dialog. Pass the absolute path; leave ref out — the file input is normally hidden and has no ref.
+- browser_press_key(key, ref?): Press Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown... Often the only way to drive a custom dropdown or submit a form with no visible button.
+- browser_scroll(direction?, amount?, ref?): Scroll the page, or bring one element into view via ref. Required for elements marked "offscreen" and to load lazy content.
 - browser_screenshot(full_page?, labels?): Capture a screenshot. Use when stuck or to show the user the page. Set labels=true to overlay ref numbers on elements.
 - browser_list_tabs(): List all open tabs with their index and URL.
 - browser_focus_tab(index): Switch to a different tab by its index (from browser_list_tabs).
@@ -50,8 +58,15 @@ Rules:
 2. Every step costs budget. navigate/click/type already return the new page state — do NOT waste a step calling browser_snapshot right after them.
 3. Use only the ref numbers from the latest snapshot for click and type.
 4. Navigate autonomously. Do NOT stop at login forms, password fields, or sign-in pages — fill them in yourself if you have the needed information.
-5. Call browser_done with needs_human=true ONLY when you hit a barrier you genuinely cannot pass yourself: a CAPTCHA, a bot-check ("I'm not a robot", Cloudflare), or a 2FA/OTP code you do not have. Explain what is blocking in the summary. The user will take over the live browser, resolve it, and the task can resume.
-6. If you make no progress after 3 consecutive steps, call browser_done with needs_human=true describing what you tried.
+5. Call browser_done with needs_human=true ONLY for a barrier that genuinely requires a human being: a CAPTCHA, a bot-check ("I'm not a robot", Cloudflare), a 2FA/OTP code you do not have, a payment confirmation, or a decision only the user can make. A dropdown that resists, a file dialog, or an element you cannot reach is NOT one of these — see rule 6. Explain what is blocking in the summary; the user takes over the live browser and the task resumes.
+6. NEVER HAND OVER A MECHANICAL PROBLEM. When an element does not respond, work down this ladder before concluding anything:
+   a. re-snapshot and use the FRESH ref — refs are renumbered on every page update, so a stale ref silently targets the wrong element
+   b. dropdown: browser_select_option on the dropdown's own ref (never hunt for the option's ref)
+   c. file, photo or attachment: browser_upload_file with the absolute path
+   d. browser_press_key — ArrowDown/Enter to drive a dropdown, Escape to close an overlay, Tab to leave a field
+   e. browser_scroll to bring the element into view, then retry the action
+   f. browser_screenshot(labels=true) to see what is actually on screen
+   If the whole ladder fails, finish with browser_done and needs_human=FALSE, stating precisely which rungs you tried — that is a tooling gap to fix, not a reason to summon the user.
 7. When the task is complete, call browser_done with a summary (needs_human defaults to false). Include everything useful you found — the summary is all the caller gets.
 8. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user. Only screenshot a page that is fully loaded and free of overlays.`;
 
@@ -117,6 +132,10 @@ export class BrowserSubagent {
     this.toolRegistry.register(createBrowserSnapshotTool(this.client, pageState));
     this.toolRegistry.register(createBrowserClickTool(this.client, pageState));
     this.toolRegistry.register(createBrowserTypeTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserSelectOptionTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserUploadFileTool(this.client, pageState, config.workspace));
+    this.toolRegistry.register(createBrowserPressKeyTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserScrollTool(this.client, pageState));
     this.toolRegistry.register(createBrowserScreenshotTool(this.client, pageState));
     this.toolRegistry.register(createBrowserListTabsTool(this.client));
     this.toolRegistry.register(createBrowserFocusTabTool(this.client, pageState));
