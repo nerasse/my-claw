@@ -70,7 +70,16 @@ describe("BrowserSubagent", () => {
       assert.ok(requestBody, "Request body should have been captured");
       const tools = (requestBody as Record<string, unknown>).tools as Array<Record<string, unknown>> | undefined;
       assert.ok(tools, "Tools should be present in request body");
-      assert.equal(tools.length, 9, "Should have 9 browser tools (8 + browser_done)");
+      assert.equal(tools.length, 13, "Should have 13 browser tools (12 + browser_done)");
+      const names = tools.map((t) => (t.function as Record<string, unknown>).name);
+      for (const expected of [
+        "browser_select_option",
+        "browser_upload_file",
+        "browser_press_key",
+        "browser_scroll",
+      ]) {
+        assert.ok(names.includes(expected), `${expected} must be exposed to the subagent`);
+      }
 
       for (const tool of tools) {
         assert.equal(tool.type, "function", "Each tool must have type 'function'");

@@ -1,10 +1,17 @@
 import { test, describe } from "bun:test";
 import assert from "node:assert";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createBrowserNavigateTool,
   createBrowserSnapshotTool,
   createBrowserClickTool,
   createBrowserTypeTool,
+  createBrowserSelectOptionTool,
+  createBrowserUploadFileTool,
+  createBrowserPressKeyTool,
+  createBrowserScrollTool,
   createBrowserScreenshotTool,
   createBrowserListTabsTool,
   createBrowserFocusTabTool,
@@ -22,6 +29,10 @@ function createMockClient(): BrowserClient {
     snapshot: createMock(() => Promise.resolve(snapshot)),
     click: createMock(() => Promise.resolve()),
     type: createMock(() => Promise.resolve()),
+    uploadFile: createMock(() => Promise.resolve({ via: "page-input" })),
+    selectOption: createMock(() => Promise.resolve({ via: "role=option" })),
+    pressKey: createMock(() => Promise.resolve()),
+    scroll: createMock(() => Promise.resolve()),
     screenshot: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
     screenshotWithLabels: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
     listTabs: createMock(() => Promise.resolve([{ id: "0", url: "https://example.com", title: "" }])),
@@ -170,5 +181,103 @@ describe("enqueueBrowserTask", () => {
 
     const next = await enqueueBrowserTask(async () => "after-failure");
     assert.strictEqual(next, "after-failure");
+  });
+});
+
+describe("browser action tools", () => {
+  async function withWorkspace(fn: (ws: string) => Promise<void>): Promise<void> {
+    const ws = await mkdtemp(join(tmpdir(), "my-claw-ws-"));
+    try {
+      await fn(ws);
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  }
+
+  test("upload_file refuses a path outside the workspace", async () => {
+    await withWorkspace(async (ws) => {
+      const state = createBrowserPageState();
+      state.currentPageId = "p1";
+      const tool = createBrowserUploadFileTool(createMockClient(), state, ws);
+      const result = await tool.execute({ path: "/etc/passwd" });
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes("escapes workspace"));
+    });
+  });
+
+  test("upload_file reports a missing file instead of calling the sidecar", async () => {
+    await withWorkspace(async (ws) => {
+      const state = createBrowserPageState();
+      state.currentPageId = "p1";
+      const client = createMockClient();
+      const tool = createBrowserUploadFileTool(client, state, ws);
+      const result = await tool.execute({ path: "nope.png" });
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes("File not found"));
+      assert.strictEqual((client.uploadFile as unknown as { calls: unknown[] }).calls.length, 0);
+    });
+  });
+
+  test("upload_file passes the resolved absolute path to the sidecar", async () => {
+    await withWorkspace(async (ws) => {
+      await writeFile(join(ws, "claw.png"), "x");
+      const state = createBrowserPageState();
+      state.currentPageId = "p1";
+      const client = createMockClient();
+      const tool = createBrowserUploadFileTool(client, state, ws);
+      const result = await tool.execute({ path: "claw.png" });
+      assert.strictEqual(result.success, true);
+      const call = (client.uploadFile as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+      assert.deepStrictEqual(call?.arguments[1], [join(ws, "claw.png")]);
+      assert.strictEqual(call?.arguments[2], undefined, "ref stays optional");
+      assert.ok(result.output.includes("via page-input"));
+    });
+  });
+
+  test("select_option surfaces which strategy worked", async () => {
+    const state = createBrowserPageState();
+    state.currentPageId = "p1";
+    const tool = createBrowserSelectOptionTool(createMockClient(), state);
+    const result = await tool.execute({ ref: 3, value: "July" });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes('Selected "July"'));
+    assert.ok(result.output.includes("via role=option"));
+  });
+
+  test("press_key forwards the key and an optional ref", async () => {
+    const state = createBrowserPageState();
+    state.currentPageId = "p1";
+    const client = createMockClient();
+    const tool = createBrowserPressKeyTool(client, state);
+    const result = await tool.execute({ key: "Enter", ref: 4 });
+    assert.strictEqual(result.success, true);
+    const call = (client.pressKey as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.deepStrictEqual(call?.arguments.slice(0, 3), ["p1", "Enter", 4]);
+  });
+
+  test("scroll defaults to down and returns a fresh snapshot", async () => {
+    const state = createBrowserPageState();
+    state.currentPageId = "p1";
+    const client = createMockClient();
+    const tool = createBrowserScrollTool(client, state);
+    const result = await tool.execute({});
+    assert.strictEqual(result.success, true);
+    const call = (client.scroll as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual(call?.arguments[1], "down");
+    assert.ok(result.output.includes("__ref"));
+  });
+
+  test("the action tools all require an active page", async () => {
+    const client = createMockClient();
+    const tools = [
+      createBrowserSelectOptionTool(client, createBrowserPageState()),
+      createBrowserPressKeyTool(client, createBrowserPageState()),
+      createBrowserScrollTool(client, createBrowserPageState()),
+    ];
+    for (const tool of tools) {
+      const result = await tool.execute({ ref: 1, value: "x", key: "Enter" });
+      assert.strictEqual(result.success, false, `${tool.name} must refuse without a page`);
+      assert.ok(result.error?.includes("No active browser page"));
+    }
   });
 });

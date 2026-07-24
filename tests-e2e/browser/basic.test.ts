@@ -33,6 +33,23 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
           `<!DOCTYPE html><html><body><input __ref="1" id="name" placeholder="Name" /><button __ref="2" id="submit">Submit</button><div id="output"></div><script>document.getElementById("submit").onclick=()=>{const v=document.getElementById("name").value;document.getElementById("output").innerText="Hello "+v;}</script></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         ),
+        // Reproduces the Instagram birthday blocker: a custom combobox whose options are
+        // plain divs with role=option, rendered in a portal at the end of <body>.
+        "/combobox": new Response(
+          `<!DOCTYPE html><html><body><div id="trigger" role="combobox" aria-label="Month" tabindex="0" style="width:200px;height:30px;border:1px solid #000">Month</div><div id="value">none</div><script>const OPTIONS=["July","August"];document.getElementById("trigger").onclick=()=>{if(document.getElementById("listbox"))return;const lb=document.createElement("div");lb.id="listbox";lb.setAttribute("role","listbox");for(const o of OPTIONS){const d=document.createElement("div");d.setAttribute("role","option");d.textContent=o;d.style.cssText="width:200px;height:24px";d.onclick=(e)=>{e.stopPropagation();document.getElementById("value").innerText="selected "+o;lb.remove();};lb.appendChild(d);}document.body.appendChild(lb);};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        // Reproduces the Instagram profile-photo blocker: the real input[type=file] is
+        // display:none (so it gets no ref) and a visible button clicks it, which is what
+        // opens the native OS dialog.
+        "/upload": new Response(
+          `<!DOCTYPE html><html><body><button id="pick" style="width:200px;height:30px">Add a profile photo</button><input id="file" type="file" style="display:none" /><div id="name">no file</div><script>document.getElementById("pick").onclick=()=>document.getElementById("file").click();document.getElementById("file").onchange=(e)=>{document.getElementById("name").innerText="file: "+((e.target.files[0]||{}).name||"");};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/tall": new Response(
+          `<!DOCTYPE html><html><body><div style="height:3000px">spacer</div><button id="deep" style="width:200px;height:30px">Deep button</button></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
       },
     });
     baseUrl = `http://localhost:${server.port}`;
@@ -128,6 +145,54 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     const { stat } = await import("node:fs/promises");
     const s = await stat(attachment.path);
     assert.ok(s.size > 0);
+  });
+
+  test("custom combobox options are reachable by ref (role=option)", async () => {
+    const result = await client.navigate(`${baseUrl}/combobox`);
+    const trigger = result.snapshot.raw.match(/\[__ref="(\d+)"\] combobox/)?.[1];
+    assert.ok(trigger, "the combobox trigger must get a ref");
+    await client.click(result.pageId, Number(trigger));
+    const opened = await client.snapshot(result.pageId);
+    // The regression: options used to appear in the aria tree with no ref at all.
+    assert.ok(/\[__ref="\d+"\] option "July"/.test(opened.raw), "options must be stamped with refs");
+  });
+
+  test("select_option picks a value in a custom combobox", async () => {
+    const result = await client.navigate(`${baseUrl}/combobox`);
+    const trigger = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] combobox/)?.[1]);
+    const info = await client.selectOption(result.pageId, trigger, "July");
+    assert.ok(info.via.startsWith("role=") || info.via === "text", `unexpected path: ${info.via}`);
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("selected July"), "the selection must reach the page");
+  });
+
+  test("upload sets a file on a hidden input that has no ref", async () => {
+    const path = "/tmp/my-claw-e2e-upload.txt";
+    await Bun.write(path, "payload");
+    const result = await client.navigate(`${baseUrl}/upload`);
+    const info = await client.uploadFile(result.pageId, [path]);
+    assert.strictEqual(info.via, "page-input");
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("file: my-claw-e2e-upload.txt"), "the file must be attached");
+  });
+
+  test("upload through the trigger button intercepts the native file chooser", async () => {
+    const path = "/tmp/my-claw-e2e-upload2.txt";
+    await Bun.write(path, "payload");
+    const result = await client.navigate(`${baseUrl}/upload`);
+    const button = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button/)?.[1]);
+    const info = await client.uploadFile(result.pageId, [path], button);
+    assert.strictEqual(info.via, "filechooser");
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("file: my-claw-e2e-upload2.txt"));
+  });
+
+  test("offscreen elements are flagged and scroll brings them into view", async () => {
+    const result = await client.navigate(`${baseUrl}/tall`);
+    assert.ok(/button "Deep button" \(offscreen/.test(result.snapshot.raw), "below-the-fold must be flagged");
+    await client.scroll(result.pageId, "down", 3000);
+    const after = await client.snapshot(result.pageId);
+    assert.ok(/\[__ref="\d+"\] button "Deep button"(?! \(offscreen)/.test(after.raw), "scroll must reveal it");
   });
 
   test("multi-tab lifecycle: open two, focus one, close one", async () => {

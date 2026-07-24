@@ -195,4 +195,49 @@ describe("BrowserClient", () => {
       handle.restore();
     }
   });
+
+  test("uploadFile posts the paths and leaves ref undefined when omitted", async () => {
+    const m = mockSidecar({ upload: { via: "page-input", fileInputs: 2 } });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const info = await client.uploadFile("p1", ["/ws/claw.png"]);
+      assert.strictEqual(info.via, "page-input");
+      assert.strictEqual(info.fileInputs, 2);
+      assert.strictEqual(m.calls[0]?.path, "upload");
+      assert.deepStrictEqual(m.calls[0]?.body.paths, ["/ws/claw.png"]);
+      assert.strictEqual(m.calls[0]?.body.ref, undefined);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("selectOption targets the select-option endpoint with ref and value", async () => {
+    const m = mockSidecar({ "select-option": { via: "role=option" } });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const info = await client.selectOption("p1", 7, "July");
+      assert.strictEqual(info.via, "role=option");
+      assert.strictEqual(m.calls[0]?.path, "select-option");
+      assert.strictEqual(m.calls[0]?.body.ref, 7);
+      assert.strictEqual(m.calls[0]?.body.value, "July");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("pressKey and scroll hit their endpoints with the expected payloads", async () => {
+    const m = mockSidecar({ "press-key": {}, scroll: {} });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.pressKey("p1", "Enter");
+      await client.scroll("p1", "down", 900);
+      assert.strictEqual(m.calls[0]?.path, "press-key");
+      assert.strictEqual(m.calls[0]?.body.key, "Enter");
+      assert.strictEqual(m.calls[1]?.path, "scroll");
+      assert.strictEqual(m.calls[1]?.body.direction, "down");
+      assert.strictEqual(m.calls[1]?.body.amount, 900);
+    } finally {
+      m.restore();
+    }
+  });
 });
