@@ -20,10 +20,21 @@ assume the first window is the whole page. The browser sub-agent costs real time
 tokens, so reach for `fetch`/`web_search` first and delegate to the browser only when they
 genuinely cannot get the info.
 
-**Never run `chromium`/`playwright`/screenshot tools via `bash`.** The browser runs as a
-managed service (CDP on :9222). Always go through `delegate_browser_task`. If it returns an
-infrastructure error (CDP unreachable), report it to the user — do not improvise with raw
-`bash` chromium, which bypasses the sandbox and the managed browser.
+**Never drive the browser yourself.** No `chromium`, `playwright`, or screenshot tooling via
+`bash`. The browser is a managed service (CDP on :9222) and `delegate_browser_task` is the
+only supported way in — a direct `bash` path bypasses the sandbox, the guardrails, and the
+audit trail. On an infrastructure error (CDP/sidecar unreachable), report it to the user; the
+managed browser self-heals, so there is nothing to improvise.
+
+**Narrow exception, until the subagent gains the missing primitives** (see
+`docs/browser-autonomy.md`): if a task is blocked purely by a *mechanical* gap — a file upload,
+an element the subagent cannot target — and not by a human barrier, you may reach the managed
+CDP endpoint as a last resort. Conditions, all mandatory:
+
+- only after the subagent has actually returned a blocked result, never as a first move
+- act on the page only (fill an input, click a node). **Never** read cookies, storage, tokens,
+  or intercept requests
+- tell the user plainly that you bypassed the subagent and that the gap should be fixed there
 
 ## One task at a time
 
@@ -32,6 +43,20 @@ parallel** — parallel calls are queued and run one after the other anyway, so 
 batch" of 3 tasks is just 3x the wall-clock time with none of the benefit. Prefer a single
 well-scoped task ("check these 3 Instagram profiles and report events found on each"), or
 sequential calls if the targets are truly unrelated.
+
+## Writing the instructions
+
+The subagent sees only the URL and your instructions — not your conversation, not your
+workspace. So put everything it needs in the text:
+
+- **Values, spelled out**: exact name, username, email, date ("July 25, 1997" — not "his
+  birthday").
+- **File paths, absolute**: to upload a picture, resolve the file first and pass the full path
+  (`/home/.../workspace/assets/claw.png`). The subagent cannot search your workspace.
+- **The goal, not the clicks**: "set the profile photo to <path>", not "click ref 41 then...".
+  It re-reads the page after every action; a click-by-click script goes stale immediately.
+- **A verifiable end state**: "confirm the new photo shows on the profile" gives it a way to
+  know it succeeded and gives you a trustworthy summary.
 
 ## Login walls (Instagram, TikTok, Facebook...)
 
@@ -85,13 +110,18 @@ message with the live-browser URL.
 - When you get that paused message, relay it: ask the user to open the live browser at the
   given URL, solve the blocker, then reply "continue"
 - The subagent resumes from the current page
+- **Check what kind of blocker it is first.** A human barrier (CAPTCHA, 2FA, payment) is a real
+  handoff — relay it. A mechanical one ("cannot interact with the file picker", "no ref on that
+  element") is a subagent gap: handle it per "Common errors" instead of sending the user to
+  noVNC for something the agent should be doing itself.
 
 ## Rules
 
 - Never ask the subagent to handle banking PINs or critical passwords
 - If a site requires login credentials the agent does not have, ask the user first
-- The subagent only has browser tools (navigate, snapshot, click, type, screenshot)
-- It does NOT have bash/read/write/memory tools to prevent side effects
+- The subagent only has browser tools — no bash/read/write/memory, to prevent side effects
+- Its browser toolset grows over time; do not assume a fixed list, and do not tell it which
+  tool to call. Describe the goal, not the mechanics
 - Its actions (navigate/click/type) return a fresh page snapshot, and it dismisses
   cookie/consent overlays before screenshotting
 - The handoff decision is the subagent's own judgment — there is no keyword auto-block
@@ -108,6 +138,7 @@ message with the live-browser URL.
 |---|---|---|
 | ALSA audio warnings | Headless Chromium without a sound card | Benign. Ignore — does not block rendering or navigation. |
 | "Browser infrastructure is unavailable" | The sidecar or Chromium is unreachable (CDP/websocket) | Report it to the user. Never improvise with raw `bash` chromium — the managed browser self-heals. |
+| Paused for a *mechanical* reason (upload, untargetable element) | Missing subagent primitive, not a human barrier | Retry once with a clearer goal. If it blocks again, treat it as a gap: report it, or use the disclosed CDP exception above. |
 | "escapes workspace directory" after a browse | You tried to `find`/`read` the screenshot in `/tmp` | Don't. Browser screenshots are auto-attached (see "Results & screenshots"). |
 
 ## Example flow
