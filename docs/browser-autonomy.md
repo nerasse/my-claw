@@ -157,8 +157,8 @@ main threat, and it is the reason `eval`/`cdp` are opt-in.
 Extends `BrowserConfig` (`src/core/config.ts:140`). Per-tool timeouts replace the single
 90s global (`src/browser/client.ts:4`).
 
-**`"browser"` must be added to `HOT_OBJECT_SECTIONS` (`src/core/config-watcher.ts:35`)** —
-a key absent from every watcher list is silently ignored, never applied and never flagged.
+`"browser"` is already in `HOT_OBJECT_SECTIONS` (`src/core/config-watcher.ts:35`), so these
+knobs hot-reload as soon as they are read live per run — no restart, nothing to wire.
 
 ## Phases and acceptance criteria
 
