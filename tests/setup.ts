@@ -13,6 +13,11 @@ import { afterEach } from "bun:test";
 const root = mkdtempSync(join(tmpdir(), "my-claw-test-"));
 process.env["MY_CLAW_DIR"] = root;
 
+// Drop ambient provider credentials. Model discovery falls back to process.env when no token
+// file exists, so a developer's real token would otherwise turn a mocked-fetch test into a live
+// call against the provider (and make the suite pass or fail depending on the shell it ran in).
+delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+
 // Wipe persisted sessions between every test. Files share one MY_CLAW_DIR and reuse ids
 // ("u1", "session-1", ...), so a session left on disk by one test could be read cold by
 // the next and create an order-dependent pass/fail. Clearing here makes each test start

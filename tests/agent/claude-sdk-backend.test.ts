@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { ClaudeSdkBackend, type SdkQueryFn } from "../../src/agent/claude-sdk/backend.ts";
+import { ClaudeSdkBackend, toSdkEffort, type SdkQueryFn } from "../../src/agent/claude-sdk/backend.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
@@ -287,4 +287,12 @@ test("mid-run injection is yielded to the generator and mirrored", async () => {
   assert.ok(captured[0]!.prompts[1]!.content.includes("also do this"));
   const userTurns = sess.messages.filter((m) => m.role === "user");
   assert.equal(userTurns.length, 2);
+});
+
+test("toSdkEffort clamps the Codex-only ultra level instead of passing it to the SDK", () => {
+  // The SDK rejects unknown levels, and a session effort chosen on a Codex model follows the
+  // user to a Claude one, so the run must degrade to the highest level Claude does support.
+  assert.equal(toSdkEffort("ultra"), "max");
+  assert.equal(toSdkEffort("high"), "high");
+  assert.equal(toSdkEffort(undefined), undefined);
 });

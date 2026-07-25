@@ -260,7 +260,9 @@ test("effort: per-model default applies when no override", () => {
 
 test("effortOptionsFor enabled when any SDK model, supportsEffort, or global effort", () => {
   assert.equal(effortOptionsFor(effortConfig).enabled, true);
-  assert.deepEqual(effortOptionsFor(effortConfig).levels, ["low", "medium", "high", "xhigh", "max"]);
+  // "ultra" is Codex-only, but the global list is the superset; per-model filtering is what
+  // keeps it off the menu for models that do not support it.
+  assert.deepEqual(effortOptionsFor(effortConfig).levels, ["low", "medium", "high", "xhigh", "max", "ultra"]);
 
   const plain: LlmConfig = {
     defaultProvider: "litellm",

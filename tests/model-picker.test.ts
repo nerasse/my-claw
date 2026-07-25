@@ -317,3 +317,31 @@ test("effort: buildEffortButtons filters levels per model when currentModelId gi
 });
 
 
+
+test("effortLevelsFor: a model the provider says has no effort gets no levels", () => {
+  const picker = new ModelPicker(
+    [
+      { id: "haiku", label: "Haiku 4.5", supportsEffort: false },
+      { id: "opus", label: "Opus 4.8", supportsEffort: true, supportedEffortLevels: ["low", "max"] },
+      { id: "legacy", label: "Legacy" },
+    ],
+    { enabled: true, levels: ["low", "medium", "high", "xhigh", "max", "ultra"] },
+  );
+  // Explicit false is a fact from the provider, not a missing value: offering the global list
+  // here would propose levels the model rejects.
+  assert.deepEqual(picker.effortLevelsFor("haiku"), []);
+  assert.deepEqual(picker.effortLevelsFor("opus"), ["low", "max"]);
+  // Unknown stays a best guess rather than silently disabling effort.
+  assert.deepEqual(picker.effortLevelsFor("legacy"), ["low", "medium", "high", "xhigh", "max", "ultra"]);
+});
+
+test("buildEffortButtons: a no-effort model offers navigation only", () => {
+  const picker = new ModelPicker(
+    [{ id: "haiku", label: "Haiku 4.5", supportsEffort: false }],
+    { enabled: true, levels: ["low", "high"] },
+  );
+  assert.deepEqual(
+    picker.buildEffortButtons(undefined, { currentModelId: "haiku" }).map((b) => b.action),
+    ["mdlb"],
+  );
+});
