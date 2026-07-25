@@ -144,7 +144,11 @@ export class MessagePreprocessor {
         const fileStat = await stat(att.path);
         void log("info", "STT processing audio", { path: att.path, size: fileStat.size, mimeType: att.mimeType });
 
-        const result = await this.sttPipeline.transcribe(att.path);
+        // Configured language applies to the owner's voice notes only. Any other audio file
+        // could be in any language, and a forced mismatch makes Whisper produce confident
+        // nonsense rather than an error.
+        const language = att.audioAsVoice ? this.sttPipeline.voiceNoteLanguage() : undefined;
+        const result = await this.sttPipeline.transcribe(att.path, language);
         transcriptions.push(result.text);
         const existingText = message.text ? message.text.trim() : "";
         const audioPrefix = existingText ? `\n\n` : "";

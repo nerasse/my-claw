@@ -22,6 +22,7 @@ import {
 import {
   buildRelation,
   extFromFilename,
+  isMatrixVoiceMessage,
   matrixAttachmentTypeFromMsgType,
   messageBody,
   resolveMatrixMessageAttachmentSummary,
@@ -1244,6 +1245,7 @@ export class MatrixAdapter implements ChannelAdapter {
 
     const tooLarge = typeof info?.size === "number" && info.size > this.mediaMaxBytes();
     const attachmentType = matrixAttachmentTypeFromMsgType(msgtype);
+    const audioAsVoice = attachmentType === "audio" && isMatrixVoiceMessage(content) ? true : undefined;
     const summaryText = resolveMatrixMessageAttachmentSummary({
       body: messageBody(content),
       filename,
@@ -1261,6 +1263,7 @@ export class MatrixAdapter implements ChannelAdapter {
           width: info?.w,
           height: info?.h,
           durationMs: info?.duration,
+          audioAsVoice,
           summaryText,
         },
       ];
@@ -1285,6 +1288,7 @@ export class MatrixAdapter implements ChannelAdapter {
           width: info?.w,
           height: info?.h,
           durationMs: info?.duration,
+          audioAsVoice,
           summaryText,
         },
       ];

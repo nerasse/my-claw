@@ -6,27 +6,36 @@ import type { STTResult, TranscriptionResult } from "./types.ts";
 export class SttPipeline {
   constructor(private voiceManager: VoiceManager) {}
 
-  async transcribe(filePath: string): Promise<STTResult> {
+  /** language is passed in rather than read from config: forcing a language is right for the
+   *  owner dictating a voice note and wrong for an arbitrary audio file, where Whisper would
+   *  invent plausible text instead of failing. Callers decide; undefined means auto-detect. */
+  async transcribe(filePath: string, language?: string): Promise<STTResult> {
     const mode = this.voiceManager.resolveMode("stt");
     try {
       return mode === "cloud"
-        ? await this.transcribeGroq(filePath)
-        : await this.transcribeLocal(filePath);
+        ? await this.transcribeGroq(filePath, language)
+        : await this.transcribeLocal(filePath, language);
     } catch (err) {
       throw new Error(`STT ${mode} failed: ${err}`);
     }
   }
 
-  async transcribeWithFallback(filePath: string): Promise<TranscriptionResult> {
+  /** Language configured for the owner's own voice notes. Deliberately NOT applied to other
+   *  audio: see transcribe(). */
+  voiceNoteLanguage(): string | undefined {
+    return this.voiceManager.getVoiceConfig()?.stt?.language;
+  }
+
+  async transcribeWithFallback(filePath: string, language?: string): Promise<TranscriptionResult> {
     try {
-      const result = await this.transcribe(filePath);
+      const result = await this.transcribe(filePath, language);
       return { text: result.text };
     } catch (err) {
       return { text: "", error: String(err) };
     }
   }
 
-  private async transcribeGroq(filePath: string): Promise<STTResult> {
+  private async transcribeGroq(filePath: string, language?: string): Promise<STTResult> {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
       throw new Error("GROQ_API_KEY not set");
@@ -52,7 +61,6 @@ export class SttPipeline {
     const file = new File([buffer], uploadName, { type: mimeType });
     formData.append("file", file);
     formData.append("model", "whisper-large-v3");
-    const language = this.voiceManager.getVoiceConfig()?.stt?.language;
     if (language) formData.append("language", language);
 
     const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
@@ -76,7 +84,7 @@ export class SttPipeline {
     };
   }
 
-  private async transcribeLocal(filePath: string): Promise<STTResult> {
+  private async transcribeLocal(filePath: string, language?: string): Promise<STTResult> {
     const endpoint = process.env.FASTER_WHISPER_ENDPOINT ?? "http://127.0.0.1:8000";
 
     const fileStat = await stat(filePath);
@@ -87,6 +95,9 @@ export class SttPipeline {
 
     const formData = new FormData();
     formData.append("file", Bun.file(filePath));
+    // The local backend used to ignore the language entirely, so stt.language silently did
+    // nothing in local mode.
+    if (language) formData.append("language", language);
 
     const response = await fetch(`${endpoint}/transcribe`, {
       method: "POST",

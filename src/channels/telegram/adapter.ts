@@ -910,10 +910,12 @@ export class TelegramAdapter implements ChannelAdapter {
       );
     }
     if (msg.voice) {
+      // Flagged as a voice note: Telegram already separates msg.voice from msg.audio, and the
+      // STT language policy needs that distinction downstream.
       tasks.push(
         this.downloadFile(msg.voice.file_id).then((dl) =>
           dl
-            ? { type: "audio" as const, path: dl.path, mimeType: msg.voice!.mime_type ?? dl.mimeType }
+            ? { type: "audio" as const, path: dl.path, mimeType: msg.voice!.mime_type ?? dl.mimeType, audioAsVoice: true }
             : null,
         ),
       );

@@ -155,6 +155,16 @@ export function normalizeRoomKey(value: string): string {
   return value.trim();
 }
 
+/** A Matrix voice message is an m.audio event carrying the MSC3245 marker (MSC2516 in older
+ *  clients). Plain audio files do not have it, and the difference matters: a configured STT
+ *  language is right for the owner dictating, wrong for an arbitrary audio file. */
+export function isMatrixVoiceMessage(content: MatrixEventContent): boolean {
+  return (
+    content["org.matrix.msc3245.voice"] !== undefined ||
+    content["org.matrix.msc2516.voice"] !== undefined
+  );
+}
+
 export function matrixAttachmentTypeFromMsgType(msgtype?: string): Attachment["type"] {
   switch (msgtype) {
     case MsgType.Image:
