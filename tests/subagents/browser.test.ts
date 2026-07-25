@@ -70,16 +70,26 @@ describe("BrowserSubagent", () => {
       assert.ok(requestBody, "Request body should have been captured");
       const tools = (requestBody as Record<string, unknown>).tools as Array<Record<string, unknown>> | undefined;
       assert.ok(tools, "Tools should be present in request body");
-      assert.equal(tools.length, 13, "Should have 13 browser tools (12 + browser_done)");
+      assert.equal(tools.length, 20, "Should have 20 browser tools (19 + browser_done)");
       const names = tools.map((t) => (t.function as Record<string, unknown>).name);
       for (const expected of [
         "browser_select_option",
         "browser_upload_file",
         "browser_press_key",
         "browser_scroll",
+        "browser_hover",
+        "browser_drag",
+        "browser_click_at",
+        "browser_wait_for",
+        "browser_handle_dialog",
+        "browser_download",
+        "browser_pdf",
       ]) {
         assert.ok(names.includes(expected), `${expected} must be exposed to the subagent`);
       }
+      // Off by default: an advertised but disabled tool costs a wasted step.
+      assert.ok(!names.includes("browser_eval"), "browser_eval must stay hidden unless allowed");
+      assert.ok(!names.includes("browser_cdp"), "browser_cdp must stay hidden unless allowed");
 
       for (const tool of tools) {
         assert.equal(tool.type, "function", "Each tool must have type 'function'");
@@ -91,6 +101,45 @@ describe("BrowserSubagent", () => {
       }
     } finally {
       fetchMock.restore();
+    }
+  });
+
+  test("allowEval and allowCdp register the low-level tools and document them", async () => {
+    const gated = new BrowserSubagent(
+      makeConfig({ browser: { allowEval: true, allowCdp: true } }) as never,
+      "http://127.0.0.1:9222",
+    );
+    let requestBody: Record<string, unknown> | null = null;
+    const fetchMock = mockLlm(async (_input, init) => {
+      requestBody = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: "",
+              tool_calls: [{ id: "tc1", function: { name: "browser_done", arguments: '{"summary":"done"}' } }],
+            },
+          }],
+        }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      await gated.run("test task", "https://example.com");
+      const body = requestBody as unknown as Record<string, unknown>;
+      const tools = body.tools as Array<Record<string, unknown>>;
+      const names = tools.map((t) => (t.function as Record<string, unknown>).name);
+      assert.ok(names.includes("browser_eval"), "browser_eval must appear when allowed");
+      assert.ok(names.includes("browser_cdp"), "browser_cdp must appear when allowed");
+      assert.equal(tools.length, 22, "the two gated tools add to the default set");
+
+      const messages = body.messages as Array<{ role: string; content: string }>;
+      const system = messages.find((m) => m.role === "system")?.content ?? "";
+      assert.ok(system.includes("browser_eval(js)"), "the prompt must document the gated tools");
+    } finally {
+      fetchMock.restore();
+      await gated.cleanup().catch(() => undefined);
     }
   });
 

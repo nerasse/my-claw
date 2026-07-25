@@ -12,6 +12,16 @@ import {
   createBrowserUploadFileTool,
   createBrowserPressKeyTool,
   createBrowserScrollTool,
+  createBrowserHoverTool,
+  createBrowserDragTool,
+  createBrowserClickAtTool,
+  createBrowserWaitForTool,
+  createBrowserEvalTool,
+  createBrowserCdpTool,
+  createBrowserHandleDialogTool,
+  createBrowserDownloadTool,
+  createBrowserPdfTool,
+  isCdpMethodAllowed,
   createBrowserScreenshotTool,
   createBrowserListTabsTool,
   createBrowserFocusTabTool,
@@ -30,6 +40,15 @@ function createMockClient(): BrowserClient {
     click: createMock(() => Promise.resolve()),
     type: createMock(() => Promise.resolve()),
     uploadFile: createMock(() => Promise.resolve({ via: "page-input" })),
+    hover: createMock(() => Promise.resolve()),
+    drag: createMock(() => Promise.resolve()),
+    clickAt: createMock(() => Promise.resolve({ x: 960, y: 540, viewport: { width: 1920, height: 1080 } })),
+    waitFor: createMock(() => Promise.resolve({ waited: "text" })),
+    evaluate: createMock(() => Promise.resolve({ value: '"Example"' })),
+    cdp: createMock(() => Promise.resolve({ result: '{"root":{}}' })),
+    handleDialog: createMock(() => Promise.resolve()),
+    waitForDownload: createMock(() => Promise.resolve({ path: "/ws/downloads/f.pdf", filename: "f.pdf" })),
+    pdf: createMock((_p: string, path: string) => Promise.resolve({ path })),
     selectOption: createMock(() => Promise.resolve({ via: "role=option" })),
     pressKey: createMock(() => Promise.resolve()),
     scroll: createMock(() => Promise.resolve()),
@@ -279,5 +298,174 @@ describe("browser action tools", () => {
       assert.strictEqual(result.success, false, `${tool.name} must refuse without a page`);
       assert.ok(result.error?.includes("No active browser page"));
     }
+  });
+});
+
+describe("browser vision and wait tools", () => {
+  function activeState() {
+    const state = createBrowserPageState();
+    state.currentPageId = "p1";
+    return state;
+  }
+
+  test("click_at refuses pixel coordinates instead of round-tripping them", async () => {
+    const client = createMockClient();
+    const tool = createBrowserClickAtTool(client, activeState());
+    const result = await tool.execute({ x: 960, y: 540 });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes("fractions"));
+    assert.strictEqual((client.clickAt as unknown as { calls: unknown[] }).calls.length, 0);
+  });
+
+  test("click_at accepts fractions and reports where it landed", async () => {
+    const client = createMockClient();
+    const tool = createBrowserClickAtTool(client, activeState());
+    const result = await tool.execute({ x: 0.5, y: 0.5 });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("960,540"));
+    assert.ok(result.output.includes("1920x1080"));
+  });
+
+  test("click_at accepts the edges of the viewport", async () => {
+    const tool = createBrowserClickAtTool(createMockClient(), activeState());
+    for (const [x, y] of [[0, 0], [1, 1]]) {
+      const result = await tool.execute({ x, y });
+      assert.strictEqual(result.success, true, `${x},${y} must be valid`);
+    }
+  });
+
+  test("wait_for forwards text, ref and timeout", async () => {
+    const client = createMockClient();
+    const tool = createBrowserWaitForTool(client, activeState());
+    await tool.execute({ text: "Loaded", timeout_ms: 5000 });
+    const call = (client.waitFor as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.deepStrictEqual(call?.arguments[1], { text: "Loaded", ref: undefined, timeoutMs: 5000 });
+  });
+
+  test("hover and drag forward their refs", async () => {
+    const client = createMockClient();
+    await createBrowserHoverTool(client, activeState()).execute({ ref: 3 });
+    await createBrowserDragTool(client, activeState()).execute({ from_ref: 4, to_ref: 5 });
+    const hover = (client.hover as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    const drag = (client.drag as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual(hover?.arguments[1], 3);
+    assert.deepStrictEqual(drag?.arguments.slice(1, 3), [4, 5]);
+  });
+});
+
+describe("browser low-level tools", () => {
+  function activeState() {
+    const state = createBrowserPageState();
+    state.currentPageId = "p1";
+    return state;
+  }
+
+  test("eval is refused unless allowEval is set", async () => {
+    const client = createMockClient();
+    const tool = createBrowserEvalTool(client, activeState(), { config: {} });
+    const result = await tool.execute({ js: "return 1" });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes("allowEval"));
+    assert.strictEqual((client.evaluate as unknown as { calls: unknown[] }).calls.length, 0);
+  });
+
+  test("eval runs when enabled", async () => {
+    const client = createMockClient();
+    const tool = createBrowserEvalTool(client, activeState(), { config: { allowEval: true } });
+    const result = await tool.execute({ js: "return document.title" });
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.output, '"Example"');
+  });
+
+  test("cdp is refused unless allowCdp is set", async () => {
+    const tool = createBrowserCdpTool(createMockClient(), activeState(), { config: {} });
+    const result = await tool.execute({ method: "DOM.getDocument" });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes("allowCdp"));
+  });
+
+  test("cdp refuses a method outside the allowlist without calling the sidecar", async () => {
+    const client = createMockClient();
+    const tool = createBrowserCdpTool(client, activeState(), { config: { allowCdp: true } });
+    for (const method of ["Network.getAllCookies", "Storage.getStorageKeyForFrame", "Target.createTarget", "Browser.close"]) {
+      const result = await tool.execute({ method });
+      assert.strictEqual(result.success, false, `${method} must be refused`);
+      assert.ok(result.error?.includes("not allowed"));
+    }
+    assert.strictEqual((client.cdp as unknown as { calls: unknown[] }).calls.length, 0);
+  });
+
+  test("cdp allows an allowlisted method", async () => {
+    const client = createMockClient();
+    const tool = createBrowserCdpTool(client, activeState(), { config: { allowCdp: true } });
+    const result = await tool.execute({ method: "DOM.getDocument", params: { depth: 1 } });
+    assert.strictEqual(result.success, true);
+    const call = (client.cdp as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual(call?.arguments[1], "DOM.getDocument");
+    assert.deepStrictEqual(call?.arguments[2], { depth: 1 });
+  });
+
+  test("a custom allowlist replaces the default one", async () => {
+    const tool = createBrowserCdpTool(createMockClient(), activeState(), {
+      config: { allowCdp: true, cdpAllowlist: ["Page.navigate"] },
+    });
+    assert.strictEqual((await tool.execute({ method: "DOM.getDocument" })).success, false);
+    assert.strictEqual((await tool.execute({ method: "Page.navigate" })).success, true);
+  });
+
+  test("isCdpMethodAllowed matches globs and is case-insensitive", () => {
+    assert.ok(isCdpMethodAllowed("DOM.getDocument"));
+    assert.ok(isCdpMethodAllowed("dom.querySelector"));
+    assert.ok(isCdpMethodAllowed("Input.dispatchMouseEvent"));
+    assert.ok(isCdpMethodAllowed("Runtime.evaluate"));
+    assert.ok(!isCdpMethodAllowed("Runtime.addBinding"));
+    assert.ok(!isCdpMethodAllowed("Network.getAllCookies"));
+    assert.ok(isCdpMethodAllowed("Anything.goes", ["*"]));
+  });
+
+  test("handle_dialog forwards the decision and the prompt text", async () => {
+    const client = createMockClient();
+    const tool = createBrowserHandleDialogTool(client, activeState());
+    const result = await tool.execute({ accept: false, prompt_text: "hello" });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("dismissed"));
+    const call = (client.handleDialog as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.deepStrictEqual(call?.arguments.slice(1, 3), [false, "hello"]);
+  });
+
+  test("download defaults to a downloads folder inside the workspace", async () => {
+    const client = createMockClient();
+    const tool = createBrowserDownloadTool(client, activeState(), { workspaceDir: "/ws" });
+    await tool.execute({});
+    const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual(call?.arguments[1], "/ws/downloads");
+  });
+
+  test("download honours a configured directory", async () => {
+    const client = createMockClient();
+    const tool = createBrowserDownloadTool(client, activeState(), {
+      workspaceDir: "/ws",
+      config: { downloadDir: "/data/dl" },
+    });
+    await tool.execute({});
+    const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual(call?.arguments[1], "/data/dl");
+  });
+
+  test("pdf refuses a destination outside the workspace", async () => {
+    const client = createMockClient();
+    const tool = createBrowserPdfTool(client, activeState(), { workspaceDir: "/ws" });
+    const result = await tool.execute({ path: "/etc/evil.pdf" });
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error?.includes("escapes workspace"));
+    assert.strictEqual((client.pdf as unknown as { calls: unknown[] }).calls.length, 0);
+  });
+
+  test("pdf defaults into the download directory", async () => {
+    const client = createMockClient();
+    const tool = createBrowserPdfTool(client, activeState(), { workspaceDir: "/ws" });
+    const result = await tool.execute({});
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("/ws/downloads/page-"));
   });
 });

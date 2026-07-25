@@ -50,6 +50,45 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
           `<!DOCTYPE html><html><body><div style="height:3000px">spacer</div><button id="deep" style="width:200px;height:30px">Deep button</button></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         ),
+        // Content in an iframe lives in a separate JS context: without per-frame stamping the
+        // agent cannot see or reach any of it.
+        "/iframe": new Response(
+          `<!DOCTYPE html><html><body><h1>Outer</h1><iframe src="/iframe-inner" width="400" height="200"></iframe></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/iframe-inner": new Response(
+          `<!DOCTYPE html><html><body><button id="b" style="width:150px;height:28px">Inner button</button><script>document.getElementById("b").onclick=()=>{document.getElementById("b").textContent="inner clicked";};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        // Web components hide their controls in a shadow root, which querySelectorAll skips.
+        "/shadow": new Response(
+          `<!DOCTYPE html><html><body><div id="host"></div><script>const r=document.getElementById("host").attachShadow({mode:"open"});r.innerHTML='<button id="sb" style="width:150px;height:28px">Shadow button</button><div id="out">idle</div>';r.getElementById("sb").onclick=()=>{r.getElementById("out").textContent="shadow clicked";};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/dialog": new Response(
+          `<!DOCTYPE html><html><body><button id="ask" style="width:150px;height:28px">Ask</button><div id="res">none</div><script>document.getElementById("ask").onclick=()=>{const r=confirm("sure?");document.getElementById("res").textContent="answer "+r;};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/hover": new Response(
+          `<!DOCTYPE html><html><body><button id="menu" style="width:150px;height:28px">Menu</button><button id="sub" style="display:none;width:150px;height:28px">Submenu item</button><script>document.getElementById("menu").onmouseenter=()=>{document.getElementById("sub").style.display="block";};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        // A viewport-sized pad that records where the click landed, to check the
+        // fraction-to-pixel conversion rather than merely that a click happened.
+        "/pad": new Response(
+          `<!DOCTYPE html><html><body style="margin:0"><div id="pad" style="width:100vw;height:100vh"></div><div id="out" style="position:fixed;bottom:0;left:0">none</div><script>document.getElementById("pad").onclick=(e)=>{document.getElementById("out").textContent="at "+e.clientX+","+e.clientY;};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/downloadpage": new Response(
+          `<!DOCTYPE html><html><body><a id="dl" href="/file" style="display:block;width:150px;height:28px">Download</a></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/file": new Response("hello", {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": 'attachment; filename="hello.txt"',
+          },
+        }),
       },
     });
     baseUrl = `http://localhost:${server.port}`;
@@ -193,6 +232,103 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     await client.scroll(result.pageId, "down", 3000);
     const after = await client.snapshot(result.pageId);
     assert.ok(/\[__ref="\d+"\] button "Deep button"(?! \(offscreen)/.test(after.raw), "scroll must reveal it");
+  });
+
+  test("iframe content gets refs and is clickable across the frame boundary", async () => {
+    const result = await client.navigate(`${baseUrl}/iframe`);
+    assert.ok(result.snapshot.raw.includes("[iframe"), "the iframe must be announced");
+    const ref = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button "Inner button"/)?.[1]);
+    assert.ok(ref > 0, "the button inside the iframe must get a ref");
+    await client.click(result.pageId, ref);
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("inner clicked"), "the click must reach inside the iframe");
+  });
+
+  test("shadow DOM controls get refs and are clickable", async () => {
+    const result = await client.navigate(`${baseUrl}/shadow`);
+    const ref = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button "Shadow button"/)?.[1]);
+    assert.ok(ref > 0, "a button inside a shadow root must get a ref");
+    await client.click(result.pageId, ref);
+    const out = await client.evaluate(
+      result.pageId,
+      "return document.getElementById('host').shadowRoot.getElementById('out').textContent",
+    );
+    assert.strictEqual(out.value, '"shadow clicked"');
+  });
+
+  test("hover reveals a menu that is hidden otherwise", async () => {
+    const result = await client.navigate(`${baseUrl}/hover`);
+    assert.ok(!result.snapshot.raw.includes("Submenu item"), "the submenu starts hidden");
+    const menu = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button "Menu"/)?.[1]);
+    assert.ok(menu > 0, "the hover trigger must have a ref");
+    await client.hover(result.pageId, menu);
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("Submenu item"), "hovering must reveal the submenu");
+  });
+
+  test("click_at converts viewport fractions into the right pixel position", async () => {
+    const result = await client.navigate(`${baseUrl}/pad`);
+    const at = await client.clickAt(result.pageId, 0.5, 0.5);
+    const out = await client.evaluate(result.pageId, "return document.getElementById('out').textContent");
+    const expected = `"at ${Math.round(at.viewport.width * 0.5)},${Math.round(at.viewport.height * 0.5)}"`;
+    assert.strictEqual(out.value, expected);
+  });
+
+  test("click_at refuses coordinates outside 0..1", async () => {
+    const result = await client.navigate(`${baseUrl}/pad`);
+    await assert.rejects(client.clickAt(result.pageId, 960, 540), /fractions/);
+  });
+
+  test("wait_for resolves on visible text", async () => {
+    const result = await client.navigate(`${baseUrl}/button`);
+    const waited = await client.waitFor(result.pageId, { text: "Click me", timeoutMs: 3000 });
+    assert.strictEqual(waited.waited, "text");
+  });
+
+  test("dialogs are auto-accepted by default and can be dismissed on demand", async () => {
+    const result = await client.navigate(`${baseUrl}/dialog`);
+    const ask = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button "Ask"/)?.[1]);
+    await client.click(result.pageId, ask);
+    let res = await client.evaluate(result.pageId, "return document.getElementById('res').textContent");
+    assert.strictEqual(res.value, '"answer true"', "default policy accepts");
+
+    await client.handleDialog(result.pageId, false);
+    await client.click(result.pageId, ask);
+    res = await client.evaluate(result.pageId, "return document.getElementById('res').textContent");
+    assert.strictEqual(res.value, '"answer false"', "the override must dismiss exactly once");
+
+    await client.click(result.pageId, ask);
+    res = await client.evaluate(result.pageId, "return document.getElementById('res').textContent");
+    assert.strictEqual(res.value, '"answer true"', "auto-accept must resume after the override");
+  });
+
+  test("downloads are captured and saved", async () => {
+    const dir = "/tmp/my-claw-e2e-downloads";
+    const result = await client.navigate(`${baseUrl}/downloadpage`);
+    const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(result.pageId, link).catch(() => undefined); // a download click never "navigates"
+    const saved = await client.waitForDownload(result.pageId, dir, 15000);
+    assert.strictEqual(saved.filename, "hello.txt");
+    const { readFile } = await import("node:fs/promises");
+    assert.strictEqual(await readFile(saved.path, "utf8"), "hello");
+  });
+
+  test("cdp reaches allowed methods and the sidecar refuses session-credential ones", async () => {
+    const result = await client.navigate(`${baseUrl}/button`);
+    const doc = await client.cdp(result.pageId, "DOM.getDocument", { depth: 1 });
+    assert.ok(doc.result.includes("root"), "DOM.getDocument must work");
+    // Defence in depth: refused by the sidecar itself, whatever the Bun-side config says.
+    await assert.rejects(client.cdp(result.pageId, "Network.getAllCookies"), /blocked/i);
+    await assert.rejects(client.cdp(result.pageId, "Target.createTarget"), /blocked/i);
+  });
+
+  test("pdf export writes a real PDF", async () => {
+    const path = "/tmp/my-claw-e2e-page.pdf";
+    const result = await client.navigate(`${baseUrl}/button`);
+    await client.pdf(result.pageId, path);
+    const { readFile } = await import("node:fs/promises");
+    const head = (await readFile(path)).subarray(0, 5).toString("latin1");
+    assert.strictEqual(head, "%PDF-", "the file must actually be a PDF");
   });
 
   test("multi-tab lifecycle: open two, focus one, close one", async () => {

@@ -240,4 +240,92 @@ describe("BrowserClient", () => {
       m.restore();
     }
   });
+
+  test("the P1/P2 endpoints are addressed with the expected payloads", async () => {
+    const m = mockSidecar({
+      "click-at": { x: 10, y: 20, viewport: { width: 100, height: 200 } },
+      "wait-for": { waited: "text" },
+      hover: {},
+      drag: {},
+      evaluate: { value: '"t"' },
+      cdp: { result: "{}" },
+      "handle-dialog": {},
+      "download-wait": { path: "/d/f.pdf", filename: "f.pdf" },
+      pdf: { path: "/d/p.pdf" },
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      const at = await client.clickAt("p1", 0.25, 0.75);
+      assert.deepStrictEqual(at.viewport, { width: 100, height: 200 });
+      await client.waitFor("p1", { text: "Loaded", timeoutMs: 4000 });
+      await client.hover("p1", 2);
+      await client.drag("p1", 3, 4);
+      await client.evaluate("p1", "return 1");
+      await client.cdp("p1", "DOM.getDocument", { depth: 1 });
+      await client.handleDialog("p1", false, "typed");
+      const dl = await client.waitForDownload("p1", "/d", 1000);
+      assert.strictEqual(dl.filename, "f.pdf");
+      await client.pdf("p1", "/d/p.pdf");
+
+      const byPath = new Map(m.calls.map((c) => [c.path, c.body]));
+      assert.deepStrictEqual(byPath.get("click-at"), { pageId: "p1", x: 0.25, y: 0.75 });
+      assert.deepStrictEqual(byPath.get("wait-for"), { pageId: "p1", text: "Loaded", timeoutMs: 4000 });
+      assert.deepStrictEqual(byPath.get("drag"), { pageId: "p1", fromRef: 3, toRef: 4 });
+      assert.deepStrictEqual(byPath.get("cdp"), { pageId: "p1", method: "DOM.getDocument", params: { depth: 1 } });
+      assert.deepStrictEqual(byPath.get("handle-dialog"), { pageId: "p1", accept: false, promptText: "typed" });
+      assert.deepStrictEqual(byPath.get("download-wait"), { pageId: "p1", dir: "/d", timeoutMs: 1000 });
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("a per-endpoint timeout aborts the call", async () => {
+    // The mock honours the abort signal, so this checks the real deadline the client sets
+    // rather than just the presence of a signal.
+    const handle = mockFetch(async (_input, init) => {
+      const signal = (init as { signal?: AbortSignal }).signal;
+      return await new Promise<never>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(new Response("{}", { status: 200 }) as never), 2000);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error("TimeoutError: signal timed out"));
+        });
+      });
+    });
+    try {
+      const client = new BrowserClient(SIDECAR, undefined, { default: 40 });
+      await assert.rejects(client.snapshot("p1"), /unreachable|timed out/i);
+    } finally {
+      handle.restore();
+    }
+  });
+
+  test("an endpoint-specific timeout overrides the default", async () => {
+    const seen: number[] = [];
+    const handle = mockFetch(async (input, init) => {
+      const signal = (init as { signal?: AbortSignal }).signal;
+      const path = String(input).split("/").pop() ?? "";
+      const started = Date.now();
+      return await new Promise<never>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          seen.push(Date.now() - started);
+          resolve(new Response(JSON.stringify({ waited: "delay" }), { status: 200 }) as never);
+        }, 120);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new Error(`aborted ${path}`));
+        });
+      });
+    });
+    try {
+      // snapshot uses the short default and must abort; wait-for has room and must succeed.
+      const client = new BrowserClient(SIDECAR, undefined, { default: 40, "wait-for": 600 });
+      await assert.rejects(client.snapshot("p1"), /unreachable|aborted/i);
+      const result = await client.waitFor("p1", { timeoutMs: 10 });
+      assert.strictEqual(result.waited, "delay");
+      assert.ok(seen.length === 1, "only the long-timeout call should have completed");
+    } finally {
+      handle.restore();
+    }
+  });
 });
