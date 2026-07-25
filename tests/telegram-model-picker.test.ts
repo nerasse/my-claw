@@ -14,10 +14,13 @@ test("ModelPicker builds buttons and parses callbacks", () => {
   assert.equal(picker.hasModels(), true);
   assert.equal(buttons.length, 3);
   assert.match(buttons[1]?.label ?? "", /selected/);
-  assert.equal(buttons[1]?.action, "mdl:1");
-  assert.equal(picker.parseCallback("mdl:1"), "accounts/fireworks/models/llama-v3p3-70b-instruct");
-  assert.equal(picker.parseCallback("mdl:99"), null);
+  const llama = "accounts/fireworks/models/llama-v3p3-70b-instruct";
+  assert.equal(buttons[1]?.action, `mdl:${picker.refForModel(llama)}`);
+  assert.equal(picker.parseCallback(`mdl:${picker.refForModel(llama)}`), llama);
+  assert.equal(picker.parseCallback("mdl:ffffffffffff"), null);
   assert.equal(picker.parseCallback("bad"), null);
+  // Telegram rejects callback_data over 64 bytes, and these ids are long.
+  for (const button of buttons) assert.ok(Buffer.byteLength(button.action) <= 64, button.action);
 });
 
 test("ModelPicker finds models by id label and fuzzy short name", () => {

@@ -33,7 +33,7 @@ test("telegram session handlers manage model and status", async () => {
   const modelMenu = await commandHandler("c1", "u1", "dm", "model", "");
   assert.equal(typeof modelMenu, "object");
 
-  const callbackResult = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:1" });
+  const callbackResult = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: `mdl:${modelPicker.refForModel("alt-model")}` });
   assert.match(callbackResult?.text ?? "", /Alt/);
 
   const status = await commandHandler("c1", "u1", "dm", "status", "");
@@ -64,19 +64,19 @@ test("telegram model submenu navigates without changing the session, then select
   const commandHandler = createTelegramCommandHandler({ config: groupedConfig, sessionManager, modelPicker });
 
   // Open the Claude submenu: menu re-renders, model unchanged (still default).
-  const opened = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdlg:0" });
+  const opened = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: `mdlg:${modelPicker.refForGroup("Claude")}` });
   assert.match(opened?.text ?? "", /Claude/);
-  assert.ok(opened?.buttons?.some((b) => b.action === "mdl:2"));
+  assert.ok(opened?.buttons?.some((b) => b.action === `mdl:${modelPicker.refForModel("claude-opus-4-8")}`));
   assert.ok(opened?.buttons?.some((b) => b.action === "mdlb"));
   const afterOpen = await commandHandler("c1", "u1", "dm", "status", "");
   assert.match(String(afterOpen), /base-model/);
 
   // Back to root: still unchanged.
   const back = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdlb" });
-  assert.ok(back?.buttons?.some((b) => b.action === "mdlg:0"));
+  assert.ok(back?.buttons?.some((b) => b.action === `mdlg:${modelPicker.refForGroup("Claude")}`));
 
   // Select opus from within the group.
-  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:2" });
+  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: `mdl:${modelPicker.refForModel("claude-opus-4-8")}` });
   assert.match(selected?.text ?? "", /opus/);
   const afterSelect = await commandHandler("c1", "u1", "dm", "status", "");
   assert.match(String(afterSelect), /claude-opus-4-8/);
@@ -121,7 +121,7 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
   assert.match(String(bad), /Unknown effort/);
 });
 
-test("telegram model selection is terminal (no effort chaining); effort via /effort only", async () => {
+test("telegram model selection chains into effort, then terminates the menu", async () => {
   const effortConfig: MyClawConfig = {
     ...config,
     llm: {
@@ -137,7 +137,12 @@ test("telegram model selection is terminal (no effort chaining); effort via /eff
   const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
 
   // Selecting a model chains into the effort keyboard with a keep-current entry.
-  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "mdl:0" });
+  const selected = await callbackHandler({
+    chatId: "c1",
+    userId: "u1",
+    chatType: "dm",
+    data: `mdl:${modelPicker.refForModel("claude-sonnet-5")}`,
+  });
   assert.match(selected?.text ?? "", /Model changed to Sonnet — now choose reasoning effort/);
   assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
   assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
@@ -208,7 +213,7 @@ test("telegram session handlers honor DM per-chat session scope", async () => {
     chatId: "c1",
     userId: "u1",
     chatType: "dm",
-    data: "mdl:0",
+    data: `mdl:${modelPicker.refForModel("base-model")}`,
   });
   assert.match(actionResult?.text ?? "", /Base/);
 
@@ -253,4 +258,45 @@ test("telegram /archive purge removes archived sessions", async () => {
 
   const response = await commandHandler("c1", "u1", "dm", "archive", "all");
   assert.match(String(response), /Archived sessions deleted/);
+});
+
+test("a menu tapped after a discovery refresh still selects the model it displayed", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const liveConfig: MyClawConfig = { ...config, llm: { ...config.llm, models: [...(config.llm.models ?? [])] } };
+  const commandHandler = createTelegramCommandHandler({ config: liveConfig, sessionManager, modelPicker });
+  const callbackHandler = createTelegramCallbackHandler({ config: liveConfig, sessionManager, modelPicker });
+
+  const menu = await commandHandler("c1", "u1", "dm", "model", "");
+  const altButton = (menu as { buttons: Array<{ label: string; action: string }> }).buttons.find((b) =>
+    b.label.startsWith("Alt"),
+  );
+
+  // Discovery prepends models, so every position shifts under the already-rendered keyboard.
+  modelPicker.setModels([{ id: "newly-discovered", label: "New" }, ...(config.llm.models ?? [])]);
+
+  const result = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: altButton?.action ?? "" });
+  assert.match(result?.text ?? "", /Alt/);
+  const status = await commandHandler("c1", "u1", "dm", "status", "");
+  assert.match(String(status), /alt-model/);
+});
+
+test("a menu tapped after its model disappeared says so instead of picking another", async () => {
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(config.llm.models ?? []);
+  const commandHandler = createTelegramCommandHandler({ config, sessionManager, modelPicker });
+  const callbackHandler = createTelegramCallbackHandler({ config, sessionManager, modelPicker });
+
+  const menu = await commandHandler("c1", "u1", "dm", "model", "");
+  const altButton = (menu as { buttons: Array<{ label: string; action: string }> }).buttons.find((b) =>
+    b.label.startsWith("Alt"),
+  );
+
+  modelPicker.setModels([{ id: "base-model", label: "Base" }]);
+
+  const result = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: altButton?.action ?? "" });
+  assert.match(result?.text ?? "", /out of date/);
+  assert.equal(result?.buttons, undefined);
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  assert.equal((await sessionManager.peek(sessionId))?.modelOverride, undefined);
 });

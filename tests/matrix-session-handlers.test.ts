@@ -45,7 +45,7 @@ test("matrix session handlers manage model and status", async () => {
     chatId: "!room:test",
     userId: "@u1:example.org",
     chatType: "dm",
-    data: "mdl:0",
+    data: `mdl:${modelPicker.refForModel("base-model")}`,
     messageId: "$menu",
   });
   assert.match(actionResult?.text ?? "", /Model changed to Base/);
@@ -75,13 +75,13 @@ test("matrix model submenu navigates and selects within a group", async () => {
   const commandHandler = createMatrixCommandHandler({ config: groupedConfig, sessionManager, modelPicker });
 
   const root = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
-  assert.ok((root as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "mdlg:0"));
+  assert.ok((root as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === `mdlg:${modelPicker.refForGroup("Claude")}`));
 
   const opened = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",
     chatType: "dm",
-    data: "mdlg:0",
+    data: `mdlg:${modelPicker.refForGroup("Claude")}`,
     messageId: "$menu",
   });
   assert.match(opened?.text ?? "", /Claude/);
@@ -93,7 +93,7 @@ test("matrix model submenu navigates and selects within a group", async () => {
     chatId: "!r:test",
     userId: "@u1:example.org",
     chatType: "dm",
-    data: "mdl:2",
+    data: `mdl:${modelPicker.refForModel("claude-opus-4-8")}`,
     messageId: "$menu",
   });
   assert.match(selected?.text ?? "", /Model changed to opus/);
@@ -132,7 +132,7 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
     chatId: "!r:test",
     userId: "@u1:example.org",
     chatType: "dm",
-    data: "mdl:1",
+    data: `mdl:${modelPicker.refForModel("alt-model")}`,
     messageId: "$menu",
   });
   assert.equal(selected?.supersededText, "Model changed to Alt");
@@ -240,7 +240,7 @@ test("matrix session handlers honor DM per-room session scope", async () => {
     chatId: "!dm-room:test",
     userId: "@u1:example.org",
     chatType: "dm",
-    data: "mdl:0",
+    data: `mdl:${modelPicker.refForModel("base-model")}`,
     messageId: "$menu",
   });
   assert.match(actionResult?.text ?? "", /Model changed to Base/);

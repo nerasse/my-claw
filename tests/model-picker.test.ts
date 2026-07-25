@@ -73,16 +73,36 @@ test("buildButtons marks current model", () => {
   assert.equal(buttons[1]?.label, "Claude Sonnet 4 [selected]");
 });
 
-test("parseCallback returns model id by index", () => {
+test("parseCallback resolves a model ref back to its id", () => {
   const picker = new ModelPicker(models);
-  assert.equal(picker.parseCallback("mdl:0"), "accounts/fireworks/models/kimi-k2p6-turbo");
-  assert.equal(picker.parseCallback("mdl:1"), "claude-sonnet-4");
+  const id = "accounts/fireworks/models/kimi-k2p6-turbo";
+  assert.equal(picker.parseCallback(`mdl:${picker.refForModel(id)}`), id);
+  assert.equal(picker.parseCallback(`mdl:${picker.refForModel("claude-sonnet-4")}`), "claude-sonnet-4");
 });
 
 test("parseCallback returns null for invalid", () => {
   const picker = new ModelPicker(models);
-  assert.equal(picker.parseCallback("mdl:99"), null);
+  assert.equal(picker.parseCallback("mdl:deadbeefdead"), null);
   assert.equal(picker.parseCallback("foo"), null);
+});
+
+test("a model ref survives reordering, unlike a position", () => {
+  // A menu can outlive a discovery refresh that reorders the list; the button must still mean
+  // the model it was rendered for.
+  const picker = new ModelPicker(models);
+  const data = picker.buildButtons("claude-sonnet-4")[1]?.action ?? "";
+  picker.setModels([{ id: "brand-new", label: "New" }, ...models]);
+  assert.equal(picker.parseCallback(data), "claude-sonnet-4");
+});
+
+test("a ref for a model that is gone reports staleness instead of picking a neighbour", () => {
+  const picker = new ModelPicker(models);
+  const data = picker.buildButtons("")[1]?.action ?? "";
+  picker.setModels([{ id: "only-one", label: "Only" }]);
+  assert.equal(picker.parseCallback(data), null);
+  assert.deepEqual(picker.parseCallbackAction(data), { kind: "stale" });
+  // Data that is not ours still falls through so other features keep their callbacks.
+  assert.equal(picker.parseCallbackAction("nope"), null);
 });
 
 test("find prefers exact match over partial", () => {
@@ -114,41 +134,47 @@ test("root buttons show ungrouped models then one entry per group", () => {
   const picker = new ModelPicker(grouped);
   const buttons = picker.buildButtons("mimo");
   assert.deepEqual(buttons, [
-    { label: "MiMo [selected]", action: "mdl:0" },
-    { label: "Qwen", action: "mdl:1" },
-    { label: "Claude >", action: "mdlg:0" },
-    { label: "Google >", action: "mdlg:1" },
+    { label: "MiMo [selected]", action: `mdl:${picker.refForModel("mimo")}` },
+    { label: "Qwen", action: `mdl:${picker.refForModel("qwen")}` },
+    { label: "Claude >", action: `mdlg:${picker.refForGroup("Claude")}` },
+    { label: "Google >", action: `mdlg:${picker.refForGroup("Google")}` },
   ]);
 });
 
 test("root marks the group containing the current model", () => {
   const picker = new ModelPicker(grouped);
   const buttons = picker.buildButtons("claude-opus-4-8");
-  assert.equal(buttons.find((b) => b.action === "mdlg:0")?.label, "Claude > [selected]");
+  assert.equal(buttons.find((b) => b.action === `mdlg:${picker.refForGroup("Claude")}`)?.label, "Claude > [selected]");
 });
 
-test("group buttons list the group models by absolute index + a back entry", () => {
+test("group buttons list the group models + a back entry", () => {
   const picker = new ModelPicker(grouped);
-  const buttons = picker.buildGroupButtons(0, "claude-opus-4-8");
+  const buttons = picker.buildGroupButtons("Claude", "claude-opus-4-8");
   assert.deepEqual(buttons, [
-    { label: "sonnet", action: "mdl:2" },
-    { label: "opus [selected]", action: "mdl:3" },
+    { label: "sonnet", action: `mdl:${picker.refForModel("claude-sonnet-5")}` },
+    { label: "opus [selected]", action: `mdl:${picker.refForModel("claude-opus-4-8")}` },
     { label: "< Back", action: "mdlb" },
   ]);
 });
 
 test("parseCallbackAction distinguishes select / openGroup / back", () => {
   const picker = new ModelPicker(grouped);
-  assert.deepEqual(picker.parseCallbackAction("mdl:3"), { kind: "select", modelId: "claude-opus-4-8" });
-  assert.deepEqual(picker.parseCallbackAction("mdlg:1"), { kind: "openGroup", groupIndex: 1 });
+  assert.deepEqual(picker.parseCallbackAction(`mdl:${picker.refForModel("claude-opus-4-8")}`), {
+    kind: "select",
+    modelId: "claude-opus-4-8",
+  });
+  assert.deepEqual(picker.parseCallbackAction(`mdlg:${picker.refForGroup("Google")}`), {
+    kind: "openGroup",
+    groupPath: "Google",
+  });
   assert.deepEqual(picker.parseCallbackAction("mdlb"), { kind: "back" });
-  assert.equal(picker.parseCallbackAction("mdlg:9"), null);
+  assert.deepEqual(picker.parseCallbackAction("mdlg:aaaaaaaaaaaa"), { kind: "stale" });
   assert.equal(picker.parseCallbackAction("nope"), null);
 });
 
-test("buildGroupButtons falls back to root for an out-of-range group", () => {
+test("buildGroupButtons falls back to root for a group that no longer exists", () => {
   const picker = new ModelPicker(grouped);
-  assert.deepEqual(picker.buildGroupButtons(9, "mimo"), picker.buildButtons("mimo"));
+  assert.deepEqual(picker.buildGroupButtons("Vanished", "mimo"), picker.buildButtons("mimo"));
 });
 
 test("formatModelGroupSummary: one line per top-level group with counts + current marker", () => {
@@ -176,7 +202,7 @@ test("formatModelGroupSummary: nested groups count under their top-level segment
 test("no groups keeps a flat root menu", () => {
   const picker = new ModelPicker([{ id: "a", label: "A" }]);
   assert.equal(picker.hasGroups(), false);
-  assert.deepEqual(picker.buildButtons("a"), [{ label: "A [selected]", action: "mdl:0" }]);
+  assert.deepEqual(picker.buildButtons("a"), [{ label: "A [selected]", action: `mdl:${picker.refForModel("a")}` }]);
 });
 
 // --- Nested groups (2-level version submenu) ---
@@ -196,28 +222,28 @@ test("nested: groupOrder includes intermediate paths", () => {
 test("nested: root shows ungrouped model + top-level group only", () => {
   const picker = new ModelPicker(nested);
   assert.deepEqual(picker.buildButtons("mimo"), [
-    { label: "MiMo [selected]", action: "mdl:0" },
-    { label: "Claude >", action: "mdlg:0" },
+    { label: "MiMo [selected]", action: `mdl:${picker.refForModel("mimo")}` },
+    { label: "Claude >", action: `mdlg:${picker.refForGroup("Claude")}` },
   ]);
 });
 
 test("nested: Claude node shows its model + Opus subgroup + back-to-root", () => {
   const picker = new ModelPicker(nested);
-  const buttons = picker.buildGroupButtons(0, "claude-opus-4-8");
+  const buttons = picker.buildGroupButtons("Claude", "claude-opus-4-8");
   assert.deepEqual(buttons, [
-    { label: "Sonnet", action: "mdl:1" },
-    { label: "Opus > [selected]", action: "mdlg:1" },
+    { label: "Sonnet", action: `mdl:${picker.refForModel("claude-sonnet-5")}` },
+    { label: "Opus > [selected]", action: `mdlg:${picker.refForGroup("Claude/Opus")}` },
     { label: "< Back", action: "mdlb" },
   ]);
 });
 
 test("nested: Opus node lists versions + back-to-parent-group", () => {
   const picker = new ModelPicker(nested);
-  const buttons = picker.buildGroupButtons(1, "claude-opus-4-5");
+  const buttons = picker.buildGroupButtons("Claude/Opus", "claude-opus-4-5");
   assert.deepEqual(buttons, [
-    { label: "Opus 4.8", action: "mdl:2" },
-    { label: "Opus 4.5 [selected]", action: "mdl:3" },
-    { label: "< Back", action: "mdlg:0" },
+    { label: "Opus 4.8", action: `mdl:${picker.refForModel("claude-opus-4-8")}` },
+    { label: "Opus 4.5 [selected]", action: `mdl:${picker.refForModel("claude-opus-4-5")}` },
+    { label: "< Back", action: `mdlg:${picker.refForGroup("Claude")}` },
   ]);
 });
 
