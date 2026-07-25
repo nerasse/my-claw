@@ -9,6 +9,9 @@ export interface ModelOption {
   // Per-model supported effort levels (from SDK discovery). When present, the effort submenu
   // shows only these levels for this model; when absent, falls back to the global levels.
   supportedEffortLevels?: EffortLevel[];
+  // Explicit `false` means the provider says this model has no reasoning effort at all, which is
+  // different from "unknown" (undefined) where the global list is the best guess.
+  supportsEffort?: boolean;
 }
 
 export interface EffortOptions {
@@ -101,6 +104,7 @@ export class ModelPicker {
   effortLevelsFor(modelId: string): EffortLevel[] {
     if (!this.effort.enabled) return [];
     const model = this.models.find((m) => m.id === modelId);
+    if (model?.supportsEffort === false) return [];
     const levels = model?.supportedEffortLevels;
     return levels && levels.length > 0 ? levels : this.effort.levels;
   }

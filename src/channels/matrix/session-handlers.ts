@@ -373,9 +373,11 @@ export function createMatrixCommandHandler({
       }
 
       case "effort": {
-        const levels = modelPicker.effortLevels();
-        if (levels.length === 0) return "Effort control is not enabled.";
         const existingSession = await sessionManager.peek(sessionId);
+        // Levels are per model: listing the global set would offer values the current model rejects.
+        const activeModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const levels = modelPicker.effortLevelsFor(activeModel);
+        if (levels.length === 0) return "Effort control is not enabled.";
         const currentEffort = existingSession?.effortOverride ?? config.llm.effort;
         const requested = args.trim();
         if (requested) {
@@ -599,7 +601,7 @@ export function createMatrixActionHandler({
     await sessionManager.persist(sessionId);
     const label = modelPicker.labelFor(modelId);
 
-    const levels = modelPicker.effortLevels();
+    const levels = modelPicker.effortLevelsFor(modelId);
     if (levels.length > 0) {
       return {
         ...buildMatrixMenuFromButtons({
