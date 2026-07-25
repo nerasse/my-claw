@@ -18,97 +18,147 @@ function extractRefs(snapshot) {
   return [...new Set(refs)].sort((a, b) => a - b);
 }
 
-// Playwright's ariaSnapshot({ ref: true }) emits no usable ref markers in this
-// build, so we assign our own: stamp every visible interactive element with a
-// __ref attribute (clicked via [__ref="N"], also used by the label overlay) and
-// list them. The aria tree is kept for readable page context.
+// Runs inside the page (once per frame). Playwright's ariaSnapshot({ ref: true }) emits no
+// usable ref markers in this build, so we assign our own: stamp every visible interactive
+// element with a __ref attribute (acted on via [__ref="N"], also used by the label overlay).
+function stampFrame({ max, start }) {
+  // role=option/listbox/menuitemradio/treeitem are load-bearing: custom React comboboxes
+  // render their options as plain divs carrying those roles. Without them in this list the
+  // options appear in the aria tree but get no ref, so the agent can see them and still be
+  // unable to click any of them.
+  const SELECTOR = [
+    "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
+    "[role=button]", "[role=link]", "[role=textbox]", "[role=searchbox]",
+    "[role=checkbox]", "[role=radio]", "[role=combobox]", "[role=listbox]",
+    "[role=option]", "[role=menuitem]", "[role=menuitemcheckbox]",
+    "[role=menuitemradio]", "[role=treeitem]", "[role=tab]", "[role=switch]",
+    "[role=slider]", "[role=spinbutton]",
+    "label", "summary", '[tabindex]:not([tabindex="-1"])',
+    "[contenteditable='']", "[contenteditable=true]", "[onclick]",
+  ].join(",");
+
+  for (const el of Array.from(document.querySelectorAll("[__ref]"))) {
+    el.removeAttribute("__ref");
+  }
+
+  // Web components hide their controls in shadow roots, which querySelectorAll does not
+  // enter: without this walk a whole class of sites exposes zero refs.
+  const found = [];
+  const walk = (root) => {
+    for (const el of Array.from(root.querySelectorAll("*"))) {
+      if (el.matches(SELECTOR)) found.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  };
+  walk(document);
+
+  const viewportHeight = window.innerHeight;
+  const viewportWidth = window.innerWidth;
+  const candidates = [];
+  for (const el of found) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === "hidden" || style.display === "none") continue;
+    const inViewport =
+      rect.bottom > 0 && rect.top < viewportHeight && rect.right > 0 && rect.left < viewportWidth;
+    candidates.push({ el, inViewport });
+  }
+  // Viewport-first: the ref budget is capped, so off-screen page chrome (footers, hidden
+  // menus) must never consume the budget before the element the agent is looking at.
+  const ordered = [
+    ...candidates.filter((c) => c.inViewport),
+    ...candidates.filter((c) => !c.inViewport),
+  ];
+
+  const lines = [];
+  let ref = start - 1;
+  for (const { el, inViewport } of ordered) {
+    if (ref - start + 1 >= max) break;
+    ref += 1;
+    el.setAttribute("__ref", String(ref));
+    const role = el.getAttribute("role") || el.tagName.toLowerCase();
+    const name = (
+      el.getAttribute("aria-label") ||
+      el.getAttribute("placeholder") ||
+      (typeof el.value === "string" ? el.value : "") ||
+      el.innerText ||
+      el.getAttribute("title") ||
+      el.getAttribute("name") ||
+      ""
+    ).replace(/\s+/g, " ").trim().slice(0, 80);
+    lines.push(`[__ref="${ref}"] ${role} "${name}"${inViewport ? "" : " (offscreen — scroll to reach)"}`);
+  }
+  return { lines: lines.join("\n"), used: lines.length };
+}
+
+/** Snapshots every frame of the page with ONE global ref counter, so a ref is unique
+ *  across the main document and all iframes. Content inside an iframe is otherwise
+ *  invisible to the agent: it lives in a separate JS context. */
 export async function snapshotPage(page) {
   const ariaTree = await page.locator("body").ariaSnapshot().catch(() => "");
 
-  const interactive = await page.evaluate((max) => {
-    // role=option/listbox/menuitemradio/treeitem are load-bearing: custom React
-    // comboboxes render their options as plain divs carrying those roles. Without them
-    // in this list the options appear in the aria tree but get no ref, so the agent can
-    // see them and still be unable to click any of them.
-    const SELECTOR = [
-      "a[href]", "button", "input:not([type=hidden])", "select", "textarea",
-      "[role=button]", "[role=link]", "[role=textbox]", "[role=searchbox]",
-      "[role=checkbox]", "[role=radio]", "[role=combobox]", "[role=listbox]",
-      "[role=option]", "[role=menuitem]", "[role=menuitemcheckbox]",
-      "[role=menuitemradio]", "[role=treeitem]", "[role=tab]", "[role=switch]",
-      "[role=slider]", "[role=spinbutton]",
-      "label", "summary", '[tabindex]:not([tabindex="-1"])',
-      "[contenteditable='']", "[contenteditable=true]", "[onclick]",
-    ].join(",");
-    for (const el of Array.from(document.querySelectorAll("[__ref]"))) {
-      el.removeAttribute("__ref");
-    }
-    const viewportHeight = window.innerHeight;
-    const viewportWidth = window.innerWidth;
-    const candidates = [];
-    for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
-      const style = window.getComputedStyle(el);
-      if (style.visibility === "hidden" || style.display === "none") continue;
-      const inViewport =
-        rect.bottom > 0 && rect.top < viewportHeight && rect.right > 0 && rect.left < viewportWidth;
-      candidates.push({ el, inViewport });
-    }
-    // Viewport-first: the ref budget is capped, so off-screen page chrome (footers, hidden
-    // menus) must never consume the budget before the element the agent is looking at.
-    const ordered = [
-      ...candidates.filter((c) => c.inViewport),
-      ...candidates.filter((c) => !c.inViewport),
-    ];
-    const lines = [];
-    let ref = 0;
-    for (const { el, inViewport } of ordered) {
-      if (ref >= max) break;
-      ref += 1;
-      el.setAttribute("__ref", String(ref));
-      const role = el.getAttribute("role") || el.tagName.toLowerCase();
-      const name = (
-        el.getAttribute("aria-label") ||
-        el.getAttribute("placeholder") ||
-        (typeof el.value === "string" ? el.value : "") ||
-        el.innerText ||
-        el.getAttribute("title") ||
-        el.getAttribute("name") ||
-        ""
-      ).replace(/\s+/g, " ").trim().slice(0, 80);
-      lines.push(`[__ref="${ref}"] ${role} "${name}"${inViewport ? "" : " (offscreen — scroll to reach)"}`);
-    }
-    return lines.join("\n");
-  }, MAX_REFS);
+  const blocks = [];
+  let next = 1;
+  for (const frame of page.frames()) {
+    const budget = MAX_REFS - (next - 1);
+    if (budget <= 0) break;
+    const result = await frame
+      .evaluate(stampFrame, { max: budget, start: next })
+      .catch(() => null); // a cross-origin or detached frame is skipped, never fatal
+    if (!result?.lines) continue;
+    const label = frame === page.mainFrame() ? "" : `\n[iframe ${frame.url().slice(0, 120)}]\n`;
+    blocks.push(`${label}${result.lines}`);
+    next += result.used;
+  }
 
+  const interactive = blocks.join("\n");
   const raw = interactive
     ? `${ariaTree}\n\nInteractive elements (click/type by ref):\n${interactive}`
     : ariaTree;
   return { raw, refs: extractRefs(raw) };
 }
 
+/** Locator for a ref plus the frame that owns it, searched across every frame. Playwright
+ *  CSS pierces open shadow roots on its own, so only iframes need the explicit walk. The
+ *  frame is returned because follow-up lookups (a combobox's options) must stay in it. */
+export async function resolveRef(page, ref) {
+  for (const frame of page.frames()) {
+    const locator = frame.locator(`[__ref="${ref}"]`);
+    if ((await locator.count().catch(() => 0)) > 0) return { locator, frame };
+  }
+  throw new Error(`Ref ${ref} not found on the page — it is stale, re-snapshot and use the new refs.`);
+}
+
 export async function injectRefLabels(page) {
-  await page.evaluate(() => {
-    const elements = document.querySelectorAll("[__ref]");
-    for (const el of Array.from(elements)) {
-      const ref = el.getAttribute("__ref");
-      if (!ref) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
-      const label = document.createElement("div");
-      label.textContent = ref;
-      label.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;background:rgba(255,0,0,0.8);color:white;font-size:12px;font-weight:bold;padding:2px 6px;border-radius:3px;z-index:999999;pointer-events:none;font-family:monospace;`;
-      label.setAttribute("data-my-claw-label", ref);
-      document.body.appendChild(label);
-    }
-  });
+  for (const frame of page.frames()) {
+    await frame
+      .evaluate(() => {
+        const elements = document.querySelectorAll("[__ref]");
+        for (const el of Array.from(elements)) {
+          const ref = el.getAttribute("__ref");
+          if (!ref) continue;
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const label = document.createElement("div");
+          label.textContent = ref;
+          label.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;background:rgba(255,0,0,0.8);color:white;font-size:12px;font-weight:bold;padding:2px 6px;border-radius:3px;z-index:999999;pointer-events:none;font-family:monospace;`;
+          label.setAttribute("data-my-claw-label", ref);
+          document.body.appendChild(label);
+        }
+      })
+      .catch(() => undefined);
+  }
 }
 
 export async function removeRefLabels(page) {
-  await page.evaluate(() => {
-    for (const el of Array.from(document.querySelectorAll("[data-my-claw-label]"))) {
-      el.remove();
-    }
-  });
+  for (const frame of page.frames()) {
+    await frame
+      .evaluate(() => {
+        for (const el of Array.from(document.querySelectorAll("[data-my-claw-label]"))) {
+          el.remove();
+        }
+      })
+      .catch(() => undefined);
+  }
 }
