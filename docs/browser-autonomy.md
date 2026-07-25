@@ -90,7 +90,7 @@ the give-up rule around the escalation ladder below.
 | `browser_eval(js)` | `browser.allowEval` | Arbitrary JS in the page, JSON-serializable return only, output size capped |
 | `browser_cdp(method, params)` | `browser.allowCdp` + method allowlist | Raw CDP through `page.context().newCDPSession(page)` — **inside** the sidecar, so the sidecar stays the single owner of the browser |
 | `browser_handle_dialog(accept, text?)` | none | Overrides the auto-accept default (`docs/browser.md:61`) for the next dialog only; auto-accept remains the default so a dialog can never hang a run |
-| `browser_download_wait(timeout_ms?)` | none | `page.on("download")` saved into a sandboxed download dir |
+| `browser_download(timeout_ms?)` | none | `page.on("download")` saved into a sandboxed download dir |
 | `browser_pdf()` | none | `page.pdf()` for archiving a result |
 
 ## Escalation ladder
