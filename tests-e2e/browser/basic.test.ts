@@ -313,6 +313,12 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     assert.strictEqual(await readFile(saved.path, "utf8"), "hello");
   });
 
+  test("download_wait fails fast on a stale page instead of burning the timeout", async () => {
+    const started = Date.now();
+    await assert.rejects(client.waitForDownload("bogus-page-id", "/tmp", 20000), /Unknown pageId/);
+    assert.ok(Date.now() - started < 3000, "it must not wait for the timeout");
+  });
+
   test("cdp reaches allowed methods and the sidecar refuses session-credential ones", async () => {
     const result = await client.navigate(`${baseUrl}/button`);
     const doc = await client.cdp(result.pageId, "DOM.getDocument", { depth: 1 });

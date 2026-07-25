@@ -342,6 +342,7 @@ export const handlers = {
   },
 
   async "download-wait"(body) {
+    getPage(body.pageId); // fail fast: a stale pageId would otherwise burn the whole timeout
     const timeout = Math.min(Number(body.timeoutMs ?? 30000), 120000);
     const deadline = Date.now() + timeout;
     let download = popDownload(body.pageId);
