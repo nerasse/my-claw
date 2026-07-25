@@ -1,13 +1,32 @@
 import type {
   BrowserActionInfo,
-  BrowserAttachment,
+  BrowserCdpResult,
+  BrowserClickAtResult,
+  BrowserDownloadResult,
+  BrowserEvalResult,
   BrowserResult,
+  BrowserScreenshot,
   BrowserSnapshot,
   BrowserTabInfo,
+  BrowserWaitResult,
 } from "./types.ts";
 
 const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
-const CALL_TIMEOUT_MS = 90000;
+
+// Per-endpoint HTTP budgets. A single global timeout was either too short for the slow
+// operations or so long that a wedged fast one hung the whole run. Each value sits just
+// above what the sidecar itself allows, so the server-side error wins the race and the
+// agent gets a real message instead of an opaque abort.
+const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
+  default: 30000,
+  navigate: 45000,
+  screenshot: 45000,
+  upload: 60000,
+  "select-option": 45000,
+  "wait-for": 35000,
+  "download-wait": 125000,
+  pdf: 60000,
+};
 
 /** HTTP client for the Node browser sidecar. All Playwright work happens in the
  *  sidecar process (connectOverCDP hangs under Bun); here we only exchange JSON
@@ -19,7 +38,18 @@ export class BrowserClient {
   constructor(
     private sidecarUrl: string,
     private viewport = DEFAULT_VIEWPORT,
+    private timeoutsMs: Record<string, number> = {},
   ) {}
+
+  private timeoutFor(path: string): number {
+    return (
+      this.timeoutsMs[path] ??
+      DEFAULT_TIMEOUTS_MS[path] ??
+      this.timeoutsMs["default"] ??
+      DEFAULT_TIMEOUTS_MS["default"] ??
+      30000
+    );
+  }
 
   private async call<T>(path: string, body: Record<string, unknown>): Promise<T> {
     let res: Response;
@@ -28,7 +58,7 @@ export class BrowserClient {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+        signal: AbortSignal.timeout(this.timeoutFor(path)),
       });
     } catch (e) {
       throw new Error(`Browser sidecar unreachable at ${this.sidecarUrl} (ECONNREFUSED): ${String(e)}`);
@@ -78,6 +108,26 @@ export class BrowserClient {
     await this.call("type", { pageId, ref, text });
   }
 
+  async hover(pageId: string, ref: number): Promise<void> {
+    await this.call("hover", { pageId, ref });
+  }
+
+  async drag(pageId: string, fromRef: number, toRef: number): Promise<void> {
+    await this.call("drag", { pageId, fromRef, toRef });
+  }
+
+  /** x and y are fractions of the viewport, not pixels — see the sidecar handler. */
+  async clickAt(pageId: string, x: number, y: number): Promise<BrowserClickAtResult> {
+    return this.call<BrowserClickAtResult>("click-at", { pageId, x, y });
+  }
+
+  async waitFor(
+    pageId: string,
+    opts: { text?: string; ref?: number; timeoutMs?: number },
+  ): Promise<BrowserWaitResult> {
+    return this.call<BrowserWaitResult>("wait-for", { pageId, ...opts });
+  }
+
   /** ref is optional on purpose: a file input is usually hidden and therefore has no ref,
    *  so the sidecar locates it in the page itself. */
   async uploadFile(pageId: string, paths: string[], ref?: number): Promise<BrowserActionInfo> {
@@ -96,12 +146,32 @@ export class BrowserClient {
     await this.call("scroll", { pageId, direction, amount, ref });
   }
 
-  async screenshot(pageId: string, fullPage?: boolean): Promise<BrowserAttachment> {
-    return this.call<BrowserAttachment>("screenshot", { pageId, fullPage });
+  async screenshot(pageId: string, fullPage?: boolean): Promise<BrowserScreenshot> {
+    return this.call<BrowserScreenshot>("screenshot", { pageId, fullPage });
   }
 
-  async screenshotWithLabels(pageId: string, fullPage?: boolean): Promise<BrowserAttachment> {
-    return this.call<BrowserAttachment>("screenshot", { pageId, fullPage, labels: true });
+  async screenshotWithLabels(pageId: string, fullPage?: boolean): Promise<BrowserScreenshot> {
+    return this.call<BrowserScreenshot>("screenshot", { pageId, fullPage, labels: true });
+  }
+
+  async evaluate(pageId: string, js: string): Promise<BrowserEvalResult> {
+    return this.call<BrowserEvalResult>("evaluate", { pageId, js });
+  }
+
+  async cdp(pageId: string, method: string, params?: Record<string, unknown>): Promise<BrowserCdpResult> {
+    return this.call<BrowserCdpResult>("cdp", { pageId, method, params });
+  }
+
+  async handleDialog(pageId: string, accept: boolean, promptText?: string): Promise<void> {
+    await this.call("handle-dialog", { pageId, accept, promptText });
+  }
+
+  async waitForDownload(pageId: string, dir: string, timeoutMs?: number): Promise<BrowserDownloadResult> {
+    return this.call<BrowserDownloadResult>("download-wait", { pageId, dir, timeoutMs });
+  }
+
+  async pdf(pageId: string, path: string): Promise<{ path: string }> {
+    return this.call<{ path: string }>("pdf", { pageId, path });
   }
 
   async listTabs(): Promise<BrowserTabInfo[]> {

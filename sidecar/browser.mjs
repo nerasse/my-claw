@@ -20,6 +20,15 @@ const pageToId = new WeakMap(); // Page -> pageId
 // native dialog blocks the whole page indefinitely.
 const dialogOverrides = new Map(); // pageId -> { accept, promptText }
 
+// Downloads are queued as they happen: an agent typically clicks first and only then asks
+// for the file, so waiting on the event alone would miss downloads already completed.
+const pendingDownloads = new Map(); // pageId -> Download[]
+
+export function popDownload(pageId) {
+  const queue = pendingDownloads.get(pageId);
+  return queue?.length ? queue.shift() : null;
+}
+
 export function isConnected() {
   return browser?.isConnected() ?? false;
 }
@@ -85,6 +94,11 @@ export function idForPage(page) {
       }
       void dialog.accept().catch(() => undefined);
     });
+    page.on("download", (download) => {
+      const queue = pendingDownloads.get(id) ?? [];
+      queue.push(download);
+      pendingDownloads.set(id, queue);
+    });
   }
   return id;
 }
@@ -116,4 +130,5 @@ export function dropPage(pageId) {
   if (page) pageToId.delete(page);
   allPages.delete(pageId);
   dialogOverrides.delete(pageId);
+  pendingDownloads.delete(pageId);
 }

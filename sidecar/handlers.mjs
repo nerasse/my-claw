@@ -1,5 +1,7 @@
 // Operations exposed over HTTP. One export per endpoint name; the server only routes.
 import crypto from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   CDP_URL,
   allPages,
@@ -10,9 +12,25 @@ import {
   getSession,
   idForPage,
   isConnected,
+  popDownload,
   sessions,
+  setDialogOverride,
 } from "./browser.mjs";
-import { injectRefLabels, removeRefLabels, screenshotPath, snapshotPage } from "./snapshot.mjs";
+import { injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
+
+const MAX_LOW_LEVEL_OUTPUT = 20000;
+
+// Hard floor, independent of config: these would expose the browser session's credentials
+// (cookies, storage, auth headers via request interception) or let the agent escape its own
+// page. A hostile page steering the agent must not be able to reach them.
+const CDP_DENIED = [
+  /^Browser\./i,
+  /^Target\./i,
+  /^Storage\./i,
+  /^Security\./i,
+  /^Fetch\./i,
+  /^Network\.(setCookie|setCookies|getCookies|getAllCookies|clearBrowserCookies|setExtraHTTPHeaders)/i,
+];
 
 export const handlers = {
   async session(body) {
@@ -48,13 +66,64 @@ export const handlers = {
   },
 
   async click(body) {
-    await getPage(body.pageId).locator(`[__ref="${body.ref}"]`).click();
+    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    await locator.click();
     return {};
   },
 
   async type(body) {
-    await getPage(body.pageId).locator(`[__ref="${body.ref}"]`).fill(body.text);
+    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    await locator.fill(body.text);
     return {};
+  },
+
+  async hover(body) {
+    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    await locator.hover();
+    return {};
+  },
+
+  async drag(body) {
+    const page = getPage(body.pageId);
+    const from = await resolveRef(page, body.fromRef);
+    const to = await resolveRef(page, body.toRef);
+    await from.locator.dragTo(to.locator);
+    return {};
+  },
+
+  // Coordinates are FRACTIONS of the viewport, not pixels: screenshots are downscaled
+  // before reaching the model, so pixel coordinates read off an image would land in the
+  // wrong place. Fractions survive any resize.
+  async "click-at"(body) {
+    const page = getPage(body.pageId);
+    const x = Number(body.x);
+    const y = Number(body.y);
+    if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) {
+      throw new Error(`click-at expects fractions between 0 and 1, got x=${body.x} y=${body.y}.`);
+    }
+    const viewport =
+      page.viewportSize() ??
+      (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })));
+    const px = Math.round(x * viewport.width);
+    const py = Math.round(y * viewport.height);
+    await page.mouse.click(px, py);
+    return { x: px, y: py, viewport };
+  },
+
+  async "wait-for"(body) {
+    const page = getPage(body.pageId);
+    const timeout = Math.min(Number(body.timeoutMs ?? 10000), 30000);
+    if (body.text) {
+      await page.getByText(String(body.text)).first().waitFor({ state: "visible", timeout });
+      return { waited: "text" };
+    }
+    if (body.ref !== undefined && body.ref !== null) {
+      const { locator } = await resolveRef(page, body.ref);
+      await locator.waitFor({ state: "visible", timeout });
+      return { waited: "ref" };
+    }
+    await page.waitForTimeout(timeout);
+    return { waited: "delay" };
   },
 
   // Sites open uploads through a NATIVE OS file dialog, which DOM automation cannot touch.
@@ -67,7 +136,7 @@ export const handlers = {
     const tried = [];
 
     if (body.ref !== undefined && body.ref !== null) {
-      const target = page.locator(`[__ref="${body.ref}"]`);
+      const { locator: target } = await resolveRef(page, body.ref);
       const kind = await target
         .evaluate((el) => `${el.tagName.toLowerCase()}|${el.getAttribute("type") || ""}`)
         .catch(() => "");
@@ -103,7 +172,7 @@ export const handlers = {
   // Native <select> and custom comboboxes are two different problems wearing the same hat.
   async "select-option"(body) {
     const page = getPage(body.pageId);
-    const target = page.locator(`[__ref="${body.ref}"]`);
+    const { locator: target, frame } = await resolveRef(page, body.ref);
     const value = String(body.value);
     const tag = await target.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
 
@@ -122,14 +191,14 @@ export const handlers = {
     await page.waitForTimeout(200);
     for (const role of ["option", "menuitemradio", "menuitemcheckbox", "menuitem", "treeitem"]) {
       for (const exact of [true, false]) {
-        const candidate = page.getByRole(role, { name: value, exact });
+        const candidate = frame.getByRole(role, { name: value, exact });
         if ((await candidate.count()) > 0) {
           await candidate.first().click();
           return { via: `role=${role}${exact ? "" : "~"}` };
         }
       }
     }
-    const byText = page.getByText(value, { exact: true });
+    const byText = frame.getByText(value, { exact: true });
     if ((await byText.count()) > 0) {
       await byText.first().click();
       return { via: "text" };
@@ -144,7 +213,8 @@ export const handlers = {
   async "press-key"(body) {
     const page = getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
-      await page.locator(`[__ref="${body.ref}"]`).press(String(body.key));
+      const { locator } = await resolveRef(page, body.ref);
+      await locator.press(String(body.key));
     } else {
       await page.keyboard.press(String(body.key));
     }
@@ -154,7 +224,8 @@ export const handlers = {
   async scroll(body) {
     const page = getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
-      await page.locator(`[__ref="${body.ref}"]`).scrollIntoViewIfNeeded();
+      const { locator } = await resolveRef(page, body.ref);
+      await locator.scrollIntoViewIfNeeded();
     } else {
       const amount = Number(body.amount ?? 600);
       const dir = String(body.direction ?? "down");
@@ -185,7 +256,14 @@ export const handlers = {
     } else {
       await page.screenshot({ path, fullPage: body.fullPage });
     }
-    return { type: "image", path, mimeType: "image/png" };
+    // The viewport travels with the shot so the agent can turn what it sees into
+    // click-at fractions without guessing the page size.
+    const viewport =
+      page.viewportSize() ??
+      (await page
+        .evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }))
+        .catch(() => undefined));
+    return { type: "image", path, mimeType: "image/png", viewport };
   },
 
   async tabs(body) {
@@ -219,6 +297,78 @@ export const handlers = {
     const pageId = existingIdForPage(page);
     if (pageId) dropPage(pageId);
     return {};
+  },
+
+  // --- low-level operations (gated on the Bun side by config) ---
+
+  // The caller passes a statement body, not an expression, so `return` is required. Being
+  // strict about it beats guessing between the two forms and silently returning undefined.
+  async evaluate(body) {
+    const page = getPage(body.pageId);
+    const value = await page.evaluate(`(async () => { ${body.js} })()`);
+    const encoded = JSON.stringify(value ?? null);
+    return {
+      value: encoded.length > MAX_LOW_LEVEL_OUTPUT ? `${encoded.slice(0, MAX_LOW_LEVEL_OUTPUT)}...[truncated]` : encoded,
+    };
+  },
+
+  // Raw CDP, inside the sidecar so it stays the single owner of the browser. The denylist is
+  // enforced here as well as on the Bun side: no config value can open these up, because they
+  // would hand the session's cookies, storage or other targets to whatever the page said.
+  async cdp(body) {
+    const method = String(body.method);
+    if (CDP_DENIED.some((pattern) => pattern.test(method))) {
+      throw new Error(`CDP method ${method} is permanently blocked (session credentials / other targets).`);
+    }
+    const page = getPage(body.pageId);
+    const session = await page.context().newCDPSession(page);
+    try {
+      const result = await session.send(method, body.params ?? {});
+      const encoded = JSON.stringify(result ?? null);
+      return {
+        result: encoded.length > MAX_LOW_LEVEL_OUTPUT ? `${encoded.slice(0, MAX_LOW_LEVEL_OUTPUT)}...[truncated]` : encoded,
+      };
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  },
+
+  // Applies to the NEXT dialog on this page only; auto-accept resumes afterwards so an
+  // unanswered native dialog can never freeze the page.
+  async "handle-dialog"(body) {
+    getPage(body.pageId); // fail fast on an unknown page
+    setDialogOverride(body.pageId, Boolean(body.accept), body.promptText);
+    return { armed: true, accept: Boolean(body.accept) };
+  },
+
+  async "download-wait"(body) {
+    const timeout = Math.min(Number(body.timeoutMs ?? 30000), 120000);
+    const deadline = Date.now() + timeout;
+    let download = popDownload(body.pageId);
+    while (!download && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      download = popDownload(body.pageId);
+    }
+    if (!download) throw new Error(`No download started within ${timeout}ms.`);
+    const filename = download.suggestedFilename();
+    await mkdir(body.dir, { recursive: true });
+    const path = join(body.dir, filename);
+    await download.saveAs(path);
+    return { path, filename };
+  },
+
+  // page.pdf() is headless-only and this Chromium runs headful on Xvfb, so go through CDP.
+  async pdf(body) {
+    const page = getPage(body.pageId);
+    const session = await page.context().newCDPSession(page);
+    try {
+      const { data } = await session.send("Page.printToPDF", { printBackground: true });
+      await mkdir(dirname(body.path), { recursive: true });
+      await writeFile(body.path, Buffer.from(data, "base64"));
+      return { path: body.path };
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
   },
 
   // Ends the task's session bookkeeping only. Tabs are intentionally LEFT OPEN so
