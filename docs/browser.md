@@ -20,9 +20,9 @@ User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Nod
 
 | Layer | Files | Role |
 |---|---|---|
-| Sidecar | `sidecar/server.mjs` (Node) | Owns Playwright: connect, navigate, snapshot, click, type, screenshot, label overlay, session/page registry |
-| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one session per task, pages addressed by id |
-| Tools | `src/tools/browser.ts` | Main registry: only `delegate_browser_task`. The 8 navigation tools + `browser_done` are registered inside the browser subagent |
+| Sidecar | `sidecar/` (Node) | Owns Playwright. `browser.mjs`: CDP connection, session/page registries, dialog + download policy. `snapshot.mjs`: ref stamping, cross-frame resolution, label overlay. `handlers.mjs`: one function per operation. `server.mjs`: HTTP routing only |
+| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one session per task, pages addressed by id, per-endpoint timeouts |
+| Tools | `src/tools/browser/` | `state` (page pointer, URL guard), `navigation` (pages/tabs), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `delegate` (`delegate_browser_task`, the only tool the main agent sees) |
 | Subagent | `src/agent/subagents/browser.ts` | Loop + LLM-driven human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
 
 ## Tools
@@ -37,6 +37,15 @@ User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Nod
 | `browser_upload_file(path, ref?)` | Upload a local file through the native OS dialog. `ref` optional: a file input is usually hidden, so it is located in the page |
 | `browser_press_key(key, ref?)` | Enter/Tab/Escape/Arrow... — often the only way to drive a custom dropdown |
 | `browser_scroll(direction?, amount?, ref?)` | Scroll the page or bring an element into view (needed for `(offscreen)` refs) |
+| `browser_hover(ref)` | Hover — menus that open on hover, tooltips |
+| `browser_drag(from_ref, to_ref)` | Drag and drop (sliders, reorderable lists, drop zones) |
+| `browser_click_at(x, y)` | Click by position, as **fractions** of the viewport. Reaches anything with no ref: canvas, WebGL, maps |
+| `browser_wait_for(text?, ref?, timeout_ms?)` | Wait for text/ref/delay instead of re-snapshotting in a loop |
+| `browser_handle_dialog(accept, prompt_text?)` | Decide the answer to the NEXT native dialog (one-shot; auto-accept otherwise) |
+| `browser_download(timeout_ms?)` | Save a downloaded file into the sandboxed download dir, return its path |
+| `browser_pdf(path?)` | Save the page as a PDF (headful-safe: goes through CDP `Page.printToPDF`) |
+| `browser_eval(js)` | **Gated** by `allowEval`. JS in the page, statement body with `return` |
+| `browser_cdp(method, params)` | **Gated** by `allowCdp` + allowlist. Raw CDP on the current page |
 | `browser_screenshot(labels?)` | Screenshot. `labels=true` overlays red ref tags |
 | `browser_list_tabs()` | List open tabs |
 | `browser_focus_tab(index)` | Switch to tab |
@@ -97,8 +106,33 @@ solves the blocker and replies "continue".
   ones are flagged `(offscreen — scroll to reach)`, so page chrome can never crowd out the
   element the agent is working on.
 - **No mechanical handoff**: the subagent prompt makes `needs_human` exclusive to human barriers
-  (CAPTCHA, 2FA, payment, user decision) and requires walking an escalation ladder
-  (fresh ref -> select_option -> upload -> keyboard -> scroll -> labelled screenshot) first.
+  (CAPTCHA, 2FA, payment, user decision) and requires walking an escalation ladder first:
+  fresh ref -> `select_option` -> `upload_file` -> keyboard -> `wait_for` -> `scroll` -> `hover`
+  -> labelled screenshot + `click_at`.
+- **Cross-frame refs**: refs are stamped per frame with ONE global counter and resolved by
+  searching every frame, so iframe content is both visible and actionable. Shadow roots are
+  walked explicitly when stamping (Playwright's CSS already pierces them when acting).
+- **Fractional coordinates**: `browser_click_at` takes fractions of the viewport, never pixels.
+  Screenshots may be downscaled before reaching the model, which would silently shift pixel
+  coordinates; fractions survive any resize. Each screenshot reports the viewport it used.
+- **Gated low-level access**: `browser_eval` and `browser_cdp` are off by default and are not
+  even registered (nor mentioned in the prompt) unless enabled — an advertised-but-disabled
+  tool just burns a step. Every `eval`/`cdp` call is written to the audit log.
+- **CDP denylist in the sidecar**: `Browser.*`, `Target.*`, `Storage.*`, `Security.*`, `Fetch.*`
+  and the `Network` cookie/header methods are refused by the sidecar itself, so no config value
+  can expose the session's credentials or let the subagent escape its own page.
+- **Filesystem sandbox**: upload paths and `browser_pdf` destinations go through
+  `resolveWorkspacePath` in Bun before the sidecar sees them; downloads land in
+  `browser.downloadDir` (default `<workspace>/downloads`).
+- **Per-endpoint timeouts**: one 90s global budget was either too short for slow operations or
+  too long for a wedged fast one. Each endpoint has its own, set just above the sidecar's own
+  limit so the server-side error wins and the agent gets a real message.
+
+### Known limit
+
+An element with no role, no `tabindex`, no `href` and only a JS-attached listener (a bare
+`<div>` wired up in code) is not detectable as interactive and gets no ref. That is precisely
+what `browser_click_at` exists for.
 
 ## Lifecycle (never kill the shared Chromium)
 
@@ -128,12 +162,30 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
     "enabled": true,
     "sidecarUrl": "http://127.0.0.1:9223",
     "novncUrl": "http://localhost:6080",
-    "maxSteps": 30
+    "maxSteps": 60,
+    "allowEval": false,
+    "allowCdp": false,
+    "cdpAllowlist": ["DOM.*", "Input.*", "Runtime.evaluate"],
+    "downloadDir": "/home/user/.my-claw/workspace/downloads",
+    "timeoutsMs": { "default": 30000, "navigate": 45000 }
   }
 }
 ```
 
 - `sidecarUrl` (default `http://127.0.0.1:9223`): where the Bun app reaches the Node sidecar.
+- `maxSteps` (default 60): the ladder spends steps on purpose instead of handing off.
+- `allowEval` / `allowCdp` (default false): register `browser_eval` / `browser_cdp`. The page
+  content the subagent reads is untrusted, so these widen the prompt-injection surface — enable
+  them deliberately. `browser_eval` implies access to non-`HttpOnly` cookies, which is why the
+  real controls are the flags themselves plus the audit log, not a cookie API blocklist.
+- `cdpAllowlist` (default `DOM.*`, `Input.*`, `Emulation.*`, `Runtime.evaluate`,
+  `Page.navigate|captureScreenshot|printToPDF`): replaces the default list entirely when set.
+  The sidecar denylist always wins on top of it.
+- `downloadDir` (default `<workspace>/downloads`): keep it inside the workspace if the agent
+  should be able to `read` what it downloaded.
+- `timeoutsMs`: per sidecar endpoint (`navigate`, `upload`, `wait-for`, `download-wait`, ...)
+  plus `default`, in milliseconds.
+- All of it hot-reloads: `browser` is in `HOT_OBJECT_SECTIONS` and read live per run.
 - The Chromium CDP endpoint is not a config knob: the **sidecar** reads it from the `CDP_URL`
   env in its systemd unit (default `http://127.0.0.1:9222`).
 
@@ -160,12 +212,21 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 ## Key Files
 
 ```
-sidecar/server.mjs   # Node: Playwright over CDP, session/page registry, HTTP API
+sidecar/
+  browser.mjs        # Node: CDP connection, session/page registries, dialog + download policy
+  snapshot.mjs       # Ref stamping (frames + shadow DOM), cross-frame resolveRef, label overlay
+  handlers.mjs       # One function per operation (the HTTP surface)
+  server.mjs         # HTTP routing only
 src/browser/
-  client.ts          # Bun: HTTP client to the sidecar (pages = opaque ids)
-  types.ts           # Snapshot, Attachment, TabInfo, Result
-src/tools/browser.ts
-  # 8 tool factories + SSRF guard + delegate_browser_task
+  client.ts          # Bun: HTTP client to the sidecar (pages = opaque ids), per-endpoint timeouts
+  types.ts           # Snapshot, Attachment, TabInfo, Result, ActionInfo, viewport, low-level results
+src/tools/browser/
+  state.ts           # Page pointer, URL guard, snapshot formatting
+  navigation.ts      # navigate/snapshot/screenshot + tabs
+  actions.ts         # click, type, select_option, upload, key, scroll, hover, drag, click_at, wait_for
+  lowlevel.ts        # eval, cdp (allowlist), dialog, download, pdf
+  delegate.ts        # delegate_browser_task + the one-at-a-time queue
+  index.ts           # Public surface
 src/agent/subagents/browser.ts
   # Subagent loop + human handoff + attachment accumulation + shared prompt
 packaging/templates/my-claw-browser-sidecar.service
@@ -174,4 +235,6 @@ src/skills/web-browsing/SKILL.md
   # When to delegate, intervention rules
 docs/browser.md
   # This file
+docs/browser-autonomy.md
+  # Spec: root causes, tool surface, escalation ladder, security model, phases
 ```

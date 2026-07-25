@@ -24,7 +24,7 @@
 - `bun test` must never touch the real `~/.my-claw`. `bunfig.toml` preloads
   `tests/setup.ts`, which points `MY_CLAW_DIR` at a throwaway temp dir before any
   module loads. Read filesystem roots from `MY_CLAW_DIR` (never hardcode `homedir()`).
-- The browser sidecar (`sidecar/server.mjs`, Node) is exercised by the gated e2e in
+- The browser sidecar (`sidecar/`, Node) is exercised by the gated e2e in
   `tests-e2e/browser/` (`BROWSER_E2E=1`); the Bun unit tests mock its HTTP endpoints.
 
 ## Git
@@ -144,7 +144,7 @@ src/
 │   ├── workspace.ts       # Workspace path resolution
 │   ├── bash.ts, read.ts, write.ts, fetch.ts, find.ts, grep.ts, ls.ts, memory.ts
 │   ├── web-search.ts
-│   ├── browser.ts         # Browser navigation/interaction tools
+│   ├── browser/           # Browser tools: state, navigation, actions, lowlevel, delegate
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
 │   ├── stt.ts, tts.ts, voice-mode.ts  # Manual voice tools (thin wrappers over voice/)

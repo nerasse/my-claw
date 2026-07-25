@@ -112,9 +112,9 @@ handing off, and must state in its summary which rungs it tried:
 payment confirmation, or an explicit user decision. A missing primitive is a **gap to report**,
 never a handoff — the ladder exists so blockers #1 and #2 can no longer reach rung 8.
 
-As shipped in P0 the ladder runs 1-4 plus a labelled screenshot, and a failed ladder ends the
-task with `needs_human=false` naming the rungs tried. Rungs 5 (`click_at`), 6 (`eval`) and 7
-(`cdp`) are wired in with P1 and P2.
+The full ladder is shipped. `eval` and `cdp` only appear on it when the owner has enabled them;
+otherwise the ladder ends at the labelled screenshot plus `click_at`. A failed ladder ends the
+task with `needs_human=false`, naming the rungs tried.
 
 ## Security model
 
@@ -165,9 +165,9 @@ knobs hot-reload as soon as they are read live per run — no restart, nothing t
 | Phase | Content | Done when | Effort |
 |---|---|---|---|
 | **P0 — DONE** | Selector coverage, `MAX_REFS` 400 + viewport-first, `upload_file`, `select_option`, `press_key`, `scroll` | Shipped. Both blockers verified against a real Chromium on local fixtures (`tests-e2e/browser/basic.test.ts`: options get refs, `select_option` commits the value, upload works both on the hidden input and through the trigger button) — no CDP involved | ~1 d |
-| **P1** | `click_at` (normalized), `wait_for`, `hover`, `drag`, iframe/shadow DOM, ladder in the prompt, budget 60 | An element with no ref at all is still actionable via the vision fallback; `needs_human` only fires on human barriers | ~1-2 d |
-| **P2** | `eval`, `cdp` (allowlist), `handle_dialog`, downloads, `pdf` | Flags off by default; every call audited; denylist enforced by a unit test | ~1 d |
-| **P3** | Config + hot-reload wiring, per-tool timeouts, audit log, tests, docs, skill | `bun test` green, e2e green, `docs/browser.md` updated | ~1 d |
+| **P1 — DONE** | `click_at` (normalized), `wait_for`, `hover`, `drag`, iframe/shadow DOM, ladder in the prompt, budget 60 | Shipped. e2e proves cross-frame clicking, shadow-root controls, hover-revealed menus, and that `click_at` lands on the exact pixel the fraction maps to | ~1-2 d |
+| **P2 — DONE** | `eval`, `cdp` (allowlist), `handle_dialog`, downloads, `pdf` | Shipped. Flags off by default and the tools are not even registered when off; sidecar denylist verified in e2e; dialog override proven one-shot | ~1 d |
+| **P3 — DONE** | Config + per-endpoint timeouts, audit log, tests, docs, skill | Shipped. `bun test` green, 22 e2e green against a live Chromium, docs and skill aligned | ~1 d |
 
 P0 carries most of the real value. Doing P2 first would ship the *feeling* of power while
 leaving the actual holes open.
@@ -210,3 +210,29 @@ src/skills/web-browsing/SKILL.md       # main-agent rules (bash/CDP boundary)
 docs/browser.md                        # architecture, updated as phases land
 docs/browser-autonomy.md               # this file
 ```
+
+## What the implementation changed about this plan
+
+Three things were wrong or imprecise in the original analysis and were corrected while building:
+
+- **`"browser"` was already in `HOT_OBJECT_SECTIONS`.** No watcher wiring was needed; the config
+  knobs hot-reload as soon as they are read live per run.
+- **`page.pdf()` being headless-only is real, but not a blocker.** Going through CDP
+  `Page.printToPDF` works on this headful Chromium — verified in e2e rather than assumed, which
+  is why `browser_pdf` shipped instead of being dropped.
+- **Bare `<div>` elements with JS-attached listeners cannot be given refs.** No role, no
+  `tabindex`, no `href` means nothing marks them as interactive. This is a genuine limit of any
+  DOM-based approach, and it is exactly the case `browser_click_at` covers. An early e2e fixture
+  pretended otherwise and was fixed rather than papered over.
+
+## Beyond this spec
+
+Deliberately not built:
+
+- **Vision-driven element detection** (ask a vision model for coordinates, no DOM at all). The
+  ladder ends with a labelled screenshot plus fractional clicking, which covers the same cases
+  at a fraction of the cost.
+- **A second browser profile for risky actions.** Doubles the infra and loses the persistent
+  logins that make the subagent useful.
+- **Network interception** (`Fetch.*`, `Network.setExtraHTTPHeaders`). Permanently denied: it
+  would expose auth headers of a session logged into the owner's real accounts.

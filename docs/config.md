@@ -163,6 +163,43 @@ Migrates automatically to the new format internally. No manual action needed.
   collide with a built-in are skipped, and a throwing plugin is isolated (never crashes the
   process). Editing a file in `tools.d/` hot-reloads it. See `docs/hot-reload-extensions.md` (A5).
 
+## Browser (`browser`)
+
+```json
+"browser": {
+  "enabled": true,
+  "sidecarUrl": "http://127.0.0.1:9223",
+  "novncUrl": "http://localhost:6080",
+  "viewport": { "width": 1920, "height": 1080 },
+  "maxSteps": 60,
+  "allowEval": false,
+  "allowCdp": false,
+  "cdpAllowlist": ["DOM.*", "Input.*", "Runtime.evaluate"],
+  "downloadDir": "~/.my-claw/workspace/downloads",
+  "timeoutsMs": { "default": 30000, "navigate": 45000 }
+}
+```
+
+- `enabled` (default `true`): read live, so `delegate_browser_task` can be turned off without a
+  restart.
+- `sidecarUrl` / `novncUrl`: where the Node sidecar and the live-browser view are reachable.
+- `maxSteps` (default 60): step budget of one browsing task. The subagent walks an escalation
+  ladder rather than asking for a human, which costs steps on purpose.
+- `allowEval` / `allowCdp` (default `false`): register `browser_eval` and `browser_cdp`. Off by
+  default because the subagent reads untrusted page content, so these widen the prompt-injection
+  surface; `browser_eval` also implies access to non-`HttpOnly` cookies. Every call is written to
+  the audit log. When disabled the tools are not registered at all and are absent from the
+  subagent prompt.
+- `cdpAllowlist`: glob patterns, replacing the default list entirely when set. The sidecar's own
+  denylist (`Browser.*`, `Target.*`, `Storage.*`, `Security.*`, `Fetch.*`, `Network` cookie and
+  header methods) is always enforced on top and cannot be opened up from config.
+- `downloadDir` (default `<workspace>/downloads`): where `browser_download` saves files. Keep it
+  inside the workspace for the agent to be able to `read` them afterwards.
+- `timeoutsMs`: HTTP budget per sidecar endpoint (`navigate`, `upload`, `select-option`,
+  `wait-for`, `download-wait`, `pdf`, `screenshot`) plus `default`.
+
+Hot-reloadable as a whole. Details and rationale in `docs/browser.md`.
+
 ## Skills (`skills`)
 
 ```json
