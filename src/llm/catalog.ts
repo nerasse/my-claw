@@ -6,6 +6,8 @@ import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
+import { loadClaudeToken } from "./claude-auth.ts";
+import { fetchAnthropicModels } from "./anthropic-models.ts";
 
 export interface DiscoveredSdkModel {
   value: string;
@@ -169,6 +171,26 @@ export class ModelCatalog {
   }
 
   /**
+   * Versioned Claude models, one submenu per family. The SDK aliases stay at the provider root
+   * so picking "Sonnet" keeps tracking the latest, while the subgroups let you pin a version.
+   */
+  private async claudeVersionedModels(name: string, provider: LlmProviderConfig): Promise<LlmModelConfig[]> {
+    const token = await loadClaudeToken();
+    if (!token) return [];
+    const models = await fetchAnthropicModels(token);
+    return models.map((m) => ({
+      id: m.id,
+      label: m.label,
+      provider: name,
+      group: provider.group ? `${provider.group}/${m.family}` : m.family,
+      supportsEffort: m.effortLevels.length > 0,
+      supportedEffortLevels: m.effortLevels.length > 0 ? m.effortLevels : undefined,
+      vision: m.vision,
+      limit: { context: m.contextLimit, output: m.outputLimit },
+    }));
+  }
+
+  /**
    * Re-discover every `discover` provider and update the merged set. Never throws: a provider
    * that fails to answer keeps its previously discovered models.
    */
@@ -194,10 +216,24 @@ export class ModelCatalog {
               label: m.displayName || m.value,
               provider: name,
               group: provider.group,
-              supportsEffort: m.supportsEffort,
+              // The SDK omits the flag entirely for models without reasoning, so normalize to a
+              // definite false: "unknown" would make the picker offer the whole global list.
+              supportsEffort: m.supportsEffort === true,
               supportedEffortLevels: m.supportedEffortLevels,
               vision: true,
             });
+          }
+          // Versioned models come from a separate endpoint: losing it must not drop the aliases,
+          // which are what makes the provider usable at all.
+          try {
+            next.push(...(await this.claudeVersionedModels(name, provider)));
+          } catch (err) {
+            anyFailed = true;
+            void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
+            const have = new Set(next.map((m) => m.id));
+            for (const m of this.discoveredModels) {
+              if (m.provider === name && !have.has(m.id)) next.push(m);
+            }
           }
         } else if (provider.type === "codex") {
           const models = await fetchCodexModels(provider.baseUrl ?? "");
