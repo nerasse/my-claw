@@ -72,7 +72,7 @@ interface CodexDiscoveredModel {
   supportedEffortLevels?: EffortLevel[];
 }
 
-const EFFORT_SET = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max"]);
+const EFFORT_SET = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max", "ultra"]);
 // The backend lists helper models (e.g. auto-review) that are not general chat targets.
 const CODEX_MODEL_DENYLIST = new Set(["codex-auto-review"]);
 

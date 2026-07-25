@@ -183,7 +183,7 @@ export interface LlmProviderConfig {
 // Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as
 // `reasoning_effort` to OpenAI-compatible providers only when the model opts in via
 // `supportsEffort` (avoids 400s on providers that reject the param).
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface LlmModelConfig {
   id: string;

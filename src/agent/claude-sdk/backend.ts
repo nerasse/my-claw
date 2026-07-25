@@ -1,5 +1,5 @@
 import { query as sdkQuery, type Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
+import type { EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
 import { MY_CLAW_DIR, resolveMaxIterations } from "../../core/config.ts";
 import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
@@ -125,6 +125,19 @@ function accumulateUsage(session: SessionData, usage: { promptTokens: number; co
   session.tokenUsage.completionTokens += usage.completionTokens;
   session.tokenUsage.totalTokens += usage.totalTokens;
   session.tokenUsage.apiCalls += 1;
+}
+
+/**
+ * "ultra" is a Codex-only reasoning level and the Claude SDK caps at "max". A session effort
+ * chosen while on a Codex model follows you to a Claude one, so clamp rather than fail the run,
+ * and log it — the setting must never be dropped silently.
+ */
+export function toSdkEffort(effort: EffortLevel | undefined): SdkOptions["effort"] {
+  if (effort === "ultra") {
+    void log("warn", "effort ultra is not supported by claude-sdk, clamping to max");
+    return "max";
+  }
+  return effort;
 }
 
 // Shared env for every SDK subprocess: hermetic flags + isolated config dir, with the
@@ -394,7 +407,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       const queryOptions: SdkOptions = {
         model: llmConfig.model,
         fallbackModel: llmConfig.fallbackModel,
-        effort: llmConfig.effort,
+        effort: toSdkEffort(llmConfig.effort),
         maxTurns,
         systemPrompt,
         cwd: this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
