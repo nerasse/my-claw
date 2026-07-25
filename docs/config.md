@@ -332,7 +332,13 @@ and on Codex models (sent as `reasoning.effort`); sent as `reasoning_effort` to 
 OpenAI-compatible providers **only** when the model sets `supportsEffort: true` (avoids 400s
 on providers that reject the param).
 
-- Levels: `low`, `medium`, `high`, `xhigh`, `max` (SDK default is `high`; `max` is select models only). When a model is selected, the effort submenu shows only the levels that model actually supports (SDK discovery provides `supportedEffortLevels` per model); models without a per-model override show the full global list.
+- Levels: `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (SDK default is `high`). This is the
+  superset across providers; `ultra` is Codex-only, and the Claude SDK clamps it to `max`.
+- The effort submenu shows only the levels the selected model actually supports, taken from the
+  provider's own capabilities (`supportedEffortLevels`). A model the provider reports as having no
+  effort at all (`supportsEffort: false`, e.g. Haiku 4.5) offers none and is not chained into the
+  effort step. Only a model with **unknown** support (neither field set, typically a curated entry)
+  falls back to the full global list.
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
 - The `/model` menu shows the active effort on the **header line** next to the model
   (`Current model: X — Effort: high`) whenever effort can take effect (any claude-sdk model,
