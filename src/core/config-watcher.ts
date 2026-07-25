@@ -4,7 +4,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
 import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
-import { CONFIG_PATH, readConfigFromDisk, type MyClawConfig } from "./config.ts";
+import { CONFIG_PATH, readConfigFromDisk, resolveWorkspaceDir, type MyClawConfig } from "./config.ts";
 import { effortOptionsFor } from "../llm/resolver.ts";
 
 const DEBOUNCE_MS = 300;
@@ -211,7 +211,11 @@ export function applyHotReload(current: MyClawConfig, next: MyClawConfig): Reloa
   applyChannelReload("matrix", current, next, MATRIX_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
 
   for (const key of REBOOT_SECTIONS) {
-    if (!eq(rec[key], nextRec[key])) rebootRequired.push(key);
+    // Normalized on both sides: boot resolves workspace to an absolute path, so comparing it
+    // raw against a file that usually omits the key flagged a reboot on every single reload.
+    if (!eq(resolveWorkspaceDir(rec[key] as string | undefined), resolveWorkspaceDir(nextRec[key] as string | undefined))) {
+      rebootRequired.push(key);
+    }
   }
 
   return { changed, rebootRequired, recreate };

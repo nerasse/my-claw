@@ -648,6 +648,13 @@ export async function readConfigFromDisk(): Promise<MyClawConfig> {
   return parseConfig(raw);
 }
 
+/** Effective workspace directory for a raw config value. Boot rewrites config.workspace to
+ *  this resolved path, so anything comparing a live config against the file on disk has to
+ *  normalize both sides or it sees a change that never happened. */
+export function resolveWorkspaceDir(raw?: string): string {
+  return raw ?? join(MY_CLAW_DIR, "workspace");
+}
+
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
   await loadEnv();
@@ -660,7 +667,7 @@ export async function loadConfig(): Promise<MyClawConfig> {
     );
   }
   const config = parseConfig(raw);
-  const workspacePath = config.workspace ?? join(MY_CLAW_DIR, "workspace");
+  const workspacePath = resolveWorkspaceDir(config.workspace);
   await mkdir(workspacePath, { recursive: true });
   await seedWorkspaceTemplates(workspacePath);
   config.workspace = workspacePath;
