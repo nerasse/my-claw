@@ -26,15 +26,11 @@ only supported way in — a direct `bash` path bypasses the sandbox, the guardra
 audit trail. On an infrastructure error (CDP/sidecar unreachable), report it to the user; the
 managed browser self-heals, so there is nothing to improvise.
 
-**Narrow exception, until the subagent gains the missing primitives** (see
-`docs/browser-autonomy.md`): if a task is blocked purely by a *mechanical* gap — a file upload,
-an element the subagent cannot target — and not by a human barrier, you may reach the managed
-CDP endpoint as a last resort. Conditions, all mandatory:
-
-- only after the subagent has actually returned a blocked result, never as a first move
-- act on the page only (fill an input, click a node). **Never** read cookies, storage, tokens,
-  or intercept requests
-- tell the user plainly that you bypassed the subagent and that the gap should be fixed there
+**There is no exception any more.** The subagent owns the whole ladder itself — dropdowns,
+file uploads through the native dialog, keyboard, scrolling, hovering, dragging, clicking by
+position when an element has no ref, waiting, dialogs, downloads, PDF export, and (when the
+owner enables them) JavaScript evaluation and raw CDP. So a mechanical blocker is a bug or a
+missing capability to report, never something for you to work around with `bash`.
 
 ## One task at a time
 
@@ -102,18 +98,19 @@ continue on a page you opened earlier, and you can.
 
 ## Human intervention
 
-The subagent navigates autonomously and fills login/password forms itself. It only asks
-for help when it hits a barrier it genuinely cannot pass (real CAPTCHA, bot-check, or a
-2FA/OTP code it does not have). In that case `delegate_browser_task` returns a paused
-message with the live-browser URL.
+The subagent navigates autonomously and fills login/password forms itself. It only asks for
+help when it hits a barrier that genuinely needs a person: a real CAPTCHA, a bot-check, a
+2FA/OTP code it does not have, a payment confirmation, or a decision only the user can make.
+In that case `delegate_browser_task` returns a paused message with the live-browser URL.
 
 - When you get that paused message, relay it: ask the user to open the live browser at the
   given URL, solve the blocker, then reply "continue"
 - The subagent resumes from the current page
-- **Check what kind of blocker it is first.** A human barrier (CAPTCHA, 2FA, payment) is a real
-  handoff — relay it. A mechanical one ("cannot interact with the file picker", "no ref on that
-  element") is a subagent gap: handle it per "Common errors" instead of sending the user to
-  noVNC for something the agent should be doing itself.
+- **Check what kind of blocker it is first.** A human barrier (CAPTCHA, 2FA, payment, a decision
+  only the user can make) is a real handoff — relay it. Anything mechanical ("cannot interact
+  with the file picker", "no ref on that element") should not reach you: the subagent has tools
+  for those and is told to exhaust them. If it does, report it as a gap instead of sending the
+  user to noVNC for something the agent should be doing itself.
 
 ## Rules
 
@@ -138,7 +135,7 @@ message with the live-browser URL.
 |---|---|---|
 | ALSA audio warnings | Headless Chromium without a sound card | Benign. Ignore — does not block rendering or navigation. |
 | "Browser infrastructure is unavailable" | The sidecar or Chromium is unreachable (CDP/websocket) | Report it to the user. Never improvise with raw `bash` chromium — the managed browser self-heals. |
-| Paused for a *mechanical* reason (upload, untargetable element) | Missing subagent primitive, not a human barrier | Retry once with a clearer goal. If it blocks again, treat it as a gap: report it, or use the disclosed CDP exception above. |
+| Paused for a *mechanical* reason (upload, untargetable element) | The subagent has tools for all of these, so this is a bug or a genuinely missing capability | Retry once with a clearer, more explicit goal. If it blocks again, report it as a gap — do not work around it with `bash`. |
 | "escapes workspace directory" after a browse | You tried to `find`/`read` the screenshot in `/tmp` | Don't. Browser screenshots are auto-attached (see "Results & screenshots"). |
 
 ## Example flow
