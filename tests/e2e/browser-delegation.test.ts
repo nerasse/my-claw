@@ -5,7 +5,7 @@ import { SessionManager } from "../../src/sessions/manager.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
-import { createDelegateBrowserTool } from "../../src/tools/browser.ts";
+import { createDelegateBrowserTool } from "../../src/tools/browser/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";

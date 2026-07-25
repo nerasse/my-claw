@@ -45,7 +45,7 @@ import { createSttTool } from "./tools/stt.ts";
 import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
-import { createDelegateBrowserTool } from "./tools/browser.ts";
+import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { loadJobs } from "./cron/store.ts";

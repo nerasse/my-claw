@@ -21,7 +21,7 @@ import {
   createBrowserFocusTabTool,
   createBrowserCloseTabTool,
   createBrowserPageState,
-} from "../../tools/browser.ts";
+} from "../../tools/browser/index.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
 import { scanForInjection } from "../prompt/anti-injection.ts";
 

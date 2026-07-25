@@ -880,14 +880,14 @@ describe("BrowserSubagent", () => {
   });
 
   test("delegate_browser_task description mentions screenshots", async () => {
-    const { createDelegateBrowserTool } = await import("../../src/tools/browser.ts");
+    const { createDelegateBrowserTool } = await import("../../src/tools/browser/index.ts");
     const tool = createDelegateBrowserTool(makeConfig() as any);
     assert.ok(tool.description.toLowerCase().includes("screenshot"), "Description should mention screenshots");
     assert.ok(tool.description.toLowerCase().includes("attached"), "Description should mention attachments");
   });
 
   test("delegate_browser_task description tells the agent not to re-fetch screenshots", async () => {
-    const { createDelegateBrowserTool } = await import("../../src/tools/browser.ts");
+    const { createDelegateBrowserTool } = await import("../../src/tools/browser/index.ts");
     const tool = createDelegateBrowserTool(makeConfig() as any);
     const desc = tool.description.toLowerCase();
     assert.ok(desc.includes("do not") || desc.includes("don't"), "Description should warn against manual handling");

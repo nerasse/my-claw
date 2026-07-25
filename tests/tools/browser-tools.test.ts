@@ -18,7 +18,7 @@ import {
   createBrowserCloseTabTool,
   createBrowserPageState,
   enqueueBrowserTask,
-} from "../../src/tools/browser.ts";
+} from "../../src/tools/browser/index.ts";
 import type { BrowserClient } from "../../src/browser/client.ts";
 import { createMock } from "../helpers/mock.ts";
 
