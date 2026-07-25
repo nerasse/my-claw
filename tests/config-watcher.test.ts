@@ -66,6 +66,30 @@ test("llm change is applied in place, preserving object identity", () => {
   assert.deepEqual(result.rebootRequired, []);
 });
 
+test("a boot-resolved workspace is not reported as needing a reboot", () => {
+  // Boot rewrites config.workspace to an absolute path while the file on disk usually omits
+  // the key entirely, which used to flag a reboot on every reload.
+  const current = baseConfig();
+  current.workspace = `${process.env["MY_CLAW_DIR"]}/workspace`;
+  const next = clone(current);
+  delete next.workspace;
+
+  const result = applyHotReload(current, next);
+
+  assert.deepEqual(result.rebootRequired, [], "the effective path is unchanged");
+});
+
+test("a real workspace change still requires a reboot", () => {
+  const current = baseConfig();
+  current.workspace = `${process.env["MY_CLAW_DIR"]}/workspace`;
+  const next = clone(current);
+  next.workspace = "/somewhere/else";
+
+  const result = applyHotReload(current, next);
+
+  assert.ok(result.rebootRequired.includes("workspace"));
+});
+
 test("agents change is applied in place", () => {
   const current = baseConfig();
   const ref = current.agents;
@@ -386,7 +410,10 @@ test("appliers are no-ops when nothing relevant changed", () => {
   const config = baseConfig();
   let touched = 0;
   const ctx: ConfigReloadContext = {
-    modelPicker: { setModels: () => { touched += 1; } },
+    modelPicker: {
+      setModels: () => { touched += 1; },
+      setEffortOptions: () => { touched += 1; },
+    },
     registerWebSearch: () => { touched += 1; },
   };
   runReloadAppliers(["agents", "browser", "blacklist", "injection"], config, ctx);

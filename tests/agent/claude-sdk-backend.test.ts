@@ -35,6 +35,22 @@ interface CapturedCall {
   prompts: Array<{ content: string }>;
 }
 
+/** SDK message content is either a string or a block array. These tests assert on the text,
+ *  so flatten it once at capture time instead of widening every assertion. */
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        block && typeof block === "object" && "text" in block
+          ? String((block as { text?: unknown }).text ?? "")
+          : "",
+      )
+      .join("");
+  }
+  return String(content ?? "");
+}
+
 /** Fake query: consumes the initial prompt message, then replays a scripted stream. */
 function fakeQuery(script: (prompts: Array<{ content: string }>) => AsyncGenerator<Record<string, unknown>>, captured: CapturedCall[]): SdkQueryFn {
   return ({ prompt, options }) => {
@@ -42,7 +58,7 @@ function fakeQuery(script: (prompts: Array<{ content: string }>) => AsyncGenerat
     captured.push(call);
     return (async function* () {
       const first = await prompt.next();
-      if (!first.done) call.prompts.push({ content: first.value.message.content });
+      if (!first.done) call.prompts.push({ content: contentToText(first.value.message.content) });
       yield* script(call.prompts) as AsyncGenerator<never>;
       // Drain the generator so the backend's `finished` flag can settle it.
       void prompt.next().catch(() => {});
@@ -242,10 +258,10 @@ test("mid-run injection is yielded to the generator and mirrored", async () => {
     captured.push(call);
     return (async function* () {
       const first = await prompt.next();
-      if (!first.done) call.prompts.push({ content: first.value.message.content });
+      if (!first.done) call.prompts.push({ content: contentToText(first.value.message.content) });
       // Simulate a running turn while an injection arrives.
       const second = await prompt.next();
-      if (!second.done) call.prompts.push({ content: second.value.message.content });
+      if (!second.done) call.prompts.push({ content: contentToText(second.value.message.content) });
       yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "handled both" }], usage: { input_tokens: 1, output_tokens: 1 } } } as never;
       yield { type: "result", subtype: "success", result: "handled both" } as never;
     })() as AsyncIterable<never>;

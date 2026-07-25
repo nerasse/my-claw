@@ -115,6 +115,6 @@ test("codex transport maps assistant tool calls and tool results to Responses it
 test("codex transport surfaces a response.failed event as an error", async () => {
   writeAuth();
   globalThis.fetch = (async () =>
-    sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }])) as typeof fetch;
+    sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }])) as unknown as typeof fetch;
   await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /server_error: boom/);
 });

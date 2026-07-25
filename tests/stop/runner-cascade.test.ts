@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { SubAgentRunner } from "../../src/subagents/runner.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
-import { VoiceManager, SttPipeline, TtsPipeline } from "../../src/voice/index.ts";
+import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { AbortedError } from "../../src/core/aborted.ts";
 import { hooks } from "../../src/hooks/index.ts";
@@ -26,8 +26,7 @@ function parentMessage(): UnifiedMessage {
 test("runner: aborting the shared signal stops a running sub-agent (AbortedError + subagent:aborted)", async () => {
   const voiceManager = new VoiceManager(config);
   const sttPipeline = new SttPipeline(voiceManager);
-  const ttsPipeline = new TtsPipeline(voiceManager);
-  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline, ttsPipeline);
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
 
   // The sub-agent's LLM call hangs until the shared signal aborts.
   const fetchMock = mockFetch((_url, init) => new Promise((_resolve, reject) => {
