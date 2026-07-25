@@ -560,7 +560,10 @@ Additional Matrix fields:
 - `mode` — global default: `"cloud"`, `"local"`, `"auto"` (cloud if credentials available, local otherwise).
 - `stt.mode` — override for STT. Cloud uses Groq Whisper, local uses faster-whisper at `FASTER_WHISPER_ENDPOINT`.
 - `stt.echoTranscript` — send transcription as reply before routing (default: true).
-- `stt.language` — Whisper language code (default: `"fr"`).
+- `stt.language` — Whisper language code. **No default: absent means auto-detect**, and it
+  applies to the owner's voice notes only. Other audio files are always auto-detected, since
+  forcing the wrong language makes Whisper emit confident nonsense rather than an error. The
+  `stt` tool takes a per-call `language` for the cases the agent is sure about.
 - `tts.mode` — override for TTS. Cloud uses Edge TTS, local uses Piper.
 - `tts.voice` — voice ID (Edge TTS voice name or Piper model name).
 

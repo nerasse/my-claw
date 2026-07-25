@@ -12,6 +12,11 @@ The transcript is sent as a visible message to the user.
 
 No tool call needed for inbound STT.
 
+**Language.** `voice.stt.language` applies to the owner's **voice notes only**. Any other
+audio (a forwarded recording, a shared mp3) is auto-detected instead, because a forced
+language does not make the transcriber fail — it makes it produce fluent, confident text
+that is simply wrong.
+
 ## Manual TTS (outbound)
 
 TTS is **never automatic**. The agent must call the `tts` tool
@@ -28,10 +33,15 @@ Limit: **5000 characters max** per call — longer text is rejected, shorten or 
 ## Manual STT
 
 ```tool
-stt(filePath="/tmp/audio.ogg")           # Transcribe a file
+stt(filePath="/tmp/audio.ogg")                    # Auto-detect the language
+stt(filePath="/tmp/audio.ogg", language="en")     # Force a language you are sure of
 ```
 
 Limit: **25 MB max** per audio file — compress/split longer recordings first.
+
+Only pass `language` when you actually know it (the user told you, or the surrounding
+conversation makes it certain). Guessing is worse than omitting it: auto-detection is
+reliable, whereas a wrong forced language yields plausible nonsense with no error.
 
 ## Mode Switch (runtime)
 
