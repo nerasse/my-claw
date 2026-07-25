@@ -40,6 +40,13 @@ jobs:
           export PATH="$HOME/.bun/bin:$PATH"
           bun run check
 
+      # The test sources were never type-checked in CI, so stale mocks and dropped
+      # constructor arguments piled up unnoticed while `bun test` stayed green.
+      - name: Check test types
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          bun run check:test
+
   test:
     name: Unit & Integration Tests
     runs-on: debian-bookworm
