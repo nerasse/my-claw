@@ -48,8 +48,11 @@ live list from the source of truth so `/model` always reflects what the account 
   known versions rather than dropping the provider.
 - `ultra` exists on Codex only (`gpt-5.6-sol`, `gpt-5.6-terra`). The Claude SDK caps at `max`, so
   an `ultra` session effort is clamped to `max` with a warning when the run lands on Claude.
-- `mdl:<n>` callback ids are absolute indices into the flat model list, so a menu left open across
-  a discovery refresh can point at a different model. More models makes that window wider.
+- Menu callbacks carry a fixed-width digest of the model id (`mdl:<ref>`), not a list position, so
+  a menu left open across a discovery refresh still designates the model it displayed. A ref that
+  no longer resolves reports the menu as out of date instead of selecting a neighbour. The digest
+  also keeps callbacks inside Telegram's 64-byte `callback_data` budget, which a provider-supplied
+  id is not guaranteed to respect.
 - LiteLLM `/v1/models` can return many entries (e.g. quantization variants); they sit under the
   provider's submenu group, not the root.
 
