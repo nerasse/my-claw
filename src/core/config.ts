@@ -143,6 +143,16 @@ export interface BrowserConfig {
   novncUrl?: string;
   viewport?: { width: number; height: number };
   maxSteps?: number;
+  // Low-level escape hatches, off by default. They let the subagent finish tasks the DOM
+  // tools cannot express, but the page content it reads is untrusted, so enabling them
+  // widens the prompt-injection surface. Every call is written to the audit log.
+  allowEval?: boolean;
+  allowCdp?: boolean;
+  // Glob patterns ("DOM.*", "Runtime.evaluate"). The sidecar's own denylist always wins.
+  cdpAllowlist?: string[];
+  downloadDir?: string;
+  // Per sidecar endpoint ("navigate", "upload", ...) plus "default", in milliseconds.
+  timeoutsMs?: Record<string, number>;
 }
 
 export interface LlmProviderConfig {

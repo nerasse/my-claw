@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import { type Tool, type ToolResult, str, num, numOpt } from "../types.ts";
+import { type Tool, type ToolResult, str, strOpt, num, numOpt } from "../types.ts";
 import type { BrowserClient } from "../../browser/client.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
 import { type BrowserPageState, getPageId, formatSnapshot } from "./state.ts";
@@ -148,6 +148,122 @@ export function createBrowserPressKeyTool(client: BrowserClient, state: BrowserP
         await client.pressKey(pageId, key, numOpt(args, "ref"));
         const snapshot = await client.snapshot(pageId);
         return { success: true, output: `Pressed ${key}.\n${formatSnapshot(snapshot)}` };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserHoverTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_hover",
+    description: "Hover the mouse over an element by ref. Needed for menus that only open on hover and for tooltips that reveal information.",
+    parameters: {
+      type: "object",
+      properties: {
+        ref: { type: "number", description: "Element ref number from snapshot" },
+      },
+      required: ["ref"],
+    },
+    async execute(args): Promise<ToolResult> {
+      try {
+        const pageId = getPageId(state);
+        await client.hover(pageId, num(args, "ref", 0));
+        const snapshot = await client.snapshot(pageId);
+        return { success: true, output: formatSnapshot(snapshot) };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserDragTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_drag",
+    description: "Drag one element onto another by ref (sliders, reorderable lists, drag-and-drop upload zones).",
+    parameters: {
+      type: "object",
+      properties: {
+        from_ref: { type: "number", description: "Ref of the element to drag" },
+        to_ref: { type: "number", description: "Ref of the drop target" },
+      },
+      required: ["from_ref", "to_ref"],
+    },
+    async execute(args): Promise<ToolResult> {
+      try {
+        const pageId = getPageId(state);
+        await client.drag(pageId, num(args, "from_ref", 0), num(args, "to_ref", 0));
+        const snapshot = await client.snapshot(pageId);
+        return { success: true, output: formatSnapshot(snapshot) };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserClickAtTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_click_at",
+    description: "Click at a position given as FRACTIONS of the viewport: x=0.5, y=0.5 is the centre, x=0 is the left edge, y=1 the bottom. Take a screenshot first and estimate the fractions from it. This is the fallback for anything the DOM does not expose as a ref (canvas, WebGL, map widgets, exotic overlays) — fractions are used because screenshots may be resized before you see them, which would break pixel coordinates.",
+    parameters: {
+      type: "object",
+      properties: {
+        x: { type: "number", description: "Horizontal position, 0 to 1" },
+        y: { type: "number", description: "Vertical position, 0 to 1" },
+      },
+      required: ["x", "y"],
+    },
+    async execute(args): Promise<ToolResult> {
+      const x = num(args, "x", -1);
+      const y = num(args, "y", -1);
+      // Caught here rather than after a round trip: the most likely mistake is passing pixels.
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) {
+        return {
+          success: false,
+          output: "",
+          error: `x and y must be fractions of the viewport between 0 and 1 (got x=${x}, y=${y}). Divide pixel coordinates by the viewport size reported with the screenshot.`,
+        };
+      }
+      try {
+        const pageId = getPageId(state);
+        const at = await client.clickAt(pageId, x, y);
+        const snapshot = await client.snapshot(pageId);
+        return {
+          success: true,
+          output: `Clicked at ${at.x},${at.y} of ${at.viewport.width}x${at.viewport.height}.\n${formatSnapshot(snapshot)}`,
+        };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserWaitForTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_wait_for",
+    description: "Wait for a condition instead of retrying blindly: for some text to appear, for a ref to become visible, or for a fixed delay when nothing better is available. Cheaper and more reliable than re-snapshotting in a loop.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Wait until this text is visible on the page" },
+        ref: { type: "number", description: "Wait until this ref is visible" },
+        timeout_ms: { type: "number", description: "Give up after this long (default 10000, max 30000)" },
+      },
+    },
+    async execute(args): Promise<ToolResult> {
+      try {
+        const pageId = getPageId(state);
+        const result = await client.waitFor(pageId, {
+          text: strOpt(args, "text"),
+          ref: numOpt(args, "ref"),
+          timeoutMs: numOpt(args, "timeout_ms"),
+        });
+        const snapshot = await client.snapshot(pageId);
+        return { success: true, output: `Wait satisfied (${result.waited}).\n${formatSnapshot(snapshot)}` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

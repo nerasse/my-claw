@@ -16,6 +16,16 @@ import {
   createBrowserUploadFileTool,
   createBrowserPressKeyTool,
   createBrowserScrollTool,
+  createBrowserHoverTool,
+  createBrowserDragTool,
+  createBrowserClickAtTool,
+  createBrowserWaitForTool,
+  createBrowserHandleDialogTool,
+  createBrowserDownloadTool,
+  createBrowserPdfTool,
+  createBrowserEvalTool,
+  createBrowserCdpTool,
+  type BrowserLowLevelOptions,
   createBrowserScreenshotTool,
   createBrowserListTabsTool,
   createBrowserFocusTabTool,
@@ -33,7 +43,9 @@ export interface BrowserSubagentResult {
   attachments?: Attachment[];
 }
 
-const DEFAULT_MAX_STEPS = 30;
+// The escalation ladder deliberately spends several steps per obstacle instead of handing
+// off, so the budget has to absorb a few of those on top of the task's own actions.
+const DEFAULT_MAX_STEPS = 60;
 
 const BROWSER_PROMPT = `You are a web browsing assistant. Your job is to complete tasks on websites using the available browser tools.
 
@@ -46,6 +58,13 @@ Available tools:
 - browser_upload_file(path, ref?): Upload a local file (profile photo, attachment, document). This is what handles the native OS file dialog. Pass the absolute path; leave ref out — the file input is normally hidden and has no ref.
 - browser_press_key(key, ref?): Press Enter, Tab, Escape, ArrowDown, ArrowUp, PageDown... Often the only way to drive a custom dropdown or submit a form with no visible button.
 - browser_scroll(direction?, amount?, ref?): Scroll the page, or bring one element into view via ref. Required for elements marked "offscreen" and to load lazy content.
+- browser_hover(ref): Hover an element — menus that only open on hover, tooltips.
+- browser_drag(from_ref, to_ref): Drag one element onto another (sliders, reorderable lists, drop zones).
+- browser_click_at(x, y): Click by POSITION, given as fractions of the viewport (0.5, 0.5 is the centre). Screenshot first, estimate the fractions from it. This reaches anything with no ref at all: canvas, WebGL, maps, exotic overlays.
+- browser_wait_for(text?, ref?, timeout_ms?): Wait for text to appear, for a ref to become visible, or a fixed delay. Use this instead of re-snapshotting in a loop.
+- browser_handle_dialog(accept, prompt_text?): Choose how the NEXT native dialog is answered. Call it BEFORE the click that triggers it; otherwise dialogs are auto-accepted.
+- browser_download(timeout_ms?): Save a file the page downloads and get its local path. Click the link first, then call this.
+- browser_pdf(path?): Save the current page as a PDF (invoice, ticket, confirmation) and get the path.
 - browser_screenshot(full_page?, labels?): Capture a screenshot. Use when stuck or to show the user the page. Set labels=true to overlay ref numbers on elements.
 - browser_list_tabs(): List all open tabs with their index and URL.
 - browser_focus_tab(index): Switch to a different tab by its index (from browser_list_tabs).
@@ -64,13 +83,22 @@ Rules:
    b. dropdown: browser_select_option on the dropdown's own ref (never hunt for the option's ref)
    c. file, photo or attachment: browser_upload_file with the absolute path
    d. browser_press_key — ArrowDown/Enter to drive a dropdown, Escape to close an overlay, Tab to leave a field
-   e. browser_scroll to bring the element into view, then retry the action
-   f. browser_screenshot(labels=true) to see what is actually on screen
+   e. browser_wait_for — the element may simply not have rendered yet
+   f. browser_scroll to bring the element into view, then retry the action
+   g. browser_hover — the target may only exist while a parent menu is open
+   h. browser_screenshot(labels=true), then browser_click_at with fractions read off the image
    If the whole ladder fails, finish with browser_done and needs_human=FALSE, stating precisely which rungs you tried — that is a tooling gap to fix, not a reason to summon the user.
 7. When the task is complete, call browser_done with a summary (needs_human defaults to false). Include everything useful you found — the summary is all the caller gets.
 8. Use browser_screenshot to capture visual evidence of results — these screenshots are delivered to the user. Only screenshot a page that is fully loaded and free of overlays.`;
 
-async function buildBrowserSystemPrompt(): Promise<string> {
+// Documented only when actually registered: advertising a disabled tool costs a wasted step
+// and an error the agent then has to reason about.
+const LOW_LEVEL_PROMPT = `Low-level tools (enabled in this deployment, use only when the ladder in rule 6 is exhausted):
+- browser_eval(js): Run JavaScript in the page. Pass a statement body and use \`return\`.
+- browser_cdp(method, params): Raw Chrome DevTools Protocol on this page, restricted to an allowlist.
+Prefer the normal tools: these two bypass what the page shows you, so a mistake is harder to notice.`;
+
+async function buildBrowserSystemPrompt(extraLayers: string[] = []): Promise<string> {
   const layers: string[] = [];
 
   layers.push(await loadCorePrompt());
@@ -85,6 +113,7 @@ async function buildBrowserSystemPrompt(): Promise<string> {
   }
 
   layers.push(BROWSER_PROMPT);
+  layers.push(...extraLayers);
   return layers.filter(Boolean).join("\n\n");
 }
 
@@ -119,15 +148,20 @@ export class BrowserSubagent {
   private client: BrowserClient;
   private toolRegistry: ToolRegistry;
   private maxSteps: number;
+  private extraPromptLayers: string[] = [];
 
   constructor(
     private config: MyClawConfig,
     private sidecarUrl: string,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
-    this.client = new BrowserClient(sidecarUrl, config.browser?.viewport);
+    this.client = new BrowserClient(sidecarUrl, config.browser?.viewport, config.browser?.timeoutsMs);
     this.toolRegistry = new ToolRegistry();
     const pageState = createBrowserPageState();
+    const lowLevel: BrowserLowLevelOptions = {
+      config: config.browser,
+      workspaceDir: config.workspace,
+    };
     this.toolRegistry.register(createBrowserNavigateTool(this.client, pageState));
     this.toolRegistry.register(createBrowserSnapshotTool(this.client, pageState));
     this.toolRegistry.register(createBrowserClickTool(this.client, pageState));
@@ -136,6 +170,22 @@ export class BrowserSubagent {
     this.toolRegistry.register(createBrowserUploadFileTool(this.client, pageState, config.workspace));
     this.toolRegistry.register(createBrowserPressKeyTool(this.client, pageState));
     this.toolRegistry.register(createBrowserScrollTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserHoverTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserDragTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserClickAtTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserWaitForTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserHandleDialogTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserDownloadTool(this.client, pageState, lowLevel));
+    this.toolRegistry.register(createBrowserPdfTool(this.client, pageState, lowLevel));
+    if (config.browser?.allowEval) {
+      this.toolRegistry.register(createBrowserEvalTool(this.client, pageState, lowLevel));
+    }
+    if (config.browser?.allowCdp) {
+      this.toolRegistry.register(createBrowserCdpTool(this.client, pageState, lowLevel));
+    }
+    if (config.browser?.allowEval || config.browser?.allowCdp) {
+      this.extraPromptLayers.push(LOW_LEVEL_PROMPT);
+    }
     this.toolRegistry.register(createBrowserScreenshotTool(this.client, pageState));
     this.toolRegistry.register(createBrowserListTabsTool(this.client));
     this.toolRegistry.register(createBrowserFocusTabTool(this.client, pageState));
@@ -156,7 +206,7 @@ export class BrowserSubagent {
   }
 
   async run(task: string, startUrl?: string, signal?: AbortSignal): Promise<BrowserSubagentResult> {
-    const systemPrompt = `${await buildBrowserSystemPrompt()}\n\n${await this.formatOpenTabs()}`;
+    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers)}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: `Task: ${task}${startUrl ? `\nStart URL: ${startUrl}` : ""}` },

@@ -66,10 +66,13 @@ export function createBrowserScreenshotTool(client: BrowserClient, state: Browse
       try {
         const useLabels = bool(args, "labels", false);
         const pageId = getPageId(state);
-        const attachment = useLabels
+        const shot = useLabels
           ? await client.screenshotWithLabels(pageId, bool(args, "full_page", false))
           : await client.screenshot(pageId, bool(args, "full_page", false));
-        return { success: true, output: "Screenshot captured.", attachments: [attachment] };
+        // The viewport is metadata for the agent, not part of the attachment contract.
+        const { viewport, ...attachment } = shot;
+        const size = viewport ? ` Viewport is ${viewport.width}x${viewport.height}; browser_click_at takes fractions of it.` : "";
+        return { success: true, output: `Screenshot captured.${size}`, attachments: [attachment] };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

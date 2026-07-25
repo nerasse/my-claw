@@ -17,7 +17,20 @@ export {
   createBrowserSelectOptionTool,
   createBrowserPressKeyTool,
   createBrowserScrollTool,
+  createBrowserHoverTool,
+  createBrowserDragTool,
+  createBrowserClickAtTool,
+  createBrowserWaitForTool,
 } from "./actions.ts";
+export {
+  type BrowserLowLevelOptions,
+  isCdpMethodAllowed,
+  createBrowserEvalTool,
+  createBrowserCdpTool,
+  createBrowserHandleDialogTool,
+  createBrowserDownloadTool,
+  createBrowserPdfTool,
+} from "./lowlevel.ts";
 export {
   DEFAULT_NOVNC_URL,
   DEFAULT_SIDECAR_URL,
