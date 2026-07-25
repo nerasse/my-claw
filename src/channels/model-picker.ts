@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
 import type { EffortLevel } from "../core/config.ts";
 
@@ -23,14 +24,38 @@ export interface EffortOptions {
 // keepEffort finalizes the chained model->effort flow without touching the session's effort.
 export type PickerCallback =
   | { kind: "select"; modelId: string }
-  | { kind: "openGroup"; groupIndex: number }
+  | { kind: "openGroup"; groupPath: string }
   | { kind: "back" }
   | { kind: "openEffort" }
   | { kind: "setEffort"; level: EffortLevel }
-  | { kind: "keepEffort" };
+  | { kind: "keepEffort" }
+  // A picker button whose target no longer exists (menu left open across a discovery refresh).
+  | { kind: "stale" };
 
 const EFFORT_ACTION = "effm";
 const KEEP_EFFORT_ACTION = "effk";
+
+// Telegram caps callback_data at 64 bytes, so a menu cannot carry a model id verbatim: ids come
+// from provider discovery and are unbounded. A fixed-width digest of the id fits the budget and,
+// unlike a list position, still designates the same model after the list is reordered.
+const REF_LENGTH = 12;
+
+function refFor(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, REF_LENGTH);
+}
+
+/**
+ * Map refs back to their values, widening the digest if two ever collide. A collision would
+ * silently point a button at the wrong model, so uniqueness is enforced rather than assumed.
+ */
+function buildRefMap(values: readonly string[]): Map<string, string> {
+  const unique = [...new Set(values)];
+  for (let length = REF_LENGTH; length <= 64; length += 4) {
+    const map = new Map(unique.map((value) => [createHash("sha256").update(value).digest("hex").slice(0, length), value]));
+    if (map.size === unique.length) return map;
+  }
+  throw new Error("model picker: unresolvable ref collision");
+}
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -109,9 +134,19 @@ export class ModelPicker {
     return levels && levels.length > 0 ? levels : this.effort.levels;
   }
 
+  /** Stable callback ref for a model id, safe to embed in a menu that may outlive the list order. */
+  refForModel(modelId: string): string {
+    return refFor(modelId);
+  }
+
+  /** Stable callback ref for a "/"-joined group path. */
+  refForGroup(groupPath: string): string {
+    return refFor(groupPath);
+  }
+
   /**
    * Every distinct group node path (including intermediate prefixes) as "/"-joined strings,
-   * in first-appearance order. groupIndex in callbacks indexes into this list.
+   * in first-appearance order.
    */
   groupOrder(): string[] {
     const seen: string[] = [];
@@ -129,18 +164,15 @@ export class ModelPicker {
     return this.groupOrder().length > 0;
   }
 
-  private childrenOf(pathSegments: string[]): {
-    models: Array<{ model: ModelOption; index: number }>;
-    subgroups: string[];
-  } {
+  private childrenOf(pathSegments: string[]): { models: ModelOption[]; subgroups: string[] } {
     const prefix = pathSegments.join("/");
-    const models: Array<{ model: ModelOption; index: number }> = [];
+    const models: ModelOption[] = [];
     const subgroups: string[] = [];
-    this.models.forEach((model, index) => {
+    this.models.forEach((model) => {
       const segments = splitGroup(model.group);
       const modelPath = segments.join("/");
       if (modelPath === prefix) {
-        models.push({ model, index });
+        models.push(model);
         return;
       }
       // Immediate subgroup one level below this node.
@@ -163,16 +195,14 @@ export class ModelPicker {
   private nodeButtons(pathSegments: string[], currentModelId: string): ConfirmationButton[] {
     const { models, subgroups } = this.childrenOf(pathSegments);
     const buttons: ConfirmationButton[] = [];
-    for (const { model, index } of models) {
-      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${index}` });
+    for (const model of models) {
+      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${refFor(model.id)}` });
     }
-    const paths = this.groupOrder();
     for (const childPath of subgroups) {
-      const groupIndex = paths.indexOf(childPath);
       const lastSegment = childPath.split("/").pop() ?? childPath;
       buttons.push({
         label: mark(`${lastSegment} >`, this.pathContainsModel(childPath, currentModelId)),
-        action: `mdlg:${groupIndex}`,
+        action: `mdlg:${refFor(childPath)}`,
       });
     }
     return buttons;
@@ -197,13 +227,12 @@ export class ModelPicker {
   }
 
   /** Submenu at a group path: its models + subgroups + a back entry to its parent. */
-  buildGroupButtons(groupIndex: number, currentModelId: string): ConfirmationButton[] {
-    const path = this.groupOrder()[groupIndex];
-    if (path === undefined) return this.buildButtons(currentModelId);
-    const segments = path.split("/");
+  buildGroupButtons(groupPath: string, currentModelId: string): ConfirmationButton[] {
+    if (!this.groupOrder().includes(groupPath)) return this.buildButtons(currentModelId);
+    const segments = groupPath.split("/");
     const buttons = this.nodeButtons(segments, currentModelId);
     const parent = segments.slice(0, -1);
-    const backAction = parent.length === 0 ? "mdlb" : `mdlg:${this.groupOrder().indexOf(parent.join("/"))}`;
+    const backAction = parent.length === 0 ? "mdlb" : `mdlg:${refFor(parent.join("/"))}`;
     buttons.push({ label: "< Back", action: backAction });
     return buttons;
   }
@@ -228,9 +257,8 @@ export class ModelPicker {
     return buttons;
   }
 
-  groupLabel(groupIndex: number): string | undefined {
-    const path = this.groupOrder()[groupIndex];
-    return path?.split("/").pop();
+  groupLabel(groupPath: string): string | undefined {
+    return this.groupOrder().includes(groupPath) ? groupPath.split("/").pop() : undefined;
   }
 
   /** Full callback intent (selection, navigation, or effort). */
@@ -245,30 +273,30 @@ export class ModelPicker {
       return this.effort.levels.includes(level) ? { kind: "setEffort", level } : null;
     }
 
-    const group = /^mdlg:(\d+)$/.exec(data);
+    const group = /^mdlg:([0-9a-f]+)$/.exec(data);
     if (group) {
-      const groupIndex = Number(group[1]);
-      if (Number.isInteger(groupIndex) && groupIndex >= 0 && groupIndex < this.groupOrder().length) {
-        return { kind: "openGroup", groupIndex };
-      }
-      return null;
+      const groupPath = buildRefMap(this.groupOrder()).get(group[1] ?? "");
+      return groupPath ? { kind: "openGroup", groupPath } : { kind: "stale" };
     }
 
-    const modelId = this.parseCallback(data);
-    return modelId ? { kind: "select", modelId } : null;
+    // Only report staleness for data that is unmistakably ours, so callbacks owned by other
+    // features still fall through untouched.
+    if (/^mdl:[0-9a-f]+$/.test(data)) {
+      const modelId = this.parseCallback(data);
+      return modelId ? { kind: "select", modelId } : { kind: "stale" };
+    }
+    return null;
   }
 
-  /** Selection-only parse (kept for callers that just need the resolved model id). */
+  /**
+   * Selection-only parse. An unknown ref means the model is gone from the list (a menu left open
+   * across a discovery refresh), which resolves to null so the caller reports it instead of
+   * picking whatever now sits at that position.
+   */
   parseCallback(data: string): string | null {
-    const match = /^mdl:(\d+)$/.exec(data);
+    const match = /^mdl:([0-9a-f]+)$/.exec(data);
     if (!match) return null;
-
-    const index = Number(match[1]);
-    if (!Number.isInteger(index) || index < 0 || index >= this.models.length) {
-      return null;
-    }
-
-    return this.models[index]?.id ?? null;
+    return buildRefMap(this.models.map((m) => m.id)).get(match[1] ?? "") ?? null;
   }
 
   find(query: string): ModelOption | null {

@@ -525,6 +525,13 @@ export function createMatrixActionHandler({
     const action = modelPicker.parseCallbackAction(data);
     if (!action) return undefined;
 
+    if (action.kind === "stale") {
+      return {
+        text: "That menu is out of date (the model list changed). Send /model again.",
+        answerText: "Menu out of date",
+      };
+    }
+
     const sessionId = resolveMatrixSessionId({
       config,
       chatId,
@@ -556,9 +563,9 @@ export function createMatrixActionHandler({
       }
       const buttons =
         action.kind === "openGroup"
-          ? modelPicker.buildGroupButtons(action.groupIndex, currentModel)
+          ? modelPicker.buildGroupButtons(action.groupPath, currentModel)
           : modelPicker.buildButtons(currentModel);
-      const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupIndex) : undefined;
+      const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
         ...buildMatrixMenuFromButtons({
           modelPicker,

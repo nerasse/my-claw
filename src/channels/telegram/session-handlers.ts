@@ -303,6 +303,13 @@ export function createTelegramCallbackHandler({
     const action = modelPicker.parseCallbackAction(data);
     if (!action) return undefined;
 
+    if (action.kind === "stale") {
+      return {
+        text: "That menu is out of date (the model list changed). Send /model again.",
+        answerText: "Menu out of date",
+      };
+    }
+
     const sessionId = resolveTelegramSessionId({
       config,
       chatId,
@@ -320,9 +327,9 @@ export function createTelegramCallbackHandler({
       const suffix = modelPicker.effortHeaderSuffix(currentEffort);
       if (action.kind === "openGroup") {
         return {
-          text: `${modelPicker.groupLabel(action.groupIndex) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
-          buttons: modelPicker.buildGroupButtons(action.groupIndex, currentModel),
-          answerText: modelPicker.groupLabel(action.groupIndex),
+          text: `${modelPicker.groupLabel(action.groupPath) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
+          buttons: modelPicker.buildGroupButtons(action.groupPath, currentModel),
+          answerText: modelPicker.groupLabel(action.groupPath),
         };
       }
       // Effort submenu, reachable without re-selecting a model.
