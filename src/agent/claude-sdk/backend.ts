@@ -4,7 +4,7 @@ import { MY_CLAW_DIR, resolveMaxIterations } from "../../core/config.ts";
 import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
-import type { SessionData } from "../../sessions/store.ts";
+import type { SessionData, SessionMessage } from "../../sessions/store.ts";
 import { trimSessionMessages } from "../../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
@@ -20,11 +20,16 @@ import { ToolApprovalManager } from "../approvals.ts";
 import type { VoiceManager, SttPipeline } from "../../voice/index.ts";
 import { MessagePreprocessor } from "../preprocess.ts";
 import { scanForInjection } from "../prompt/anti-injection.ts";
+import { renderPriorConversation } from "./history.ts";
+import { estimateTokens, DEFAULT_CONTEXT_TOKENS } from "../../llm/tokens.ts";
 import { recall } from "../../memory/index.ts";
 import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { createToolServerForRun } from "./tools.ts";
+
+// Headroom left for the reply when the resolved model does not declare an output limit.
+const DEFAULT_OUTPUT_RESERVE_TOKENS = 32_000;
 
 const MAX_SESSION_MESSAGES = 500;
 const MAX_SESSION_MESSAGES_KEEP = 50;
@@ -331,6 +336,7 @@ export class ClaudeSdkBackend implements AgentBackend {
 
     const messageCountBefore = session.messages.length;
     const sdkSessionIdBefore = session.sdkSessionId;
+    const sdkSyncedAtBefore = session.sdkSyncedAt;
     let toolExecutions = 0;
     let removeAbortListener: (() => void) | undefined;
 
@@ -354,8 +360,15 @@ export class ClaudeSdkBackend implements AgentBackend {
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
       systemPrompt += OWNER_STEERING_NOTE;
 
+      // Captured before buildUserTurn, which appends the current message to the same array.
+      // Without an SDK session the whole transcript is new to it; with one, only the turns that
+      // landed after its watermark (a detour through the home backend) are missing.
+      const priorHistory = session.sdkSessionId
+        ? session.messages.filter((m) => !session.sdkSyncedAt || m.timestamp > session.sdkSyncedAt)
+        : [...session.messages];
       const userContent = await this.buildUserTurn(message, session);
-      const initialText = await this.prefixMemory(message, userContent);
+      let initialText = await this.prefixMemory(message, userContent);
+      initialText = this.withPriorConversation(initialText, priorHistory, session, systemPrompt, llmConfig);
       const initialContent = await this.withImageBlocks(message, initialText, Boolean(llmConfig.vision));
 
       const abortController = new AbortController();
@@ -574,6 +587,10 @@ export class ClaudeSdkBackend implements AgentBackend {
         hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
       }
 
+      // Watermark what this SDK session has now seen. Turns appended after it (by the home
+      // backend, if the owner switches away and back) are what the next SDK run must replay.
+      session.sdkSyncedAt = session.messages[session.messages.length - 1]?.timestamp;
+
       const durationMs = Date.now() - startedAt;
       hooks.emit("agent:run:finish", {
         messageId: message.id,
@@ -610,6 +627,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       // Mirror and SDK pointer roll back together: keeping a session id whose SDK-side
       // history contains the failed turn would desync the two histories.
       session.sdkSessionId = sdkSessionIdBefore;
+      session.sdkSyncedAt = sdkSyncedAtBefore;
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -632,6 +650,54 @@ export class ClaudeSdkBackend implements AgentBackend {
   }
 
   /** Scan, transform and mirror one inbound user turn; returns the content to send. */
+  /**
+   * Carry a conversation that started on the home backend into a fresh SDK session. The SDK owns
+   * history on its path and resumes it by id, so without this the model would see only the newest
+   * message and behave as if the session were brand new.
+   *
+   * The whole transcript is replayed. The only bound is physical: whatever is left of the model's
+   * context window once the system prompt, this turn and the reply are accounted for, so an
+   * oversized history degrades to its most recent part instead of failing the request outright.
+   */
+  private withPriorConversation(
+    text: string,
+    priorHistory: SessionMessage[],
+    session: SessionData,
+    systemPrompt: string,
+    llmConfig: ResolvedLlmConfig,
+  ): string {
+    if (priorHistory.length === 0) return text;
+
+    const contextLimit = llmConfig.limit?.context ?? DEFAULT_CONTEXT_TOKENS;
+    const outputReserve = llmConfig.limit?.output ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
+    const maxTokens = contextLimit - estimateTokens(systemPrompt) - estimateTokens(text) - outputReserve;
+
+    const rendered = renderPriorConversation(priorHistory, { maxTokens });
+    if (!rendered) {
+      void log("warn", "prior conversation not carried into the SDK session", {
+        sessionId: session.id,
+        messages: priorHistory.length,
+        maxTokens,
+      });
+      return text;
+    }
+
+    session.contextTransfer = {
+      at: new Date().toISOString(),
+      messages: rendered.includedMessages,
+      dropped: rendered.droppedMessages,
+      tokens: rendered.tokens,
+      model: llmConfig.model,
+    };
+    void log("info", "prior conversation carried into a new SDK session", {
+      sessionId: session.id,
+      ...session.contextTransfer,
+    });
+    hooks.emit("session:context:transferred", { sessionId: session.id, ...session.contextTransfer });
+
+    return `${rendered.text}\n\n${text}`;
+  }
+
   private async buildUserTurn(message: UnifiedMessage, session: SessionData): Promise<string> {
     const rawContent = this.preprocessor.buildUserContent(message);
     const scanned = scanForInjection(rawContent, "user-message");

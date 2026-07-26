@@ -60,6 +60,18 @@ export interface SessionData {
   // Claude Agent SDK session to resume on the claude-sdk backend. The SDK owns that
   // history; `messages` is only a mirror for UI/commands/archives on that path.
   sdkSessionId?: string;
+  // Timestamp of the newest transcript entry the SDK session already knows about, so turns
+  // taken on the home backend in between can be replayed instead of silently vanishing.
+  sdkSyncedAt?: string;
+  // Last time local history was replayed into a fresh SDK session (crossing from the home
+  // backend). Kept so /status can report it, since the transfer is otherwise invisible.
+  contextTransfer?: {
+    at: string;
+    model: string;
+    messages: number;
+    dropped: number;
+    tokens: number;
+  };
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
