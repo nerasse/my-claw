@@ -402,3 +402,44 @@ test("a pre-existing SDK session without a watermark is not replayed into itself
   // The run writes the watermark, so the session is on the normal path from now on.
   assert.equal(sess.sdkSyncedAt, sess.messages[sess.messages.length - 1]?.timestamp);
 });
+
+test("aborting mid-tool leaves no unanswered tool_call for the other engine to choke on", async () => {
+  runRegistry.clear();
+  const ac = new AbortController();
+  const queryFn: SdkQueryFn = ({ prompt }) =>
+    (async function* () {
+      await prompt.next();
+      yield {
+        type: "assistant",
+        message: {
+          id: "a1",
+          content: [{ type: "tool_use", id: "call-1", name: "web_search", input: {} }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      // The owner hits /stop while the tool is still running: no tool_result ever arrives.
+      ac.abort();
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    })() as AsyncIterable<never>;
+
+  const backend = makeBackend(queryFn);
+  const sess = session("s1");
+  await backend.handleMessage(msg("m1", "search please"), sess, ac.signal).catch(() => {});
+
+  const calls = sess.messages
+    .filter((m): m is Extract<typeof m, { role: "assistant" }> => m.role === "assistant")
+    .flatMap((m) => m.toolCalls ?? [])
+    .map((c) => c.id);
+  const answered = sess.messages
+    .filter((m): m is Extract<typeof m, { role: "tool" }> => m.role === "tool")
+    .map((m) => m.toolCallId);
+
+  assert.deepEqual(calls, ["call-1"]);
+  // An unanswered tool_call is invisible on the SDK path but makes the OpenAI-compatible API
+  // reject every later turn once the owner switches back to a home model.
+  assert.deepEqual(
+    calls.filter((id) => !answered.includes(id)),
+    [],
+  );
+  assert.equal(sess.messages[sess.messages.length - 1]?.content, "[Stopped by user]");
+});
