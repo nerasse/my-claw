@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
-import { trimSessionMessages } from "../../sessions/store.ts";
+import { trimSessionMessages, sealDanglingToolCalls } from "../../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
@@ -620,6 +620,13 @@ export class ClaudeSdkBackend implements AgentBackend {
       return response;
     } catch (err) {
       if (isAbort(err, signal)) {
+        // The mirror is kept on abort, so a tool the run never got to answer would leave a
+        // dangling tool_call. That is invisible here but rejected by the home backend's API the
+        // moment the owner switches to a non-SDK model, wedging every later turn.
+        const sealed = sealDanglingToolCalls(session.messages);
+        if (sealed > 0) {
+          void log("info", "sealed dangling tool calls after an aborted SDK run", { sessionId: session.id, sealed });
+        }
         hooks.emit("agent:run:aborted", {
           messageId: message.id,
           sessionId: session.id,

@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { trimSessionMessages, dropLeadingOrphanToolMessages } from "../sessions/store.ts";
+import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse } from "../llm/provider.ts";
@@ -577,7 +577,7 @@ export class AgentBridge implements AgentBackend {
       return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget, signal);
     } catch (err) {
       if (isAbort(err, signal)) {
-        this.sealDanglingToolCalls(session);
+        sealDanglingToolCalls(session.messages);
         hooks.emit("agent:run:aborted", {
           messageId: message.id,
           sessionId: session.id,
@@ -646,35 +646,6 @@ export class AgentBridge implements AgentBackend {
     void log("info", "mid-run injection", { sessionId: session.id, messageId: injected.id, textChars: injected.text.length });
   }
 
-  /**
-   * On abort we keep the full history but guarantee no assistant tool_call is left without a
-   * tool response (which would break the next turn's API call). Appends a synthetic result for
-   * any dangling tool_call id in the last assistant message.
-   */
-  private sealDanglingToolCalls(session: SessionData): void {
-    let lastAssistantIdx = -1;
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      if (session.messages[i]!.role === "assistant") {
-        lastAssistantIdx = i;
-        break;
-      }
-    }
-    if (lastAssistantIdx < 0) return;
-    const assistant = session.messages[lastAssistantIdx]!;
-    if (assistant.role !== "assistant" || !assistant.toolCalls?.length) return;
-    const toolCalls = assistant.toolCalls;
-
-    const answered = new Set<string>();
-    for (let i = lastAssistantIdx + 1; i < session.messages.length; i++) {
-      const msg = session.messages[i]!;
-      if (msg.role === "tool" && msg.toolCallId) answered.add(msg.toolCallId);
-    }
-    for (const tc of toolCalls) {
-      if (!answered.has(tc.id)) {
-        session.messages.push({ role: "tool", toolCallId: tc.id, content: "[Stopped by user]", timestamp: new Date().toISOString() });
-      }
-    }
-  }
 
   private async handleMaxIterations(
     chatMessages: ChatMessage[],

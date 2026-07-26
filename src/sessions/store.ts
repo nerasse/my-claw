@@ -27,6 +27,39 @@ export function trimSessionMessages(messages: SessionMessage[], keep: number): S
   return dropLeadingOrphanToolMessages(messages.slice(-keep));
 }
 
+/**
+ * Guarantee no assistant tool_call is left without a tool response. An aborted run can stop
+ * between the tool request and its result; OpenAI-compatible APIs reject a request whose
+ * assistant tool_calls are unanswered, which wedges every later turn on that session. Appends a
+ * synthetic result for any dangling id in the last assistant message.
+ */
+export function sealDanglingToolCalls(messages: SessionMessage[]): number {
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  if (lastAssistantIdx < 0) return 0;
+  const assistant = messages[lastAssistantIdx]!;
+  if (assistant.role !== "assistant" || !assistant.toolCalls?.length) return 0;
+
+  const answered = new Set<string>();
+  for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
+    const msg = messages[i]!;
+    if (msg.role === "tool" && msg.toolCallId) answered.add(msg.toolCallId);
+  }
+
+  let sealed = 0;
+  for (const call of assistant.toolCalls) {
+    if (answered.has(call.id)) continue;
+    messages.push({ role: "tool", toolCallId: call.id, content: "[Stopped by user]", timestamp: new Date().toISOString() });
+    sealed += 1;
+  }
+  return sealed;
+}
+
 export interface SubAgentMeta {
   displayName: string;
   type: "general" | "research";
