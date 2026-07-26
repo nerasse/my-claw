@@ -262,6 +262,14 @@ export function createTelegramCommandHandler({
           `Last active: ${session.lastActiveAt}`,
         ];
         if (liveLine) lines.push(liveLine);
+        if (session.contextTransfer) {
+          const t = session.contextTransfer;
+          // The transfer is silent by design, so /status is the only place it surfaces.
+          lines.push(
+            `Context carried to ${t.model}: ${t.messages} messages (~${t.tokens.toLocaleString()} tokens)` +
+              (t.dropped > 0 ? `, ${t.dropped} oldest dropped to fit` : ""),
+          );
+        }
         if (session.tokenUsage) {
           const u = session.tokenUsage;
           lines.push(`Tokens: ${u.totalTokens.toLocaleString()} (in: ${u.promptTokens.toLocaleString()}, out: ${u.completionTokens.toLocaleString()})`);
