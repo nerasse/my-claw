@@ -363,9 +363,15 @@ export class ClaudeSdkBackend implements AgentBackend {
       // Captured before buildUserTurn, which appends the current message to the same array.
       // Without an SDK session the whole transcript is new to it; with one, only the turns that
       // landed after its watermark (a detour through the home backend) are missing.
-      const priorHistory = session.sdkSessionId
-        ? session.messages.filter((m) => !session.sdkSyncedAt || m.timestamp > session.sdkSyncedAt)
-        : [...session.messages];
+      // An SDK session with no watermark predates this mechanism: its history is already owned by
+      // the SDK, so replaying it would duplicate the entire conversation. The watermark is written
+      // at the end of every run, so such a session self-heals after one turn.
+      const syncedAt = session.sdkSyncedAt;
+      const priorHistory = !session.sdkSessionId
+        ? [...session.messages]
+        : syncedAt
+          ? session.messages.filter((m) => m.timestamp > syncedAt)
+          : [];
       const userContent = await this.buildUserTurn(message, session);
       let initialText = await this.prefixMemory(message, userContent);
       initialText = this.withPriorConversation(initialText, priorHistory, session, systemPrompt, llmConfig);

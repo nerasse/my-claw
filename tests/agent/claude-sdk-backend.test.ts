@@ -376,3 +376,29 @@ test("a detour through the home backend is replayed on the way back, without the
   assert.doesNotMatch(sent, /known to the sdk/);
   assert.equal(sess.contextTransfer?.messages, 2);
 });
+
+test("a pre-existing SDK session without a watermark is not replayed into itself", async () => {
+  runRegistry.clear();
+  const captured: CapturedCall[] = [];
+  const backend = makeBackend(fakeQuery(async function* () {
+    yield resultMsg("ok");
+  }, captured));
+
+  // Every session created before the watermark existed looks like this. Treating the missing
+  // watermark as "nothing known" would resend the whole conversation the SDK already owns.
+  const sess = session("s1");
+  sess.sdkSessionId = "sdk-known";
+  sess.messages = [
+    { role: "user", content: "asked long ago", timestamp: "2026-07-25T18:00:00.000Z" },
+    { role: "assistant", content: "answered long ago", timestamp: "2026-07-25T18:00:01.000Z" },
+  ];
+
+  await backend.handleMessage(msg("m1", "next"), sess);
+
+  const sent = captured[0]!.prompts[0]!.content;
+  assert.doesNotMatch(sent, /<prior_conversation>/);
+  assert.doesNotMatch(sent, /asked long ago/);
+  assert.equal(sess.contextTransfer, undefined);
+  // The run writes the watermark, so the session is on the normal path from now on.
+  assert.equal(sess.sdkSyncedAt, sess.messages[sess.messages.length - 1]?.timestamp);
+});
