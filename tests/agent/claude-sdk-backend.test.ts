@@ -296,3 +296,83 @@ test("toSdkEffort clamps the Codex-only ultra level instead of passing it to the
   assert.equal(toSdkEffort("high"), "high");
   assert.equal(toSdkEffort(undefined), undefined);
 });
+
+test("crossing from the home backend replays the local transcript into the new SDK session", async () => {
+  runRegistry.clear();
+  const captured: CapturedCall[] = [];
+  const backend = makeBackend(fakeQuery(async function* () {
+    yield { type: "system", subtype: "init", session_id: "sdk-new" };
+    yield resultMsg("ok");
+  }, captured));
+
+  // A conversation that ran on the home backend: no sdkSessionId, history in session.messages.
+  const sess = session("s1");
+  const t = "2026-07-25T18:44:00.000Z";
+  sess.messages = [
+    { role: "user", content: "Restaurants near Le Grand Rex?", timestamp: t },
+    { role: "assistant", content: "", timestamp: t, toolCalls: [{ id: "c1", name: "web_search", arguments: "{}" }] },
+    { role: "tool", toolCallId: "c1", content: "1. Chez Paul", timestamp: t },
+  ];
+
+  await backend.handleMessage(msg("m1", "Continue"), sess);
+
+  const sent = captured[0]!.prompts[0]!.content;
+  // Without this the model would only see "Continue" and behave as if the session were new.
+  assert.match(sent, /<prior_conversation>/);
+  assert.match(sent, /Restaurants near Le Grand Rex\?/);
+  assert.match(sent, /\[tool result: web_search\]\n1\. Chez Paul/);
+  // The current turn still comes last, after the replayed context.
+  assert.ok(sent.indexOf("<prior_conversation>") < sent.lastIndexOf("Continue"));
+
+  assert.equal(sess.contextTransfer?.messages, 3);
+  assert.equal(sess.contextTransfer?.dropped, 0);
+  assert.equal(sess.contextTransfer?.model, "claude-sonnet-5");
+  // Everything is now known to the SDK session, so the next turn must not replay it again.
+  assert.equal(sess.sdkSyncedAt, sess.messages[sess.messages.length - 1]?.timestamp);
+});
+
+test("a resumed SDK session replays nothing when no turn happened elsewhere", async () => {
+  runRegistry.clear();
+  const captured: CapturedCall[] = [];
+  const backend = makeBackend(fakeQuery(async function* () {
+    yield resultMsg("ok");
+  }, captured));
+
+  const sess = session("s1");
+  sess.sdkSessionId = "sdk-known";
+  sess.messages = [{ role: "user", content: "earlier", timestamp: "2026-07-25T18:00:00.000Z" }];
+  sess.sdkSyncedAt = "2026-07-25T18:00:00.000Z";
+
+  await backend.handleMessage(msg("m1", "next"), sess);
+
+  const sent = captured[0]!.prompts[0]!.content;
+  // The SDK already owns this history; resending it would duplicate the whole conversation.
+  assert.doesNotMatch(sent, /<prior_conversation>/);
+  assert.equal(sess.contextTransfer, undefined);
+});
+
+test("a detour through the home backend is replayed on the way back, without the rest", async () => {
+  runRegistry.clear();
+  const captured: CapturedCall[] = [];
+  const backend = makeBackend(fakeQuery(async function* () {
+    yield resultMsg("ok");
+  }, captured));
+
+  const sess = session("s1");
+  sess.sdkSessionId = "sdk-known";
+  sess.sdkSyncedAt = "2026-07-25T18:00:00.000Z";
+  sess.messages = [
+    { role: "user", content: "known to the sdk", timestamp: "2026-07-25T18:00:00.000Z" },
+    { role: "user", content: "asked on the other engine", timestamp: "2026-07-25T18:30:00.000Z" },
+    { role: "assistant", content: "answered on the other engine", timestamp: "2026-07-25T18:31:00.000Z" },
+  ];
+
+  await backend.handleMessage(msg("m1", "back on claude"), sess);
+
+  const sent = captured[0]!.prompts[0]!.content;
+  assert.match(sent, /asked on the other engine/);
+  assert.match(sent, /answered on the other engine/);
+  // Resuming already carries this one; replaying it too would duplicate it.
+  assert.doesNotMatch(sent, /known to the sdk/);
+  assert.equal(sess.contextTransfer?.messages, 2);
+});
