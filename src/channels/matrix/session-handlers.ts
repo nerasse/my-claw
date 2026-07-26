@@ -12,6 +12,8 @@ import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
+import { redactCommandArgs } from "../command-log.ts";
+import { log } from "../../utils/logger.ts";
 
 type MatrixChatType = "dm" | "group";
 
@@ -292,7 +294,8 @@ export function createMatrixCommandHandler({
   meta?: { roomId?: string; threadId?: string },
   ) => Promise<OutgoingMessage | string | undefined> {
   const handler = async (chatId: string, userId: string, chatType: MatrixChatType, command: string, args: string, meta?: { roomId?: string; threadId?: string }): Promise<OutgoingMessage | string | undefined> => {
-    hooks.emit("command:received", { command, args, platform: "matrix", userId });
+    const loggedArgs = redactCommandArgs(command, args);
+    hooks.emit("command:received", { command, args: loggedArgs, platform: "matrix", userId });
     const sessionId = resolveMatrixSessionId({
       config,
       chatId,
@@ -300,6 +303,17 @@ export function createMatrixCommandHandler({
       chatType,
       roomId: meta?.roomId,
       threadId: meta?.threadId,
+    });
+    // Matrix commands were entirely absent from the logs, which is why a session recreation
+    // could not be attributed to any command after the fact.
+    void log("info", "command received", {
+      platform: "matrix",
+      command,
+      args: loggedArgs,
+      userId,
+      chatId,
+      chatType,
+      sessionId,
     });
 
     switch (command) {
@@ -505,6 +519,10 @@ export function createMatrixCommandHandler({
     const result = await handler(chatId, userId, chatType, command, args, meta);
     const responseText = typeof result === "string" ? result : typeof result === "object" && result?.text ? result.text : undefined;
     hooks.emit("command:handled", { command, platform: "matrix", response: responseText });
+    // Matrix answers "Unknown command" for this case, so record what was actually typed.
+    if (result === undefined) {
+      void log("info", "command not recognized", { platform: "matrix", command, userId, chatId });
+    }
     return result;
   };
 }

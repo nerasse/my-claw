@@ -46,6 +46,7 @@ import {
   type TelegramHistoryEntry,
   type TelegramStoredMessageContext,
 } from "./context.ts";
+import { redactCommandArgs } from "../command-log.ts";
 
 // Text batching (from OpenClaw)
 const TEXT_BATCH_THRESHOLD = 4000;
@@ -434,7 +435,14 @@ export class TelegramAdapter implements ChannelAdapter {
     }
 
     const userId = String(msg.from.id);
-    await telegramLog("info", "telegram command received", { command, userId, text: msg.text ?? msg.caption });
+    // The raw line was logged here, which wrote `/claude set-token <token>` to disk in clear.
+    const rawArgs = (msg.text ?? msg.caption ?? "").replace(/^\/\S+\s*/, "");
+    await telegramLog("info", "telegram command received", {
+      command,
+      userId,
+      chatId: String(msg.chat.id),
+      args: redactCommandArgs(command, rawArgs),
+    });
 
     if (command === "help" || command === "commands") {
       await ctx.reply(getHelpText());
@@ -532,6 +540,14 @@ export class TelegramAdapter implements ChannelAdapter {
         this.releaseClaimedUpdate(ctx.update.update_id);
         return;
       }
+
+      // Button taps changed the model or the effort with no trace at all; only failures were
+      // recorded, so a menu action could not be correlated with a session change.
+      void telegramLog("info", "telegram button action", {
+        data: ctx.callbackQuery?.data,
+        userId,
+        chatId: String(message.chat.id),
+      });
 
       try {
         const response = await this.callbackHandler({

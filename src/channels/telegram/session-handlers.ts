@@ -9,6 +9,8 @@ import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
+import { redactCommandArgs } from "../command-log.ts";
+import { log } from "../../utils/logger.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -84,13 +86,25 @@ export function createTelegramCommandHandler({
   meta?: TelegramSessionMeta,
 ) => Promise<OutgoingMessage | string | undefined> {
   const handler = async (chatId: string, userId: string, chatType: TelegramChatType, command: string, args: string, meta?: TelegramSessionMeta): Promise<OutgoingMessage | string | undefined> => {
-    hooks.emit("command:received", { command, args, platform: "telegram", userId });
+    const loggedArgs = redactCommandArgs(command, args);
+    hooks.emit("command:received", { command, args: loggedArgs, platform: "telegram", userId });
     const sessionId = resolveTelegramSessionId({
       config,
       chatId,
       userId,
       chatType,
       threadId: meta?.threadId,
+    });
+    // The session id is the point of this record: it is what ties a command to the session whose
+    // history it changed.
+    void log("info", "command received", {
+      platform: "telegram",
+      command,
+      args: loggedArgs,
+      userId,
+      chatId,
+      chatType,
+      sessionId,
     });
 
     switch (command) {
@@ -296,6 +310,11 @@ export function createTelegramCommandHandler({
     const result = await handler(chatId, userId, chatType, command, args, meta);
     const responseText = typeof result === "string" ? result : typeof result === "object" && result?.text ? result.text : undefined;
     hooks.emit("command:handled", { command, platform: "telegram", response: responseText });
+    // `undefined` means the switch had no branch for it: Telegram answers nothing at all, so
+    // without this line an unknown command leaves no trace of having been typed.
+    if (result === undefined) {
+      void log("info", "command not recognized", { platform: "telegram", command, userId, chatId });
+    }
     return result;
   };
 }

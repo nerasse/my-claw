@@ -539,6 +539,12 @@ export class MatrixAdapter implements ChannelAdapter {
       const parsedCommand = commandText ? parseMatrixCommand(commandText) : null;
       if (parsedCommand && this.commandHandler) {
         if (parsedCommand.command === "help" || parsedCommand.command === "commands") {
+          // Answered here, so the central handler never sees it and would not record it.
+          void matrixLog("info", "matrix command received", {
+            command: parsedCommand.command,
+            userId: event.getSender(),
+            chatId: roomId,
+          });
           await this.send(roomId, {
             text: getMatrixHelpText(),
             replyToId: event.getId(),
@@ -989,6 +995,13 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   private async resolvePendingActionResponse(ctx: Parameters<MatrixActionHandler>[0]) {
+    // Reactions and numbered replies drive the same menus as Telegram's buttons and were not
+    // logged either, in a channel that logged no command at all.
+    void matrixLog("info", "matrix menu action", {
+      data: ctx.data,
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+    });
     const confirmation = this.resolveConfirmationAction(ctx.data);
     if (confirmation) {
       return confirmation;
