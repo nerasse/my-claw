@@ -57,6 +57,18 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   `$MY_CLAW_DIR/claude-sdk/` so SDK session files never mix with the owner's
   interactive Claude Code state. The `sessionStore` adapter (append/load) is the
   official escape hatch if we later want the transcripts inside our own store.
+- **Crossing engines mid-conversation.** The SDK resumes history by id, so a session that ran on
+  the home backend arrives with an empty SDK session and the model would see only the newest
+  message. On the first SDK request the local transcript is replayed inside a
+  `<prior_conversation>` block, and a watermark (`sdkSyncedAt`) records what that SDK session has
+  seen so a later detour back through the home backend is replayed too, without resending what
+  resuming already carries. Tool results are included (they hold the substance: tool-call turns
+  often have no text at all) and scanned for injection **per entry**, because the scanner replaces
+  whatever string it is given and one flagged result would otherwise erase the whole history. The
+  replay is bounded only by the model's real context window minus the system prompt, the current
+  turn and the reply reserve; when that binds, the oldest turns go first and the kept head is
+  repaired so it never opens on an orphan tool result. The transfer is silent in chat by design and
+  surfaces in `/status` plus the `session:context:transferred` hook.
 - Home pruning/compaction/trim do not apply on the SDK path: the SDK has its own
   context management and auto-compaction. Meta-commands map to SDK slash
   commands: `/compact` sends `/compact` into the session (emits a
