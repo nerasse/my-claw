@@ -144,6 +144,13 @@
 Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
 - Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`
+- Every command is recorded (`command received`, with the resolved `sessionId`, plus
+  `command not recognized`), because a session whose history changed could not otherwise be tied to
+  the command that changed it. Menu interactions are recorded too: `telegram button action` and
+  `matrix menu action`.
+- Command arguments are masked by `src/channels/command-log.ts` before they are logged or emitted
+  on the `command:received` hook. `/claude set-token <token>` carries a live credential and used to
+  be written to disk in clear.
 
 - Config format: JSON (jq-compatible)
 
