@@ -575,6 +575,16 @@ Additional Matrix fields:
 - `tts.mode` — override for TTS. Cloud uses Edge TTS, local uses Piper.
 - `tts.voice` — voice ID (Edge TTS voice name or Piper model name).
 
+### Tests
+
+- **Unit**: `tests/tools/voice-tools.test.ts` (stub pipeline: argument forwarding, attachment
+  and error mapping), `tests/voice/stt-groq.test.ts`, `tests/voice/stt.test.ts` (failure paths,
+  no network — the file read fails before the request).
+- **E2E**, real binaries and real network, so they never run in CI: `tests-e2e/voice/tts.test.ts`
+  spawns edge-tts/piper (`VOICE_E2E=1`), `tests-e2e/voice/stt-language.test.ts` synthesizes
+  speech then transcribes it through Groq (`VOICE_E2E=1` + `GROQ_API_KEY`). Run them by hand
+  after touching the voice pipeline.
+
 ## Web Search
 
 ```json

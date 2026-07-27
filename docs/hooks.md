@@ -2,13 +2,13 @@
 
 > WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
 > Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
-> 89 hooks (77 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
+> 95 hooks (83 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.
 
 ## Architecture
 
 ```
 src/hooks/
-  types.ts    -- typed event maps for all 89 hooks
+  types.ts    -- typed event maps for all 95 hooks
   bus.ts      -- HookBus with on/off/emit, gate/check, tap/transform
   index.ts    -- exports hooks singleton + types
 ```
@@ -63,6 +63,8 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `message:received` -- raw message from channel adapter
 - `message:preprocessed` -- after audio/video processing
 - `message:route:start` -- before agent handle
+- `message:injected` -- mid-run steering: the message joined an in-flight run instead of
+  starting its own, so it gets no delivery of its own
 - `message:route:complete` -- after response generated
 - `message:route:error` -- routing threw exception
 - `message:delivered` -- response sent to channel
@@ -170,7 +172,7 @@ No `~/.my-claw/hooks/` directory. Single-dev = code directly in `src/`. Adding f
 ### No priorities
 Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs priorities because plugins from different authors can conflict.
 
-### 89 hooks, not 10
+### 95 hooks, not 10
 The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
 
 ### Cron bypass incoming gate

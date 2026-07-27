@@ -40,7 +40,11 @@
 - Stub `fetch` through `tests/helpers/mock-fetch.ts`, never by assigning `globalThis.fetch`
   directly: the helper guarantees the restore and resets the circuit breaker on both ends.
 - Tests that need the network or an external binary belong in `tests-e2e/` behind an env gate
-  (`VOICE_E2E`, `BROWSER_E2E`), never in the default suite.
+  (`VOICE_E2E`, `BROWSER_E2E`), never in the default suite. CI runs a bare `bun test`, so a
+  gated test only ever runs when someone runs it by hand.
+- Test files under `src/**/__tests__/` are excluded from `tsconfig.json` (they import from
+  `tests/helpers/`, outside the build `rootDir`) and type-checked by `tsconfig.test.json`
+  instead: `bun run check` skips them, `bun run check:test` covers them.
 
 ## Git
 
