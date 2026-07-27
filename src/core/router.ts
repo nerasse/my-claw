@@ -131,6 +131,7 @@ export class MessageRouter {
       const injected = runRegistry.enqueueInjection(sessionId, message);
       if (injected) {
         void log("info", "message injected into active run", { ...messageLogData(message), sessionId });
+        hooks.emit("message:injected", { message, sessionId });
         await injected;
         return undefined;
       }

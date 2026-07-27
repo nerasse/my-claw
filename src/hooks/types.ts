@@ -18,6 +18,8 @@ export interface HookEventMap {
   "message:received": { message: UnifiedMessage };
   "message:preprocessed": { message: UnifiedMessage; transcription?: string };
   "message:route:start": { message: UnifiedMessage; sessionId: string };
+  /** Mid-run steering: the message joined an in-flight run instead of starting its own. */
+  "message:injected": { message: UnifiedMessage; sessionId: string };
   "message:route:complete": {
     message: UnifiedMessage;
     sessionId: string;
