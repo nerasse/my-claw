@@ -1721,7 +1721,12 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
       event: createEvent({ id: "$stream-flow", content: { msgtype: "m.text", body: "hi there" } }),
     });
 
-    await new Promise((r) => setTimeout(r, 80));
+    // The full round trip runs behind a 25ms buffered-ingress timer, so a fixed sleep was a bet
+    // on machine speed. Wait for the edit that ends the stream instead.
+    await waitFor(() =>
+      calls.filter((c) => c.method === "sendMessage").length >= 2
+      && calls.some((c) => c.method === "sendMessage"
+        && (c.args[1] as Record<string, unknown>)?.["m.new_content"] !== undefined));
 
     const sendCalls = calls.filter((call) => call.method === "sendMessage");
     assert.ok(sendCalls.length >= 2);
