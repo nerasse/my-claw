@@ -27,11 +27,13 @@ live list from the source of truth so `/model` always reflects what the account 
   dispatcher, picker) already reads `config.llm.models`, so the merge writes there.
 - **Grouping.** Each provider's discovered models land under its `group` label (a submenu entry
   in `/model`). The redundant Claude `default` alias is dropped.
-- **Aliases at the root, versions in family submenus.** Claude aliases keep the provider group
-  (`Claude (abo)`) so picking `Sonnet` still tracks the latest, while each versioned model goes to
-  `Claude (abo)/<Family>` — the family comes from the API display name (`Claude Opus 4.8` ->
-  family `Opus`, label `Opus 4.8`), so no family list is hardcoded. The picker already supports
-  arbitrarily nested `a/b` group paths, so this needed no picker change.
+- **One submenu per family, alias included.** Every Claude model goes to
+  `Claude (abo)/<Family>`, the family coming from the API display name (`Claude Opus 4.8` ->
+  family `Opus`, label `Opus 4.8`), so no family list is hardcoded. The moving alias joins its own
+  family as `Opus (auto)` and is listed first: side by side with the family it read as the same
+  entry twice (`Opus` and `Opus >`) and picking it silently skipped the version choice. An alias
+  the versioned list does not cover stays at the provider root under its plain name. The picker
+  already supports arbitrarily nested `a/b` group paths, so this needed no picker change.
 - **Effort is per model, from the provider.** Levels come from the model's own capabilities, never
   from a global assumption: Opus 4.6 has no `xhigh`, Opus 4.5 stops at `high`, and Haiku 4.5,
   Sonnet 4.5 and Opus 4.1 have none at all. `supportsEffort: false` is a definite fact and yields
