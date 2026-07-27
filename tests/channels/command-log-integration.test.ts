@@ -25,6 +25,21 @@ async function readLogs(): Promise<string> {
   return parts.join("");
 }
 
+/**
+ * The logger is fire-and-forget, so the writes land on their own schedule. Re-reading until the
+ * expected lines appear removes the dependence on machine speed that a fixed sleep encodes, and
+ * the throw names the real cause instead of leaving a bare assert.match failure behind.
+ */
+async function readLogsUntil(done: (text: string) => boolean, timeoutMs = 10_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const text = await readLogs();
+    if (done(text)) return text;
+    if (Date.now() > deadline) throw new Error("timed out waiting for the command log writes to land");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 test("a command is logged with its session id, and a token argument never reaches the log", async () => {
   const sessionManager = new SessionManager();
   const handler = createTelegramCommandHandler({
@@ -37,10 +52,12 @@ test("a command is logged with its session id, and a token argument never reache
   // The secret below is exactly what used to be written to disk in clear.
   await handler("c1", "u1", "dm", "claude", "set-token sk-ant-oat01-TOPSECRET-VALUE");
   await handler("c1", "u1", "dm", "definitely-not-a-command", "");
-  // The logger is fire-and-forget, so let its writes land.
-  await new Promise((resolve) => setTimeout(resolve, 150));
-
-  const logs = await readLogs();
+  // Waits on markers that do not depend on redaction: if the token ever leaks, the failure must
+  // be the explicit leak assertion below, not a timeout on a missing "[redacted]" marker.
+  const logs = await readLogsUntil((text) =>
+    text.includes('"message":"command received"')
+    && text.includes('"command":"claude"')
+    && text.includes('"message":"command not recognized"'));
 
   // The session id is what makes an incident reconstructible after the fact.
   assert.match(logs, /"message":"command received"/);
@@ -53,4 +70,4 @@ test("a command is logged with its session id, and a token argument never reache
   // The whole point of the redaction.
   assert.ok(!logs.includes("TOPSECRET"), "the token leaked into the log file");
   assert.match(logs, /"args":"set-token \[redacted\]"/);
-});
+}, 15_000);
