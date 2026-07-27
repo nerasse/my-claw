@@ -14,6 +14,17 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
   } as MyClawConfig;
 }
 
+/** Removes GROQ_API_KEY for one test and gives back a restore. Deleting it without restoring
+ *  leaked out of this file and disabled any later test that needs the key. */
+function takeGroqKey(): () => void {
+  const saved = process.env["GROQ_API_KEY"];
+  delete process.env["GROQ_API_KEY"];
+  return () => {
+    if (saved === undefined) delete process.env["GROQ_API_KEY"];
+    else process.env["GROQ_API_KEY"] = saved;
+  };
+}
+
 describe("SttPipeline", () => {
   describe("transcribe", () => {
     test("throws when cloud mode fails", async () => {
@@ -35,25 +46,33 @@ describe("SttPipeline", () => {
     });
 
     test("throws when local mode fails (no server)", async () => {
-      delete process.env.GROQ_API_KEY;
+      const restoreKey = takeGroqKey();
       const config = createConfig({ voice: { mode: "local" } });
       const manager = new VoiceManager(config);
       const pipeline = new SttPipeline(manager);
 
-      await expect(pipeline.transcribe("/tmp/nonexistent.ogg")).rejects.toThrow("STT local failed");
+      try {
+        await expect(pipeline.transcribe("/tmp/nonexistent.ogg")).rejects.toThrow("STT local failed");
+      } finally {
+        restoreKey();
+      }
     });
   });
 
   describe("transcribeWithFallback", () => {
     test("returns error object on failure instead of throwing", async () => {
-      delete process.env.GROQ_API_KEY;
+      const restoreKey = takeGroqKey();
       const config = createConfig({ voice: { mode: "local" } });
       const manager = new VoiceManager(config);
       const pipeline = new SttPipeline(manager);
 
-      const result = await pipeline.transcribeWithFallback("/tmp/nonexistent.ogg");
-      expect(result.error).toBeDefined();
-      expect(result.text).toBe("");
+      try {
+        const result = await pipeline.transcribeWithFallback("/tmp/nonexistent.ogg");
+        expect(result.error).toBeDefined();
+        expect(result.text).toBe("");
+      } finally {
+        restoreKey();
+      }
     });
   });
 });
