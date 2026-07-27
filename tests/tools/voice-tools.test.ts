@@ -27,20 +27,34 @@ describe("tts tool", () => {
     expect(result.error).toContain("text is required");
   });
 
-  test("attempts generation with valid text", async () => {
-    const config = createConfig({ voice: { mode: "cloud" } });
-    const manager = new VoiceManager(config);
-    const pipeline = new TtsPipeline(manager);
-    const tool = createTtsTool(pipeline);
+  // Previously this ran the real edge-tts binary, so it called Microsoft over the network and
+  // timed out under load. It also asserted a tautology ("success or error"), which every
+  // ToolResult satisfies. A stub pipeline asserts what the tool actually owns: forwarding the
+  // arguments, and mapping a generated file to output + an audio attachment.
+  test("forwards the arguments and returns the generated file as an audio attachment", async () => {
+    const calls: Array<{ text: string; voice?: string; forceCloud?: boolean }> = [];
+    const pipeline = {
+      generate: async (text: string, opts?: { voice?: string; forceCloud?: boolean }) => {
+        calls.push({ text, voice: opts?.voice, forceCloud: opts?.forceCloud });
+        return { path: "/tmp/generated.mp3", mimeType: "audio/mpeg" };
+      },
+    } as unknown as TtsPipeline;
 
-    const result = await tool.execute({ text: "hello world" });
-    // May succeed or fail depending on whether edge-tts is installed.
-    // We just verify it returns a result (either success or error).
-    if (result.success) {
-      expect(result.output).toBeDefined();
-    } else {
-      expect(result.error).toBeDefined();
-    }
+    const result = await createTtsTool(pipeline).execute({ text: "hello world", voice: "fr-FR-RemyMultilingualNeural", forceCloud: true });
+
+    expect(calls).toEqual([{ text: "hello world", voice: "fr-FR-RemyMultilingualNeural", forceCloud: true }]);
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("/tmp/generated.mp3");
+    expect(result.attachments).toEqual([{ type: "audio", path: "/tmp/generated.mp3", mimeType: "audio/mpeg" }]);
+  });
+
+  test("a pipeline failure becomes a tool error, not a throw", async () => {
+    const pipeline = { generate: async () => { throw new Error("TTS cloud failed: edge-tts missing"); } } as unknown as TtsPipeline;
+
+    const result = await createTtsTool(pipeline).execute({ text: "hello" });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("TTS cloud failed");
   });
 });
 
