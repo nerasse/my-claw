@@ -33,7 +33,14 @@
   order-dependence with `bun test --randomize --seed=N` and timing assumptions by rerunning
   under CPU load.
 - Bun's `fs.watch` is not active when `watch()` returns. A single write can beat registration
-  and be lost outright, so a test must re-touch the file until the watcher reacts.
+  and be lost outright, so a test must re-touch the file until the watcher reacts. Two measured
+  gotchas: a dotfile created *after* the watcher attached produces no events at all (a
+  pre-existing one does), and the retry interval must exceed the watcher's debounce or every
+  poke re-arms the timer and starves the reload.
+- Stub `fetch` through `tests/helpers/mock-fetch.ts`, never by assigning `globalThis.fetch`
+  directly: the helper guarantees the restore and resets the circuit breaker on both ends.
+- Tests that need the network or an external binary belong in `tests-e2e/` behind an env gate
+  (`VOICE_E2E`, `BROWSER_E2E`), never in the default suite.
 
 ## Git
 
