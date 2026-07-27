@@ -58,9 +58,12 @@ src/
 │   ├── claude-sdk/        # Claude Agent SDK backend (subscription auth) — docs/claude-sdk-backend.md
 │   │   ├── backend.ts     # ClaudeSdkBackend: run lifecycle, streaming, injections, usage
 │   │   ├── tools.ts       # Per-run in-process MCP server factory (closures = run context)
-│   │   └── schema.ts      # JSON Schema -> Zod conversion for tool()
+│   │   ├── schema.ts      # JSON Schema -> Zod conversion for tool()
+│   │   ├── models.ts      # discoverSdkModels: supportedModels() over the SDK control channel
+│   │   └── history.ts     # Replays local history into a fresh SDK session (engine switch)
 │   ├── bridge.ts          # LLM agent orchestration (home OpenAI-compatible loop)
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
+│   ├── context-pruning.ts # Prunes old tool results from the prompt (home loop)
 │   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
 │   ├── blacklist.ts
@@ -72,12 +75,16 @@ src/
 │       ├── loader.ts
 │       ├── core-prompts.ts
 │       ├── anti-injection.ts
+│       ├── nested-agents.ts   # Per-directory AGENTS.md collected from the paths tools touch
 │       └── platform-hints.ts
 ├── channels/
 │   ├── types.ts           # UnifiedMessage, ChannelAdapter, shared types
-│   ├── model-picker.ts
+│   ├── model-picker.ts   # /model menu: nested groups, identity-addressed callbacks, effort
 │   ├── context-visibility.ts
 │   ├── meta-commands.ts  # Meta-command filter (/help, /status, etc.)
+│   ├── command-log.ts    # Masks sensitive command arguments before they are logged
+│   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
+│   ├── recreate.ts
 │   ├── telegram/
 │   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
 │   │   ├── send.ts        # All outgoing send/edit/delete methods
@@ -123,7 +130,12 @@ src/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
 │   ├── tokens.ts          # Token estimation + context window trimming
 │   ├── resolver.ts        # Multi-provider model resolution
-│   └── openai-format.ts   # Tool definition + tool call format conversion
+│   ├── openai-format.ts   # Tool definition + tool call format conversion
+│   ├── catalog.ts         # ModelCatalog: per-provider discovery, merge, cache, resilience
+│   ├── anthropic-models.ts # Versioned Claude models from /v1/models (families, per-model effort)
+│   ├── codex.ts           # Codex Responses transport for the home loop
+│   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
+│   └── claude-auth.ts     # Claude subscription token store
 ├── sessions/
 │   ├── manager.ts         # LRU-cached session manager (max 100, persist-on-evict)
 │   ├── store.ts           # Session persistence (JSON files)
@@ -145,6 +157,7 @@ src/
 │   ├── bash.ts, read.ts, write.ts, fetch.ts, find.ts, grep.ts, ls.ts, memory.ts
 │   ├── web-search.ts
 │   ├── browser/           # Browser tools: state, navigation, actions, lowlevel, delegate
+│   ├── plugins.ts         # PluginLoader: external tool plugins
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
 │   ├── stt.ts, tts.ts, voice-mode.ts  # Manual voice tools (thin wrappers over voice/)
@@ -157,6 +170,8 @@ src/
 │   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace)
 │   ├── loader.ts          # Skill file loader + YAML frontmatter parser
 │   ├── sync.ts            # Built-in skill auto-sync (SHA256 hash)
+│   ├── reload.ts          # Re-scans the skill dirs into the registry (/reload-skills)
+│   ├── retrieval.ts       # Skill suggestion: embedding vectors + keyword fallback
 │   └── types.ts
 ├── cron/
 │   ├── scheduler.ts       # Tick loop, at-most-once dispatch, timeout wall

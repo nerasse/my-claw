@@ -314,7 +314,9 @@ The root menu shows `MiMo v2.5 Pro` and a `Claude (abo) >` entry; tapping it ope
 The Claude Agent SDK accepts both aliases (`sonnet`, `opus`, `haiku`, `fable`) and full ids
 (`claude-sonnet-5`, `claude-opus-4-8`); availability depends on your subscription.
 
-A `"/"`-separated `group` nests submenus, e.g. a version picker `Claude > Opus > [Latest / 4.8]`:
+A `"/"`-separated `group` nests submenus, e.g. a version picker `Claude > Opus > [Latest / 4.8]`.
+Discovery builds exactly this shape on its own for a `claude-sdk` provider (see
+`docs/model-discovery.md`), so curated entries are only needed to override what it produces:
 
 ```json
 "models": [

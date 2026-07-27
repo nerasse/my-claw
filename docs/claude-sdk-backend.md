@@ -72,7 +72,8 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
 - Home pruning/compaction/trim do not apply on the SDK path: the SDK has its own
   context management and auto-compaction. Meta-commands map to SDK slash
   commands: `/compact` sends `/compact` into the session (emits a
-  `compact_boundary` message), `/reset` drops the `sdkSessionId` (archive kept
+  `compact_boundary` message), `/reset` drops the `sdkSessionId`, its transfer
+  watermark and the recorded transfer (archive kept
   my-claw-side as today).
 
 ### Tools: in-process MCP server, factory per run
