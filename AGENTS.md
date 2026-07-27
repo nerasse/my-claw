@@ -26,6 +26,14 @@
   module loads. Read filesystem roots from `MY_CLAW_DIR` (never hardcode `homedir()`).
 - The browser sidecar (`sidecar/`, Node) is exercised by the gated e2e in
   `tests-e2e/browser/` (`BROWSER_E2E=1`); the Bun unit tests mock its HTTP endpoints.
+- Module-level state in `src/` is shared by every test file and leaks across them. Reset it
+  in `tests/setup-globals.ts` (second preload, loaded after `setup.ts` so `MY_CLAW_DIR` is
+  already redirected), not per-file: a per-file reset only protects the files that remember.
+- Never assert on a fixed sleep or a bounded polling loop; wait on the event itself. Check
+  order-dependence with `bun test --randomize --seed=N` and timing assumptions by rerunning
+  under CPU load.
+- Bun's `fs.watch` is not active when `watch()` returns. A single write can beat registration
+  and be lost outright, so a test must re-touch the file until the watcher reacts.
 
 ## Git
 
