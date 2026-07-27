@@ -41,6 +41,12 @@ export async function loadPromptFile(name: string): Promise<string> {
   }
 }
 
+/** Drops the mtime cache. Only needed by tests: the cache is keyed on the workspace path,
+ *  which they move around, and mtime equality cannot see two writes inside one tick. */
+export function resetPromptFileCache(): void {
+  cache.clear();
+}
+
 export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> {
   const entries = await Promise.all(
     PROMPT_FILES.map(async (name) => [name, await loadPromptFile(name)] as const),

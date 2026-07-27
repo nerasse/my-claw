@@ -4,12 +4,37 @@
 // later preload guarantees the temp dir is already in place.
 import { beforeEach } from "bun:test";
 import { resetCircuitBreaker } from "../src/llm/provider.ts";
+import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
+import { resetSkillVectorCache } from "../src/skills/retrieval.ts";
+import { clearRecallCache } from "../src/memory/cache.ts";
+import { resetEmbeddingState } from "../src/memory/embedding.ts";
+import { runRegistry } from "../src/core/run-registry.ts";
+import { resetBinaryCache } from "../src/voice/tts.ts";
 
-// The LLM circuit breaker is module-level state shared by every test file. A test that
-// deliberately drives 5 consecutive failures leaves it open for 60s, which then rejects
-// unrelated LLM calls in whatever file happens to run next: an order-dependent failure that
-// only shows up under some orderings. No test wants an inherited open breaker (the ones that
-// exercise it open it themselves), so clear it before each test.
+// Module-level state in src/ outlives a single test file, so anything a test writes here is
+// readable by every file that runs after it. Order-dependent pass/fail is the result, and a
+// per-file reset only ever protects the files that remember to call it. Everything reset here
+// is either a pure cache (clearing it only forces recomputation) or per-run bookkeeping that
+// no test should inherit; nothing semantic is dropped.
 beforeEach(() => {
+  // Opened by the retry tests on purpose, then rejects unrelated LLM calls for 60s.
   resetCircuitBreaker();
+  // Keyed on MY_CLAW_WORKSPACE, which tests move around; mtime equality is also blind to two
+  // writes inside one tick.
+  resetPromptFileCache();
+  // A leftover vector is reused instead of re-embedded, so a fetch mock counting calls sees
+  // fewer than it expects, and skillVectorCacheSize() assertions see foreign entries.
+  resetSkillVectorCache();
+  // Recall keys are short and generic, so a hit can return another file's result without ever
+  // touching sqlite.
+  clearRecallCache();
+  // warmupEmbedding() flips a process-wide latch: once any file warms up, later files silently
+  // take the embedding path instead of the keyword fallback.
+  resetEmbeddingState();
+  // Session ids are reused across files ("s1", "sess-A"), so a leaked controller makes
+  // isRunning() true and leaves a mailbox accepting injections.
+  runRegistry.clear();
+  // A binary path resolved by an earlier file would defeat a test that simulates edge-tts or
+  // piper being absent.
+  resetBinaryCache();
 });

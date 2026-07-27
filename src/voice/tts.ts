@@ -47,6 +47,12 @@ function cacheAndReturn(name: string, path: string): string {
   return path;
 }
 
+/** Drops the resolved-binary cache. Only needed by tests: a path cached from a previous test
+ *  would otherwise defeat any attempt to simulate a missing binary. */
+export function resetBinaryCache(): void {
+  binaryCache.clear();
+}
+
 export class TtsPipeline {
   constructor(private voiceManager: VoiceManager) {}
 
