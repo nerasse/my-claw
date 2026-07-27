@@ -178,7 +178,7 @@ const VERSIONED_FIXTURE = [
   },
 ];
 
-test("claude-sdk provider: aliases stay at the root, versions land in family submenus", async () => {
+test("claude-sdk provider: an alias joins its family submenu, ahead of the pinned versions", async () => {
   const originalFetch = globalThis.fetch;
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
@@ -192,9 +192,14 @@ test("claude-sdk provider: aliases stay at the root, versions land in family sub
     ]);
     await catalog.refresh();
 
-    // The alias keeps tracking the latest, so it must not be buried in a version submenu.
+    // Beside its family the alias reads as the same entry twice and skips the version choice, so
+    // it belongs inside the submenu, marked as the auto-tracking one.
     const alias = catalog.discovered().find((m) => m.id === "sonnet");
-    assert.equal(alias?.group, "Claude (abo)");
+    assert.equal(alias?.group, "Claude (abo)/Sonnet");
+    assert.equal(alias?.label, "Sonnet (auto)");
+    // It must come before the pinned versions so the submenu opens on the auto entry.
+    const ids = catalog.discovered().map((m) => m.id);
+    assert.ok(ids.indexOf("sonnet") < ids.indexOf("claude-sonnet-4-6"));
 
     const opus = catalog.discovered().find((m) => m.id === "claude-opus-4-8");
     assert.equal(opus?.group, "Claude (abo)/Opus");
@@ -255,5 +260,36 @@ test("claude-sdk provider: no token means aliases only, not a failed refresh", a
     assert.deepEqual(catalog.discovered().map((m) => m.id), ["sonnet"]);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("claude-sdk provider: an alias with no matching family stays where it was", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+  globalThis.fetch = anthropicAwareFetch({ versions: VERSIONED_FIXTURE });
+
+  try {
+    clearCatalogCache();
+    const config = makeConfig();
+    const catalog = new ModelCatalog(() => config, async () => [
+      { value: "default", displayName: "Default" },
+      { value: "opus[1m]", displayName: "Opus (1M context)" },
+      { value: "mystery", displayName: "Mystery" },
+    ]);
+    await catalog.refresh();
+
+    // A variant marker names the same family as the plain alias.
+    assert.equal(catalog.discovered().find((m) => m.id === "opus[1m]")?.group, "Claude (abo)/Opus");
+    // An alias the versioned list knows nothing about must not invent a submenu.
+    const mystery = catalog.discovered().find((m) => m.id === "mystery");
+    assert.equal(mystery?.group, "Claude (abo)");
+    assert.equal(mystery?.label, "Mystery");
+    // "default" resolves to another listed model, so it stays out of the menu.
+    assert.ok(!catalog.discovered().some((m) => m.id === "default"));
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }
 });
