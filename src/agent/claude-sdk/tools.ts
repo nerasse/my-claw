@@ -4,6 +4,7 @@ import { READ_ONLY_TOOLS } from "../../tools/registry.ts";
 import type { UnifiedMessage, Attachment } from "../../channels/types.ts";
 import type { SessionData } from "../../sessions/store.ts";
 import { jsonSchemaToZodShape } from "./schema.ts";
+import type { NestedAgentsCollector } from "../prompt/nested-agents.ts";
 import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
 import { log } from "../../utils/logger.ts";
@@ -28,6 +29,9 @@ export interface SdkRunContext {
   signal?: AbortSignal;
   workspaceDir?: string;
   addAttachment: (att: Attachment) => void;
+  // Run-local, like the home loop: dedup and byte budget reset every run, so an edited
+  // nested AGENTS.md is re-read from disk on the next message.
+  nestedAgents?: NestedAgentsCollector;
   // Fired after each tool completes so the backend can stream tool-status to the channel.
   onToolDone?: (info: { name: string; arguments: Record<string, unknown>; durationMs: number }) => Promise<void>;
 }
@@ -93,6 +97,10 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
     sessionId: ctx.session.id,
     toolCallId: `sdk-${startedAt}`,
   })).result;
+
+  if (ctx.nestedAgents) {
+    content += ctx.nestedAgents.collect(t.name, args);
+  }
 
   hooks.emit(success ? "tool:execute:end" : "tool:execute:error", success
     ? { toolName: t.name, toolCallId: `sdk-${startedAt}`, sessionId: ctx.session.id, success: true, outputChars: content.length, durationMs }

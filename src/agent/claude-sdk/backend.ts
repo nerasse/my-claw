@@ -1,6 +1,12 @@
 import { query as sdkQuery, type Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
-import { MY_CLAW_DIR, resolveMaxIterations } from "../../core/config.ts";
+import {
+  MY_CLAW_DIR,
+  nestedAgentsEnabled,
+  resolveMaxIterations,
+  resolveNestedAgentsMaxBytes,
+} from "../../core/config.ts";
+import { NestedAgentsCollector } from "../prompt/nested-agents.ts";
 import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
@@ -390,6 +396,12 @@ export class ClaudeSdkBackend implements AgentBackend {
         signal,
         workspaceDir: this.workspaceDir,
         addAttachment: (att) => this.preprocessor.addResponseAttachment(message.id, att),
+        nestedAgents: nestedAgentsEnabled(this.config)
+          ? new NestedAgentsCollector(
+              this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+              resolveNestedAgentsMaxBytes(this.config),
+            )
+          : undefined,
         onToolDone: async (info) => {
           toolExecutions += 1;
           if (onToolUse) await onToolUse([info], session.verbose !== false);
