@@ -126,6 +126,50 @@ async function fetchCodexModels(baseUrl: string): Promise<CodexDiscoveredModel[]
   }
 }
 
+/** Family submenu names keyed by their lowercase form, e.g. "opus" -> "Opus". */
+function familyIndex(versioned: LlmModelConfig[]): Map<string, string> {
+  const families = new Map<string, string>();
+  for (const model of versioned) {
+    const family = model.group?.split("/").pop();
+    if (family) families.set(family.toLowerCase(), family);
+  }
+  return families;
+}
+
+/**
+ * Place each moving alias inside its own family submenu instead of beside it. Side by side, an
+ * alias and its family read as the same entry twice ("Opus" and "Opus >"), and picking the alias
+ * silently skips the version choice the owner came for. Inside the submenu it is unambiguous: the
+ * auto-tracking entry sits first, then the pinned versions.
+ */
+function aliasModels(
+  aliases: DiscoveredSdkModel[],
+  provider: string,
+  config: LlmProviderConfig,
+  families: Map<string, string>,
+): LlmModelConfig[] {
+  const out: LlmModelConfig[] = [];
+  for (const alias of aliases) {
+    // "default" is a redundant alias (resolves to another listed model).
+    if (alias.value === "default") continue;
+    // Variant markers like "opus[1m]" name the same family as the plain alias.
+    const family = families.get(alias.value.replace(/\[.*\]$/, "").toLowerCase());
+    const displayName = alias.displayName || alias.value;
+    out.push({
+      id: alias.value,
+      label: family ? `${displayName} (auto)` : displayName,
+      provider,
+      group: family && config.group ? `${config.group}/${family}` : config.group,
+      // The SDK omits the flag entirely for models without reasoning, so normalize to a
+      // definite false: "unknown" would make the picker offer the whole global list.
+      supportsEffort: alias.supportsEffort === true,
+      supportedEffortLevels: alias.supportedEffortLevels,
+      vision: true,
+    });
+  }
+  return out;
+}
+
 /**
  * Runtime model catalog: augments config.models with models discovered from providers marked
  * `discover`. Resilient by design — a failed provider keeps the last known set (persisted to
@@ -207,34 +251,20 @@ export class ModelCatalog {
       try {
         if (provider.type === "claude-sdk") {
           if (!this.sdkDiscoverer) continue;
-          const models = await this.sdkDiscoverer();
-          for (const m of models) {
-            // "default" is a redundant alias (resolves to another listed model).
-            if (m.value === "default") continue;
-            next.push({
-              id: m.value,
-              label: m.displayName || m.value,
-              provider: name,
-              group: provider.group,
-              // The SDK omits the flag entirely for models without reasoning, so normalize to a
-              // definite false: "unknown" would make the picker offer the whole global list.
-              supportsEffort: m.supportsEffort === true,
-              supportedEffortLevels: m.supportedEffortLevels,
-              vision: true,
-            });
-          }
+          const aliases = await this.sdkDiscoverer();
           // Versioned models come from a separate endpoint: losing it must not drop the aliases,
           // which are what makes the provider usable at all.
+          let versioned: LlmModelConfig[] = [];
           try {
-            next.push(...(await this.claudeVersionedModels(name, provider)));
+            versioned = await this.claudeVersionedModels(name, provider);
           } catch (err) {
             anyFailed = true;
             void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
-            const have = new Set(next.map((m) => m.id));
-            for (const m of this.discoveredModels) {
-              if (m.provider === name && !have.has(m.id)) next.push(m);
-            }
+            const aliasIds = new Set(aliases.map((m) => m.value));
+            versioned = this.discoveredModels.filter((m) => m.provider === name && !aliasIds.has(m.id));
           }
+          next.push(...aliasModels(aliases, name, provider, familyIndex(versioned)));
+          next.push(...versioned);
         } else if (provider.type === "codex") {
           const models = await fetchCodexModels(provider.baseUrl ?? "");
           for (const m of models) {
