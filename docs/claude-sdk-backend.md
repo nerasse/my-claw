@@ -154,6 +154,11 @@ The subprocess runs hermetic — my-claw is the only source of behavior:
   `CLAUDE_CONFIG_DIR=$MY_CLAW_DIR/claude-sdk`.
 - `cwd` = the run's workspace dir, same resolution as the home loop.
 
+Isolation is not a loss of project instructions: nested `AGENTS.md` files reach this
+backend through my-claw's own collector, built per run and appended to tool results exactly
+as in the home loop (`docs/nested-agents.md`). One mechanism, both engines, and the
+subprocess still never reads `CLAUDE.md` or `.claude/settings.json` by itself.
+
 ### Approvals, prompt, streaming, hooks
 
 - Approvals: `canUseTool` callback delegating to `ToolApprovalManager`; blacklist

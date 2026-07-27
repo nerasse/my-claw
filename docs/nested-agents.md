@@ -1,6 +1,6 @@
 # Nested AGENTS.md (subtree instructions)
 
-Status: proposed spec, pending implementation.
+Status: implemented, on both engines (home loop and Claude Agent SDK).
 
 ## Why
 
@@ -90,6 +90,15 @@ injected at most once per run. The set lives as a local variable in the `reply` 
 on the `session` object -- the session is persisted to disk as JSON and this state is
 transient. A new run that touches the same subtree re-injects (cheap, and picks up edits).
 
+### Both engines, same behaviour
+
+The collector is built per run by each backend and reads from disk every time, so editing a
+nested `AGENTS.md` mid-conversation applies from the next message on either engine. The
+Claude Agent SDK subprocess stays hermetic (`settingSources: []`,
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`): it never loads `CLAUDE.md` or `.claude/settings.json`
+by itself. Nested instructions reach it only through this collector, so one mechanism
+governs both engines instead of two divergent ones.
+
 ## Scope and limits
 
 - No `@import` / file-reference expansion.
@@ -115,18 +124,19 @@ transient. A new run that touches the same subtree re-injects (cheap, and picks 
 }
 ```
 
-## Where (planned)
+## Where
 
-- `src/tools/bash.ts` -- new optional `workdir` parameter: resolved against the workspace,
-  used as the spawn `cwd` (falls back to workspace root). Documented in the tool
-  description so the model sets it when operating in a subtree.
-- `src/agent/prompt/nested-agents.ts` -- target-dir extraction per tool (`path` arg for
-  file tools; `workdir` else leading-`cd` for bash), git-root walk, chain collection,
-  dedup set, byte budget, `scanForInjection`, block formatting.
-- `src/agent/bridge.ts` -- call the discovery in the tool-result loop (around
-  `src/agent/bridge.ts:469-480`, before pushing the `role: "tool"` message) and append the
-  injected block to the tool result. Run-local dedup set + byte counter created per
-  `reply`.
-- `src/core/config.ts` -- `agents.nested` (`NestedAgentsConfig`), defaults, hot-reload
-  section registration.
-- `docs/config.md` -- document `agents.nested`.
+- `src/tools/bash.ts` -- optional `workdir` parameter: resolved against the workspace, used
+  as the spawn `cwd` (falls back to workspace root). Documented in the tool description so
+  the model sets it when operating in a subtree.
+- `src/agent/prompt/nested-agents.ts` -- `extractTargetDir` per tool (`path` arg for file
+  tools; `workdir` else leading-`cd` for bash), git-root walk, chain collection, and the
+  `NestedAgentsCollector` holding the dedup set, byte budget, `scanForInjection` and block
+  formatting.
+- `src/agent/bridge.ts` -- home loop: collector built per `reply`, block appended to the
+  tool result after the `transform:tool:result` hook.
+- `src/agent/claude-sdk/backend.ts` + `tools.ts` -- SDK backend: the collector travels on
+  the per-run `SdkRunContext` and is appended at the same point, right after the same hook.
+- `src/core/config.ts` -- `agents.nested` (`nestedAgentsEnabled`,
+  `resolveNestedAgentsMaxBytes`), defaults, hot-reload section registration.
+- `docs/config.md` -- documents `agents.nested`.

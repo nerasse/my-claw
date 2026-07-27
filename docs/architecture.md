@@ -235,6 +235,12 @@ Layer 2 is only the **workspace-root** AGENTS.md. AGENTS.md files in subtrees th
 touches are surfaced lazily, appended to the relevant tool result rather than preloaded
 here (see `docs/nested-agents.md`).
 
+Layers 1-3 are re-read per run and cached on mtime only, with no time-based staleness
+window: editing a workspace prompt file applies from the very next message. This holds on
+both engines -- the Claude Agent SDK receives the freshly built prompt in its `initialize`
+request on every run, and a changed prompt takes effect even when resuming an existing SDK
+session.
+
 #### Anti-injection
 
 - All workspace files scanned before injection, plus every nested AGENTS.md discovered in
