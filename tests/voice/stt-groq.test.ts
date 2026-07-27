@@ -1,10 +1,11 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import { writeFile, unlink, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
   return {
@@ -32,15 +33,15 @@ describe("SttPipeline Groq upload fixes", () => {
 
       // Mock fetch to inspect FormData
       const fetchCalls: Array<{ formData: FormData }> = [];
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
-        if (url.includes("groq.com")) {
+      const realFetch = globalThis.fetch;
+      const fetchMock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
+        if (String(url).includes("groq.com")) {
           const fd = init?.body as FormData;
           fetchCalls.push({ formData: fd });
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
-        return originalFetch(url, init);
-      }) as unknown as typeof fetch;
+        return realFetch(url as string, init);
+      });
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -52,7 +53,7 @@ describe("SttPipeline Groq upload fixes", () => {
         expect(fileEntry.name).toBe("voice.ogg"); // .oga -> .ogg
         expect(fileEntry.type).toBe("audio/ogg");  // forced MIME type
       } finally {
-        globalThis.fetch = originalFetch;
+        fetchMock.restore();
         delete process.env.GROQ_API_KEY;
         await unlink(filePath).catch(() => {});
       }
@@ -69,14 +70,14 @@ describe("SttPipeline Groq upload fixes", () => {
       const pipeline = new SttPipeline(manager);
 
       const fetchCalls: Array<{ formData: FormData }> = [];
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
-        if (url.includes("groq.com")) {
+      const realFetch = globalThis.fetch;
+      const fetchMock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
+        if (String(url).includes("groq.com")) {
           fetchCalls.push({ formData: init?.body as FormData });
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
-        return originalFetch(url, init);
-      }) as unknown as typeof fetch;
+        return realFetch(url as string, init);
+      });
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -87,7 +88,7 @@ describe("SttPipeline Groq upload fixes", () => {
         expect(fileEntry.name).toBe("audio.ogg");
         expect(fileEntry.type).toBe("audio/ogg");
       } finally {
-        globalThis.fetch = originalFetch;
+        fetchMock.restore();
         delete process.env.GROQ_API_KEY;
         await unlink(filePath).catch(() => {});
       }
@@ -105,15 +106,15 @@ describe("SttPipeline Groq upload fixes", () => {
       const pipeline = new SttPipeline(manager);
 
       const fetchCalls: Array<{ formData: FormData }> = [];
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
-        if (url.includes("groq.com")) {
+      const realFetch = globalThis.fetch;
+      const fetchMock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
+        if (String(url).includes("groq.com")) {
           const fd = init?.body as FormData;
           fetchCalls.push({ formData: fd });
           return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
         }
-        return originalFetch(url, init);
-      }) as unknown as typeof fetch;
+        return realFetch(url as string, init);
+      });
 
       try {
         process.env.GROQ_API_KEY = "test-key";
@@ -123,7 +124,7 @@ describe("SttPipeline Groq upload fixes", () => {
         const fileEntry = fetchCalls[0]!.formData.get("file") as File;
         expect(fileEntry.type).toBe("audio/mpeg");
       } finally {
-        globalThis.fetch = originalFetch;
+        fetchMock.restore();
         delete process.env.GROQ_API_KEY;
         await unlink(filePath).catch(() => {});
       }
@@ -139,17 +140,16 @@ describe("SttPipeline Groq upload fixes", () => {
       const manager = new VoiceManager(config);
       const pipeline = new SttPipeline(manager);
 
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = mock(async () => {
+      const fetchMock = mockFetch(async () => {
         return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
-      }) as unknown as typeof fetch;
+      });
 
       try {
         process.env.GROQ_API_KEY = "test-key";
         const result = await pipeline.transcribe(filePath);
         expect(result.text).toBe("hello");
       } finally {
-        globalThis.fetch = originalFetch;
+        fetchMock.restore();
         delete process.env.GROQ_API_KEY;
         await unlink(filePath).catch(() => {});
       }

@@ -7,6 +7,7 @@ import { VoiceManager } from "../../src/voice/manager.ts";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function createConfig(): MyClawConfig {
   return {
@@ -50,14 +51,14 @@ async function languageSentFor(audioAsVoice: boolean | undefined): Promise<strin
   const preprocessor = new MessagePreprocessor(voiceManager, pipeline);
 
   let sent: string | null = null;
-  const original = globalThis.fetch;
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+  const realFetch = globalThis.fetch;
+  const mock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
     if (String(url).includes("groq.com")) {
       sent = (init?.body as FormData).get("language") as string | null;
       return new Response(JSON.stringify({ text: "bonjour" }), { status: 200 });
     }
-    return original(url as string, init);
-  }) as unknown as typeof fetch;
+    return realFetch(url as string, init);
+  });
 
   try {
     process.env.GROQ_API_KEY = "test-key";
@@ -65,7 +66,7 @@ async function languageSentFor(audioAsVoice: boolean | undefined): Promise<strin
       message({ attachments: [{ type: "audio", path, mimeType: "audio/ogg", audioAsVoice }] }),
     );
   } finally {
-    globalThis.fetch = original;
+    mock.restore();
   }
   return sent;
 }

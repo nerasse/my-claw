@@ -6,6 +6,7 @@ import { addEntry, getEntry, closeMemoryDb, clearAllEntries } from "../db.ts";
 import { clearRecallCache } from "../cache.ts";
 import { recall } from "../recall.ts";
 import { hashContent } from "../dedup.ts";
+import { mockFetch } from "../../../tests/helpers/mock-fetch.ts";
 
 const DB = join(tmpdir(), `mc-recall-${process.pid}-${Date.now()}.db`);
 
@@ -80,16 +81,15 @@ test("hybrid recall blends cosine when embeddings present", async () => {
   addEntry("project uses redis somewhere unrelated", "lesson", new Float32Array([0, 1]), hashContent("project uses redis somewhere unrelated"), "m");
   const cfg = { embedding: { backend: "http" as const, model: "m", baseUrl: "http://x" } };
 
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
+  const mock = mockFetch(async () =>
     new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), {
       status: 200,
-    })) as unknown as typeof fetch;
+    }));
   try {
     const r = await recall("redis queue cache", cfg);
     expect(r.semantic).toBe(true);
     expect(r.hits[0]!.entry.content).toContain("queue and cache");
   } finally {
-    globalThis.fetch = realFetch;
+    mock.restore();
   }
 });

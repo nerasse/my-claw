@@ -7,11 +7,13 @@ import {
   embed,
   resetEmbeddingState,
 } from "../embedding.ts";
+import { mockFetch } from "../../../tests/helpers/mock-fetch.ts";
 
-const realFetch = globalThis.fetch;
+let mock: { restore(): void } | undefined;
 
 afterEach(() => {
-  globalThis.fetch = realFetch;
+  mock?.restore();
+  mock = undefined;
   resetEmbeddingState();
 });
 
@@ -52,10 +54,10 @@ test("embed returns null when no model configured", async () => {
 
 test("embed http posts to /embeddings and parses response", async () => {
   let captured: { url: string; body: unknown } | null = null;
-  globalThis.fetch = (async (url: string, init: RequestInit) => {
-    captured = { url, body: JSON.parse(String(init.body)) };
+  mock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
+    captured = { url: String(url), body: JSON.parse(String(init?.body)) };
     return new Response(JSON.stringify({ data: [{ embedding: [0.6, 0.8] }] }), { status: 200 });
-  }) as unknown as typeof fetch;
+  });
 
   const vec = await embed("hi", { backend: "http", model: "m", baseUrl: "http://host/v1" });
   expect(captured!.url).toBe("http://host/v1/embeddings");
@@ -64,16 +66,16 @@ test("embed http posts to /embeddings and parses response", async () => {
 });
 
 test("embed http returns null on http error", async () => {
-  globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+  mock = mockFetch(async () => new Response("nope", { status: 500 }));
   const vec = await embed("hi", { backend: "http", model: "m", baseUrl: "http://host/v1" });
   expect(vec).toBeNull();
 });
 
 test("embed http truncates and renormalizes to requested dimensions", async () => {
-  globalThis.fetch = (async () =>
+  mock = mockFetch(async () =>
     new Response(JSON.stringify({ data: [{ embedding: [3, 4, 100, 100] }] }), {
       status: 200,
-    })) as unknown as typeof fetch;
+    }));
   const vec = await embed("hi", { backend: "http", model: "m", baseUrl: "http://h", dimensions: 2 });
   expect(vec!.length).toBe(2);
   // [3,4] normalized -> [0.6, 0.8]

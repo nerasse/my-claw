@@ -5,6 +5,7 @@ import {
   splitAnthropicDisplayName,
   anthropicEffortLevels,
 } from "../../src/llm/anthropic-models.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 test("splitAnthropicDisplayName: strips the Claude prefix and separates the family", () => {
   assert.deepEqual(splitAnthropicDisplayName("Claude Opus 4.8", "claude-opus-4-8"), {
@@ -54,10 +55,9 @@ test("anthropicEffortLevels: only levels the model actually supports, in menu or
 });
 
 test("fetchAnthropicModels: sends subscription auth and maps capabilities", async () => {
-  const originalFetch = globalThis.fetch;
   let seenUrl = "";
   let seenHeaders: Record<string, string> = {};
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+  const mock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
     seenUrl = String(url);
     seenHeaders = (init?.headers ?? {}) as Record<string, string>;
     return new Response(
@@ -84,7 +84,7 @@ test("fetchAnthropicModels: sends subscription auth and maps capabilities", asyn
       }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     );
-  }) as unknown as typeof fetch;
+  });
 
   try {
     const models = await fetchAnthropicModels("tok-123");
@@ -107,16 +107,15 @@ test("fetchAnthropicModels: sends subscription auth and maps capabilities", asyn
     assert.deepEqual(haiku.effortLevels, []);
     assert.equal(haiku.vision, false);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
   }
 });
 
 test("fetchAnthropicModels: a non-ok response throws so the caller keeps its cached set", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+  const mock = mockFetch(async () => new Response("nope", { status: 401 }));
   try {
     await assert.rejects(() => fetchAnthropicModels("bad"), /HTTP 401/);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
   }
 });

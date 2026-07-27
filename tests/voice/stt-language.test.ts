@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -6,6 +6,7 @@ import { writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSttTool } from "../../src/tools/stt.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
   return {
@@ -28,15 +29,15 @@ async function audioFixture(name = "voice.ogg"): Promise<string> {
 /** Captures the multipart body the pipeline actually puts on the wire. */
 function captureUpload(host: string, body: unknown = { text: "bonjour" }) {
   const calls: FormData[] = [];
-  const original = globalThis.fetch;
-  globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+  const realFetch = globalThis.fetch;
+  const fetchMock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
     if (String(url).includes(host)) {
       calls.push(init?.body as FormData);
       return new Response(JSON.stringify(body), { status: 200 });
     }
-    return original(url as string, init);
-  }) as unknown as typeof fetch;
-  return { calls, restore: () => { globalThis.fetch = original; } };
+    return realFetch(url as string, init);
+  });
+  return { calls, restore: () => { fetchMock.restore(); } };
 }
 
 describe("STT language selection", () => {

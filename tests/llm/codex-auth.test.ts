@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { getCodexAccessToken, loadCodexCredential, codexLogout } from "../../src/llm/codex-auth.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const AUTH_PATH = join(MY_CLAW_DIR, "codex", "auth.json");
 
@@ -23,9 +24,10 @@ function writeAuth(cred: Record<string, unknown>): void {
   writeFileSync(AUTH_PATH, JSON.stringify(cred));
 }
 
-const realFetch = globalThis.fetch;
+let mock: { restore(): void } | undefined;
 afterEach(() => {
-  globalThis.fetch = realFetch;
+  mock?.restore();
+  mock = undefined;
   // MY_CLAW_DIR is shared across test files; leaking a codex credential breaks
   // other suites that assume a fresh (logged-out) state.
   rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
@@ -42,10 +44,10 @@ test("getCodexAccessToken refreshes an expiring token and persists the rotation"
   writeAuth({ access: "old", refresh: "old-refresh", expires: Date.now() + 1000, accountId: "acct-1" });
   const newAccess = fakeJwt("acct-2");
   let calledWith: URLSearchParams | undefined;
-  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
     calledWith = new URLSearchParams(String(init?.body));
     return new Response(JSON.stringify({ access_token: newAccess, refresh_token: "new-refresh", expires_in: 3600 }), { status: 200 });
-  }) as typeof fetch;
+  });
 
   const { accessToken, accountId } = await getCodexAccessToken();
   assert.equal(accessToken, newAccess);

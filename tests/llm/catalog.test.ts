@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ModelCatalog, mergeModels, applyProviderGroups } from "../../src/llm/catalog.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 // Discovery persists to a shared cache file; clear it so tests don't inherit each other's state.
 function clearCatalogCache(): void {
@@ -57,14 +58,13 @@ function makeConfig(): LlmConfig {
 }
 
 test("refresh discovers SDK + OpenAI models, groups them, skips default alias", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (url: string) => {
+  const mock = mockFetch(async (url?: string | URL | Request) => {
     assert.match(String(url), /litellm\.example\/v1\/models$/);
     return new Response(JSON.stringify({ data: [{ id: "mimo" }, { id: "qwen-72b" }] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  }) as unknown as typeof fetch;
+  });
 
   try {
     clearCatalogCache();
@@ -101,22 +101,21 @@ test("refresh discovers SDK + OpenAI models, groups them, skips default alias", 
 
     assert.equal(notified, 1);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
   }
 });
 
 test("refresh is resilient: a failing provider keeps its previous models", async () => {
   const config = makeConfig();
   // First refresh: openai fails, SDK ok.
-  const originalFetch = globalThis.fetch;
   let failFetch = true;
-  globalThis.fetch = (async () => {
+  const mock = mockFetch(async () => {
     if (failFetch) throw new Error("network down");
     return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  }) as unknown as typeof fetch;
+  });
 
   try {
     clearCatalogCache();
@@ -129,7 +128,7 @@ test("refresh is resilient: a failing provider keeps its previous models", async
     await catalog.refresh();
     assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["qwen-72b", "sonnet"]);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
   }
 });
 
@@ -143,8 +142,8 @@ test("enabled() false when no provider opts into discovery", () => {
 });
 
 /** Routes the two discovery endpoints used by the anthropic provider tests below. */
-function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolean }): typeof fetch {
-  return (async (url: string) => {
+function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolean }) {
+  return async (url?: string | URL | Request) => {
     const href = String(url);
     if (href.includes("api.anthropic.com")) {
       if (opts.versionsFail) throw new Error("anthropic down");
@@ -157,7 +156,7 @@ function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolea
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  }) as unknown as typeof fetch;
+  };
 }
 
 const VERSIONED_FIXTURE = [
@@ -179,10 +178,9 @@ const VERSIONED_FIXTURE = [
 ];
 
 test("claude-sdk provider: an alias joins its family submenu, ahead of the pinned versions", async () => {
-  const originalFetch = globalThis.fetch;
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
-  globalThis.fetch = anthropicAwareFetch({ versions: VERSIONED_FIXTURE });
+  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
 
   try {
     clearCatalogCache();
@@ -215,43 +213,43 @@ test("claude-sdk provider: an alias joins its family submenu, ahead of the pinne
     assert.equal(sonnet46?.supportsEffort, false);
     assert.equal(sonnet46?.supportedEffortLevels, undefined);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
     else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }
 });
 
 test("claude-sdk provider: losing the version endpoint keeps the aliases and the cached versions", async () => {
-  const originalFetch = globalThis.fetch;
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+  let mock: { restore(): void } | undefined;
 
   try {
     clearCatalogCache();
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
 
-    globalThis.fetch = anthropicAwareFetch({ versions: VERSIONED_FIXTURE });
+    mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
     await catalog.refresh();
     assert.ok(catalog.discovered().some((m) => m.id === "claude-opus-4-8"));
 
     // The aliases are what make the provider usable, so they must survive on their own; the
     // previously discovered versions are kept too rather than vanishing from the menu.
-    globalThis.fetch = anthropicAwareFetch({ versionsFail: true });
+    mock.restore();
+    mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
     await catalog.refresh();
     const ids = catalog.discovered().map((m) => m.id).sort();
     assert.deepEqual(ids, ["claude-opus-4-8", "claude-sonnet-4-6", "sonnet"]);
     assert.equal(catalog.discovered().find((m) => m.id === "claude-opus-4-8")?.group, "Claude (abo)/Opus");
   } finally {
-    globalThis.fetch = originalFetch;
+    mock?.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
     else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }
 });
 
 test("claude-sdk provider: no token means aliases only, not a failed refresh", async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = anthropicAwareFetch({ versionsFail: true });
+  const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
   try {
     clearCatalogCache();
     const config = makeConfig();
@@ -259,15 +257,14 @@ test("claude-sdk provider: no token means aliases only, not a failed refresh", a
     await catalog.refresh();
     assert.deepEqual(catalog.discovered().map((m) => m.id), ["sonnet"]);
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
   }
 });
 
 test("claude-sdk provider: an alias with no matching family stays where it was", async () => {
-  const originalFetch = globalThis.fetch;
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
-  globalThis.fetch = anthropicAwareFetch({ versions: VERSIONED_FIXTURE });
+  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
 
   try {
     clearCatalogCache();
@@ -288,7 +285,7 @@ test("claude-sdk provider: an alias with no matching family stays where it was",
     // "default" resolves to another listed model, so it stays out of the menu.
     assert.ok(!catalog.discovered().some((m) => m.id === "default"));
   } finally {
-    globalThis.fetch = originalFetch;
+    mock.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
     else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }

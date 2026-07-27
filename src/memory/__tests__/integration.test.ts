@@ -16,6 +16,7 @@ import {
 } from "../index.ts";
 import { clearAllEntries, getActiveNeedingEmbedding, addEntry } from "../db.ts";
 import { hashContent } from "../dedup.ts";
+import { mockFetch } from "../../../tests/helpers/mock-fetch.ts";
 
 const DB = join(tmpdir(), `mc-integ-${process.pid}-${Date.now()}.db`);
 let workspace: string;
@@ -92,18 +93,17 @@ test("backfill embeds entries stored while FTS5-only", async () => {
   await remember("another older fact", "lesson");
   expect(getActiveNeedingEmbedding("m").length).toBe(2);
 
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
+  const mock = mockFetch(async () =>
     new Response(JSON.stringify({ data: [{ embedding: [0.6, 0.8] }] }), {
       status: 200,
-    })) as unknown as typeof fetch;
+    }));
   try {
     const cfg = { embedding: { backend: "http" as const, model: "m", baseUrl: "http://x" } };
     const n = await backfillEmbeddings(cfg);
     expect(n).toBe(2);
     expect(getActiveNeedingEmbedding("m").length).toBe(0);
   } finally {
-    globalThis.fetch = realFetch;
+    mock.restore();
   }
 });
 
@@ -112,17 +112,16 @@ test("backfill re-embeds entries from a different model", async () => {
   addEntry("fact embedded by old model", "lesson", new Float32Array([1, 0]), hashContent("fact embedded by old model"), "old-model");
   expect(getActiveNeedingEmbedding("new-model").length).toBe(1);
 
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
+  const mock = mockFetch(async () =>
     new Response(JSON.stringify({ data: [{ embedding: [0.6, 0.8] }] }), {
       status: 200,
-    })) as unknown as typeof fetch;
+    }));
   try {
     const cfg = { embedding: { backend: "http" as const, model: "new-model", baseUrl: "http://x" } };
     expect(await backfillEmbeddings(cfg)).toBe(1);
     expect(getActiveNeedingEmbedding("new-model").length).toBe(0);
   } finally {
-    globalThis.fetch = realFetch;
+    mock.restore();
   }
 });
 

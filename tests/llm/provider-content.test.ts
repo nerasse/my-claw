@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { chatCompletion, chatCompletionStream } from "../../src/llm/provider.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const config = {
   provider: "x",
@@ -10,8 +11,7 @@ const config = {
 
 describe("chatCompletion", () => {
   test("parses content and tool calls", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
+    const mock = mockFetch(async () =>
       new Response(
         JSON.stringify({
           choices: [
@@ -29,27 +29,26 @@ describe("chatCompletion", () => {
           ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      )) as unknown as typeof fetch;
+      ));
 
     try {
       const result = await chatCompletion(config, [{ role: "user", content: "hi" }]);
       expect(result.content).toBe("hello");
       expect(result.toolCalls).toEqual([{ id: "tc1", name: "demo", arguments: { x: 1 } }]);
     } finally {
-      globalThis.fetch = originalFetch;
+      mock.restore();
     }
   });
 
   test("sends reasoning_effort only when config.effort is set", async () => {
     const capturedBodies: Array<Record<string, unknown>> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init: RequestInit) => {
-      capturedBodies.push(JSON.parse(init.body as string));
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      capturedBodies.push(JSON.parse(init?.body as string));
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
-    }) as unknown as typeof fetch;
+    });
 
     try {
       await chatCompletion(config, [{ role: "user", content: "hi" }]);
@@ -58,15 +57,14 @@ describe("chatCompletion", () => {
       await chatCompletion({ ...config, effort: "xhigh" }, [{ role: "user", content: "hi" }]);
       expect(capturedBodies[1]!.reasoning_effort).toBe("xhigh");
     } finally {
-      globalThis.fetch = originalFetch;
+      mock.restore();
     }
   });
 
   test("serializes array content with image_url", async () => {
     const capturedBodies: unknown[] = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(init.body as string);
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string);
       capturedBodies.push(body);
 
       return new Response(
@@ -75,7 +73,7 @@ describe("chatCompletion", () => {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
-    }) as unknown as typeof fetch;
+    });
 
     try {
       const messages = [
@@ -99,7 +97,7 @@ describe("chatCompletion", () => {
       expect((body.messages[0]!.content as Array<{ type: string }>)[0]!.type).toBe("text");
       expect((body.messages[0]!.content as Array<{ type: string }>)[1]!.type).toBe("image_url");
     } finally {
-      globalThis.fetch = originalFetch;
+      mock.restore();
     }
   });
 });
@@ -124,9 +122,8 @@ describe("chatCompletionStream", () => {
       },
     });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })) as unknown as typeof fetch;
+    const mock = mockFetch(async () =>
+      new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }));
 
     try {
       const tokens: string[] = [];
@@ -142,7 +139,7 @@ describe("chatCompletionStream", () => {
       expect(result.content).toBe("hello");
       expect(result.toolCalls).toEqual([{ id: "tc1", name: "demo", arguments: { x: 1 } }]);
     } finally {
-      globalThis.fetch = originalFetch;
+      mock.restore();
     }
   });
 });

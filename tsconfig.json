@@ -28,5 +28,8 @@
     "noPropertyAccessFromIndexSignature": false,
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  // The in-src test files reach into tests/helpers, which is outside rootDir. They are
+  // type-checked by tsconfig.test.json (rootDir "."), which resets this exclude.
+  "exclude": ["src/**/__tests__/**"]
 }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { MY_CLAW_DIR, type ResolvedLlmConfig } from "../../src/core/config.ts";
 import { codexResponse, codexResponseStream } from "../../src/llm/codex.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function writeAuth(): void {
   mkdirSync(join(MY_CLAW_DIR, "codex"), { recursive: true });
@@ -25,9 +26,10 @@ function sseResponse(events: unknown[]): Response {
   return new Response(stream, { status: 200 });
 }
 
-const realFetch = globalThis.fetch;
+let mock: { restore(): void } | undefined;
 afterEach(() => {
-  globalThis.fetch = realFetch;
+  mock?.restore();
+  mock = undefined;
   // MY_CLAW_DIR is shared across test files; leaking a codex credential breaks
   // other suites that assume a fresh (logged-out) state.
   rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
@@ -54,11 +56,11 @@ test("codex transport builds a Responses request and parses the SSE stream", asy
   writeAuth();
   let capturedUrl = "";
   let capturedInit: RequestInit | undefined;
-  globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    capturedUrl = url;
+  mock = mockFetch(async (url?: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = String(url);
     capturedInit = init;
     return sseResponse(events);
-  }) as typeof fetch;
+  });
 
   const messages: ChatMessage[] = [
     { role: "system", content: "SYS PROMPT" },
@@ -94,10 +96,10 @@ test("codex transport builds a Responses request and parses the SSE stream", asy
 test("codex transport maps assistant tool calls and tool results to Responses items", async () => {
   writeAuth();
   let body: Record<string, any> = {};
-  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
     body = JSON.parse(String(init?.body));
     return sseResponse([{ type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }]);
-  }) as typeof fetch;
+  });
 
   const messages: ChatMessage[] = [
     { role: "system", content: "SYS" },
@@ -114,7 +116,7 @@ test("codex transport maps assistant tool calls and tool results to Responses it
 
 test("codex transport surfaces a response.failed event as an error", async () => {
   writeAuth();
-  globalThis.fetch = (async () =>
-    sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }])) as unknown as typeof fetch;
+  mock = mockFetch(async () =>
+    sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }]));
   await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /server_error: boom/);
 });

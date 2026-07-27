@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { applyPromptCache, chatCompletion, type ChatMessage } from "../../src/llm/provider.ts";
 import { resolveLlmConfig } from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const EPHEMERAL = { type: "ephemeral" };
 
@@ -73,14 +74,13 @@ describe("buildRequestBody prompt cache gating", () => {
 
   async function capture(promptCache: boolean): Promise<Record<string, unknown>> {
     const bodies: Array<Record<string, unknown>> = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (_url: string, init: RequestInit) => {
-      bodies.push(JSON.parse(init.body as string));
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
-    }) as unknown as typeof fetch;
+    });
     try {
       await chatCompletion({ ...base, promptCache }, [
         { role: "system", content: "SYS" },
@@ -88,7 +88,7 @@ describe("buildRequestBody prompt cache gating", () => {
       ]);
       return bodies[0]!;
     } finally {
-      globalThis.fetch = originalFetch;
+      mock.restore();
     }
   }
 

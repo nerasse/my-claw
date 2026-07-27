@@ -7,11 +7,13 @@ import {
   skillVectorCacheSize,
 } from "../../src/skills/retrieval.ts";
 import { warmupEmbedding, resetEmbeddingState } from "../../src/memory/embedding.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
-const realFetch = globalThis.fetch;
+let mock: { restore(): void } | undefined;
 
 afterEach(() => {
-  globalThis.fetch = realFetch;
+  mock?.restore();
+  mock = undefined;
   resetEmbeddingState();
   resetSkillVectorCache();
 });
@@ -29,14 +31,14 @@ const SKILLS: SkillInfo[] = [
 // Map each embedding request to a deterministic 2D vector by keyword in the input text, so cosine
 // ranking against a "video" query is predictable: video is colinear, media close, email orthogonal.
 function mockEmbeddings(): void {
-  globalThis.fetch = (async (_url: string, init: RequestInit) => {
-    const input = String((JSON.parse(String(init.body)) as { input: string }).input).toLowerCase();
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    const input = String((JSON.parse(String(init?.body)) as { input: string }).input).toLowerCase();
     let vec = [0, 0.0001];
     if (input.includes("video")) vec = [1, 0];
     else if (input.includes("media")) vec = [0.9, 0.436];
     else if (input.includes("email")) vec = [0, 1];
     return new Response(JSON.stringify({ data: [{ embedding: vec }] }), { status: 200 });
-  }) as unknown as typeof fetch;
+  });
 }
 
 const EMBED_CFG = { backend: "http" as const, model: "m", baseUrl: "http://host/v1" };
@@ -79,7 +81,7 @@ test("embedding ranking orders by similarity and drops below minScore", async ()
 });
 
 test("embedding runtime failure falls back to keyword", async () => {
-  globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+  mock = mockFetch(async () => new Response("nope", { status: 500 }));
   await warmupEmbedding(EMBED_CFG);
   const out = await selectRelevantSkills(SKILLS, "convert video files", EMBED_CFG, undefined);
   expect(out[0]!.name).toBe("video");
