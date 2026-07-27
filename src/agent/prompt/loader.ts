@@ -4,7 +4,6 @@ import { CORE_PROMPT } from "./core-prompts.ts";
 import { scanForInjection } from "./anti-injection.ts";
 
 const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md"] as const;
-const CACHE_TTL_MS = 30_000;
 
 export type PromptFile = (typeof PROMPT_FILES)[number];
 
@@ -15,28 +14,26 @@ function promptDir(): string {
 interface CacheEntry {
   content: string;
   mtimeMs: number;
-  checkedAt: number;
 }
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * Always stats: an edit must land on the very next message, so there is no time-based
+ * short-circuit. The cache only skips the read when mtime is unchanged, and the prompt is
+ * built once per run, so this costs a handful of stat() calls per message.
+ */
 export async function loadPromptFile(name: string): Promise<string> {
   const path = join(promptDir(), name);
-  const now = Date.now();
   const cached = cache.get(path);
-
-  if (cached && now - cached.checkedAt < CACHE_TTL_MS) {
-    return cached.content;
-  }
 
   try {
     const s = await stat(path);
     if (cached && s.mtimeMs === cached.mtimeMs) {
-      cached.checkedAt = now;
       return cached.content;
     }
     const content = await readFile(path, "utf-8");
-    cache.set(path, { content, mtimeMs: s.mtimeMs, checkedAt: now });
+    cache.set(path, { content, mtimeMs: s.mtimeMs });
     return content;
   } catch {
     cache.delete(path);

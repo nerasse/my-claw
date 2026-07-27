@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSystemPrompt, type PromptContext } from "../../src/agent/prompt/builder.ts";
@@ -89,6 +89,32 @@ test("workspace files are loaded into prompt", async () => {
     const result = await buildSystemPrompt(makeCtx());
     assert.match(result, /I am the soul of this bot/);
     assert.match(result, /The user likes tea/);
+  } finally {
+    if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
+    else process.env["MY_CLAW_WORKSPACE"] = saved;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an edited workspace file is picked up by the very next build", async () => {
+  const saved = process.env["MY_CLAW_WORKSPACE"];
+  const dir = await mkdtemp(join(tmpdir(), "prompt-hot-"));
+  try {
+    const file = join(dir, "AGENTS.md");
+    await writeFile(file, "FIRST RULES");
+    process.env["MY_CLAW_WORKSPACE"] = dir;
+    const before = await buildSystemPrompt(makeCtx());
+    assert.match(before, /FIRST RULES/);
+
+    await writeFile(file, "SECOND RULES");
+    // mtimeMs has millisecond resolution: pin a later stamp so the assertion cannot hinge
+    // on both writes landing in the same millisecond.
+    const later = new Date(Date.now() + 2000);
+    await utimes(file, later, later);
+
+    const after = await buildSystemPrompt(makeCtx());
+    assert.match(after, /SECOND RULES/, "edit applies with no cache delay");
+    assert.ok(!after.includes("FIRST RULES"), "stale content dropped");
   } finally {
     if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
     else process.env["MY_CLAW_WORKSPACE"] = saved;
