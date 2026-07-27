@@ -47,6 +47,21 @@ function waitForReload(timeoutMs = 3000): Promise<{ changed: string[]; rebootReq
   });
 }
 
+/**
+ * Event-driven wait: resolves the instant the caller signals, instead of polling for a fixed
+ * budget. Polling made the outcome depend on how fast the machine delivers fs.watch events,
+ * which fails on a loaded CI runner while passing locally.
+ */
+function signalGate(label: string, timeoutMs = 10_000): { fired: () => void; done: Promise<void> } {
+  let fire!: () => void;
+  const inner = new Promise<void>((resolve) => { fire = resolve; });
+  const done = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
+    void inner.then(() => { clearTimeout(timer); resolve(); });
+  });
+  return { fired: fire, done };
+}
+
 describe("E2E config hot-reload", () => {
   test("editing config.json on disk hot-reloads LLM + whitelist + memory, recreates telegram on token change", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
@@ -139,17 +154,28 @@ describe("E2E config hot-reload", () => {
     // read() is where loadEnv force-refreshes process.env; proving it runs on a bare
     // .env edit proves a secret rotation is picked up without touching config.json.
     let reads = 0;
+    const gate = signalGate("config read triggered by the .env edit");
     const stop = startConfigWatcher(config, {}, {
       path: file,
-      read: async () => { reads += 1; return parseConfig(await Bun.file(file).text()); },
+      read: async () => { reads += 1; gate.fired(); return parseConfig(await Bun.file(file).text()); },
       debounceMs: 20,
     });
     cleanups.push(() => stop());
 
+    // Bun's fs.watch is not active when watch() returns: it needs an event-loop turn to
+    // register, and under load a single write can beat it and be lost outright (measured:
+    // with no yield at all, 30/30 events lost). Re-touching until the watcher reacts makes
+    // the test independent of that registration latency rather than betting on one write.
     await writeFile(envFile, "TOKEN=rotated\n");
-    for (let i = 0; i < 50 && reads === 0; i++) await new Promise((r) => setTimeout(r, 20));
+    const retouch = setInterval(() => { void writeFile(envFile, `TOKEN=rotated-${Date.now()}\n`); }, 100);
+    cleanups.push(() => clearInterval(retouch));
+    try {
+      await gate.done;
+    } finally {
+      clearInterval(retouch);
+    }
     expect(reads).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   test("invalid JSON is skipped and the running config is preserved", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
