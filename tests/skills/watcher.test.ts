@@ -25,8 +25,24 @@ async function writeSkill(dir: string, name: string, description: string): Promi
   await writeFile(join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\nBody for ${name}.\n`);
 }
 
-async function waitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> {
-  for (let i = 0; i < timeoutMs / 20 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
+/**
+ * Bun's fs.watch is not active when watch() returns, so the mutation under test can beat
+ * registration and be lost outright -- a longer wait never recovers it. The watcher rescans
+ * every dir on any event, so poking the directory until the expectation holds is immune to
+ * that race. The poke is a plain file, which `src/skills/loader.ts:67` skips because it is not
+ * a directory, so it can never register as a skill. Its name must NOT start with a dot:
+ * measured in Bun 1.3, a dotfile created after the watcher attached produces no events at all
+ * (a pre-existing dotfile does, which is why production `.env` rotation works).
+ * Throws on timeout: a bounded loop that returns quietly reports a value mismatch instead of
+ * "the watcher never fired".
+ */
+async function waitFor(pred: () => boolean, pokeDir: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for the skills watcher (poking ${pokeDir})`);
+    await writeFile(join(pokeDir, "watcher-poke"), String(Date.now()));
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 test("reloadSkills rescans dirs and swaps the registry contents", async () => {
@@ -45,13 +61,11 @@ test("watcher picks up a newly added skill dir without restart", async () => {
   const registry = new SkillRegistry();
   const stop = startSkillsWatcher(dirs, registry, { debounceMs: 20 });
   cleanups.push(() => stop());
-  // Give the async watcher setup a tick to attach the tier watchers.
-  await new Promise((r) => setTimeout(r, 50));
 
   await writeSkill(dirs.customDir, "beta", "added at runtime");
-  await waitFor(() => registry.exists("beta"));
+  await waitFor(() => registry.exists("beta"), dirs.customDir);
   assert.equal(registry.exists("beta"), true);
-});
+}, 15_000);
 
 test("watcher picks up an edit to an existing SKILL.md", async () => {
   const dirs = await tempDirs();
@@ -63,12 +77,11 @@ test("watcher picks up an edit to an existing SKILL.md", async () => {
 
   const stop = startSkillsWatcher(dirs, registry, { debounceMs: 20 });
   cleanups.push(() => stop());
-  await new Promise((r) => setTimeout(r, 50));
 
   await writeSkill(dirs.workspaceDir, "gamma", "edited description");
-  await waitFor(() => registry.list().find((s) => s.name === "gamma")?.description === "edited description");
+  await waitFor(() => registry.list().find((s) => s.name === "gamma")?.description === "edited description", dirs.workspaceDir);
   assert.equal(registry.list().find((s) => s.name === "gamma")?.description, "edited description");
-});
+}, 15_000);
 
 test("watcher drops a removed skill", async () => {
   const dirs = await tempDirs();
@@ -79,12 +92,11 @@ test("watcher drops a removed skill", async () => {
 
   const stop = startSkillsWatcher(dirs, registry, { debounceMs: 20 });
   cleanups.push(() => stop());
-  await new Promise((r) => setTimeout(r, 50));
 
   await rm(join(dirs.customDir, "delta"), { recursive: true, force: true });
-  await waitFor(() => !registry.exists("delta"));
+  await waitFor(() => !registry.exists("delta"), dirs.customDir);
   assert.equal(registry.exists("delta"), false);
-});
+}, 15_000);
 
 test("stop() detaches watchers (no reload after stop)", async () => {
   const dirs = await tempDirs();

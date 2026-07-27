@@ -19,8 +19,25 @@ const GOOD = `export const tool = {
   execute: async (args) => ({ success: true, output: "hi " + args.who }),
 };`;
 
-async function waitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> {
-  for (let i = 0; i < timeoutMs / 20 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
+/**
+ * Bun's fs.watch is not active when watch() returns, so a single write right after start() can
+ * beat registration and be lost outright -- waiting longer never recovers it. Re-applying the
+ * mutation until it is observed removes the race. Throws on timeout so the failure names the
+ * real cause instead of surfacing as a value mismatch.
+ *
+ * The retry interval MUST exceed the watcher's debounce (300ms here, `src/tools/plugins.ts:9`,
+ * which this test does not override): poking faster than that re-arms the debounce timer on
+ * every event, so the reload is starved and never runs at all.
+ */
+const POKE_INTERVAL_MS = 400;
+
+async function waitFor(pred: () => boolean, poke: () => Promise<void>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the plugin watcher to reload");
+    await poke();
+    await new Promise((r) => setTimeout(r, POKE_INTERVAL_MS));
+  }
 }
 
 test("loads a valid plugin and executes it", async () => {
@@ -94,11 +111,12 @@ test("watcher hot-reloads an edited plugin (cache-bust)", async () => {
   cleanups.push(async () => loader.stop());
   assert.equal((await loader.getTools()[0]!.execute({})).output, "v1");
 
-  await writeFile(file, `export const tool = { name: "ver", description: "v2", execute: async () => ({ success: true, output: "v2" }) };`);
-  await waitFor(() => loader.getTools()[0]?.description === "v2");
+  const v2 = `export const tool = { name: "ver", description: "v2", execute: async () => ({ success: true, output: "v2" }) };`;
+  await writeFile(file, v2);
+  await waitFor(() => loader.getTools()[0]?.description === "v2", () => writeFile(file, v2));
   assert.equal(loader.getTools()[0]!.description, "v2");
   assert.equal((await loader.getTools()[0]!.execute({})).output, "v2");
-});
+}, 15_000);
 
 test("cleanup", async () => {
   while (cleanups.length) await cleanups.pop()!();
