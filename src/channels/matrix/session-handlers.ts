@@ -12,6 +12,7 @@ import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
+import { handleConfigCommand } from "../config-commands.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 
@@ -58,6 +59,9 @@ interface MatrixSessionHandlerDeps {
   postMessage?: (roomId: string, text: string, threadId?: string) => Promise<void>;
   // Ensure the provider exists + re-run model discovery after a Codex/Claude auth change.
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
+  // Apply a config restore through the normal reload path (a restored dotfile fires no fs.watch
+  // event, so /config rollback cannot rely on the watcher noticing).
+  reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
 }
 
 function resolveMatrixSessionId(params: {
@@ -285,6 +289,7 @@ export function createMatrixCommandHandler({
   sdkCompact,
   postMessage,
   onAuthChanged,
+  reloadConfigNow,
 }: MatrixSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -510,6 +515,14 @@ export function createMatrixCommandHandler({
           onAuthChanged,
         });
       }
+
+      case "config":
+        return handleConfigCommand({
+          args,
+          isDm: chatType === "dm",
+          workspaceDir: process.env["MY_CLAW_WORKSPACE"] ?? "",
+          applyReload: reloadConfigNow,
+        });
 
       default:
         return undefined;

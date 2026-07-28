@@ -18,7 +18,7 @@
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |
 | Cron / Scheduling | Complete — interval/cron/one-shot, at-most-once, tool-restricted cron agent type, [SILENT] delivery suppression, manual JSON editing + chat creation |
-| Hooks / Event System | Complete — 95 hooks (83 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
+| Hooks / Event System | Complete — 96 hooks (84 void + 7 gate + 5 waterfall), instrumented across app/message/agent/tool/session/memory/skill/subagent/cron/stream/channel lifecycles |
 | Run control (`/stop`) | Complete — aborts the session run + all sub-agents via one shared AbortSignal, abortable LLM/bash/fetch/web_search, live run tree in `/status` — see `docs/stop.md` |
 | Mid-run injection (steering) | Complete — a message arriving during an active run is injected at the next iteration boundary (text + media), answered in its own threaded bubble, with correct reactions; per-session mailbox, cap + reroute fallback — see `docs/injection.md` |
 | Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |

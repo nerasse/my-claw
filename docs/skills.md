@@ -80,6 +80,13 @@ run. The agent can also force a rescan with `manage_skills(action='reload')`. Th
 at boot only. Bun's recursive watch is unreliable on Linux, so the watcher tracks each tier dir plus every
 skill subdir. See `docs/hot-reload-extensions.md`.
 
+A reload rebuilds the registry wholesale, so a skill edited into a broken frontmatter used to just
+vanish. The loader now keeps the last version of each `SKILL.md` that parsed and logs the retention;
+a skill whose *file* is deleted still disappears, since that is a removal rather than a mistake.
+`manage_skills(action='update')` also re-parses its own output before reporting success, so a skill
+can no longer delete itself by corrupting the frontmatter it copies over. Custom and workspace
+`SKILL.md` files are snapshotted (`docs/config-backup.md`).
+
 ## Prompt Injection
 
 Only the **skill index** (name + description) is injected into the system prompt on every run. The full skill content is loaded on-demand via the `read_skill` tool. This keeps the context window light while making all skills discoverable.

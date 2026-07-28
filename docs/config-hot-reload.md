@@ -86,6 +86,21 @@ A save mid-write or invalid JSON makes the re-parse throw. The watcher catches i
 **keeps the running config** -- a broken file never takes down or corrupts the live state. Events are
 debounced (300ms) so editors that emit multiple writes trigger a single reload.
 
+Three things extend this (see `docs/config-backup.md`):
+
+- The refused content is archived under `backups/<artifact>/rejected/`. The owner repairs the file
+  within seconds, so without the archive nothing would still explain why the edit never applied.
+- `parseConfig` now also rejects a section of the wrong *type* (`"llm": "oops"`), which used to be
+  stored as-is and break the object identity this whole design depends on. A section that is simply
+  **absent** stays legal and still empties the live section, matching what a restart produces.
+- `applyHotReload` is wrapped in try/catch. It used to sit between the two guarded blocks, so a throw
+  inside it became an unhandled rejection and `index.ts` turned that into `process.exit(1)`.
+
+`startConfigWatcher` returns `{ stop, reloadNow }` rather than a bare stop function. `reloadNow()`
+exists because a restored file cannot be trusted to produce an `fs.watch` event -- a recreated dotfile
+emits none at all -- so `/config rollback` applies through this call and reports the resulting
+`changed` / `rebootRequired` instead of hoping the watcher notices.
+
 ### Browser tool is always registered
 
 To make `browser.enabled` toggleable at runtime, `delegate_browser_task` is now always registered; its

@@ -405,6 +405,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/cron(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "cron"));
     this.bot.hears(/^\/codex(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "codex"));
     this.bot.hears(/^\/claude(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "claude"));
+    this.bot.hears(/^\/config(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "config"));
     this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
     this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
     this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
@@ -642,7 +643,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "clear", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "codex", "claude", "archive", "help", "commands"].includes(command)) {
+      if (["new", "clear", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "codex", "claude", "config", "archive", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command, true);
         return;
       }

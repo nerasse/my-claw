@@ -7,6 +7,12 @@ Single JSON file. jq-compatible. Loaded at boot, then **hot-reloaded** on change
 crypto, memory, voice, cron and workspace changes still require a restart. See
 `docs/config-hot-reload.md`.
 
+Every version that ran is snapshotted, and a config that cannot be parsed -- or that starts but never
+brings a channel up -- is reverted to the last one that worked, without ever rewriting your file.
+`/config history`, `/config diff` and `/config rollback` (also `my-claw config ...` from a terminal)
+browse and restore. `.env`, the workspace prompt files, custom skills, `tools.d/` and `cron/jobs.json`
+are covered too. See `docs/config-backup.md`.
+
 ## LLM (Multi-Provider)
 
 ### New format (recommended)

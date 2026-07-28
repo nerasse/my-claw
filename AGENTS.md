@@ -68,6 +68,8 @@ src/
 ├── core/
 │   ├── config.ts          # App configuration + types
 │   ├── config-watcher.ts  # Hot-reload of ~/.my-claw/config.json (fs.watch)
+│   ├── config-store.ts    # Config snapshots: boot fallback, health gate, rollback -- docs/config-backup.md
+│   ├── config-health.ts   # A/B loop: quarantines a config that never brings a channel up
 │   ├── router.ts          # Message routing (router/ moved here)
 │   ├── run-registry.ts    # Live run tree (main + sub-agents) for /status and /stop
 │   └── aborted.ts         # rethrowIfAborted + shared abort helpers
@@ -103,6 +105,7 @@ src/
 │   ├── meta-commands.ts  # Meta-command filter (/help, /status, etc.)
 │   ├── command-log.ts    # Masks sensitive command arguments before they are logged
 │   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
+│   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── recreate.ts
 │   ├── telegram/
 │   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
@@ -192,6 +195,9 @@ src/
 │   ├── reload.ts          # Re-scans the skill dirs into the registry (/reload-skills)
 │   ├── retrieval.ts       # Skill suggestion: embedding vectors + keyword fallback
 │   └── types.ts
+├── mcp/
+│   ├── manager.ts         # External MCP servers: connect/reconnect on config reload
+│   └── connection.ts      # One server connection (stdio/SSE transports, tool listing)
 ├── cron/
 │   ├── scheduler.ts       # Tick loop, at-most-once dispatch, timeout wall
 │   ├── store.ts           # jobs.json CRUD, schedule parsing, next-run compute

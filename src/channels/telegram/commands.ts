@@ -15,6 +15,7 @@ export const COMMANDS = [
   { command: "cron", description: "List scheduled tasks" },
   { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },
   { command: "claude", description: "Claude subscription: login|set-token|status|logout" },
+  { command: "config", description: "Config snapshots: history|diff|rollback" },
   { command: "help", description: "List available commands" },
 ] as const;
 
