@@ -1,9 +1,10 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startConfigWatcher } from "../../src/core/config-watcher.ts";
-import { parseConfig, type MyClawConfig } from "../../src/core/config.ts";
+import { parseConfig, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
+import { artifactId, setQuarantine, clearQuarantine, contentSha } from "../../src/core/config-store.ts";
 import { ModelPicker } from "../../src/channels/model-picker.ts";
 import { hooks } from "../../src/hooks/index.ts";
 
@@ -82,7 +83,7 @@ describe("E2E config hot-reload", () => {
     const llmRef = config.llm;
     const tgRef = config.channels.telegram;
 
-    const stop = startConfigWatcher(
+    const watcher = startConfigWatcher(
       config,
       {
         modelPicker: picker,
@@ -96,7 +97,7 @@ describe("E2E config hot-reload", () => {
         debounceMs: 20,
       },
     );
-    cleanups.push(() => stop());
+    cleanups.push(() => watcher.stop());
 
     const reloaded = waitForReload();
 
@@ -155,12 +156,12 @@ describe("E2E config hot-reload", () => {
     // .env edit proves a secret rotation is picked up without touching config.json.
     let reads = 0;
     const gate = signalGate("config read triggered by the .env edit");
-    const stop = startConfigWatcher(config, {}, {
+    const watcher = startConfigWatcher(config, {}, {
       path: file,
       read: async () => { reads += 1; gate.fired(); return parseConfig(await Bun.file(file).text()); },
       debounceMs: 20,
     });
-    cleanups.push(() => stop());
+    cleanups.push(() => watcher.stop());
 
     // Bun's fs.watch is not active when watch() returns: it needs an event-loop turn to
     // register, and under load a single write can beat it and be lost outright (measured:
@@ -190,17 +191,107 @@ describe("E2E config hot-reload", () => {
     hooks.on("config:reloaded", handler);
     cleanups.push(() => hooks.off("config:reloaded", handler));
 
-    const stop = startConfigWatcher(config, {}, {
+    const watcher = startConfigWatcher(config, {}, {
       path: file,
       read: async () => parseConfig(await Bun.file(file).text()),
       debounceMs: 20,
     });
-    cleanups.push(() => stop());
+    cleanups.push(() => watcher.stop());
 
     await writeFile(file, "{ this is not valid json ");
     await new Promise((r) => setTimeout(r, 200));
 
     expect(reloadCount).toBe(0);
     expect(config.llm.defaultModel).toBe("model-a");
+  });
+
+  test("a rejected reload is archived so the evidence survives the fix", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
+    const file = join(dir, "config.json");
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    cleanups.push(() => rm(join(MY_CLAW_DIR, "backups"), { recursive: true, force: true }));
+
+    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
+    const config = parseConfig(await Bun.file(file).text());
+    const watcher = startConfigWatcher(config, {}, {
+      path: file,
+      read: async () => parseConfig(await Bun.file(file).text()),
+      debounceMs: 20,
+    });
+    cleanups.push(() => watcher.stop());
+
+    await writeFile(file, "{ broken beyond repair");
+    // Driven directly: the fs.watch path is covered above, and waiting on a watcher event here
+    // would only add a polling loop to a case that has nothing timing-dependent about it.
+    const result = await watcher.reloadNow();
+    expect(result.changed).toEqual([]);
+
+    const rejectedDir = join(MY_CLAW_DIR, "backups", artifactId(file), "rejected");
+    const files = await readdir(rejectedDir);
+    expect(files).toHaveLength(1);
+    expect(await readFile(join(rejectedDir, files[0]!), "utf-8")).toBe("{ broken beyond repair");
+    // The owner will fix the file in seconds; the archive is what still explains the skip.
+    expect(config.llm.defaultModel).toBe("model-a");
+  });
+
+  test("a quarantined content cannot come back through a save", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
+    const file = join(dir, "config.json");
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    cleanups.push(() => rm(join(MY_CLAW_DIR, "backups"), { recursive: true, force: true }));
+    cleanups.push(() => clearQuarantine());
+
+    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
+    const config = parseConfig(await Bun.file(file).text());
+    const watcher = startConfigWatcher(config, {}, {
+      path: file,
+      read: async () => parseConfig(await Bun.file(file).text()),
+      debounceMs: 20,
+    });
+    cleanups.push(() => watcher.stop());
+
+    const bad = initialConfig();
+    bad.llm.defaultModel = "model-quarantined";
+    const raw = JSON.stringify(bad, null, 2);
+    await writeFile(file, raw);
+    await setQuarantine(contentSha(raw), "aucun canal actif");
+
+    // It parses, so nothing but the marker stands between it and the live config; re-applying it
+    // would undo the revert that just brought the channel back.
+    const result = await watcher.reloadNow();
+    expect(result.changed).toEqual([]);
+    expect(config.llm.defaultModel).toBe("model-a");
+  });
+
+  test("a throw while applying is contained instead of killing the process", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
+    const file = join(dir, "config.json");
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+
+    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
+    const config = parseConfig(await Bun.file(file).text());
+    // Freezing whitelist makes the in-place splice throw from inside applyHotReload, which used to
+    // sit outside both guards: the rejection reached index.ts and exited the process.
+    Object.freeze(config.whitelist);
+
+    let reloads = 0;
+    const handler = () => { reloads += 1; };
+    hooks.on("config:reloaded", handler);
+    cleanups.push(() => hooks.off("config:reloaded", handler));
+
+    const watcher = startConfigWatcher(config, {}, {
+      path: file,
+      read: async () => parseConfig(await Bun.file(file).text()),
+      debounceMs: 20,
+    });
+    cleanups.push(() => watcher.stop());
+
+    const next = initialConfig();
+    next.whitelist = ["someone-else"];
+    await writeFile(file, JSON.stringify(next, null, 2));
+
+    const result = await watcher.reloadNow();
+    expect(result.changed).toEqual([]);
+    expect(reloads).toBe(0);
   });
 });

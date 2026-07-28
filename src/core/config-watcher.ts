@@ -1,10 +1,19 @@
 /** @file Config hot-reload: watch ~/.my-claw/config.json and apply safe changes in place. */
 
 import { watch, type FSWatcher } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
-import { CONFIG_PATH, readConfigFromDisk, resolveWorkspaceDir, type MyClawConfig } from "./config.ts";
+import {
+  CONFIG_PATH,
+  readConfigFromDisk,
+  resolveWorkspaceDir,
+  HOT_OBJECT_SECTIONS,
+  HOT_ARRAY_SECTIONS,
+  type MyClawConfig,
+} from "./config.ts";
+import { snapshot, reject, confirm, readQuarantine, contentSha, HEALTH_GATE_MS } from "./config-store.ts";
 import { effortOptionsFor } from "../llm/resolver.ts";
 
 const DEBOUNCE_MS = 300;
@@ -28,14 +37,10 @@ const MATRIX_REBOOT_FIELDS = [
 // re-resolving every tool's cwd. memory/voice/cron are hot (see appliers below).
 const REBOOT_SECTIONS = ["workspace"] as const;
 
-// Object sections read live through the shared root config object on every use.
+// HOT_OBJECT_SECTIONS / HOT_ARRAY_SECTIONS live in config.ts: parseConfig's structural guard needs
+// the same lists, and a second copy here would drift from it.
 // `voice` is pure live-read (VoiceManager reads config.voice per call, no applier).
 // `mcp`/`cron`/`memory` are applied in place too but also drive side-effecting appliers.
-const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
-] as const;
-// Array sections whose identity must be preserved (consumers hold the same array reference).
-const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
 
 export interface ReloadResult {
   /** Hot sections that were applied in place. */
@@ -255,39 +260,70 @@ export function runReloadAppliers(
   // agents, injection, browser, tools, skills, voice, blacklist are read live through the shared config; no applier.
 }
 
+export interface ConfigWatcherHandle {
+  stop: () => void;
+  /** Re-read and apply now, returning what changed. Used by `/config rollback`. */
+  reloadNow: () => Promise<ReloadResult>;
+}
+
 /**
  * Start watching config.json and hot-reload safe sections on change.
- * Invalid JSON or read errors are logged and skipped (the running config is kept).
- * Returns a stop function.
+ * Invalid JSON or read errors are logged, archived, and skipped (the running config is kept).
  */
 export function startConfigWatcher(
   config: MyClawConfig,
   ctx: ConfigReloadContext,
   options: ConfigWatcherOptions = {},
-): () => void {
+): ConfigWatcherHandle {
   const path = options.path ?? CONFIG_PATH;
   const read = options.read ?? readConfigFromDisk;
   const debounceMs = options.debounceMs ?? DEBOUNCE_MS;
   const dir = dirname(path);
   const file = basename(path);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   let watcher: FSWatcher | undefined;
 
-  const reload = async (): Promise<void> => {
+  const NO_CHANGE: ReloadResult = { changed: [], rebootRequired: [], recreate: [] };
+
+  const reload = async (): Promise<ReloadResult> => {
+    // A quarantined content must not come back through a save: it parses, so nothing else would
+    // stop it, and re-applying it would undo the revert that just recovered the channel.
+    const rawNow = await readFile(path, "utf-8").catch(() => null);
+    if (rawNow !== null) {
+      const q = await readQuarantine();
+      if (q && q.sha === contentSha(rawNow)) {
+        void log("warn", "config reload skipped: content is quarantined", { reason: q.reason });
+        return NO_CHANGE;
+      }
+    }
+
     let next: MyClawConfig;
     try {
       next = await read();
     } catch (err) {
       void log("warn", "config reload skipped: failed to read/parse config.json", { error: String(err) });
-      return;
+      // Archive what was refused: the owner fixes the file within seconds, and the failed attempt
+      // is then the only thing that could have explained why the edit never applied.
+      const raw = await readFile(path, "utf-8").catch(() => null);
+      if (raw !== null) await reject(path, raw, String(err));
+      return NO_CHANGE;
     }
 
-    const result = applyHotReload(config, next);
+    // applyHotReload sat outside both guards: a throw here became an unhandled rejection, which
+    // index.ts turns into process.exit(1) -- a bad edit could take the whole agent down.
+    let result: ReloadResult;
+    try {
+      result = applyHotReload(config, next);
+    } catch (err) {
+      void log("error", "config reload failed while applying", { error: String(err) });
+      return NO_CHANGE;
+    }
     if (result.changed.length === 0 && result.rebootRequired.length === 0 && result.recreate.length === 0) {
       // read() already force-refreshed process.env; a bare .env rotation lands here
       // with no config-section diff. Confirm it so a token rotation is observable.
       void log("info", "config watcher fired with no section changes (env refreshed)");
-      return;
+      return result;
     }
 
     try {
@@ -304,7 +340,19 @@ export function startConfigWatcher(
     if (result.rebootRequired.length > 0) {
       void log("warn", "config changes require a reboot to take effect", { fields: result.rebootRequired });
     }
+    // The diff is the most useful thing a debugger can have and it is computed exactly once, here.
+    await snapshot(path, {
+      origin: "reload",
+      changed: result.changed,
+      rebootRequired: result.rebootRequired,
+    });
+    // Same gate as boot: a reload that kills the process must not be promoted. Re-armed on each
+    // reload, so a burst of edits is confirmed once, 60s after the last one settles.
+    if (confirmTimer) clearTimeout(confirmTimer);
+    confirmTimer = setTimeout(() => void confirm(path), HEALTH_GATE_MS);
+    confirmTimer.unref?.();
     hooks.emit("config:reloaded", { changed: result.changed, rebootRequired: result.rebootRequired });
+    return result;
   };
 
   try {
@@ -322,8 +370,14 @@ export function startConfigWatcher(
     void log("warn", "config watcher could not start", { error: String(err) });
   }
 
-  return () => {
-    if (timer) clearTimeout(timer);
-    watcher?.close();
+  return {
+    stop: () => {
+      if (timer) clearTimeout(timer);
+      if (confirmTimer) clearTimeout(confirmTimer);
+      watcher?.close();
+    },
+    // Exposed so `/config rollback` applies through this exact path: a restored dotfile emits no
+    // fs.watch event, so waiting for the watcher would apply nothing and report nothing.
+    reloadNow: reload,
   };
 }
