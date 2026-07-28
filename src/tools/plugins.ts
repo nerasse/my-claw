@@ -50,9 +50,17 @@ export class PluginLoader {
     let entries;
     try {
       entries = await readdir(this.dir, { withFileTypes: true });
-    } catch {
-      this.tools = [];
-      return 0;
+    } catch (err) {
+      // Keep the last good set: wiping it turned a transient directory error into "every plugin
+      // tool silently disappeared", which looks like the plugins were never configured at all.
+      if (this.tools.length > 0) {
+        void log("warn", "tools.d unreadable, keeping the previously loaded plugins", {
+          dir: this.dir,
+          kept: this.tools.length,
+          error: String(err),
+        });
+      }
+      return this.tools.length;
     }
     const loaded: Tool[] = [];
     const seen = new Set<string>();

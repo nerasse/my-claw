@@ -10,6 +10,7 @@ import { clearRecallCache } from "../src/memory/cache.ts";
 import { resetEmbeddingState } from "../src/memory/embedding.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
 import { resetBinaryCache } from "../src/voice/tts.ts";
+import { resetSkillLastGood } from "../src/skills/loader.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -37,4 +38,7 @@ beforeEach(() => {
   // A binary path resolved by an earlier file would defeat a test that simulates edge-tts or
   // piper being absent.
   resetBinaryCache();
+  // Keyed by SKILL.md path, and skill names/paths repeat across files: a retained version would
+  // make a deliberately broken skill still resolve.
+  resetSkillLastGood();
 });

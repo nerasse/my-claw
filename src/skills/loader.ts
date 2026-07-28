@@ -1,6 +1,8 @@
 import { readFile, readdir, access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Skill, SkillMeta } from "./types.ts";
+import { snapshot } from "../core/config-store.ts";
+import { log } from "../utils/logger.ts";
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 
@@ -38,20 +40,40 @@ function parseFrontmatter(text: string): { meta: SkillMeta; content: string } | 
   };
 }
 
+/** Single definition of "this text is a loadable skill", so a writer can check what a reader will
+ *  accept instead of re-implementing the frontmatter rules. */
+export function parsesAsSkill(text: string): boolean {
+  return parseFrontmatter(text) !== null;
+}
+
+/** Last version of each SKILL.md that parsed. A reload rebuilds the registry wholesale, so without
+ *  this a skill edited into a broken frontmatter just vanishes from `/skills` with no explanation. */
+const lastGood = new Map<string, Skill>();
+
+/** Only needed by tests: skill paths repeat across files and a kept version would leak. */
+export function resetSkillLastGood(): void {
+  lastGood.clear();
+}
+
 async function loadSkillFromFile(path: string): Promise<Skill | null> {
+  let text: string;
   try {
-    const text = await readFile(path, "utf-8");
-    const parsed = parseFrontmatter(text);
-    if (!parsed) return null;
-    return {
-      meta: parsed.meta,
-      content: parsed.content,
-      path,
-      source: "custom",
-    };
+    text = await readFile(path, "utf-8");
   } catch {
+    // Gone, not broken: forget it so a deleted skill really disappears.
+    lastGood.delete(path);
     return null;
   }
+  const parsed = parseFrontmatter(text);
+  if (!parsed) {
+    const kept = lastGood.get(path);
+    void log("warn", kept ? "SKILL.md no longer parses, keeping the last good version" : "SKILL.md does not parse", { path });
+    return kept ?? null;
+  }
+  const skill: Skill = { meta: parsed.meta, content: parsed.content, path, source: "custom" };
+  lastGood.set(path, skill);
+  void snapshot(path, { origin: "reload", note: parsed.meta.name });
+  return skill;
 }
 
 async function scanDir(dir: string, source: Skill["source"]): Promise<Skill[]> {

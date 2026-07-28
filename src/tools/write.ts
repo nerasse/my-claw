@@ -1,5 +1,7 @@
-import { writeFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { writeFileAtomically } from "../utils/atomic-write.ts";
+import { isTracked, snapshot } from "../core/config-store.ts";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
@@ -25,7 +27,14 @@ export const writeTool: Tool = {
       const resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
       await mkdir(dirname(resolved), { recursive: true });
       const content = str(args, "content");
-      await writeFile(resolved, content);
+      // The agent edits its own instructions through this tool, so keep the version it is about to
+      // replace. Tracked-only: no second list of protected paths to keep in sync.
+      if (await isTracked(resolved)) {
+        await snapshot(resolved, { origin: "tool", note: "write tool" });
+      }
+      // Atomic: a torn write to a watched file (SOUL.md, a SKILL.md) is read back by the watcher
+      // and looks like corruption rather than an interrupted write.
+      await writeFileAtomically(resolved, content);
       hooks.emit("tool:file:write", { path: resolved, size: content.length });
       return { success: true, output: `Written to ${resolved}` };
     } catch (e) {

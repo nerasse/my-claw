@@ -1,11 +1,14 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
-import { writeFile, mkdir, readFile, access, rm } from "node:fs/promises";
+import { mkdir, readFile, access, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { reloadSkills } from "../skills/reload.ts";
+import { parsesAsSkill } from "../skills/loader.ts";
 import { scanForInjection } from "../agent/prompt/anti-injection.ts";
+import { writeFileAtomically } from "../utils/atomic-write.ts";
+import { snapshot } from "../core/config-store.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESC_LENGTH = 1024;
@@ -169,7 +172,7 @@ export function createManageSkillsTool(
         const safeDescription = description.replace(/[\n\r]/g, " ").trim();
         const content = `---\nname: ${safeName}\ndescription: ${safeDescription}\n---\n\n${instructions}\n`;
         try {
-          await writeFile(join(skillDir, "SKILL.md"), content);
+          await writeFileAtomically(join(skillDir, "SKILL.md"), content);
         } catch (err) {
           return { success: false, output: formatError(`Failed to write SKILL.md for "${name}"`, err) };
         }
@@ -217,7 +220,14 @@ export function createManageSkillsTool(
         }
         const header = frontmatterEnd >= 0 ? lines.slice(0, frontmatterEnd + 1).join("\n") : `---\nname: ${name}\n---`;
         const newContent = `${header}\n\n${instructions}\n`;
-        await writeFile(skillFile, newContent);
+        // The header is copied verbatim from the old file, so a malformed one propagates. Refuse
+        // before writing: an unparseable SKILL.md drops out of the registry, i.e. the skill would
+        // delete itself while reporting success.
+        if (!parsesAsSkill(newContent)) {
+          return { success: false, output: `Refused: the result would not parse as a skill (frontmatter of "${name}" is malformed).` };
+        }
+        await snapshot(skillFile, { origin: "pre-write", note: `manage_skills update ${name}` });
+        await writeFileAtomically(skillFile, newContent);
 
         await refreshRegistry();
         hooks.emit("skill:updated", { name });

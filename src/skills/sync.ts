@@ -1,4 +1,5 @@
-import { readFile, writeFile, readdir, mkdir, copyFile, rm, access, rename } from "node:fs/promises";
+import { readFile, readdir, mkdir, copyFile, rm, access, rename } from "node:fs/promises";
+import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -80,7 +81,7 @@ async function writeManifest(builtinDir: string, entries: ManifestEntry[]): Prom
     entries,
     syncedAt: new Date().toISOString(),
   };
-  await writeFile(join(builtinDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+  await writeFileAtomically(join(builtinDir, "manifest.json"), JSON.stringify(manifest, null, 2));
 }
 
 export async function syncBuiltIn(repoDir: string, builtinDir: string): Promise<string[]> {
