@@ -3,7 +3,21 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, loadConfig, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import {
+  loadConfigOrFallback,
+  snapshotProtected,
+  confirmProtected,
+  snapshot as snapshotConfigFile,
+  latestConfirmed,
+  recordConfirmedSha,
+  clearStrikes,
+  clearQuarantine,
+  setQuarantine,
+  contentSha,
+  HEALTH_GATE_MS,
+} from "./core/config-store.ts";
+import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-health.ts";
 import { writeJsonFileAtomically } from "./utils/atomic-write.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
@@ -11,7 +25,7 @@ import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups } from "./llm/catalog.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
-import { startConfigWatcher } from "./core/config-watcher.ts";
+import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import {
   createTelegramCommandHandler,
   createTelegramCallbackHandler,
@@ -97,12 +111,66 @@ async function routeWithReroute(
 }
 
 async function main() {
-  const config = await loadConfig();
+  const { config, fallback } = await loadConfigOrFallback();
+  if (fallback) {
+    log("error", "config.json unusable, started from a snapshot", { ref: fallback.ref, error: fallback.error });
+    hooks.emit("config:fallback", fallback);
+  }
   pruneOldRecords();
   void pruneOldLogs();
   void pruneOldSessions();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
+  await snapshotProtected(workspacePath, { origin: "boot" });
+
+  // A/B confirmation. Channels are tracked live rather than from a one-shot list, because a
+  // recreate that fails mid-life has to count as "down" too.
+  const liveChannels = new Set<string>();
+  hooks.on("channel:started", ({ platform }) => void liveChannels.add(platform));
+  hooks.on("channel:stopped", ({ platform }) => void liveChannels.delete(platform));
+  hooks.on("channel:error", ({ platform }) => void liveChannels.delete(platform));
+
+  const confirmHealthyConfig = async (): Promise<void> => {
+    const healthy = isHealthy({
+      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config),
+      liveChannels: liveChannels.size,
+    });
+    const raw = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
+    const good = await latestConfirmed(CONFIG_PATH);
+    const outcome = await decideAfterHealthGate({
+      healthy,
+      currentSha: contentSha(raw),
+      confirmedSha: good ? contentSha(good.content) : null,
+      underServiceManager: Boolean(process.env["INVOCATION_ID"]),
+    });
+
+    if (outcome.action === "confirm") {
+      const n = await confirmProtected(workspacePath).catch(() => 0);
+      await recordConfirmedSha(contentSha(raw)).catch(() => {});
+      await clearStrikes().catch(() => {});
+      await clearQuarantine().catch(() => {});
+      log("info", "config snapshots confirmed", { artifacts: n });
+      return;
+    }
+    if (outcome.action === "warn") {
+      log("warn", "config never became healthy, but leaving it in place", { reason: outcome.reason });
+      return;
+    }
+    if (outcome.action === "retry") {
+      log("error", "config never became healthy, restarting to retry", { reason: outcome.reason });
+      await restartForHealth(`retry ${outcome.strikes}/${MAX_STRIKES}`);
+      return;
+    }
+    log("error", "config quarantined, restarting on the last confirmed version", { reason: outcome.reason });
+    await setQuarantine(contentSha(raw), outcome.reason).catch(() => {});
+    await restartForHealth("quarantine");
+  };
+  // Late-bound: the command handlers are wired before the watcher exists, and `/config rollback`
+  // needs the watcher's own apply path rather than an fs.watch event that may never come.
+  let restartForHealth: (reason: string) => Promise<void> = async () => {};
+  let configWatcher: ConfigWatcherHandle | undefined;
+  const reloadConfigNow = async (): Promise<{ changed: string[]; rebootRequired: string[] }> =>
+    (await configWatcher?.reloadNow()) ?? { changed: [], rebootRequired: [] };
   const memoryPurgeTimer = initMemory(config);
   const modelPicker = new ModelPicker(config.llm.models ?? [], effortOptionsFor(config.llm));
 
@@ -154,6 +222,7 @@ async function main() {
       disk.llm.providers ??= {};
       if (!hasProviderType(disk.llm.providers, spec.type)) {
         disk.llm.providers[freeKey(disk.llm.providers, spec.key)] = { type: spec.type, discover: true, group: spec.group };
+        await snapshotConfigFile(CONFIG_PATH, { origin: "pre-write", note: `ajout du provider ${kind}` });
         await writeJsonFileAtomically(CONFIG_PATH, disk, true);
       }
     } catch (err) {
@@ -239,6 +308,7 @@ async function main() {
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
       onAuthChanged,
+      reloadConfigNow,
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -350,6 +420,7 @@ async function main() {
       sdkCompact: (session) => agent.compactSdkSession(session),
       postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
       onAuthChanged,
+      reloadConfigNow,
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
@@ -466,7 +537,7 @@ async function main() {
   if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
   cronScheduler.start();
 
-  const stopConfigWatcher = startConfigWatcher(config, {
+  configWatcher = startConfigWatcher(config, {
     modelPicker,
     // On an llm config edit, re-snapshot the curated base and re-merge discovered models
     // (config.llm.models was just reset to the disk value by the watcher).
@@ -518,14 +589,42 @@ async function main() {
   log("info", "my-claw started", { channels: Object.keys(config.channels) });
   hooks.emit("app:ready", { channels: Object.keys(config.channels) });
 
+  // The whole point of reverting is that the owner can reach the agent again, so the reason has to
+  // arrive in the chat. Best-effort and unaddressed elsewhere: whitelist ids are Telegram user ids,
+  // and a Matrix send needs a room, so this reaches Telegram only.
+  if (fallback) {
+    const owner = config.whitelist?.[0];
+    if (owner && telegramRef) {
+      void telegramRef
+        .send(owner, {
+          text: [
+            "Attention : j'ai démarré sur une sauvegarde de config.",
+            `Raison : ${fallback.error}`,
+            `Version restaurée : \`${fallback.ref}\``,
+            "Ton fichier n'a pas été modifié. Corrige-le puis sauvegarde : toute modification lève la quarantaine.",
+            "Voir `/config history config.json` et `/config diff config.json`.",
+          ].join("\n"),
+        })
+        .catch(() => {});
+    }
+  }
+
+  // Health gate: "it parsed" is not "it works". A config that boots and then dies must never become
+  // the thing we fall back to, or the safety net records the trap. Surviving 60s past a completed
+  // boot is the evidence, mirroring update.sh waiting for the service to be healthy before keeping
+  // a new version. Snapshots of files that never ran stay unconfirmed and thus never auto-restore.
+  const confirmTimer = setTimeout(() => void confirmHealthyConfig(), HEALTH_GATE_MS);
+  confirmTimer.unref?.();
+
   const activeChannels: string[] = [];
   if (telegramRef) activeChannels.push("telegram");
   if (matrixRef) activeChannels.push("matrix");
 
-  const shutdown = async () => {
-    log("info", "shutting down...");
-    hooks.emit("app:shutdown", { signal: "SIGINT" });
-    stopConfigWatcher();
+  const shutdown = async (signal = "SIGINT") => {
+    log("info", "shutting down...", { signal });
+    hooks.emit("app:shutdown", { signal });
+    clearTimeout(confirmTimer);
+    configWatcher.stop();
     stopSkillsWatcher();
     pluginLoader?.stop();
     await mcpManager.stop().catch(() => undefined);
@@ -539,8 +638,14 @@ async function main() {
     process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  // Exits cleanly and lets the supervisor bring us back: Restart=always restarts on a clean exit
+  // too, so there is no need to fake a failure code. Only ever called when a better config exists.
+  restartForHealth = async (reason: string): Promise<void> => {
+    await shutdown(`config-health:${reason}`);
+  };
+
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
   let shutdownTriggered = false;
   process.on("unhandledRejection", (reason) => {
@@ -748,9 +853,29 @@ async function runClaudeCli(args: string[]): Promise<number> {
   return cmd ? 1 : 0;
 }
 
+// The chat commands need a live channel. A config that kills the only channel (a bad token) leaves
+// no way in, so the same three subcommands are reachable from a terminal.
+async function runConfigCli(args: string[]): Promise<number> {
+  const { configCommandCli } = await import("./channels/config-commands.ts");
+  const { resolveWorkspaceDir, loadEnv } = await import("./core/config.ts");
+  await loadEnv();
+  // Read the workspace straight off disk: loadConfig would refuse to run on the very file the
+  // operator is trying to roll back.
+  const raw = await readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
+  let workspace: string | undefined;
+  try {
+    workspace = (JSON.parse(raw) as MyClawConfig).workspace;
+  } catch {
+    // A broken config is the expected case here.
+  }
+  console.log(await configCommandCli(args, resolveWorkspaceDir(workspace)));
+  return 0;
+}
+
 const cliArgs = process.argv.slice(2);
-if (cliArgs[0] === "codex" || cliArgs[0] === "claude") {
-  const runner = cliArgs[0] === "codex" ? runCodexCli : runClaudeCli;
+if (cliArgs[0] === "codex" || cliArgs[0] === "claude" || cliArgs[0] === "config") {
+  const runner =
+    cliArgs[0] === "codex" ? runCodexCli : cliArgs[0] === "claude" ? runClaudeCli : runConfigCli;
   runner(cliArgs.slice(1))
     .then((code) => process.exit(code))
     .catch((err) => {

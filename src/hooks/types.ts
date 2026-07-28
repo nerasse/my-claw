@@ -13,6 +13,8 @@ export interface HookEventMap {
   "app:shutdown": { signal: string };
   "app:error": { error: unknown; type: "rejection" | "exception" };
   "config:reloaded": { changed: string[]; rebootRequired: string[] };
+  /** config.json was unusable at boot; the agent started on a snapshot instead. */
+  "config:fallback": { ref: string; error: string };
 
   // === MESSAGE LIFECYCLE ===
   "message:received": { message: UnifiedMessage };
