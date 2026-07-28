@@ -55,7 +55,7 @@ export function resetSkillLastGood(): void {
   lastGood.clear();
 }
 
-async function loadSkillFromFile(path: string): Promise<Skill | null> {
+async function loadSkillFromFile(path: string, source: Skill["source"]): Promise<Skill | null> {
   let text: string;
   try {
     text = await readFile(path, "utf-8");
@@ -70,9 +70,11 @@ async function loadSkillFromFile(path: string): Promise<Skill | null> {
     void log("warn", kept ? "SKILL.md no longer parses, keeping the last good version" : "SKILL.md does not parse", { path });
     return kept ?? null;
   }
-  const skill: Skill = { meta: parsed.meta, content: parsed.content, path, source: "custom" };
+  const skill: Skill = { meta: parsed.meta, content: parsed.content, path, source };
   lastGood.set(path, skill);
-  void snapshot(path, { origin: "reload", note: parsed.meta.name });
+  // Built-ins are resynced from the repo by hash at every boot, so snapshotting them would archive
+  // a copy of the release on each upgrade and churn the store for something already versioned here.
+  if (source !== "built-in") void snapshot(path, { origin: "reload", note: parsed.meta.name });
   return skill;
 }
 
@@ -89,11 +91,8 @@ async function scanDir(dir: string, source: Skill["source"]): Promise<Skill[]> {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const skillDir = join(dir, entry.name);
     const skillFile = join(skillDir, "SKILL.md");
-    const skill = await loadSkillFromFile(skillFile);
-    if (skill) {
-      skill.source = source;
-      skills.push(skill);
-    }
+    const skill = await loadSkillFromFile(skillFile, source);
+    if (skill) skills.push(skill);
   }
 
   return skills;

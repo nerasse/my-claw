@@ -6,6 +6,7 @@ import { parseConfig } from "../../src/core/config.ts";
 import { loadPromptFile, resetPromptFileCache } from "../../src/agent/prompt/loader.ts";
 import { loadAllSkills, resetSkillLastGood } from "../../src/skills/loader.ts";
 import { PluginLoader } from "../../src/tools/plugins.ts";
+import { isTracked } from "../../src/core/config-store.ts";
 
 describe("structural guard", () => {
   test("accepts a config with sections missing", () => {
@@ -121,6 +122,18 @@ describe("skills keep the last parseable version", () => {
   test("a skill that never parsed is not invented", async () => {
     await writeFile(join(tier, "demo", "SKILL.md"), "pas de frontmatter du tout");
     expect((await loadAllSkills(dirs())).has("demo")).toBe(false);
+  });
+
+  test("built-in skills are not snapshotted", async () => {
+    // They are resynced from the repo by hash at every boot, so archiving them would store a copy
+    // of the release on each upgrade for something this repo already versions.
+    const builtIn = join(root, "builtin");
+    await mkdir(join(builtIn, "bi"), { recursive: true });
+    await writeFile(join(builtIn, "bi", "SKILL.md"), "---\nname: bi\ndescription: d\n---\ncorps");
+    await loadAllSkills({ ...dirs(), builtInDir: builtIn });
+
+    expect(await isTracked(join(builtIn, "bi", "SKILL.md"))).toBe(false);
+    expect(await isTracked(join(tier, "demo", "SKILL.md"))).toBe(false);
   });
 });
 
