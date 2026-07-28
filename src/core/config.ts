@@ -485,7 +485,7 @@ export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-cl
  * effect immediately; channel tokens update process.env but the live Telegram/
  * Matrix client keeps its old connection until reboot.
  */
-async function loadEnv(forceRefresh = false): Promise<void> {
+export async function loadEnv(forceRefresh = false): Promise<void> {
   const envPath = join(MY_CLAW_DIR, ".env");
   try {
     const text = await readFile(envPath, "utf-8");
@@ -606,10 +606,47 @@ function migrateLegacyAgentLlmConfig(agentLlm: unknown): AgentLlmConfig {
 export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
 
 /**
+ * Sections the hot-reload watcher mutates in place. Declared here rather than in config-watcher.ts
+ * so the structural guard below can share the exact same lists instead of drifting from them.
+ */
+export const HOT_OBJECT_SECTIONS = [
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
+] as const;
+/** Array sections whose identity must be preserved (consumers hold the same array reference). */
+export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
+
+/**
+ * Reject a config that would corrupt live state, without constraining what it may contain.
+ *
+ * Deliberately not a schema. A missing section stays legal: `applyObjectSection` empties the live
+ * section, which is what a restart produces too (no override, defaults apply). The only class this
+ * catches is a section of the wrong *type* -- `"llm": "oops"` gets stored as-is and breaks the
+ * object identity that every hot-reload consumer depends on.
+ */
+function assertStructure(config: MyClawConfig): void {
+  const rec = config as unknown as Record<string, unknown>;
+  for (const key of HOT_OBJECT_SECTIONS) {
+    const v = rec[key];
+    if (v === undefined || v === null) continue;
+    if (typeof v !== "object" || Array.isArray(v)) {
+      throw new Error(`Invalid config: "${key}" must be an object, got ${Array.isArray(v) ? "array" : typeof v}`);
+    }
+  }
+  for (const key of HOT_ARRAY_SECTIONS) {
+    const v = rec[key];
+    if (v === undefined || v === null) continue;
+    if (!Array.isArray(v)) throw new Error(`Invalid config: "${key}" must be an array, got ${typeof v}`);
+  }
+  if (config.channels !== undefined && (typeof config.channels !== "object" || Array.isArray(config.channels))) {
+    throw new Error(`Invalid config: "channels" must be an object`);
+  }
+}
+
+/**
  * Parse raw JSON config text into a normalized MyClawConfig.
  * Runs legacy migrations, applies defaults, and overlays env secrets.
  * Pure with respect to the filesystem (no mkdir/seed) so it is reusable for hot-reload.
- * Throws on invalid JSON.
+ * Throws on invalid JSON or a structurally unusable section.
  */
 export function parseConfig(raw: string): MyClawConfig {
   let config: MyClawConfig;
@@ -620,6 +657,10 @@ export function parseConfig(raw: string): MyClawConfig {
       `Invalid JSON in ${CONFIG_PATH}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Invalid config: ${CONFIG_PATH} must contain a JSON object`);
+  }
+  assertStructure(config);
 
   if (isLegacyLlmConfig(config.llm)) {
     config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);
@@ -633,6 +674,10 @@ export function parseConfig(raw: string): MyClawConfig {
 
   config.whitelist = config.whitelist ?? [];
   config.blacklist = config.blacklist ?? [];
+  // A config.json without "channels" used to reach applySecretOverrides and die on
+  // `config.channels.telegram` with an opaque "undefined is not an object". The type says the key
+  // is required, which is exactly why nothing checked it.
+  config.channels = config.channels ?? {};
   applySecretOverrides(config);
   return config;
 }
@@ -655,6 +700,19 @@ export function resolveWorkspaceDir(raw?: string): string {
   return raw ?? join(MY_CLAW_DIR, "workspace");
 }
 
+/**
+ * Filesystem side effects a parsed config needs before use: resolve and create the workspace, seed
+ * the prompt templates. Split out of loadConfig so the boot fallback can run them on a config that
+ * came from a snapshot rather than from CONFIG_PATH.
+ */
+export async function finalizeConfig(config: MyClawConfig): Promise<MyClawConfig> {
+  const workspacePath = resolveWorkspaceDir(config.workspace);
+  await mkdir(workspacePath, { recursive: true });
+  await seedWorkspaceTemplates(workspacePath);
+  config.workspace = workspacePath;
+  return config;
+}
+
 export async function loadConfig(): Promise<MyClawConfig> {
   await mkdir(MY_CLAW_DIR, { recursive: true });
   await loadEnv();
@@ -666,10 +724,5 @@ export async function loadConfig(): Promise<MyClawConfig> {
       `Config file not found at ${CONFIG_PATH}\nCopy the template: cp packaging/config.json ~/.my-claw/config.json`,
     );
   }
-  const config = parseConfig(raw);
-  const workspacePath = resolveWorkspaceDir(config.workspace);
-  await mkdir(workspacePath, { recursive: true });
-  await seedWorkspaceTemplates(workspacePath);
-  config.workspace = workspacePath;
-  return config;
+  return finalizeConfig(parseConfig(raw));
 }
