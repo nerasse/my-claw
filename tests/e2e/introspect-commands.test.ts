@@ -86,7 +86,12 @@ const text = (r: OutgoingMessage | string | undefined): string =>
  */
 async function writeUntilReloaded(file: string, content: string, reloaded: Promise<unknown>): Promise<void> {
   await writeFile(file, content);
-  const retouch = setInterval(() => { void writeFile(file, content); }, 100);
+  // Swallow the write error: the directory is removed by afterEach, and a rejection escaping this
+  // interval surfaces as an unhandled rejection charged to whichever test runs next.
+  const retouch = setInterval(() => { void writeFile(file, content).catch(() => {}); }, 100);
+  // Registered as a cleanup as well as cleared below: when Bun times a test out it abandons the
+  // body without running `finally`, and the surviving interval then poisons the following tests.
+  cleanups.push(() => clearInterval(retouch));
   try {
     await reloaded;
   } finally {

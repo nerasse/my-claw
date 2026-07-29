@@ -168,7 +168,7 @@ describe("E2E config hot-reload", () => {
     // with no yield at all, 30/30 events lost). Re-touching until the watcher reacts makes
     // the test independent of that registration latency rather than betting on one write.
     await writeFile(envFile, "TOKEN=rotated\n");
-    const retouch = setInterval(() => { void writeFile(envFile, `TOKEN=rotated-${Date.now()}\n`); }, 100);
+    const retouch = setInterval(() => { void writeFile(envFile, `TOKEN=rotated-${Date.now()}\n`).catch(() => {}); }, 100);
     cleanups.push(() => clearInterval(retouch));
     try {
       await gate.done;
