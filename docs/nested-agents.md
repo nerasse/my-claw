@@ -73,7 +73,7 @@ neutralise core rules. The injected block states this explicitly.
 ### Untrusted content: anti-injection scan
 
 A nested `AGENTS.md` can come from an external repository the agent cloned or was pointed
-at. It is untrusted input and MUST pass through `scanForInjection()` (already applied to
+at. It is untrusted input and MUST pass through `scanForeign()` (already applied to
 the root files) before injection. This is the main security difference from tools that
 assume a trusted local codebase.
 
@@ -131,7 +131,7 @@ governs both engines instead of two divergent ones.
   the model sets it when operating in a subtree.
 - `src/agent/prompt/nested-agents.ts` -- `extractTargetDir` per tool (`path` arg for file
   tools; `workdir` else leading-`cd` for bash), git-root walk, chain collection, and the
-  `NestedAgentsCollector` holding the dedup set, byte budget, `scanForInjection` and block
+  `NestedAgentsCollector` holding the dedup set, byte budget, `scanForeign` and block
   formatting.
 - `src/agent/bridge.ts` -- home loop: collector built per `reply`, block appended to the
   tool result after the `transform:tool:result` hook.

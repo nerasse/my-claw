@@ -60,4 +60,4 @@ Standard cron expressions (`0 9 * * 1`) are parsed by `cron-parser`. Custom synt
 
 ## Security
 
-Prompts are scanned with `scanForInjection()` at creation and update time. Same patterns as user messages. Sub-agents cannot call the `cron` tool.
+Prompts are scanned with `scanForeign()` at creation and update time: the same patterns as the user turn, but always blocking rather than annotating. Sub-agents cannot call the `cron` tool. See `docs/anti-injection.md`.

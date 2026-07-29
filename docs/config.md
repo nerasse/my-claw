@@ -707,6 +707,35 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
   pass the anti-injection scan. `enabled` (default true) toggles it; `maxBytes` (default
   32768) caps the total nested content injected per run. See `docs/nested-agents.md`.
 
+## Anti-injection
+
+```json
+"antiInjection": {
+  "enabled": true,
+  "ownerSanction": "annotate"
+}
+```
+
+Governs the scan of the **user turn** only. Each segment of an incoming message (`reply`,
+`thread-root`, `room-context`, `user-text`, `attachments`) is scanned on its own, so a verdict on
+quoted or contextual text can no longer blank the sender's actual question.
+
+- `enabled` (default true) — set to false to skip pattern matching on the user turn. Invisible
+  characters are still stripped: disabling the scan must not hand the model text a human cannot
+  see.
+- `ownerSanction` (default `"annotate"`) — what happens when the sender's own text matches a
+  pattern. `annotate` keeps the text and wraps it in a marker telling the model to read it as data,
+  never as instructions. `block` replaces it with the marker, which is what every version before
+  this did to the whole turn.
+
+Foreign content — tool results, fetched pages, browser output, nested `AGENTS.md`, `CORE.md`,
+skills, cron prompts — is always scanned and always blocked. That is deliberately not
+configurable, so an editable file can never lower the guard. The pattern list stays in code for
+the same reason. See `docs/anti-injection.md`.
+
+Not a section: `injection` above is the unrelated mid-run steering feature.
+
+
 ## Context
 
 ```json
