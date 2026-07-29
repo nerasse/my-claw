@@ -41,7 +41,11 @@ export function parseMatrixCommand(text: string): {
   command: string;
   args: string;
 } | null {
-  const match = /^\/(\w+)(?:\s+([\s\S]*))?$/.exec(text.trim());
+  // Hyphens are part of a command name: `\w+` alone silently dropped `/reload-skills`, which is
+  // advertised above, matched by META_COMMAND_PATTERN and handled in the switch, yet reached the LLM
+  // as prose instead. The leading `\w` rejects `/-`, and the trailing `$` keeps a path like
+  // `/home/user/x` out of the command path since `/` is not part of a name.
+  const match = /^\/(\w[\w-]*)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!match) return null;
   return {
     command: match[1] ?? "",

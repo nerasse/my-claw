@@ -92,6 +92,23 @@ describe("Matrix message normalization", () => {
     expect(result!.args).toBe("gpt-4");
   });
 
+  test("parseMatrixCommand parses a hyphenated command", () => {
+    // `\w+` excluded the hyphen, so /reload-skills never parsed: it was advertised in
+    // MATRIX_COMMANDS, matched by META_COMMAND_PATTERN and handled in the switch, yet reached the
+    // LLM as prose.
+    expect(parseMatrixCommand("/reload-skills")).toEqual({ command: "reload-skills", args: "" });
+    expect(parseMatrixCommand("/reload-skills now")).toEqual({ command: "reload-skills", args: "now" });
+  });
+
+  test("parseMatrixCommand still refuses a path and a bare hyphen", () => {
+    // The trailing anchor keeps a path out of the command path, and a name must start with a word
+    // character, or "/-" would become a command named "-".
+    expect(parseMatrixCommand("/home/neras/dev")).toBeNull();
+    expect(parseMatrixCommand("/some/path here")).toBeNull();
+    expect(parseMatrixCommand("/-")).toBeNull();
+    expect(parseMatrixCommand("/")).toBeNull();
+  });
+
   test("parseMatrixCommand returns null for non-command text", () => {
     const result = parseMatrixCommand("hello world");
     expect(result).toBeNull();
