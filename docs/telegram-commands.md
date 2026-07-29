@@ -16,7 +16,8 @@ ignoring entity presence entirely. The `(?:@\w+)?` group also accepts the option
 `@botname` suffix that Telegram appends in groups or that some clients include.
 Applied to all commands:
 `/new`, `/clear`, `/model`, `/models`, `/effort`, `/compact`, `/reload`, `/verbose`, `/status`, `/stop`,
-`/cron`, `/archive`, `/help`, `/commands`.
+`/cron`, `/codex`, `/claude`, `/config`, `/skills`, `/agents`, `/mcp`, `/instructions`, `/archive`,
+`/help`, `/commands`.
 
 A defensive fallback in `handleMessage` strips `@botname` before matching, so
 commands never leak to the LLM even if `bot.hears()` somehow fails. The fallback list must

@@ -478,6 +478,27 @@ If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `d
 
 `agents` is a hot section, so a scope edit lands on the next message with no restart.
 
+### Inspecting it from chat
+
+Four commands on every channel, all accepting an optional agent (`orchestrator`/`main`, `general`,
+`research`, `cron`, or a live `subagent/<name>-<hex>` id, which resolves through its type since scope
+is per type). No argument means the orchestrator, and an unknown name lists the accepted values.
+
+- `/skills [agent]` — the skills that agent sees, with its scope, whether it can write skills
+  (`manage_skills` is orchestrator-only), and any configured name matching no installed skill.
+- `/agents` — the three configured types with iterations, model, tool class and both scopes; then
+  `cron` (no config entry, inherits the orchestrator); then the live sub-agents; then the browser
+  sub-agent, which is hardcoded, has no skills or MCP, and is invisible to `list_agents`.
+- `/mcp [agent]` — every **declared** server with its state (`connected`/`disabled`/`failed`, with the
+  connect error), marked in or out of that agent's scope. A failed server stays listed, which is the
+  point: it used to be logged and dropped. Warns when `research` has servers.
+- `/instructions [agent]` — the composed system prompt as a `.md` attachment plus a summary. Shown as
+  actually sent: the `transform:system:prompt` hook is applied and the SDK steering note is appended
+  for a `claude-sdk` agent. A `cron` dump has no platform-hint layer, because a cron run has no
+  channel. Two things a static dump cannot reproduce, and the summary says so: the suggested-skills
+  layer depends on the message text, and nested `AGENTS.md` are injected into tool results during a
+  run rather than into the prompt.
+
 ## Context Limits
 
 Per-model or global `limit` controls context window and output cap:

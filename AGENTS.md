@@ -106,6 +106,7 @@ src/
 │   ├── command-log.ts    # Masks sensitive command arguments before they are logged
 │   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
+│   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
 │   ├── recreate.ts
 │   ├── telegram/
 │   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
@@ -196,7 +197,7 @@ src/
 │   ├── retrieval.ts       # Skill suggestion: embedding vectors + keyword fallback
 │   └── types.ts
 ├── mcp/
-│   ├── manager.ts         # External MCP servers: connect/reconnect on config reload
+│   ├── manager.ts         # External MCP servers: connect/reconnect, per-server status()
 │   └── connection.ts      # One server connection (stdio/SSE transports, tool listing)
 ├── cron/
 │   ├── scheduler.ts       # Tick loop, at-most-once dispatch, timeout wall

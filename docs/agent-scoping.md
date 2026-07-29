@@ -1,7 +1,7 @@
 # Agent scoping and introspection commands
 
-Status: **spec approved, not implemented**. Every axis below was decided with the owner; there are
-no open points left.
+Status: **implemented**. Every axis below was decided with the owner; there are no open points left.
+Deviations found while building are recorded inline, marked "as built".
 
 Two things ship together because one is useless without the other:
 
@@ -248,10 +248,14 @@ export interface McpServerStatus {
   state: "connected" | "disabled" | "failed";
   toolCount: number;
   lastError?: string;
-  lastAttemptAt: string;
+  lastAttemptAt?: string;
 }
 export function status(): McpServerStatus[];   // on McpManager
 ```
+
+As built: `lastAttemptAt` is optional, because a server declared `enabled: false` is never attempted
+and inventing a timestamp for it would be a lie. `disabled` also outranks `failed`: a broken server
+switched off afterwards is not a problem worth reporting.
 
 Built from `config.mcp` (the declared set) rather than from the live connections, so a declared
 server always appears. `failed` keeps `lastError` from the caught connect error.
