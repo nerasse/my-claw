@@ -169,6 +169,55 @@ export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels:
   return { enabled: anyNative || anySupports || config.effort !== undefined, levels: EFFORT_LEVELS };
 }
 
+// The Claude Agent SDK documents `high` as what it applies when a query carries no effort
+// (see the EffortLevel doc comment in its typings). Codex and plain OpenAI-compatible providers
+// document no such value, so their unset state stays unnamed instead of guessed.
+const SDK_DEFAULT_EFFORT: EffortLevel = "high";
+
+export type EffortSource = "session" | "model" | "config" | "sdk-default" | "provider-default" | "unsupported";
+
+export interface EffectiveEffort {
+  // Absent when nothing sets a level and the provider documents no default of its own.
+  level?: EffortLevel;
+  source: EffortSource;
+}
+
+/**
+ * What effort a run on this model would actually use, and where that value comes from.
+ *
+ * The menus used to render the raw `session ?? global` chain, which disagreed with computeEffort
+ * on two counts: it skipped the per-model default, and it reported "default" even for models
+ * that discard effort outright. Callers need the origin too, because "high because you asked for
+ * it" and "high because the SDK falls back to it" are different answers to the same question.
+ */
+export function effectiveEffort(
+  config: LlmConfig,
+  modelId?: string,
+  sessionOverride?: EffortLevel,
+): EffectiveEffort {
+  let backend: ResolvedLlmConfig["backend"];
+  try {
+    backend = resolveLlmConfig(config, modelId).backend;
+  } catch {
+    // Stale model override after a config edit: claiming a level here would invent one.
+    return { source: "unsupported" };
+  }
+
+  const model = findModel(config, modelId ?? config.defaultModel ?? config.model ?? "");
+  const native = backend === "claude-sdk" || backend === "codex";
+  // Explicit `false` is the provider stating this model has no effort at all, which outranks the
+  // backend being effort-native (Haiku on the SDK). `undefined` only blocks non-native backends,
+  // where the parameter is never sent without an opt-in.
+  if (model?.supportsEffort === false) return { source: "unsupported" };
+  if (!native && !model?.supportsEffort) return { source: "unsupported" };
+
+  if (sessionOverride) return { level: sessionOverride, source: "session" };
+  if (model?.effort) return { level: model.effort, source: "model" };
+  if (config.effort) return { level: config.effort, source: "config" };
+  if (backend === "claude-sdk") return { level: SDK_DEFAULT_EFFORT, source: "sdk-default" };
+  return { source: "provider-default" };
+}
+
 /**
  * True when this model id (or the default) resolves to the claude-sdk backend. Resolution
  * failures (stale override after a config edit) count as "not SDK" so callers fall back to

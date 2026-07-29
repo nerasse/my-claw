@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels, effortOptionsFor } from "../../src/llm/resolver.ts";
+import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels, effortOptionsFor, effectiveEffort } from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 
 const newFormatConfig: LlmConfig = {
@@ -271,4 +271,57 @@ test("effortOptionsFor enabled when any SDK model, supportsEffort, or global eff
     models: [{ id: "mimo", label: "MiMo", provider: "litellm" }],
   };
   assert.equal(effortOptionsFor(plain).enabled, false);
+});
+
+// --- effectiveEffort: what the menus must display ---
+
+test("effectiveEffort: reports the level and its origin", () => {
+  // Origin, not just the level: the menus have to distinguish a deliberate setting from a fallback.
+  assert.deepEqual(effectiveEffort(effortConfig, "claude-sonnet-5", "max"), { level: "max", source: "session" });
+  assert.deepEqual(effectiveEffort(effortConfig, "claude-sonnet-5"), { level: "high", source: "config" });
+  assert.deepEqual(effectiveEffort(effortConfig, "grok-reasoner"), { level: "high", source: "config" });
+});
+
+test("effectiveEffort: a per-model default is reported, not skipped", () => {
+  // The menus resolved session > global only, so a model-level effort displayed as "default"
+  // while the run actually used it.
+  const cfg: LlmConfig = {
+    ...effortConfig,
+    effort: undefined,
+    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", effort: "low" }],
+  };
+  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5"), { level: "low", source: "model" });
+});
+
+test("effectiveEffort: an unset SDK model names the documented SDK fallback", () => {
+  const cfg: LlmConfig = { ...effortConfig, effort: undefined };
+  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5"), { level: "high", source: "sdk-default" });
+});
+
+test("effectiveEffort: an unset opt-in home model stays unnamed", () => {
+  // Only the Claude SDK documents its fallback. Naming one for the others would be an invention.
+  const cfg: LlmConfig = { ...effortConfig, effort: undefined };
+  assert.deepEqual(effectiveEffort(cfg, "grok-reasoner"), { source: "provider-default" });
+});
+
+test("effectiveEffort: a model that discards effort reports unsupported", () => {
+  // mimo is OpenAI-compatible with no opt-in, so the parameter is never sent: the old menus still
+  // advertised "Effort: default" for it.
+  assert.deepEqual(effectiveEffort(effortConfig, "mimo"), { source: "unsupported" });
+  assert.deepEqual(effectiveEffort(effortConfig, "mimo", "max"), { source: "unsupported" });
+});
+
+test("effectiveEffort: an explicit supportsEffort false outranks an effort-native backend", () => {
+  const cfg: LlmConfig = {
+    ...effortConfig,
+    models: [{ id: "haiku", label: "Haiku", provider: "anthropic", supportsEffort: false }],
+  };
+  assert.deepEqual(effectiveEffort(cfg, "haiku"), { source: "unsupported" });
+});
+
+test("effectiveEffort: an unresolvable model or provider claims nothing", () => {
+  assert.deepEqual(effectiveEffort(effortConfig, "gone-from-config"), { source: "unsupported" });
+  // Provider resolution throws here; a display must not invent a level out of the failure.
+  const broken: LlmConfig = { ...effortConfig, models: [{ id: "orphan", label: "Orphan", provider: "vanished" }] };
+  assert.deepEqual(effectiveEffort(broken, "orphan"), { source: "unsupported" });
 });
