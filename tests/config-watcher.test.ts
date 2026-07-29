@@ -411,8 +411,7 @@ test("appliers are no-ops when nothing relevant changed", () => {
   let touched = 0;
   const ctx: ConfigReloadContext = {
     modelPicker: {
-      setModels: () => { touched += 1; },
-      setEffortOptions: () => { touched += 1; },
+      syncFromConfig: () => { touched += 1; },
     },
     registerWebSearch: () => { touched += 1; },
   };

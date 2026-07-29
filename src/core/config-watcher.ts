@@ -14,7 +14,6 @@ import {
   type MyClawConfig,
 } from "./config.ts";
 import { snapshot, reject, confirm, readQuarantine, contentSha, HEALTH_GATE_MS } from "./config-store.ts";
-import { effortOptionsFor } from "../llm/resolver.ts";
 
 const DEBOUNCE_MS = 300;
 
@@ -58,8 +57,7 @@ interface ChannelTarget {
 
 export interface ConfigReloadContext {
   modelPicker?: {
-    setModels(models: { id: string; label: string; group?: string }[]): void;
-    setEffortOptions(effort: { enabled: boolean; levels: import("./config.ts").EffortLevel[] }): void;
+    syncFromConfig(llm: import("./config.ts").LlmConfig): void;
   };
   // Owns the base/discovered merge into config.llm.models + the picker sync. When provided it
   // supersedes the built-in modelPicker sync (which only knows the curated config models).
@@ -239,8 +237,7 @@ export function runReloadAppliers(
     if (ctx.syncModels) {
       ctx.syncModels();
     } else if (ctx.modelPicker) {
-      ctx.modelPicker.setModels((config.llm.models ?? []).map((m) => ({ id: m.id, label: m.label, group: m.group, supportedEffortLevels: m.supportedEffortLevels, supportsEffort: m.supportsEffort })));
-      ctx.modelPicker.setEffortOptions(effortOptionsFor(config.llm));
+      ctx.modelPicker.syncFromConfig(config.llm);
     }
   }
   if (changed.includes("whitelist")) {

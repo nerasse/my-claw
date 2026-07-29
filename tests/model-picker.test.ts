@@ -1,6 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { ModelPicker, formatModelGroupSummary } from "../src/channels/model-picker.ts";
+import type { EffectiveEffort } from "../src/llm/resolver.ts";
+import type { EffortLevel } from "../src/core/config.ts";
 
 const models = [
   { id: "accounts/fireworks/models/kimi-k2p6-turbo", label: "Kimi K2.6 Turbo" },
@@ -252,6 +254,10 @@ test("nested: Opus node lists versions + back-to-parent-group", () => {
 const effortPicker = () =>
   new ModelPicker([{ id: "a", label: "A" }], { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] });
 
+const at = (level: EffortLevel, source: EffectiveEffort["source"] = "session"): EffectiveEffort => ({ level, source });
+const NOT_SET: EffectiveEffort = { source: "provider-default" };
+const UNSUPPORTED: EffectiveEffort = { source: "unsupported" };
+
 test("effort: root menu has an Effort entry to adjust without re-selecting a model", () => {
   const buttons = effortPicker().buildButtons("a");
   assert.deepEqual(buttons.at(-1), { label: "Effort >", action: "effm" });
@@ -261,19 +267,30 @@ test("effort: root menu has no effort entry when disabled", () => {
   assert.equal(new ModelPicker([{ id: "a", label: "A" }]).buildButtons("a").some((b) => b.action === "effm"), false);
 });
 
-test("effort: header suffix reflects current level when enabled", () => {
-  assert.equal(effortPicker().effortHeaderSuffix("high"), " — Effort: high");
-  assert.equal(effortPicker().effortHeaderSuffix(), " — Effort: default");
+test("effort: header suffix names the level and where it comes from", () => {
+  // "high because you asked" and "high because the SDK falls back to it" are different answers,
+  // and the old bare "default" gave neither.
+  assert.equal(effortPicker().effortHeaderSuffix(at("high")), " — Effort: high (session)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("high", "sdk-default")), " — Effort: high (SDK default)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("medium", "config")), " — Effort: medium (config)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("low", "model")), " — Effort: low (model default)");
+  assert.equal(effortPicker().effortHeaderSuffix(NOT_SET), " — Effort: provider default (nothing sent)");
+});
+
+test("effort: no header suffix for a model that discards effort", () => {
+  // The line used to show up for every model as soon as any model supported effort, which
+  // advertised a setting with no effect on the current one.
+  assert.equal(effortPicker().effortHeaderSuffix(UNSUPPORTED), "");
 });
 
 test("effort: no header suffix when disabled", () => {
   const picker = new ModelPicker([{ id: "a", label: "A" }]);
-  assert.equal(picker.effortHeaderSuffix("high"), "");
+  assert.equal(picker.effortHeaderSuffix(UNSUPPORTED), "");
   assert.deepEqual(picker.effortLevels(), []);
 });
 
 test("effort: submenu marks current level + back to root", () => {
-  const buttons = effortPicker().buildEffortButtons("medium");
+  const buttons = effortPicker().buildEffortButtons(at("medium"));
   assert.deepEqual(buttons, [
     { label: "low", action: "eff:low" },
     { label: "medium [selected]", action: "eff:medium" },
@@ -292,12 +309,12 @@ test("effort: parseCallbackAction handles openEffort and setEffort", () => {
 });
 
 test("effort: chained submenu replaces back with a keep-current entry", () => {
-  const buttons = effortPicker().buildEffortButtons("medium", { chained: true });
-  assert.deepEqual(buttons.at(-1), { label: "Keep current (medium)", action: "effk" });
+  const buttons = effortPicker().buildEffortButtons(at("medium"), { chained: true });
+  assert.deepEqual(buttons.at(-1), { label: "Keep current: medium (session)", action: "effk" });
   assert.equal(buttons.some((b) => b.action === "mdlb"), false);
 
-  const noEffort = effortPicker().buildEffortButtons(undefined, { chained: true });
-  assert.deepEqual(noEffort.at(-1), { label: "Keep current (default)", action: "effk" });
+  const noEffort = effortPicker().buildEffortButtons(NOT_SET, { chained: true });
+  assert.deepEqual(noEffort.at(-1), { label: "Keep current: provider default (nothing sent)", action: "effk" });
 });
 
 test("effort: parseCallbackAction handles keepEffort", () => {
@@ -332,13 +349,13 @@ test("effort: buildEffortButtons filters levels per model when currentModelId gi
     ],
     { enabled: true, levels: ["low", "medium", "high", "xhigh", "max"] },
   );
-  const fullButtons = picker.buildEffortButtons(undefined, { currentModelId: "full" });
+  const fullButtons = picker.buildEffortButtons(NOT_SET, { currentModelId: "full" });
   assert.deepEqual(fullButtons.map((b) => b.action), ["eff:low", "eff:medium", "eff:high", "eff:xhigh", "eff:max", "mdlb"]);
 
-  const limitedButtons = picker.buildEffortButtons(undefined, { currentModelId: "limited" });
+  const limitedButtons = picker.buildEffortButtons(NOT_SET, { currentModelId: "limited" });
   assert.deepEqual(limitedButtons.map((b) => b.action), ["eff:high", "eff:max", "mdlb"]);
 
-  const chainedLimited = picker.buildEffortButtons("max", { chained: true, currentModelId: "limited" });
+  const chainedLimited = picker.buildEffortButtons(at("max"), { chained: true, currentModelId: "limited" });
   assert.deepEqual(chainedLimited.map((b) => b.action), ["eff:high", "eff:max", "effk"]);
 });
 
@@ -367,7 +384,44 @@ test("buildEffortButtons: a no-effort model offers navigation only", () => {
     { enabled: true, levels: ["low", "high"] },
   );
   assert.deepEqual(
-    picker.buildEffortButtons(undefined, { currentModelId: "haiku" }).map((b) => b.action),
+    picker.buildEffortButtons(NOT_SET, { currentModelId: "haiku" }).map((b) => b.action),
     ["mdlb"],
   );
+});
+
+test("syncFromConfig hides effort for a model the parameter never reaches", () => {
+  // The picker cannot see the backend on its own, so this projection is the only place that knows
+  // an OpenAI-compatible model with no opt-in silently discards effort.
+  const picker = new ModelPicker([]);
+  picker.syncFromConfig({
+    defaultProvider: "litellm",
+    defaultModel: "mimo",
+    providers: { litellm: { baseUrl: "https://x/v1" }, anthropic: { type: "claude-sdk" } },
+    models: [
+      { id: "mimo", label: "MiMo", provider: "litellm" },
+      { id: "grok", label: "Grok", provider: "litellm", supportsEffort: true },
+      { id: "sonnet", label: "Sonnet", provider: "anthropic" },
+    ],
+  });
+
+  assert.deepEqual(picker.effortLevelsFor("mimo"), []);
+  assert.equal(picker.buildButtons("mimo").some((b) => b.action === "effm"), false);
+
+  assert.ok(picker.effortLevelsFor("sonnet").length > 0);
+  assert.equal(picker.buildButtons("sonnet").some((b) => b.action === "effm"), true);
+  assert.equal(picker.buildButtons("grok").some((b) => b.action === "effm"), true);
+});
+
+test("syncFromConfig keeps the model list and effort options in step", () => {
+  const picker = new ModelPicker([{ id: "stale", label: "Stale" }], { enabled: true, levels: ["low"] });
+  picker.syncFromConfig({
+    defaultProvider: "litellm",
+    defaultModel: "mimo",
+    providers: { litellm: { baseUrl: "https://x/v1" } },
+    models: [{ id: "mimo", label: "MiMo", provider: "litellm" }],
+  });
+  assert.equal(picker.labelFor("stale"), "stale");
+  assert.equal(picker.labelFor("mimo"), "MiMo");
+  // No model can honor effort and no global default is set, so the whole effort UI stays off.
+  assert.deepEqual(picker.effortLevels(), []);
 });

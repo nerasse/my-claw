@@ -78,7 +78,7 @@ import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig, effortOptionsFor } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig } from "./llm/resolver.ts";
 import {
   warmupEmbedding,
   backfillEmbeddings,
@@ -172,7 +172,9 @@ async function main() {
   const reloadConfigNow = async (): Promise<{ changed: string[]; rebootRequired: string[] }> =>
     (await configWatcher?.reloadNow()) ?? { changed: [], rebootRequired: [] };
   const memoryPurgeTimer = initMemory(config);
-  const modelPicker = new ModelPicker(config.llm.models ?? [], effortOptionsFor(config.llm));
+  // Left empty on purpose: applyModelCatalog() below is the single place that projects the merged
+  // model list into the picker, and it runs synchronously before anything can read the menu.
+  const modelPicker = new ModelPicker([]);
 
   // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,
@@ -183,8 +185,7 @@ async function main() {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
     // Provider-first: models with no explicit group nest under their provider's group label.
     config.llm.models = applyProviderGroups(merged, config.llm.providers ?? {});
-    modelPicker.setModels(config.llm.models.map((m) => ({ id: m.id, label: m.label, group: m.group, supportedEffortLevels: m.supportedEffortLevels, supportsEffort: m.supportsEffort })));
-    modelPicker.setEffortOptions(effortOptionsFor(config.llm));
+    modelPicker.syncFromConfig(config.llm);
   };
   modelCatalog.onUpdate(applyModelCatalog);
   applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)

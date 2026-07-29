@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
-import type { EffortLevel } from "../core/config.ts";
+import type { EffortLevel, LlmConfig } from "../core/config.ts";
+import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
 
 export interface ModelOption {
   id: string;
@@ -13,6 +14,11 @@ export interface ModelOption {
   // Explicit `false` means the provider says this model has no reasoning effort at all, which is
   // different from "unknown" (undefined) where the global list is the best guess.
   supportsEffort?: boolean;
+  // Whether effort actually reaches the provider for this model, resolved from the backend at
+  // sync time. Distinct from `supportsEffort`: an OpenAI-compatible model the provider says
+  // nothing about never gets the parameter sent, so offering levels for it is a no-op. Absent
+  // means "not resolved" and leaves the older capability fields in charge.
+  effortApplies?: boolean;
 }
 
 export interface EffortOptions {
@@ -117,6 +123,23 @@ export class ModelPicker {
     this.effort = effort;
   }
 
+  /**
+   * Sync the model list and the effort options from a resolved llm config. Both callers (boot
+   * catalog merge, hot reload) need the same projection, and `effortApplies` can only be derived
+   * here from the backend, so a hand-written field list at each call site would drop it silently.
+   */
+  syncFromConfig(llm: LlmConfig): void {
+    this.models = (llm.models ?? []).map((model) => ({
+      id: model.id,
+      label: model.label,
+      group: model.group,
+      supportedEffortLevels: model.supportedEffortLevels,
+      supportsEffort: model.supportsEffort,
+      effortApplies: effectiveEffort(llm, model.id).source !== "unsupported",
+    }));
+    this.effort = effortOptionsFor(llm);
+  }
+
   hasModels(): boolean {
     return this.models.length > 0;
   }
@@ -129,6 +152,7 @@ export class ModelPicker {
   effortLevelsFor(modelId: string): EffortLevel[] {
     if (!this.effort.enabled) return [];
     const model = this.models.find((m) => m.id === modelId);
+    if (model?.effortApplies === false) return [];
     if (model?.supportsEffort === false) return [];
     const levels = model?.supportedEffortLevels;
     return levels && levels.length > 0 ? levels : this.effort.levels;
@@ -209,21 +233,22 @@ export class ModelPicker {
   }
 
   /**
-   * Root menu: ungrouped models + top-level group entries + an `Effort >` entry (when enabled)
-   * to adjust effort without re-selecting a model. The active effort level is also shown on the
-   * header line; selecting a model never forces the effort step.
+   * Root menu: ungrouped models + top-level group entries + an `Effort >` entry to adjust effort
+   * without re-selecting a model. The active effort level is also shown on the header line;
+   * selecting a model never forces the effort step. The entry is dropped when the current model
+   * discards effort, where it would open a submenu that cannot change anything.
    */
   buildButtons(currentModelId: string): ConfirmationButton[] {
     const buttons = this.nodeButtons([], currentModelId);
-    if (this.effortLevels().length > 0) {
+    if (this.effortLevelsFor(currentModelId).length > 0) {
       buttons.push({ label: "Effort >", action: EFFORT_ACTION });
     }
     return buttons;
   }
 
-  /** Header suffix showing the active effort, only when effort control is enabled. */
-  effortHeaderSuffix(currentEffort?: EffortLevel): string {
-    return this.effortLevels().length > 0 ? ` — Effort: ${currentEffort ?? "default"}` : "";
+  /** Header suffix showing the effective effort, omitted when the current model discards it. */
+  effortHeaderSuffix(effort: EffectiveEffort): string {
+    return effort.source === "unsupported" ? "" : ` — Effort: ${formatEffort(effort)}`;
   }
 
   /** Submenu at a group path: its models + subgroups + a back entry to its parent. */
@@ -243,14 +268,14 @@ export class ModelPicker {
    * model selection, where going back to the model menu would defeat the point of the chain).
    * When `currentModelId` is provided, only levels that model supports are shown.
    */
-  buildEffortButtons(currentEffort?: EffortLevel, opts?: { chained?: boolean; currentModelId?: string }): ConfirmationButton[] {
+  buildEffortButtons(effort: EffectiveEffort, opts?: { chained?: boolean; currentModelId?: string }): ConfirmationButton[] {
     const levels = opts?.currentModelId ? this.effortLevelsFor(opts.currentModelId) : this.effort.levels;
     const buttons: ConfirmationButton[] = levels.map((level) => ({
-      label: mark(level, level === currentEffort),
+      label: mark(level, level === effort.level),
       action: `eff:${level}`,
     }));
     if (opts?.chained) {
-      buttons.push({ label: `Keep current (${currentEffort ?? "default"})`, action: KEEP_EFFORT_ACTION });
+      buttons.push({ label: `Keep current: ${formatEffort(effort)}`, action: KEEP_EFFORT_ACTION });
     } else {
       buttons.push({ label: "< Back", action: "mdlb" });
     }
@@ -321,6 +346,30 @@ export class ModelPicker {
 
   labelFor(modelId: string): string {
     return this.models.find((model) => model.id === modelId)?.label ?? modelId;
+  }
+}
+
+/**
+ * Renders an effective effort as "<level> (<origin>)". The origin matters: "high because you set
+ * it" and "high because the SDK falls back to it" answer the same question differently, and a
+ * bare "default" answered neither.
+ */
+export function formatEffort(effort: EffectiveEffort): string {
+  switch (effort.source) {
+    case "session":
+      return `${effort.level} (session)`;
+    case "model":
+      return `${effort.level} (model default)`;
+    case "config":
+      return `${effort.level} (config)`;
+    case "sdk-default":
+      return `${effort.level} (SDK default)`;
+    case "provider-default":
+      // Codex and opt-in OpenAI-compatible providers document no default, so naming one would
+      // be an invention. The honest answer is that nothing is sent and the provider decides.
+      return "provider default (nothing sent)";
+    case "unsupported":
+      return "not supported by this model";
   }
 }
 
