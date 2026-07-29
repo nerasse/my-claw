@@ -262,6 +262,13 @@ export interface AgentLlmConfig {
 export interface AgentConfig {
   maxIterations?: number;
   llm?: AgentLlmConfig;
+  /**
+   * Skill names this agent may see and read. Exact names, or the single entry `["*"]` for all.
+   * Absent inherits the orchestrator's list; absent there too means all. See docs/agent-scoping.md.
+   */
+  skills?: string[];
+  /** MCP server names whose tools reach this agent. Same semantics as `skills`. */
+  mcp?: string[];
 }
 
 /** Lazy nested AGENTS.md discovery. See `docs/nested-agents.md`. */
@@ -467,6 +474,100 @@ export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" 
     return agentCfg.maxIterations;
   }
   return type === "orchestrator" ? DEFAULT_ORCHESTRATOR_MAX_ITERATIONS : DEFAULT_SUBAGENT_MAX_ITERATIONS;
+}
+
+/**
+ * Agent scoping. Two vocabularies exist for agents: the tool axis is
+ * `main | general | research | cron` and the config axis is `orchestrator | general | research`.
+ * `main` and `orchestrator` are the same agent, and `cron` has no config entry of its own.
+ * Callers pass the tool-axis value; the mapping below is the single place they meet.
+ * See docs/agent-scoping.md.
+ */
+export type AgentToolType = "main" | "general" | "research" | "cron";
+
+/** `"all"` is a distinct value, not a sentinel array, so it cannot be mistaken for a list. */
+export type AgentScope = string[] | "all";
+
+const SCOPE_WILDCARD = "*";
+
+function configKeyForAgent(type: AgentToolType): "orchestrator" | "general" | "research" {
+  // cron inherits the orchestrator: that is today's behavior, and a fourth config key would carry a
+  // name that exists on neither axis.
+  if (type === "general" || type === "research") return type;
+  return "orchestrator";
+}
+
+function normalizeScope(list: string[]): AgentScope {
+  if (list.includes(SCOPE_WILDCARD)) return "all";
+  return list;
+}
+
+/**
+ * An empty array is a decision ("nothing"), never an unset field. Branching on `length` would read
+ * `[]` as absent and grant everything to an agent meant to have nothing -- the exact opposite.
+ */
+function readScope(agent: AgentConfig | undefined, field: "skills" | "mcp"): AgentScope | undefined {
+  const list = agent?.[field];
+  return Array.isArray(list) ? normalizeScope(list) : undefined;
+}
+
+export function resolveAgentSkills(config: MyClawConfig, type: AgentToolType): AgentScope {
+  const own = readScope(config.agents?.[configKeyForAgent(type)], "skills");
+  if (own !== undefined) return own;
+  const inherited = readScope(config.agents?.orchestrator, "skills");
+  return inherited ?? "all";
+}
+
+export function resolveAgentMcp(config: MyClawConfig, type: AgentToolType): AgentScope {
+  const own = readScope(config.agents?.[configKeyForAgent(type)], "mcp");
+  if (own !== undefined) return own;
+  // The one override of the inheritance rule: the research agent got zero MCP tools before this
+  // existed, so inheriting the orchestrator's list would hand it every server on upgrade -- a
+  // widening nobody asked for, disguised as a default. Only an explicit list grants it servers.
+  if (type === "research") return [];
+  const inherited = readScope(config.agents?.orchestrator, "mcp");
+  return inherited ?? "all";
+}
+
+export function scopeAllows(scope: AgentScope, name: string): boolean {
+  return scope === "all" || scope.includes(name);
+}
+
+export interface UnknownScopeEntry {
+  /** Config path as the owner wrote it, e.g. `agents.general.skills`. */
+  path: string;
+  name: string;
+  kind: "skill" | "mcp";
+}
+
+/**
+ * Scope entries that match no installed skill and no declared MCP server. A typo silently narrows an
+ * agent's world, and the symptom is an agent that quietly stops using a skill, so this is reported
+ * at boot rather than waiting for someone to run `/skills`.
+ *
+ * A report, never a refusal: a renamed skill must not take the process down.
+ */
+export function findUnknownScopeEntries(
+  config: MyClawConfig,
+  known: { skills: readonly string[]; mcpServers: readonly string[] },
+): UnknownScopeEntry[] {
+  const out: UnknownScopeEntry[] = [];
+  for (const key of ["orchestrator", "general", "research"] as const) {
+    const agent = config.agents?.[key];
+    if (!agent) continue;
+    for (const [field, kind, pool] of [
+      ["skills", "skill", known.skills],
+      ["mcp", "mcp", known.mcpServers],
+    ] as const) {
+      const list = agent[field];
+      // The wildcard entry is not a name, and "all" carries nothing to validate.
+      if (!Array.isArray(list) || list.includes(SCOPE_WILDCARD)) continue;
+      for (const name of list) {
+        if (!pool.includes(name)) out.push({ path: `agents.${key}.${field}`, name, kind });
+      }
+    }
+  }
+  return out;
 }
 
 // MY_CLAW_DIR env override exists so tests (and alternate deployments) never touch
