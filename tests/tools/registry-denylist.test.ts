@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { ToolRegistry } from "../../src/tools/registry.ts";
+import { resolveAgentMcp } from "../../src/core/config.ts";
 import { applyHotReload } from "../../src/core/config-watcher.ts";
 import type { Tool } from "../../src/tools/types.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -79,15 +80,48 @@ test("adding a tools denylist at runtime is a hot change", () => {
 
 // ── dynamic provider (external MCP tools) ────────────────────────────────────
 
-test("dynamic provider tools are added for acting agents but not research", () => {
-  const r = registry(["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "bash"]);
+const readOnlySet = ["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "bash"];
+
+test("dynamic provider tools are added for every agent class the scope allows", () => {
+  const r = registry(readOnlySet);
   r.setDynamicProvider(() => [stub("mcp__demo__echo")]);
 
-  assert.ok(r.getForAgent("main").some((t) => t.name === "mcp__demo__echo"));
-  assert.ok(r.getForAgent("general").some((t) => t.name === "mcp__demo__echo"));
-  assert.ok(r.getForAgent("cron").some((t) => t.name === "mcp__demo__echo"));
-  assert.ok(!r.getForAgent("research").some((t) => t.name === "mcp__demo__echo"),
-    "read-only research agent must not see external MCP tools");
+  for (const type of ["main", "general", "cron", "research"] as const) {
+    assert.ok(r.getForAgent(type).some((t) => t.name === "mcp__demo__echo"), type);
+  }
+});
+
+test("research gets no MCP by default, but the rule now lives in resolveAgentMcp", () => {
+  // It used to be hardcoded here. Moving it means the registry obeys whatever scope it is handed,
+  // and the negative default for research is a config resolution decision instead.
+  const r = registry(readOnlySet);
+  r.setDynamicProvider(() => [stub("mcp__demo__echo")]);
+  const config: MyClawConfig = { ...baseConfig(), agents: { orchestrator: { mcp: ["*"] } } };
+
+  const scope = resolveAgentMcp(config, "research");
+  assert.deepEqual(scope, []);
+  assert.ok(!r.getForAgent("research", [], scope).some((t) => t.name === "mcp__demo__echo"));
+  assert.ok(r.getForAgent("main", [], resolveAgentMcp(config, "main")).some((t) => t.name === "mcp__demo__echo"));
+});
+
+test("mcp scope filters by server, one server at a time", () => {
+  const r = registry(["read"]);
+  r.setDynamicProvider(() => [stub("mcp__alpha__a"), stub("mcp__beta__b"), stub("plain_plugin")]);
+
+  const names = r.getForAgent("main", [], ["alpha"]).map((t) => t.name);
+  assert.ok(names.includes("mcp__alpha__a"));
+  assert.ok(!names.includes("mcp__beta__b"));
+  // A plugin is not an MCP server: the scope must leave it alone or the same list would silently
+  // gate owner-authored tools too.
+  assert.ok(names.includes("plain_plugin"));
+  assert.ok(names.includes("read"));
+});
+
+test("mcp scope: empty means no server, wildcard resolves to all upstream", () => {
+  const r = registry(["read"]);
+  r.setDynamicProvider(() => [stub("mcp__alpha__a")]);
+  assert.ok(!r.getForAgent("main", [], []).some((t) => t.name === "mcp__alpha__a"));
+  assert.ok(r.getForAgent("main", [], "all").some((t) => t.name === "mcp__alpha__a"));
 });
 
 test("denylist can disable a dynamic MCP tool by full name", () => {
