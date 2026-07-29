@@ -135,7 +135,9 @@ contextVisibility: "all" | "allowlist" | "allowlist_quote"
 - `allowlist_quote`: same as `allowlist`, but reply quotes from non-allowlisted senders are still shown
 
 ### Meta-Command Filtering
-Commands (`/help`, `/status`, `/stop`, `/model`, `/compact`, `/reload-skills`, `/clear`, `/archive`, `/commands`, `/models`) and their responses are **not injected** into the LLM's `[Recent Room Context]`. This prevents meta-commands from polluting the conversation context. Only `/new` is preserved as a session boundary marker.
+Every command matched by `META_COMMAND_PATTERN` (`src/channels/meta-commands.ts`) and its response are **not injected** into the LLM's `[Recent Room Context]`, so meta-commands never pollute the conversation. The pattern is the single source of truth; enumerating it here went stale twice.
+
+`/new` is **not** an exception: it is in the pattern and is filtered like the rest. This section used to claim it was preserved as a session boundary marker, and no such mechanism exists anywhere in the code.
 
 ## DM Detection
 
