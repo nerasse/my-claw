@@ -2,9 +2,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { EffortLevel, MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
-import { isSdkBackedModel } from "../../llm/resolver.ts";
+import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
-import { ModelPicker, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
+import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
@@ -105,17 +105,17 @@ function buildMatrixMenuFromButtons(params: {
   currentModel: string;
   buttons: ConfirmationButton[];
   heading?: string;
-  currentEffort?: EffortLevel;
+  effort: EffectiveEffort;
 }): OutgoingMessage {
   const { buttons } = params;
   const instruction =
     buttons.length > MATRIX_REACTION_BUTTON_EMOJIS.length
-      ? "Reply with a number/name for any option, react to this message for the first 10, or send `/model <number|name>`:"
-      : "Reply with a number/name, react to this message, or send `/model <number|name>`:";
+      ? `Reply with a number/name for any option, react to this message for the first ${MATRIX_REACTION_BUTTON_EMOJIS.length}, or send \`/model <number|name>\`:`
+      : "Reply with a number/name/letter, react to this message, or send `/model <number|name>`:";
   return {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
-      `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.currentEffort)}`,
+      `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}`,
       instruction,
       ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
     ].join("\n"),
@@ -127,7 +127,7 @@ function buildMatrixModelMenu(params: {
   config: MyClawConfig;
   modelPicker: ModelPicker;
   currentModel: string;
-  currentEffort?: EffortLevel;
+  effort: EffectiveEffort;
   heading?: string;
 }): OutgoingMessage | string {
   if (!params.modelPicker.hasModels()) {
@@ -138,7 +138,7 @@ function buildMatrixModelMenu(params: {
     currentModel: params.currentModel,
     buttons: params.modelPicker.buildButtons(params.currentModel),
     heading: params.heading,
-    currentEffort: params.currentEffort,
+    effort: params.effort,
   });
 }
 
@@ -189,14 +189,16 @@ function buildMatrixModelsList(params: {
   config: MyClawConfig;
   modelPicker: ModelPicker;
   currentModel: string;
+  effort: EffectiveEffort;
 }): string {
+  const header = `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}`;
   const models = params.config.llm.models ?? [];
   if (models.length === 0) {
-    return `Current model: ${params.modelPicker.labelFor(params.currentModel)}`;
+    return header;
   }
 
   return [
-    `Current model: ${params.modelPicker.labelFor(params.currentModel)}`,
+    header,
     "Available models by group:",
     ...formatModelGroupSummary(models, params.currentModel),
     "",
@@ -381,23 +383,30 @@ export function createMatrixCommandHandler({
           config,
           modelPicker,
           currentModel,
-          currentEffort: existingSession?.effortOverride ?? config.llm.effort,
+          effort: effectiveEffort(config.llm, currentModel, existingSession?.effortOverride),
         });
       }
 
       case "models": {
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-        return buildMatrixModelsList({ config, modelPicker, currentModel });
+        return buildMatrixModelsList({
+          config,
+          modelPicker,
+          currentModel,
+          effort: effectiveEffort(config.llm, currentModel, existingSession?.effortOverride),
+        });
       }
 
       case "effort": {
         const existingSession = await sessionManager.peek(sessionId);
         // Levels are per model: listing the global set would offer values the current model rejects.
         const activeModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const effort = effectiveEffort(config.llm, activeModel, existingSession?.effortOverride);
         const levels = modelPicker.effortLevelsFor(activeModel);
-        if (levels.length === 0) return "Effort control is not enabled.";
-        const currentEffort = existingSession?.effortOverride ?? config.llm.effort;
+        if (effort.source === "unsupported" || levels.length === 0) {
+          return `Effort has no effect on ${modelPicker.labelFor(activeModel)}.`;
+        }
         const requested = args.trim();
         if (requested) {
           const level = parseEffortArg(requested, levels);
@@ -410,10 +419,10 @@ export function createMatrixCommandHandler({
         }
         return buildMatrixMenuFromButtons({
           modelPicker,
-          currentModel: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "",
-          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "" }),
-          currentEffort,
-          heading: `Effort (current: ${currentEffort ?? "default"})`,
+          currentModel: activeModel,
+          buttons: modelPicker.buildEffortButtons(effort, { currentModelId: activeModel }),
+          effort,
+          heading: `Effort — current: ${formatEffort(effort)}`,
         });
       }
 
@@ -586,16 +595,16 @@ export function createMatrixActionHandler({
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
       // Effort submenu, reachable without re-selecting a model.
       if (action.kind === "openEffort") {
         return {
           ...buildMatrixMenuFromButtons({
             modelPicker,
             currentModel,
-            buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: currentModel }),
-            currentEffort,
-            heading: `Effort (current: ${currentEffort ?? "default"})`,
+            buttons: modelPicker.buildEffortButtons(effort, { currentModelId: currentModel }),
+            effort,
+            heading: `Effort — current: ${formatEffort(effort)}`,
           }),
           supersededText: "Model menu > Effort",
         };
@@ -611,7 +620,7 @@ export function createMatrixActionHandler({
           currentModel,
           buttons,
           heading: groupLabel,
-          currentEffort,
+          effort,
         }),
         supersededText: groupLabel ? `Model menu > ${groupLabel}` : "Model menu",
       };
@@ -630,9 +639,9 @@ export function createMatrixActionHandler({
     if (action.kind === "keepEffort") {
       const existing = await sessionManager.peek(sessionId);
       const model = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
       return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged: ${formatEffort(effort)}`,
       };
     }
 
@@ -641,20 +650,22 @@ export function createMatrixActionHandler({
     // opens the effort submenu without re-selecting a model.
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-    const currentEffort = session.effortOverride ?? config.llm.effort;
+    // Resolved against the model just picked, not the one being left: the chained step must show
+    // the effort that will actually apply from here on.
+    const effort = effectiveEffort(config.llm, modelId, session.effortOverride);
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
     const label = modelPicker.labelFor(modelId);
 
     const levels = modelPicker.effortLevelsFor(modelId);
-    if (levels.length > 0) {
+    if (effort.source !== "unsupported" && levels.length > 0) {
       return {
         ...buildMatrixMenuFromButtons({
           modelPicker,
           currentModel: modelId,
-          buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true, currentModelId: modelId }),
-          currentEffort,
+          buttons: modelPicker.buildEffortButtons(effort, { chained: true, currentModelId: modelId }),
+          effort,
           heading: `Model changed to ${label} — now choose reasoning effort:`,
         }),
         supersededText: `Model changed to ${label}`,

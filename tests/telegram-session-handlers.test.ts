@@ -88,6 +88,7 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
     llm: {
       ...config.llm,
       effort: "high",
+      model: "claude-sonnet-5",
       providers: { anthropic: { type: "claude-sdk" } },
       models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
     },
@@ -121,12 +122,50 @@ test("telegram effort: menu, callback set, and /effort arg persist to session", 
   assert.match(String(bad), /Unknown effort/);
 });
 
+test("telegram effort: a model that discards effort advertises nothing", async () => {
+  // The base config is a plain OpenAI-compatible provider with no opt-in, so effort is never sent.
+  // The menu used to print "Effort: default" and offer an Effort entry regardless.
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker([]);
+  modelPicker.syncFromConfig(config.llm);
+  const commandHandler = createTelegramCommandHandler({ config, sessionManager, modelPicker });
+
+  const menu = await commandHandler("c1", "u1", "dm", "model", "");
+  assert.doesNotMatch(String((menu as { text?: string }).text ?? ""), /Effort/);
+  assert.equal((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"), false);
+
+  assert.match(String(await commandHandler("c1", "u1", "dm", "effort", "")), /Effort has no effect on Base/);
+  assert.match(String(await commandHandler("c1", "u1", "dm", "effort", "high")), /Effort has no effect on Base/);
+});
+
+test("telegram /models reports the effective effort next to the model", async () => {
+  const effortConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      model: "claude-sonnet-5",
+      providers: { anthropic: { type: "claude-sdk" } },
+      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
+    },
+  };
+  const modelPicker = new ModelPicker([]);
+  modelPicker.syncFromConfig(effortConfig.llm);
+  const commandHandler = createTelegramCommandHandler({
+    config: effortConfig,
+    sessionManager: new SessionManager(),
+    modelPicker,
+  });
+
+  assert.match(String(await commandHandler("c1", "u1", "dm", "models", "")), /Current model: Sonnet — Effort: high \(SDK default\)/);
+});
+
 test("telegram model selection chains into effort, then terminates the menu", async () => {
   const effortConfig: MyClawConfig = {
     ...config,
     llm: {
       ...config.llm,
       effort: "high",
+      model: "claude-sonnet-5",
       providers: { anthropic: { type: "claude-sdk" } },
       models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
     },
@@ -152,7 +191,7 @@ test("telegram model selection chains into effort, then terminates the menu", as
   // keepEffort closes the menu without touching the session's effort.
   const kept = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effk" });
   assert.equal(kept?.buttons, undefined);
-  assert.match(kept?.text ?? "", /effort unchanged \(high\)/);
+  assert.match(kept?.text ?? "", /effort unchanged: high \(config\)/);
   assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
 
   // setEffort closes the menu (no keyboard bounce back to root).

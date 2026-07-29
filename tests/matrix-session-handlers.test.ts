@@ -5,7 +5,7 @@ import {
   createMatrixActionHandler,
   createMatrixCommandHandler,
 } from "../src/channels/matrix/session-handlers.ts";
-import { editPendingActionMessage } from "../src/channels/matrix/actions.ts";
+import { editPendingActionMessage, MATRIX_REACTION_BUTTON_EMOJIS } from "../src/channels/matrix/actions.ts";
 import { getMatrixHelpText } from "../src/channels/matrix/commands.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
@@ -102,7 +102,21 @@ test("matrix model submenu navigates and selects within a group", async () => {
   assert.match(String(afterSelect), /claude-opus-4-8/);
 });
 
+const sdkEffortConfig: MyClawConfig = {
+  ...config,
+  llm: {
+    ...config.llm,
+    model: "sonnet",
+    providers: { anthropic: { type: "claude-sdk" } },
+    models: [
+      { id: "sonnet", label: "Sonnet", provider: "anthropic" },
+      { id: "alt-model", label: "Alt", provider: "anthropic" },
+    ],
+  },
+};
+
 test("matrix effort: header status, an Effort menu entry, and terminal model selection", async () => {
+  const config = sdkEffortConfig;
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(config.llm.models ?? [], {
     enabled: true,
@@ -111,9 +125,10 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
   const actionHandler = createMatrixActionHandler({ config, sessionManager, modelPicker });
   const commandHandler = createMatrixCommandHandler({ config, sessionManager, modelPicker });
 
-  // /model shows effort on the header line AND offers an Effort entry to adjust it.
+  // Nothing sets a level, so the header must name the SDK's own documented fallback rather than
+  // the opaque "default" it used to print.
   const menu = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
-  assert.match(String((menu as { text?: string }).text ?? ""), /Current model:.*— Effort: default/);
+  assert.match(String((menu as { text?: string }).text ?? ""), /Current model: Sonnet — Effort: high \(SDK default\)/);
   assert.ok((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"));
 
   // Opening the Effort entry shows the level submenu without touching the model.
@@ -163,27 +178,46 @@ test("matrix help text includes command discoverability tips", () => {
   assert.match(help, /Use `\/commands` to list commands explicitly/i);
 });
 
-test("matrix model menu copy explains replies beyond ten options", async () => {
+const menuTextFor = async (count: number): Promise<string> => {
   const bigConfig: MyClawConfig = {
     ...config,
     llm: {
       ...config.llm,
-      models: Array.from({ length: 12 }, (_, index) => ({
+      models: Array.from({ length: count }, (_, index) => ({
         id: `model-${index + 1}`,
         label: `Model ${index + 1}`,
       })),
       model: "model-1",
     },
   };
-  const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(bigConfig.llm.models ?? []);
-  const commandHandler = createMatrixCommandHandler({ config: bigConfig, sessionManager, modelPicker });
+  const message = await createMatrixCommandHandler({
+    config: bigConfig,
+    sessionManager: new SessionManager(),
+    modelPicker,
+  })("!room:test", "@u1:example.org", "dm", "model", "");
+  assert.equal(typeof message, "object");
+  return String((message as { text?: string }).text ?? "");
+};
 
-  const modelMessage = await commandHandler("!room:test", "@u1:example.org", "dm", "model", "");
-  assert.equal(typeof modelMessage, "object");
+test("matrix model menu labels options past the tenth with letters", async () => {
+  // Unicode stops at the tenth keycap, so options 11+ used to render as bare "11." with no
+  // reaction to click. Regional-indicator letters continue the numbering.
+  const text = await menuTextFor(12);
+  assert.match(text, /🔟 Model 10/);
+  assert.match(text, /🇦 Model 11/);
+  assert.match(text, /🇧 Model 12/);
+  assert.doesNotMatch(text, /^11\. /m);
+  assert.match(text, /Reply with a number\/name\/letter/i);
+});
+
+test("matrix model menu falls back to plain numbering past the last symbol", async () => {
+  const text = await menuTextFor(MATRIX_REACTION_BUTTON_EMOJIS.length + 2);
+  assert.match(text, /🇿 Model 36/);
+  assert.match(text, new RegExp(`^37\\. Model 37$`, "m"));
   assert.match(
-    String((modelMessage as { text?: string }).text ?? ""),
-    /Reply with a number\/name for any option, react to this message for the first 10/i,
+    text,
+    new RegExp(`react to this message for the first ${MATRIX_REACTION_BUTTON_EMOJIS.length}`, "i"),
   );
 });
 

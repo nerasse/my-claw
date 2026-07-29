@@ -1,9 +1,9 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
-import { isSdkBackedModel } from "../../llm/resolver.ts";
+import { isSdkBackedModel, effectiveEffort } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
-import { ModelPicker, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
+import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -169,7 +169,7 @@ export function createTelegramCommandHandler({
           return `Current model: ${currentModel}`;
         }
 
-        const effort = existingSession?.effortOverride ?? config.llm.effort;
+        const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         return {
           text: `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`,
           buttons: modelPicker.buildButtons(currentModel),
@@ -180,9 +180,11 @@ export function createTelegramCommandHandler({
         const existingSession = await sessionManager.peek(sessionId);
         // Levels are per model: listing the global set would offer values the current model rejects.
         const activeModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const effort = effectiveEffort(config.llm, activeModel, existingSession?.effortOverride);
         const levels = modelPicker.effortLevelsFor(activeModel);
-        if (levels.length === 0) return "Effort control is not enabled.";
-        const currentEffort = existingSession?.effortOverride ?? config.llm.effort;
+        if (effort.source === "unsupported" || levels.length === 0) {
+          return `Effort has no effect on ${modelPicker.labelFor(activeModel)}.`;
+        }
         const requested = args.trim();
         if (requested) {
           const level = parseEffortArg(requested, levels);
@@ -194,20 +196,21 @@ export function createTelegramCommandHandler({
           return `Effort set to ${level}`;
         }
         return {
-          text: `Effort — current: ${currentEffort ?? "default"}`,
-          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "" }),
+          text: `Effort — current: ${formatEffort(effort)}`,
+          buttons: modelPicker.buildEffortButtons(effort, { currentModelId: activeModel }),
         };
       }
 
       case "models": {
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         const models = config.llm.models ?? [];
         if (models.length === 0) {
-          return `Current model: ${modelPicker.labelFor(currentModel)}`;
+          return `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`;
         }
         return [
-          `Current model: ${modelPicker.labelFor(currentModel)}`,
+          `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`,
           "Available models by group:",
           ...formatModelGroupSummary(models, currentModel),
           "",
@@ -363,8 +366,8 @@ export function createTelegramCallbackHandler({
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
-      const suffix = modelPicker.effortHeaderSuffix(currentEffort);
+      const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
+      const suffix = modelPicker.effortHeaderSuffix(effort);
       if (action.kind === "openGroup") {
         return {
           text: `${modelPicker.groupLabel(action.groupPath) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
@@ -375,8 +378,8 @@ export function createTelegramCallbackHandler({
       // Effort submenu, reachable without re-selecting a model.
       if (action.kind === "openEffort") {
         return {
-          text: `Effort — current: ${currentEffort ?? "default"}`,
-          buttons: modelPicker.buildEffortButtons(currentEffort, { currentModelId: currentModel }),
+          text: `Effort — current: ${formatEffort(effort)}`,
+          buttons: modelPicker.buildEffortButtons(effort, { currentModelId: currentModel }),
           answerText: "Effort",
         };
       }
@@ -403,9 +406,9 @@ export function createTelegramCallbackHandler({
     if (action.kind === "keepEffort") {
       const existing = await sessionManager.peek(sessionId);
       const model = existing?.modelOverride ?? defaultModel;
-      const currentEffort = existing?.effortOverride ?? config.llm.effort;
+      const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
       return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged (${currentEffort ?? "default"})`,
+        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged: ${formatEffort(effort)}`,
         answerText: "Effort kept",
       };
     }
@@ -415,17 +418,19 @@ export function createTelegramCallbackHandler({
     // opens the effort submenu without re-selecting a model.
     const modelId = action.modelId;
     const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-    const currentEffort = session.effortOverride ?? config.llm.effort;
+    // Resolved against the model just picked, not the one being left: the chained step must show
+    // the effort that will actually apply from here on.
+    const effort = effectiveEffort(config.llm, modelId, session.effortOverride);
     session.modelOverride = modelId === defaultModel ? undefined : modelId;
     session.lastActiveAt = new Date().toISOString();
     await sessionManager.persist(sessionId);
     const label = modelPicker.labelFor(modelId);
 
     const levels = modelPicker.effortLevelsFor(modelId);
-    if (levels.length > 0) {
+    if (effort.source !== "unsupported" && levels.length > 0) {
       return {
-        text: `Model changed to ${label} — now choose reasoning effort (current: ${currentEffort ?? "default"})`,
-        buttons: modelPicker.buildEffortButtons(currentEffort, { chained: true, currentModelId: modelId }),
+        text: `Model changed to ${label} — now choose reasoning effort. Current: ${formatEffort(effort)}`,
+        buttons: modelPicker.buildEffortButtons(effort, { chained: true, currentModelId: modelId }),
         answerText: "Model updated",
       };
     }
