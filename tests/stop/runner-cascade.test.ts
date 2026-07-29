@@ -29,10 +29,15 @@ test("runner: aborting the shared signal stops a running sub-agent (AbortedError
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
 
   // The sub-agent's LLM call hangs until the shared signal aborts.
-  const fetchMock = mockFetch((_url, init) => new Promise((_resolve, reject) => {
-    const sig = (init as RequestInit | undefined)?.signal;
-    sig?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
-  }) as never);
+  let inFlight!: () => void;
+  const subAgentRunning = new Promise<void>((resolve) => { inFlight = resolve; });
+  const fetchMock = mockFetch((_url, init) => {
+    inFlight();
+    return new Promise((_resolve, reject) => {
+      const sig = (init as RequestInit | undefined)?.signal;
+      sig?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }) as never;
+  });
 
   let abortedId: string | undefined;
   const onAbort = (p: { id: string }) => { abortedId = p.id; };
@@ -41,7 +46,10 @@ test("runner: aborting the shared signal stops a running sub-agent (AbortedError
   const c = new AbortController();
   try {
     const p = runner.spawn("researcher", "research", "run", "dig", undefined, parentMessage(), new Set(), (n) => `subagent/${n}`, c.signal);
-    setTimeout(() => c.abort(), 30);
+    // A fixed delay could fire before the sub-agent reached its LLM call, and then no
+    // subagent:aborted would ever be emitted. Wait for the call instead.
+    await subAgentRunning;
+    c.abort();
     await assert.rejects(() => p, AbortedError);
     assert.ok(abortedId, "subagent:aborted emitted");
   } finally {

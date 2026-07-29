@@ -58,11 +58,18 @@ test("bridge: already-aborted signal stops before the first LLM call and emits a
 
 test("bridge: abort mid-tool seals dangling tool_calls and never swallows the abort", async () => {
   const registry = new ToolRegistry();
+  // Sealing only happens once the assistant tool_call message is in the session, so the abort has
+  // to land while the tool runs. A fixed delay made that a race: on a loaded machine it could fire
+  // during the LLM call instead, leaving nothing to seal. The tool signals when it truly starts.
+  let toolStarted!: () => void;
+  const started = new Promise<void>((resolve) => { toolStarted = resolve; });
   registry.register({
     name: "slow",
     description: "slow tool",
     parameters: {},
     async execute() {
+      toolStarted();
+      // Long enough that the abort below is observed before this resolves, whatever the load.
       await new Promise((r) => setTimeout(r, 200));
       return { success: true, output: "done" };
     },
@@ -74,7 +81,8 @@ test("bridge: abort mid-tool seals dangling tool_calls and never swallows the ab
   const session = createSession();
   try {
     const p = bridge.handleMessage(createMessage(), session, c.signal);
-    setTimeout(() => c.abort(), 40);
+    await started;
+    c.abort();
     await assert.rejects(() => p, AbortedError);
 
     // Assistant tool_call is present and sealed with a synthetic tool result (no orphan).

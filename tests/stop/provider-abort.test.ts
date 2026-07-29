@@ -30,8 +30,11 @@ test("chatCompletion: already-aborted signal throws AbortedError before any fetc
 
 test("chatCompletion: abort during request throws AbortedError and does NOT retry", async () => {
   let calls = 0;
+  let inFlight!: () => void;
+  const requestSent = new Promise<void>((resolve) => { inFlight = resolve; });
   const fetchMock = mockFetch((_url, init) => {
     calls++;
+    inFlight();
     return new Promise((_resolve, reject) => {
       const sig = (init as RequestInit | undefined)?.signal;
       sig?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
@@ -40,7 +43,10 @@ test("chatCompletion: abort during request throws AbortedError and does NOT retr
   const c = new AbortController();
   try {
     const p = chatCompletion(config, messages, undefined, c.signal);
-    setTimeout(() => c.abort(), 20);
+    // Aborting on a fixed delay could fire before the request left, and `calls === 1` would then be
+    // asserted against a call that never happened. Wait for the request instead.
+    await requestSent;
+    c.abort();
     await assert.rejects(() => p, AbortedError);
     assert.equal(calls, 1); // no retry on user abort
   } finally {

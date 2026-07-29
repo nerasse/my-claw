@@ -13,10 +13,16 @@ function createMessage(userId: string): UnifiedMessage {
 test("router.stop aborts the in-flight run; route resolves to undefined (no delivery)", async () => {
   runRegistry.clear();
   const sessionManager = new SessionManager();
+  // route() registers the run before the handler attaches its abort listener, so a stop() fired on a
+  // fixed delay could abort in that gap: the listener would then never run and route() would hang.
+  let listening!: () => void;
+  const handlerListening = new Promise<void>((resolve) => { listening = resolve; });
   const router = new MessageRouter(sessionManager, {
     async handleMessage(_m: UnifiedMessage, _s: unknown, signal?: AbortSignal) {
       await new Promise<void>((_resolve, reject) => {
+        if (signal?.aborted) { reject(new AbortedError()); return; }
         signal?.addEventListener("abort", () => reject(new AbortedError()));
+        listening();
       });
       return "unreachable";
     },
@@ -26,7 +32,7 @@ test("router.stop aborts the in-flight run; route resolves to undefined (no deli
 
   const sessionId = "telegram/dm/stop-user";
   const p = router.route(createMessage("stop-user"));
-  await new Promise((r) => setTimeout(r, 20));
+  await handlerListening;
 
   assert.equal(router.stop(sessionId), true);
   const res = await p;
@@ -52,11 +58,18 @@ test("router.stop targets only the requested session", async () => {
   runRegistry.clear();
   const sessionManager = new SessionManager();
   const finished: string[] = [];
+  // Both handlers must have their abort listener attached before stopping A, otherwise the stop
+  // lands in the registration gap and A would run to completion instead of aborting.
+  let listening!: () => void;
+  let pending = 2;
+  const bothListening = new Promise<void>((resolve) => { listening = () => { if (--pending === 0) resolve(); }; });
   const router = new MessageRouter(sessionManager, {
     async handleMessage(m: UnifiedMessage, _s: unknown, signal?: AbortSignal) {
       await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) { reject(new AbortedError()); return; }
         const t = setTimeout(() => { finished.push(m.userId); resolve(); }, 100);
         signal?.addEventListener("abort", () => { clearTimeout(t); reject(new AbortedError()); });
+        listening();
       });
       return "ok";
     },
@@ -66,7 +79,7 @@ test("router.stop targets only the requested session", async () => {
 
   const pA = router.route(createMessage("user-a"));
   const pB = router.route(createMessage("user-b"));
-  await new Promise((r) => setTimeout(r, 20));
+  await bothListening;
 
   assert.equal(router.stop("telegram/dm/user-a"), true);
   const [rA, rB] = await Promise.all([pA, pB]);
