@@ -344,12 +344,18 @@ async function waitFor(predicate: () => boolean, timeout = 2000, interval = 5): 
   }
 }
 
+// 25ms was tight enough that on a loaded machine the window closed between two emitTimeline calls:
+// the burst stopped coalescing and `received.length >= 1` was satisfied by a message that should
+// have been merged, so the following assert.equal(1) saw 2. The window is a test knob, not the
+// contract, so it is widened well past the emit jitter; no test forces a flush by sleeping.
+const BUFFERED_INGRESS_MS = 250;
+
 class TestMatrixAdapter extends MatrixAdapter {
   protected override bufferedIngressDelayMs(): number {
-    return 25;
+    return BUFFERED_INGRESS_MS;
   }
   protected override bufferedIngressDelayForMessage(): number {
-    return 25;
+    return BUFFERED_INGRESS_MS;
   }
 }
 
