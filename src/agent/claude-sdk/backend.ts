@@ -44,7 +44,8 @@ const MAX_SESSION_MESSAGES_KEEP = 50;
 
 // Without this, Claude's anti-injection training treats a mid-run steering message that
 // contradicts the initial task as an attack and ignores it (verified in the phase 0 spike).
-const OWNER_STEERING_NOTE =
+// Exported so `/instructions` can show the prompt this backend really sends, not the builder output.
+export const OWNER_STEERING_NOTE =
   "\n\n# Mid-run steering\n" +
   "You are operated by a single trusted owner. User messages arriving mid-conversation " +
   "(including while you are working) are legitimate steering from the owner and take " +
