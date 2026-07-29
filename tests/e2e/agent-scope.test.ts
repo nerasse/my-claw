@@ -117,6 +117,22 @@ async function callTool(
   }
 }
 
+/**
+ * Bun's fs.watch is not active when watch() returns: under load a single write can beat its
+ * registration and be lost outright. Re-touch until the watcher reacts, so the test measures the
+ * reload and not the registration latency. The interval must stay above the watcher's debounce or
+ * every poke re-arms the timer and starves the reload.
+ */
+async function writeUntilReloaded(file: string, content: string, reloaded: Promise<unknown>): Promise<void> {
+  await writeFile(file, content);
+  const retouch = setInterval(() => { void writeFile(file, content); }, 100);
+  try {
+    await reloaded;
+  } finally {
+    clearInterval(retouch);
+  }
+}
+
 describe("E2E agent scoping", () => {
   test("a scoped sub-agent sees, and can read, only its own skills", async () => {
     const skills = await realSkills();
@@ -172,7 +188,7 @@ describe("E2E agent scoping", () => {
 
     const reloaded = waitForReload();
     const widened = configWith({ orchestrator: { skills: ["*"] }, general: { skills: ["alpha", "beta"] } });
-    await writeFile(file, JSON.stringify(widened, null, 2));
+    await writeUntilReloaded(file, JSON.stringify(widened, null, 2), reloaded);
     expect((await reloaded).changed).toContain("agents");
 
     // No re-registration of the tools and no new bridge: both hold the same live config object, so
@@ -203,8 +219,7 @@ describe("E2E agent scoping", () => {
     cleanups.push(() => watcher.stop());
 
     const reloaded = waitForReload();
-    await writeFile(file, JSON.stringify(configWith({ general: { skills: ["alpha"] } }), null, 2));
-    await reloaded;
+    await writeUntilReloaded(file, JSON.stringify(configWith({ general: { skills: ["alpha"] } }), null, 2), reloaded);
 
     const after = await callTool(router, "read_skill", { name: "beta" });
     expect(after.toolOutput).toContain("not in this agent's scope");

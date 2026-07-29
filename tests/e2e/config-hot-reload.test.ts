@@ -213,6 +213,11 @@ describe("E2E config hot-reload", () => {
 
     await writeFile(file, JSON.stringify(initialConfig(), null, 2));
     const config = parseConfig(await Bun.file(file).text());
+
+    // The broken content is written before the watcher exists, so fs.watch never sees it: the
+    // explicit reloadNow below is the only attempt, and the archive count is therefore exact.
+    // Watching first would let the debounced auto-reload archive it too and yield 2 files.
+    await writeFile(file, "{ broken beyond repair");
     const watcher = startConfigWatcher(config, {}, {
       path: file,
       read: async () => parseConfig(await Bun.file(file).text()),
@@ -220,9 +225,6 @@ describe("E2E config hot-reload", () => {
     });
     cleanups.push(() => watcher.stop());
 
-    await writeFile(file, "{ broken beyond repair");
-    // Driven directly: the fs.watch path is covered above, and waiting on a watcher event here
-    // would only add a polling loop to a case that has nothing timing-dependent about it.
     const result = await watcher.reloadNow();
     expect(result.changed).toEqual([]);
 
@@ -253,8 +255,10 @@ describe("E2E config hot-reload", () => {
     const bad = initialConfig();
     bad.llm.defaultModel = "model-quarantined";
     const raw = JSON.stringify(bad, null, 2);
-    await writeFile(file, raw);
+    // Quarantine first: writing the file wakes the watcher, whose own debounced reload would race
+    // setQuarantine's disk write and apply the bad config before the marker exists.
     await setQuarantine(contentSha(raw), "aucun canal actif");
+    await writeFile(file, raw);
 
     // It parses, so nothing but the marker stands between it and the live config; re-applying it
     // would undo the revert that just brought the channel back.

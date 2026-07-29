@@ -78,6 +78,22 @@ async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ teleg
 const text = (r: OutgoingMessage | string | undefined): string =>
   typeof r === "string" ? r : typeof r === "object" && r ? r.text : "";
 
+/**
+ * Bun's fs.watch is not active when watch() returns: under load a single write can beat its
+ * registration and be lost outright. Re-touch until the watcher reacts, so the test measures the
+ * reload and not the registration latency. The interval must stay above the watcher's debounce or
+ * every poke re-arms the timer and starves the reload.
+ */
+async function writeUntilReloaded(file: string, content: string, reloaded: Promise<unknown>): Promise<void> {
+  await writeFile(file, content);
+  const retouch = setInterval(() => { void writeFile(file, content); }, 100);
+  try {
+    await reloaded;
+  } finally {
+    clearInterval(retouch);
+  }
+}
+
 describe("E2E introspection commands", () => {
   test("all four answer on both channels, with the same body", async () => {
     const h = await handlers(baseConfig({ general: { skills: ["alpha"] } }));
@@ -160,8 +176,7 @@ describe("E2E introspection commands", () => {
       hooks.on("config:reloaded", handler);
       cleanups.push(() => hooks.off("config:reloaded", handler));
     });
-    await writeFile(file, JSON.stringify(baseConfig({ general: { skills: ["alpha", "beta"] } }), null, 2));
-    await reloaded;
+    await writeUntilReloaded(file, JSON.stringify(baseConfig({ general: { skills: ["alpha", "beta"] } }), null, 2), reloaded);
 
     // The handler holds the same live config object, so no re-registration should be needed.
     expect(text(await h.telegram("c1", "u1", "dm", "skills", "general"))).toContain("- beta:");
