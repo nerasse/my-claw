@@ -348,7 +348,6 @@ test("skill index appears in system prompt via buildSystemPrompt", async () => {
   const prompt = await buildSystemPrompt({
     platform: "telegram",
     model: "test-model",
-    channelId: "c1",
     sessionId: "test-session",
     tools: [],
     skills: registry.list(),
@@ -367,7 +366,6 @@ test("empty skills list omits skills section from system prompt", async () => {
   const prompt = await buildSystemPrompt({
     platform: "telegram",
     model: "test-model",
-    channelId: "c1",
     sessionId: "test-session",
     tools: [],
     skills: [],

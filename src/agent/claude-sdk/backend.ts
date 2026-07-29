@@ -356,7 +356,6 @@ export class ClaudeSdkBackend implements AgentBackend {
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
-        channelId: message.chatId,
         sessionId: session.id,
         tools,
         skills: allSkills,

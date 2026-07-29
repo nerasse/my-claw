@@ -228,7 +228,6 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
   let prompt = await buildSystemPrompt({
     platform,
     model,
-    channelId: "instructions",
     sessionId: "instructions",
     tools,
     skills,

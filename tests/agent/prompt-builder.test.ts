@@ -11,7 +11,6 @@ function makeCtx(overrides: Partial<PromptContext> = {}): PromptContext {
   return {
     platform: "unknown",
     model: "test-model-1",
-    channelId: "ch-1",
     sessionId: "sess-1",
     tools: [],
     skills: [],

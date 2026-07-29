@@ -7,7 +7,6 @@ import { scanForInjection } from "./anti-injection.ts";
 export interface PromptContext {
   platform: string;
   model: string;
-  channelId: string;
   sessionId: string;
   tools: Tool[];
   skills: SkillInfo[];
