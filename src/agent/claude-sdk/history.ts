@@ -1,5 +1,5 @@
 import { estimateTokens } from "../../llm/tokens.ts";
-import { scanForInjection } from "../prompt/anti-injection.ts";
+import { scanForeign } from "../prompt/anti-injection.ts";
 import { dropLeadingOrphanToolMessages, type SessionMessage } from "../../sessions/store.ts";
 
 export interface RenderedHistory {
@@ -48,9 +48,9 @@ function renderMessage(message: SessionMessage, toolNames: Map<string, string>):
   const content = message.content.trim();
   if (!content) return null;
   const name = toolNames.get(message.toolCallId);
-  // Scanned per entry: scanForInjection replaces the whole string it is given, so scanning the
+  // Scanned per entry: scanForeign replaces the whole string it is given, so scanning the
   // assembled block would let one flagged result erase the entire history.
-  const safe = scanForInjection(content, name ? `tool-result:${name}` : "tool-result");
+  const safe = scanForeign(content, name ? `tool-result:${name}` : "tool-result");
   return `[tool result${name ? `: ${name}` : ""}]\n${safe}`;
 }
 

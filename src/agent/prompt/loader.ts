@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { CORE_PROMPT } from "./core-prompts.ts";
-import { scanForInjection } from "./anti-injection.ts";
+import { scanForeign } from "./anti-injection.ts";
 import { snapshot, isTracked } from "../../core/config-store.ts";
 import { log } from "../../utils/logger.ts";
 
@@ -84,5 +84,5 @@ export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> 
 export async function loadCorePrompt(): Promise<string> {
   const content = (await loadPromptFile("CORE.md")).trim();
   if (!content) return CORE_PROMPT;
-  return scanForInjection(content, "CORE.md");
+  return scanForeign(content, "CORE.md");
 }

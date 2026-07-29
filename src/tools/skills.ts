@@ -6,7 +6,7 @@ import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { reloadSkills } from "../skills/reload.ts";
 import { parsesAsSkill } from "../skills/loader.ts";
-import { scanForInjection } from "../agent/prompt/anti-injection.ts";
+import { scanForeign } from "../agent/prompt/anti-injection.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { snapshot } from "../core/config-store.ts";
 import { resolveAgentSkills, scopeAllows, type AgentScope, type AgentToolType, type MyClawConfig } from "../core/config.ts";
@@ -106,7 +106,7 @@ export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfi
 
       hooks.emit("skill:read", { name });
       const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
-      return { success: true, output: scanForInjection(resolved, `skill:${name}`) };
+      return { success: true, output: scanForeign(resolved, `skill:${name}`) };
     },
   };
 }

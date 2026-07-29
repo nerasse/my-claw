@@ -1,6 +1,6 @@
 import { statSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { scanForInjection } from "./anti-injection.ts";
+import { scanForeign } from "./anti-injection.ts";
 
 // Tools whose `path` argument is a deterministic signal for the directory being touched.
 const PATH_TOOLS = new Set(["read", "write", "ls", "grep", "find"]);
@@ -154,7 +154,7 @@ export class NestedAgentsCollector {
         break;
       }
       this.bytesUsed += size;
-      blocks.push(`--- ${AGENTS_FILE} (${file}) ---\n${scanForInjection(content, file)}`);
+      blocks.push(`--- ${AGENTS_FILE} (${file}) ---\n${scanForeign(content, file)}`);
     }
 
     if (blocks.length === 0) return "";

@@ -33,7 +33,7 @@ import {
   createBrowserPageState,
 } from "../../tools/browser/index.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
-import { scanForInjection } from "../prompt/anti-injection.ts";
+import { scanForeign } from "../prompt/anti-injection.ts";
 
 export interface BrowserSubagentResult {
   success: boolean;
@@ -107,7 +107,7 @@ async function buildBrowserSystemPrompt(extraLayers: string[] = []): Promise<str
   for (const name of ["SOUL.md", "USER.md"] as const) {
     const content = files[name];
     if (content) {
-      const safe = scanForInjection(content, name);
+      const safe = scanForeign(content, name);
       if (safe) layers.push(safe);
     }
   }

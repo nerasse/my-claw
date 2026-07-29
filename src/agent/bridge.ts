@@ -2,6 +2,7 @@ import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/con
 import {
   resolveMaxIterations,
   resolveInjectionBudgetBonus,
+  resolveScanPolicy,
   nestedAgentsEnabled,
   resolveAgentSkills,
   resolveAgentMcp,
@@ -34,7 +35,6 @@ import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
-import { scanForInjection } from "./prompt/anti-injection.ts";
 import { NestedAgentsCollector } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
@@ -272,8 +272,7 @@ export class AgentBridge implements AgentBackend {
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
 
-      const rawUserContent = this.preprocessor.buildUserContent(message);
-      const userContent = scanForInjection(rawUserContent, "user-message");
+      const userContent = this.preprocessor.buildUserContent(message, resolveScanPolicy(this.config));
       const now = new Date().toISOString();
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
       session.messages.push({ role: "user", content: transformedContent, timestamp: now });
@@ -638,8 +637,7 @@ export class AgentBridge implements AgentBackend {
   ): Promise<void> {
     if (onTurnSwitch) await onTurnSwitch(injected);
 
-    const rawUserContent = this.preprocessor.buildUserContent(injected);
-    const userContent = scanForInjection(rawUserContent, "user-message");
+    const userContent = this.preprocessor.buildUserContent(injected, resolveScanPolicy(this.config));
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformedContent, timestamp: new Date().toISOString() });
 

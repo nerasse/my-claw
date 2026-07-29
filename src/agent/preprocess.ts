@@ -7,6 +7,8 @@ import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { scanSegment, type ScanSanction } from "./prompt/anti-injection.ts";
+import type { ScanPolicy } from "../core/config.ts";
 
 /** Per-run scratch state, keyed by message id. A single MessagePreprocessor instance is shared
  *  by the one AgentBridge that serves telegram + matrix + cron, so concurrent runs (different
@@ -227,23 +229,32 @@ export class MessagePreprocessor {
     message.attachments = message.attachments.filter((a) => a.type !== "video");
   }
 
-  buildUserContent(message: UnifiedMessage): string {
+  /**
+   * Each segment is scanned on its own so a verdict on quoted or contextual text cannot destroy
+   * the sender's actual question -- the single-blob scan this replaces let one stray zero-width
+   * space anywhere blank the whole turn. Segment headers stay outside the scanned text so a
+   * blocked segment keeps its shape instead of collapsing into the marker.
+   * See docs/anti-injection.md.
+   */
+  buildUserContent(message: UnifiedMessage, scan: ScanPolicy): string {
+    const scanned = (text: string, label: string, sanction: ScanSanction): string =>
+      scanSegment(text, label, scan.enabled ? sanction : "off").content;
     const parts: string[] = [];
 
     if (message.replyToText) {
       const sender = message.replyToSender ? ` from ${message.replyToSender}` : "";
-      parts.push(`[Reply${sender}]\n${message.replyToText}`);
+      parts.push(`[Reply${sender}]\n${scanned(message.replyToText, "reply", "block")}`);
     }
 
     if (message.threadRootText) {
-      parts.push(`[Thread Root]\n${message.threadRootText}`);
+      parts.push(`[Thread Root]\n${scanned(message.threadRootText, "thread-root", "block")}`);
     }
 
     if (message.roomContext) {
-      parts.push(message.roomContext);
+      parts.push(scanned(message.roomContext, "room-context", "block"));
     }
 
-    let content = message.text;
+    let content = scanned(message.text, "user-text", scan.ownerSanction);
     const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
     if (visibleAttachments.length > 0) {
       const lines = visibleAttachments.map((a) => {
@@ -257,7 +268,8 @@ export class MessagePreprocessor {
         ].filter(Boolean);
         return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
       });
-      content += `\n\n[Attachments]\n${lines.join("\n")}`;
+      // Paths and filenames come from the sender, not from my-claw.
+      content += `\n\n[Attachments]\n${scanned(lines.join("\n"), "attachments", "block")}`;
     }
 
     parts.push(content);

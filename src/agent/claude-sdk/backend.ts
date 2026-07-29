@@ -7,6 +7,7 @@ import {
   resolveAgentMcp,
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
+  resolveScanPolicy,
 } from "../../core/config.ts";
 import { NestedAgentsCollector } from "../prompt/nested-agents.ts";
 import { join } from "node:path";
@@ -27,7 +28,6 @@ import { errorLogData } from "../../utils/errors.ts";
 import { ToolApprovalManager } from "../approvals.ts";
 import type { VoiceManager, SttPipeline } from "../../voice/index.ts";
 import { MessagePreprocessor } from "../preprocess.ts";
-import { scanForInjection } from "../prompt/anti-injection.ts";
 import { renderPriorConversation } from "./history.ts";
 import { estimateTokens, DEFAULT_CONTEXT_TOKENS } from "../../llm/tokens.ts";
 import { recall } from "../../memory/index.ts";
@@ -729,8 +729,7 @@ export class ClaudeSdkBackend implements AgentBackend {
   }
 
   private async buildUserTurn(message: UnifiedMessage, session: SessionData): Promise<string> {
-    const rawContent = this.preprocessor.buildUserContent(message);
-    const scanned = scanForInjection(rawContent, "user-message");
+    const scanned = this.preprocessor.buildUserContent(message, resolveScanPolicy(this.config));
     const transformed = (await hooks.transform("transform:user:content", { content: scanned, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformed, timestamp: new Date().toISOString() });
     return transformed;

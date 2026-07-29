@@ -1,6 +1,6 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import { str, strOpt, bool } from "../tools/types.ts";
-import { scanForInjection } from "../agent/prompt/anti-injection.ts";
+import { scanForeign } from "../agent/prompt/anti-injection.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { createJob, loadJobs, saveJobs, updateJob, removeJob, parseDeliver, computeNextRun } from "../cron/store.ts";
 import type { CronOrigin } from "../cron/types.ts";
@@ -45,7 +45,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           const schedule = str(args, "schedule");
           if (!schedule) return { success: false, output: "Missing 'schedule' for create." };
 
-          const scanned = scanForInjection(prompt, "cron-prompt");
+          const scanned = scanForeign(prompt, "cron-prompt");
           if (scanned !== prompt) {
             return { success: false, output: `Prompt rejected: ${scanned}` };
           }
@@ -89,7 +89,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
 
           const prompt = strOpt(args, "prompt");
           if (prompt) {
-            const scanned = scanForInjection(prompt, "cron-prompt");
+            const scanned = scanForeign(prompt, "cron-prompt");
             if (scanned !== prompt) {
               return { success: false, output: `Prompt rejected: ${scanned}` };
             }
