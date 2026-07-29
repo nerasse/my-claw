@@ -26,6 +26,7 @@ import { pruneOldToolResults } from "./context-pruning.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
+import type { Tool } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
@@ -258,7 +259,6 @@ export class AgentBridge implements AgentBackend {
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
-        channelId: message.chatId,
         sessionId: session.id,
         tools,
         skills: allSkills,
@@ -505,6 +505,7 @@ export class AgentBridge implements AgentBackend {
             toolCallId: tc.id,
             signal,
             agentType: agentToolType,
+            available: tools,
           });
 
           const durationMs = Date.now() - toolStartedAt;
@@ -790,13 +791,23 @@ export class AgentBridge implements AgentBackend {
     // Tool-axis class of the calling agent, so a tool can resolve its own scope. Derived once in
     // handle() rather than recomputed here, which would drift from the set the agent was offered.
     agentType: AgentToolType;
+    // The exact tool set offered to the model this run. Passed rather than recomputed so the set
+    // that can be executed is the same object the prompt and the API payload were built from.
+    available: Tool[];
   }): Promise<{ content: string; success: boolean }> {
     if (params.signal?.aborted) throw new AbortedError();
-    const tool = this.toolRegistry.get(params.name);
+    // Resolved against the set this agent was offered, never the whole registry. A global lookup
+    // executed anything the model named, which defeated three documented controls at once: the
+    // sub-agent exclusion lists (a general sub-agent could spawn, write skills or touch memory), the
+    // read-only allowlist of the research agent, and the `tools.disabled` denylist. The model only
+    // ever sees this set, so a name outside it is a hallucination, not a request to honour.
+    const tool = params.available.find((t) => t.name === params.name);
     if (!tool) {
       return {
         success: false,
-        content: `Error: unknown tool "${params.name}"`,
+        content: this.toolRegistry.get(params.name)
+          ? `Error: tool "${params.name}" is not available to this agent`
+          : `Error: unknown tool "${params.name}"`,
       };
     }
 

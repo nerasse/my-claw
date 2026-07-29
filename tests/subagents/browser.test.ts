@@ -104,6 +104,48 @@ describe("BrowserSubagent", () => {
     }
   });
 
+  test("a tools.disabled tool cannot be run by naming it", async () => {
+    // The lookup used to hit the whole private registry, so a hallucinated name executed a tool the
+    // denylist had already removed from the set the model was offered.
+    const gated = new BrowserSubagent(
+      makeConfig({ tools: { disabled: ["browser_navigate"] } }) as never,
+      "http://127.0.0.1:9222",
+    );
+    let offered: string[] = [];
+    let toolResult = "";
+    let call = 0;
+    const fetchMock = mockLlm(async (_input, init) => {
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as {
+        tools?: Array<{ function: { name: string } }>;
+        messages?: Array<{ role: string; content?: unknown }>;
+      };
+      if (call === 0) offered = (body.tools ?? []).map((t) => t.function.name);
+      // The refusal (or the navigation output) comes back as the tool message of the next turn.
+      // Asserting on the turn count alone would pass either way, since the loop continues regardless.
+      if (call === 1) {
+        const last = (body.messages ?? []).filter((m) => m.role === "tool").at(-1);
+        toolResult = typeof last?.content === "string" ? last.content : "";
+      }
+      call++;
+      const tc = call === 1
+        ? { id: "tc1", function: { name: "browser_navigate", arguments: '{"url":"https://example.com"}' } }
+        : { id: "tc2", function: { name: "browser_done", arguments: '{"summary":"done"}' } };
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "", tool_calls: [tc] } }] }),
+        { status: 200 },
+      ) as never;
+    });
+
+    try {
+      const result = await gated.run("test task", "https://example.com");
+      assert.ok(!offered.includes("browser_navigate"), "the denylisted tool must not be offered");
+      assert.match(toolResult, /not found/, "the denylisted tool must be refused, not executed");
+      assert.ok(result.summary.length > 0);
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
   test("allowEval and allowCdp register the low-level tools and document them", async () => {
     const gated = new BrowserSubagent(
       makeConfig({ browser: { allowEval: true, allowCdp: true } }) as never,

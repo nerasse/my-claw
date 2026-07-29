@@ -227,7 +227,8 @@ export class BrowserSubagent {
         };
       }
 
-      const openaiTools = toOpenAiToolDefinitions(this.toolRegistry.getForAgent("general", this.config.tools?.disabled));
+      const available = this.toolRegistry.getForAgent("general", this.config.tools?.disabled);
+      const openaiTools = toOpenAiToolDefinitions(available);
 
       let response: LlmResponse;
       const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
@@ -276,7 +277,9 @@ export class BrowserSubagent {
             attachments: allAttachments,
           };
         }
-        const tool = this.toolRegistry.get(tc.name);
+        // Same set the model was offered, not the whole registry: a global lookup let a hallucinated
+        // name run a tool that `tools.disabled` had removed.
+        const tool = available.find((t) => t.name === tc.name);
         if (!tool) {
           toolResults.push({ tc, output: `Tool ${tc.name} not found.` });
           continue;

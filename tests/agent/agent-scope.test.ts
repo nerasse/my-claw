@@ -81,13 +81,16 @@ interface HomeRun {
 async function runHome(
   config: MyClawConfig,
   skills: SkillRegistry,
-  opts: { depth?: number; agentKind?: "general" | "research"; platform?: UnifiedMessage["platform"]; dynamic?: Tool[] } = {},
+  opts: { depth?: number; agentKind?: "general" | "research"; platform?: UnifiedMessage["platform"]; dynamic?: Tool[]; probeName?: string } = {},
 ): Promise<HomeRun> {
   runRegistry.clear();
   const registry = new ToolRegistry();
   let toolArgs: Record<string, unknown> | undefined;
+  // The research agent only ever receives READ_ONLY_TOOLS, so a probe named anything else is not in
+  // its set and is refused before it runs. Callers testing that agent name the probe accordingly.
+  const probeName = opts.probeName ?? "probe";
   registry.register({
-    name: "probe",
+    name: probeName,
     description: "probe",
     parameters: { type: "object", properties: {} },
     async execute(args) { toolArgs = args; return { success: true, output: "ok" }; },
@@ -107,7 +110,7 @@ async function runHome(
     bodies.push(JSON.parse(String(init?.body ?? "{}")));
     call++;
     if (call === 1) {
-      return llmResponse({ content: "", tool_calls: [{ id: "tc1", function: { name: "probe", arguments: "{}" } }] });
+      return llmResponse({ content: "", tool_calls: [{ id: "tc1", function: { name: probeName, arguments: "{}" } }] });
     }
     return llmResponse({ content: "done" });
   });
@@ -121,6 +124,45 @@ async function runHome(
       toolNames: (first?.tools ?? []).map((t) => t.function.name),
       toolArgs,
     };
+  } finally {
+    mock.restore(); end(); runRegistry.clear();
+  }
+}
+
+/** Same run, but returns the tool-role message the second LLM call saw (the refusal text). */
+async function runHomeCapturingToolResult(
+  config: MyClawConfig,
+  skills: SkillRegistry,
+  opts: { depth?: number; agentKind?: "general" | "research"; probeName?: string; callName?: string; dynamic?: Tool[] } = {},
+): Promise<string> {
+  runRegistry.clear();
+  const registry = new ToolRegistry();
+  registry.register({
+    name: opts.probeName ?? "probe",
+    description: "probe",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ success: true, output: "ran" }),
+  });
+  if (opts.dynamic) registry.setDynamicProvider(() => opts.dynamic ?? []);
+  const bridge = new AgentBridge(config, registry, skills, undefined, undefined, opts.depth ?? 0, undefined, opts.agentKind);
+  const sess = session(`telegram/dm/deny-${Math.random()}`);
+  const { signal, end } = runRegistry.startRoot(sess.id);
+
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  let call = 0;
+  const mock = mockFetch(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    call++;
+    if (call === 1) {
+      const name = opts.callName ?? opts.probeName ?? "probe";
+      return llmResponse({ content: "", tool_calls: [{ id: "tc1", function: { name, arguments: "{}" } }] });
+    }
+    return llmResponse({ content: "done" });
+  });
+  try {
+    await bridge.handleMessage(msg("go"), sess, signal);
+    const toolMsg = (bodies[1]?.messages ?? []).filter((m) => m.role === "tool").at(-1);
+    return typeof toolMsg?.content === "string" ? toolMsg.content : "";
   } finally {
     mock.restore(); end(); runRegistry.clear();
   }
@@ -183,7 +225,7 @@ test("scope: the home loop tells a tool which agent class called it", async () =
   const { skills } = fixtures();
   assert.equal((await runHome(baseConfig(), skills, { depth: 0 })).toolArgs?.["__agentType"], "main");
   assert.equal((await runHome(baseConfig(), skills, { depth: 1, agentKind: "general" })).toolArgs?.["__agentType"], "general");
-  assert.equal((await runHome(baseConfig(), skills, { depth: 1, agentKind: "research" })).toolArgs?.["__agentType"], "research");
+  assert.equal((await runHome(baseConfig(), skills, { depth: 1, agentKind: "research", probeName: "read" })).toolArgs?.["__agentType"], "research");
   assert.equal((await runHome(baseConfig(), skills, { platform: "cron" })).toolArgs?.["__agentType"], "cron");
 });
 
@@ -274,4 +316,42 @@ test("scope: the home loop keeps the prompt tool layer and the API payload in st
   assert.match(toolsLayer, /- mcp__srv_a__ping:/);
   assert.doesNotMatch(toolsLayer, /mcp__srv_b__ping/);
   assert.deepEqual(run.toolNames.filter((n) => n.startsWith("mcp__")), ["mcp__srv_a__ping"]);
+});
+
+// --- The offered set is the executable set ---
+
+test("enforcement: a tool the agent was never offered is refused, not executed", async () => {
+  // The lookup used to hit the whole registry, so a hallucinated name ran anyway. That defeated the
+  // sub-agent exclusion lists, the read-only allowlist of the research agent, and tools.disabled.
+  const { skills } = fixtures();
+  const run = await runHome(baseConfig(), skills, { depth: 1, agentKind: "research", probeName: "probe" });
+  assert.equal(run.toolArgs, undefined, "the probe must not have run");
+  assert.ok(!run.toolNames.includes("probe"), "and it must not have been offered either");
+});
+
+test("enforcement: the refusal says whether the tool exists at all", async () => {
+  const { skills } = fixtures();
+  const denied = await runHomeCapturingToolResult(baseConfig(), skills, { depth: 1, agentKind: "research", probeName: "probe" });
+  assert.match(denied, /not available to this agent/);
+
+  const unknown = await runHomeCapturingToolResult(baseConfig(), skills, { depth: 0, callName: "no_such_tool" });
+  assert.match(unknown, /unknown tool/);
+});
+
+test("enforcement: tools.disabled can no longer be bypassed by naming the tool", async () => {
+  const { skills } = fixtures();
+  const config = { ...baseConfig(), tools: { disabled: ["probe"] } };
+  const run = await runHome(config, skills, { depth: 0 });
+  assert.ok(!run.toolNames.includes("probe"));
+  assert.equal(run.toolArgs, undefined, "a denylisted tool must not run even when called by name");
+});
+
+test("enforcement: an out-of-scope MCP tool cannot be called by name", async () => {
+  const { skills, mcp } = fixtures();
+  const out = await runHomeCapturingToolResult(
+    baseConfig({ orchestrator: { mcp: ["srv_a"] } }),
+    skills,
+    { depth: 0, dynamic: mcp, callName: "mcp__srv_b__ping" },
+  );
+  assert.match(out, /not available to this agent/);
 });
