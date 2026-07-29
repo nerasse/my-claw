@@ -9,6 +9,22 @@ interface Entry {
   conn: McpConnection;
 }
 
+/**
+ * Per-server view for `/mcp`. Built from the *declared* set, not from the live connections: a
+ * server that failed to connect used to be logged and dropped, so listing only what is connected
+ * hid exactly the servers worth reporting.
+ */
+export interface McpServerStatus {
+  name: string;
+  transport: McpServerConfig["transport"];
+  state: "connected" | "disabled" | "failed";
+  toolCount: number;
+  /** Present only for `failed`, carried over from the caught connect error. */
+  lastError?: string;
+  /** ISO timestamp of the last connect attempt, absent for a server never attempted (disabled). */
+  lastAttemptAt?: string;
+}
+
 function isEnabled(config: McpServerConfig): boolean {
   return config.enabled !== false;
 }
@@ -36,8 +52,14 @@ function configKey(config: McpServerConfig): string {
  */
 export class McpManager {
   private entries = new Map<string, Entry>();
+  // Survives a failed connect so the reason is still reportable. Keyed by server name and cleared
+  // when that server later connects.
+  private failures = new Map<string, { error: string; at: string }>();
+  private declared: Record<string, McpServerConfig> = {};
+  private lastAttemptAt = new Map<string, string>();
 
   async sync(mcp: Record<string, McpServerConfig> | undefined): Promise<void> {
+    this.declared = { ...(mcp ?? {}) };
     const desired = new Map<string, McpServerConfig>();
     for (const [name, config] of Object.entries(mcp ?? {})) {
       if (isEnabled(config)) desired.set(name, config);
@@ -58,11 +80,14 @@ export class McpManager {
       [...desired].map(async ([name, config]) => {
         if (this.entries.has(name)) return;
         const conn = new McpConnection(name, config);
+        this.lastAttemptAt.set(name, new Date().toISOString());
         try {
           await conn.connect();
           this.entries.set(name, { configKey: configKey(config), conn });
+          this.failures.delete(name);
           added.push(name);
         } catch (err) {
+          this.failures.set(name, { error: String(err), at: new Date().toISOString() });
           void log("error", "mcp server connect failed", { server: name, error: String(err) });
           await conn.close().catch(() => undefined);
         }
@@ -83,6 +108,23 @@ export class McpManager {
 
   serverNames(): string[] {
     return [...this.entries.keys()];
+  }
+
+  /** Declared servers with their live state, in config order so the output matches the file. */
+  status(): McpServerStatus[] {
+    return Object.entries(this.declared).map(([name, config]) => {
+      const entry = this.entries.get(name);
+      const failure = this.failures.get(name);
+      const lastAttemptAt = this.lastAttemptAt.get(name);
+      if (entry) {
+        return { name, transport: config.transport, state: "connected" as const, toolCount: entry.conn.getTools().length, lastAttemptAt };
+      }
+      // Disabled outranks failed: a server switched off after a failure is not a problem to report.
+      if (!isEnabled(config)) {
+        return { name, transport: config.transport, state: "disabled" as const, toolCount: 0, lastAttemptAt };
+      }
+      return { name, transport: config.transport, state: "failed" as const, toolCount: 0, lastError: failure?.error, lastAttemptAt: failure?.at ?? lastAttemptAt };
+    });
   }
 
   async stop(): Promise<void> {

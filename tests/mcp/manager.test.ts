@@ -101,3 +101,94 @@ test("a failing server does not throw and leaves the manager usable", async () =
     await mgr.stop();
   }
 });
+
+// --- Per-server status (docs/agent-scoping.md, feeds /mcp) ---
+
+test("status reports a connected server with its tool count", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ demo: stdioServer() });
+    const [demo] = mgr.status();
+    assert.equal(demo?.name, "demo");
+    assert.equal(demo?.state, "connected");
+    assert.equal(demo?.transport, "stdio");
+    assert.equal(demo?.toolCount, 2);
+    assert.equal(demo?.lastError, undefined);
+    assert.ok(demo?.lastAttemptAt);
+  } finally {
+    await mgr.stop();
+  }
+});
+
+test("status keeps a failed server visible, with the reason", async () => {
+  // The whole point: a failed connect used to be logged and dropped, so listing live connections
+  // hid exactly the servers worth reporting.
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ broken: { transport: "stdio", command: "definitely-not-a-real-binary-xyz" } });
+    assert.deepEqual(mgr.serverNames(), []);
+    const [broken] = mgr.status();
+    assert.equal(broken?.name, "broken");
+    assert.equal(broken?.state, "failed");
+    assert.equal(broken?.toolCount, 0);
+    assert.ok(broken?.lastError && broken.lastError.length > 0);
+  } finally {
+    await mgr.stop();
+  }
+});
+
+test("status reports a declared but disabled server, and disabled outranks a past failure", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ off: { transport: "stdio", command: "definitely-not-a-real-binary-xyz" } });
+    assert.equal(mgr.status()[0]?.state, "failed");
+
+    // Switching a broken server off is not a problem to keep reporting.
+    await mgr.sync({ off: { transport: "stdio", command: "definitely-not-a-real-binary-xyz", enabled: false } });
+    const [off] = mgr.status();
+    assert.equal(off?.state, "disabled");
+    assert.equal(off?.toolCount, 0);
+  } finally {
+    await mgr.stop();
+  }
+});
+
+test("status covers connected and failed side by side, in config order", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({
+      broken: { transport: "stdio", command: "definitely-not-a-real-binary-xyz" },
+      demo: stdioServer(),
+    });
+    assert.deepEqual(mgr.status().map((s) => [s.name, s.state]), [["broken", "failed"], ["demo", "connected"]]);
+  } finally {
+    await mgr.stop();
+  }
+});
+
+test("status forgets a failure once the server connects", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ demo: { transport: "stdio", command: "definitely-not-a-real-binary-xyz" } });
+    assert.equal(mgr.status()[0]?.state, "failed");
+    // Same name, new wiring: the entry is reconnected and the stale reason must not survive.
+    await mgr.sync({ demo: stdioServer() });
+    const [demo] = mgr.status();
+    assert.equal(demo?.state, "connected");
+    assert.equal(demo?.lastError, undefined);
+  } finally {
+    await mgr.stop();
+  }
+});
+
+test("status drops a server removed from config", async () => {
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ demo: stdioServer() });
+    assert.equal(mgr.status().length, 1);
+    await mgr.sync({});
+    assert.deepEqual(mgr.status(), []);
+  } finally {
+    await mgr.stop();
+  }
+});
