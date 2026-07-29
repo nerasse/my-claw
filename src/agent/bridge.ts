@@ -1,8 +1,10 @@
-import type { MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
+import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
 import {
   resolveMaxIterations,
   resolveInjectionBudgetBonus,
   nestedAgentsEnabled,
+  resolveAgentSkills,
+  resolveAgentMcp,
   resolveNestedAgentsMaxBytes,
   contextPruningEnabled,
   resolveContextPruning,
@@ -188,7 +190,7 @@ export class AgentBridge implements AgentBackend {
       : this.depth === 0
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
-    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled);
+    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
     const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
       this.config.llm,
       session.modelOverride,
@@ -250,7 +252,9 @@ export class AgentBridge implements AgentBackend {
         await this.maybeAutoCompact(session, llmConfig);
       }
 
-      const allSkills = this.skillRegistry.list();
+      // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
+      // catalog wider than the scope would advertise skills read_skill then refuses.
+      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType));
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
@@ -500,6 +504,7 @@ export class AgentBridge implements AgentBackend {
             session,
             toolCallId: tc.id,
             signal,
+            agentType: agentToolType,
           });
 
           const durationMs = Date.now() - toolStartedAt;
@@ -782,6 +787,9 @@ export class AgentBridge implements AgentBackend {
     session: SessionData;
     toolCallId: string;
     signal?: AbortSignal;
+    // Tool-axis class of the calling agent, so a tool can resolve its own scope. Derived once in
+    // handle() rather than recomputed here, which would drift from the set the agent was offered.
+    agentType: AgentToolType;
   }): Promise<{ content: string; success: boolean }> {
     if (params.signal?.aborted) throw new AbortedError();
     const tool = this.toolRegistry.get(params.name);
@@ -820,6 +828,7 @@ export class AgentBridge implements AgentBackend {
       const enrichedArgs = {
         ...params.args,
         __depth: this.depth,
+        __agentType: params.agentType,
         __message: params.message,
         __workspaceDir: this.workspaceDir,
         __signal: params.signal,

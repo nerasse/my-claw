@@ -48,6 +48,7 @@ async function callRead(file: string, collector?: NestedAgentsCollector): Promis
     message: msg(),
     session: session(),
     depth: 0,
+    agentType: "main" as const,
     workspaceDir: tmpdir(),
     addAttachment: () => {},
     nestedAgents: collector,

@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAllSkills } from "../src/skills/loader.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 import { VoiceManager, SttPipeline } from "../src/voice/index.ts";
 import { syncBuiltIn } from "../src/skills/sync.ts";
 import {
@@ -12,6 +13,9 @@ import {
   createReadSkillTool,
   createManageSkillsTool,
 } from "../src/tools/skills.ts";
+
+// No agents section: every agent stays unrestricted, which is what these tests assert.
+const noScope = { whitelist: [], blacklist: [], channels: {}, llm: { provider: "t", baseUrl: "u", model: "m" }, agents: {} } as MyClawConfig;
 
 async function setupDir(): Promise<string> {
   const dir = join("/tmp", `skills-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -194,7 +198,7 @@ test("list_skills tool", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createListSkillsTool(registry);
+  const tool = createListSkillsTool(registry, noScope);
 
   const result = await tool.execute({});
   assert.equal(result.success, true);
@@ -210,7 +214,7 @@ test("read_skill tool", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "s2" });
   assert.equal(result.success, true);
@@ -408,7 +412,7 @@ test("read_skill returns full content for loaded skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "deep" });
   assert.equal(result.success, true);
@@ -427,7 +431,7 @@ test("read_skill with file_path reads referenced file", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "multi", file_path: "references/detail.md" });
   assert.equal(result.success, true);
@@ -442,7 +446,7 @@ test("read_skill with bad file_path returns error", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "single", file_path: "nope.md" });
   assert.equal(result.success, false);
@@ -457,7 +461,7 @@ test("read_skill substitutes ${SKILL_DIR} with absolute path", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "scripted" });
   assert.equal(result.success, true);
@@ -475,7 +479,7 @@ test("read_skill substitutes ${SKILL_DIR} in referenced files too", async () => 
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry);
+  const tool = createReadSkillTool(registry, noScope);
 
   const result = await tool.execute({ name: "multi-ref", file_path: "references/detail.md" });
   assert.equal(result.success, true);
@@ -534,7 +538,7 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
   assert.equal(registry.exists("docker-deploy"), true);
 
   // 2. Agent loads SKILL.md
-  const readTool = createReadSkillTool(registry);
+  const readTool = createReadSkillTool(registry, noScope);
   const skillResult = await readTool.execute({ name: "docker-deploy" });
   assert.equal(skillResult.success, true);
   assert.ok(skillResult.output.includes("scripts/build.sh"), "Should reference build script");
@@ -678,4 +682,79 @@ test("memory remember without content is clear", async () => {
   const result = await tool.execute({ action: "remember", content: "" });
   assert.equal(result.success, false);
   assert.ok(result.output.includes("content is required"));
+});
+
+// --- Agent scoping (docs/agent-scoping.md) ---
+
+const scoped = (agents: MyClawConfig["agents"]): MyClawConfig => ({ ...noScope, agents });
+
+async function twoSkillRegistry(): Promise<{ registry: SkillRegistry; dir: string }> {
+  const dir = await setupDir();
+  await writeSkill(dir, "allowed", "---\nname: allowed\ndescription: In scope\n---\n\nBody A.");
+  await writeSkill(dir, "hidden", "---\nname: hidden\ndescription: Out of scope\n---\n\nBody B.");
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  return { registry: new SkillRegistry(skills), dir };
+}
+
+test("scope: registry.list filters, get stays unscoped", async () => {
+  const { registry, dir } = await twoSkillRegistry();
+  assert.deepEqual(registry.list(["allowed"]).map((s) => s.name), ["allowed"]);
+  assert.equal(registry.list().length, 2);
+  assert.equal(registry.list("all").length, 2);
+  assert.deepEqual(registry.list([]), []);
+  // get() is the store, used by the loader and manage_skills: it must not be scoped.
+  assert.ok(registry.get("hidden"));
+  assert.deepEqual(registry.names().sort(), ["allowed", "hidden"]);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("scope: list_skills shows only the calling agent's skills", async () => {
+  const { registry, dir } = await twoSkillRegistry();
+  const config = scoped({ general: { skills: ["allowed"] } });
+  const tool = createListSkillsTool(registry, config);
+
+  const asGeneral = await tool.execute({ __agentType: "general" });
+  assert.match(asGeneral.output, /allowed/);
+  assert.doesNotMatch(asGeneral.output, /hidden/);
+
+  // The orchestrator has no list of its own here, so it stays unrestricted.
+  const asMain = await tool.execute({ __agentType: "main" });
+  assert.match(asMain.output, /hidden/);
+
+  // No __agentType means the call did not come from an agent run: treated as the orchestrator.
+  assert.match((await tool.execute({})).output, /hidden/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("scope: read_skill refuses an out-of-scope skill and says why", async () => {
+  const { registry, dir } = await twoSkillRegistry();
+  const tool = createReadSkillTool(registry, scoped({ general: { skills: ["allowed"] } }));
+
+  const ok = await tool.execute({ name: "allowed", __agentType: "general" });
+  assert.equal(ok.success, true);
+  assert.match(ok.output, /Body A/);
+
+  const refused = await tool.execute({ name: "hidden", __agentType: "general" });
+  assert.equal(refused.success, false);
+  assert.match(refused.output, /not in this agent's scope/);
+
+  // A name that does not exist reports a typo, not a permission problem.
+  const missing = await tool.execute({ name: "nope", __agentType: "general" });
+  assert.equal(missing.success, false);
+  assert.match(missing.output, /not found/);
+
+  // The same skill is readable by an agent that has it in scope.
+  assert.equal((await tool.execute({ name: "hidden", __agentType: "main" })).success, true);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("scope: an empty list leaves an agent with no skills at all", async () => {
+  const { registry, dir } = await twoSkillRegistry();
+  const config = scoped({ orchestrator: { skills: ["*"] }, research: { skills: [] } });
+  const list = createListSkillsTool(registry, config);
+  const read = createReadSkillTool(registry, config);
+
+  assert.match((await list.execute({ __agentType: "research" })).output, /No skills available/);
+  assert.equal((await read.execute({ name: "allowed", __agentType: "research" })).success, false);
+  await rm(dir, { recursive: true, force: true });
 });

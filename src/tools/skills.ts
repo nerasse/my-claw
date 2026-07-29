@@ -9,6 +9,18 @@ import { parsesAsSkill } from "../skills/loader.ts";
 import { scanForInjection } from "../agent/prompt/anti-injection.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { snapshot } from "../core/config-store.ts";
+import { resolveAgentSkills, scopeAllows, type AgentScope, type AgentToolType, type MyClawConfig } from "../core/config.ts";
+
+/**
+ * The calling agent's skill scope, read from the `__agentType` the backends attach to every tool
+ * call. Absent means the call did not come from an agent run, which resolves to the orchestrator --
+ * the same default the `/skills` command uses for a missing argument. See docs/agent-scoping.md.
+ */
+function scopeFromArgs(config: MyClawConfig, args: Record<string, unknown>): AgentScope {
+  const raw = args["__agentType"];
+  const type: AgentToolType = raw === "general" || raw === "research" || raw === "cron" ? raw : "main";
+  return resolveAgentSkills(config, type);
+}
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESC_LENGTH = 1024;
@@ -27,7 +39,7 @@ function validateSkillDescription(desc: string): string | null {
   return null;
 }
 
-export function createListSkillsTool(registry: SkillRegistry): Tool {
+export function createListSkillsTool(registry: SkillRegistry, config: MyClawConfig): Tool {
   return {
     name: "list_skills",
     description: "List all available skills with their name, description, and source.",
@@ -35,8 +47,10 @@ export function createListSkillsTool(registry: SkillRegistry): Tool {
       type: "object",
       properties: {},
     },
-    execute: async () => {
-      const skills = registry.list();
+    execute: async (args: Record<string, unknown>) => {
+      // Must match the prompt catalog: listing more than the scope would advertise skills that
+      // read_skill then refuses.
+      const skills = registry.list(scopeFromArgs(config, args));
       if (skills.length === 0) {
         return { success: true, output: "No skills available." };
       }
@@ -48,7 +62,7 @@ export function createListSkillsTool(registry: SkillRegistry): Tool {
   };
 }
 
-export function createReadSkillTool(registry: SkillRegistry): Tool {
+export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfig): Tool {
   return {
     name: "read_skill",
     description: "Read the full content of a skill by name. If file_path is provided, reads a specific file within the skill directory (e.g., 'references/format.md'). Call this when a skill matches your task or when the skill references a file you need.",
@@ -66,6 +80,11 @@ export function createReadSkillTool(registry: SkillRegistry): Tool {
       const skill = registry.get(name);
       if (!skill) {
         return { success: false, output: `Skill "${name}" not found. Use list_skills() to see available skills.` };
+      }
+      // Existence is checked first on purpose: "not in scope" for a name that does not exist at all
+      // would send the agent looking for a permission problem instead of a typo.
+      if (!scopeAllows(scopeFromArgs(config, args), name)) {
+        return { success: false, output: `Skill "${name}" is not in this agent's scope. Use list_skills() to see the skills available to you.` };
       }
 
       const skillDir = dirname(skill.path);

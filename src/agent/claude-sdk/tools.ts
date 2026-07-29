@@ -3,6 +3,7 @@ import type { Tool } from "../../tools/types.ts";
 import { READ_ONLY_TOOLS } from "../../tools/registry.ts";
 import type { UnifiedMessage, Attachment } from "../../channels/types.ts";
 import type { SessionData } from "../../sessions/store.ts";
+import type { AgentToolType } from "../../core/config.ts";
 import { jsonSchemaToZodShape } from "./schema.ts";
 import type { NestedAgentsCollector } from "../prompt/nested-agents.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -26,6 +27,8 @@ export interface SdkRunContext {
   message: UnifiedMessage;
   session: SessionData;
   depth: number;
+  // Tool-axis class of the calling agent, so a tool can resolve its own scope.
+  agentType: AgentToolType;
   signal?: AbortSignal;
   workspaceDir?: string;
   addAttachment: (att: Attachment) => void;
@@ -69,6 +72,7 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
     const result = await t.execute({
       ...args,
       __depth: ctx.depth,
+      __agentType: ctx.agentType,
       __message: ctx.message,
       __workspaceDir: ctx.workspaceDir,
       __signal: ctx.signal,

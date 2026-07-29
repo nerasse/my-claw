@@ -3,6 +3,8 @@ import type { EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/co
 import {
   MY_CLAW_DIR,
   nestedAgentsEnabled,
+  resolveAgentSkills,
+  resolveAgentMcp,
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
 } from "../../core/config.ts";
@@ -299,7 +301,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       : this.depth === 0
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
-    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled);
+    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
     const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
       this.config.llm,
       session.modelOverride,
@@ -347,7 +349,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     let removeAbortListener: (() => void) | undefined;
 
     try {
-      const allSkills = this.skillRegistry.list();
+      // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
+      // catalog wider than the scope would advertise skills read_skill then refuses.
+      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType));
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
@@ -393,6 +397,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         message,
         session,
         depth: this.depth,
+        agentType: agentToolType,
         signal,
         workspaceDir: this.workspaceDir,
         addAttachment: (att) => this.preprocessor.addResponseAttachment(message.id, att),
