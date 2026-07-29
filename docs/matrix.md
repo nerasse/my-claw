@@ -186,14 +186,20 @@ All commands are text-based (Matrix has no native command UI):
 - **Threading**: Full `m.thread` relation support
 - **Streaming**: Preview via `m.replace`, final edit or fallback redact
 - **Reactions**: `m.reaction` for status and menu selection
+- **Menu option symbols**: options are numbered `1..10` with keycap emojis, then `A..Z` with
+  regional-indicator letters, for 36 clickable options per menu. Unicode has no keycap past ten,
+  and the numbering used to simply stop there: option 11 rendered as a bare `11.` with no
+  reaction to click. Replying with the number *or* the letter you see selects the option, and a
+  single-letter reply falls back to label matching on menus too short to display letters. Past 36
+  options the list falls back to plain `N.` numbering and only the typed number works.
 - **Menu steps are new messages**: each navigation step of the `/model` menu is sent as a
   fresh message with its own seeded numbered reactions. Matrix does not let a user re-react
   with an emoji they already used, and an edited message keeps the old reaction count — so
   editing menus in place broke re-selection and left submenus with too few reactions. The
   superseded menu collapses to a one-line breadcrumb and its bot reactions are redacted.
-- **Model -> effort chaining**: the active effort is shown on the menu header line next to
-  the model, and the `/model` menu offers an `Effort >` entry to adjust it without
-  re-selecting a model. Selecting a model chains straight into the reasoning-effort choice
+- **Model -> effort chaining**: the effective effort is shown on the menu header line next to
+  the model (level + where it comes from), and the `/model` menu offers an `Effort >` entry to
+  adjust it without re-selecting a model. Both disappear when the current model discards effort. Selecting a model chains straight into the reasoning-effort choice
   (with a `Keep current` entry); `/effort` and `/effort <level>` also work as quick standalone
   shortcuts. Terminal steps (set/keep effort) edit the menu message in place and drop its
   reactions.

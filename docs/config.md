@@ -348,14 +348,23 @@ on providers that reject the param).
   effort step. Only a model with **unknown** support (neither field set, typically a curated entry)
   falls back to the full global list.
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
-- The `/model` menu shows the active effort on the **header line** next to the model
-  (`Current model: X — Effort: high`) whenever effort can take effect (any claude-sdk model,
-  any `supportsEffort` model, or a global `llm.effort`) — it is not a menu button.
+- The `/model`, `/models` and `/effort` headers show the **effective** effort with its origin:
+  `high (session)`, `medium (model default)`, `low (config)`, `high (SDK default)`, or
+  `provider default (nothing sent)`. The origin matters, because "high because you asked for it"
+  and "high because the SDK falls back to it" are different answers. Only the Claude SDK documents
+  its own fallback (`high`); Codex and opt-in OpenAI-compatible providers do not, so nothing is
+  named for them rather than guessed.
+- The effort line and the `Effort >` entry are **hidden** when the current model discards effort
+  (an OpenAI-compatible model without `supportsEffort`, or one the provider reports as
+  `supportsEffort: false`), and `/effort` answers `Effort has no effect on <model>`. Both used to
+  show up for every model as soon as any model supported effort, advertising a setting that could
+  not take effect. `ModelPicker.syncFromConfig` is the single place that resolves this, since the
+  answer depends on the backend and the picker cannot see it.
 - Selecting a model in `/model` chains straight into the effort choice (levels + a
   `Keep current` entry), so model + effort is one flow with no back-and-forth. The root
   `/model` menu also shows an `Effort >` entry to adjust effort without re-selecting a model;
-  alternatively, `/effort` and `/effort <level>` work as a quick standalone shortcut. The active
-  effort is shown on the `/model` header line.
+  alternatively, `/effort` and `/effort <level>` work as a quick standalone shortcut. A model that
+  discards effort is never chained into the step.
 
 ```json
 "llm": {
