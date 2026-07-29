@@ -25,7 +25,7 @@ export function getMatrixHelpText(): string {
     ...MATRIX_COMMANDS.map((c) => `/${c.command} - ${c.description}`),
     "",
     "Tips:",
-    "- Reply with a menu number when model or approval menus are shown",
+    "- Reply with a menu number, or the letter shown past the tenth option",
     "- Reactions work well for quick choices; replies work for every numbered option",
     "- Use `/model` with no args to reopen the model menu",
     "- Use `/models` to browse the configured model list",

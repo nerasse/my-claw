@@ -84,6 +84,18 @@ describe("resolveActionForReaction", () => {
   test("emoji index beyond buttons length returns undefined", () => {
     expect(resolveActionForReaction(buttons, MATRIX_REACTION_BUTTON_EMOJIS[5]!)).toBeUndefined();
   });
+
+  test("letters continue the numbering past the tenth option", () => {
+    // Unicode has no eleventh keycap, so options past ten get regional-indicator letters.
+    expect(MATRIX_REACTION_BUTTON_EMOJIS.length).toBe(36);
+    expect(MATRIX_REACTION_BUTTON_EMOJIS[10]).toBe("\u{1F1E6}");
+    expect(MATRIX_REACTION_BUTTON_EMOJIS[35]).toBe("\u{1F1FF}");
+    expect(new Set(MATRIX_REACTION_BUTTON_EMOJIS).size).toBe(MATRIX_REACTION_BUTTON_EMOJIS.length);
+
+    const many = Array.from({ length: 12 }, (_, i) => ({ label: `L${i + 1}`, action: `a${i + 1}` }));
+    expect(resolveActionForReaction(many, "\u{1F1E6}")).toBe("a11");
+    expect(resolveActionForReaction(many, "\u{1F1E7}")).toBe("a12");
+  });
 });
 
 describe("resolveActionForTextReply", () => {
@@ -116,6 +128,28 @@ describe("resolveActionForTextReply", () => {
 
   test("non-matching text returns undefined", () => {
     expect(resolveActionForTextReply(buttons, "something else")).toBeUndefined();
+  });
+
+  test("a bare letter selects the option that displays it", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ label: `L${i + 1}`, action: `a${i + 1}` }));
+    expect(resolveActionForTextReply(many, "A")).toBe("a11");
+    expect(resolveActionForTextReply(many, "a")).toBe("a11");
+    expect(resolveActionForTextReply(many, "/b")).toBe("a12");
+    expect(resolveActionForTextReply(many, "b.")).toBe("a12");
+    // No thirteenth option, so the letter designates nothing.
+    expect(resolveActionForTextReply(many, "C")).toBeUndefined();
+  });
+
+  test("a letter reply falls through to label matching on a short menu", () => {
+    // Only menus past ten options display letters, so on a short one a single letter is far more
+    // likely to be a model label than an ordinal.
+    const labelled: ConfirmationButton[] = [{ label: "A", action: "model-a" }, { label: "Deny", action: "deny" }];
+    expect(resolveActionForTextReply(labelled, "A")).toBe("model-a");
+  });
+
+  test("a multi-letter word is never read as an ordinal", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ label: `L${i + 1}`, action: `a${i + 1}` }));
+    expect(resolveActionForTextReply([...many, { label: "Alt", action: "alt" }], "Alt")).toBe("alt");
   });
 });
 

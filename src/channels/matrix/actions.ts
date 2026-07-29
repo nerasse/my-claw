@@ -4,7 +4,16 @@ import type { ConfirmationButton, OutgoingMessage } from "../types.ts";
 import type { PendingMatrixAction } from "./types.ts";
 import { buildReplaceRelation, trimString } from "./helpers.ts";
 
-export const MATRIX_REACTION_BUTTON_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+const KEYCAP_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+
+// Unicode has no keycap past ten, so the numbering continues with regional-indicator letters:
+// A is option 11, Z is option 36. Reaction keys are arbitrary strings on Matrix, so the only
+// requirement is that each option gets a distinct, typeable symbol. Built from code points rather
+// than 26 literals to keep the letter/position mapping evident.
+const REGIONAL_INDICATOR_A = 0x1f1e6;
+const LETTER_EMOJIS = Array.from({ length: 26 }, (_, i) => String.fromCodePoint(REGIONAL_INDICATOR_A + i));
+
+export const MATRIX_REACTION_BUTTON_EMOJIS = [...KEYCAP_EMOJIS, ...LETTER_EMOJIS];
 
 export function extractReactionAnnotation(
   content: Record<string, unknown>,
@@ -44,6 +53,17 @@ export function resolveActionForTextReply(buttons: ConfirmationButton[], text: s
   if (indexMatch) {
     const index = Number(indexMatch[1]) - 1;
     return index >= 0 ? buttons[index]?.action : undefined;
+  }
+
+  // Options past the tenth are labelled with letters, so typing the letter you see must work.
+  // A miss falls through to label matching instead of returning: on a menu too short to reach
+  // that letter, a single-letter reply is far more likely to be a model label.
+  const letterMatch = /^\/?([a-z])(?:\b|\s|[.)-])/i.exec(trimmed);
+  if (letterMatch?.[1]) {
+    const offset = letterMatch[1].toLowerCase().charCodeAt(0) - "a".charCodeAt(0);
+    const index = MATRIX_REACTION_BUTTON_EMOJIS.indexOf(String.fromCodePoint(REGIONAL_INDICATOR_A + offset));
+    const action = index >= 0 ? buttons[index]?.action : undefined;
+    if (action) return action;
   }
 
   const normalized = normalizeActionSelectionText(trimmed);
