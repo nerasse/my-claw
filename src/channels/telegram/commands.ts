@@ -16,6 +16,10 @@ export const COMMANDS = [
   { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },
   { command: "claude", description: "Claude subscription: login|set-token|status|logout" },
   { command: "config", description: "Config snapshots: history|diff|rollback" },
+  { command: "skills", description: "List skills, optionally for one agent" },
+  { command: "agents", description: "List agent types and live sub-agents" },
+  { command: "mcp", description: "List MCP servers, optionally for one agent" },
+  { command: "instructions", description: "Dump the composed system prompt" },
   { command: "help", description: "List available commands" },
 ] as const;
 

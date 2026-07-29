@@ -10,6 +10,10 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
+import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
+import type { ToolRegistry } from "../../tools/registry.ts";
+import type { McpServerStatus } from "../../mcp/manager.ts";
+import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 
@@ -34,6 +38,11 @@ interface TelegramCallbackResponse {
 }
 
 interface TelegramSessionHandlerDeps {
+  // Introspection commands (/skills, /agents, /mcp, /instructions). Optional so a host or a test
+  // can build the handler without them; the commands then report the gap instead of throwing.
+  toolRegistry?: ToolRegistry;
+  mcpStatus?: () => McpServerStatus[];
+  listSubAgents?: () => Promise<SubAgentInfo[]>;
   config: MyClawConfig;
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
@@ -82,6 +91,9 @@ export function createTelegramCommandHandler({
   postMessage,
   onAuthChanged,
   reloadConfigNow,
+  toolRegistry,
+  mcpStatus,
+  listSubAgents,
 }: TelegramSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -317,6 +329,31 @@ export function createTelegramCommandHandler({
           workspaceDir: process.env["MY_CLAW_WORKSPACE"] ?? "",
           applyReload: reloadConfigNow,
         });
+
+      // The four introspection commands share one body per channel (docs/agent-scoping.md).
+      case "skills":
+      case "agents":
+      case "mcp":
+      case "instructions": {
+        if (!skillRegistry || !toolRegistry) {
+          return "Introspection indisponible : les registres ne sont pas injectes.";
+        }
+        const params = {
+          args,
+          config,
+          skillRegistry,
+          toolRegistry,
+          // Absent means the host wired no MCP manager or sub-agent runner, which reads as "none"
+          // rather than crashing a read-only command.
+          mcpStatus: mcpStatus ?? (() => []),
+          listSubAgents: listSubAgents ?? (async () => []),
+          platform: "telegram",
+        };
+        if (command === "skills") return handleSkillsCommand(params);
+        if (command === "agents") return handleAgentsCommand(params);
+        if (command === "mcp") return handleMcpCommand(params);
+        return handleInstructionsCommand(params);
+      }
 
       default:
         return undefined;

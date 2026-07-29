@@ -321,6 +321,9 @@ async function main() {
       postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
       onAuthChanged,
       reloadConfigNow,
+      toolRegistry,
+      mcpStatus: () => mcpManager.status(),
+      listSubAgents: () => subAgentRunner.list(subAgentRegistry),
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -433,6 +436,9 @@ async function main() {
       postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
       onAuthChanged,
       reloadConfigNow,
+      toolRegistry,
+      mcpStatus: () => mcpManager.status(),
+      listSubAgents: () => subAgentRunner.list(subAgentRegistry),
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({
