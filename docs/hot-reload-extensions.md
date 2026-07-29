@@ -62,8 +62,12 @@ split, which is simpler and avoids double-spawning stdio servers:
 - Hot-reload: `mcp` is a HOT section; the applier calls `McpManager.sync`, which
   diffs the map -- connect added, reconnect wiring-changed, drop removed/disabled.
 - Namespacing: external tools are exposed as `mcp__<server>__<tool>`.
-- External MCP tools go to acting agents (main/general/cron) only, never the
-  read-only research sub-agent.
+- Which agents receive MCP tools is a per-agent scope (`agents.<type>.mcp`, see
+  `docs/agent-scoping.md`), not a hardcoded rule. The research sub-agent still
+  gets **none by default** -- its absent field resolves to `[]` rather than
+  inheriting the orchestrator -- but an explicit `agents.research.mcp` grants it
+  servers, which ends the "read-only research agent" guarantee: its built-in
+  tools are a read-only allowlist, an MCP server's tools are not.
 
 ### Phase 4 -- Externalize CORE_PROMPT to CORE.md (medium)
 

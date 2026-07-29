@@ -66,7 +66,7 @@
 ```
 src/
 ├── core/
-│   ├── config.ts          # App configuration + types
+│   ├── config.ts          # App configuration + types, per-agent scoping -- docs/agent-scoping.md
 │   ├── config-watcher.ts  # Hot-reload of ~/.my-claw/config.json (fs.watch)
 │   ├── config-store.ts    # Config snapshots: boot fallback, health gate, rollback -- docs/config-backup.md
 │   ├── config-health.ts   # A/B loop: quarantines a config that never brings a channel up
@@ -189,7 +189,7 @@ src/
 │   ├── registry.ts        # Sub-agent ID generation + listing
 │   └── types.ts
 ├── skills/
-│   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace)
+│   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace), per-agent scope
 │   ├── loader.ts          # Skill file loader + YAML frontmatter parser
 │   ├── sync.ts            # Built-in skill auto-sync (SHA256 hash)
 │   ├── reload.ts          # Re-scans the skill dirs into the registry (/reload-skills)

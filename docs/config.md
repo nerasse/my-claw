@@ -446,6 +446,38 @@ Sub-agents inherit the global `llm.providers`. You only need to specify a differ
 
 If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `defaultModel` is omitted, the global `llm.defaultModel` is used.
 
+### Per-Agent Skills and MCP Servers
+
+`skills` and `mcp` narrow what an agent sees. Full spec: `docs/agent-scoping.md`.
+
+```json
+"agents": {
+  "orchestrator": { "skills": ["*"], "mcp": ["*"] },
+  "general":      { "skills": ["forgejo", "nextcloud"], "mcp": ["mailcow"] },
+  "research":     { "skills": ["web-browsing"], "mcp": [] }
+}
+```
+
+- Entries are **exact names**, or the single entry `["*"]` for all. No prefix globs: a renamed skill
+  would silently change scope.
+- An **absent** field inherits the orchestrator's; absent there too means all. So a config without
+  these fields behaves exactly as before.
+- `[]` means **none**, and is never read as "unset". `skills: []` gives that agent no skills at all.
+- The orchestrator's own list restricts the orchestrator, it is not merely a value children inherit.
+- `cron` has no config entry of its own and inherits the orchestrator.
+- **Exception, `research.mcp`:** an absent field resolves to `[]`, not to the orchestrator's list.
+  The research agent had zero MCP servers before this existed, so inheriting `["*"]` would hand it
+  every server on upgrade. Only an explicit `agents.research.mcp` grants it servers.
+- Granting MCP to `research` **ends the "read-only research agent" guarantee**: its built-in tools
+  are a read-only allowlist, but an MCP server's tools are arbitrary and may write.
+- The scope binds visibility *and* execution: the prompt catalog, `list_skills` and `read_skill` all
+  agree, and out-of-scope MCP tools are not exposed. It scopes the skill system, not the filesystem —
+  `read` can still open a `SKILL.md` by path.
+- A name matching no installed skill and no declared MCP server is reported to the owner at boot and
+  logged at `warn`. It never blocks a boot.
+
+`agents` is a hot section, so a scope edit lands on the next message with no restart.
+
 ## Context Limits
 
 Per-model or global `limit` controls context window and output cap:
