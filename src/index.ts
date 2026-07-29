@@ -3,7 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import {
   loadConfigOrFallback,
   snapshotProtected,
@@ -275,10 +275,21 @@ async function main() {
   const skillRegistry = new SkillRegistry(allSkills);
   hooks.emit("skills:loaded", { count: allSkills.size });
 
+  // Scope entries pointing at nothing narrow an agent silently, so they are reported. Validated
+  // against the *declared* MCP servers rather than the connected ones: a server that failed to
+  // connect is still a real name, and flagging it as a typo would send the owner the wrong way.
+  const unknownScopes = findUnknownScopeEntries(config, {
+    skills: skillRegistry.names(),
+    mcpServers: Object.keys(config.mcp ?? {}),
+  });
+  if (unknownScopes.length > 0) {
+    log("warn", "agent scope entries match nothing", { entries: unknownScopes });
+  }
+
   const subAgentRegistry = new SubAgentRegistry();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
   registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config);
-  registerSkillTools(toolRegistry, skillRegistry, builtinDir, customDir, workspaceSkillsDir);
+  registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
   const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
@@ -610,6 +621,27 @@ async function main() {
     }
   }
 
+  // Same best-effort channel and same caveat as the fallback alert above: whitelist ids are
+  // Telegram user ids, so this reaches Telegram only. A silently reduced scope is worth a message
+  // because the symptom is an agent that just stops using a skill.
+  if (unknownScopes.length > 0) {
+    const owner = config.whitelist?.[0];
+    if (owner && telegramRef) {
+      const lines = unknownScopes.map(
+        (e) => `- \`${e.path}\`: "${e.name}" (${e.kind === "skill" ? "aucune skill de ce nom" : "aucun serveur declare"})`,
+      );
+      void telegramRef
+        .send(owner, {
+          text: [
+            "Attention : des noms de scope ne correspondent a rien.",
+            ...lines,
+            "Ces agents tournent avec un scope reduit. `agents` est une section hot : corrige puis sauvegarde.",
+          ].join("\n"),
+        })
+        .catch(() => {});
+    }
+  }
+
   // Health gate: "it parsed" is not "it works". A config that boots and then dies must never become
   // the thing we fall back to, or the safety net records the trap. Surviving 60s past a completed
   // boot is the evidence, mirroring update.sh waiting for the service to be healthy before keeping
@@ -763,11 +795,13 @@ function registerSubAgentTools(
 }
 
 function registerSkillTools(
-  registry: ToolRegistry, skillRegistry: SkillRegistry,
+  registry: ToolRegistry, skillRegistry: SkillRegistry, config: MyClawConfig,
   builtinDir: string, customDir: string, workspaceSkillsDir: string,
 ): void {
-  registry.register(createListSkillsTool(skillRegistry));
-  registry.register(createReadSkillTool(skillRegistry));
+  // config is the live object mutated in place by the hot-reload appliers, so a scope edit takes
+  // effect on the next tool call without re-registering anything.
+  registry.register(createListSkillsTool(skillRegistry, config));
+  registry.register(createReadSkillTool(skillRegistry, config));
   registry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
 }
 
