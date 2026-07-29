@@ -6,8 +6,9 @@ const MEDIA_PATTERN = /MEDIA:(\/[^\s]+)/g;
 
 // Response attachments we generated ourselves are only needed until sent; without this they
 // accumulate forever. TTS creates a whole temp DIRECTORY per generation (tts-XXXX/output.mp3), so
-// unlinking the file alone leaves the empty dir behind — remove the dir. Browser screenshots are
-// flat files (browser-*.png). Prefixes are matched under the OS temp root (not hardcoded /tmp).
+// unlinking the file alone leaves the empty dir behind — remove the dir. `/instructions` does the
+// same with prompt-XXXX/prompt-<agent>.md. Browser screenshots are flat files (browser-*.png).
+// Prefixes are matched under the OS temp root (not hardcoded /tmp).
 function isTempRoot(dir: string): boolean {
   return dir === tmpdir() || dir === "/tmp";
 }
@@ -18,8 +19,9 @@ export async function cleanupGeneratedTempFiles(attachments?: Array<{ path?: str
     const p = att.path;
     if (!p) continue;
     const parent = dirname(p);
-    // Real TTS output lives in its own temp dir (tts-XXXX/output.mp3): remove the whole dir.
-    if (isTempRoot(dirname(parent)) && basename(parent).startsWith("tts-")) {
+    // Output that lives in its own temp dir (tts-XXXX/output.mp3, prompt-XXXX/prompt-main.md):
+    // remove the whole dir.
+    if (isTempRoot(dirname(parent)) && (basename(parent).startsWith("tts-") || basename(parent).startsWith("prompt-"))) {
       await rm(parent, { recursive: true, force: true }).catch(() => {});
       continue;
     }

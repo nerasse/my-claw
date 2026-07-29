@@ -6,7 +6,7 @@ import { MY_CLAW_DIR } from "../../core/config.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 import type { MatrixChannelConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
-import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { extractMediaRefs, stripMediaRefs, cleanupGeneratedTempFiles } from "../../utils/media.ts";
 import { matrixLog } from "../../utils/logger.ts";
 import { MatrixClientRuntime } from "./client.ts";
 import {
@@ -587,6 +587,9 @@ export class MatrixAdapter implements ChannelAdapter {
             replyToId: response.replyToId ?? event.getId(),
             threadId: response.threadId ?? rootThreadId,
           });
+          // The message paths clean their own generated attachments; the command path never did, so a
+          // command that answers with a file (/instructions) leaked a temp file per call.
+          await cleanupGeneratedTempFiles(response.attachments);
           await commitInboundEventIfClaimed();
         } catch (err) {
           await this.reportProcessingError(roomId, event.getId(), err, rootThreadId);
