@@ -72,3 +72,29 @@ test("setApprovalHandler reaches both engines", () => {
   dispatcher.setApprovalHandler(async () => "allow-once");
   assert.deepEqual(seen, ["home", "sdk"]);
 });
+
+// The engine is chosen from the model that will actually run. When only the *agent* pins a
+// claude-sdk model, resolving without the agent's config sends the run to the home loop, which
+// then quietly runs a different model than the one configured.
+test("dispatcher routes by the agent's configured model, not only the session's", async () => {
+  const calls: string[] = [];
+  const home = { handleMessage: async () => { calls.push("home"); return "home"; } } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => { calls.push("sdk"); return "sdk"; } } as unknown as ClaudeSdkBackend;
+
+  const pinned = mixedConfig();
+  pinned.agents.orchestrator = { llm: { defaultModel: "claude-sonnet-5", defaultProvider: "anthropic" } };
+  const d1 = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+  assert.equal(await d1.handleMessage(msg("m1"), session("s1")), "sdk");
+
+  // A per-chat choice still wins over the configured default.
+  assert.equal(await d1.handleMessage(msg("m2"), session("s2", "mimo")), "home");
+
+  // A cron pin must move cron runs only.
+  const cronPinned = mixedConfig();
+  cronPinned.agents.cron = { llm: { defaultModel: "claude-sonnet-5", defaultProvider: "anthropic" } };
+  const d2 = new BackendDispatcher(cronPinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+  assert.equal(await d2.handleMessage({ ...msg("m3"), platform: "cron" }, session("s3")), "sdk");
+  assert.equal(await d2.handleMessage(msg("m4"), session("s4")), "home");
+
+  assert.deepEqual(calls, ["sdk", "home", "sdk", "home"]);
+});
