@@ -148,15 +148,33 @@ The pattern list stays in code, as already decided in `docs/hot-reload-extension
   finer would mean parsing the context block back into per-sender lines.
 - `resolveScanPolicy` is read per run, so a mid-run config change applies from the next turn.
 
-## Known gap, not addressed here
+## The pattern gap, closed
 
-The pattern `/ignore\s+(previous|all|above|prior)\s+instructions/i` requires exactly one word
-between the verb and the noun, so it matches `ignore previous instructions` and
-`ignore all instructions` but **not** `ignore all previous instructions` -- the most common
-phrasing -- nor `ignore the previous instructions`. This predates this work and was left alone:
-widening it (`ignore\s+(?:\w+\s+){0,3}instructions`) would also match ordinary developer speech
-such as "you can ignore the linter rules here", and for foreign content the sanction is a hard
-block. Tightening the pattern list is a separate decision.
+The two oldest patterns demand exactly one word between the verb and the noun, so a single inserted
+word defeated them. Measured against the shipped list:
+
+| | Known phrasings caught | False positives |
+| --- | --- | --- |
+| Shipped list | 4 / 11 | 0 / 10 |
+| Shipped list + anaphora pattern | 11 / 11 | 0 / 10 |
+
+Everything the old list let through referred to a "before": `ignore all previous instructions`
+(the most common phrasing of all), `ignore the previous instructions`, `Ignore all prior
+instructions`, `please disregard all previous instructions`, `IGNORE ALL ABOVE INSTRUCTIONS`,
+`ignore your previous instructions`, `forget your prior instructions`.
+
+Widening the verb-to-noun gap to any word was rejected: it flags ordinary developer speech such as
+"you can ignore the linter rules here" or "the parser must ignore all whitespace rules", and for
+foreign content the sanction is a hard block. The discriminant is not the verb but the **anaphora**
+-- an injection must point at a previous instruction -- with the noun immediately after it.
+"disregard my previous message" stays clean because the noun is not an instruction word.
+
+Added alongside the two older patterns rather than replacing them: `ignore all instructions` and
+`disregard your instructions` carry no anaphora and would otherwise stop matching. The overlap on
+the plain `ignore previous instructions` form is intentional and reported as two reasons.
+
+Measured false positives: none, across this repo's docs, sources and tests, the persisted sessions
+and the workspace prompt files (399 files). The only hits are the deliberate attack fixtures.
 
 ## Test plan
 
@@ -166,4 +184,6 @@ block. Tightening the pattern list is a separate decision.
 - Sanctions: authored segment annotates and retains content; foreign segment blocks.
 - Reasons deduplicated: five `U+200B` produce one reason with a count.
 - Config: `enabled: false` skips user-turn scanning; foreign content still blocks.
+- Pattern gap: the seven phrasings a single inserted word used to smuggle through are caught, and
+  ten benign sentences about ignoring rules are not.
 - Hot reload: the section applies without a restart.

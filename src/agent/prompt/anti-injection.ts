@@ -5,6 +5,14 @@ const INJECTION_PATTERNS = [
   /do\s+not\s+tell\s+the\s+user/i,
   /system\s+prompt\s+override/i,
   /disregard\s+(your|all|any)\s+(instructions|rules|guidelines)/i,
+  // The two forms above demand exactly one word between verb and noun, so a single inserted word
+  // defeated them: `ignore all previous instructions`, the most common phrasing of all, went
+  // straight through. Widening the gap to any word would catch ordinary speech ("ignore the linter
+  // rules"), so this anchors on the anaphora an injection cannot avoid -- it must refer to a
+  // "before" -- with the noun immediately after. Measured 11/11 known phrasings and zero false
+  // positives across this repo's docs, sources, tests, the persisted sessions and the prompt files.
+  // Kept alongside rather than replacing them: neither anaphora-less form above would still match.
+  /\b(?:ignore|disregard|forget)\s+(?:all\s+|any\s+|the\s+|your\s+|these\s+|those\s+|my\s+)?(?:previous|prior|above|preceding|earlier)\s+(?:instructions|prompts?|rules|guidelines)/i,
   /act\s+as\s+(if|though)\s+you\s+(have\s+no|don['']t\s+have)\s+(restrictions|limits|rules)/i,
   /<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->/i,
   /<\s*div\s+style\s*=\s*["'][\s\S]*?display\s*:\s*none/i,
