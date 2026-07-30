@@ -1,6 +1,6 @@
 export const MATRIX_COMMANDS = [
   { command: "new", description: "Start a fresh session" },
-  { command: "model", description: "Show model menu or change current model" },
+  { command: "model", description: "Show model menu or change current model, or an agent default: /model <agent>" },
   { command: "models", description: "List available models" },
   { command: "effort", description: "Show or set reasoning effort" },
   { command: "compact", description: "Compact session context" },
@@ -32,6 +32,7 @@ export function getMatrixHelpText(): string {
     "- Reply with a menu number, or the letter shown past the tenth option",
     "- Reactions work well for quick choices; replies work for every numbered option",
     "- Use `/model` with no args to reopen the model menu",
+    "- Use `/model <agent>` (orchestrator, general, research, cron) to set that agent's default in config",
     "- Use `/models` to browse the configured model list",
     "- Use `/commands` to list commands explicitly",
   ].join("\n");

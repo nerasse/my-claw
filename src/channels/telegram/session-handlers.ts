@@ -10,6 +10,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -157,6 +158,22 @@ export function createTelegramCommandHandler({
       }
 
       case "model": {
+        // `/model <agent>` targets a persisted default; anything else is this chat's own override.
+        const agentOutcome = await handleAgentModelCommand(args, {
+          config,
+          modelPicker,
+          listSubAgents: listSubAgents ?? (async () => []),
+          reloadConfigNow,
+          isDm: chatType === "dm",
+        });
+        if (agentOutcome.kind === "message") return agentOutcome.text;
+        if (agentOutcome.kind === "menu") {
+          return {
+            text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}`,
+            buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target),
+          };
+        }
+
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
 
@@ -376,6 +393,7 @@ export function createTelegramCallbackHandler({
   config,
   sessionManager,
   modelPicker,
+  reloadConfigNow,
 }: TelegramSessionHandlerDeps): (
   ctx: TelegramCallbackContext,
 ) => Promise<TelegramCallbackResponse | undefined> {
@@ -398,6 +416,29 @@ export function createTelegramCallbackHandler({
       threadId,
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+
+    // An agent-targeted menu edits config, never this chat. Handled before the session branches so
+    // a target can never fall through into them and silently change the wrong thing.
+    if ("target" in action && action.target) {
+      const target = action.target;
+      const currentModel = currentAgentModel(config, target);
+      if (action.kind === "select") {
+        return {
+          text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }),
+          answerText: "Config mise à jour",
+        };
+      }
+      const buttons =
+        action.kind === "openGroup"
+          ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
+          : modelPicker.buildButtons(currentModel, target);
+      const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
+      return {
+        text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}`,
+        buttons,
+        answerText: groupLabel ?? "Retour",
+      };
+    }
 
     // Navigation re-render without touching the model (no selection yet).
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {

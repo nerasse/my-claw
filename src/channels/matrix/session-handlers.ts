@@ -4,7 +4,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
-import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
+import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg, type PickerTarget } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
@@ -13,6 +13,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -125,6 +126,32 @@ function buildMatrixMenuFromButtons(params: {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
       `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}`,
+      instruction,
+      ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
+    ].join("\n"),
+    buttons,
+  };
+}
+
+/**
+ * Agent menu, rendered like the session one so the numbered replies and reactions keep working.
+ * The effort line is left out: effort is a per-session choice and this menu writes config.
+ */
+function buildMatrixAgentModelMenu(params: {
+  modelPicker: ModelPicker;
+  outcome: { target: PickerTarget; currentModel: string; heading: string };
+}): OutgoingMessage {
+  const { modelPicker, outcome } = params;
+  const buttons = modelPicker.buildButtons(outcome.currentModel, outcome.target);
+  const instruction =
+    buttons.length > MATRIX_REACTION_BUTTON_EMOJIS.length
+      ? `Réponds avec un numéro/nom, réagis pour les ${MATRIX_REACTION_BUTTON_EMOJIS.length} premiers, ou envoie \`/model ${outcome.target} <nom>\` :`
+      : `Réponds avec un numéro/nom, réagis à ce message, ou envoie \`/model ${outcome.target} <nom>\` :`;
+  return {
+    text: [
+      outcome.heading,
+      "",
+      `Actuel : ${modelPicker.labelFor(outcome.currentModel)}`,
       instruction,
       ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
     ].join("\n"),
@@ -368,6 +395,19 @@ export function createMatrixCommandHandler({
       }
 
       case "model": {
+        // `/model <agent>` targets a persisted default; anything else is this chat's own override.
+        const agentOutcome = await handleAgentModelCommand(args, {
+          config,
+          modelPicker,
+          listSubAgents: listSubAgents ?? (async () => []),
+          reloadConfigNow,
+          isDm: chatType === "dm",
+        });
+        if (agentOutcome.kind === "message") return agentOutcome.text;
+        if (agentOutcome.kind === "menu") {
+          return buildMatrixAgentModelMenu({ modelPicker, outcome: agentOutcome });
+        }
+
         const existingSession = await sessionManager.peek(sessionId);
         const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
 
@@ -590,6 +630,7 @@ export function createMatrixActionHandler({
   config,
   sessionManager,
   modelPicker,
+  reloadConfigNow,
   approvalHandler = createMatrixApprovalHandler(),
 }: MatrixSessionHandlerDeps): (
   ctx: MatrixActionContext,
@@ -626,6 +667,32 @@ export function createMatrixActionHandler({
       threadId,
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+
+    // An agent-targeted menu edits config, never this room. Handled before the session branches so
+    // a target can never fall through into them and silently change the wrong thing.
+    if ("target" in action && action.target) {
+      const target = action.target;
+      const currentModel = currentAgentModel(config, target);
+      if (action.kind === "select") {
+        return { text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }) };
+      }
+      const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
+      const buttons =
+        action.kind === "openGroup"
+          ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
+          : modelPicker.buildButtons(currentModel, target);
+      return {
+        text: [
+          `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""}`,
+          "",
+          `Actuel : ${modelPicker.labelFor(currentModel)}`,
+          "Réponds avec un numéro/nom ou réagis à ce message :",
+          ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
+        ].join("\n"),
+        buttons,
+        supersededText: groupLabel ? `Agent ${target} > ${groupLabel}` : `Agent ${target}`,
+      };
+    }
 
     // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
     // reactions and collapses the previous menu to the supersededText breadcrumb.

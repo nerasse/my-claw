@@ -2,7 +2,7 @@ import type { Bot } from "grammy";
 
 export const COMMANDS = [
   { command: "new", description: "Start a fresh session" },
-  { command: "model", description: "Show or change current model" },
+  { command: "model", description: "Show or change current model, or an agent default: /model <agent>" },
   { command: "models", description: "List available models" },
   { command: "effort", description: "Show or set reasoning effort" },
   { command: "compact", description: "Compact session context" },

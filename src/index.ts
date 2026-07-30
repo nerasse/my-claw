@@ -329,6 +329,8 @@ async function main() {
       config,
       sessionManager,
       modelPicker,
+      // An agent menu writes config.json, and the confirmation must describe the running config.
+      reloadConfigNow,
     });
 
     telegram.onMessage(async (msg) => {
@@ -445,6 +447,8 @@ async function main() {
       config,
       sessionManager,
       modelPicker,
+      // An agent menu writes config.json, and the confirmation must describe the running config.
+      reloadConfigNow,
       approvalHandler,
       skillRegistry,
       builtinDir,

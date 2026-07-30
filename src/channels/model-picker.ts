@@ -6,6 +6,12 @@ import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/
 export interface ModelOption {
   id: string;
   label: string;
+  /**
+   * Provider key this model belongs to. Needed when pinning a model into config.json: most models
+   * come from provider discovery and are absent from the file, so recording only the id would let
+   * a later offline start resolve it against the wrong endpoint.
+   */
+  provider?: string;
   // "/"-separated path; each segment is one submenu level (e.g. "Claude/Opus").
   group?: string;
   // Per-model supported effort levels (from SDK discovery). When present, the effort submenu
@@ -26,12 +32,37 @@ export interface EffortOptions {
   levels: EffortLevel[];
 }
 
+/**
+ * Which model a menu is about to change. Absent means the session's own model, the original and
+ * still the default behaviour of `/model`. A value means an agent's persisted default in config.
+ *
+ * Encoded as a single letter inside callback_data: Telegram caps it at 64 bytes and the model ref
+ * already spends 12 of them, so the target must not cost a word.
+ */
+export type PickerTarget = "orchestrator" | "general" | "research" | "cron";
+
+const TARGET_CODES: Record<PickerTarget, string> = {
+  orchestrator: "o",
+  general: "g",
+  research: "r",
+  cron: "c",
+};
+const TARGET_BY_CODE = new Map<string, PickerTarget>(
+  Object.entries(TARGET_CODES).map(([target, code]) => [code, target as PickerTarget]),
+);
+
+/** Suffix appended to every action of an agent-targeted menu, so navigation keeps its target. */
+function targetSuffix(target?: PickerTarget): string {
+  return target ? `@${TARGET_CODES[target]}` : "";
+}
+
 // A picker callback is a model selection, a submenu navigation step, or an effort change.
 // keepEffort finalizes the chained model->effort flow without touching the session's effort.
+// `target` rides along on selection and navigation so a submenu does not lose which agent it edits.
 export type PickerCallback =
-  | { kind: "select"; modelId: string }
-  | { kind: "openGroup"; groupPath: string }
-  | { kind: "back" }
+  | { kind: "select"; modelId: string; target?: PickerTarget }
+  | { kind: "openGroup"; groupPath: string; target?: PickerTarget }
+  | { kind: "back"; target?: PickerTarget }
   | { kind: "openEffort" }
   | { kind: "setEffort"; level: EffortLevel }
   | { kind: "keepEffort" }
@@ -132,6 +163,7 @@ export class ModelPicker {
     this.models = (llm.models ?? []).map((model) => ({
       id: model.id,
       label: model.label,
+      provider: model.provider,
       group: model.group,
       supportedEffortLevels: model.supportedEffortLevels,
       supportsEffort: model.supportsEffort,
@@ -216,17 +248,18 @@ export class ModelPicker {
     });
   }
 
-  private nodeButtons(pathSegments: string[], currentModelId: string): ConfirmationButton[] {
+  private nodeButtons(pathSegments: string[], currentModelId: string, target?: PickerTarget): ConfirmationButton[] {
     const { models, subgroups } = this.childrenOf(pathSegments);
+    const suffix = targetSuffix(target);
     const buttons: ConfirmationButton[] = [];
     for (const model of models) {
-      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${refFor(model.id)}` });
+      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${refFor(model.id)}${suffix}` });
     }
     for (const childPath of subgroups) {
       const lastSegment = childPath.split("/").pop() ?? childPath;
       buttons.push({
         label: mark(`${lastSegment} >`, this.pathContainsModel(childPath, currentModelId)),
-        action: `mdlg:${refFor(childPath)}`,
+        action: `mdlg:${refFor(childPath)}${suffix}`,
       });
     }
     return buttons;
@@ -238,9 +271,11 @@ export class ModelPicker {
    * selecting a model never forces the effort step. The entry is dropped when the current model
    * discards effort, where it would open a submenu that cannot change anything.
    */
-  buildButtons(currentModelId: string): ConfirmationButton[] {
-    const buttons = this.nodeButtons([], currentModelId);
-    if (this.effortLevelsFor(currentModelId).length > 0) {
+  buildButtons(currentModelId: string, target?: PickerTarget): ConfirmationButton[] {
+    const buttons = this.nodeButtons([], currentModelId, target);
+    // No effort entry on an agent menu: effort is a per-session choice, and offering it here would
+    // suggest the config edit also pins it.
+    if (!target && this.effortLevelsFor(currentModelId).length > 0) {
       buttons.push({ label: "Effort >", action: EFFORT_ACTION });
     }
     return buttons;
@@ -252,12 +287,13 @@ export class ModelPicker {
   }
 
   /** Submenu at a group path: its models + subgroups + a back entry to its parent. */
-  buildGroupButtons(groupPath: string, currentModelId: string): ConfirmationButton[] {
-    if (!this.groupOrder().includes(groupPath)) return this.buildButtons(currentModelId);
+  buildGroupButtons(groupPath: string, currentModelId: string, target?: PickerTarget): ConfirmationButton[] {
+    if (!this.groupOrder().includes(groupPath)) return this.buildButtons(currentModelId, target);
     const segments = groupPath.split("/");
-    const buttons = this.nodeButtons(segments, currentModelId);
+    const buttons = this.nodeButtons(segments, currentModelId, target);
     const parent = segments.slice(0, -1);
-    const backAction = parent.length === 0 ? "mdlb" : `mdlg:${refFor(parent.join("/"))}`;
+    const suffix = targetSuffix(target);
+    const backAction = parent.length === 0 ? `mdlb${suffix}` : `mdlg:${refFor(parent.join("/"))}${suffix}`;
     buttons.push({ label: "< Back", action: backAction });
     return buttons;
   }
@@ -288,27 +324,35 @@ export class ModelPicker {
 
   /** Full callback intent (selection, navigation, or effort). */
   parseCallbackAction(data: string): PickerCallback | null {
-    if (data === "mdlb") return { kind: "back" };
-    if (data === EFFORT_ACTION) return { kind: "openEffort" };
-    if (data === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
+    // The target is stripped first so every branch below parses the same shapes it always did.
+    // An unknown letter is treated as no target rather than as a target: falling back to the
+    // session is recoverable, writing config for the wrong agent is not.
+    const targeted = /^(.*)@([a-z])$/.exec(data);
+    const target = targeted ? TARGET_BY_CODE.get(targeted[2] ?? "") : undefined;
+    if (targeted && !target) return null;
+    const bare = target ? targeted?.[1] ?? data : data;
 
-    const effort = /^eff:(.+)$/.exec(data);
+    if (bare === "mdlb") return { kind: "back", ...(target ? { target } : {}) };
+    if (bare === EFFORT_ACTION) return { kind: "openEffort" };
+    if (bare === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
+
+    const effort = /^eff:(.+)$/.exec(bare);
     if (effort) {
       const level = effort[1] as EffortLevel;
       return this.effort.levels.includes(level) ? { kind: "setEffort", level } : null;
     }
 
-    const group = /^mdlg:([0-9a-f]+)$/.exec(data);
+    const group = /^mdlg:([0-9a-f]+)$/.exec(bare);
     if (group) {
       const groupPath = buildRefMap(this.groupOrder()).get(group[1] ?? "");
-      return groupPath ? { kind: "openGroup", groupPath } : { kind: "stale" };
+      return groupPath ? { kind: "openGroup", groupPath, ...(target ? { target } : {}) } : { kind: "stale" };
     }
 
     // Only report staleness for data that is unmistakably ours, so callbacks owned by other
     // features still fall through untouched.
-    if (/^mdl:[0-9a-f]+$/.test(data)) {
-      const modelId = this.parseCallback(data);
-      return modelId ? { kind: "select", modelId } : { kind: "stale" };
+    if (/^mdl:[0-9a-f]+$/.test(bare)) {
+      const modelId = this.parseCallback(bare);
+      return modelId ? { kind: "select", modelId, ...(target ? { target } : {}) } : { kind: "stale" };
     }
     return null;
   }
@@ -346,6 +390,11 @@ export class ModelPicker {
 
   labelFor(modelId: string): string {
     return this.models.find((model) => model.id === modelId)?.label ?? modelId;
+  }
+
+  /** The provider a model belongs to, or undefined when it follows the global default. */
+  providerFor(modelId: string): string | undefined {
+    return this.models.find((model) => model.id === modelId)?.provider;
   }
 }
 
