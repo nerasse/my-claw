@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import { stripInvisible } from "../../utils/invisible.ts";
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
 md.enable("strikethrough");
@@ -50,7 +51,7 @@ function decodeHtmlEntities(value: string): string {
 
 function normalizeVisibleMatrixText(value: string): string {
   return decodeHtmlEntities(
-    value.replace(/<[^>]+>/g, " ").replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, ""),
+    stripInvisible(value.replace(/<[^>]+>/g, " ")).text,
   )
     .replace(/\s+/g, " ")
     .trim();

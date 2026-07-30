@@ -7,8 +7,7 @@ import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
-import { scanSegment, type ScanSanction } from "./prompt/anti-injection.ts";
-import type { ScanPolicy } from "../core/config.ts";
+import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /** Per-run scratch state, keyed by message id. A single MessagePreprocessor instance is shared
  *  by the one AgentBridge that serves telegram + matrix + cron, so concurrent runs (different
@@ -230,31 +229,27 @@ export class MessagePreprocessor {
   }
 
   /**
-   * Each segment is scanned on its own so a verdict on quoted or contextual text cannot destroy
-   * the sender's actual question -- the single-blob scan this replaces let one stray zero-width
-   * space anywhere blank the whole turn. Segment headers stay outside the scanned text so a
-   * blocked segment keeps its shape instead of collapsing into the marker.
-   * See docs/anti-injection.md.
+   * Normalised as one blob: stripping invisible characters is uniform, so there is nothing a
+   * per-segment pass would decide differently. Segment-level handling only mattered while a
+   * verdict could replace a segment, and that denylist is gone -- see docs/untrusted-content.md.
    */
-  buildUserContent(message: UnifiedMessage, scan: ScanPolicy): string {
-    const scanned = (text: string, label: string, sanction: ScanSanction): string =>
-      scanSegment(text, label, scan.enabled ? sanction : "off").content;
+  buildUserContent(message: UnifiedMessage): string {
     const parts: string[] = [];
 
     if (message.replyToText) {
       const sender = message.replyToSender ? ` from ${message.replyToSender}` : "";
-      parts.push(`[Reply${sender}]\n${scanned(message.replyToText, "reply", "block")}`);
+      parts.push(`[Reply${sender}]\n${message.replyToText}`);
     }
 
     if (message.threadRootText) {
-      parts.push(`[Thread Root]\n${scanned(message.threadRootText, "thread-root", "block")}`);
+      parts.push(`[Thread Root]\n${message.threadRootText}`);
     }
 
     if (message.roomContext) {
-      parts.push(scanned(message.roomContext, "room-context", "block"));
+      parts.push(message.roomContext);
     }
 
-    let content = scanned(message.text, "user-text", scan.ownerSanction);
+    let content = message.text;
     const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
     if (visibleAttachments.length > 0) {
       const lines = visibleAttachments.map((a) => {
@@ -268,12 +263,11 @@ export class MessagePreprocessor {
         ].filter(Boolean);
         return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
       });
-      // Paths and filenames come from the sender, not from my-claw.
-      content += `\n\n[Attachments]\n${scanned(lines.join("\n"), "attachments", "block")}`;
+      content += `\n\n[Attachments]\n${lines.join("\n")}`;
     }
 
     parts.push(content);
-    return parts.filter((part) => part.trim()).join("\n\n");
+    return normalizeUntrusted(parts.filter((part) => part.trim()).join("\n\n"), "user-turn");
   }
 
   async buildImageContent(message: UnifiedMessage): Promise<ChatMessageContent[]> {

@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { CORE_PROMPT } from "./core-prompts.ts";
-import { scanForeign } from "./anti-injection.ts";
+import { normalizeUntrusted } from "./normalize-untrusted.ts";
 import { snapshot, isTracked } from "../../core/config-store.ts";
 import { log } from "../../utils/logger.ts";
 
@@ -77,12 +77,12 @@ export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> 
 
 /**
  * Layer 0 core directives. Read live from the workspace CORE.md (mtime cache, hot like the
- * other prompt files) and scanned for injection since it is owner-editable. Falls back to
- * the hardcoded CORE_PROMPT when the file is missing or blank, so the structural prompt can
- * never be silently emptied. OWNER_STEERING/anti-injection stay in code by design.
+ * other prompt files) and normalised since it is owner-editable. Falls back to the hardcoded
+ * CORE_PROMPT when the file is missing or blank, so the structural prompt can never be silently
+ * emptied. OWNER_STEERING stays in code by design.
  */
 export async function loadCorePrompt(): Promise<string> {
   const content = (await loadPromptFile("CORE.md")).trim();
   if (!content) return CORE_PROMPT;
-  return scanForeign(content, "CORE.md");
+  return normalizeUntrusted(content, "CORE.md");
 }

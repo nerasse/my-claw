@@ -7,7 +7,6 @@ import {
   resolveAgentMcp,
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
-  resolveScanPolicy,
 } from "../../core/config.ts";
 import { NestedAgentsCollector } from "../prompt/nested-agents.ts";
 import { join } from "node:path";
@@ -729,7 +728,7 @@ export class ClaudeSdkBackend implements AgentBackend {
   }
 
   private async buildUserTurn(message: UnifiedMessage, session: SessionData): Promise<string> {
-    const scanned = this.preprocessor.buildUserContent(message, resolveScanPolicy(this.config));
+    const scanned = this.preprocessor.buildUserContent(message);
     const transformed = (await hooks.transform("transform:user:content", { content: scanned, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformed, timestamp: new Date().toISOString() });
     return transformed;

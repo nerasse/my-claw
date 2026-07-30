@@ -1,5 +1,5 @@
 import { estimateTokens } from "../../llm/tokens.ts";
-import { scanForeign } from "../prompt/anti-injection.ts";
+import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
 import { dropLeadingOrphanToolMessages, type SessionMessage } from "../../sessions/store.ts";
 
 export interface RenderedHistory {
@@ -48,9 +48,9 @@ function renderMessage(message: SessionMessage, toolNames: Map<string, string>):
   const content = message.content.trim();
   if (!content) return null;
   const name = toolNames.get(message.toolCallId);
-  // Scanned per entry: scanForeign replaces the whole string it is given, so scanning the
-  // assembled block would let one flagged result erase the entire history.
-  const safe = scanForeign(content, name ? `tool-result:${name}` : "tool-result");
+  // Normalised per entry so the label names the tool that produced it, which is what makes the
+  // debug line useful when a stripped result has to be traced back.
+  const safe = normalizeUntrusted(content, name ? `tool-result:${name}` : "tool-result");
   return `[tool result${name ? `: ${name}` : ""}]\n${safe}`;
 }
 

@@ -2,7 +2,6 @@ import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/con
 import {
   resolveMaxIterations,
   resolveInjectionBudgetBonus,
-  resolveScanPolicy,
   nestedAgentsEnabled,
   resolveAgentSkills,
   resolveAgentMcp,
@@ -272,7 +271,7 @@ export class AgentBridge implements AgentBackend {
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
 
-      const userContent = this.preprocessor.buildUserContent(message, resolveScanPolicy(this.config));
+      const userContent = this.preprocessor.buildUserContent(message);
       const now = new Date().toISOString();
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
       session.messages.push({ role: "user", content: transformedContent, timestamp: now });
@@ -637,7 +636,7 @@ export class AgentBridge implements AgentBackend {
   ): Promise<void> {
     if (onTurnSwitch) await onTurnSwitch(injected);
 
-    const userContent = this.preprocessor.buildUserContent(injected, resolveScanPolicy(this.config));
+    const userContent = this.preprocessor.buildUserContent(injected);
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
     session.messages.push({ role: "user", content: transformedContent, timestamp: new Date().toISOString() });
 

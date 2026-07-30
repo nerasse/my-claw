@@ -1,6 +1,6 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import { str, strOpt, bool } from "../tools/types.ts";
-import { scanForeign } from "../agent/prompt/anti-injection.ts";
+import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { createJob, loadJobs, saveJobs, updateJob, removeJob, parseDeliver, computeNextRun } from "../cron/store.ts";
 import type { CronOrigin } from "../cron/types.ts";
@@ -40,15 +40,13 @@ export function createCronTool(scheduler: CronScheduler): Tool {
 
       switch (action) {
         case "create": {
-          const prompt = str(args, "prompt");
-          if (!prompt) return { success: false, output: "Missing 'prompt' for create." };
+          const rawPrompt = str(args, "prompt");
+          if (!rawPrompt) return { success: false, output: "Missing 'prompt' for create." };
+          // Stored normalised. Rejecting when normalisation changed the text would turn a stray
+          // zero-width space into a refusal to schedule; see docs/untrusted-content.md.
+          const prompt = normalizeUntrusted(rawPrompt, "cron-prompt");
           const schedule = str(args, "schedule");
           if (!schedule) return { success: false, output: "Missing 'schedule' for create." };
-
-          const scanned = scanForeign(prompt, "cron-prompt");
-          if (scanned !== prompt) {
-            return { success: false, output: `Prompt rejected: ${scanned}` };
-          }
 
           const deliverInput = strOpt(args, "deliver") ?? "origin";
           if (deliverInput.toLowerCase() === "origin" && !origin) {
@@ -87,13 +85,8 @@ export function createCronTool(scheduler: CronScheduler): Tool {
           const jobId = str(args, "job_id");
           if (!jobId) return { success: false, output: "Missing 'job_id' for update." };
 
-          const prompt = strOpt(args, "prompt");
-          if (prompt) {
-            const scanned = scanForeign(prompt, "cron-prompt");
-            if (scanned !== prompt) {
-              return { success: false, output: `Prompt rejected: ${scanned}` };
-            }
-          }
+          const rawPrompt = strOpt(args, "prompt");
+          const prompt = rawPrompt ? normalizeUntrusted(rawPrompt, "cron-prompt") : undefined;
 
           const schedule = strOpt(args, "schedule");
           const deliver = strOpt(args, "deliver");

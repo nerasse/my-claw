@@ -330,7 +330,6 @@ export interface MyClawConfig {
   cron?: CronConfig;
   memory?: MemoryConfig;
   injection?: InjectionConfig;
-  antiInjection?: AntiInjectionConfig;
   context?: ContextConfig;
   tools?: ToolsConfig;
   skills?: SkillsConfig;
@@ -453,30 +452,6 @@ export function injectionEnabled(config: MyClawConfig): boolean {
 export function resolveInjectionBudgetBonus(config: MyClawConfig): number {
   const n = config.injection?.budgetBonus;
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : DEFAULT_INJECTION_BUDGET_BONUS;
-}
-
-/**
- * Anti-injection scan of the user turn. Named apart from `injection` above, which is the unrelated
- * mid-run steering feature. Governs the user turn only: foreign content (tool results, fetched
- * pages, nested AGENTS.md) is always scanned and always blocked so an editable file can never
- * weaken the guard. See `docs/anti-injection.md`.
- */
-export interface AntiInjectionConfig {
-  enabled?: boolean; // default true
-  ownerSanction?: "annotate" | "block"; // default "annotate"
-}
-
-/** Resolved per run and passed explicitly; the preprocessor holds no config of its own. */
-export interface ScanPolicy {
-  enabled: boolean;
-  ownerSanction: "annotate" | "block";
-}
-
-export function resolveScanPolicy(config: MyClawConfig | undefined): ScanPolicy {
-  return {
-    enabled: config?.antiInjection?.enabled !== false,
-    ownerSanction: config?.antiInjection?.ownerSanction === "block" ? "block" : "annotate",
-  };
 }
 
 export const DEFAULT_ORCHESTRATOR_MAX_ITERATIONS = 90;
@@ -736,7 +711,7 @@ export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
  * so the structural guard below can share the exact same lists instead of drifting from them.
  */
 export const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "antiInjection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
 ] as const;
 /** Array sections whose identity must be preserved (consumers hold the same array reference). */
 export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;

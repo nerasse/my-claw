@@ -2,7 +2,7 @@ import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "./loader.ts";
 import { getPlatformHint } from "./platform-hints.ts";
-import { scanForeign } from "./anti-injection.ts";
+import { normalizeUntrusted } from "./normalize-untrusted.ts";
 
 export interface PromptContext {
   platform: string;
@@ -27,7 +27,7 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   for (const name of fileOrder) {
     const content = files[name];
     if (content) {
-      layers.push(scanForeign(content, name));
+      layers.push(normalizeUntrusted(content, name));
     }
   }
 
