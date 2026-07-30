@@ -1,11 +1,11 @@
-import type { MyClawConfig } from "../core/config.ts";
+import { resolveAgentLlm, type MyClawConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
 import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
-import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
+import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -57,9 +57,13 @@ export class BackendDispatcher implements AgentBackend {
       });
       delete session.modelOverride;
     }
+    // The engine is picked from the model that will actually run, so the agent's configured
+    // default has to be merged in here too: resolving without it would route a claude-sdk model
+    // configured for cron into the home loop, which then quietly ran a different model.
+    const agentLlm = resolveAgentLlm(this.config, message.platform === "cron" ? "cron" : "main");
     let resolved;
     try {
-      resolved = resolveLlmConfigForMessage(this.config.llm, session.modelOverride, hasImages);
+      resolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, session.modelOverride, hasImages);
     } catch (err) {
       if (!session.modelOverride) throw err;
       void log("warn", "session modelOverride no longer resolves; falling back to default", {
@@ -68,7 +72,7 @@ export class BackendDispatcher implements AgentBackend {
         error: String(err),
       });
       delete session.modelOverride;
-      resolved = resolveLlmConfigForMessage(this.config.llm, undefined, hasImages);
+      resolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, undefined, hasImages);
     }
     return resolved.backend === "claude-sdk" ? this.sdk : this.home;
   }

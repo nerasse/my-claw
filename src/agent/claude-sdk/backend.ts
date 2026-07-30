@@ -5,6 +5,7 @@ import {
   nestedAgentsEnabled,
   resolveAgentSkills,
   resolveAgentMcp,
+  resolveAgentLlm,
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
 } from "../../core/config.ts";
@@ -17,7 +18,7 @@ import { trimSessionMessages, sealDanglingToolCalls } from "../../sessions/store
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
-import { resolveLlmConfigForMessage } from "../../llm/resolver.ts";
+import { resolveLlmConfigForAgentMessage } from "../../llm/resolver.ts";
 import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -302,8 +303,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
     const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
-    const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
+    const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,
+      resolveAgentLlm(this.config, agentToolType),
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       session.effortOverride,

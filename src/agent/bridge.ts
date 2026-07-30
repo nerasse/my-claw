@@ -5,6 +5,7 @@ import {
   nestedAgentsEnabled,
   resolveAgentSkills,
   resolveAgentMcp,
+  resolveAgentLlm,
   resolveNestedAgentsMaxBytes,
   contextPruningEnabled,
   resolveContextPruning,
@@ -19,7 +20,7 @@ import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse } from "../llm/provider.ts";
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
-import { resolveLlmConfigForMessage } from "../llm/resolver.ts";
+import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens, estimateMessagesTokens, DEFAULT_CONTEXT_TOKENS } from "../llm/tokens.ts";
 import { pruneOldToolResults } from "./context-pruning.ts";
@@ -193,8 +194,9 @@ export class AgentBridge implements AgentBackend {
         ? "main"
         : this.agentKind === "research" ? "research" : "general";
     const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
-    const llmConfig = this.llmOverride ?? resolveLlmConfigForMessage(
+    const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,
+      resolveAgentLlm(this.config, agentToolType),
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       session.effortOverride,

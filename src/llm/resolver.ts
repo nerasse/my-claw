@@ -131,17 +131,40 @@ export function resolveLlmConfigForMessage(
   return resolveLlmConfig(config, fallbackId, effortOverride);
 }
 
+/** An agent's defaults layered over the global ones. Only the two keys an agent may override. */
+function mergeAgentLlm(agentConfig: AgentLlmConfig | undefined, globalConfig: LlmConfig): LlmConfig {
+  return {
+    ...globalConfig,
+    defaultProvider: agentConfig?.defaultProvider ?? globalConfig.defaultProvider,
+    defaultModel: agentConfig?.defaultModel ?? globalConfig.defaultModel,
+  };
+}
+
 export function resolveAgentLlmConfig(
   agentConfig: AgentLlmConfig | undefined,
   globalConfig: LlmConfig,
   modelId?: string,
 ): ResolvedLlmConfig {
-  const merged: LlmConfig = {
-    ...globalConfig,
-    defaultProvider: agentConfig?.defaultProvider ?? globalConfig.defaultProvider,
-    defaultModel: agentConfig?.defaultModel ?? globalConfig.defaultModel,
-  };
-  return resolveFromMerged(merged, modelId);
+  return resolveFromMerged(mergeAgentLlm(agentConfig, globalConfig), modelId);
+}
+
+/**
+ * The agent-aware form of `resolveLlmConfigForMessage`, for the agents that run a real message
+ * rather than a synthetic sub-agent turn. Sub-agents go through `resolveAgentLlmConfig` instead
+ * and lose the vision fallback and the session effort with it, which is fine for them because
+ * their turn carries no attachment; the orchestrator and cron both need those kept.
+ *
+ * Precedence: the session's own `/model` first, then the agent's configured default, then the
+ * global default. A per-chat choice must never be silently overruled by a config edit.
+ */
+export function resolveLlmConfigForAgentMessage(
+  globalConfig: LlmConfig,
+  agentConfig: AgentLlmConfig | undefined,
+  modelId: string | undefined,
+  hasImages: boolean,
+  effortOverride?: EffortLevel,
+): ResolvedLlmConfig {
+  return resolveLlmConfigForMessage(mergeAgentLlm(agentConfig, globalConfig), modelId, hasImages, effortOverride);
 }
 
 export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {

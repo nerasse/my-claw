@@ -321,6 +321,13 @@ export interface MyClawConfig {
     orchestrator?: AgentConfig;
     general?: AgentConfig;
     research?: AgentConfig;
+    /**
+     * Cron runs used to be indistinguishable from the orchestrator in config, so a scheduled job
+     * could not be pinned to a cheap model without moving the owner's own default. The key is
+     * optional and absent inherits the orchestrator, so adding it changed nothing that existed.
+     * `maxIterations` here is ignored: cron already has `cron.maxIterations`.
+     */
+    cron?: AgentConfig;
     nested?: NestedAgentsConfig;
   };
   voice?: VoiceConfig;
@@ -490,11 +497,32 @@ export type AgentScope = string[] | "all";
 
 const SCOPE_WILDCARD = "*";
 
-function configKeyForAgent(type: AgentToolType): "orchestrator" | "general" | "research" {
-  // cron inherits the orchestrator: that is today's behavior, and a fourth config key would carry a
-  // name that exists on neither axis.
-  if (type === "general" || type === "research") return type;
-  return "orchestrator";
+export type AgentConfigKey = "orchestrator" | "general" | "research" | "cron";
+
+function configKeyForAgent(type: AgentToolType): AgentConfigKey {
+  // `cron` was long absent from the config axis so that no key would carry a name existing on only
+  // one axis. It now has one, which brings the two axes closer instead of further apart. Absence
+  // still inherits the orchestrator, so nothing that predates the key moved.
+  if (type === "main") return "orchestrator";
+  return type;
+}
+
+/** The config key an agent reads, in the caller's own vocabulary. `main` and `orchestrator` are one. */
+export function agentConfigKey(type: AgentToolType): AgentConfigKey {
+  return configKeyForAgent(type);
+}
+
+/**
+ * The agent's own model/provider defaults, or the orchestrator's when it has none. Returning
+ * `undefined` rather than the global config keeps the merge in the resolver, which owns precedence.
+ */
+export function resolveAgentLlm(config: MyClawConfig, type: AgentToolType): AgentLlmConfig | undefined {
+  const own = config.agents?.[configKeyForAgent(type)]?.llm;
+  if (own?.defaultModel !== undefined || own?.defaultProvider !== undefined) return own;
+  // Only cron inherits: general and research are separate agents whose absent entry means "global
+  // default", not "whatever the owner picked for the chat he is sitting in".
+  if (type === "cron") return config.agents?.orchestrator?.llm;
+  return undefined;
 }
 
 function normalizeScope(list: string[]): AgentScope {
@@ -766,11 +794,14 @@ export function parseConfig(raw: string): MyClawConfig {
   if (isLegacyLlmConfig(config.llm)) {
     config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);
   }
-  if (config.agents?.general?.llm && isLegacyLlmConfig(config.agents.general.llm)) {
-    config.agents.general.llm = migrateLegacyAgentLlmConfig(config.agents.general.llm);
-  }
-  if (config.agents?.research?.llm && isLegacyLlmConfig(config.agents.research.llm)) {
-    config.agents.research.llm = migrateLegacyAgentLlmConfig(config.agents.research.llm);
+  // Every agent key, not just the two that had a working model override: `orchestrator` was skipped
+  // here for as long as its model was dead config, so a legacy `{"model": ...}` under it stayed
+  // legacy and would now resolve to nothing.
+  for (const key of ["orchestrator", "general", "research", "cron"] as const) {
+    const agent = config.agents?.[key];
+    if (agent?.llm && isLegacyLlmConfig(agent.llm)) {
+      agent.llm = migrateLegacyAgentLlmConfig(agent.llm);
+    }
   }
 
   config.whitelist = config.whitelist ?? [];

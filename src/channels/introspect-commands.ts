@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   resolveAgentSkills,
   resolveAgentMcp,
+  resolveAgentLlm,
   resolveMaxIterations,
   scopeAllows,
   type AgentScope,
@@ -77,18 +78,16 @@ function scopeLabel(scope: AgentScope): string {
 
 /** Resolved model for an agent, or a marker: a broken provider must not take the command down. */
 function modelFor(config: MyClawConfig, toolType: AgentToolType): string {
-  const key = toolType === "general" || toolType === "research" ? toolType : undefined;
   try {
-    return resolveAgentLlmConfig(key ? config.agents?.[key]?.llm : undefined, config.llm).model || "(aucun)";
+    return resolveAgentLlmConfig(resolveAgentLlm(config, toolType), config.llm).model || "(aucun)";
   } catch (err) {
     return `(non résolu : ${String(err).slice(0, 60)})`;
   }
 }
 
 function backendFor(config: MyClawConfig, toolType: AgentToolType): string {
-  const key = toolType === "general" || toolType === "research" ? toolType : undefined;
   try {
-    return resolveAgentLlmConfig(key ? config.agents?.[key]?.llm : undefined, config.llm).backend ?? "openai";
+    return resolveAgentLlmConfig(resolveAgentLlm(config, toolType), config.llm).backend ?? "openai";
   } catch {
     return "inconnu";
   }
