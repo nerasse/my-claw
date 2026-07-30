@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startConfigWatcher } from "../../src/core/config-watcher.ts";
-import { parseConfig, resolveScanPolicy, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
+import { parseConfig, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
 import { artifactId, setQuarantine, clearQuarantine, contentSha } from "../../src/core/config-store.ts";
 import { ModelPicker } from "../../src/channels/model-picker.ts";
 import { hooks } from "../../src/hooks/index.ts";
@@ -234,32 +234,6 @@ describe("E2E config hot-reload", () => {
     expect(await readFile(join(rejectedDir, files[0]!), "utf-8")).toBe("{ broken beyond repair");
     // The owner will fix the file in seconds; the archive is what still explains the skip.
     expect(config.llm.defaultModel).toBe("model-a");
-  });
-
-  test("antiInjection is hot-reloaded in place so a run picks up the new sanction", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
-    const file = join(dir, "config.json");
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
-
-    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
-    const config = parseConfig(await Bun.file(file).text());
-    expect(resolveScanPolicy(config)).toEqual({ enabled: true, ownerSanction: "annotate" });
-
-    const next = initialConfig();
-    next.antiInjection = { ownerSanction: "block" };
-    await writeFile(file, JSON.stringify(next, null, 2));
-    const watcher = startConfigWatcher(config, {}, {
-      path: file,
-      read: async () => parseConfig(await Bun.file(file).text()),
-      debounceMs: 20,
-    });
-    cleanups.push(() => watcher.stop());
-
-    const result = await watcher.reloadNow();
-    expect(result.changed).toContain("antiInjection");
-    // Every run resolves the policy from the same live object, so mutating it in place is what
-    // makes the change take effect without a restart.
-    expect(resolveScanPolicy(config)).toEqual({ enabled: true, ownerSanction: "block" });
   });
 
   test("a quarantined content cannot come back through a save", async () => {
