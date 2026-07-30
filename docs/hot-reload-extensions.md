@@ -78,12 +78,10 @@ split, which is simpler and avoids double-spawning stdio servers:
   constant stays in code as both the seed source and the safety net.
 - `CORE.md` is distinct from the existing `SYSTEM.md` (which is reference-only
   documentation, not injected).
-- Stays hardcoded (safety): `OWNER_STEERING_NOTE` and the anti-injection
-  patterns. An editable file must never be able to weaken injection defenses or
-  break the mid-run owner-steering contract the SDK backend depends on.
-  The `antiInjection` config section tunes the *user turn* only (see
-  `docs/anti-injection.md`); foreign content stays unconditionally blocking, so
-  nothing reachable from config can lower the guard on fetched or cloned content.
+- Stays hardcoded (safety): `OWNER_STEERING_NOTE`. An editable file must never
+  break the mid-run owner-steering contract the SDK backend depends on. The
+  anti-injection pattern denylist it used to sit beside was removed outright --
+  see `docs/untrusted-content.md`.
 
 ### Phase 5 -- Live tool-code plugins (DEFERRED, feasible)
 
@@ -127,15 +125,13 @@ Not scheduled; captured for the same reason.
 - Until Block A/B land, new tool *implementations* and Matrix/Telegram identity are
   boot-only; `memory`/`voice`/`cron` are reboot sections. The plan below moves the
   feasible ones to hot; `workspace` path changes and the safety constants stay out.
-- Genuinely never hot: `workspace` path (re-seed + re-resolve every tool cwd), and
-  the anti-injection patterns + `OWNER_STEERING` (an editable file must not be able
-  to weaken injection defenses). The `antiInjection` section is hot, but it only
-  reaches the user turn. A5 gates tool-code loading behind an opt-in switch.
+- Genuinely never hot: `workspace` path (re-seed + re-resolve every tool cwd) and
+  `OWNER_STEERING`. A5 gates tool-code loading behind an opt-in switch.
 - MCP: using the official SDK client for all transports avoids a hand-rolled
   JSON-RPC stack. stdio servers are spawned once by the manager and shared by both
   backends. A stdio server that changes wiring is fully torn down before reconnect.
-- `CORE.md` is structurally powerful and only scanned for injection, not otherwise
-  guarded; `OWNER_STEERING` and the anti-injection patterns stay in code.
+- `CORE.md` is structurally powerful and only normalised, not otherwise guarded;
+  `OWNER_STEERING` stays in code.
 
 ## Where
 

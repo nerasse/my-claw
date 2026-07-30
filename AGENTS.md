@@ -95,7 +95,7 @@ src/
 │       ├── builder.ts
 │       ├── loader.ts
 │       ├── core-prompts.ts
-│       ├── anti-injection.ts
+│       ├── normalize-untrusted.ts
 │       ├── nested-agents.ts   # Per-directory AGENTS.md collected from the paths tools touch
 │       └── platform-hints.ts
 ├── channels/
