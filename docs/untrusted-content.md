@@ -1,14 +1,27 @@
 # Untrusted content: what my-claw does, and what it deliberately does not
 
-Status: **implemented**. Supersedes `docs/anti-injection.md`, which described a pattern denylist
-that has been removed.
+Status: **implemented**. Replaces the former `docs/anti-injection.md` (deleted in the same
+change), which described a pattern denylist that no longer exists.
 
 ## What is kept
 
 One thing: **invisible characters are stripped from untrusted content** before the model reads it,
-in `src/utils/invisible.ts`, applied through `normalizeUntrusted()` at every ingestion point --
-fetched pages, tool results, browser output, nested `AGENTS.md` from cloned repos, `CORE.md`,
-skills, cron prompts, replayed history, and the incoming user turn.
+in `src/utils/invisible.ts`, applied through `normalizeUntrusted()`.
+
+Ingestion points: the incoming user turn, `CORE.md` and the workspace prompt files, nested
+`AGENTS.md` from cloned repos, skills, cron prompts, the browser sub-agent's context, replayed
+history, and **live tool results from remote-content tools**.
+
+That last one was missing until it was checked: only the SDK *replay* path normalised tool results,
+so a fetched page carrying Unicode tag characters reached the model intact on the pass that
+actually mattered. It now happens in both backends, right after the `transform:tool:result` hook.
+
+`producesRemoteContent()` in `src/tools/registry.ts` decides which results qualify: `fetch`,
+`web_search`, `delegate_browser_task`, `browser_*` and `mcp__*`. The local file tools -- `read`,
+`grep`, `find`, `ls`, `bash` -- are deliberately excluded, so the agent sees a local file exactly
+as it is. Normalising them would let an edit round-trip silently delete invisible characters the
+owner put there on purpose, and for a coding agent corrupting a local file is worse than the
+hidden-instruction risk it would cover.
 
 The rationale is narrow and defensible: it guarantees the model reads the same text a human sees.
 It is the one measure with a demonstrated attack behind it -- Johann Rehberger's

@@ -225,6 +225,7 @@ src/
 │   ├── media.ts           # Media ref extraction/dedup
 │   ├── errors.ts          # Error formatting
 │   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
+│   ├── invisible.ts       # Invisible-character class, shared -- docs/untrusted-content.md
 │   └── lru-map.ts         # LruMap + TtlSet utilities
 └── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```

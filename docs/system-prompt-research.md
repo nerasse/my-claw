@@ -126,7 +126,8 @@
 2. **Ordered layers** -- simple to understand and debug
 3. **Cache once per session** -- no rebuild every turn
 4. **Frozen snapshots for memory** -- avoids invalidating the cache
-5. **Anti-injection scan** on every external file loaded
+5. **Normalisation** on every external file loaded (invisible characters only; the pattern
+   scan this line originally meant was removed -- see `docs/untrusted-content.md`)
 6. **PLATFORM_HINTS** -- formatting guidance per channel (essential for us)
 7. **Ephemeral system prompt** -- temporary overlay without touching the cache
 

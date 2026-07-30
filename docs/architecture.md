@@ -241,12 +241,13 @@ both engines -- the Claude Agent SDK receives the freshly built prompt in its `i
 request on every run, and a changed prompt takes effect even when resuming an existing SDK
 session.
 
-#### Anti-injection
+#### Untrusted content
 
-- All workspace files scanned before injection, plus every nested AGENTS.md discovered in
-  a subtree (untrusted external content) -- see `docs/nested-agents.md`
-- 10 threat patterns + invisible unicode characters
-- Blocked files replaced with `[BLOCKED: potential prompt injection]`
+- All workspace files are normalised before injection, plus every nested AGENTS.md discovered
+  in a subtree (untrusted external content) -- see `docs/nested-agents.md`
+- Normalisation strips invisible characters only, so the model reads what a human sees. The
+  pattern denylist that used to sit here was removed after measurement -- it is not a security
+  boundary and no longer pretends to be. See `docs/untrusted-content.md`
 
 #### SYSTEM.md
 
