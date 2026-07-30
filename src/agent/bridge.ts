@@ -40,6 +40,8 @@ import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import { producesRemoteContent } from "../tools/registry.ts";
+import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 // The home loop is provider-agnostic except for these two transport calls: codex-backed models
 // speak the OpenAI Responses API (docs/codex-backend.md), everything else chat/completions. Both
@@ -555,6 +557,9 @@ export class AgentBridge implements AgentBackend {
             sessionId: session.id,
             toolCallId: tc.id,
           })).result;
+          if (producesRemoteContent(tc.name)) {
+            transformedResult = normalizeUntrusted(transformedResult, `tool-result:${tc.name}`);
+          }
           if (nestedAgents) {
             transformedResult += nestedAgents.collect(tc.name, tc.arguments);
           }

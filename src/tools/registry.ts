@@ -23,6 +23,22 @@ export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_sear
 const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron"];
 const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory"];
 
+/**
+ * Tools whose output is content my-claw did not author, so it is normalised before the model reads
+ * it (invisible characters stripped -- see docs/untrusted-content.md).
+ *
+ * The local file tools are deliberately absent. The agent has to see a file exactly as it is, or an
+ * edit round-trip would silently delete invisible characters the owner put there on purpose; for a
+ * coding agent, corrupting a local file is worse than the hidden-instruction risk it would cover.
+ */
+const REMOTE_CONTENT_TOOLS = new Set(["fetch", "web_search", "delegate_browser_task"]);
+
+export function producesRemoteContent(toolName: string): boolean {
+  return REMOTE_CONTENT_TOOLS.has(toolName)
+    || toolName.startsWith("browser_")
+    || toolName.startsWith(MCP_PREFIX);
+}
+
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private dynamicProvider?: () => Tool[];

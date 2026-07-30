@@ -10,6 +10,8 @@ import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
 import { log } from "../../utils/logger.ts";
 import { errorLogData } from "../../utils/errors.ts";
+import { producesRemoteContent } from "../../tools/registry.ts";
+import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
 
 export const MCP_SERVER_NAME = "myclaw";
 
@@ -101,6 +103,10 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
     sessionId: ctx.session.id,
     toolCallId: `sdk-${startedAt}`,
   })).result;
+
+  if (producesRemoteContent(t.name)) {
+    content = normalizeUntrusted(content, `tool-result:${t.name}`);
+  }
 
   if (ctx.nestedAgents) {
     content += ctx.nestedAgents.collect(t.name, args);
