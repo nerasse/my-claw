@@ -80,8 +80,8 @@ export function resolveAgentMcp(config: MyClawConfig, type: AgentScopeType): str
 ### The two agent vocabularies
 
 The tool axis is `main | general | research | cron` (`src/tools/registry.ts:3`); the config axis is
-`orchestrator | general | research` (`src/core/config.ts:313-318`). `main` and `orchestrator` are the
-same agent under two names, and `cron` has no config entry.
+`orchestrator | general | research | cron`. `main` and `orchestrator` are the same agent under two
+names; every other name is shared by both axes.
 
 The resolvers take the **config** vocabulary and the callers map into it:
 
@@ -90,10 +90,13 @@ The resolvers take the **config** vocabulary and the callers map into it:
 | `main` | `orchestrator` |
 | `general` | `general` |
 | `research` | `research` |
-| `cron` | `orchestrator` (no `agents.cron` key is added) |
+| `cron` | `cron`, falling back to `orchestrator` when the key is absent |
 
-`cron` inheriting the orchestrator preserves today's behaviour exactly and avoids a fourth key whose
-name would not match either axis.
+`agents.cron` was refused for a long time (see Rejected below) on the grounds that it would name
+something present on only one axis. That argument was backwards: `cron` exists on the tool axis, so
+adding it to the config axis brings the two closer. The key is optional and an absent one still
+inherits the orchestrator, so nothing that predates it moved. `maxIterations` is the exception: cron
+already reads `cron.maxIterations`, and an `agents.cron.maxIterations` is ignored.
 
 ### The orchestrator is scoped too
 
@@ -374,8 +377,10 @@ despite being advertised in `MATRIX_COMMANDS:8`, matched by `META_COMMAND_PATTER
   per-agent argument was the point of the request.
 - **Deriving per-server MCP tool counts from the `mcp__<server>__` prefix instead of adding manager
   state** — cheaper, but cannot explain why a declared server is missing.
-- **A fourth `agents.cron` config key** — the tool axis and config axis already disagree on names;
-  adding a key present in only one of them makes it worse.
+- ~~**A fourth `agents.cron` config key**~~ — originally rejected because "the tool axis and config
+  axis already disagree on names; adding a key present in only one of them makes it worse". Reversed
+  when per-agent models arrived: a scheduled job could not be pinned to a cheap model without moving
+  the owner's own default, and `cron` was already a name on the tool axis. See `docs/agent-model.md`.
 
 ## Tests
 

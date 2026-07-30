@@ -184,7 +184,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 - Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
 - 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`
 - FIFO queueing: concurrent `send` to same sub-agent queues instead of rejecting
-- Configurable LLM per type via `config.agents.{general,research}.llm.model` (any provider/model)
+- Configurable LLM per type via `config.agents.<agent>.llm.defaultModel` (`docs/agent-model.md`)
 - Optional `workspaceDir` per sub-agent for filesystem isolation
 
 ### Skills

@@ -427,24 +427,28 @@ Add custom headers per provider:
 
 ### Per-Agent Model
 
-Sub-agents inherit the global `llm.providers`. You only need to specify a different model if desired:
+Every agent inherits the global `llm.providers`; an entry is only needed to pin a different model.
+Settable from chat with `/model <agent>` (`docs/agent-model.md`), which writes this exact shape.
 
 ```json
 "agents": {
-  "general": {
-    "llm": {
-      "defaultModel": "llama-3.3-70b-versatile"
-    }
-  },
-  "research": {
-    "llm": {
-"defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo"
-    }
-  }
+  "orchestrator": { "llm": { "defaultModel": "claude-opus-5", "defaultProvider": "anthropic" } },
+  "general":      { "llm": { "defaultModel": "llama-3.3-70b-versatile" } },
+  "research":     { "llm": { "defaultModel": "mimo-v2.5" } },
+  "cron":         { "llm": { "defaultModel": "mimo-v2.5-pro" } }
 }
 ```
 
-If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `defaultModel` is omitted, the global `llm.defaultModel` is used.
+Precedence for one run: the session's own `/model` first, then the agent's `defaultModel`, then the
+global `llm.defaultModel`. A per-chat choice is never overruled by a config edit.
+
+If `defaultProvider` is omitted the model's own `provider` field decides, then the global
+`llm.defaultProvider`. Writing it explicitly is what `/model <agent>` does, because most models come
+from provider discovery and are absent from this file: with the discovery endpoint down after a
+restart, an id alone would resolve against whatever `llm.defaultProvider` happens to be.
+
+`cron` inherits `orchestrator` when it has no entry. `general` and `research` do not: their absent
+entry means the global default, not whatever the owner picked for his own chats.
 
 ### Per-Agent Skills and MCP Servers
 
@@ -464,7 +468,7 @@ If `defaultProvider` is omitted, the global `llm.defaultProvider` is used. If `d
   these fields behaves exactly as before.
 - `[]` means **none**, and is never read as "unset". `skills: []` gives that agent no skills at all.
 - The orchestrator's own list restricts the orchestrator, it is not merely a value children inherit.
-- `cron` has no config entry of its own and inherits the orchestrator.
+- `cron` has its own optional entry; when absent it inherits the orchestrator.
 - **Exception, `research.mcp`:** an absent field resolves to `[]`, not to the orchestrator's list.
   The research agent had zero MCP servers before this existed, so inheriting `["*"]` would hand it
   every server on upgrade. Only an explicit `agents.research.mcp` grants it servers.
@@ -487,7 +491,7 @@ is per type). No argument means the orchestrator, and an unknown name lists the 
 - `/skills [agent]` — the skills that agent sees, with its scope, whether it can write skills
   (`manage_skills` is orchestrator-only), and any configured name matching no installed skill.
 - `/agents` — the three configured types with iterations, model, tool class and both scopes; then
-  `cron` (no config entry, inherits the orchestrator); then the live sub-agents; then the browser
+  `cron` (inherits the orchestrator when it has no entry of its own); then the live sub-agents; then the browser
   sub-agent, which is hardcoded, has no skills or MCP, and is invisible to `list_agents`.
 - `/mcp [agent]` — every **declared** server with its state (`connected`/`disabled`/`failed`, with the
   connect error), marked in or out of that agent's scope. A failed server stays listed, which is the

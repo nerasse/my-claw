@@ -22,7 +22,9 @@ The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subage
 | `general` | All 8 base tools (bash, read, write, fetch, find, grep, ls, memory) | Execution tasks |
 | `research` | Read-only: read, grep, find, ls, fetch | Exploration, analysis |
 
-Depth 0 (orchestrator) can spawn depth 1. Depth 1 `general` can spawn depth 2 `research`. Depth 2 cannot spawn further.
+Depth 0 (orchestrator) can spawn depth 1. `MAX_DEPTH` is 2, but **depth 2 is currently unreachable**:
+`spawn` is in `SUBAGENT_EXCLUDED_TOOLS` (`src/tools/registry.ts`), so no sub-agent of any type can
+spawn, and `executeRunWithSession` hard-codes `depth = 1`.
 
 ## Lifecycle
 

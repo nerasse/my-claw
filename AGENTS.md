@@ -69,6 +69,7 @@ src/
 │   ├── config.ts          # App configuration + types, per-agent scoping -- docs/agent-scoping.md
 │   ├── config-watcher.ts  # Hot-reload of ~/.my-claw/config.json (fs.watch)
 │   ├── config-store.ts    # Config snapshots: boot fallback, health gate, rollback -- docs/config-backup.md
+│   ├── config-edit.ts     # Targeted config.json writes from chat -- docs/agent-model.md
 │   ├── config-health.ts   # A/B loop: quarantines a config that never brings a channel up
 │   ├── router.ts          # Message routing (router/ moved here)
 │   ├── run-registry.ts    # Live run tree (main + sub-agents) for /status and /stop
@@ -107,6 +108,7 @@ src/
 │   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
+│   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
 │   ├── telegram/
 │   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
