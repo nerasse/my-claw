@@ -22,7 +22,8 @@ import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmRespons
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
-import { trimToContextWindow, estimateTokens, estimateMessagesTokens, DEFAULT_CONTEXT_TOKENS } from "../llm/tokens.ts";
+import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
+import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import { pruneOldToolResults } from "./context-pruning.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -70,8 +71,13 @@ function complete(
     : chatCompletion(config, messages, tools, signal);
 }
 
-function accumulateUsage(session: SessionData, usage?: LlmUsage): void {
+function accumulateUsage(session: SessionData, usage?: LlmUsage, historyLength?: number): void {
   if (!usage) return;
+  // The billed prompt size, tied to the history it covered, so the compaction gate can stop
+  // guessing it from chars/4. See docs/context-window.md.
+  if (historyLength !== undefined) {
+    session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength) ?? session.lastPrompt;
+  }
   if (!session.tokenUsage) {
     session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
   }
@@ -327,7 +333,7 @@ export class AgentBridge implements AgentBackend {
             chatMessages.push(...pruned);
           }
         }
-        const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context, toolSchemaTokens);
+        const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig).effective, toolSchemaTokens);
         if (trimmed !== chatMessages) {
           chatMessages.length = 0;
           chatMessages.push(...trimmed);
@@ -368,8 +374,8 @@ export class AgentBridge implements AgentBackend {
           toolCallCount: response.toolCalls?.length ?? 0,
         });
 
-        accumulateUsage(session, response.usage);
-        recordApiCall({
+          accumulateUsage(session, response.usage, session.messages.length);
+          recordApiCall({
           sessionId: session.id,
           parentSessionId: attributionParent(session),
           platform: message.platform,
@@ -683,7 +689,7 @@ export class AgentBridge implements AgentBackend {
     chatMessages.push({ role: "system", content: summaryPrompt });
     session.messages.push({ role: "user", content: `[system: ${summaryPrompt}]`, timestamp: new Date().toISOString() });
 
-    const trimmed = trimToContextWindow(chatMessages, llmConfig.limit?.context);
+    const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig).effective);
     if (trimmed !== chatMessages) {
       chatMessages.length = 0;
       chatMessages.push(...trimmed);
@@ -892,18 +898,36 @@ export class AgentBridge implements AgentBackend {
     }
   }
 
+  /**
+   * Window this run may use: the model's window lowered by the standing cap, unless the model is
+   * exempt or the session asked for the full one. Every consumer goes through here so the trim, the
+   * compaction gate and /status can never disagree about the number.
+   */
+  private contextWindow(session: SessionData, llmConfig: ResolvedLlmConfig) {
+    return resolveContextWindow({
+      model: llmConfig.model,
+      config: this.config,
+      declared: llmConfig.limit?.context,
+      baseUrl: llmConfig.baseUrl,
+      sessionMode: session.contextModeOverride,
+    });
+  }
+
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
   private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig): Promise<void> {
-    const contextLimit = llmConfig.limit?.context ?? DEFAULT_CONTEXT_TOKENS;
+    const window = this.contextWindow(session, llmConfig);
     const threshold = resolveAutoCompactThreshold(this.config);
-    const estimated = estimateMessagesTokens(this.toChatMessages(session.messages));
-    if (estimated <= contextLimit * threshold) return;
+    const occupied = occupiedContextTokens(session.messages, (msgs) => this.toChatMessages([...msgs]), session.lastPrompt);
+    if (occupied <= window.effective * threshold) return;
 
     void log("info", "auto-compaction triggered", {
       sessionId: session.id,
-      estimatedTokens: estimated,
-      contextLimit,
+      occupiedTokens: occupied,
+      measured: session.lastPrompt?.tokens,
+      contextLimit: window.effective,
+      rawContextLimit: window.raw,
+      windowSource: window.rawSource,
       threshold,
       messageCount: session.messages.length,
     });

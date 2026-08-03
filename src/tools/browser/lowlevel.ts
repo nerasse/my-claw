@@ -5,6 +5,7 @@ import type { BrowserConfig } from "../../core/config.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
 import { log } from "../../utils/logger.ts";
 import { type BrowserPageState, getPageId } from "./state.ts";
+import { globToRegExp } from "../../utils/glob.ts";
 
 /** Methods the subagent may drive when allowCdp is on. Deliberately narrow: page structure,
  *  input synthesis and rendering. Anything touching the browser session itself is refused by
@@ -18,11 +19,6 @@ const DEFAULT_CDP_ALLOWLIST = [
   "Page.captureScreenshot",
   "Page.printToPDF",
 ];
-
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`, "i");
-}
 
 export function isCdpMethodAllowed(method: string, allowlist?: string[]): boolean {
   const patterns = allowlist?.length ? allowlist : DEFAULT_CDP_ALLOWLIST;

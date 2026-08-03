@@ -206,14 +206,18 @@ export interface LlmModelConfig {
   // Per-model supported effort levels (SDK discovery provides these). When set, the effort
   // submenu only shows these levels instead of the full global list.
   supportedEffortLevels?: EffortLevel[];
-  vision?: boolean;
-  limit?: {
-    context?: number;
-    output?: number;
-  };
-}
+    vision?: boolean;
+    limit?: {
+      context?: number;
+      output?: number;
+    };
+    // Set when the context window was filled in from the models.dev table instead of being
+    // declared or discovered, so /status can attribute a surprising number. See
+    // docs/context-window.md.
+    contextFrom?: "models.dev";
+  }
 
-export interface LlmConfig {
+  export interface LlmConfig {
   provider?: string;
   baseUrl?: string;
   model?: string;
@@ -408,6 +412,13 @@ export interface McpServerConfig {
 export interface ContextConfig {
   pruning?: ContextPruningConfig;
   autoCompact?: AutoCompactConfig;
+  // Ceiling applied to every resolved context window, active without configuration. Very long
+  // contexts degrade attention and bill linearly, so the window a provider allows is not
+  // automatically the window we agree to use. See docs/context-window.md.
+  cap?: number;
+  // Glob patterns matched against the model id. A match uses the model's full window. Patterns
+  // rather than exact ids because a self-hosted family can carry a dozen quantisation variants.
+  capExempt?: string[];
 }
 
 export interface ContextPruningConfig {
@@ -424,6 +435,15 @@ export interface AutoCompactConfig {
 export const DEFAULT_PRUNING_KEEP_TURNS = 5;
 export const DEFAULT_PRUNING_HEAD_CHARS = 200;
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
+export const DEFAULT_CONTEXT_CAP = 512_000;
+
+/** `0` or a negative value disables the ceiling; anything else is honoured as written. */
+export function resolveContextCap(config: MyClawConfig): number | undefined {
+  const cap = config.context?.cap;
+  if (cap === undefined) return DEFAULT_CONTEXT_CAP;
+  if (!Number.isFinite(cap) || cap <= 0) return undefined;
+  return Math.floor(cap);
+}
 
 export function contextPruningEnabled(config: MyClawConfig): boolean {
   return config.context?.pruning?.enabled !== false;

@@ -106,6 +106,12 @@ export interface SessionData {
   messages: SessionMessage[];
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
+  // Opt this conversation out of the standing context cap. Only offered when the model's window
+  // exceeds the cap, since there is nothing to choose otherwise. See docs/context-window.md.
+  contextModeOverride?: import("../llm/context-window.ts").ContextMode;
+  // Prompt size the provider actually billed on the last call, with the message count it covered.
+  // The compaction gate needs a real number: chars/4 under-counts by ~2.3x on live traffic.
+  lastPrompt?: import("../llm/context-window.ts").MeasuredPrompt;
   roomId?: string;
   threadId?: string;
   verbose?: boolean;

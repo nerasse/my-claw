@@ -29,7 +29,8 @@ import { ToolApprovalManager } from "../approvals.ts";
 import type { VoiceManager, SttPipeline } from "../../voice/index.ts";
 import { MessagePreprocessor } from "../preprocess.ts";
 import { renderPriorConversation } from "./history.ts";
-import { estimateTokens, DEFAULT_CONTEXT_TOKENS } from "../../llm/tokens.ts";
+import { estimateTokens } from "../../llm/tokens.ts";
+import { resolveContextWindow, measuredPrompt } from "../../llm/context-window.ts";
 import { recall } from "../../memory/index.ts";
 import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
@@ -709,7 +710,15 @@ export class ClaudeSdkBackend implements AgentBackend {
   ): string {
     if (priorHistory.length === 0) return text;
 
-    const contextLimit = llmConfig.limit?.context ?? DEFAULT_CONTEXT_TOKENS;
+    // The cap applies here too: replaying history up to the model's full window would defeat a
+    // ceiling the operator set precisely to keep prompts short.
+    const contextLimit = resolveContextWindow({
+      model: llmConfig.model,
+      config: this.config,
+      declared: llmConfig.limit?.context,
+      baseUrl: llmConfig.baseUrl,
+      sessionMode: session.contextModeOverride,
+    }).effective;
     const outputReserve = llmConfig.limit?.output ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
     const maxTokens = contextLimit - estimateTokens(systemPrompt) - estimateTokens(text) - outputReserve;
 
@@ -817,6 +826,10 @@ export class ClaudeSdkBackend implements AgentBackend {
     if (cacheReadTokens > 0) usage.cacheReadTokens = cacheReadTokens;
     if (cacheWriteTokens > 0) usage.cacheWriteTokens = cacheWriteTokens;
     accumulateUsage(session, usage);
+    // `messages` is only a mirror on this backend (the SDK owns the real history), so the count is
+    // approximate here. occupiedContextTokens floors on the plain estimate, so an off count can
+    // only make the gate read high, never low.
+    session.lastPrompt = measuredPrompt(promptTokens, session.messages.length) ?? session.lastPrompt;
     const toolCalls = (m.content ?? []).filter((b) => b.type === "tool_use").length;
     recordApiCall({
       sessionId: session.id,
