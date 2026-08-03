@@ -23,7 +23,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
-import { ModelCatalog, mergeModels, applyProviderGroups } from "./llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
@@ -177,6 +177,11 @@ async function main() {
   // model list into the picker, and it runs synchronously before anything can read the menu.
   const modelPicker = new ModelPicker([]);
 
+  // Reads the live config so a hot-reloaded provider is priced without a restart, and the live
+  // model list so an alias resolves to whatever version discovery last reported. Declared ahead of
+  // the catalog because the same table also fills in the context windows discovery left blank.
+  const pricing = new ModelPricing(() => config.llm.providers ?? {}, () => config.llm.models ?? []);
+
   // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,
   // so the merge writes there; baseModels is the curated disk set re-merged on each refresh.
@@ -185,7 +190,8 @@ async function main() {
   const applyModelCatalog = () => {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
     // Provider-first: models with no explicit group nest under their provider's group label.
-    config.llm.models = applyProviderGroups(merged, config.llm.providers ?? {});
+    const grouped = applyProviderGroups(merged, config.llm.providers ?? {});
+    config.llm.models = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
     modelPicker.syncFromConfig(config.llm);
   };
   modelCatalog.onUpdate(applyModelCatalog);
@@ -194,12 +200,12 @@ async function main() {
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
 
-  // Reads the live config so a hot-reloaded provider is priced without a restart, and the live
-  // model list so an alias resolves to whatever version discovery last reported.
-  const pricing = new ModelPricing(() => config.llm.providers ?? {}, () => config.llm.models ?? []);
-  void pricing.refreshIfStale();
-  const pricingTimer = setInterval(() => void pricing.refreshIfStale(), 6 * 60 * 60 * 1000);
+  // The window enrichment above is a no-op until the price table is on disk, so a first-ever
+  // fetch has to replay it; otherwise every model keeps the fallback window until a restart.
+  void pricing.refreshIfStale().then(applyModelCatalog);
+  const pricingTimer = setInterval(() => void pricing.refreshIfStale().then(applyModelCatalog), 6 * 60 * 60 * 1000);
   pricingTimer.unref?.();
+
 
   // `/codex login` and `/claude set-token` only store a token; without a matching provider,
   // discovery is a no-op and the subscription's models never reach /model. After an auth change

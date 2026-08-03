@@ -48,6 +48,34 @@ export function applyProviderGroups(
   });
 }
 
+/**
+ * Fill in the context window for models that declare none, from the models.dev table.
+ *
+ * Done here, in the same enrichment pass as the provider groups, because everything downstream
+ * (resolver, dispatcher, bridge, picker, /status) already reads `config.llm.models`. Resolving the
+ * window at each of those sites instead would mean threading the price table through a constructor
+ * that already takes nine positional arguments.
+ *
+ * A declared window always survives: config wins over discovery, and both win over a third party.
+ */
+export function applyModelWindows(
+  models: LlmModelConfig[],
+  providers: Record<string, LlmProviderConfig>,
+  table: WindowTable | undefined,
+): LlmModelConfig[] {
+  if (!table) return models;
+  return models.map((m) => {
+    if (m.limit?.context) return m;
+    const hit = table.contextWindowOf(m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    if (!hit) return m;
+    return { ...m, limit: { ...m.limit, context: hit.tokens }, contextFrom: "models.dev" };
+  });
+}
+
+interface WindowTable {
+  contextWindowOf(model: string, baseUrl?: string, upstreamApiBase?: string): { tokens: number } | undefined;
+}
+
 async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/models`;
   const controller = new AbortController();

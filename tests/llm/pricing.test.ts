@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
-import { ModelPricing, modelKeyCandidates } from "../../src/llm/pricing.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
+import { ModelPricing, modelKeyCandidates, CACHE_VERSION, isSelfHosted } from "../../src/llm/pricing.ts";
 
 /**
  * The price table is written to disk rather than fetched, so these tests exercise the resolution
@@ -11,6 +12,7 @@ import { ModelPricing, modelKeyCandidates } from "../../src/llm/pricing.ts";
 function withTable(): ModelPricing {
   mkdirSync(MY_CLAW_DIR, { recursive: true });
   const table = {
+    version: CACHE_VERSION,
     fetchedAt: new Date().toISOString(),
     hosts: {
       "fireworks-ai": "https://api.fireworks.ai/inference/v1/",
@@ -192,4 +194,103 @@ test("candidate keys go from strict to loose without duplicates", () => {
 test("digit-only collapsing leaves non-version separators alone", () => {
   expect(modelKeyCandidates("gpt-4o")).toContain("gpt-4o");
   expect(modelKeyCandidates("kimi-k2-code")).toContain("kimi-k2-code");
+});
+
+/**
+ * Since the table started carrying models that declare a window but no price, a key holding one
+ * must not shadow a looser key holding the other. Both questions have to resolve independently.
+ */
+function withMixedTable(): ModelPricing {
+  mkdirSync(MY_CLAW_DIR, { recursive: true });
+  writeFileSync(
+    join(MY_CLAW_DIR, "model-pricing.json"),
+    JSON.stringify({
+      version: CACHE_VERSION,
+      hosts: { acme: "https://acme.example.com/v1" },
+      models: {
+        acme: {
+          // Exact key: a window and nothing else. Collapsed key: the price.
+          "widget-1.0": { context: 999_000, id: "widget-1.0" },
+          "widget-10": { cost: { input: 1, output: 2 }, id: "widget-1.0" },
+        },
+      },
+    }),
+  );
+  return new ModelPricing(() => ({}), () => []);
+}
+
+test("a priceless entry does not shadow a looser key that carries the price", () => {
+  const p = withMixedTable();
+  const cost = p.costOf({
+    model: "widget-1.0",
+    baseUrl: "https://acme.example.com/v1",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+  });
+  expect(cost?.usd).toBeCloseTo(1, 6);
+  // The amount alone does not discriminate: without the fallthrough the median rung finds the same
+  // figure by another route. The rung that answered is what proves the shadowing did not happen.
+  expect(cost?.source).toBe("host acme");
+  expect(cost?.billed).toBe(true);
+});
+
+test("the window resolves from the entry that declares it, through the provider ladder", () => {
+  const p = withMixedTable();
+  expect(p.contextWindowOf("widget-1.0", "https://acme.example.com/v1")?.tokens).toBe(999_000);
+});
+
+test("an unknown model has no window rather than a fabricated one", () => {
+  expect(withMixedTable().contextWindowOf("nothing-like-this", "https://acme.example.com/v1")).toBeUndefined();
+});
+
+test("a cache written by an older shape is refused, not served with fields missing", () => {
+  mkdirSync(MY_CLAW_DIR, { recursive: true });
+  writeFileSync(
+    join(MY_CLAW_DIR, "model-pricing.json"),
+    JSON.stringify({ version: CACHE_VERSION - 1, hosts: {}, models: { acme: { x: { cost: { input: 1, output: 1 }, id: "x" } } } }),
+  );
+  // Serving it would mean every model silently keeps the fallback window for a whole refresh period.
+  expect(new ModelPricing(() => ({}), () => []).ready()).toBe(false);
+});
+
+test("gguf K-quant tags mark a self-hosted build; commercial precision formats do not", () => {
+  for (const id of ["Qwen3.6-35B-Q5_K_M", "Qwen3.6-35B-A3B-uncensored-MTP-Q3_K_M-instant", "gemma-4-E4B-it-IQ4_XS", "Meta-Llama-3_1-8B-Instruct-GGUF"]) {
+    expect(isSelfHosted(id)).toBe(true);
+  }
+  // Measured: all 6 models in models.dev carrying these suffixes are billed, 0.05 to 0.50 USD/M.
+  for (const id of ["L3.1-70B-Celeste-V0.1-BF16", "NVIDIA-Nemotron-3-Nano-30B-A3B-BF16", "llama-3-8b-instruct-awq", "some-model-gptq", "claude-opus-5", "mimo-v2.5-pro"]) {
+    expect(isSelfHosted(id)).toBe(false);
+  }
+});
+
+test("a window declared without a price survives compaction of the downloaded table", () => {
+  // Written through refresh() on purpose: the tests that seed the cache file by hand cannot see
+  // whether compact() kept a model that models.dev describes without publishing a price.
+  const mock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({
+        acme: {
+          api: "https://acme.example.com/v1",
+          models: {
+            "priceless-model": { limit: { context: 777_000 } },
+            "normal-model": { cost: { input: 1, output: 2 }, limit: { context: 100 } },
+            "empty-model": {},
+          },
+        },
+      }),
+      { status: 200 },
+    ),
+  );
+  try {
+    const p = new ModelPricing(() => ({}), () => []);
+    return p.refresh().then(() => {
+      expect(p.contextWindowOf("priceless-model", "https://acme.example.com/v1")?.tokens).toBe(777_000);
+      // It has no price, and inventing one would be worse than reporting nothing.
+      expect(p.costOf({ model: "priceless-model", baseUrl: "https://acme.example.com/v1", promptTokens: 1000, completionTokens: 0 })).toBeUndefined();
+      // A model with neither price nor window carries nothing and is still dropped.
+      expect(p.contextWindowOf("empty-model", "https://acme.example.com/v1")).toBeUndefined();
+    });
+  } finally {
+    mock.restore();
+  }
 });

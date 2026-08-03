@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { ModelCatalog, mergeModels, applyProviderGroups } from "../../src/llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "../../src/llm/catalog.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
@@ -289,4 +289,40 @@ test("claude-sdk provider: an alias with no matching family stays where it was",
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
     else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }
+});
+
+/**
+ * Window enrichment runs at boot in the same pass as the provider groups, so everything downstream
+ * reads a populated `limit.context` without the price table being threaded through it.
+ * See docs/context-window.md.
+ */
+const windowTable = { contextWindowOf: (id: string) => (id === "known" ? { tokens: 400_000 } : undefined) };
+
+test("a model with no declared window gets one from the table, tagged with its provenance", () => {
+  const out = applyModelWindows([{ id: "known", label: "Known", provider: "p" }], {}, windowTable);
+  assert.equal(out[0]?.limit?.context, 400_000);
+  // Without the tag, /status could not tell a curated number from a third-party one.
+  assert.equal(out[0]?.contextFrom, "models.dev");
+});
+
+test("a declared window is never overwritten, because config outranks a third party", () => {
+  const out = applyModelWindows([{ id: "known", label: "Known", limit: { context: 123, output: 456 } }], {}, windowTable);
+  assert.deepEqual(out[0]?.limit, { context: 123, output: 456 });
+  assert.equal(out[0]?.contextFrom, undefined);
+});
+
+test("a model the table cannot answer is left untouched, to fall back on the default later", () => {
+  const out = applyModelWindows([{ id: "mystery", label: "Mystery" }], {}, windowTable);
+  assert.equal(out[0]?.limit?.context, undefined);
+  assert.equal(out[0]?.contextFrom, undefined);
+});
+
+test("with no table at all the list passes through unchanged, so boot works offline", () => {
+  const models = [{ id: "known", label: "Known" }];
+  assert.equal(applyModelWindows(models, {}, undefined), models);
+});
+
+test("an output limit declared alone survives the context fill", () => {
+  const out = applyModelWindows([{ id: "known", label: "Known", limit: { output: 8192 } }], {}, windowTable);
+  assert.deepEqual(out[0]?.limit, { output: 8192, context: 400_000 });
 });
