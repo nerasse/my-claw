@@ -24,6 +24,7 @@ import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups } from "./llm/catalog.ts";
+import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import {
@@ -193,6 +194,13 @@ async function main() {
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
 
+  // Reads the live config so a hot-reloaded provider is priced without a restart, and the live
+  // model list so an alias resolves to whatever version discovery last reported.
+  const pricing = new ModelPricing(() => config.llm.providers ?? {}, () => config.llm.models ?? []);
+  void pricing.refreshIfStale();
+  const pricingTimer = setInterval(() => void pricing.refreshIfStale(), 6 * 60 * 60 * 1000);
+  pricingTimer.unref?.();
+
   // `/codex login` and `/claude set-token` only store a token; without a matching provider,
   // discovery is a no-op and the subscription's models never reach /model. After an auth change
   // we ensure the provider exists (added to config, persisted for restarts) and re-run discovery
@@ -324,6 +332,7 @@ async function main() {
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
       listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
+      pricing,
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -441,6 +450,7 @@ async function main() {
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
       listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
+      pricing,
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({

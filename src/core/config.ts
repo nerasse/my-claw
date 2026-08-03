@@ -178,6 +178,11 @@ export interface LlmProviderConfig {
   // Ignored on the claude-sdk (SDK caches itself) and codex (subscription) backends.
   // See docs/prompt-caching.md.
   promptCache?: boolean;
+  // Optional escape hatch for /status cost reporting: the models.dev provider id whose prices
+  // apply to this endpoint. Only needed for a proxy that reveals neither its cost nor its upstream
+  // in response headers -- LiteLLM reports both, so this normally stays unset.
+  // See docs/status-command.md.
+  pricingProvider?: string;
 }
 
 // Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as

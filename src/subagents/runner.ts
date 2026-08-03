@@ -29,7 +29,9 @@ const MAX_MESSAGES_KEEP = 50;
  * because the owner asked, or because it is a one-shot with no name to share.
  */
 function isReachableFrom(meta: SubAgentMeta, callerSessionId: string): boolean {
-  return meta.visibility !== "private" || meta.parentSessionId === callerSessionId;
+  if (meta.visibility !== "private") return true;
+  // An unknown caller must not match an agent whose parent is also unknown.
+  return callerSessionId.length > 0 && meta.parentSessionId === callerSessionId;
 }
 
 export class SubAgentRunner {

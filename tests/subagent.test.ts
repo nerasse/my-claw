@@ -1,3 +1,4 @@
+import { getSessionModelUsage } from "../src/analytics/usage-db.ts";
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
@@ -363,4 +364,91 @@ test("SubAgentRegistry isRunning reflects queue state", async () => {
   assert.equal(reg.isRunning("subagent/test"), true);
   await p;
   assert.equal(reg.isRunning("subagent/test"), false);
+});
+
+test("a global sub-agent is reachable from another conversation, a private one is not", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never);
+  const CREATOR = "matrix/room/!creator:test";
+  const OTHER = "telegram/dm/424242";
+
+  try {
+    const shared = await runner.spawn({ displayName: "shared", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: await reg.listExistingIds(), generateId: (n, e) => reg.generateId(n, e), parentSessionId: CREATOR, visibility: "global" });
+    const secret = await runner.spawn({ displayName: "secret", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: await reg.listExistingIds(), generateId: (n, e) => reg.generateId(n, e), parentSessionId: CREATOR, visibility: "private" });
+
+    // Sharing is the default and the point: another chat can list and drive a global agent.
+    const fromOther = await runner.list(reg, OTHER);
+    assert.ok(fromOther.some((a) => a.id === shared.id));
+    assert.ok(!fromOther.some((a) => a.id === secret.id));
+
+    const fromCreator = await runner.list(reg, CREATOR);
+    assert.ok(fromCreator.some((a) => a.id === secret.id));
+
+    assert.equal(await runner.send(shared.id, "hi", undefined, createMessage(), reg, OTHER), "ok");
+    // A private agent must not even confirm it exists to a chat that does not own it.
+    assert.ok((await runner.send(secret.id, "hi", undefined, createMessage(), reg, OTHER)).startsWith("Error:"));
+    assert.ok((await runner.kill(secret.id, OTHER)).startsWith("Error:"));
+    assert.ok((await runner.reset(secret.id, OTHER)).startsWith("Error:"));
+
+    // The owner still controls it.
+    assert.ok(!(await runner.kill(secret.id, CREATOR)).startsWith("Error:"));
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a one-shot sub-agent is never listed, and its calls are billed to the caller", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const CALLER = "matrix/room/!oneshot-caller:test";
+  // Observed from inside the run: the session is deleted when it ends, so afterwards there would
+  // be nothing to look at either way.
+  let visibleMidRun: string[] = [];
+  const fetchMock = mockFetch(async () => {
+    visibleMidRun = (await runner.list(reg, "telegram/dm/777")).map((a) => a.id);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), { status: 200 }) as never;
+  });
+  try {
+    const { id } = await runner.spawn({ displayName: "ephemeral", type: "research", mode: "run", task: "look", parentMessage: createMessage(), existingIds: await reg.listExistingIds(), generateId: (n, e) => reg.generateId(n, e), parentSessionId: CALLER, visibility: "global" });
+    assert.ok(id.startsWith("subagent/run-"));
+    assert.ok(!visibleMidRun.includes(id));
+
+    // The reason one-shots get metadata at all: without it their tokens land nowhere.
+    const rows = getSessionModelUsage(CALLER, "delegated");
+    assert.ok(rows.length > 0, "the one-shot's calls should be billed to the session that asked");
+    assert.ok(rows.some((r) => r.calls > 0));
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("kill refuses an id that is not a sub-agent", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  // deleteSession takes any id, so without validation this would delete a conversation.
+  const result = await runner.kill("matrix/room/!victim:test", "matrix/room/!victim:test");
+  assert.ok(result.startsWith("Error:"));
+});
+
+test("driving a shared sub-agent moves the bill to the chat that drove it", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const CREATOR = "matrix/room/!bill-creator:test";
+  const DRIVER = "telegram/dm/555111";
+  const fetchMock = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never);
+  try {
+    const { id } = await runner.spawn({ displayName: "shared-bill", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: await reg.listExistingIds(), generateId: (n, e) => reg.generateId(n, e), parentSessionId: CREATOR, visibility: "global" });
+    const afterSpawn = getSessionModelUsage(CREATOR, "delegated").reduce((s, r) => s + r.calls, 0);
+    assert.ok(afterSpawn > 0, "the spawn run belongs to the creator");
+
+    await runner.send(id, "do more", undefined, createMessage(), reg, DRIVER);
+
+    // Parentage is creation-time, but a bill is not: whoever asked for this run pays for it.
+    const driverCalls = getSessionModelUsage(DRIVER, "delegated").reduce((s, r) => s + r.calls, 0);
+    assert.ok(driverCalls > 0, "the send run should be billed to the driver, not the creator");
+    // And the creator is not charged twice for work it did not request.
+    assert.equal(getSessionModelUsage(CREATOR, "delegated").reduce((s, r) => s + r.calls, 0), afterSpawn);
+  } finally {
+    fetchMock.restore();
+  }
 });

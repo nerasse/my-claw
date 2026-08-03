@@ -83,7 +83,9 @@ export interface SubAgentMeta {
  * agent instead of silently misfiling tokens onto the wrong conversation.
  */
 export function attributionParent(session: SessionData): string {
-  return session.invokedBy ?? session.meta?.parentSessionId ?? session.id;
+  // Truthiness, not nullish coalescing: callers default a missing session id to "", and an empty
+  // parent is worse than no parent -- it would group unrelated work under a blank key.
+  return session.invokedBy || session.meta?.parentSessionId || session.id;
 }
 
 export interface TokenUsage {

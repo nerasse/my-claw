@@ -245,7 +245,7 @@ test("telegram session handlers honor DM per-chat session scope", async () => {
   await commandHandler("c1", "u1", "dm", "model", "alt");
 
   const statusAfterCommand = await commandHandler("c1", "u1", "dm", "status", "");
-  assert.match(String(statusAfterCommand), /Session: telegram\/dm-chat\/c1/);
+  assert.match(String(statusAfterCommand), /telegram\/dm-chat\/c1/);
   assert.match(String(statusAfterCommand), /alt-model/);
 
   const actionResult = await callbackHandler({
@@ -257,7 +257,7 @@ test("telegram session handlers honor DM per-chat session scope", async () => {
   assert.match(actionResult?.text ?? "", /Base/);
 
   const statusAfterAction = await commandHandler("c1", "u1", "dm", "status", "");
-  assert.match(String(statusAfterAction), /Session: telegram\/dm-chat\/c1/);
+  assert.match(String(statusAfterAction), /telegram\/dm-chat\/c1/);
   assert.match(String(statusAfterAction), /base-model/);
 });
 

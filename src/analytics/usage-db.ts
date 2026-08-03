@@ -126,14 +126,16 @@ export function recordApiCall(record: ApiCallRecord): void {
       $base_url: record.baseUrl,
       $streaming: record.streaming ? 1 : 0,
       $caller: record.caller,
-      $prompt_tokens: record.promptTokens,
-      $completion_tokens: record.completionTokens,
-      $total_tokens: record.totalTokens,
+      // Coerced because bun:sqlite rejects an undefined binding by throwing, and this function
+      // swallows its errors: one caller with a missing field would silently stop all recording.
+      $prompt_tokens: record.promptTokens ?? 0,
+      $completion_tokens: record.completionTokens ?? 0,
+      $total_tokens: record.totalTokens ?? (record.promptTokens ?? 0) + (record.completionTokens ?? 0),
       $cache_read_tokens: record.cacheReadTokens ?? 0,
       $cache_write_tokens: record.cacheWriteTokens ?? 0,
-      $tool_calls: record.toolCalls,
-      $iteration: record.iteration,
-      $duration_ms: record.durationMs,
+      $tool_calls: record.toolCalls ?? 0,
+      $iteration: record.iteration ?? 0,
+      $duration_ms: record.durationMs ?? 0,
       $proxy_cost_usd: record.proxyCostUsd ?? null,
       $upstream_api_base: record.upstreamApiBase ?? null,
       $error: record.error ?? null,
@@ -162,6 +164,81 @@ export interface UsageSummary {
   completionTokens: number;
   totalDurationMs: number;
   errorCount: number;
+}
+
+/** One model as used by one session, with everything needed to price it. */
+export interface SessionModelRow {
+  model: string;
+  baseUrl: string;
+  upstreamApiBase: string | null;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  proxyCostUsd: number | null;
+  errorCount: number;
+  lastUsedAt: string;
+}
+
+/**
+ * Per-model breakdown for one session, grouped by endpoint as well as by model: the same model id
+ * reached through two different providers is billed at two different rates, so collapsing them
+ * would make the total unpriceable.
+ *
+ * `own` counts what the session ran itself; `delegated` counts what it spawned. They are separate
+ * because a chat's own tokens and the tokens of the sub-agents it drove answer different questions.
+ */
+export function getSessionModelUsage(sessionId: string, scope: "own" | "delegated"): SessionModelRow[] {
+  const where = scope === "own" ? "session_id = ?" : "parent_session_id = ? AND session_id <> parent_session_id";
+  try {
+    const d = getDb();
+    return d
+      .prepare(
+        `SELECT
+           model,
+           base_url                        AS baseUrl,
+           MAX(upstream_api_base)          AS upstreamApiBase,
+           COUNT(*)                        AS calls,
+           COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
+           COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+           COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+           SUM(proxy_cost_usd)             AS proxyCostUsd,
+           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
+           MAX(timestamp)                  AS lastUsedAt
+         FROM api_calls
+         WHERE ${where}
+         GROUP BY model, base_url
+         ORDER BY SUM(total_tokens) DESC`,
+      )
+      .all(sessionId) as SessionModelRow[];
+  } catch (err) {
+    void log("warn", "analytics getSessionModelUsage failed", { error: String(err) });
+    return [];
+  }
+}
+
+/**
+ * Input tokens the provider counted on the most recent successful call. This is the only measured
+ * context occupancy available: everything else in the codebase estimates it from character counts.
+ */
+export function getLastContextTokens(sessionId: string): { promptTokens: number; model: string; at: string } | null {
+  try {
+    const d = getDb();
+    const row = d
+      .prepare(
+        `SELECT prompt_tokens AS promptTokens, model, timestamp AS at
+         FROM api_calls
+         WHERE session_id = ? AND error IS NULL AND prompt_tokens > 0
+         ORDER BY timestamp DESC LIMIT 1`,
+      )
+      .get(sessionId) as { promptTokens: number; model: string; at: string } | null;
+    return row ?? null;
+  } catch (err) {
+    void log("warn", "analytics getLastContextTokens failed", { error: String(err) });
+    return null;
+  }
 }
 
 export function getSessionUsage(sessionId: string): UsageSummary | null {

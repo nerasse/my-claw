@@ -267,7 +267,7 @@ test("matrix session handlers honor DM per-room session scope", async () => {
   const statusAfterCommand = await commandHandler("!dm-room:test", "@u1:example.org", "dm", "status", "", {
     roomId: "!dm-room:test",
   });
-  assert.match(String(statusAfterCommand), /Session: matrix\/dm-room\/!dm-room:test/);
+  assert.match(String(statusAfterCommand), /matrix\/dm-room\/!dm-room:test/);
   assert.match(String(statusAfterCommand), /alt-model/);
 
   const actionResult = await actionHandler({
@@ -282,7 +282,7 @@ test("matrix session handlers honor DM per-room session scope", async () => {
   const statusAfterAction = await commandHandler("!dm-room:test", "@u1:example.org", "dm", "status", "", {
     roomId: "!dm-room:test",
   });
-  assert.match(String(statusAfterAction), /Session: matrix\/dm-room\/!dm-room:test/);
+  assert.match(String(statusAfterAction), /matrix\/dm-room\/!dm-room:test/);
   assert.match(String(statusAfterAction), /base-model/);
 });
 

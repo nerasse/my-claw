@@ -1,3 +1,5 @@
+import { handleStatusCommand } from "../status-command.ts";
+import type { ModelPricing } from "../../llm/pricing.ts";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { EffortLevel, MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
@@ -54,6 +56,8 @@ interface MatrixSessionHandlerDeps {
   toolRegistry?: ToolRegistry;
   mcpStatus?: () => McpServerStatus[];
   listSubAgents?: (sessionId: string) => Promise<SubAgentInfo[]>;
+  // Price table for /status cost reporting. Optional: without it /status reports tokens only.
+  pricing?: ModelPricing;
   config: MyClawConfig;
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
@@ -331,6 +335,7 @@ export function createMatrixCommandHandler({
   toolRegistry,
   mcpStatus,
   listSubAgents,
+  pricing,
 }: MatrixSessionHandlerDeps): (
   chatId: string,
   userId: string,
@@ -532,37 +537,13 @@ export function createMatrixCommandHandler({
         return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
 
       case "status": {
-        const session = await sessionManager.peek(sessionId);
-        const currentModel = session?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-        const live = runRegistry.list(sessionId);
-        const liveLine = live.length > 0
-          ? `Active run: ${live.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ")}`
-          : undefined;
-        if (!session) {
-          return [`Model: ${currentModel}`, "Session: none active", ...(liveLine ? [liveLine] : [])].join("\n");
-        }
-        const lines = [
-          `Model: ${currentModel}`,
-          `Session: ${sessionId}`,
-          `Messages: ${session.messages.length}`,
-          `Created: ${session.createdAt}`,
-          `Last active: ${session.lastActiveAt}`,
-        ];
-        if (liveLine) lines.push(liveLine);
-        if (session.contextTransfer) {
-          const t = session.contextTransfer;
-          // The transfer is silent by design, so /status is the only place it surfaces.
-          lines.push(
-            `Context carried to ${t.model}: ${t.messages} messages (~${t.tokens.toLocaleString()} tokens)` +
-              (t.dropped > 0 ? `, ${t.dropped} oldest dropped to fit` : ""),
-          );
-        }
-        if (session.tokenUsage) {
-          const u = session.tokenUsage;
-          lines.push(`Tokens: ${u.totalTokens.toLocaleString()} (in: ${u.promptTokens.toLocaleString()}, out: ${u.completionTokens.toLocaleString()})`);
-          lines.push(`API calls: ${u.apiCalls}`);
-        }
-        return lines.join("\n");
+        return handleStatusCommand({
+          config,
+          sessionId,
+          session: await sessionManager.peek(sessionId),
+          liveRuns: runRegistry.list(sessionId),
+          pricing,
+        });
       }
 
       case "codex":
