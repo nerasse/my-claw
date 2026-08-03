@@ -108,6 +108,7 @@ src/
 │   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
+│   ├── status-command.ts  # /status diagnostics: context, tokens, cost -- docs/status-command.md
 │   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
 │   ├── telegram/
@@ -157,6 +158,7 @@ src/
 │   ├── resolver.ts        # Multi-provider model resolution
 │   ├── openai-format.ts   # Tool definition + tool call format conversion
 │   ├── catalog.ts         # ModelCatalog: per-provider discovery, merge, cache, resilience
+│   ├── pricing.ts         # models.dev price table + cost resolution -- docs/status-command.md
 │   ├── anthropic-models.ts # Versioned Claude models from /v1/models (families, per-model effort)
 │   ├── codex.ts           # Codex Responses transport for the home loop
 │   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
@@ -188,7 +190,7 @@ src/
 │   ├── stt.ts, tts.ts, voice-mode.ts  # Manual voice tools (thin wrappers over voice/)
 │   └── spawn.ts, send.ts, list-agents.ts, kill-agent.ts, reset-agent.ts
 ├── subagents/
-│   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset)
+│   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset) -- docs/subagent-visibility.md
 │   ├── registry.ts        # Sub-agent ID generation + listing
 │   └── types.ts
 ├── skills/

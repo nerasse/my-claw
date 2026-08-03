@@ -411,6 +411,25 @@ reject unknown fields in message content; ignored on `claude-sdk` (SDK caches it
 
 Full details (breakpoint placement, what actually gets cached, cost model) in `docs/prompt-caching.md`.
 
+Cache hits are now measured: `/status` reports them per model, and cost is computed at the cache
+rate rather than the full one -- often two orders of magnitude apart.
+
+### Pricing provider
+
+`pricingProvider` names the [models.dev](https://models.dev) provider whose prices apply to an
+endpoint, for `/status` cost reporting only. It is an escape hatch and normally stays unset: a
+proxy that reports its own cost or its upstream in response headers (LiteLLM does both) is resolved
+without it, and so is any endpoint whose host matches a known provider.
+
+```json
+"providers": {
+  "myproxy": { "baseUrl": "https://proxy.example/v1", "apiKeyEnv": "PROXY_KEY", "pricingProvider": "xiaomi" }
+}
+```
+
+Without it, such an endpoint falls back to the median market price, reported as an estimate. See
+`docs/status-command.md`.
+
 ### Provider-Specific Headers
 
 Add custom headers per provider:

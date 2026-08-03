@@ -7,7 +7,7 @@ export const MATRIX_COMMANDS = [
   { command: "reload", description: "Reload skills from disk" },
   { command: "reload-skills", description: "Reload skills from disk" },
   { command: "verbose", description: "Toggle verbose tool output" },
-  { command: "status", description: "Show current status" },
+  { command: "status", description: "Session diagnostics: context, tokens, cost, active runs" },
   { command: "stop", description: "Stop the running agent and its sub-agents" },
   { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
