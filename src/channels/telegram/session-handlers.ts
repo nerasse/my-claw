@@ -19,6 +19,7 @@ import type { McpServerStatus } from "../../mcp/manager.ts";
 import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
+import { contextChoiceFor } from "../context-menu.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -422,7 +423,7 @@ export function createTelegramCallbackHandler({
     }
 
     // Navigation re-render without touching the model (no selection yet).
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
+    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
@@ -442,9 +443,17 @@ export function createTelegramCallbackHandler({
           answerText: "Effort",
         };
       }
+      const choice = contextChoiceFor(config, currentModel, existing?.contextModeOverride);
+      if (action.kind === "openContext") {
+        return {
+          text: `Context window — ${modelPicker.labelFor(currentModel)} allows ${choice.raw.toLocaleString("en-US")}, the cap keeps ${choice.cap.toLocaleString("en-US")}`,
+          buttons: modelPicker.buildContextButtons(choice.mode, choice.raw, choice.cap),
+          answerText: "Context",
+        };
+      }
       return {
         text: `Current model: ${modelPicker.labelFor(currentModel)}${suffix}`,
-        buttons: modelPicker.buildButtons(currentModel),
+        buttons: modelPicker.buildButtons(currentModel, undefined, { contextChoice: choice.available }),
         answerText: "Back",
       };
     }
@@ -459,6 +468,22 @@ export function createTelegramCallbackHandler({
       return {
         text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}`,
         answerText: `Effort: ${action.level}`,
+      };
+    }
+
+    if (action.kind === "setContext") {
+      const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+      // Stored only when it departs from the standing policy, so a session does not pin "capped"
+      // and then silently ignore a later change to the cap.
+      session.contextModeOverride = action.mode === "full" ? "full" : undefined;
+      session.lastActiveAt = new Date().toISOString();
+      await sessionManager.persist(sessionId);
+      const model = session.modelOverride ?? defaultModel;
+      const applied = contextChoiceFor(config, model, session.contextModeOverride);
+      const size = action.mode === "full" ? applied.raw : applied.cap;
+      return {
+        text: `Context window for this conversation: ${action.mode} — ${size.toLocaleString("en-US")} tokens`,
+        answerText: `Context: ${action.mode}`,
       };
     }
 

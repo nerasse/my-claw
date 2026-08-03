@@ -425,3 +425,58 @@ test("syncFromConfig keeps the model list and effort options in step", () => {
   // No model can honor effort and no global default is set, so the whole effort UI stays off.
   assert.deepEqual(picker.effortLevels(), []);
 });
+
+/** Context submenu: a root entry, not a step chained after every model switch.
+ *  See docs/context-window.md. */
+
+test("the context entry appears only when the cap actually lowers this model's window", () => {
+  const picker = new ModelPicker(models);
+  const withChoice = picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: true });
+  assert.ok(withChoice.some((b) => b.label === "Context >"));
+  // Offering it otherwise would open a submenu whose two options are the same number.
+  const without = picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: false });
+  assert.ok(!without.some((b) => b.label === "Context >"));
+  assert.ok(!picker.buildButtons("llama-3.3-70b").some((b) => b.label === "Context >"));
+});
+
+test("the context entry stays off an agent menu, where the choice is per-session", () => {
+  const picker = new ModelPicker(models);
+  const buttons = picker.buildButtons("llama-3.3-70b", "agent" as never, { contextChoice: true });
+  assert.ok(!buttons.some((b) => b.label === "Context >"));
+});
+
+test("both windows are spelled out and the active one is marked", () => {
+  const picker = new ModelPicker(models);
+  const capped = picker.buildContextButtons("capped", 1_048_576, 512_000);
+  assert.equal(capped[0]?.label, "Full: 1,048,576");
+  assert.equal(capped[1]?.label, "Capped: 512,000 [selected]");
+  const full = picker.buildContextButtons("full", 1_048_576, 512_000);
+  assert.equal(full[0]?.label, "Full: 1,048,576 [selected]");
+  assert.equal(full[1]?.label, "Capped: 512,000");
+});
+
+test("context callbacks round-trip through the parser", () => {
+  const picker = new ModelPicker(models);
+  assert.deepEqual(picker.parseCallbackAction("ctxm"), { kind: "openContext" });
+  assert.deepEqual(picker.parseCallbackAction("ctx:full"), { kind: "setContext", mode: "full" });
+  assert.deepEqual(picker.parseCallbackAction("ctx:capped"), { kind: "setContext", mode: "capped" });
+  // The back button of the context submenu returns to the model root, like the effort one.
+  assert.deepEqual(picker.parseCallbackAction("mdlb"), { kind: "back" });
+});
+
+test("every context action fits Telegram's 64-byte callback budget", () => {
+  const picker = new ModelPicker(models);
+  for (const button of picker.buildContextButtons("capped", 1_048_576, 512_000)) {
+    assert.ok(Buffer.byteLength(button.action) <= 64, button.action);
+  }
+});
+
+test("every button the context submenu renders parses back into an intent", () => {
+  const picker = new ModelPicker(models);
+  // Asserting the parser accepts the literals is not enough: a typo in a button's action would
+  // ship a dead key that answers nothing when pressed.
+  const kinds = picker
+    .buildContextButtons("capped", 1_048_576, 512_000)
+    .map((b) => picker.parseCallbackAction(b.action)?.kind);
+  assert.deepEqual(kinds, ["setContext", "setContext", "back"]);
+});

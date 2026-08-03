@@ -735,20 +735,40 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 ```json
 "context": {
   "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
-  "autoCompact": { "enabled": true, "thresholdRatio": 0.8 }
+  "autoCompact": { "enabled": true, "thresholdRatio": 0.8 },
+  "cap": 512000,
+  "capExempt": ["claude-*", "Qwen3.6-*"]
 }
 ```
 
-Context weight management for long sessions (see `docs/context-pruning.md`). Both stages
-default to enabled; the whole section is optional and hot-reloadable.
+Context weight management for long sessions (see `docs/context-pruning.md` and
+`docs/context-window.md`). Every stage defaults to enabled; the whole section is optional and
+hot-reloadable.
 
 - `pruning` — at prompt-build time, tool results older than the last
   `keepLastAssistantTurns` assistant turns (default 5) are replaced by their first
   `headChars` chars (default 200) plus a marker. The persisted session keeps full outputs;
   the agent can re-run a tool to recover anything pruned.
-- `autoCompact` — at run start (main agent only), if the estimated history exceeds
-  `thresholdRatio` (default 0.8) of the resolved model context limit, the session is
-  compacted with the same LLM summarization as `/compact`.
+- `autoCompact` — at run start (main agent only), if the occupied history exceeds
+  `thresholdRatio` (default 0.8) of the effective context window, the session is compacted
+  with the same LLM summarization as `/compact`. "Occupied" is the prompt size the provider
+  last billed plus an estimate of the turns since, not a plain `chars/4` count: the estimate
+  under-counts by roughly 2.3x on real traffic, which made the gate fire far too late.
+- `cap` — ceiling applied to every resolved context window, **active at 512 000 without
+  configuration**. A provider allowing 1M does not mean we agree to send 1M: long contexts
+  degrade attention and bill linearly. Set `0` to disable the ceiling entirely. The cap never
+  raises a window, only lowers it.
+- `capExempt` — glob patterns matched against the model id (anchored, case-insensitive). A
+  match uses the model's full window. Patterns rather than exact ids so one line can cover a
+  self-hosted family with a dozen quantisation variants.
+
+A `limit.context` declared on a model in `llm.models` **is still capped**: the cap is
+unconditionally the last step, and `capExempt` is the only way past it. One rule rather than a
+precedence table. A single conversation can opt out for itself, which wins over both.
+
+Windows that no model declares and discovery does not report are filled in from the models.dev
+table (98% coverage of 6 044 models), and `/status` names the source so a surprising number can
+be traced. Anything still unresolved falls back to 262 144.
 
 ## Cron
 

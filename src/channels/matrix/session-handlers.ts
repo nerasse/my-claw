@@ -22,6 +22,7 @@ import type { McpServerStatus } from "../../mcp/manager.ts";
 import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
+import { contextChoiceFor } from "../context-menu.ts";
 
 type MatrixChatType = "dm" | "group";
 
@@ -677,7 +678,7 @@ export function createMatrixActionHandler({
 
     // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
     // reactions and collapses the previous menu to the supersededText breadcrumb.
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort") {
+    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = existing?.modelOverride ?? defaultModel;
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
@@ -694,10 +695,23 @@ export function createMatrixActionHandler({
           supersededText: "Model menu > Effort",
         };
       }
+      const choice = contextChoiceFor(config, currentModel, existing?.contextModeOverride);
+      if (action.kind === "openContext") {
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildContextButtons(choice.mode, choice.raw, choice.cap),
+            effort,
+            heading: `Context window — ${modelPicker.labelFor(currentModel)} allows ${choice.raw.toLocaleString("en-US")}, the cap keeps ${choice.cap.toLocaleString("en-US")}`,
+          }),
+          supersededText: "Model menu > Context",
+        };
+      }
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupPath, currentModel)
-          : modelPicker.buildButtons(currentModel);
+          : modelPicker.buildButtons(currentModel, undefined, { contextChoice: choice.available });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
         ...buildMatrixMenuFromButtons({
@@ -719,6 +733,19 @@ export function createMatrixActionHandler({
       await sessionManager.persist(sessionId);
       const model = session.modelOverride ?? defaultModel;
       return { text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}` };
+    }
+
+    if (action.kind === "setContext") {
+      const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
+      // Stored only when it departs from the standing policy, so a session does not pin "capped"
+      // and then silently ignore a later change to the cap.
+      session.contextModeOverride = action.mode === "full" ? "full" : undefined;
+      session.lastActiveAt = new Date().toISOString();
+      await sessionManager.persist(sessionId);
+      const model = session.modelOverride ?? defaultModel;
+      const applied = contextChoiceFor(config, model, session.contextModeOverride);
+      const size = action.mode === "full" ? applied.raw : applied.cap;
+      return { text: `Context window for this conversation: ${action.mode} — ${size.toLocaleString("en-US")} tokens` };
     }
 
     if (action.kind === "keepEffort") {

@@ -102,6 +102,7 @@ src/
 ├── channels/
 │   ├── types.ts           # UnifiedMessage, ChannelAdapter, shared types
 │   ├── model-picker.ts   # /model menu: nested groups, identity-addressed callbacks, effort
+│   ├── context-menu.ts     # /model context submenu, shared by both channels -- docs/context-window.md
 │   ├── context-visibility.ts
 │   ├── meta-commands.ts  # Meta-command filter (/help, /status, etc.)
 │   ├── command-log.ts    # Masks sensitive command arguments before they are logged
@@ -158,7 +159,8 @@ src/
 │   ├── resolver.ts        # Multi-provider model resolution
 │   ├── openai-format.ts   # Tool definition + tool call format conversion
 │   ├── catalog.ts         # ModelCatalog: per-provider discovery, merge, cache, resilience
-│   ├── pricing.ts         # models.dev price table + cost resolution -- docs/status-command.md
+│   ├── pricing.ts         # models.dev price + context window table -- docs/status-command.md
+│   ├── context-window.ts  # Window resolution, global cap, occupancy -- docs/context-window.md
 │   ├── anthropic-models.ts # Versioned Claude models from /v1/models (families, per-model effort)
 │   ├── codex.ts           # Codex Responses transport for the home loop
 │   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
@@ -230,6 +232,7 @@ src/
 │   ├── errors.ts          # Error formatting
 │   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
 │   ├── invisible.ts       # Invisible-character class, shared -- docs/untrusted-content.md
+│   ├── glob.ts            # `*` matching for flat ids (CDP methods, model ids)
 │   └── lru-map.ts         # LruMap + TtlSet utilities
 └── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```

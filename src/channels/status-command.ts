@@ -1,12 +1,15 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm } from "../core/config.ts";
-import type { SessionData } from "../sessions/store.ts";
+import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { getSessionModelUsage, getLastContextTokens, getSessionUsage, type SessionModelRow } from "../analytics/usage-db.ts";
 import type { ModelPricing, CostBreakdown } from "../llm/pricing.ts";
 import { estimateMessagesTokens } from "../llm/tokens.ts";
-import { DEFAULT_CONTEXT_TOKENS } from "../llm/tokens.ts";
+
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
+import { resolveContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
+import { isSelfHosted } from "../llm/pricing.ts";
+import type { ChatMessage } from "../llm/provider.ts";
 
 /**
  * `/status` -- one screen, always the whole thing. See docs/status-command.md.
@@ -108,29 +111,49 @@ export function handleStatusCommand(p: StatusParams): string {
   }
 
   const model = p.config.llm.models?.find((m) => m.id === currentModel);
-  const contextLimit = model?.limit?.context;
+  const window = resolveContextWindow({
+    model: currentModel,
+    config: p.config,
+    declared: model?.limit?.context,
+    declaredSource: model?.contextFrom,
+    sessionMode: session.contextModeOverride,
+  });
   lines.push("");
   lines.push("**Model**");
   lines.push(`  current       ${currentModel}${session.modelOverride ? " (session override)" : ""}`);
   if (session.modelOverride) lines.push(`  config default ${configured?.defaultModel ?? p.config.llm.defaultModel ?? "-"}`);
   if (session.effortOverride) lines.push(`  effort        ${session.effortOverride}`);
-  lines.push(`  context limit ${short(contextLimit ?? DEFAULT_CONTEXT_TOKENS)}${contextLimit ? "" : " (default, not declared for this model)"}`);
+  if (isSelfHosted(currentModel)) lines.push("  billing       self-hosted, no marginal cost");
+  // Every clause here is a reason the number can look wrong, so each one that applies is named.
+  const notes = [window.rawSource === "default" ? "default, not declared for this model" : window.rawSource];
+  if (window.approximate) notes.push("matched id");
+  if (window.cappedFrom) notes.push(`capped from ${window.cappedFrom.toLocaleString("en-US")}`);
+  if (window.overridden) notes.push("session override: full");
+  lines.push(`  context limit ${short(window.effective)} (${notes.join(", ")})`);
 
   // Two numbers, deliberately side by side: the measured one is exact, the estimate is what
   // actually decides when compaction fires. A wide gap means the trigger is mis-tuned.
-  const measured = getLastContextTokens(p.sessionId);
-  const estimated = estimateMessagesTokens(
-    session.messages.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content })),
-  );
-  const limit = contextLimit ?? DEFAULT_CONTEXT_TOKENS;
+  // The session's own figure first: it is the one the compaction gate uses, so showing anything
+  // else here would let the two lines below contradict each other. Analytics is the fallback for
+  // sessions that predate the field, but only while there is a history for it to describe: after a
+  // /new the last recorded call is not in this context any more, and reporting it as a share of the
+  // window would be a straight falsehood.
+  const measured =
+    session.lastPrompt?.tokens ?? (session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined);
+  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] =>
+    msgs.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
+  const estimated = estimateMessagesTokens(toChat(session.messages));
+  const occupied = occupiedContextTokens(session.messages, toChat, session.lastPrompt);
+  const limit = window.effective;
   lines.push("");
   lines.push("**Context**");
   if (measured) {
-    lines.push(`  measured      ${short(measured.promptTokens)} on the last call - ${((measured.promptTokens / limit) * 100).toFixed(1)}% of the limit`);
+    lines.push(`  measured      ${short(measured)} on the last call - ${((measured / limit) * 100).toFixed(1)}% of the limit`);
   } else {
     lines.push("  measured      no call recorded yet");
   }
-  lines.push(`  estimated     ${short(estimated)} (chars/4, this is what drives auto-compaction)`);
+  lines.push(`  estimated     ${short(estimated)} (chars/4, under-counts)`);
+  lines.push(`  occupied      ${short(occupied)} (measured prompt plus the turns since, drives auto-compaction)`);
   if (autoCompactEnabled(p.config)) {
     const threshold = resolveAutoCompactThreshold(p.config);
     lines.push(`  auto-compact  on, threshold ${Math.round(threshold * 100)}% = ${short(Math.round(limit * threshold))}`);

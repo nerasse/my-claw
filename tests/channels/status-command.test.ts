@@ -5,7 +5,7 @@ import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
-import { ModelPricing } from "../../src/llm/pricing.ts";
+import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { handleStatusCommand } from "../../src/channels/status-command.ts";
 
 function pricing(): ModelPricing {
@@ -13,6 +13,7 @@ function pricing(): ModelPricing {
   writeFileSync(
     join(MY_CLAW_DIR, "model-pricing.json"),
     JSON.stringify({
+      version: CACHE_VERSION,
       fetchedAt: new Date().toISOString(),
       hosts: { "fireworks-ai": "https://api.fireworks.ai/inference/v1/" },
       models: {
@@ -79,7 +80,9 @@ test("both totals appear, labelled, because the same id carries two answers", ()
   expect(out).toContain("4 calls");
   // A subscription figure must be marked as not-a-charge, never folded into the billed total.
   expect(out).toContain("reference");
-  expect(out).not.toContain("billed");
+  // Anchored on the total line itself: the word appears in prose elsewhere, and the claim being
+  // made is about the absence of a charge, not about the absence of a string.
+  expect(out).not.toMatch(/^ {2}billed\s/m);
 });
 
 test("a billed endpoint and a subscription are totalled separately", () => {
@@ -118,19 +121,43 @@ test("work delegated to a sub-agent is reported under the session that drove it"
   expect(out).not.toContain("This session, 90 d");
 });
 
-test("measured and estimated context are both shown, since only the estimate drives compaction", () => {
+test("measured, estimated and occupied are reported apart, because the estimate under-counts", () => {
   const sessionId = "matrix/room/!ctx:test";
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "claude-sdk",
     streaming: true, caller: "orchestrator", promptTokens: 12_345, completionTokens: 1, totalTokens: 12346, toolCalls: 0, iteration: 1, durationMs: 5,
   });
+  // No session.lastPrompt here, so this also covers the analytics fallback for older sessions.
   const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  // The provider's own number, not the character-count estimate, and its share of the window.
-  expect(out).toMatch(/measured\s+12k on the last call - 1\.2% of the limit/);
+  // Share of the *effective* window: claude-opus-5 resolves to 1M and the default cap lowers it to
+  // 512k, so a percentage computed against the raw window would read half as much.
+  expect(out).toMatch(/measured\s+12k on the last call - 2\.4% of the limit/);
   expect(out).toContain("estimated");
-  expect(out).toContain("drives auto-compaction");
-  // The two must not be conflated: the estimate is tiny here while the measurement is not.
+  // The gate reads the occupied line, not the estimate, and the label has to say so.
+  expect(out).toMatch(/occupied\s+\S+ \(measured prompt plus the turns since, drives auto-compaction\)/);
+  // The three must not be conflated: the estimate is tiny here while the measurement is not.
   expect(out).not.toMatch(/estimated\s+12k/);
+});
+
+test("the cap lowers the window and says what it lowered, so the number can be explained", () => {
+  const sessionId = "matrix/room/!capped:test";
+  const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(out).toMatch(/context limit\s+512k \(declared, capped from 1,000,000\)/);
+});
+
+test("a session that asked for the full window is not capped, and the override is named", () => {
+  const sessionId = "matrix/room/!full:test";
+  const out = handleStatusCommand({
+    config,
+    sessionId,
+    session: session(sessionId, { contextModeOverride: "full" }),
+    liveRuns: [],
+    pricing: pricing(),
+  });
+  expect(out).toMatch(/context limit\s+1\.0M \(declared, session override: full\)/);
+  expect(out).not.toContain("capped from");
+  // The threshold has to follow the override, or the gate would still compact at the capped size.
+  expect(out).toMatch(/threshold 80% = 800k/);
 });
 
 test("a sub-agent session reports its visibility and who spawned it", () => {
@@ -169,4 +196,19 @@ test("without a price table the tokens are still reported", () => {
   const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [] });
   expect(out).toContain("1 calls");
   expect(out).toContain("unpriced");
+});
+
+test("after a reset the previous call is not reported as filling the window", () => {
+  const sessionId = "matrix/room/!reset:test";
+  recordApiCall({
+    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "claude-sdk",
+    streaming: true, caller: "orchestrator", promptTokens: 10_000, completionTokens: 1, totalTokens: 10001, toolCalls: 0, iteration: 1, durationMs: 5,
+  });
+  // Analytics keeps the call; the session history does not. Showing it as a share of the window
+  // would contradict the occupied line on the very next row.
+  const out = handleStatusCommand({
+    config, sessionId, session: session(sessionId, { messages: [] }), liveRuns: [], pricing: pricing(),
+  });
+  expect(out).toContain("measured      no call recorded yet");
+  expect(out).not.toMatch(/measured\s+10k/);
 });

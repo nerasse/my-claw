@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
 import type { EffortLevel, LlmConfig } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
+import type { ContextMode } from "../llm/context-window.ts";
 
 export interface ModelOption {
   id: string;
@@ -66,11 +67,14 @@ export type PickerCallback =
   | { kind: "openEffort" }
   | { kind: "setEffort"; level: EffortLevel }
   | { kind: "keepEffort" }
+  | { kind: "openContext" }
+  | { kind: "setContext"; mode: ContextMode }
   // A picker button whose target no longer exists (menu left open across a discovery refresh).
   | { kind: "stale" };
 
 const EFFORT_ACTION = "effm";
 const KEEP_EFFORT_ACTION = "effk";
+const CONTEXT_ACTION = "ctxm";
 
 // Telegram caps callback_data at 64 bytes, so a menu cannot carry a model id verbatim: ids come
 // from provider discovery and are unbounded. A fixed-width digest of the id fits the budget and,
@@ -271,14 +275,33 @@ export class ModelPicker {
    * selecting a model never forces the effort step. The entry is dropped when the current model
    * discards effort, where it would open a submenu that cannot change anything.
    */
-  buildButtons(currentModelId: string, target?: PickerTarget): ConfirmationButton[] {
+  buildButtons(currentModelId: string, target?: PickerTarget, opts?: { contextChoice?: boolean }): ConfirmationButton[] {
     const buttons = this.nodeButtons([], currentModelId, target);
     // No effort entry on an agent menu: effort is a per-session choice, and offering it here would
-    // suggest the config edit also pins it.
+    // suggest the config edit also pins it. Same reasoning for the context entry.
     if (!target && this.effortLevelsFor(currentModelId).length > 0) {
       buttons.push({ label: "Effort >", action: EFFORT_ACTION });
     }
+    // Only when the cap actually lowers this model's window: otherwise the submenu would offer a
+    // choice between two identical numbers.
+    if (!target && opts?.contextChoice) {
+      buttons.push({ label: "Context >", action: CONTEXT_ACTION });
+    }
     return buttons;
+  }
+
+  /**
+   * Context submenu: the full window against the capped one, with the active choice marked.
+   * A root-level entry rather than a step chained after picking a model -- the cap is a standing
+   * policy that rarely changes, and a third screen on every model switch would cost more than it
+   * saves. See docs/context-window.md.
+   */
+  buildContextButtons(current: ContextMode, raw: number, cap: number): ConfirmationButton[] {
+    return [
+      { label: mark(`Full: ${raw.toLocaleString("en-US")}`, current === "full"), action: "ctx:full" },
+      { label: mark(`Capped: ${cap.toLocaleString("en-US")}`, current === "capped"), action: "ctx:capped" },
+      { label: "< Back", action: "mdlb" },
+    ];
   }
 
   /** Header suffix showing the effective effort, omitted when the current model discards it. */
@@ -334,6 +357,9 @@ export class ModelPicker {
 
     if (bare === "mdlb") return { kind: "back", ...(target ? { target } : {}) };
     if (bare === EFFORT_ACTION) return { kind: "openEffort" };
+    if (bare === CONTEXT_ACTION) return { kind: "openContext" };
+    if (bare === "ctx:full") return { kind: "setContext", mode: "full" };
+    if (bare === "ctx:capped") return { kind: "setContext", mode: "capped" };
     if (bare === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
 
     const effort = /^eff:(.+)$/.exec(bare);
