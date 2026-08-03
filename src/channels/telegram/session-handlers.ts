@@ -43,7 +43,7 @@ interface TelegramSessionHandlerDeps {
   // can build the handler without them; the commands then report the gap instead of throwing.
   toolRegistry?: ToolRegistry;
   mcpStatus?: () => McpServerStatus[];
-  listSubAgents?: () => Promise<SubAgentInfo[]>;
+  listSubAgents?: (sessionId: string) => Promise<SubAgentInfo[]>;
   config: MyClawConfig;
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
@@ -162,7 +162,7 @@ export function createTelegramCommandHandler({
         const agentOutcome = await handleAgentModelCommand(args, {
           config,
           modelPicker,
-          listSubAgents: listSubAgents ?? (async () => []),
+          listSubAgents: listSubAgents ? () => listSubAgents(sessionId) : (async () => []),
           reloadConfigNow,
           isDm: chatType === "dm",
         });
@@ -363,7 +363,7 @@ export function createTelegramCommandHandler({
           // Absent means the host wired no MCP manager or sub-agent runner, which reads as "none"
           // rather than crashing a read-only command.
           mcpStatus: mcpStatus ?? (() => []),
-          listSubAgents: listSubAgents ?? (async () => []),
+          listSubAgents: listSubAgents ? () => listSubAgents(sessionId) : (async () => []),
           platform: "telegram",
         };
         if (command === "skills") return handleSkillsCommand(params);

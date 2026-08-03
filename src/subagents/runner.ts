@@ -23,6 +23,15 @@ const MAX_DEPTH = 2;
 const MAX_MESSAGES = 500;
 const MAX_MESSAGES_KEEP = 50;
 
+/**
+ * Sub-agents are global on purpose: any chat can list and drive any of them, which is what makes
+ * them useful as shared workers. A private one is scoped to the session that created it -- either
+ * because the owner asked, or because it is a one-shot with no name to share.
+ */
+function isReachableFrom(meta: SubAgentMeta, callerSessionId: string): boolean {
+  return meta.visibility !== "private" || meta.parentSessionId === callerSessionId;
+}
+
 export class SubAgentRunner {
   private activeCount = 0;
 
@@ -38,26 +47,32 @@ export class SubAgentRunner {
     return this.activeCount < MAX_CONCURRENT_RUNS && depth < MAX_DEPTH;
   }
 
-  async spawn(
-    displayName: string,
-    type: SubAgentType,
-    mode: "run" | "session",
-    task: string,
-    workspaceDir: string | undefined,
-    parentMessage: UnifiedMessage,
-    existingIds: Set<string>,
-    generateId: (name: string, existing: Set<string>) => string,
-    signal?: AbortSignal,
-    model?: string,
+  // An options object rather than positional arguments: this call already carried eleven of them,
+  // and a caller or a test asserting on argument position silently binds to the wrong one as soon
+  // as a parameter is inserted.
+  async spawn(opts: {
+    displayName: string;
+    type: SubAgentType;
+    mode: "run" | "session";
+    task: string;
+    workspaceDir?: string;
+    parentMessage: UnifiedMessage;
+    existingIds: Set<string>;
+    generateId: (name: string, existing: Set<string>) => string;
+    parentSessionId: string;
+    visibility: "global" | "private";
+    signal?: AbortSignal;
+    model?: string;
     // Same per-agent queue as send(): without it, a send() issued while the spawn's first
     // run is still going races it on the session file (and the SDK session resume).
-    enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
-  ): Promise<{ id: string; result: string }> {
+    enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
+  }): Promise<{ id: string; result: string }> {
+    const { displayName, type, mode, task, workspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
     if (mode === "run") {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, workspaceDir, parentMessage, signal, model);
+      return this.runOneShot(type, task, workspaceDir, parentMessage, parentSessionId, signal, model);
     }
 
     const id = generateId(displayName, existingIds);
@@ -65,11 +80,13 @@ export class SubAgentRunner {
       displayName,
       type,
       workspaceDir,
-      createdBy: parentMessage.chatId,
+      parentSessionId,
+      visibility,
       createdAt: new Date().toISOString(),
     };
 
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta);
+    session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
     await saveSession(id, session);
 
@@ -86,11 +103,15 @@ export class SubAgentRunner {
     attachments: Attachment[] | undefined,
     parentMessage: UnifiedMessage,
     registry: { enqueue: <T>(id: string, task: () => Promise<T>) => Promise<T>; isRunning: (id: string) => boolean },
+    callerSessionId: string,
     signal?: AbortSignal,
   ): Promise<string> {
     return registry.enqueue(id, async () => {
       const session = await loadSession(id);
       if (!session || !session.meta) {
+        return `Error: sub-agent ${id} not found.`;
+      }
+      if (!isReachableFrom(session.meta, callerSessionId)) {
         return `Error: sub-agent ${id} not found.`;
       }
 
@@ -101,21 +122,30 @@ export class SubAgentRunner {
         session.messages = trimSessionMessages(session.messages, MAX_MESSAGES_KEEP);
       }
 
+      // A global agent can be driven from a chat other than its creator, so this run's tokens
+      // belong to whoever sent this message, not to whoever spawned the agent.
+      session.invokedBy = callerSessionId;
       const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal);
       await saveSession(id, session);
       return result;
     });
   }
 
-  async kill(id: string): Promise<string> {
+  async kill(id: string, callerSessionId: string): Promise<string> {
+    // deleteSession takes any session id, so without this guard `kill_agent` could be pointed at
+    // a chat session and delete a conversation.
+    const session = await loadSession(id);
+    if (!id.startsWith("subagent/") || !session?.meta || !isReachableFrom(session.meta, callerSessionId)) {
+      return `Error: sub-agent ${id} not found.`;
+    }
     await deleteSession(id);
     hooks.emit("subagent:killed", { id });
     return `Sub-agent ${id} deleted.`;
   }
 
-  async reset(id: string): Promise<string> {
+  async reset(id: string, callerSessionId: string): Promise<string> {
     const session = await loadSession(id);
-    if (!session || !session.meta) {
+    if (!session || !session.meta || !isReachableFrom(session.meta, callerSessionId)) {
       return `Error: sub-agent ${id} not found.`;
     }
     await archiveSession(id);
@@ -125,7 +155,7 @@ export class SubAgentRunner {
     return `Sub-agent ${id} session reset. Workspace preserved.`;
   }
 
-  async list(registry: { isRunning: (id: string) => boolean }): Promise<SubAgentInfo[]> {
+  async list(registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentInfo[]> {
     const dir = join(MY_CLAW_DIR, "sessions", "subagent");
     const out: SubAgentInfo[] = [];
     try {
@@ -135,6 +165,7 @@ export class SubAgentRunner {
         const id = `subagent/${entry.name.slice(0, -5)}`;
         const session = await loadSession(id);
         if (!session?.meta) continue;
+        if (!isReachableFrom(session.meta, callerSessionId)) continue;
         out.push({
           id,
           displayName: session.meta.displayName,
@@ -154,11 +185,23 @@ export class SubAgentRunner {
     task: string,
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
+    parentSessionId: string,
     signal?: AbortSignal,
     model?: string,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
-    const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, undefined);
+    // A one-shot agent is unnamed and deleted when the run ends. It gets metadata only so its
+    // tokens can be attributed, and that metadata is what makes an agent listable -- hence
+    // private, or giving it a parent would also expose it to every other chat.
+    const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, {
+      displayName: id.slice("subagent/".length),
+      type,
+      workspaceDir,
+      parentSessionId,
+      visibility: "private",
+      createdAt: new Date().toISOString(),
+    });
+    session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
 
     this.activeCount += 1;

@@ -10,9 +10,10 @@ export function createListAgentsTool(runner: SubAgentRunner, registry: SubAgentR
       type: "object",
       properties: {},
     },
-    async execute(): Promise<ToolResult> {
+    async execute(args): Promise<ToolResult> {
       try {
-        const agents = await runner.list(registry);
+        const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+        const agents = await runner.list(registry, callerSessionId);
         const output = agents
           .map((a) => `- ${a.id} | ${a.displayName} | ${a.type} | ${a.messageCount} messages | ${a.status}`)
           .join("\n") || "No persistent sub-agents.";

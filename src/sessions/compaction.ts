@@ -2,6 +2,7 @@ import type { MyClawConfig } from "../core/config.ts";
 import { chatCompletion } from "../llm/provider.ts";
 import { resolveOpenAiLlmConfig } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
+import { attributionParent } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
 
@@ -155,6 +156,9 @@ export async function compactSession(
     );
     recordApiCall({
       sessionId: session.id,
+      // Compaction is maintenance on a session, not work delegated by another one, so it bills
+      // to the session it is compacting.
+      parentSessionId: attributionParent(session),
       platform: session.platform,
       model: llmConfig.model,
       baseUrl: llmConfig.baseUrl,
@@ -163,9 +167,13 @@ export async function compactSession(
       promptTokens: response.usage?.promptTokens ?? 0,
       completionTokens: response.usage?.completionTokens ?? 0,
       totalTokens: response.usage?.totalTokens ?? 0,
+      cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
       toolCalls: 0,
       iteration: 0,
       durationMs: Date.now() - compactionStartedAt,
+      proxyCostUsd: response.proxyCostUsd,
+      upstreamApiBase: response.upstreamApiBase,
     });
 
     const summary = response.content.slice(0, MAX_SUMMARY_CHARS).trim();

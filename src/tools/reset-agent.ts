@@ -15,7 +15,8 @@ export function createResetAgentTool(runner: SubAgentRunner): Tool {
     async execute(args): Promise<ToolResult> {
       try {
         const id = str(args, "id");
-        const result = await runner.reset(id);
+        const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+        const result = await runner.reset(id, callerSessionId);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         return { success: false, output: "", error: String(e) };

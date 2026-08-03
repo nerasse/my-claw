@@ -77,7 +77,7 @@ test("SubAgentRunner spawns research agent one-shot", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id, result } = await runner.spawn("test", "research", "run", "explore", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id, result } = await runner.spawn({ displayName: "test", type: "research", mode: "run", task: "explore", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
     assert.ok(id.startsWith("subagent/run-"));
     assert.equal(result, "research done");
   } finally {
@@ -108,7 +108,7 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id, result } = await runner.spawn("persist", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id, result } = await runner.spawn({ displayName: "persist", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
     assert.ok(id.startsWith("subagent/persist-"));
     assert.equal(result, "ack");
 
@@ -120,7 +120,7 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
     assert.equal(firstRunReply?.content, "ack");
     const lengthAfterSpawn = session!.messages.length;
 
-    const sendResult = await runner.send(id, "second message", undefined, createMessage(), reg);
+    const sendResult = await runner.send(id, "second message", undefined, createMessage(), reg, "matrix/room/!caller:test");
     assert.equal(sendResult, "ack");
 
     const session2 = await loadSession(id);
@@ -171,11 +171,11 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id } = await runner.spawn("queue", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id } = await runner.spawn({ displayName: "queue", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
 
     // Fire two sends almost simultaneously
-    const p1 = runner.send(id, "msg1", undefined, createMessage(), reg);
-    const p2 = runner.send(id, "msg2", undefined, createMessage(), reg);
+    const p1 = runner.send(id, "msg1", undefined, createMessage(), reg, "matrix/room/!caller:test");
+    const p2 = runner.send(id, "msg2", undefined, createMessage(), reg, "matrix/room/!caller:test");
 
     const [r1, r2] = await Promise.all([p1, p2]);
 
@@ -219,12 +219,12 @@ test("SubAgentRunner queues three sends in order", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id } = await runner.spawn("triple", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id } = await runner.spawn({ displayName: "triple", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
 
     const results = await Promise.all([
-      runner.send(id, "a", undefined, createMessage(), reg),
-      runner.send(id, "b", undefined, createMessage(), reg),
-      runner.send(id, "c", undefined, createMessage(), reg),
+      runner.send(id, "a", undefined, createMessage(), reg, "matrix/room/!caller:test"),
+      runner.send(id, "b", undefined, createMessage(), reg, "matrix/room/!caller:test"),
+      runner.send(id, "c", undefined, createMessage(), reg, "matrix/room/!caller:test"),
     ]);
 
     // All succeed
@@ -257,14 +257,14 @@ test("SubAgentRunner kill and reset", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id } = await runner.spawn("killtest", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id } = await runner.spawn({ displayName: "killtest", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
 
-    const killResult = await runner.kill(id);
+    const killResult = await runner.kill(id, "matrix/room/!caller:test");
     assert.ok(killResult.includes("deleted"));
     assert.equal(await loadSession(id), null);
 
-    const { id: id2 } = await runner.spawn("resettest", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
-    const resetResult = await runner.reset(id2);
+    const { id: id2 } = await runner.spawn({ displayName: "resettest", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
+    const resetResult = await runner.reset(id2, "matrix/room/!caller:test");
     assert.ok(resetResult.includes("reset"));
     const session = await loadSession(id2);
     assert.ok(session);
@@ -296,7 +296,7 @@ test("spawn tool with attachments", async () => {
 
   try {
     const existing = await reg.listExistingIds();
-    const { id } = await runner.spawn("attach", "research", "session", "init", undefined, createMessage(), existing, (n, e) => reg.generateId(n, e));
+    const { id } = await runner.spawn({ displayName: "attach", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
 
     const send = createSendTool(runner, reg);
     const result = await send.execute({
@@ -340,7 +340,7 @@ test("sub-agent with workspaceDir receives same skills as main agent", async () 
 
   try {
     const existing = await new SubAgentRegistry().listExistingIds();
-    await runner.spawn("skill-test", "research", "run", "test", "/tmp/project", createMessage(), existing, (n, e) => new SubAgentRegistry().generateId(n, e));
+    await runner.spawn({ displayName: "skill-test", type: "research", mode: "run", task: "test", workspaceDir: "/tmp/project", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => new SubAgentRegistry().generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
     assert.ok(capturedSystemPrompt.includes("Available skills"), "System prompt should contain skills");
     assert.ok(capturedSystemPrompt.includes("shared"), "System prompt should contain shared skill");
   } finally {

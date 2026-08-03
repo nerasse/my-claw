@@ -45,11 +45,35 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_api_calls_caller       ON api_calls (caller);
   `);
 
+  // Columns added after the table shipped. CREATE TABLE IF NOT EXISTS never re-runs, so an
+  // existing analytics.db would keep the old shape and every INSERT would fail -- silently,
+  // because recordApiCall swallows its errors.
+  ensureColumn(db, "api_calls", "parent_session_id", "TEXT");
+  ensureColumn(db, "api_calls", "cache_read_tokens", "INTEGER");
+  ensureColumn(db, "api_calls", "cache_write_tokens", "INTEGER");
+  ensureColumn(db, "api_calls", "upstream_api_base", "TEXT");
+  ensureColumn(db, "api_calls", "proxy_cost_usd", "REAL");
+
+  // Must come after ensureColumn: an index on a column the table does not have yet would throw,
+  // and inside the block above it would take the whole statement down with it.
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_parent ON api_calls (parent_session_id)");
+
   return db;
+}
+
+/** Add a column to an existing table if a prior schema version lacks it. */
+function ensureColumn(d: Database, table: string, column: string, type: string): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 export interface ApiCallRecord {
   sessionId: string;
+  // Session this call is billed to. A sub-agent or browser run charges the session that drove it,
+  // so a chat's real cost includes the work it delegated. A top-level chat records itself.
+  parentSessionId?: string;
   platform: string;
   model: string;
   baseUrl: string;
@@ -59,10 +83,19 @@ export interface ApiCallRecord {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  // Subsets of promptTokens, billed at a different rate -- often two orders of magnitude cheaper,
+  // so a cost computed without them is meaningless rather than merely imprecise.
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 
   toolCalls: number;
   iteration: number;
   durationMs: number;
+
+  // What a billing proxy said this call cost, and which endpoint it forwarded to. Authoritative
+  // when present; the price table is the fallback.
+  proxyCostUsd?: number;
+  upstreamApiBase?: string;
 
   error?: string;
 }
@@ -75,18 +108,19 @@ export function recordApiCall(record: ApiCallRecord): void {
     if (!insertStmt) {
       insertStmt = d.prepare(`
         INSERT INTO api_calls (
-          session_id, platform, model, base_url, streaming, caller,
-          prompt_tokens, completion_tokens, total_tokens,
-          tool_calls, iteration, duration_ms, error
+          session_id, parent_session_id, platform, model, base_url, streaming, caller,
+          prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
+          tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, error
         ) VALUES (
-          $session_id, $platform, $model, $base_url, $streaming, $caller,
-          $prompt_tokens, $completion_tokens, $total_tokens,
-          $tool_calls, $iteration, $duration_ms, $error
+          $session_id, $parent_session_id, $platform, $model, $base_url, $streaming, $caller,
+          $prompt_tokens, $completion_tokens, $total_tokens, $cache_read_tokens, $cache_write_tokens,
+          $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $error
         )
       `);
     }
     insertStmt.run({
       $session_id: record.sessionId,
+      $parent_session_id: record.parentSessionId ?? record.sessionId,
       $platform: record.platform,
       $model: record.model,
       $base_url: record.baseUrl,
@@ -95,9 +129,13 @@ export function recordApiCall(record: ApiCallRecord): void {
       $prompt_tokens: record.promptTokens,
       $completion_tokens: record.completionTokens,
       $total_tokens: record.totalTokens,
+      $cache_read_tokens: record.cacheReadTokens ?? 0,
+      $cache_write_tokens: record.cacheWriteTokens ?? 0,
       $tool_calls: record.toolCalls,
       $iteration: record.iteration,
       $duration_ms: record.durationMs,
+      $proxy_cost_usd: record.proxyCostUsd ?? null,
+      $upstream_api_base: record.upstreamApiBase ?? null,
       $error: record.error ?? null,
     });
   } catch (err) {

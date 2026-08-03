@@ -15,10 +15,10 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls } from "../sessions/store.ts";
+import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
-import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse } from "../llm/provider.ts";
+import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
@@ -70,7 +70,7 @@ function complete(
     : chatCompletion(config, messages, tools, signal);
 }
 
-function accumulateUsage(session: SessionData, usage?: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+function accumulateUsage(session: SessionData, usage?: LlmUsage): void {
   if (!usage) return;
   if (!session.tokenUsage) {
     session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
@@ -79,6 +79,8 @@ function accumulateUsage(session: SessionData, usage?: { promptTokens: number; c
   session.tokenUsage.completionTokens += usage.completionTokens;
   session.tokenUsage.totalTokens += usage.totalTokens;
   session.tokenUsage.apiCalls += 1;
+  if (usage.cacheReadTokens) session.tokenUsage.cacheReadTokens = (session.tokenUsage.cacheReadTokens ?? 0) + usage.cacheReadTokens;
+  if (usage.cacheWriteTokens) session.tokenUsage.cacheWriteTokens = (session.tokenUsage.cacheWriteTokens ?? 0) + usage.cacheWriteTokens;
 }
 
 function runLogData(message: UnifiedMessage, session: SessionData): Record<string, unknown> {
@@ -369,6 +371,7 @@ export class AgentBridge implements AgentBackend {
         accumulateUsage(session, response.usage);
         recordApiCall({
           sessionId: session.id,
+          parentSessionId: attributionParent(session),
           platform: message.platform,
           model: llmConfig.model,
           baseUrl: llmConfig.baseUrl,
@@ -377,9 +380,13 @@ export class AgentBridge implements AgentBackend {
           promptTokens: response.usage?.promptTokens ?? 0,
           completionTokens: response.usage?.completionTokens ?? 0,
           totalTokens: response.usage?.totalTokens ?? 0,
+          cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
+          cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
           toolCalls: response.toolCalls?.length ?? 0,
           iteration,
           durationMs: llmDurationMs,
+          proxyCostUsd: response.proxyCostUsd,
+          upstreamApiBase: response.upstreamApiBase,
         });
 
         hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length) });
@@ -714,6 +721,7 @@ export class AgentBridge implements AgentBackend {
     accumulateUsage(session, summaryResponse.usage);
     recordApiCall({
       sessionId: session.id,
+      parentSessionId: attributionParent(session),
       platform: message.platform,
       model: llmConfig.model,
       baseUrl: llmConfig.baseUrl,
@@ -722,9 +730,13 @@ export class AgentBridge implements AgentBackend {
       promptTokens: summaryResponse.usage?.promptTokens ?? 0,
       completionTokens: summaryResponse.usage?.completionTokens ?? 0,
       totalTokens: summaryResponse.usage?.totalTokens ?? 0,
+      cacheReadTokens: summaryResponse.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: summaryResponse.usage?.cacheWriteTokens ?? 0,
       toolCalls: 0,
       iteration: iteration + 1,
       durationMs: summaryDurationMs,
+      proxyCostUsd: summaryResponse.proxyCostUsd,
+      upstreamApiBase: summaryResponse.upstreamApiBase,
     });
 
     const rawFinalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
@@ -847,6 +859,10 @@ export class AgentBridge implements AgentBackend {
         __message: params.message,
         __workspaceDir: this.workspaceDir,
         __signal: params.signal,
+        // Identity of the calling session, so a tool that creates or drives a sub-agent can record
+        // who owns the work. Derived from the session, never from the message: the message alone
+        // cannot tell a thread session from its room.
+        __sessionId: params.session.id,
       };
       const result = await tool.execute(enrichedArgs);
       if (params.signal?.aborted) throw new AbortedError();

@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
-import { trimSessionMessages, sealDanglingToolCalls } from "../../sessions/store.ts";
+import { trimSessionMessages, sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
@@ -131,7 +131,7 @@ function toolResultToText(content: unknown, isError: boolean): string {
   return isError && !text.startsWith("Error") ? `Error: ${text}` : text;
 }
 
-function accumulateUsage(session: SessionData, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+function accumulateUsage(session: SessionData, usage: SdkUsage): void {
   if (!session.tokenUsage) {
     session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
   }
@@ -139,6 +139,16 @@ function accumulateUsage(session: SessionData, usage: { promptTokens: number; co
   session.tokenUsage.completionTokens += usage.completionTokens;
   session.tokenUsage.totalTokens += usage.totalTokens;
   session.tokenUsage.apiCalls += 1;
+  if (usage.cacheReadTokens) session.tokenUsage.cacheReadTokens = (session.tokenUsage.cacheReadTokens ?? 0) + usage.cacheReadTokens;
+  if (usage.cacheWriteTokens) session.tokenUsage.cacheWriteTokens = (session.tokenUsage.cacheWriteTokens ?? 0) + usage.cacheWriteTokens;
+}
+
+interface SdkUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 /**
@@ -789,20 +799,28 @@ export class ClaudeSdkBackend implements AgentBackend {
     seenIds: Set<string>,
     nextIteration: () => number,
     windowStart: number,
-  ): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
+  ): SdkUsage | undefined {
     const m = msg.message;
     if (!m?.usage) return undefined;
     // Parallel tool batches share one API message id; dedupe so a call is counted once.
     const id = m.id ?? `no-id-${Date.now()}`;
     if (seenIds.has(id)) return undefined;
     seenIds.add(id);
-    const promptTokens = (m.usage.input_tokens ?? 0) + (m.usage.cache_read_input_tokens ?? 0) + (m.usage.cache_creation_input_tokens ?? 0);
+    const cacheReadTokens = m.usage.cache_read_input_tokens ?? 0;
+    const cacheWriteTokens = m.usage.cache_creation_input_tokens ?? 0;
+    // Anthropic reports fresh input separately from the cache buckets. Summing keeps promptTokens
+    // meaning "all input", the same as on the OpenAI-compatible path; the buckets are kept as
+    // their own fields because they are billed at very different rates.
+    const promptTokens = (m.usage.input_tokens ?? 0) + cacheReadTokens + cacheWriteTokens;
     const completionTokens = m.usage.output_tokens ?? 0;
-    const usage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+    const usage: SdkUsage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+    if (cacheReadTokens > 0) usage.cacheReadTokens = cacheReadTokens;
+    if (cacheWriteTokens > 0) usage.cacheWriteTokens = cacheWriteTokens;
     accumulateUsage(session, usage);
     const toolCalls = (m.content ?? []).filter((b) => b.type === "tool_use").length;
     recordApiCall({
       sessionId: session.id,
+      parentSessionId: attributionParent(session),
       platform: message.platform,
       model: llmConfig.model,
       baseUrl: "claude-sdk",
@@ -811,6 +829,8 @@ export class ClaudeSdkBackend implements AgentBackend {
       promptTokens,
       completionTokens,
       totalTokens: usage.totalTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
       toolCalls,
       iteration: nextIteration(),
       durationMs: Date.now() - windowStart,

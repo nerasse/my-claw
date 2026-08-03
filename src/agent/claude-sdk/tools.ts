@@ -78,6 +78,7 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
       __message: ctx.message,
       __workspaceDir: ctx.workspaceDir,
       __signal: ctx.signal,
+      __sessionId: ctx.session.id,
     });
     if (ctx.signal?.aborted) throw new AbortedError();
     for (const att of result.attachments ?? []) ctx.addAttachment(att);

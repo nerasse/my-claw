@@ -323,7 +323,7 @@ async function main() {
       reloadConfigNow,
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
-      listSubAgents: () => subAgentRunner.list(subAgentRegistry),
+      listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
     });
     const callbackHandler = createTelegramCallbackHandler({
       config,
@@ -440,7 +440,7 @@ async function main() {
       reloadConfigNow,
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
-      listSubAgents: () => subAgentRunner.list(subAgentRegistry),
+      listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
     });
     const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
     const actionHandler = createMatrixActionHandler({

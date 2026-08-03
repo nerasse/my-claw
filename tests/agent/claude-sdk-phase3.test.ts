@@ -71,8 +71,8 @@ test("spawn tool exposes a live model enum and validates the model", async () =>
   let models = ["mimo", "claude-sonnet-5"];
   const runnerCalls: Array<{ model?: string }> = [];
   const runner = {
-    spawn: async (...args: unknown[]) => {
-      runnerCalls.push({ model: args[9] as string | undefined });
+    spawn: async (opts: { model?: string }) => {
+      runnerCalls.push({ model: opts.model });
       return { id: "subagent/x", result: "done" };
     },
   } as unknown as SubAgentRunner;

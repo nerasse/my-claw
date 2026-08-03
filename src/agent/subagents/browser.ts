@@ -153,6 +153,11 @@ export class BrowserSubagent {
   constructor(
     private config: MyClawConfig,
     private sidecarUrl: string,
+    // Session that asked for this browser task. The browser has no session of its own, so without
+    // it these calls land in a global bucket and no conversation ever shows what it delegated.
+    // Passed explicitly rather than derived from the run's abort signal, because a sub-agent shares
+    // the root signal and would attribute its browsing to the top-level chat instead of itself.
+    private callerSessionId?: string,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
     this.client = new BrowserClient(sidecarUrl, config.browser?.viewport, config.browser?.timeoutsMs);
@@ -240,6 +245,7 @@ export class BrowserSubagent {
         response = await chatCompletion(llmConfig, trimmed, openaiTools, signal);
         recordApiCall({
           sessionId: "browser-subagent",
+          parentSessionId: this.callerSessionId,
           platform: "internal",
           model: llmConfig.model,
           baseUrl: llmConfig.baseUrl,
@@ -248,9 +254,13 @@ export class BrowserSubagent {
           promptTokens: response.usage?.promptTokens ?? 0,
           completionTokens: response.usage?.completionTokens ?? 0,
           totalTokens: response.usage?.totalTokens ?? 0,
+          cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
+          cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
           toolCalls: response.toolCalls?.length ?? 0,
           iteration: step,
           durationMs: Date.now() - browserLlmStart,
+          proxyCostUsd: response.proxyCostUsd,
+          upstreamApiBase: response.upstreamApiBase,
         });
       } catch (e) {
         return {
@@ -371,6 +381,7 @@ export class BrowserSubagent {
       const response = await chatCompletion(llmConfig, trimmed, undefined, signal);
       recordApiCall({
         sessionId: "browser-subagent",
+        parentSessionId: this.callerSessionId,
         platform: "internal",
         model: llmConfig.model,
         baseUrl: llmConfig.baseUrl,
@@ -379,9 +390,13 @@ export class BrowserSubagent {
         promptTokens: response.usage?.promptTokens ?? 0,
         completionTokens: response.usage?.completionTokens ?? 0,
         totalTokens: response.usage?.totalTokens ?? 0,
+        cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
+        cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
         toolCalls: 0,
         iteration: this.maxSteps,
         durationMs: Date.now() - start,
+        proxyCostUsd: response.proxyCostUsd,
+        upstreamApiBase: response.upstreamApiBase,
       });
       return (response.content ?? "").trim();
     } catch {

@@ -86,10 +86,20 @@ test("SubAgentRunner uses isolated iteration budget from config", async () => {
   });
 
   try {
-    const { result } = await runner.spawn("tester", "general", "run", "do work", undefined, createParentMessage(), new Set(), (n, e) => {
-      let i = 1;
-      while (e.has(`${n}-${i}`)) i++;
-      return `${n}-${i}`;
+    const { result } = await runner.spawn({
+      displayName: "tester",
+      type: "general",
+      mode: "run",
+      task: "do work",
+      parentMessage: createParentMessage(),
+      existingIds: new Set(),
+      generateId: (n: string, e: Set<string>) => {
+        let i = 1;
+        while (e.has(`${n}-${i}`)) i++;
+        return `${n}-${i}`;
+      },
+      parentSessionId: "matrix/room/!caller:test",
+      visibility: "global",
     });
 
     expect(result).toBe("Sub-agent summary after 6 calls.");
@@ -117,10 +127,20 @@ test("SubAgentRunner budget does not affect parent bridge budget", async () => {
   });
 
   try {
-    const { result } = await runner.spawn("tester", "research", "run", "quick task", undefined, createParentMessage(), new Set(), (n, e) => {
-      let i = 1;
-      while (e.has(`${n}-${i}`)) i++;
-      return `${n}-${i}`;
+    const { result } = await runner.spawn({
+      displayName: "tester",
+      type: "research",
+      mode: "run",
+      task: "quick task",
+      parentMessage: createParentMessage(),
+      existingIds: new Set(),
+      generateId: (n: string, e: Set<string>) => {
+        let i = 1;
+        while (e.has(`${n}-${i}`)) i++;
+        return `${n}-${i}`;
+      },
+      parentSessionId: "matrix/room/!caller:test",
+      visibility: "global",
     });
 
     expect(result).toBe("reply-1");

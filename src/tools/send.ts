@@ -38,7 +38,8 @@ export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistr
           return { success: false, output: "", error: "Missing parent message context" };
         }
         const signal = args["__signal"] as AbortSignal | undefined;
-        const result = await runner.send(id, message, attachments, parentMessage, registry, signal);
+        const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);

@@ -95,21 +95,54 @@ export type ChatMessage =
   | { role: "tool"; tool_call_id: string; content: string };
 
 export interface LlmUsage {
+  // Every input token, cached ones included. Providers disagree on whether their own prompt
+  // counter includes the cache buckets, so this field is normalised to always include them:
+  // fresh input is promptTokens - cacheReadTokens - cacheWriteTokens.
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 export interface LlmResponse {
   content: string;
   toolCalls?: ToolCall[];
   usage?: LlmUsage;
+  // A proxy that bills us can report the authoritative figure for the call it just served.
+  // Preferred over any price table when present and positive.
+  proxyCostUsd?: number;
+  // The endpoint the proxy actually forwarded to, which is what determines the real tariff.
+  upstreamApiBase?: string;
 }
 
 export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+}
+
+/**
+ * The union of every usage shape the OpenAI-compatible endpoints in use actually emit. The cache
+ * fields are the reason this type exists: they were previously undeclared, so `normalizeUsage`
+ * could not see them and prompt caching had no instrumentation at all.
+ */
+interface RawUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_creation_tokens?: number;
+  };
+  // Anthropic-style, passed straight through by some proxies instead of being folded into
+  // prompt_tokens_details.
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  // DeepSeek names it differently again.
+  prompt_cache_hit_tokens?: number;
 }
 
 interface ChatCompletionResponse {
@@ -122,13 +155,7 @@ interface ChatCompletionResponse {
       }>;
     };
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-    input_tokens?: number;
-    output_tokens?: number;
-  };
+  usage?: RawUsage;
 }
 
 interface ChatCompletionStreamChunk {
@@ -145,13 +172,7 @@ interface ChatCompletionStreamChunk {
       }>;
     };
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-    input_tokens?: number;
-    output_tokens?: number;
-  };
+  usage?: RawUsage;
 }
 
 const EPHEMERAL_CACHE = { type: "ephemeral" as const };
@@ -268,13 +289,40 @@ function safeJsonParse(raw: string, label: string): Record<string, unknown> {
   }
 }
 
-function normalizeUsage(raw?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; input_tokens?: number; output_tokens?: number }): LlmUsage | undefined {
+function normalizeUsage(raw?: RawUsage): LlmUsage | undefined {
   if (!raw) return undefined;
-  const prompt = raw.prompt_tokens ?? raw.input_tokens ?? 0;
   const completion = raw.completion_tokens ?? raw.output_tokens ?? 0;
-  const total = raw.total_tokens ?? prompt + completion;
+  const cacheRead = raw.prompt_tokens_details?.cached_tokens ?? raw.cache_read_input_tokens ?? raw.prompt_cache_hit_tokens ?? 0;
+  const cacheWrite = raw.prompt_tokens_details?.cache_creation_tokens ?? raw.cache_creation_input_tokens ?? 0;
+
+  // OpenAI-style prompt_tokens already counts the cached tokens; Anthropic-style input_tokens
+  // counts only the fresh ones and reports the cache buckets alongside. Normalise to "all input".
+  const declared = raw.prompt_tokens ?? raw.input_tokens ?? 0;
+  const prompt = raw.prompt_tokens !== undefined ? declared : declared + cacheRead + cacheWrite;
+
   if (prompt === 0 && completion === 0) return undefined;
-  return { promptTokens: prompt, completionTokens: completion, totalTokens: total };
+  const usage: LlmUsage = {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: raw.total_tokens ?? prompt + completion,
+  };
+  if (cacheRead > 0) usage.cacheReadTokens = cacheRead;
+  if (cacheWrite > 0) usage.cacheWriteTokens = cacheWrite;
+  return usage;
+}
+
+/**
+ * LiteLLM reports what it billed, and which endpoint it forwarded to, as response headers on the
+ * completion route itself -- reachable with a virtual key that is denied the admin routes.
+ * A cost of 0 is ambiguous (free plan, or no price configured), so it is only carried when positive.
+ */
+function readProxyHeaders(response: Response): { proxyCostUsd?: number; upstreamApiBase?: string } {
+  const out: { proxyCostUsd?: number; upstreamApiBase?: string } = {};
+  const cost = Number(response.headers.get("x-litellm-response-cost-original") ?? response.headers.get("x-litellm-response-cost"));
+  if (Number.isFinite(cost) && cost > 0) out.proxyCostUsd = cost;
+  const upstream = response.headers.get("x-litellm-model-api-base");
+  if (upstream) out.upstreamApiBase = upstream;
+  return out;
 }
 
 function parseToolCalls(
@@ -343,6 +391,7 @@ export async function chatCompletion(
         content: choice.message.content ?? "",
         toolCalls: parseToolCalls(choice.message.tool_calls),
         usage: normalizeUsage(data.usage),
+        ...readProxyHeaders(response),
       };
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
@@ -508,6 +557,7 @@ export async function chatCompletionStream(
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
         usage: streamUsage,
+        ...readProxyHeaders(response),
       };
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();

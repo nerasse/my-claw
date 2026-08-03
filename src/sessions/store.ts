@@ -64,8 +64,26 @@ export interface SubAgentMeta {
   displayName: string;
   type: "general" | "research";
   workspaceDir?: string;
-  createdBy: string;
+  // Session that spawned this agent. Recorded once, at creation, because parentage is a property
+  // of the agent rather than of a run -- so it survives restarts and needs no argument threading.
+  parentSessionId: string;
+  // Sub-agents are addressable from any chat by default, which is the point. A private one is
+  // only visible and drivable from parentSessionId. One-shot agents are always private: they are
+  // unnamed and short-lived, and were invisible before they had metadata at all.
+  visibility: "global" | "private";
   createdAt: string;
+}
+
+/**
+ * Who a session's API calls should be billed to, strongest evidence first: the session that
+ * triggered this run, then the one that created the agent, then itself.
+ *
+ * Recording self rather than null for a top-level chat keeps `WHERE parent_session_id = ?`
+ * rollups complete without a COALESCE, and makes a missing parent show up as an unattributed
+ * agent instead of silently misfiling tokens onto the wrong conversation.
+ */
+export function attributionParent(session: SessionData): string {
+  return session.invokedBy ?? session.meta?.parentSessionId ?? session.id;
 }
 
 export interface TokenUsage {
@@ -73,6 +91,8 @@ export interface TokenUsage {
   completionTokens: number;
   totalTokens: number;
   apiCalls: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 export interface SessionData {
@@ -89,6 +109,10 @@ export interface SessionData {
   verbose?: boolean;
   approvedTools?: string[];
   meta?: SubAgentMeta;
+  // Session that triggered the run currently executing, set by the runner before each run. A
+  // global sub-agent can be driven from a chat other than the one that created it, so the creator
+  // in `meta` is only a fallback: attribution follows whoever asked for this run.
+  invokedBy?: string;
   tokenUsage?: TokenUsage;
   // Claude Agent SDK session to resume on the claude-sdk backend. The SDK owns that
   // history; `messages` is only a mirror for UI/commands/archives on that path.

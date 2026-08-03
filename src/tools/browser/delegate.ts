@@ -36,7 +36,8 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       const url = str(args, "url");
       const instructions = str(args, "instructions");
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
-      const subagent = new BrowserSubagent(config, sidecarUrl);
+      const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : undefined;
+      const subagent = new BrowserSubagent(config, sidecarUrl, callerSessionId);
       try {
         const task = enqueueBrowserTask(() => subagent.run(instructions, url, signal));
         // If /stop fires while this task is still queued behind another, return promptly instead

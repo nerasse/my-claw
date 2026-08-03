@@ -119,6 +119,7 @@ interface ResponsesUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  input_tokens_details?: { cached_tokens?: number };
 }
 
 function normalizeUsage(raw?: ResponsesUsage): LlmUsage | undefined {
@@ -127,7 +128,11 @@ function normalizeUsage(raw?: ResponsesUsage): LlmUsage | undefined {
   const completion = raw.output_tokens ?? 0;
   const total = raw.total_tokens ?? prompt + completion;
   if (prompt === 0 && completion === 0) return undefined;
-  return { promptTokens: prompt, completionTokens: completion, totalTokens: total };
+  const usage: LlmUsage = { promptTokens: prompt, completionTokens: completion, totalTokens: total };
+  // The Responses API reports cache hits as a subset of input_tokens, like chat completions.
+  const cacheRead = raw.input_tokens_details?.cached_tokens ?? 0;
+  if (cacheRead > 0) usage.cacheReadTokens = cacheRead;
+  return usage;
 }
 
 function safeJson(raw: string): Record<string, unknown> {

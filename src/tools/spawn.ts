@@ -26,6 +26,7 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
           mode: { type: "string", enum: ["run", "session"], description: "'run' = one-shot, 'session' = persistent" },
           task: { type: "string", description: "Task description for the sub-agent" },
           workspaceDir: { type: "string", description: "Optional absolute workspace directory for the sub-agent" },
+          private: { type: "boolean", description: "Restrict this sub-agent to the current conversation. Default false: sub-agents are usable from any chat." },
           ...(models.length > 0
             ? { model: { type: "string", enum: models, description: "Optional model for this sub-agent" } }
             : {}),
@@ -67,8 +68,26 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         }
 
         const signal = args["__signal"] as AbortSignal | undefined;
+        const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+        // Global unless asked otherwise, so a sub-agent stays a shared worker by default. A
+        // one-shot is forced private inside the runner regardless of what is passed here.
+        const visibility = args["private"] === true ? "private" : "global";
         const existing = await registry.listExistingIds();
-        const { id, result } = await runner.spawn(name, type as "general" | "research", mode as "run" | "session", task, workspaceDir, message, existing, (n, e) => registry.generateId(n, e), signal, model, (i, task2) => registry.enqueue(i, task2));
+        const { id, result } = await runner.spawn({
+          displayName: name,
+          type: type as "general" | "research",
+          mode: mode as "run" | "session",
+          task,
+          workspaceDir,
+          parentMessage: message,
+          existingIds: existing,
+          generateId: (n, e) => registry.generateId(n, e),
+          parentSessionId: callerSessionId,
+          visibility,
+          signal,
+          model,
+          enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
+        });
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);

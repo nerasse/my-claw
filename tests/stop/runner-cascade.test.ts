@@ -45,7 +45,7 @@ test("runner: aborting the shared signal stops a running sub-agent (AbortedError
 
   const c = new AbortController();
   try {
-    const p = runner.spawn("researcher", "research", "run", "dig", undefined, parentMessage(), new Set(), (n) => `subagent/${n}`, c.signal);
+    const p = runner.spawn({ displayName: "researcher", type: "research", mode: "run", task: "dig", parentMessage: parentMessage(), existingIds: new Set(), generateId: (n) => `subagent/${n}`, signal: c.signal, parentSessionId: "matrix/room/!caller:test", visibility: "global" });
     // A fixed delay could fire before the sub-agent reached its LLM call, and then no
     // subagent:aborted would ever be emitted. Wait for the call instead.
     await subAgentRunning;
