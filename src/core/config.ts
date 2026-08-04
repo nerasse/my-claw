@@ -111,6 +111,31 @@ export interface MatrixChannelConfig {
   mediaMaxMb?: number;
 }
 
+export interface MobileChannelConfig {
+  enabled?: boolean;
+  /** Port the WSS server binds. Defaults to 8080. Reboot-only: the socket is created at start. */
+  port?: number;
+  /** Paired devices: deviceId -> credentials. `token` is the shared secret the device presents. */
+  devices?: Record<
+    string,
+    {
+      token: string;
+      name?: string;
+      enabled?: boolean;
+    }
+  >;
+  streaming?: {
+    enabled?: boolean;
+    minChars?: number;
+    throttleMs?: number;
+  };
+  /**
+   * Tool approvals answered from the device (approval.request / approval.response frames).
+   * Off by default: approval-required tools are denied until the app surfaces the request.
+   */
+  approvals?: boolean;
+}
+
 export interface VoiceFeatureConfig {
   mode?: "cloud" | "local" | "auto";
 }
@@ -330,6 +355,7 @@ export interface MyClawConfig {
   channels: {
     telegram?: TelegramChannelConfig;
     matrix?: MatrixChannelConfig;
+    mobile?: MobileChannelConfig;
   };
   llm: LlmConfig;
   agents: {
@@ -699,6 +725,10 @@ export function isTelegramChannelEnabled(config: MyClawConfig): boolean {
 
 export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
+}
+
+export function isMobileChannelEnabled(config: MyClawConfig): boolean {
+  return config.channels.mobile?.enabled !== false && Boolean(config.channels.mobile);
 }
 
 const PROMPT_TEMPLATES = ["SYSTEM.md", "CORE.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;

@@ -3,7 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMobileChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import {
   loadConfigOrFallback,
   snapshotProtected,
@@ -22,6 +22,7 @@ import { writeJsonFileAtomically } from "./utils/atomic-write.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
+import { MobileAdapter } from "./channels/mobile/adapter.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -135,7 +136,7 @@ async function main() {
 
   const confirmHealthyConfig = async (): Promise<void> => {
     const healthy = isHealthy({
-      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config),
+      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config) || isMobileChannelEnabled(config),
       liveChannels: liveChannels.size,
     });
     const raw = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
@@ -320,6 +321,7 @@ async function main() {
   const adapters: Array<{ stop(): Promise<void> }> = [];
   let telegramRef: TelegramAdapter | undefined;
   let matrixRef: MatrixAdapter | undefined;
+  let mobileRef: MobileAdapter | undefined;
 
   // Factory so the channel can be recreated on an identity/token change (A6b) without a
   // restart: reads config.channels.telegram live, wires all handlers, starts, sets telegramRef.
@@ -425,6 +427,9 @@ async function main() {
           const text = `Approval required for tool <b>${escapeHtml(request.toolName)}</b>\n\n<pre>${args}</pre>`;
           const accepted = await telegram.confirm(request.chatId, text, request.messageId);
           return accepted ? "allow-session" : "deny";
+        }
+        if (request.platform === "mobile" && mobileRef) {
+          return await mobileRef.confirmTool(request);
         }
         return "deny";
       });
@@ -564,6 +569,9 @@ async function main() {
         const accepted = await telegramRef.confirm(request.chatId, text, request.messageId);
         return accepted ? "allow-session" : "deny";
       }
+      if (request.platform === "mobile" && mobileRef) {
+        return await mobileRef.confirmTool(request);
+      }
       return "deny";
     });
     await approvalHandler.restorePendingApprovals();
@@ -579,8 +587,89 @@ async function main() {
 
   if (telegramRef) cronScheduler.adapters.set("telegram", telegramRef);
   if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
-  cronScheduler.start();
 
+  const startMobileChannel = async (): Promise<void> => {
+    if (!isMobileChannelEnabled(config)) return;
+    const mobile = new MobileAdapter(config.channels.mobile!);
+    mobileRef = mobile;
+
+    mobile.onMessage(async (msg) => {
+      let response: RouteResult | undefined;
+      try {
+        await agent.preprocessMessage(msg);
+        const echoes = agent.getEchoMessages(msg.id);
+        for (const echo of echoes) {
+          await mobile.send(msg.chatId, { ...echo, replyToId: msg.id });
+        }
+
+        if (mobile.streamingEnabled()) {
+          // The streamer owns the output bubble for the whole run; a mid-run injected message
+          // finalizes it and opens a fresh bubble replying to that message.
+          let active = mobile.createStreamer(msg);
+          hooks.emit("stream:start", { platform: "mobile", chatId: msg.chatId });
+          try {
+            response = await routeWithReroute(router, msg, {
+              onToken: (token) => active.push(token),
+              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+              onTurnSwitch: async (injMsg) => {
+                await active.finish();
+                active = mobile.createStreamer(injMsg);
+              },
+            });
+            await active.finish();
+            hooks.emit("stream:finish", { platform: "mobile", chatId: msg.chatId });
+          } catch (err) {
+            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+            await active.abort(brief);
+            hooks.emit("stream:abort", { platform: "mobile", chatId: msg.chatId, error: err });
+            throw err;
+          }
+        } else {
+          response = await routeWithReroute(router, msg, {});
+        }
+
+        if (response) {
+          const outGate = await hooks.check("gate:message:outgoing", { platform: "mobile", chatId: msg.chatId, text: response.text });
+          if (outGate.allowed) {
+            const refs = extractMediaRefs(response.text);
+            const textHasMediaRefs = refs.length > 0;
+            if (!mobile.streamingEnabled()) {
+              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "mobile", chatId: msg.chatId })).text;
+              await mobile.send(msg.chatId, {
+                text: deliveryText,
+                attachments: textHasMediaRefs ? undefined : response.attachments,
+                replyToId: msg.id,
+              });
+              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
+            } else if (!textHasMediaRefs && response.attachments?.length) {
+              await mobile.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
+              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: response.attachments.length });
+            } else if (textHasMediaRefs) {
+              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              await mobile.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
+              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
+            }
+          }
+        }
+      } finally {
+        await cleanupAttachments(msg.attachments);
+        await cleanupGeneratedTempFiles(response?.attachments);
+      }
+    });
+
+    try {
+      await mobile.start();
+      adapters.push(mobile);
+      hooks.emit("channel:started", { platform: "mobile" });
+    } catch (err) {
+      log("error", "mobile adapter failed to start", { error: String(err) });
+      hooks.emit("channel:error", { platform: "mobile", error: err });
+    }
+  };
+  await startMobileChannel();
+  if (mobileRef) cronScheduler.adapters.set("mobile", mobileRef);
+
+  cronScheduler.start();
   configWatcher = startConfigWatcher(config, {
     modelPicker,
     // On an llm config edit, re-snapshot the curated base and re-merge discovered models
@@ -684,6 +773,7 @@ async function main() {
   const activeChannels: string[] = [];
   if (telegramRef) activeChannels.push("telegram");
   if (matrixRef) activeChannels.push("matrix");
+  if (mobileRef) activeChannels.push("mobile");
 
   const shutdown = async (signal = "SIGINT") => {
     log("info", "shutting down...", { signal });

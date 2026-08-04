@@ -7,7 +7,7 @@ const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024;
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 type AppLogLevel = Exclude<LogLevel, "trace">;
-type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram";
+type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram" | "mobile";
 type ConsoleMode = "all" | "errors" | "none";
 
 type ScopedSdkLogger = {
@@ -231,6 +231,7 @@ const orchestratorLogger = createScopedLogger("orchestrator");
 
 export const matrixLog = createScopedLogger("matrix", { console: "errors" });
 export const telegramLog = createScopedLogger("telegram", { console: "errors" });
+export const mobileLog = createScopedLogger("mobile", { console: "errors" });
 
 export function createSdkLogger(
   scope: Extract<LogScope, "matrix-sdk">,

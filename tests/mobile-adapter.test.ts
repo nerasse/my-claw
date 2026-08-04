@@ -1,0 +1,315 @@
+import { test, afterEach, beforeEach, describe } from "bun:test";
+import assert from "node:assert/strict";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { MobileAdapter } from "../src/channels/mobile/adapter.ts";
+import type { MobileChannelConfig } from "../src/core/config.ts";
+import { MY_CLAW_DIR } from "../src/core/config.ts";
+import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
+
+const DEVICE_ID = "test-device";
+const TOKEN = "secret-token";
+
+function createConfig(overrides: Partial<MobileChannelConfig> = {}): MobileChannelConfig {
+  return {
+    port: 0,
+    devices: { [DEVICE_ID]: { token: TOKEN, name: "test phone" } },
+    streaming: { enabled: true, minChars: 1 },
+    ...overrides,
+  };
+}
+
+interface WsClient {
+  ws: WebSocket;
+  frames: unknown[];
+  closed: { code: number; reason: string } | null;
+}
+
+function connectClient(port: number, device = DEVICE_ID, token = TOKEN): Promise<WsClient> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/mobile?device=${device}&token=${token}`);
+    const client: WsClient = { ws, frames: [], closed: null };
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(new Error("ws open timeout"));
+    }, 5000);
+    ws.onopen = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(client);
+    };
+    ws.onerror = () => {
+      if (settled) return;
+      // Keep waiting for close: a rejected upgrade surfaces as close, not error.
+    };
+    ws.onmessage = (event) => {
+      const raw = event.data as string;
+      try {
+        client.frames.push(JSON.parse(raw));
+      } catch {
+        client.frames.push(raw);
+      }
+    };
+    ws.onclose = (event) => {
+      client.closed = { code: event.code, reason: event.reason };
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(client);
+      }
+    };
+  });
+}
+
+function nextFrame(client: WsClient, timeoutMs = 3000): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("no frame within timeout")), timeoutMs);
+    const check = () => {
+      if (client.frames.length > 0) {
+        clearTimeout(timer);
+        resolve(client.frames.shift() as Record<string, unknown>);
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
+
+function waitClosed(client: WsClient, timeoutMs = 3000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("ws close timeout")), timeoutMs);
+    const check = () => {
+      if (client.closed) {
+        clearTimeout(timer);
+        resolve();
+        return;
+      }
+      setTimeout(check, 10);
+    };
+    check();
+  });
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("condition not met within timeout");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+function streamerMessage(adapter: MobileAdapter, id: string, chatId: string): UnifiedMessage {
+  return {
+    id,
+    platform: "mobile",
+    userId: chatId,
+    chatId,
+    chatType: "dm",
+    text: "",
+    attachments: [],
+    isForwarded: false,
+    raw: { type: "chat.send", id, text: "" },
+  };
+}
+
+function approvalRequest(): ToolApprovalRequest {
+  return {
+    id: "a1",
+    platform: "mobile",
+    chatId: DEVICE_ID,
+    userId: DEVICE_ID,
+    chatType: "dm",
+    messageId: "m1",
+    sessionId: "s1",
+    toolName: "bash",
+    args: { command: "ls" },
+  };
+}
+
+describe("MobileAdapter", () => {
+  let adapter: MobileAdapter;
+  let client: WsClient;
+  let received: UnifiedMessage[];
+
+  beforeEach(async () => {
+    adapter = new MobileAdapter(createConfig());
+    received = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+    received = [];
+  });
+
+  afterEach(async () => {
+    client?.ws.close();
+    await adapter.stop();
+  });
+
+  test("rejects unpaired devices and wrong tokens", async () => {
+    const unknown = await connectClient(adapter.port, "unknown-device", TOKEN);
+    assert.notEqual(unknown.closed?.code, 1000, "unknown device must not connect cleanly");
+    unknown.ws.close();
+
+    const wrongToken = await connectClient(adapter.port, DEVICE_ID, "wrong");
+    assert.notEqual(wrongToken.closed?.code, 1000, "wrong token must not connect cleanly");
+    wrongToken.ws.close();
+  });
+
+  test("routes a chat.send frame as a UnifiedMessage", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "hello agent" }));
+    await waitUntil(() => received.length === 1);
+
+    const msg = received[0]!;
+    assert.equal(msg.id, "m1");
+    assert.equal(msg.platform, "mobile");
+    assert.equal(msg.userId, DEVICE_ID);
+    assert.equal(msg.chatId, DEVICE_ID);
+    assert.equal(msg.chatType, "dm");
+    assert.equal(msg.text, "hello agent");
+    assert.equal(msg.sessionScope, "per-user");
+  });
+
+  test("treats a plain-text frame as chat.send (console mode)", async () => {
+    client.ws.send("plain text from the console");
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.text, "plain text from the console");
+    assert.equal(received[0]!.chatId, DEVICE_ID);
+  });
+
+  test("ignores empty, whitespace-only and unknown frames", async () => {
+    client.ws.send("");
+    client.ws.send("   ");
+    client.ws.send(JSON.stringify({ type: "device.capabilities", accessibility: true }));
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(received.length, 0);
+  });
+
+  test("send delivers a chat.message frame to the connected device", async () => {
+    await adapter.send(DEVICE_ID, { text: "answer from agent", replyToId: "m1" });
+    const frame = await nextFrame(client);
+    assert.equal(frame.type, "chat.message");
+    assert.equal(frame.text, "answer from agent");
+    assert.equal(frame.replyToId, "m1");
+    assert.deepEqual(frame.attachments, []);
+  });
+
+  test("send with a local attachment registers a servable media id", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const file = join(tmpDir, `mobile-test-${Date.now()}.png`);
+    await writeFile(file, "png-bytes");
+
+    await adapter.send(DEVICE_ID, {
+      text: "with media",
+      attachments: [{ type: "image", path: file, mimeType: "image/png" }],
+    });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string }> };
+    assert.equal(frame.attachments.length, 1);
+    const mediaId = frame.attachments[0]!.id;
+
+    const authorized = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(authorized.status, 200);
+    assert.equal(await authorized.text(), "png-bytes");
+    assert.equal(authorized.headers.get("content-type"), "image/png");
+
+    const unauthorized = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}`);
+    assert.equal(unauthorized.status, 401);
+
+    const missing = await fetch(`http://127.0.0.1:${adapter.port}/media/nope?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(missing.status, 404);
+
+    await unlink(file).catch(() => {});
+  });
+
+  test("streaming emits start/delta/done frames and abort annotates the error", async () => {
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m1", DEVICE_ID));
+
+    await streamer.push("hello ");
+    const start = await nextFrame(client);
+    assert.equal(start.type, "chat.stream.start");
+    assert.equal(start.replyToId, "m1");
+
+    const delta = await nextFrame(client);
+    assert.equal(delta.type, "chat.stream.delta");
+    assert.equal(delta.text, "hello ");
+
+    await streamer.push("world");
+    const delta2 = await nextFrame(client);
+    assert.equal(delta2.type, "chat.stream.delta");
+    assert.equal(delta2.text, "world");
+
+    await streamer.finish();
+    const done = await nextFrame(client);
+    assert.equal(done.type, "chat.stream.done");
+
+    const streamer2 = adapter.createStreamer(streamerMessage(adapter, "m2", DEVICE_ID));
+    await streamer2.push("partial");
+    await nextFrame(client);
+    await nextFrame(client);
+    await streamer2.abort("boom");
+    const abort = await nextFrame(client);
+    assert.equal(abort.type, "chat.stream.abort");
+    assert.equal(abort.error, "boom");
+  });
+
+  test("confirmTool returns deny when approvals are disabled", async () => {
+    const decision = await adapter.confirmTool(approvalRequest());
+    assert.equal(decision, "deny");
+  });
+
+  test("confirmTool sends approval.request and accepts a response", async () => {
+    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }));
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool(approvalRequest());
+    const request = (await nextFrame(approvalClient)) as { type: string; id: string; toolName: string; args: Record<string, unknown> };
+    assert.equal(request.type, "approval.request");
+    assert.equal(request.toolName, "bash");
+    assert.deepEqual(request.args, { command: "ls" });
+
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, accepted: true }));
+    assert.equal(await decisionPromise, "allow-session");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  test("confirmTool stays pending until timeout (deny)", async () => {
+    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }));
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool(approvalRequest());
+    await nextFrame(approvalClient);
+    const decision = await Promise.race([
+      decisionPromise,
+      new Promise<string>((r) => setTimeout(() => r("pending"), 800)),
+    ]);
+    assert.equal(decision, "pending");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  test("send to an offline device does not throw", async () => {
+    client.ws.close();
+    await waitClosed(client);
+    await adapter.send(DEVICE_ID, { text: "nobody home" });
+    await adapter.send("other-device", { text: "never paired" });
+  });
+
+  test("stop closes live sockets and releases the port", async () => {
+    const port = adapter.port;
+    await adapter.stop();
+    const probe = await fetch(`http://127.0.0.1:${port}/mobile`).catch(() => null);
+    assert.equal(probe, null);
+  });
+});
