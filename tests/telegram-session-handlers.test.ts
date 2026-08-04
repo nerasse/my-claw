@@ -159,7 +159,7 @@ test("telegram /models reports the effective effort next to the model", async ()
   assert.match(String(await commandHandler("c1", "u1", "dm", "models", "")), /Current model: Sonnet — Effort: high \(SDK default\)/);
 });
 
-test("telegram model selection chains into effort, then terminates the menu", async () => {
+test("telegram chains model into effort into context, and persists the window chosen", async () => {
   const effortConfig: MyClawConfig = {
     ...config,
     llm: {
@@ -167,37 +167,89 @@ test("telegram model selection chains into effort, then terminates the menu", as
       effort: "high",
       model: "claude-sonnet-5",
       providers: { anthropic: { type: "claude-sdk" } },
-      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
+      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }],
     },
   };
   const sessionManager = new SessionManager();
   const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "high"] });
-  const commandHandler = createTelegramCommandHandler({ config: effortConfig, sessionManager, modelPicker });
   const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
+  const press = (data: string) => callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data });
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
 
-  // Selecting a model chains into the effort keyboard with a keep-current entry.
-  const selected = await callbackHandler({
-    chatId: "c1",
-    userId: "u1",
-    chatType: "dm",
-    data: `mdl:${modelPicker.refForModel("claude-sonnet-5")}`,
-  });
-  assert.match(selected?.text ?? "", /Model changed to Sonnet — now choose reasoning effort/);
+  // 1. Selecting a model chains into the effort keyboard with a keep-current entry.
+  const selected = await press(`mdl:${modelPicker.refForModel("claude-sonnet-5")}`);
   assert.ok(selected?.buttons?.some((b) => b.action === "eff:low"));
   assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
-  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
   assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
 
-  // keepEffort closes the menu without touching the session's effort.
-  const kept = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "effk" });
-  assert.equal(kept?.buttons, undefined);
-  assert.match(kept?.text ?? "", /effort unchanged: high \(config\)/);
-  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
+  // 2. Effort no longer ends the flow: it hands over to the context step.
+  const afterEffort = await press("eff:low");
+  assert.match(afterEffort?.text ?? "", /fenêtre de contexte/i);
+  assert.deepEqual(
+    afterEffort?.buttons?.map((b) => b.action),
+    ["ctx:full", "ctx:512000", "ctx:256000", "ctx:128000", "ctx:64000", "ctxk"],
+  );
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, "low");
+  // Nothing is written until a window is actually picked.
+  assert.equal((await sessionManager.peek(sessionId))?.contextOverride, undefined);
 
-  // setEffort closes the menu (no keyboard bounce back to root).
-  const set = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: "eff:low" });
+  // 3. Picking a ceiling closes the menu and persists it on this conversation alone.
+  const set = await press("ctx:128000");
   assert.equal(set?.buttons, undefined);
-  assert.match(set?.text ?? "", /Effort set to low — model: Sonnet/);
+  assert.match(set?.text ?? "", /128,000 tokens/);
+  assert.equal((await sessionManager.peek(sessionId))?.contextOverride, 128_000);
+
+  // The full window is stored as such, not as the number, so it survives a model change.
+  await press("ctx:full");
+  assert.equal((await sessionManager.peek(sessionId))?.contextOverride, "full");
+});
+
+test("telegram keepEffort still reaches the context step, and keepContext writes nothing", async () => {
+  const effortConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      effort: "high",
+      model: "claude-sonnet-5",
+      providers: { anthropic: { type: "claude-sdk" } },
+      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "high"] });
+  const callbackHandler = createTelegramCallbackHandler({ config: effortConfig, sessionManager, modelPicker });
+  const press = (data: string) => callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data });
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+
+  await press(`mdl:${modelPicker.refForModel("claude-sonnet-5")}`);
+  const kept = await press("effk");
+  assert.match(kept?.text ?? "", /effort inchangé/i);
+  assert.ok(kept?.buttons?.some((b) => b.action === "ctx:full"));
+  assert.equal((await sessionManager.peek(sessionId))?.effortOverride, undefined);
+
+  const keptContext = await press("ctxk");
+  assert.equal(keptContext?.buttons, undefined);
+  assert.equal((await sessionManager.peek(sessionId))?.contextOverride, undefined);
+});
+
+test("telegram stops the chain when the model has a single possible window", async () => {
+  const smallConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      ...config.llm,
+      model: "tiny",
+      providers: { anthropic: { type: "claude-sdk" } },
+      models: [{ id: "tiny", label: "Tiny", provider: "anthropic", limit: { context: 40_000 } }],
+    },
+  };
+  const sessionManager = new SessionManager();
+  const modelPicker = new ModelPicker(smallConfig.llm.models ?? []);
+  const callbackHandler = createTelegramCallbackHandler({ config: smallConfig, sessionManager, modelPicker });
+
+  // Below every offered ceiling, so there is nothing to arbitrate and the menu must close.
+  const selected = await callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data: `mdl:${modelPicker.refForModel("tiny")}` });
+  assert.equal(selected?.buttons, undefined);
+  assert.match(selected?.text ?? "", /Modèle changé pour Tiny/);
 });
 
 test("telegram /new resets the DM session", async () => {

@@ -1,7 +1,7 @@
 import type { AgentToolType, MyClawConfig } from "../core/config.ts";
 import { agentConfigKey, resolveAgentLlm } from "../core/config.ts";
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
-import { setAgentModel } from "../core/config-edit.ts";
+import { setAgentContextCap, setAgentModel } from "../core/config-edit.ts";
 import type { ModelPicker, PickerTarget } from "./model-picker.ts";
 import type { SubAgentInfo } from "../subagents/types.ts";
 import { log } from "../utils/logger.ts";
@@ -15,7 +15,7 @@ import { log } from "../utils/logger.ts";
  */
 
 /** The tool-axis type an agent target resolves to, for reading its currently effective model. */
-const TOOL_TYPE: Record<PickerTarget, AgentToolType> = {
+export const TOOL_TYPE: Record<PickerTarget, AgentToolType> = {
   orchestrator: "main",
   general: "general",
   research: "research",
@@ -131,6 +131,28 @@ export async function applyAgentModel(
  * Entry point for `/model <args>`. Returns `not-an-agent` for everything that is not an agent name,
  * leaving `/model <model>` untouched.
  */
+/**
+ * Per-agent context ceiling from the picker. `"full"` writes `0`, which is how the config spells
+ * "no ceiling for this agent"; a number is written as-is so it can also sit below the global cap.
+ */
+export async function applyAgentContext(
+  target: PickerTarget,
+  choice: import("../llm/context-window.ts").ContextOverride,
+  deps: Pick<AgentModelDeps, "config" | "reloadConfigNow">,
+): Promise<string> {
+  const key = agentConfigKey(TOOL_TYPE[target]);
+  const cap = choice === "full" ? 0 : choice;
+  const result = await setAgentContextCap(key, cap);
+  if (!result.ok) return `Échec de l'écriture : ${result.error}`;
+
+  await deps.reloadConfigNow?.().catch((err) => {
+    void log("warn", "config reload after /model agent context failed", { agent: key, error: String(err) });
+  });
+  return choice === "full"
+    ? `Fenêtre de contexte de l'agent ${target} : complète, sans plafond`
+    : `Fenêtre de contexte de l'agent ${target} : ${choice.toLocaleString("en-US")} tokens`;
+}
+
 export async function handleAgentModelCommand(args: string, deps: AgentModelDeps): Promise<AgentModelOutcome> {
   const { first, rest } = splitFirst(args);
   if (!first) return { kind: "not-an-agent" };

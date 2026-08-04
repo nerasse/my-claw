@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
 import type { EffortLevel, LlmConfig } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
-import type { ContextMode } from "../llm/context-window.ts";
+import type { ContextOverride } from "../llm/context-window.ts";
 
 export interface ModelOption {
   id: string;
@@ -67,14 +67,16 @@ export type PickerCallback =
   | { kind: "openEffort" }
   | { kind: "setEffort"; level: EffortLevel }
   | { kind: "keepEffort" }
-  | { kind: "openContext" }
-  | { kind: "setContext"; mode: ContextMode }
+  | { kind: "openContext"; target?: PickerTarget }
+  | { kind: "setContext"; choice: ContextOverride; target?: PickerTarget }
+  | { kind: "keepContext" }
   // A picker button whose target no longer exists (menu left open across a discovery refresh).
   | { kind: "stale" };
 
 const EFFORT_ACTION = "effm";
 const KEEP_EFFORT_ACTION = "effk";
 const CONTEXT_ACTION = "ctxm";
+const KEEP_CONTEXT_ACTION = "ctxk";
 
 // Telegram caps callback_data at 64 bytes, so a menu cannot carry a model id verbatim: ids come
 // from provider discovery and are unbounded. A fixed-width digest of the id fits the budget and,
@@ -282,9 +284,10 @@ export class ModelPicker {
     if (!target && this.effortLevelsFor(currentModelId).length > 0) {
       buttons.push({ label: "Effort >", action: EFFORT_ACTION });
     }
-    // Only when the cap actually lowers this model's window: otherwise the submenu would offer a
-    // choice between two identical numbers.
-    if (!target && opts?.contextChoice) {
+    // Only when there is more than one ceiling worth offering: otherwise the submenu would show a
+    // single option, which is not a choice. Unlike effort, this is offered on an agent menu too --
+    // a research sub-agent and a cron job do not want the same window.
+    if (opts?.contextChoice) {
       buttons.push({ label: "Context >", action: CONTEXT_ACTION });
     }
     return buttons;
@@ -296,12 +299,23 @@ export class ModelPicker {
    * policy that rarely changes, and a third screen on every model switch would cost more than it
    * saves. See docs/context-window.md.
    */
-  buildContextButtons(current: ContextMode, raw: number, cap: number): ConfirmationButton[] {
-    return [
-      { label: mark(`Full: ${raw.toLocaleString("en-US")}`, current === "full"), action: "ctx:full" },
-      { label: mark(`Capped: ${cap.toLocaleString("en-US")}`, current === "capped"), action: "ctx:capped" },
-      { label: "< Back", action: "mdlb" },
-    ];
+  buildContextButtons(
+    tiers: readonly { ceiling?: number; label: string; selected: boolean }[],
+    opts?: { chained?: boolean; target?: PickerTarget },
+  ): ConfirmationButton[] {
+    const suffix = targetSuffix(opts?.target);
+    const buttons: ConfirmationButton[] = tiers.map((tier) => ({
+      label: mark(tier.label, tier.selected),
+      action: `ctx:${tier.ceiling ?? "full"}${suffix}`,
+    }));
+    // Chained right after the effort step, going back to the model menu would defeat the flow, so
+    // the escape is "leave it as it is" instead. Mirrors the effort submenu.
+    buttons.push(
+      opts?.chained
+        ? { label: `Keep current: ${tiers.find((t) => t.selected)?.label ?? "unchanged"}`, action: `${KEEP_CONTEXT_ACTION}${suffix}` }
+        : { label: "< Back", action: `mdlb${suffix}` },
+    );
+    return buttons;
   }
 
   /** Header suffix showing the effective effort, omitted when the current model discards it. */
@@ -357,9 +371,17 @@ export class ModelPicker {
 
     if (bare === "mdlb") return { kind: "back", ...(target ? { target } : {}) };
     if (bare === EFFORT_ACTION) return { kind: "openEffort" };
-    if (bare === CONTEXT_ACTION) return { kind: "openContext" };
-    if (bare === "ctx:full") return { kind: "setContext", mode: "full" };
-    if (bare === "ctx:capped") return { kind: "setContext", mode: "capped" };
+    if (bare === CONTEXT_ACTION) return { kind: "openContext", ...(target ? { target } : {}) };
+    if (bare === KEEP_CONTEXT_ACTION) return { kind: "keepContext" };
+
+    const ctx = /^ctx:(full|[0-9]+)$/.exec(bare);
+    if (ctx) {
+      const raw = ctx[1] ?? "";
+      const choice: ContextOverride = raw === "full" ? "full" : Number(raw);
+      // A zero or unparsable ceiling would silently mean "no window at all".
+      if (choice !== "full" && !(choice > 0)) return null;
+      return { kind: "setContext", choice, ...(target ? { target } : {}) };
+    }
     if (bare === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
 
     const effort = /^eff:(.+)$/.exec(bare);

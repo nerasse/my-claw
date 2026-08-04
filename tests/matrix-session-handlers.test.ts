@@ -156,7 +156,7 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
   assert.ok(selected?.buttons?.some((b) => b.action === "effk"));
   assert.equal(selected?.buttons?.some((b) => b.action === "mdlb"), false);
 
-  // Setting effort from the submenu is terminal.
+  // Setting effort hands over to the context step instead of ending the flow.
   const set = await actionHandler({
     chatId: "!r:test",
     userId: "@u1:example.org",
@@ -164,8 +164,27 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
     data: "eff:high",
     messageId: "$menu",
   });
-  assert.equal(set?.buttons, undefined);
-  assert.match(set?.text ?? "", /Effort set to high — model: Alt/);
+  assert.equal(set?.supersededText, "Model menu > Context");
+  assert.match(set?.text ?? "", /fenêtre de contexte/i);
+  assert.ok(set?.buttons?.some((b) => b.action === "ctx:full"));
+  assert.ok(set?.buttons?.some((b) => b.action === "ctxk"));
+  // Matrix renders buttons as numbered reactions, so every option must be listed in the body too.
+  for (const button of set?.buttons ?? []) {
+    assert.ok((set?.text ?? "").includes(button.label), button.label);
+  }
+
+  // Picking a ceiling closes the flow and persists it on this conversation.
+  const chosen = await actionHandler({
+    chatId: "!r:test",
+    userId: "@u1:example.org",
+    chatType: "dm",
+    data: "ctx:128000",
+    messageId: "$menu",
+  });
+  assert.equal(chosen?.buttons, undefined);
+  assert.match(chosen?.text ?? "", /128,000 tokens/);
+  const sessionId = SessionManager.resolveSessionId("matrix", "dm", "!r:test", "@u1:example.org");
+  assert.equal((await sessionManager.peek(sessionId))?.contextOverride, 128_000);
 });
 
 test("matrix help text includes command discoverability tips", () => {

@@ -12,7 +12,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, TOOL_TYPE } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -20,6 +20,7 @@ import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 import { contextChoiceFor } from "../context-menu.ts";
+import type { ContextOverride } from "../../llm/context-window.ts";
 
 type TelegramChatType = "dm" | "group";
 
@@ -399,6 +400,18 @@ export function createTelegramCallbackHandler({
     });
     const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
 
+    // The context step is chained after the effort one, so a single flow sets model, effort and
+    // window. Terminal when this model has nothing to arbitrate: a lone option is not a choice.
+    const chainContext = (model: string, override: ContextOverride | undefined, text: string, answerText: string) => {
+      const choice = contextChoiceFor(config, model, override);
+      if (!choice.available) return { text, answerText };
+      return {
+        text: `${text} — choisissez maintenant la fenêtre de contexte`,
+        buttons: modelPicker.buildContextButtons(choice.tiers, { chained: true }),
+        answerText,
+      };
+    };
+
     // An agent-targeted menu edits config, never this chat. Handled before the session branches so
     // a target can never fall through into them and silently change the wrong thing.
     if ("target" in action && action.target) {
@@ -410,10 +423,24 @@ export function createTelegramCallbackHandler({
           answerText: "Config mise à jour",
         };
       }
+      const agentChoice = contextChoiceFor(config, currentModel, undefined, TOOL_TYPE[target]);
+      if (action.kind === "setContext") {
+        return {
+          text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }),
+          answerText: "Config mise a jour",
+        };
+      }
+      if (action.kind === "openContext") {
+        return {
+          text: `Fenetre de contexte de l'agent ${target} — ${modelPicker.labelFor(currentModel)} permet ${agentChoice.raw.toLocaleString("en-US")}`,
+          buttons: modelPicker.buildContextButtons(agentChoice.tiers, { target }),
+          answerText: "Contexte",
+        };
+      }
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
-          : modelPicker.buildButtons(currentModel, target);
+          : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
         text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}`,
@@ -443,12 +470,12 @@ export function createTelegramCallbackHandler({
           answerText: "Effort",
         };
       }
-      const choice = contextChoiceFor(config, currentModel, existing?.contextModeOverride);
+      const choice = contextChoiceFor(config, currentModel, existing?.contextOverride);
       if (action.kind === "openContext") {
         return {
-          text: `Context window — ${modelPicker.labelFor(currentModel)} allows ${choice.raw.toLocaleString("en-US")}, the cap keeps ${choice.cap.toLocaleString("en-US")}`,
-          buttons: modelPicker.buildContextButtons(choice.mode, choice.raw, choice.cap),
-          answerText: "Context",
+          text: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)} permet ${choice.raw.toLocaleString("en-US")}, en vigueur ${choice.effective.toLocaleString("en-US")}`,
+          buttons: modelPicker.buildContextButtons(choice.tiers),
+          answerText: "Contexte",
         };
       }
       return {
@@ -465,25 +492,27 @@ export function createTelegramCallbackHandler({
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
       const model = session.modelOverride ?? defaultModel;
-      return {
-        text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}`,
-        answerText: `Effort: ${action.level}`,
-      };
+      return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`, `Effort: ${action.level}`);
     }
 
     if (action.kind === "setContext") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-      // Stored only when it departs from the standing policy, so a session does not pin "capped"
-      // and then silently ignore a later change to the cap.
-      session.contextModeOverride = action.mode === "full" ? "full" : undefined;
+      session.contextOverride = action.choice;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const model = session.modelOverride ?? defaultModel;
-      const applied = contextChoiceFor(config, model, session.contextModeOverride);
-      const size = action.mode === "full" ? applied.raw : applied.cap;
+      const applied = contextChoiceFor(config, session.modelOverride ?? defaultModel, session.contextOverride);
       return {
-        text: `Context window for this conversation: ${action.mode} — ${size.toLocaleString("en-US")} tokens`,
-        answerText: `Context: ${action.mode}`,
+        text: `Fenetre de contexte de cette conversation : ${applied.effective.toLocaleString("en-US")} tokens`,
+        answerText: "Contexte mis a jour",
+      };
+    }
+
+    if (action.kind === "keepContext") {
+      const existing = await sessionManager.peek(sessionId);
+      const applied = contextChoiceFor(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride);
+      return {
+        text: `Fenetre de contexte inchangee : ${applied.effective.toLocaleString("en-US")} tokens`,
+        answerText: "Contexte inchange",
       };
     }
 
@@ -491,10 +520,7 @@ export function createTelegramCallbackHandler({
       const existing = await sessionManager.peek(sessionId);
       const model = existing?.modelOverride ?? defaultModel;
       const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
-      return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged: ${formatEffort(effort)}`,
-        answerText: "Effort kept",
-      };
+      return chainContext(model, existing?.contextOverride, `Modèle : ${modelPicker.labelFor(model)} — effort inchangé : ${formatEffort(effort)}`, "Effort conservé");
     }
 
     // Selecting a model chains into the effort choice so you can set it in one flow.
@@ -519,9 +545,6 @@ export function createTelegramCallbackHandler({
       };
     }
 
-    return {
-      text: `Model changed to ${label}`,
-      answerText: "Model updated",
-    };
+    return chainContext(modelId, session.contextOverride, `Modèle changé pour ${label}`, "Modèle mis à jour");
   };
 }

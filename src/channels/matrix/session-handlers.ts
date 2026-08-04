@@ -15,7 +15,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, TOOL_TYPE } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -23,6 +23,7 @@ import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 import { contextChoiceFor } from "../context-menu.ts";
+import type { ContextOverride } from "../../llm/context-window.ts";
 
 type MatrixChatType = "dm" | "group";
 
@@ -652,17 +653,41 @@ export function createMatrixActionHandler({
 
     // An agent-targeted menu edits config, never this room. Handled before the session branches so
     // a target can never fall through into them and silently change the wrong thing.
+    // The context step is chained after the effort one, so a single flow sets model, effort and
+    // window. Terminal when this model has nothing to arbitrate: a lone option is not a choice.
+    const chainContext = (model: string, override: ContextOverride | undefined, text: string) => {
+      const choice = contextChoiceFor(config, model, override);
+      if (!choice.available) return { text };
+      const buttons = modelPicker.buildContextButtons(choice.tiers, { chained: true });
+      return {
+        text: [
+          `${text}`,
+          "",
+          "Choisis maintenant la fenêtre de contexte :",
+          ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
+        ].join("\n"),
+        buttons,
+        supersededText: "Model menu > Context",
+      };
+    };
+
     if ("target" in action && action.target) {
       const target = action.target;
       const currentModel = currentAgentModel(config, target);
       if (action.kind === "select") {
         return { text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }) };
       }
+      const agentChoice = contextChoiceFor(config, currentModel, undefined, TOOL_TYPE[target]);
+      if (action.kind === "setContext") {
+        return { text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }) };
+      }
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       const buttons =
-        action.kind === "openGroup"
-          ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
-          : modelPicker.buildButtons(currentModel, target);
+        action.kind === "openContext"
+          ? modelPicker.buildContextButtons(agentChoice.tiers, { target })
+          : action.kind === "openGroup"
+            ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
+            : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
       return {
         text: [
           `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""}`,
@@ -695,15 +720,15 @@ export function createMatrixActionHandler({
           supersededText: "Model menu > Effort",
         };
       }
-      const choice = contextChoiceFor(config, currentModel, existing?.contextModeOverride);
+      const choice = contextChoiceFor(config, currentModel, existing?.contextOverride);
       if (action.kind === "openContext") {
         return {
           ...buildMatrixMenuFromButtons({
             modelPicker,
             currentModel,
-            buttons: modelPicker.buildContextButtons(choice.mode, choice.raw, choice.cap),
+            buttons: modelPicker.buildContextButtons(choice.tiers),
             effort,
-            heading: `Context window — ${modelPicker.labelFor(currentModel)} allows ${choice.raw.toLocaleString("en-US")}, the cap keeps ${choice.cap.toLocaleString("en-US")}`,
+            heading: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)} permet ${choice.raw.toLocaleString("en-US")}, en vigueur ${choice.effective.toLocaleString("en-US")}`,
           }),
           supersededText: "Model menu > Context",
         };
@@ -732,29 +757,29 @@ export function createMatrixActionHandler({
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
       const model = session.modelOverride ?? defaultModel;
-      return { text: `Effort set to ${action.level} — model: ${modelPicker.labelFor(model)}` };
+      return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`);
     }
 
     if (action.kind === "setContext") {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-      // Stored only when it departs from the standing policy, so a session does not pin "capped"
-      // and then silently ignore a later change to the cap.
-      session.contextModeOverride = action.mode === "full" ? "full" : undefined;
+      session.contextOverride = action.choice;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const model = session.modelOverride ?? defaultModel;
-      const applied = contextChoiceFor(config, model, session.contextModeOverride);
-      const size = action.mode === "full" ? applied.raw : applied.cap;
-      return { text: `Context window for this conversation: ${action.mode} — ${size.toLocaleString("en-US")} tokens` };
+      const applied = contextChoiceFor(config, session.modelOverride ?? defaultModel, session.contextOverride);
+      return { text: `Fenetre de contexte de cette conversation : ${applied.effective.toLocaleString("en-US")} tokens` };
+    }
+
+    if (action.kind === "keepContext") {
+      const existing = await sessionManager.peek(sessionId);
+      const applied = contextChoiceFor(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride);
+      return { text: `Fenetre de contexte inchangee : ${applied.effective.toLocaleString("en-US")} tokens` };
     }
 
     if (action.kind === "keepEffort") {
       const existing = await sessionManager.peek(sessionId);
       const model = existing?.modelOverride ?? defaultModel;
       const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
-      return {
-        text: `Model: ${modelPicker.labelFor(model)} — effort unchanged: ${formatEffort(effort)}`,
-      };
+      return chainContext(model, existing?.contextOverride, `Modèle : ${modelPicker.labelFor(model)} — effort inchangé : ${formatEffort(effort)}`);
     }
 
     // Selecting a model chains into the effort choice so you can set it in one flow.

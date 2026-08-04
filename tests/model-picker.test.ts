@@ -426,47 +426,70 @@ test("syncFromConfig keeps the model list and effort options in step", () => {
   assert.deepEqual(picker.effortLevels(), []);
 });
 
-/** Context submenu: a root entry, not a step chained after every model switch.
+/** Context step: chained after effort, and also reachable from the root.
  *  See docs/context-window.md. */
 
-test("the context entry appears only when the cap actually lowers this model's window", () => {
+const tiers = [
+  { tokens: 1_048_576, label: "Full: 1,048,576", selected: false },
+  { ceiling: 512_000, tokens: 512_000, label: "512,000 (cap)", selected: true },
+  { ceiling: 128_000, tokens: 128_000, label: "128,000", selected: false },
+];
+
+test("the context entry appears only when there is more than one ceiling to choose", () => {
   const picker = new ModelPicker(models);
-  const withChoice = picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: true });
-  assert.ok(withChoice.some((b) => b.label === "Context >"));
-  // Offering it otherwise would open a submenu whose two options are the same number.
-  const without = picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: false });
-  assert.ok(!without.some((b) => b.label === "Context >"));
+  assert.ok(picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: true }).some((b) => b.label === "Context >"));
+  // A lone option is not a choice, so the entry stays hidden.
+  assert.ok(!picker.buildButtons("llama-3.3-70b", undefined, { contextChoice: false }).some((b) => b.label === "Context >"));
   assert.ok(!picker.buildButtons("llama-3.3-70b").some((b) => b.label === "Context >"));
 });
 
-test("the context entry stays off an agent menu, where the choice is per-session", () => {
+test("the context entry is offered on an agent menu too, unlike effort", () => {
   const picker = new ModelPicker(models);
-  const buttons = picker.buildButtons("llama-3.3-70b", "agent" as never, { contextChoice: true });
-  assert.ok(!buttons.some((b) => b.label === "Context >"));
+  // A research sub-agent and a cron job do not want the same window, and each is set independently.
+  const buttons = picker.buildButtons("llama-3.3-70b", "research", { contextChoice: true });
+  assert.ok(buttons.some((b) => b.label === "Context >"));
 });
 
-test("both windows are spelled out and the active one is marked", () => {
+test("every tier is rendered and the active one is marked", () => {
   const picker = new ModelPicker(models);
-  const capped = picker.buildContextButtons("capped", 1_048_576, 512_000);
-  assert.equal(capped[0]?.label, "Full: 1,048,576");
-  assert.equal(capped[1]?.label, "Capped: 512,000 [selected]");
-  const full = picker.buildContextButtons("full", 1_048_576, 512_000);
-  assert.equal(full[0]?.label, "Full: 1,048,576 [selected]");
-  assert.equal(full[1]?.label, "Capped: 512,000");
+  const buttons = picker.buildContextButtons(tiers);
+  assert.deepEqual(buttons.map((b) => b.label), ["Full: 1,048,576", "512,000 (cap) [selected]", "128,000", "< Back"]);
+  assert.deepEqual(buttons.map((b) => b.action), ["ctx:full", "ctx:512000", "ctx:128000", "mdlb"]);
+});
+
+test("chained after effort, the escape keeps the current window instead of going back", () => {
+  const picker = new ModelPicker(models);
+  const buttons = picker.buildContextButtons(tiers, { chained: true });
+  // Returning to the model menu mid-flow would undo the point of the chain.
+  assert.equal(buttons.at(-1)?.label, "Keep current: 512,000 (cap)");
+  assert.equal(buttons.at(-1)?.action, "ctxk");
+});
+
+test("an agent target rides along on every context action, or the submenu edits the wrong thing", () => {
+  const picker = new ModelPicker(models);
+  for (const button of picker.buildContextButtons(tiers, { target: "research" })) {
+    const parsed = picker.parseCallbackAction(button.action);
+    assert.ok(parsed && "target" in parsed && parsed.target === "research", button.action);
+  }
 });
 
 test("context callbacks round-trip through the parser", () => {
   const picker = new ModelPicker(models);
   assert.deepEqual(picker.parseCallbackAction("ctxm"), { kind: "openContext" });
-  assert.deepEqual(picker.parseCallbackAction("ctx:full"), { kind: "setContext", mode: "full" });
-  assert.deepEqual(picker.parseCallbackAction("ctx:capped"), { kind: "setContext", mode: "capped" });
-  // The back button of the context submenu returns to the model root, like the effort one.
-  assert.deepEqual(picker.parseCallbackAction("mdlb"), { kind: "back" });
+  assert.deepEqual(picker.parseCallbackAction("ctxk"), { kind: "keepContext" });
+  assert.deepEqual(picker.parseCallbackAction("ctx:full"), { kind: "setContext", choice: "full" });
+  assert.deepEqual(picker.parseCallbackAction("ctx:128000"), { kind: "setContext", choice: 128_000 });
+});
+
+test("a zero or unparsable ceiling is refused rather than meaning no window at all", () => {
+  const picker = new ModelPicker(models);
+  assert.equal(picker.parseCallbackAction("ctx:0"), null);
+  assert.equal(picker.parseCallbackAction("ctx:abc"), null);
 });
 
 test("every context action fits Telegram's 64-byte callback budget", () => {
   const picker = new ModelPicker(models);
-  for (const button of picker.buildContextButtons("capped", 1_048_576, 512_000)) {
+  for (const button of picker.buildContextButtons(tiers, { target: "research" })) {
     assert.ok(Buffer.byteLength(button.action) <= 64, button.action);
   }
 });
@@ -475,8 +498,12 @@ test("every button the context submenu renders parses back into an intent", () =
   const picker = new ModelPicker(models);
   // Asserting the parser accepts the literals is not enough: a typo in a button's action would
   // ship a dead key that answers nothing when pressed.
-  const kinds = picker
-    .buildContextButtons("capped", 1_048_576, 512_000)
-    .map((b) => picker.parseCallbackAction(b.action)?.kind);
-  assert.deepEqual(kinds, ["setContext", "setContext", "back"]);
+  assert.deepEqual(
+    picker.buildContextButtons(tiers).map((b) => picker.parseCallbackAction(b.action)?.kind),
+    ["setContext", "setContext", "setContext", "back"],
+  );
+  assert.deepEqual(
+    picker.buildContextButtons(tiers, { chained: true }).map((b) => picker.parseCallbackAction(b.action)?.kind),
+    ["setContext", "setContext", "setContext", "keepContext"],
+  );
 });

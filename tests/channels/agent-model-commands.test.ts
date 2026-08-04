@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import {
   handleAgentModelCommand,
   applyAgentModel,
+  applyAgentContext,
   resolveAgentTarget,
   currentAgentModel,
   AGENT_MODEL_DM_ONLY,
@@ -11,6 +12,7 @@ import {
 import { ModelPicker } from "../../src/channels/model-picker.ts";
 import { CONFIG_PATH, parseConfig, resolveAgentLlm, type MyClawConfig } from "../../src/core/config.ts";
 import type { SubAgentInfo } from "../../src/subagents/types.ts";
+import { resolveContextWindow } from "../../src/llm/context-window.ts";
 
 const INSTANCES: SubAgentInfo[] = [
   { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general", messageCount: 3, status: "idle" },
@@ -194,5 +196,61 @@ describe("currentAgentModel", () => {
     c.agents.orchestrator = { llm: { defaultModel: "opus", defaultProvider: "anthropic" } };
     expect(currentAgentModel(c, "cron")).toBe("opus");
     expect(currentAgentModel(c, "general")).toBe("mimo");
+  });
+});
+
+/**
+ * Per-agent context ceiling. Each agent and sub-agent is set independently: a research agent
+ * reading long documents and a cron job posting a one-liner do not want the same window.
+ * See docs/context-window.md.
+ */
+describe("applyAgentContext", () => {
+  afterEach(async () => {
+    await rm(CONFIG_PATH, { force: true });
+  });
+
+  test("a ceiling is written under the agent, not globally", async () => {
+    await writeConfigFile();
+    const text = await applyAgentContext("research", 128_000, { config: config() });
+    expect(text).toMatch(/128,000/);
+    const written = await readConfigFile();
+    expect(written["agents"]["research"]["context"]).toEqual({ cap: 128_000 });
+    // The global policy is untouched, and so is every other agent.
+    expect(written["context"]).toBeUndefined();
+    expect(written["agents"]["orchestrator"]).toEqual({ maxIterations: 90 });
+  });
+
+  test("two agents hold different ceilings at once", async () => {
+    await writeConfigFile();
+    await applyAgentContext("research", 128_000, { config: config() });
+    await applyAgentContext("cron", 64_000, { config: config() });
+    const written = await readConfigFile();
+    expect(written["agents"]["research"]["context"]).toEqual({ cap: 128_000 });
+    expect(written["agents"]["cron"]["context"]).toEqual({ cap: 64_000 });
+  });
+
+  test("the full window is written as a zero, which is how config spells no ceiling", async () => {
+    await writeConfigFile();
+    const text = await applyAgentContext("general", "full", { config: config() });
+    expect(text).toMatch(/complète/);
+    const written = await readConfigFile();
+    expect(written["agents"]["general"]["context"]).toEqual({ cap: 0 });
+  });
+
+  test("the written ceiling is what the resolver then applies to that agent alone", async () => {
+    await writeConfigFile();
+    await applyAgentContext("research", 128_000, { config: config() });
+    const reloaded = parseConfig(JSON.stringify(await readConfigFile()));
+    const window = (model: string, agent: "research" | "general") =>
+      resolveContextWindow({ model, config: reloaded, declared: 1_000_000, agent }).effective;
+    expect(window("m", "research")).toBe(128_000);
+    // Anything not named keeps the standing policy.
+    expect(window("m", "general")).toBe(512_000);
+  });
+
+  test("a failed write reports instead of pretending, and leaves no config behind", async () => {
+    await rm(CONFIG_PATH, { force: true });
+    const text = await applyAgentContext("research", 128_000, { config: config() });
+    expect(text).toMatch(/Échec/);
   });
 });

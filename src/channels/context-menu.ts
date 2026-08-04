@@ -1,47 +1,76 @@
-import type { MyClawConfig } from "../core/config.ts";
+import type { MyClawConfig, AgentToolType } from "../core/config.ts";
 import { resolveContextCap } from "../core/config.ts";
-import { resolveContextWindow, type ContextMode } from "../llm/context-window.ts";
-import { matchesAnyGlob } from "../utils/glob.ts";
+import { resolveContextWindow, type ContextOverride } from "../llm/context-window.ts";
 
 /**
- * Whether the `/model` menu should offer a context choice for this model, and what to show in it.
+ * The context step of the `/model` flow: which ceilings are worth offering for this model, and
+ * which one is currently in force.
  *
  * Shared by both channels for the same reason `status-command.ts` is: the two adapters had byte
  * identical bodies for every other picker step, and a divergence here would mean one channel
  * offering a window the other refuses. See docs/context-window.md.
  */
+
+/** Ceilings offered below the standing cap. Lowering a window is not only about lifting a policy:
+ *  a shorter prompt is cheaper and faster, and sometimes worth it for one conversation. */
+const LOWER_TIERS = [256_000, 128_000, 64_000];
+
+export interface ContextTier {
+  /** `undefined` marks the full window, which is the model's own number rather than a ceiling. */
+  ceiling?: number;
+  tokens: number;
+  label: string;
+  selected: boolean;
+}
+
 export interface ContextChoice {
-  /** False when the cap does not lower this model's window: the submenu would offer one number twice. */
+  /** False when there is nothing to arbitrate: a single option is not a choice. */
   available: boolean;
   raw: number;
-  cap: number;
-  mode: ContextMode;
+  effective: number;
+  tiers: ContextTier[];
 }
 
 export function contextChoiceFor(
   config: MyClawConfig,
   modelId: string,
-  override: ContextMode | undefined,
+  override: ContextOverride | undefined,
+  agent?: AgentToolType | "orchestrator",
 ): ContextChoice {
   const model = config.llm.models?.find((m) => m.id === modelId);
-  const window = resolveContextWindow({
-    model: modelId,
-    config,
-    declared: model?.limit?.context,
-    declaredSource: model?.contextFrom,
-    sessionMode: override,
-  });
-  const cap = resolveContextCap(config);
-  // An exemption is a standing decision by the operator, and "capped" clears the session override
-  // rather than outranking it, so both entries would resolve to the full window: the submenu would
-  // compare a number against itself.
-  const exempt = matchesAnyGlob(modelId, config.context?.capExempt);
-  return {
-    // `cappedFrom` alone is not enough: it is absent precisely when the session already opted out,
-    // and the entry has to stay reachable to opt back in.
-    available: cap !== undefined && !exempt && window.raw > cap,
-    raw: window.raw,
-    cap: cap ?? window.raw,
-    mode: override ?? "capped",
-  };
+  const resolve = (sessionOverride: ContextOverride | undefined) =>
+    resolveContextWindow({
+      model: modelId,
+      config,
+      declared: model?.limit?.context,
+      declaredSource: model?.contextFrom,
+      sessionOverride,
+      agent,
+    });
+  const window = resolve(override);
+  const raw = window.raw;
+  const cap = resolveContextCap(config, agent);
+
+  // The standing policy first, so the list always contains the option that undoes a session
+  // choice, then anything strictly smaller. Ceilings at or above the window are dropped: they
+  // would render as the same number twice.
+  const ceilings = [...(cap !== undefined ? [cap] : []), ...LOWER_TIERS].filter((c) => c < raw);
+  const tiers: ContextTier[] = [
+    {
+      tokens: raw,
+      label: `Full: ${raw.toLocaleString("en-US")}`,
+      selected: window.effective === raw,
+    },
+  ];
+  for (const ceiling of [...new Set(ceilings)]) {
+    tiers.push({
+      ceiling,
+      tokens: ceiling,
+      // The standing cap is named as such: picking it back is how a conversation returns to policy.
+      label: `${ceiling.toLocaleString("en-US")}${ceiling === cap ? " (cap)" : ""}`,
+      selected: window.effective === ceiling,
+    });
+  }
+
+  return { available: tiers.length > 1, raw, effective: window.effective, tiers };
 }
