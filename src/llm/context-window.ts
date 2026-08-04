@@ -1,5 +1,5 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
-import { resolveContextCap, type MyClawConfig } from "../core/config.ts";
+import { resolveContextCap, type MyClawConfig, type AgentToolType } from "../core/config.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
@@ -28,8 +28,12 @@ export interface ResolvedContextWindow {
   approximate?: boolean;
 }
 
-/** Full window for this conversation regardless of the standing cap. */
-export type ContextMode = "full" | "capped";
+/**
+ * What a single conversation asked for: the model's whole window, or an explicit ceiling in tokens.
+ * A number may sit below the standing cap as well as above it -- the point is not only to lift the
+ * policy but to tighten it on a conversation where a smaller prompt is worth the trade.
+ */
+export type ContextOverride = "full" | number;
 
 interface WindowSource {
   contextWindowOf(model: string, baseUrl?: string, upstreamApiBase?: string): ContextLookup | undefined;
@@ -50,24 +54,35 @@ export interface ResolveWindowOptions {
   upstreamApiBase?: string;
   /** models.dev table. Optional so resolution still works before the table is on disk. */
   table?: WindowSource;
-  sessionMode?: ContextMode;
+  sessionOverride?: ContextOverride;
+  /** Agent whose own ceiling applies, when the run belongs to one. */
+  agent?: AgentToolType | "orchestrator";
 }
 
 export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContextWindow {
   const { raw, rawSource, approximate } = resolveRaw(opts);
 
-  const cap = resolveContextCap(opts.config);
-  const exempt = matchesAnyGlob(opts.model, opts.config.context?.capExempt);
-  // Precedence: session override, then exemption, then the cap. A session that asked for the full
-  // window has said the most recent and most specific thing, so it wins over both.
-  const full = opts.sessionMode === "full" || exempt;
-
   const out: ResolvedContextWindow = { raw, effective: raw, rawSource };
   if (approximate) out.approximate = true;
-  if (cap === undefined || full || raw <= cap) {
+
+  // Precedence: session override, then exemption, then the cap. A conversation has said the most
+  // recent and most specific thing, so it wins over both -- in either direction.
+  const override = opts.sessionOverride;
+  if (typeof override === "number" && override > 0) {
+    if (override < raw) {
+      out.effective = override;
+      out.cappedFrom = raw;
+    }
+    out.overridden = true;
+    return out;
+  }
+
+  const cap = resolveContextCap(opts.config, opts.agent);
+  const exempt = matchesAnyGlob(opts.model, opts.config.context?.capExempt);
+  if (cap === undefined || override === "full" || exempt || raw <= cap) {
     // Only claim an override when it changed something, so /status does not advertise a session
-    // choice that made no difference on a model below the cap.
-    if (opts.sessionMode === "full" && cap !== undefined && raw > cap) out.overridden = true;
+    // choice that made no difference on a model already below the cap.
+    if (override === "full" && cap !== undefined && raw > cap) out.overridden = true;
     return out;
   }
   out.effective = cap;

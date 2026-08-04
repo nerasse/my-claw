@@ -717,7 +717,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       config: this.config,
       declared: llmConfig.limit?.context,
       baseUrl: llmConfig.baseUrl,
-      sessionMode: session.contextModeOverride,
+      sessionOverride: session.contextOverride,
     }).effective;
     const outputReserve = llmConfig.limit?.output ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
     const maxTokens = contextLimit - estimateTokens(systemPrompt) - estimateTokens(text) - outputReserve;

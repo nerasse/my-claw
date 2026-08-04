@@ -272,6 +272,12 @@ export interface AgentConfig {
   maxIterations?: number;
   llm?: AgentLlmConfig;
   /**
+   * Context ceiling for this agent, overriding the global `context.cap`. A research sub-agent
+   * reading long documents and a cron job posting a one-line summary do not want the same window.
+   * `0` lifts the ceiling for this agent alone. See docs/context-window.md.
+   */
+  context?: { cap?: number };
+  /**
    * Skill names this agent may see and read. Exact names, or the single entry `["*"]` for all.
    * Absent inherits the orchestrator's list; absent there too means all. See docs/agent-scoping.md.
    */
@@ -437,9 +443,16 @@ export const DEFAULT_PRUNING_HEAD_CHARS = 200;
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
 export const DEFAULT_CONTEXT_CAP = 512_000;
 
-/** `0` or a negative value disables the ceiling; anything else is honoured as written. */
-export function resolveContextCap(config: MyClawConfig): number | undefined {
-  const cap = config.context?.cap;
+/**
+ * `0` or a negative value disables the ceiling; anything else is honoured as written.
+ *
+ * An agent's own key wins outright rather than being combined with the global one: "this agent
+ * gets 1M" has to be expressible without editing the global policy, and a min() would silently
+ * refuse it.
+ */
+export function resolveContextCap(config: MyClawConfig, agent?: AgentToolType | "orchestrator"): number | undefined {
+  const own = agent ? config.agents?.[agent === "orchestrator" ? "orchestrator" : configKeyForAgent(agent)]?.context?.cap : undefined;
+  const cap = own ?? config.context?.cap;
   if (cap === undefined) return DEFAULT_CONTEXT_CAP;
   if (!Number.isFinite(cap) || cap <= 0) return undefined;
   return Math.floor(cap);

@@ -909,7 +909,7 @@ export class AgentBridge implements AgentBackend {
       config: this.config,
       declared: llmConfig.limit?.context,
       baseUrl: llmConfig.baseUrl,
-      sessionMode: session.contextModeOverride,
+      sessionOverride: session.contextOverride,
     });
   }
 

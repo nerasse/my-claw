@@ -150,7 +150,7 @@ test("a session that asked for the full window is not capped, and the override i
   const out = handleStatusCommand({
     config,
     sessionId,
-    session: session(sessionId, { contextModeOverride: "full" }),
+    session: session(sessionId, { contextOverride: "full" }),
     liveRuns: [],
     pricing: pricing(),
   });

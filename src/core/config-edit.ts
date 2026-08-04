@@ -62,6 +62,30 @@ function objectAt(parent: Record<string, unknown>, key: string): Record<string, 
  * be -- an Anthropic model id sent to a local endpoint. Recording the provider makes the pin
  * survive a cold, offline start.
  */
+/**
+ * Per-agent context ceiling. `undefined` removes the key so the agent falls back on the global
+ * `context.cap`, which is how a menu offers a way back to the standing policy.
+ */
+export async function setAgentContextCap(agent: AgentConfigKey, cap: number | undefined): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const agents = objectAt(read.data, "agents");
+  const entry = objectAt(agents, agent);
+  const context = objectAt(entry, "context");
+  const previous = { model: undefined, provider: undefined };
+
+  if (cap === undefined) delete context["cap"];
+  else context["cap"] = cap;
+  // An emptied object left behind would read as a deliberate, meaningless setting.
+  if (Object.keys(context).length === 0) delete (entry as Record<string, unknown>)["context"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} context ${cap ?? "defaut"}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, contextCap: cap ?? null });
+  return { ok: true, previous };
+}
+
 export async function setAgentModel(
   agent: AgentConfigKey,
   modelId: string,

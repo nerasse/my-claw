@@ -116,7 +116,7 @@ export function handleStatusCommand(p: StatusParams): string {
     config: p.config,
     declared: model?.limit?.context,
     declaredSource: model?.contextFrom,
-    sessionMode: session.contextModeOverride,
+    sessionOverride: session.contextOverride,
   });
   lines.push("");
   lines.push("**Model**");

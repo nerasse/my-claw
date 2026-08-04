@@ -100,24 +100,67 @@ test("an explicitly declared window is still capped: one rule, and capExempt is 
 });
 
 test("a session override wins over the cap and is named", () => {
-  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 1_000_000, sessionMode: "full" });
+  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 1_000_000, sessionOverride: "full" });
   expect(w.effective).toBe(1_000_000);
   expect(w.overridden).toBe(true);
   expect(w.cappedFrom).toBeUndefined();
 });
 
 test("an override on a model the cap never touched is not advertised", () => {
-  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 100_000, sessionMode: "full" });
+  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 100_000, sessionOverride: "full" });
   expect(w.effective).toBe(100_000);
   // Claiming an override here would tell the owner a choice mattered when it changed nothing.
   expect(w.overridden).toBeUndefined();
 });
 
-test("asking for the capped mode explicitly is not an override", () => {
-  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 1_000_000, sessionMode: "capped" });
+test("clearing the override returns the conversation to the standing policy", () => {
+  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 1_000_000, sessionOverride: undefined });
   expect(w.effective).toBe(512_000);
   expect(w.overridden).toBeUndefined();
   expect(w.cappedFrom).toBe(1_000_000);
+});
+
+test("a numeric override can tighten below the cap, not only lift it", () => {
+  // The point is not only to escape the policy: a shorter prompt is cheaper and faster, and one
+  // conversation may be worth spending less on.
+  const w = resolveContextWindow({ model: "m", config: cfg({ cap: 512_000 }), declared: 1_000_000, sessionOverride: 128_000 });
+  expect(w.effective).toBe(128_000);
+  expect(w.cappedFrom).toBe(1_000_000);
+  expect(w.overridden).toBe(true);
+});
+
+test("a numeric override beats an exemption, in either direction", () => {
+  const config = cfg({ cap: 512_000, capExempt: ["m"] });
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000, sessionOverride: 64_000 }).effective).toBe(64_000);
+  // And with no override the exemption still releases it.
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000 }).effective).toBe(1_000_000);
+});
+
+test("an override above the model's own window cannot invent capacity", () => {
+  const w = resolveContextWindow({ model: "m", config: cfg(), declared: 200_000, sessionOverride: 900_000 });
+  expect(w.effective).toBe(200_000);
+  expect(w.cappedFrom).toBeUndefined();
+});
+
+test("an agent's own ceiling wins over the global one", () => {
+  const config = { llm: {}, context: { cap: 512_000 }, agents: { research: { context: { cap: 128_000 } } } } as never;
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000, agent: "research" }).effective).toBe(128_000);
+  // A different agent is untouched by it.
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000, agent: "general" }).effective).toBe(512_000);
+});
+
+test("an agent's ceiling may exceed the global one, which a min() would silently refuse", () => {
+  const config = { llm: {}, context: { cap: 512_000 }, agents: { research: { context: { cap: 900_000 } } } } as never;
+  // The case the whole "wins outright" rule exists for: granting one agent more than the standing
+  // policy without editing the policy. Combining the two would clamp it straight back to 512k.
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000, agent: "research" }).effective).toBe(900_000);
+});
+
+test("an agent can lift the ceiling for itself alone with a zero", () => {
+  const config = { llm: {}, context: { cap: 512_000 }, agents: { research: { context: { cap: 0 } } } } as never;
+  // A min() against the global cap would silently refuse this, which is why the agent key wins
+  // outright instead of being combined.
+  expect(resolveContextWindow({ model: "m", config, declared: 1_000_000, agent: "research" }).effective).toBe(1_000_000);
 });
 
 // -- occupancy ---------------------------------------------------------------------------------
