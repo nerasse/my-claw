@@ -5,6 +5,7 @@ import { setAgentContextCap, setAgentModel } from "../core/config-edit.ts";
 import type { ModelPicker, PickerTarget } from "./model-picker.ts";
 import type { SubAgentInfo } from "../subagents/types.ts";
 import { log } from "../utils/logger.ts";
+import { formatContextInfo } from "./context-menu.ts";
 
 /**
  * `/model <agent> [<model>]` — the persisted, per-agent half of `/model`.
@@ -118,6 +119,7 @@ export async function applyAgentModel(
   const providerNote = provider ? ` (provider ${provider})` : "";
   return [
     `Agent ${key} : ${before} -> ${label}${providerNote}`,
+    formatContextInfo(deps.config, modelId, undefined, TOOL_TYPE[target]),
     "Enregistré dans config.json. `/config diff config` pour voir l'écriture, `/config rollback` pour l'annuler.",
     target === "orchestrator"
       ? "Le `/model` d'une conversation reste prioritaire sur ce défaut."
@@ -167,7 +169,10 @@ export async function handleAgentModelCommand(args: string, deps: AgentModelDeps
 
   if (!rest) {
     if (!deps.modelPicker.hasModels()) {
-      return { kind: "message", text: `Agent ${key} : ${deps.modelPicker.labelFor(currentModel)} (aucun modèle configuré à proposer)` };
+      return {
+        kind: "message",
+        text: `Agent ${key} : ${deps.modelPicker.labelFor(currentModel)}\n${formatContextInfo(deps.config, currentModel, undefined, TOOL_TYPE[target])}\n(aucun modèle configuré à proposer)`,
+      };
     }
     return {
       kind: "menu",

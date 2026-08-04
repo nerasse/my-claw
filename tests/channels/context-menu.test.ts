@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { contextChoiceFor } from "../../src/channels/context-menu.ts";
+import { contextChoiceFor, formatContextInfo } from "../../src/channels/context-menu.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 /** Shared by both channels so one cannot offer a window the other refuses. */
@@ -71,4 +71,15 @@ test("an agent's own ceiling is the one offered and marked", () => {
 test("an unknown model still resolves, falling back to the default window", () => {
   const c = contextChoiceFor(cfg([]), "ghost", undefined);
   expect(c.raw).toBe(262_144);
+});
+
+test("the compact info line shows the effective window and the full window when they differ", () => {
+  expect(formatContextInfo(cfg(big), "big", undefined)).toBe("Context: 512k / full 1.0M");
+  expect(formatContextInfo(cfg(big), "big", 128_000)).toBe("Context: 128k / full 1.0M");
+  expect(formatContextInfo(cfg(tiny), "tiny", undefined)).toBe("Context: 40k");
+});
+
+test("the compact info line uses the agent ceiling, not the global one", () => {
+  const config = cfg(big, { cap: 512_000 }, { research: { context: { cap: 128_000 } } });
+  expect(formatContextInfo(config, "big", undefined, "research")).toBe("Context: 128k / full 1.0M");
 });

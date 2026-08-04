@@ -1,5 +1,5 @@
 import { query as sdkQuery, type Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
+import type { AgentToolType, EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
 import {
   MY_CLAW_DIR,
   nestedAgentsEnabled,
@@ -396,7 +396,7 @@ export class ClaudeSdkBackend implements AgentBackend {
           : [];
       const userContent = await this.buildUserTurn(message, session);
       let initialText = await this.prefixMemory(message, userContent);
-      initialText = this.withPriorConversation(initialText, priorHistory, session, systemPrompt, llmConfig);
+      initialText = this.withPriorConversation(initialText, priorHistory, session, systemPrompt, llmConfig, agentToolType);
       const initialContent = await this.withImageBlocks(message, initialText, Boolean(llmConfig.vision));
 
       const abortController = new AbortController();
@@ -707,6 +707,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     session: SessionData,
     systemPrompt: string,
     llmConfig: ResolvedLlmConfig,
+    agent: AgentToolType,
   ): string {
     if (priorHistory.length === 0) return text;
 
@@ -718,6 +719,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       declared: llmConfig.limit?.context,
       baseUrl: llmConfig.baseUrl,
       sessionOverride: session.contextOverride,
+      agent,
     }).effective;
     const outputReserve = llmConfig.limit?.output ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
     const maxTokens = contextLimit - estimateTokens(systemPrompt) - estimateTokens(text) - outputReserve;

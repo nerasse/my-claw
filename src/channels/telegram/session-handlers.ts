@@ -19,7 +19,7 @@ import type { McpServerStatus } from "../../mcp/manager.ts";
 import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
-import { contextChoiceFor } from "../context-menu.ts";
+import { contextChoiceFor, formatContextInfo } from "../context-menu.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 
 type TelegramChatType = "dm" | "group";
@@ -175,9 +175,10 @@ export function createTelegramCommandHandler({
         });
         if (agentOutcome.kind === "message") return agentOutcome.text;
         if (agentOutcome.kind === "menu") {
+          const agentContext = contextChoiceFor(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]);
           return {
-            text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}`,
-            buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target),
+            text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}\n${formatContextInfo(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target])}`,
+            buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target, { contextChoice: agentContext.available }),
           };
         }
 
@@ -198,16 +199,16 @@ export function createTelegramCommandHandler({
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
           hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
-          return `Model changed to ${modelPicker.labelFor(match.id)}`;
+          return `Model changed to ${modelPicker.labelFor(match.id)}\n${formatContextInfo(config, match.id, session.contextOverride)}`;
         }
 
         if (!modelPicker.hasModels()) {
-          return `Current model: ${currentModel}`;
+          return `Current model: ${currentModel}\n${formatContextInfo(config, currentModel, existingSession?.contextOverride)}`;
         }
 
         const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         return {
-          text: `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`,
+          text: `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}\n${formatContextInfo(config, currentModel, existingSession?.contextOverride)}`,
           buttons: modelPicker.buildButtons(currentModel),
         };
       }
@@ -232,7 +233,7 @@ export function createTelegramCommandHandler({
           return `Effort set to ${level}`;
         }
         return {
-          text: `Effort — current: ${formatEffort(effort)}`,
+          text: `Effort — current: ${formatEffort(effort)}\n${formatContextInfo(config, activeModel, existingSession?.contextOverride)}`,
           buttons: modelPicker.buildEffortButtons(effort, { currentModelId: activeModel }),
         };
       }
@@ -243,10 +244,11 @@ export function createTelegramCommandHandler({
         const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         const models = config.llm.models ?? [];
         if (models.length === 0) {
-          return `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`;
+          return `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}\n${formatContextInfo(config, currentModel, existingSession?.contextOverride)}`;
         }
         return [
           `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}`,
+          formatContextInfo(config, currentModel, existingSession?.contextOverride),
           "Available models by group:",
           ...formatModelGroupSummary(models, currentModel),
           "",
@@ -406,7 +408,7 @@ export function createTelegramCallbackHandler({
       const choice = contextChoiceFor(config, model, override);
       if (!choice.available) return { text, answerText };
       return {
-        text: `${text} — choisissez maintenant la fenêtre de contexte`,
+        text: `${text}\n${formatContextInfo(config, model, override)}\nChoisissez maintenant la fenêtre de contexte`,
         buttons: modelPicker.buildContextButtons(choice.tiers, { chained: true }),
         answerText,
       };
@@ -432,7 +434,7 @@ export function createTelegramCallbackHandler({
       }
       if (action.kind === "openContext") {
         return {
-          text: `Fenetre de contexte de l'agent ${target} — ${modelPicker.labelFor(currentModel)} permet ${agentChoice.raw.toLocaleString("en-US")}`,
+          text: `Fenetre de contexte de l'agent ${target} — ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target])}`,
           buttons: modelPicker.buildContextButtons(agentChoice.tiers, { target }),
           answerText: "Contexte",
         };
@@ -443,7 +445,7 @@ export function createTelegramCallbackHandler({
           : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
-        text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}`,
+        text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target])}`,
         buttons,
         answerText: groupLabel ?? "Retour",
       };
@@ -457,7 +459,7 @@ export function createTelegramCallbackHandler({
       const suffix = modelPicker.effortHeaderSuffix(effort);
       if (action.kind === "openGroup") {
         return {
-          text: `${modelPicker.groupLabel(action.groupPath) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}`,
+          text: `${modelPicker.groupLabel(action.groupPath) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
           buttons: modelPicker.buildGroupButtons(action.groupPath, currentModel),
           answerText: modelPicker.groupLabel(action.groupPath),
         };
@@ -465,7 +467,7 @@ export function createTelegramCallbackHandler({
       // Effort submenu, reachable without re-selecting a model.
       if (action.kind === "openEffort") {
         return {
-          text: `Effort — current: ${formatEffort(effort)}`,
+          text: `Effort — current: ${formatEffort(effort)}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
           buttons: modelPicker.buildEffortButtons(effort, { currentModelId: currentModel }),
           answerText: "Effort",
         };
@@ -473,13 +475,13 @@ export function createTelegramCallbackHandler({
       const choice = contextChoiceFor(config, currentModel, existing?.contextOverride);
       if (action.kind === "openContext") {
         return {
-          text: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)} permet ${choice.raw.toLocaleString("en-US")}, en vigueur ${choice.effective.toLocaleString("en-US")}`,
+          text: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
           buttons: modelPicker.buildContextButtons(choice.tiers),
           answerText: "Contexte",
         };
       }
       return {
-        text: `Current model: ${modelPicker.labelFor(currentModel)}${suffix}`,
+        text: `Current model: ${modelPicker.labelFor(currentModel)}${suffix}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
         buttons: modelPicker.buildButtons(currentModel, undefined, { contextChoice: choice.available }),
         answerText: "Back",
       };
@@ -500,18 +502,16 @@ export function createTelegramCallbackHandler({
       session.contextOverride = action.choice;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const applied = contextChoiceFor(config, session.modelOverride ?? defaultModel, session.contextOverride);
       return {
-        text: `Fenetre de contexte de cette conversation : ${applied.effective.toLocaleString("en-US")} tokens`,
+        text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, session.modelOverride ?? defaultModel, session.contextOverride)}`,
         answerText: "Contexte mis a jour",
       };
     }
 
     if (action.kind === "keepContext") {
       const existing = await sessionManager.peek(sessionId);
-      const applied = contextChoiceFor(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride);
       return {
-        text: `Fenetre de contexte inchangee : ${applied.effective.toLocaleString("en-US")} tokens`,
+        text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride)}`,
         answerText: "Contexte inchange",
       };
     }

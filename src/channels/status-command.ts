@@ -98,6 +98,7 @@ export function handleStatusCommand(p: StatusParams): string {
     return [`Model: ${currentModel}`, "Session: none active", `Active run: ${live}`].join("\n");
   }
   const session = p.session;
+  const contextAgent = session.platform === "cron" ? "cron" : session.meta?.type ?? "main";
 
   lines.push("**Session**");
   lines.push(`  id            \`${p.sessionId}\``);
@@ -117,6 +118,7 @@ export function handleStatusCommand(p: StatusParams): string {
     declared: model?.limit?.context,
     declaredSource: model?.contextFrom,
     sessionOverride: session.contextOverride,
+    agent: contextAgent,
   });
   lines.push("");
   lines.push("**Model**");

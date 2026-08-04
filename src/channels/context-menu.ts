@@ -31,11 +31,34 @@ export interface ContextChoice {
   tiers: ContextTier[];
 }
 
-export function contextChoiceFor(
+function shortContextTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 10_000) return `${Math.round(tokens / 1_000)}k`;
+  return tokens.toLocaleString("en-US");
+}
+
+/**
+ * One compact line for model menus and `/models`. The first number is what this run may use; the
+ * second is shown only when policy or a session/agent choice lowered the model's full window.
+ */
+export function formatContextInfo(
   config: MyClawConfig,
   modelId: string,
   override: ContextOverride | undefined,
   agent?: AgentToolType | "orchestrator",
+): string {
+  const choice = contextChoiceFor(config, modelId, override, agent);
+  const effective = shortContextTokens(choice.effective);
+  return choice.effective === choice.raw
+    ? `Context: ${effective}`
+    : `Context: ${effective} / full ${shortContextTokens(choice.raw)}`;
+}
+
+export function contextChoiceFor(
+  config: MyClawConfig,
+  modelId: string,
+  override: ContextOverride | undefined,
+  agent: AgentToolType | "orchestrator" = "main",
 ): ContextChoice {
   const model = config.llm.models?.find((m) => m.id === modelId);
   const resolve = (sessionOverride: ContextOverride | undefined) =>

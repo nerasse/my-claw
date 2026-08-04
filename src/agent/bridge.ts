@@ -261,7 +261,7 @@ export class AgentBridge implements AgentBackend {
       // Run start is the only moment the session is guaranteed idle: compacting mid-run
       // would race the tool loop, compacting post-run would race the next inbound message.
       if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(session, llmConfig);
+        await this.maybeAutoCompact(session, llmConfig, agentToolType);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
@@ -333,7 +333,7 @@ export class AgentBridge implements AgentBackend {
             chatMessages.push(...pruned);
           }
         }
-        const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig).effective, toolSchemaTokens);
+        const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig, agentToolType).effective, toolSchemaTokens);
         if (trimmed !== chatMessages) {
           chatMessages.length = 0;
           chatMessages.push(...trimmed);
@@ -598,7 +598,7 @@ export class AgentBridge implements AgentBackend {
         maxIterations: budget.total,
         toolExecutions,
       });
-      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, startedAt, toolExecutions, iteration, budget, signal);
+      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, signal);
     } catch (err) {
       if (isAbort(err, signal)) {
         sealDanglingToolCalls(session.messages);
@@ -675,6 +675,7 @@ export class AgentBridge implements AgentBackend {
     session: SessionData,
     message: UnifiedMessage,
     llmConfig: ResolvedLlmConfig,
+    agent: AgentToolType,
     startedAt: number,
     toolExecutions: number,
     iteration: number,
@@ -689,7 +690,7 @@ export class AgentBridge implements AgentBackend {
     chatMessages.push({ role: "system", content: summaryPrompt });
     session.messages.push({ role: "user", content: `[system: ${summaryPrompt}]`, timestamp: new Date().toISOString() });
 
-    const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig).effective);
+    const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig, agent).effective);
     if (trimmed !== chatMessages) {
       chatMessages.length = 0;
       chatMessages.push(...trimmed);
@@ -903,20 +904,21 @@ export class AgentBridge implements AgentBackend {
    * exempt or the session asked for the full one. Every consumer goes through here so the trim, the
    * compaction gate and /status can never disagree about the number.
    */
-  private contextWindow(session: SessionData, llmConfig: ResolvedLlmConfig) {
+  private contextWindow(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType) {
     return resolveContextWindow({
       model: llmConfig.model,
       config: this.config,
       declared: llmConfig.limit?.context,
       baseUrl: llmConfig.baseUrl,
       sessionOverride: session.contextOverride,
+      agent,
     });
   }
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig): Promise<void> {
-    const window = this.contextWindow(session, llmConfig);
+  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
+    const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const occupied = occupiedContextTokens(session.messages, (msgs) => this.toChatMessages([...msgs]), session.lastPrompt);
     if (occupied <= window.effective * threshold) return;

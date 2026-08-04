@@ -129,6 +129,7 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
   // the opaque "default" it used to print.
   const menu = await commandHandler("!r:test", "@u1:example.org", "dm", "model", "");
   assert.match(String((menu as { text?: string }).text ?? ""), /Current model: Sonnet — Effort: high \(SDK default\)/);
+  assert.match(String((menu as { text?: string }).text ?? ""), /Context: 262k/);
   assert.ok((menu as { buttons?: { action: string }[] }).buttons?.some((b) => b.action === "effm"));
 
   // Opening the Effort entry shows the level submenu without touching the model.
@@ -182,7 +183,7 @@ test("matrix effort: header status, an Effort menu entry, and terminal model sel
     messageId: "$menu",
   });
   assert.equal(chosen?.buttons, undefined);
-  assert.match(chosen?.text ?? "", /128,000 tokens/);
+  assert.match(chosen?.text ?? "", /Context: 128k \/ full 262k/);
   const sessionId = SessionManager.resolveSessionId("matrix", "dm", "!r:test", "@u1:example.org");
   assert.equal((await sessionManager.peek(sessionId))?.contextOverride, 128_000);
 });

@@ -157,6 +157,7 @@ test("telegram /models reports the effective effort next to the model", async ()
   });
 
   assert.match(String(await commandHandler("c1", "u1", "dm", "models", "")), /Current model: Sonnet — Effort: high \(SDK default\)/);
+  assert.match(String(await commandHandler("c1", "u1", "dm", "models", "")), /Context: 262k/);
 });
 
 test("telegram chains model into effort into context, and persists the window chosen", async () => {
@@ -196,7 +197,7 @@ test("telegram chains model into effort into context, and persists the window ch
   // 3. Picking a ceiling closes the menu and persists it on this conversation alone.
   const set = await press("ctx:128000");
   assert.equal(set?.buttons, undefined);
-  assert.match(set?.text ?? "", /128,000 tokens/);
+  assert.match(set?.text ?? "", /Context: 128k \/ full 1\.0M/);
   assert.equal((await sessionManager.peek(sessionId))?.contextOverride, 128_000);
 
   // The full window is stored as such, not as the number, so it survives a model change.

@@ -89,6 +89,7 @@ describe("both channels", () => {
       (await h.matrix("!r:t", "u1", "dm", "model", "research")) as OutgoingMessage,
     ]) {
       expect(menu.text).toContain("research");
+      expect(menu.text).toContain("Context: 262k");
       // The target letter is what survives the round trip through callback_data.
       expect(actionFor(menu, "Opus")).toMatch(/@r$/);
     }

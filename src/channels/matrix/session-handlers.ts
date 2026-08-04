@@ -22,7 +22,7 @@ import type { McpServerStatus } from "../../mcp/manager.ts";
 import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
-import { contextChoiceFor } from "../context-menu.ts";
+import { contextChoiceFor, formatContextInfo } from "../context-menu.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 
 type MatrixChatType = "dm" | "group";
@@ -122,6 +122,7 @@ function buildMatrixMenuFromButtons(params: {
   buttons: ConfirmationButton[];
   heading?: string;
   effort: EffectiveEffort;
+  contextInfo?: string;
 }): OutgoingMessage {
   const { buttons } = params;
   const instruction =
@@ -132,6 +133,7 @@ function buildMatrixMenuFromButtons(params: {
     text: [
       ...(params.heading ? [params.heading, ""] : []),
       `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}`,
+      ...(params.contextInfo ? [params.contextInfo] : []),
       instruction,
       ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
     ].join("\n"),
@@ -146,9 +148,11 @@ function buildMatrixMenuFromButtons(params: {
 function buildMatrixAgentModelMenu(params: {
   modelPicker: ModelPicker;
   outcome: { target: PickerTarget; currentModel: string; heading: string };
+  contextInfo: string;
+  contextChoice: boolean;
 }): OutgoingMessage {
   const { modelPicker, outcome } = params;
-  const buttons = modelPicker.buildButtons(outcome.currentModel, outcome.target);
+  const buttons = modelPicker.buildButtons(outcome.currentModel, outcome.target, { contextChoice: params.contextChoice });
   const instruction =
     buttons.length > MATRIX_REACTION_BUTTON_EMOJIS.length
       ? `Réponds avec un numéro/nom, réagis pour les ${MATRIX_REACTION_BUTTON_EMOJIS.length} premiers, ou envoie \`/model ${outcome.target} <nom>\` :`
@@ -158,6 +162,7 @@ function buildMatrixAgentModelMenu(params: {
       outcome.heading,
       "",
       `Actuel : ${modelPicker.labelFor(outcome.currentModel)}`,
+      params.contextInfo,
       instruction,
       ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
     ].join("\n"),
@@ -171,9 +176,10 @@ function buildMatrixModelMenu(params: {
   currentModel: string;
   effort: EffectiveEffort;
   heading?: string;
+  contextInfo?: string;
 }): OutgoingMessage | string {
   if (!params.modelPicker.hasModels()) {
-    return `${params.heading ? `${params.heading}\n` : ""}Current model: ${params.modelPicker.labelFor(params.currentModel)}`.trim();
+    return `${params.heading ? `${params.heading}\n` : ""}Current model: ${params.modelPicker.labelFor(params.currentModel)}\n${params.contextInfo ?? ""}`.trim();
   }
   return buildMatrixMenuFromButtons({
     modelPicker: params.modelPicker,
@@ -181,6 +187,7 @@ function buildMatrixModelMenu(params: {
     buttons: params.modelPicker.buildButtons(params.currentModel),
     heading: params.heading,
     effort: params.effort,
+    contextInfo: params.contextInfo,
   });
 }
 
@@ -232,8 +239,9 @@ function buildMatrixModelsList(params: {
   modelPicker: ModelPicker;
   currentModel: string;
   effort: EffectiveEffort;
+  contextInfo: string;
 }): string {
-  const header = `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}`;
+  const header = `Current model: ${params.modelPicker.labelFor(params.currentModel)}${params.modelPicker.effortHeaderSuffix(params.effort)}\n${params.contextInfo}`;
   const models = params.config.llm.models ?? [];
   if (models.length === 0) {
     return header;
@@ -412,7 +420,12 @@ export function createMatrixCommandHandler({
         });
         if (agentOutcome.kind === "message") return agentOutcome.text;
         if (agentOutcome.kind === "menu") {
-          return buildMatrixAgentModelMenu({ modelPicker, outcome: agentOutcome });
+          return buildMatrixAgentModelMenu({
+            modelPicker,
+            outcome: agentOutcome,
+            contextInfo: formatContextInfo(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]),
+            contextChoice: contextChoiceFor(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]).available,
+          });
         }
 
         const existingSession = await sessionManager.peek(sessionId);
@@ -435,7 +448,7 @@ export function createMatrixCommandHandler({
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
           hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
-          return `Model changed to ${match.label}`;
+          return `Model changed to ${match.label}\n${formatContextInfo(config, match.id, session.contextOverride)}`;
         }
 
         return buildMatrixModelMenu({
@@ -443,6 +456,7 @@ export function createMatrixCommandHandler({
           modelPicker,
           currentModel,
           effort: effectiveEffort(config.llm, currentModel, existingSession?.effortOverride),
+          contextInfo: formatContextInfo(config, currentModel, existingSession?.contextOverride),
         });
       }
 
@@ -454,6 +468,7 @@ export function createMatrixCommandHandler({
           modelPicker,
           currentModel,
           effort: effectiveEffort(config.llm, currentModel, existingSession?.effortOverride),
+          contextInfo: formatContextInfo(config, currentModel, existingSession?.contextOverride),
         });
       }
 
@@ -482,6 +497,7 @@ export function createMatrixCommandHandler({
           buttons: modelPicker.buildEffortButtons(effort, { currentModelId: activeModel }),
           effort,
           heading: `Effort — current: ${formatEffort(effort)}`,
+          contextInfo: formatContextInfo(config, activeModel, existingSession?.contextOverride),
         });
       }
 
@@ -693,6 +709,7 @@ export function createMatrixActionHandler({
           `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""}`,
           "",
           `Actuel : ${modelPicker.labelFor(currentModel)}`,
+          formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target]),
           "Réponds avec un numéro/nom ou réagis à ce message :",
           ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
         ].join("\n"),
@@ -716,6 +733,7 @@ export function createMatrixActionHandler({
             buttons: modelPicker.buildEffortButtons(effort, { currentModelId: currentModel }),
             effort,
             heading: `Effort — current: ${formatEffort(effort)}`,
+            contextInfo: formatContextInfo(config, currentModel, existing?.contextOverride),
           }),
           supersededText: "Model menu > Effort",
         };
@@ -728,7 +746,8 @@ export function createMatrixActionHandler({
             currentModel,
             buttons: modelPicker.buildContextButtons(choice.tiers),
             effort,
-            heading: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)} permet ${choice.raw.toLocaleString("en-US")}, en vigueur ${choice.effective.toLocaleString("en-US")}`,
+            heading: `Fenetre de contexte — ${modelPicker.labelFor(currentModel)}`,
+            contextInfo: formatContextInfo(config, currentModel, existing?.contextOverride),
           }),
           supersededText: "Model menu > Context",
         };
@@ -745,6 +764,7 @@ export function createMatrixActionHandler({
           buttons,
           heading: groupLabel,
           effort,
+          contextInfo: formatContextInfo(config, currentModel, existing?.contextOverride),
         }),
         supersededText: groupLabel ? `Model menu > ${groupLabel}` : "Model menu",
       };
@@ -765,14 +785,12 @@ export function createMatrixActionHandler({
       session.contextOverride = action.choice;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const applied = contextChoiceFor(config, session.modelOverride ?? defaultModel, session.contextOverride);
-      return { text: `Fenetre de contexte de cette conversation : ${applied.effective.toLocaleString("en-US")} tokens` };
+      return { text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, session.modelOverride ?? defaultModel, session.contextOverride)}` };
     }
 
     if (action.kind === "keepContext") {
       const existing = await sessionManager.peek(sessionId);
-      const applied = contextChoiceFor(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride);
-      return { text: `Fenetre de contexte inchangee : ${applied.effective.toLocaleString("en-US")} tokens` };
+      return { text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride)}` };
     }
 
     if (action.kind === "keepEffort") {
@@ -804,6 +822,7 @@ export function createMatrixActionHandler({
           buttons: modelPicker.buildEffortButtons(effort, { chained: true, currentModelId: modelId }),
           effort,
           heading: `Model changed to ${label} — now choose reasoning effort:`,
+          contextInfo: formatContextInfo(config, modelId, session.contextOverride),
         }),
         supersededText: `Model changed to ${label}`,
       };
