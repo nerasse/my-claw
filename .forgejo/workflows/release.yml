@@ -27,12 +27,8 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl xz-utils
-
-      - name: Install ffmpeg
-        run: |
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" | tar -xJ --strip-components=2 -C /usr/local/bin/ "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg"
-          ffmpeg -version | head -1
+          apt-get install -y jq curl ffmpeg
+          ffmpeg -version
 
       - name: Install project deps
         run: |
@@ -62,12 +58,8 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl xz-utils
-
-      - name: Install ffmpeg
-        run: |
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" | tar -xJ --strip-components=2 -C /usr/local/bin/ "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg"
-          ffmpeg -version | head -1
+          apt-get install -y jq curl ffmpeg
+          ffmpeg -version
 
       - name: Install project deps
         run: |
@@ -97,12 +89,8 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl xz-utils
-
-      - name: Install ffmpeg
-        run: |
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" | tar -xJ --strip-components=2 -C /usr/local/bin/ "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg"
-          ffmpeg -version | head -1
+          apt-get install -y jq curl ffmpeg
+          ffmpeg -version
 
       - name: Install project deps
         run: |
