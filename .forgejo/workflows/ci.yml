@@ -80,4 +80,26 @@ jobs:
       - name: Run tests
         run: |
           export PATH="$HOME/.bun/bin:$PATH"
-          bun test
+          set -o pipefail
+          bun test 2>&1 | tee /tmp/testlog.txt
+
+      - name: Report test failure
+        if: failure()
+        run: |
+          {
+            echo "## environment"
+            uname -a || true
+            cat /etc/os-release 2>/dev/null || true
+            echo "nproc: $(nproc)"
+            echo "bun: $(bun --version 2>&1)"
+            echo "ffmpeg: $(command -v ffmpeg) -> $(ffmpeg -version 2>&1 | head -1)"
+            df -h / /tmp 2>/dev/null || true
+            echo "## test tail"
+            tail -c 16000 /tmp/testlog.txt 2>/dev/null || echo "no testlog"
+          } > /tmp/report.txt
+          BODY=$(jq -Rs . < /tmp/report.txt)
+          curl -sS -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues" \
+            -d "{\"title\":\"CI test failure ${{ github.sha }}\",\"body\":${BODY}}" || true
