@@ -9,6 +9,7 @@ import { hooks } from "../hooks/index.ts";
 import { isAbort } from "./aborted.ts";
 import { runRegistry } from "./run-registry.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
+import { archiveAssistantMessage, archiveChannelMessage } from "../conversations/store.ts";
 
 export interface RouteResult {
   text: string;
@@ -76,6 +77,7 @@ export class MessageRouter {
 
   // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated
   async routeCron(message: UnifiedMessage, sessionId: string, options: RouteOptions = {}): Promise<RouteResult | undefined> {
+    archiveChannelMessage(message);
     const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
     const current = previous
       .catch(() => {})
@@ -100,6 +102,7 @@ export class MessageRouter {
     }
 
     hooks.emit("message:received", { message });
+    archiveChannelMessage(message);
 
     if (!this.checkRateLimit(message.userId)) {
       void log("warn", "rate limit exceeded", { userId: message.userId, platform: message.platform });
@@ -176,6 +179,7 @@ export class MessageRouter {
         : await this.agent.handleMessage(message, session, signal);
       const attachments = this.agent.getResponseAttachments(message.id);
       await this.sessionManager.persist(sessionId);
+      archiveAssistantMessage(message, sessionId, text ?? "");
       runRegistry.settleMailbox(sessionId, "resolve");
 
       const durationMs = Date.now() - startedAt;

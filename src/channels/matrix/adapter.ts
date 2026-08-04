@@ -31,6 +31,7 @@ import {
   trimString,
 } from "./helpers.ts";
 import { buildTimelineIngress } from "./ingress.ts";
+import { archiveChannelMessage } from "../../conversations/store.ts";
 import {
   allowBotsModeForRoom as resolveAllowBotsModeForRoom,
   contextVisibility as resolveContextVisibility,
@@ -628,7 +629,7 @@ export class MatrixAdapter implements ChannelAdapter {
         return;
       }
 
-      const unified = await this.normalizeMessage(
+       const unified = await this.normalizeMessage(
         room,
         event,
         chatType,
@@ -637,9 +638,10 @@ export class MatrixAdapter implements ChannelAdapter {
         rootThreadId,
         replyId,
         preparedRoomHistory,
-        selfDisplayName,
-      );
-      if (this.shouldBufferInboundMessage(unified, chatType, rootThreadId)) {
+         selfDisplayName,
+       );
+       archiveChannelMessage(unified);
+       if (this.shouldBufferInboundMessage(unified, chatType, rootThreadId)) {
         const buffered = await this.bufferOrProcessMessage({
           roomId,
           eventId: unified.id,
@@ -1226,6 +1228,7 @@ export class MatrixAdapter implements ChannelAdapter {
       displayName: selfDisplayName,
     });
     const normalizedText = resolveNormalizedInboundText(content, strippedText, attachments);
+    const eventTimestamp = event.getTs();
 
     return {
       id: event.getId() ?? "",
@@ -1234,6 +1237,7 @@ export class MatrixAdapter implements ChannelAdapter {
       chatId: room.roomId,
       chatType,
       text: normalizedText,
+      timestamp: typeof eventTimestamp === "number" ? new Date(eventTimestamp).toISOString() : undefined,
       attachments,
       isForwarded: this.isForwardedMatrixMessage(event, content),
       replyToId,

@@ -50,6 +50,7 @@ import { findTool } from "./tools/find.ts";
 import { grepTool } from "./tools/grep.ts";
 import { lsTool } from "./tools/ls.ts";
 import { createMemoryTool } from "./tools/memory.ts";
+import { createConversationSearchTool } from "./tools/conversation-search.ts";
 import { createSpawnTool } from "./tools/spawn.ts";
 import { createSendTool } from "./tools/send.ts";
 import { createListAgentsTool } from "./tools/list-agents.ts";
@@ -73,6 +74,7 @@ import { syncBuiltIn } from "./skills/sync.ts";
 import { startSkillsWatcher } from "./skills/watcher.ts";
 import { McpManager } from "./mcp/manager.ts";
 import { PluginLoader } from "./tools/plugins.ts";
+import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
@@ -306,6 +308,10 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
+  const backfilledConversations = await backfillConversationArchive();
+  if (backfilledConversations > 0) {
+    void log("info", "conversation archive backfilled", { messages: backfilledConversations });
+  }
   const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
@@ -799,7 +805,7 @@ async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<vo
 }
 
 function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
-  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, createMemoryTool(config)]) {
+  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, createMemoryTool(config), createConversationSearchTool()]) {
     registry.register(tool);
   }
 }

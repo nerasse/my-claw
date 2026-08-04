@@ -19,9 +19,9 @@ function mcpServerOf(toolName: string): string | undefined {
 
 // read_skill/list_skills are read-only and the system prompt tells every agent to call
 // read_skill to load a skill; research agents need them or they hit unknown-tool errors.
-export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill"];
+export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_search", "conversation_search", "list_skills", "read_skill"];
 const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron"];
-const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory"];
+const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "conversation_search"];
 
 /**
  * Tools whose output is content my-claw did not author, so it is normalised before the model reads
@@ -31,7 +31,7 @@ const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent
  * edit round-trip would silently delete invisible characters the owner put there on purpose; for a
  * coding agent, corrupting a local file is worse than the hidden-instruction risk it would cover.
  */
-const REMOTE_CONTENT_TOOLS = new Set(["fetch", "web_search", "delegate_browser_task"]);
+const REMOTE_CONTENT_TOOLS = new Set(["fetch", "web_search", "conversation_search", "delegate_browser_task"]);
 
 export function producesRemoteContent(toolName: string): boolean {
   return REMOTE_CONTENT_TOOLS.has(toolName)

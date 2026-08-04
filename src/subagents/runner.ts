@@ -15,6 +15,7 @@ import { loadSession, saveSession, deleteSession, archiveSession, trimSessionMes
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
+import { indexSessionArchive } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 
@@ -91,6 +92,7 @@ export class SubAgentRunner {
     session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
     await saveSession(id, session);
+    indexSessionArchive(session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
     const run = () => this.executeRun(id, type, workspaceDir, parentMessage, signal, model);
@@ -129,6 +131,7 @@ export class SubAgentRunner {
       session.invokedBy = callerSessionId;
       const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal);
       await saveSession(id, session);
+      indexSessionArchive(session);
       return result;
     });
   }
@@ -212,6 +215,7 @@ export class SubAgentRunner {
       return { id, result };
     } finally {
       this.activeCount -= 1;
+      indexSessionArchive(session);
       await deleteSession(id).catch(() => {});
     }
   }
@@ -229,6 +233,7 @@ export class SubAgentRunner {
     // Persist the first run so a session-mode sub-agent remembers its own answer; without this
     // the next send() reloads a history containing the task but not the reply.
     await saveSession(id, session);
+    indexSessionArchive(session);
     return result;
   }
 

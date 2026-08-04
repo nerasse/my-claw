@@ -5,6 +5,8 @@ export interface UnifiedMessage {
   chatId: string;
   chatType: "dm" | "group";
   text: string;
+  /** Original channel timestamp when the adapter exposes one. */
+  timestamp?: string;
   attachments: Attachment[];
   isForwarded: boolean;
   replyToId?: string;

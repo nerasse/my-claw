@@ -25,6 +25,7 @@ import {
 import { extractMediaRefs, stripMediaRefs, cleanupGeneratedTempFiles } from "../../utils/media.ts";
 import { telegramLog } from "../../utils/logger.ts";
 import { LruMap } from "../../utils/lru-map.ts";
+import { archiveChannelMessage } from "../../conversations/store.ts";
 import {
   sendTextMessage,
   sendPlainTextMessage,
@@ -681,6 +682,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const chatId = String(msg.chat.id);
     const messageId = msg.message_id;
     const unified = await this.normalizeMessage(msg, textOverride, extraMessages);
+    archiveChannelMessage(unified);
     rememberInboundContext(this.config, this.whitelist, this.historyByScope, this.messageContexts, this.threadRoots, unified);
 
     await this.reactions.set(chatId, messageId, "received");
@@ -753,6 +755,7 @@ export class TelegramAdapter implements ChannelAdapter {
       chatId,
       chatType,
       text: this.normalizedMessageText(msg, textOverride),
+      timestamp: typeof msg.date === "number" ? new Date(msg.date * 1000).toISOString() : undefined,
       attachments,
       isForwarded: !!msg.forward_origin,
       replyToId: replyContext?.messageId,
