@@ -128,32 +128,58 @@ individually. Patterns collapse a family to one line:
 Enabling the cap by default moves `mimo-v2.5-pro`, the `gpt-5.6-*` family and `claude-*` from
 roughly 1M to 512k on the first start after upgrade. This is intended, not incidental.
 
-## 3. Session override
+## 3. Per-conversation and per-agent overrides
 
-The cap is a standing policy; a single conversation sometimes needs the full window. `/model`
-gains a chained submenu, mirroring the existing model -> effort flow, shown **only** when the
-resolved window exceeds the cap — there is nothing to choose otherwise.
+The cap is a standing policy. Two things override it, and both are set independently of each
+other and of every other agent.
 
-```
-Full: 1,048,576  |  Capped: 512,000  |  < Back
-```
+### The `/model` flow
 
-A **root entry**, not a step chained after picking a model. The cap is a standing policy that
-rarely changes, and a third screen on every model switch would cost more than it saves.
-
-Stored as `contextModeOverride` on the session, alongside `effortOverride`. Only `full` is
-stored: choosing `capped` clears the override rather than pinning the word, so a session does
-not freeze today's cap and then ignore a later change to it.
-
-Precedence, highest first:
+Context is the **third step of the chain**, after the effort one:
 
 ```
-session override  >  capExempt  >  cap
+model  ->  effort  ->  context
 ```
 
-Consequently the entry is hidden for an exempt model: `capped` clears the override rather than
-outranking the exemption, so both buttons would resolve to the same window. `contextChoiceFor`
-is shared by both channels, so one adapter cannot offer a window the other refuses.
+```
+Full: 1,048,576 | 512,000 (cap) | 256,000 | 128,000 | 64,000 | Keep current
+```
+
+Also reachable from the root menu as `Context >`, to change it without re-selecting a model.
+The step is skipped entirely when the model has a single possible window: a lone option is not
+a choice, and a model below every offered ceiling has nothing to arbitrate.
+
+Lower tiers exist because lifting the policy is not the only useful direction. A shorter prompt
+is cheaper and faster, and one conversation may be worth spending less on.
+
+### Per conversation
+
+Stored as `contextOverride` on the session: `"full"` or a number. `"full"` is stored as the word
+rather than the current number so it survives a model change.
+
+**Sub-agents are sessions**, so each one already carries its own independently of the chat that
+spawned it: the runner loads `subagent/...` and the bridge reads that session's field. Nothing
+is shared with the parent.
+
+### Per agent
+
+`/model <agent>` offers the same context step, and writes `agents.<name>.context.cap` in the
+config. A research agent reading long documents and a cron job posting a one-line summary do
+not want the same window.
+
+An agent's key **wins outright** over the global cap rather than being combined with it.
+Granting one agent more than the standing policy has to be expressible without editing the
+policy, and a `min()` would silently refuse exactly that. `0` lifts the ceiling for that agent
+alone.
+
+### Precedence
+
+```
+session override  >  agent cap  >  capExempt  >  global cap
+```
+
+A numeric session override wins in both directions, including over an exemption: the
+conversation has said the most recent and most specific thing.
 
 ## 4. Trigger
 

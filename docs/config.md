@@ -762,6 +762,15 @@ hot-reloadable.
   match uses the model's full window. Patterns rather than exact ids so one line can cover a
   self-hosted family with a dozen quantisation variants.
 
+An agent can hold its own ceiling, which wins outright over the global one:
+
+```json
+"agents": { "research": { "context": { "cap": 1000000 } } }
+```
+
+`0` lifts the ceiling for that agent alone. Settable from chat with `/model research`, whose
+flow ends on a context step. Each agent and sub-agent is independent.
+
 A `limit.context` declared on a model in `llm.models` **is still capped**: the cap is
 unconditionally the last step, and `capExempt` is the only way past it. One rule rather than a
 precedence table. A single conversation can opt out for itself, which wins over both.
