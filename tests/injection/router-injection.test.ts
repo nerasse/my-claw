@@ -78,7 +78,13 @@ test("aborting a run rejects a pending injected message", async () => {
   runRegistry.clear();
   const router = new MessageRouter(new SessionManager(), {
     async handleMessage(_m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
-      await new Promise<void>((_res, rej) => signal?.addEventListener("abort", () => rej(new AbortedError())));
+      await new Promise<void>((_res, rej) => {
+        if (signal?.aborted) {
+          rej(new AbortedError());
+          return;
+        }
+        signal?.addEventListener("abort", () => rej(new AbortedError()), { once: true });
+      });
       return "x";
     },
     async handleMessageStreaming() { throw new Error("unused"); },
