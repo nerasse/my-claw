@@ -38,7 +38,7 @@ export interface SdkRunContext {
   // nested AGENTS.md is re-read from disk on the next message.
   nestedAgents?: NestedAgentsCollector;
   // Fired after each tool completes so the backend can stream tool-status to the channel.
-  onToolDone?: (info: { name: string; arguments: Record<string, unknown>; durationMs: number }) => Promise<void>;
+  onToolDone?: (info: { name: string; arguments: Record<string, unknown>; durationMs: number; output: string; ok: boolean }) => Promise<void>;
 }
 
 interface WrappedResult {
@@ -109,6 +109,9 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
     content = normalizeUntrusted(content, `tool-result:${t.name}`);
   }
 
+  // Snapshot before the nested AGENTS.md injection: tool cards show the result, not prompt plumbing.
+  const output = content;
+
   if (ctx.nestedAgents) {
     content += ctx.nestedAgents.collect(t.name, args);
   }
@@ -117,7 +120,7 @@ async function runTool(t: Tool, args: Record<string, unknown>, ctx: SdkRunContex
     ? { toolName: t.name, toolCallId: `sdk-${startedAt}`, sessionId: ctx.session.id, success: true, outputChars: content.length, durationMs }
     : { toolName: t.name, toolCallId: `sdk-${startedAt}`, sessionId: ctx.session.id, error: new Error(content), durationMs });
 
-  if (ctx.onToolDone) await ctx.onToolDone({ name: t.name, arguments: args, durationMs });
+  if (ctx.onToolDone) await ctx.onToolDone({ name: t.name, arguments: args, durationMs, output, ok: success });
 
   return { content: [{ type: "text", text: content }], isError: success ? undefined : true };
 }

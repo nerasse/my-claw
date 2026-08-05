@@ -88,6 +88,7 @@ threads), so each conversation has its own context and runs in parallel.
 { "type": "chat.stream.delta", "id": "uuid", "threadId": "projet", "text": "..." }
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
+{ "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso" }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
@@ -97,6 +98,26 @@ threads), so each conversation has its own context and runs in parallel.
 `chat.history` is also the ack for `session.archive`/`session.delete` (empty
 messages list). `session.list.result` only lists active (non-archived) threads,
 most recently active first, capped at 50.
+
+### Tool calls
+
+Unlike the text channels, which glue a formatted note inside the reply, the mobile
+channel emits one `chat.tool` frame per executed tool so the client can render a
+collapsed card and expand it on tap. `turnId` is the stream id the run started
+with, which groups the cards of a turn.
+
+A tool card seals the text bubble it interrupts: the streamer sends
+`chat.stream.done` for the current id, then the cards, then a fresh
+`chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
+therefore stay in chronological order without the client reordering anything.
+
+`output` is the result handed to the model, capped at 4000 characters
+(`truncated: true` past that). Nested `AGENTS.md` injections are excluded.
+`/verbose off` suppresses the frames entirely.
+
+History replays the same cards from the session file: entries with
+`role: "tool"` carry `name`, `args`, `durationMs`, `ok`, `output`, `truncated`.
+`durationMs` is absent for turns recorded before timings were persisted.
 
 ### Attachments
 

@@ -4,7 +4,7 @@ import { buildRelation, buildReplaceRelation } from "./helpers.ts";
 import { withMatrixRetry } from "./retry.ts";
 import { toSdkContent } from "./send.ts";
 import { stripMediaRefs } from "../../utils/media.ts";
-import { formatToolStatusVerbose, formatToolStatusCompact } from "../../agent/tool-status.ts";
+import { formatToolStatusVerbose, formatToolStatusCompact, type ToolCallResult } from "../../agent/tool-status.ts";
 import { matrixLog } from "../../utils/logger.ts";
 
 const MSC4357_LIVE_KEY = "org.matrix.msc4357.live";
@@ -86,7 +86,7 @@ export class MatrixMessageStreamer {
     });
   }
 
-  async appendToolUse(toolCalls: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean): Promise<void> {
+  async appendToolUse(toolCalls: ToolCallResult[], verbose: boolean): Promise<void> {
     const note = verbose ? formatToolStatusVerbose(toolCalls) : formatToolStatusCompact(toolCalls);
     if (!note) return;
     return this.enqueue(() => this.pushInternal(note));

@@ -6,7 +6,11 @@ export interface ToolCallInfo {
 export interface ToolCallResult {
   name: string;
   arguments: Record<string, unknown>;
-  durationMs: number;
+  /** Absent when the call is replayed from a session file written before timings were persisted. */
+  durationMs?: number;
+  /** Result handed to the model. Channels that render tool cards (mobile) show it; text channels ignore it. */
+  output?: string;
+  ok?: boolean;
 }
 
 export function formatToolStatusVerbose(tools: ToolCallResult[]): string {
@@ -14,7 +18,8 @@ export function formatToolStatusVerbose(tools: ToolCallResult[]): string {
   const lines = tools.map((tc) => {
     const argsStr = JSON.stringify(tc.arguments);
     const display = argsStr.length > 300 ? argsStr.slice(0, 240) + "..." : argsStr;
-    return `${tc.name}(${display}) [${tc.durationMs}ms]`;
+    const timing = typeof tc.durationMs === "number" ? ` [${tc.durationMs}ms]` : "";
+    return `${tc.name}(${display})${timing}`;
   });
   return "\n\n```\n" + lines.join("\n") + "\n```\n";
 }

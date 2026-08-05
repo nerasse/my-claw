@@ -1,12 +1,10 @@
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
+import type { ToolCallResult } from "./tool-status.ts";
 
 export type TokenCallback = (token: string) => Promise<void>;
 
-export type ToolUseCallback = (
-  tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>,
-  verbose: boolean,
-) => Promise<void>;
+export type ToolUseCallback = (tools: ToolCallResult[], verbose: boolean) => Promise<void>;
 
 export type TurnSwitchCallback = (message: UnifiedMessage) => Promise<void>;
 

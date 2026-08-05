@@ -72,12 +72,27 @@ export type MobileClientFrame =
   | MobileCapabilitiesFrame
   | MobilePing;
 
-export interface MobileHistoryEntry {
+export interface MobileToolCallEntry {
   id: string;
-  role: "user" | "assistant";
-  text: string;
+  name: string;
+  args: Record<string, unknown>;
+  durationMs?: number;
+  ok: boolean;
+  output: string;
+  truncated: boolean;
+}
+
+/** Tool card, sent between two text bubbles of the same turn. Suppressed when verbose is off. */
+export interface MobileToolCall extends MobileToolCallEntry {
+  type: "chat.tool";
+  threadId: string;
+  turnId: string;
   ts: string;
 }
+
+export type MobileHistoryEntry =
+  | { id: string; role: "user" | "assistant"; text: string; ts: string }
+  | ({ role: "tool"; ts: string } & MobileToolCallEntry);
 
 export interface MobileSessionSummary {
   threadId: string;
@@ -157,6 +172,7 @@ export type MobileServerFrame =
   | MobileStreamDelta
   | MobileStreamDone
   | MobileStreamAbort
+  | MobileToolCall
   | MobileApprovalRequest
   | MobileSessionListResult
   | MobileChatHistory

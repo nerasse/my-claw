@@ -288,6 +288,62 @@ describe("MobileAdapter", () => {
     assert.equal(abort.error, "boom");
   });
 
+  test("a tool call seals the text bubble, emits a card, and later text opens a new bubble", async () => {
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m3", DEVICE_ID));
+
+    await streamer.push("je regarde");
+    const start = await nextFrame(client);
+    assert.equal(start.type, "chat.stream.start");
+    await nextFrame(client);
+
+    await streamer.appendToolUse([{ name: "bash", arguments: { command: "echo hi" }, durationMs: 4, output: "hi\n", ok: true }], true);
+    const sealed = await nextFrame(client);
+    assert.equal(sealed.type, "chat.stream.done");
+    assert.equal(sealed.id, start.id);
+
+    const card = await nextFrame(client);
+    assert.equal(card.type, "chat.tool");
+    assert.equal(card.name, "bash");
+    assert.deepEqual(card.args, { command: "echo hi" });
+    assert.equal(card.durationMs, 4);
+    assert.equal(card.output, "hi\n");
+    assert.equal(card.ok, true);
+    assert.equal(card.truncated, false);
+    assert.equal(card.turnId, start.id);
+
+    await streamer.push("voila");
+    const start2 = await nextFrame(client);
+    assert.equal(start2.type, "chat.stream.start");
+    assert.notEqual(start2.id, start.id);
+    assert.equal(start2.replyToId, undefined);
+    const delta2 = await nextFrame(client);
+    assert.equal(delta2.text, "voila");
+
+    await streamer.finish();
+    const done = await nextFrame(client);
+    assert.equal(done.type, "chat.stream.done");
+    assert.equal(done.id, start2.id);
+  });
+
+  test("tool cards are suppressed when verbose is off and long output is truncated", async () => {
+    const quiet = adapter.createStreamer(streamerMessage(adapter, "m4", DEVICE_ID));
+    await quiet.appendToolUse([{ name: "bash", arguments: {}, durationMs: 1, output: "x", ok: true }], false);
+    await quiet.finish("fini");
+    const start = await nextFrame(client);
+    assert.equal(start.type, "chat.stream.start");
+    const delta = await nextFrame(client);
+    assert.equal(delta.text, "fini");
+    await nextFrame(client);
+
+    const loud = adapter.createStreamer(streamerMessage(adapter, "m5", DEVICE_ID));
+    await loud.appendToolUse([{ name: "read", arguments: {}, durationMs: 2, output: "y".repeat(5000), ok: false }], true);
+    const card = await nextFrame(client);
+    assert.equal(card.type, "chat.tool");
+    assert.equal(card.ok, false);
+    assert.equal(card.truncated, true);
+    assert.equal(card.output.length, 4000);
+  });
+
   test("confirmTool returns deny when approvals are disabled", async () => {
     const decision = await adapter.confirmTool(approvalRequest());
     assert.equal(decision, "deny");

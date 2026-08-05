@@ -7,7 +7,7 @@ import { hooks } from "../hooks/index.ts";
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string }
-  | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> }
+  | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string; durationMs?: number }> }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
 /**

@@ -25,6 +25,7 @@ import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import { pruneOldToolResults } from "./context-pruning.ts";
+import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -189,7 +190,7 @@ export class AgentBridge implements AgentBackend {
     message: UnifiedMessage,
     session: SessionData,
     onToken?: (token: string) => Promise<void>,
-    onToolUse?: (tools: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }>, verbose: boolean) => Promise<void>,
+    onToolUse?: (tools: ToolCallResult[], verbose: boolean) => Promise<void>,
     signal?: AbortSignal,
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<string> {
@@ -466,8 +467,11 @@ export class AgentBridge implements AgentBackend {
           tool_calls: assistantToolCalls,
         });
 
-        session.messages.push({
-          role: "assistant",
+        // Kept as a reference so the tool durations measured below can be written back into the
+        // persisted message: history renderers (mobile bubbles) show the same detail as the
+        // live stream only if the timings survive the session file.
+        const persistedAssistant = {
+          role: "assistant" as const,
           content: response.content,
           toolCalls: assistantToolCalls.map((tc) => ({
             id: tc.id,
@@ -475,7 +479,8 @@ export class AgentBridge implements AgentBackend {
             arguments: tc.function.arguments,
           })),
           timestamp: new Date().toISOString(),
-        });
+        };
+        session.messages.push(persistedAssistant);
 
         const executeOne = async (tc: typeof response.toolCalls[number]) => {
           const toolGate = await hooks.check("gate:tool:before", {
@@ -562,10 +567,13 @@ export class AgentBridge implements AgentBackend {
           ? await Promise.all(response.toolCalls.map(executeOne))
           : [await executeOne(response.toolCalls[0]!)];
 
-        const toolResults: Array<{ name: string; arguments: Record<string, unknown>; durationMs: number }> = [];
+        const toolResults: ToolCallResult[] = [];
         for (const { tc, result, durationMs } of settled) {
           toolExecutions += 1;
-          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs });
+          const persistedCall = persistedAssistant.toolCalls.find((call) => call.id === tc.id);
+          if (persistedCall) {
+            (persistedCall as { durationMs?: number }).durationMs = durationMs;
+          }
           let transformedResult = (await hooks.transform("transform:tool:result", {
             toolName: tc.name,
             result: result.content,
@@ -575,6 +583,9 @@ export class AgentBridge implements AgentBackend {
           if (producesRemoteContent(tc.name)) {
             transformedResult = normalizeUntrusted(transformedResult, `tool-result:${tc.name}`);
           }
+          // Captured before the nested AGENTS.md injection: that text is prompt plumbing, not
+          // something a tool card should show.
+          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs, output: transformedResult, ok: result.success });
           if (nestedAgents) {
             transformedResult += nestedAgents.collect(tc.name, tc.arguments);
           }
