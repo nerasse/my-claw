@@ -401,6 +401,77 @@ describe("MobileAdapter", () => {
     assert.ok(frame.commands.some((c) => c.name === "help"));
   });
 
+  test("uploads a file, routes it as an attachment, and lists it back", async () => {
+    const port = adapter.port;
+    const upload = await fetch(`http://127.0.0.1:${port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "note.pdf", "x-type": "file", "x-thread-id": "projet" },
+      body: new Uint8Array([1, 2, 3, 4, 5]),
+    });
+    assert.equal(upload.status, 200);
+    const meta = (await upload.json()) as { id: string; type: string };
+    assert.ok(meta.id.length > 0);
+
+    // A message carrying the attachment reaches the agent with a resolvable path.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "lis ce pdf", threadId: "projet", attachments: [{ id: meta.id, type: "file" }] }));
+    await waitUntil(() => received.length === 1);
+    const msg = received[0]!;
+    assert.equal(msg.attachments.length, 1);
+    assert.equal(msg.attachments[0]!.type, "file");
+    assert.ok(msg.attachments[0]!.path!.includes("files/mobile/test-device/projet"));
+
+    // The session explorer lists it with its size, and delete empties the list.
+    client.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
+    const list = (await nextFrame(client)) as { type: string; files: Array<{ id: string; sizeBytes: number }>; totalBytes: number };
+    assert.equal(list.type, "files.list.result");
+    assert.equal(list.files.length, 1);
+    assert.equal(list.files[0]!.id, meta.id);
+    assert.equal(list.totalBytes, 5);
+
+    client.ws.send(JSON.stringify({ type: "files.delete", threadId: "projet", id: meta.id }));
+    const after = (await nextFrame(client)) as { type: string; files: unknown[] };
+    assert.equal(after.type, "files.list.result");
+    assert.equal(after.files.length, 0);
+  });
+
+  test("archiving a session removes its uploaded files", async () => {
+    const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "pic.png", "x-type": "image", "x-thread-id": "projet" },
+      body: new Uint8Array([9, 9, 9]),
+    });
+    assert.equal(upload.status, 200);
+
+    client.ws.send(JSON.stringify({ type: "session.archive", threadId: "projet" }));
+    // The archive ack is sent after the file cleanup completes.
+    const ack = (await nextFrame(client)) as { type: string };
+    assert.equal(ack.type, "chat.history");
+    client.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
+    const list = (await nextFrame(client)) as { type: string; files: unknown[] };
+    assert.equal(list.type, "files.list.result");
+    assert.equal(list.files.length, 0);
+  });
+
+  test("uploads are capped by the configured size limit", async () => {
+    const small = new MobileAdapter(
+      createConfig({ files: { maxSizeBytes: 4 } }),
+      store as never,
+    );
+    small.onMessage(async () => {});
+    await small.start();
+    const port = small.port;
+    try {
+      const upload = await fetch(`http://127.0.0.1:${port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+        method: "POST",
+        headers: { "x-filename": "big.bin", "x-type": "file", "x-thread-id": "projet" },
+        body: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+      });
+      assert.equal(upload.status, 413);
+    } finally {
+      await small.stop();
+    }
+  });
+
   test("session.history returns stored messages for the thread", async () => {
     store.historyMap.set("a", [
       { id: "h1", role: "user", text: "bonjour", ts: "t1" },

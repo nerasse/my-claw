@@ -1,7 +1,9 @@
 import type { Server, ServerWebSocket } from "bun";
 import { extname } from "node:path";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalDecision,
+  Attachment,
   ChannelAdapter,
   OutgoingMessage,
   ToolApprovalRequest,
@@ -11,14 +13,18 @@ import type { MobileChannelConfig } from "../../core/config.ts";
 import { mobileLog } from "../../utils/logger.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { COMMANDS } from "../commands-catalog.ts";
+import { SessionFileStore, filePathFor } from "./files.ts";
 import type {
   MobileApprovalRequest,
   MobileApprovalResponse,
   MobileAttachmentMeta,
+  MobileAttachmentRef,
   MobileChatHistory,
   MobileChatMessage,
   MobileChatSend,
   MobileClientFrame,
+  MobileFileDelete,
+  MobileFilesList,
   MobileServerFrame,
   MobileSessionArchive,
   MobileSessionDelete,
@@ -72,7 +78,11 @@ export class MobileAdapter implements ChannelAdapter {
   constructor(
     private config: MobileChannelConfig,
     private store: MobileSessionStore,
-  ) {}
+  ) {
+    this.files = new SessionFileStore(this.config);
+  }
+
+  private files: SessionFileStore;
 
   /** Actual bound port; 0 until started. Exposed for tests. */
   get port(): number {
@@ -209,18 +219,30 @@ export class MobileAdapter implements ChannelAdapter {
     const device = this.config.devices?.[deviceId];
     if (!device) return false;
     if (device.enabled === false) return false;
-    return device.token === token;
+    // Constant-time compare: a token check with early exit would leak the prefix by timing.
+    const expected = createHash("sha256").update(device.token).digest();
+    const provided = createHash("sha256").update(token).digest();
+    return timingSafeEqual(expected, provided);
   }
 
-  private handleFetch(req: Request, server: Server<MobileSessionData>): Response | undefined {
+  private async handleFetch(req: Request, server: Server<MobileSessionData>): Promise<Response | undefined> {
     const url = new URL(req.url);
+
+    if (url.pathname === "/media" && req.method === "POST") {
+      const deviceId = url.searchParams.get("device") ?? "";
+      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      return this.handleUpload(deviceId, req);
+    }
 
     if (url.pathname.startsWith("/media/")) {
       const id = url.pathname.slice("/media/".length);
-      if (!this.deviceFor(url.searchParams.get("device") ?? "", url.searchParams.get("token") ?? "")) {
+      const deviceId = url.searchParams.get("device") ?? "";
+      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      return this.serveMedia(id);
+      return this.serveMedia(id, deviceId);
     }
 
     if (url.pathname === "/mobile") {
@@ -239,17 +261,52 @@ export class MobileAdapter implements ChannelAdapter {
     return new Response("Not Found", { status: 404 });
   }
 
-  private serveMedia(id: string): Response {
+  private async serveMedia(id: string, deviceId?: string): Promise<Response> {
     const entry = this.media.get(id);
-    if (!entry) return new Response("Not Found", { status: 404 });
-
-    const headers: Record<string, string> = {
-      "Content-Type": entry.mimeType ?? "application/octet-stream",
-    };
-    if (entry.filename) {
-      headers["Content-Disposition"] = `attachment; filename="${entry.filename.replace(/["\\]/g, "")}"`;
+    if (entry) {
+      const headers: Record<string, string> = {
+        "Content-Type": entry.mimeType ?? "application/octet-stream",
+      };
+      if (entry.filename) {
+        headers["Content-Disposition"] = `attachment; filename="${entry.filename.replace(/["\\]/g, "")}"`;
+      }
+      return new Response(Bun.file(entry.path), { headers });
     }
-    return new Response(Bun.file(entry.path), { headers });
+    // Attachments uploaded by the device itself: served back from the session files.
+    if (deviceId) {
+      const found = await this.files.readById(deviceId, id);
+      if (found) {
+        return new Response(Bun.file(found.path), {
+          headers: {
+            "Content-Type": found.file.mimeType,
+            "Content-Disposition": `attachment; filename="${found.file.filename.replace(/["\\]/g, "")}"`,
+          },
+        });
+      }
+    }
+    return new Response("Not Found", { status: 404 });
+  }
+
+  private async handleUpload(deviceId: string, req: Request): Promise<Response> {
+    const threadId = req.headers.get("x-thread-id")?.trim() || "default";
+    const safeThread = sanitizeThreadId(threadId);
+    const filename = (req.headers.get("x-filename") ?? "attachment").trim();
+    const type = (req.headers.get("x-type") ?? "file").trim() as MobileAttachmentRef["type"];
+    if (!safeThread) return new Response("Bad threadId", { status: 400 });
+    // Reject oversized payloads from the declared length BEFORE buffering the body: the
+    // client decides the bytes we hold in memory, so the cap must apply to the declaration.
+    const declared = Number(req.headers.get("content-length") ?? 0);
+    if (declared > this.files.maxSizeBytes) {
+      return new Response("File too large", { status: 413 });
+    }
+    try {
+      const bytes = new Uint8Array(await req.arrayBuffer());
+      const file = await this.files.save(deviceId, safeThread, filename, bytes);
+      await mobileLog("info", "mobile file uploaded", { deviceId, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
+      return Response.json({ id: file.id, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
+    } catch (err) {
+      return new Response(err instanceof Error ? err.message : "Upload failed", { status: 413 });
+    }
   }
 
   private registerMedia(path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">): MobileAttachmentMeta | undefined {
@@ -314,7 +371,7 @@ export class MobileAdapter implements ChannelAdapter {
 
     switch (frame.type) {
       case "chat.send":
-        this.emitChatSend(ws.data.deviceId, frame);
+        void this.emitChatSend(ws.data.deviceId, frame);
         break;
       case "approval.response":
         this.resolveApproval(frame);
@@ -334,24 +391,43 @@ export class MobileAdapter implements ChannelAdapter {
           commands: COMMANDS.map(({ command, description }) => ({ name: command, description })),
         }));
         break;
+      case "files.list":
+        void this.handleFilesList(ws, frame);
+        break;
+      case "files.delete":
+        void this.handleFileDelete(ws, frame);
+        break;
       case "session.history":
         this.handleSessionHistory(ws, frame);
         break;
       case "session.archive":
-        this.handleSessionArchive(ws, frame);
+        void this.handleSessionArchive(ws, frame);
         break;
       case "session.delete":
-        this.handleSessionDelete(ws, frame);
+        void this.handleSessionDelete(ws, frame);
         break;
     }
   }
 
-  private emitChatSend(deviceId: string, frame: MobileChatSend): void {
+  private async emitChatSend(deviceId: string, frame: MobileChatSend): Promise<void> {
     const text = frame.text.trim();
-    if (!text) return;
+    if (!text && !frame.attachments?.length) return;
     if (!this.messageHandler) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_MOBILE_THREAD;
+
+    const attachments: Attachment[] = [];
+    for (const ref of frame.attachments ?? []) {
+      const stored = await this.files.findById(deviceId, threadId, ref.id);
+      if (!stored) continue;
+      attachments.push({
+        type: ref.type,
+        path: filePathFor(deviceId, threadId, stored.id, stored.filename.split(".").at(-1) ?? "bin"),
+        mimeType: stored.mimeType,
+        filename: stored.filename,
+        sizeBytes: stored.sizeBytes,
+      });
+    }
 
     void this.messageHandler({
       id: frame.id,
@@ -361,7 +437,7 @@ export class MobileAdapter implements ChannelAdapter {
       chatType: "dm",
       text,
       timestamp: frame.ts,
-      attachments: [],
+      attachments,
       isForwarded: false,
       threadId,
       sessionScope: "per-user",
@@ -405,6 +481,7 @@ export class MobileAdapter implements ChannelAdapter {
     }
     try {
       await this.store.archive(ws.data.deviceId, threadId);
+      await this.files.removeSessionFiles(ws.data.deviceId, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
       await mobileLog("error", "mobile session.archive failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
@@ -420,10 +497,48 @@ export class MobileAdapter implements ChannelAdapter {
     }
     try {
       await this.store.remove(ws.data.deviceId, threadId);
+      await this.files.removeSessionFiles(ws.data.deviceId, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
       await mobileLog("error", "mobile session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "delete failed" });
+    }
+  }
+
+  private async handleFilesList(ws: ServerWebSocket<MobileSessionData>, frame: MobileFilesList): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      return;
+    }
+    try {
+      const [files, totalBytes] = await Promise.all([
+        this.files.list(ws.data.deviceId, threadId),
+        this.files.sessionSizeBytes(ws.data.deviceId, threadId),
+      ]);
+      this.sendFrame(ws, { type: "files.list.result", threadId, files, totalBytes });
+    } catch (err) {
+      await mobileLog("error", "mobile files.list failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "files.list failed" });
+    }
+  }
+
+  private async handleFileDelete(ws: ServerWebSocket<MobileSessionData>, frame: MobileFileDelete): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      return;
+    }
+    try {
+      const removed = await this.files.remove(ws.data.deviceId, threadId, frame.id);
+      if (removed) {
+        await this.handleFilesList(ws, { type: "files.list", threadId });
+      } else {
+        this.sendFrame(ws, { type: "error", message: "file not found" });
+      }
+    } catch (err) {
+      await mobileLog("error", "mobile files.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "files.delete failed" });
     }
   }
 

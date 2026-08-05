@@ -15,12 +15,18 @@ export interface MobileAttachmentMeta {
 /** Default conversation for devices that do not send a threadId. */
 export const DEFAULT_MOBILE_THREAD = "default";
 
+export interface MobileAttachmentRef {
+  id: string;
+  type: "image" | "audio" | "video" | "file";
+}
+
 export interface MobileChatSend {
   type: "chat.send";
   id: string;
   text: string;
   threadId?: string;
   ts?: string;
+  attachments?: MobileAttachmentRef[];
 }
 
 export interface MobileSessionList {
@@ -29,6 +35,17 @@ export interface MobileSessionList {
 
 export interface MobileCommandsList {
   type: "commands.list";
+}
+
+export interface MobileFilesList {
+  type: "files.list";
+  threadId: string;
+}
+
+export interface MobileFileDelete {
+  type: "files.delete";
+  threadId: string;
+  id: string;
 }
 
 export interface MobileSessionHistory {
@@ -70,6 +87,8 @@ export type MobileClientFrame =
   | MobileChatSend
   | MobileSessionList
   | MobileCommandsList
+  | MobileFilesList
+  | MobileFileDelete
   | MobileSessionHistory
   | MobileSessionArchive
   | MobileSessionDelete
@@ -165,6 +184,22 @@ export interface MobileCommandsResult {
   commands: Array<{ name: string; description: string }>;
 }
 
+export interface MobileSessionFile {
+  id: string;
+  filename: string;
+  type: "image" | "audio" | "video" | "file";
+  mimeType: string;
+  sizeBytes: number;
+  ts: string;
+}
+
+export interface MobileFilesListResult {
+  type: "files.list.result";
+  threadId: string;
+  files: MobileSessionFile[];
+  totalBytes: number;
+}
+
 export interface MobileChatHistory {
   type: "chat.history";
   threadId: string;
@@ -186,5 +221,6 @@ export type MobileServerFrame =
   | MobileApprovalRequest
   | MobileSessionListResult
   | MobileCommandsResult
+  | MobileFilesListResult
   | MobileChatHistory
   | MobileError;

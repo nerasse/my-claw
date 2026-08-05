@@ -66,9 +66,11 @@ threads), so each conversation has its own context and runs in parallel.
 ### Device -> Server
 
 ```json
-{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso" }
+{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }] }
 { "type": "session.list" }
 { "type": "commands.list" }
+{ "type": "files.list", "threadId": "projet" }
+{ "type": "files.delete", "threadId": "projet", "id": "uuid" }
 { "type": "session.history", "threadId": "projet", "limit": 50 }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
@@ -80,6 +82,7 @@ threads), so each conversation has its own context and runs in parallel.
 - `session.archive` archives the thread's history (sessions-archive) and starts a
   fresh empty conversation on the same threadId.
 - `session.delete` hard-deletes the session file and every archive snapshot.
+- `files.list` / `files.delete` manage the conversation's attachments.
 
 ### Server -> Device
 
@@ -93,6 +96,7 @@ threads), so each conversation has its own context and runs in parallel.
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso" }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
+{ "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "error", "message": "..." }
 ```
@@ -100,6 +104,24 @@ threads), so each conversation has its own context and runs in parallel.
 `commands.list.result` carries the shared command catalog (same source as the
 telegram bot menu), so the app's slash-menu can never drift from the server:
 the device asks for it again whenever the menu opens.
+
+### Attachments
+
+The device uploads files over HTTP first, then references them in `chat.send`:
+
+```
+POST /media?device=<id>&token=<token>
+  headers: x-filename, x-type (image|audio|video|file), x-thread-id
+  body: raw bytes
+-> { "id": "uuid", "type": "image", "filename": "...", "mimeType": "...", "sizeBytes": 123 }
+```
+
+Files are stored per conversation in `$MY_CLAW_DIR/files/mobile/<device>/<threadId>/`
+and removed with the session (archive/delete). `GET /media/<id>` serves them back
+for display/download. Uploads are capped (`channels.mobile.files.maxSizeBytes`,
+default 10 MB, plus a global `maxTotalBytes` of 2 GB). The agent receives the
+attachment as a path it can read with its tools, and images are routed to a
+vision-capable model when the active model cannot take them.
 
 `chat.history` is also the ack for `session.archive`/`session.delete` (empty
 messages list). `session.list.result` only lists active (non-archived) threads,

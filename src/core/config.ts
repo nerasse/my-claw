@@ -134,6 +134,14 @@ export interface MobileChannelConfig {
    * Off by default: approval-required tools are denied until the app surfaces the request.
    */
   approvals?: boolean;
+  files?: {
+    /** Largest upload accepted, in bytes. Defaults to 10 MB. */
+    maxSizeBytes?: number;
+    /** Total bytes the channel may keep across all devices. Defaults to 2 GB. */
+    maxTotalBytes?: number;
+    /** Extensions accepted on upload, lowercased without the dot. */
+    allowedExtensions?: string[];
+  };
 }
 
 export interface VoiceFeatureConfig {
