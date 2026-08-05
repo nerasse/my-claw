@@ -41,7 +41,7 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
     });
   }
 
-  async list(deviceId: string, limit = 50): Promise<MobileSessionSummary[]> {
+  async list(deviceId: string, limit = 200): Promise<MobileSessionSummary[]> {
     const ids = await this.sessionManager.listSessions(`mobile/thread/${deviceId}/`, limit);
     const summaries: MobileSessionSummary[] = [];
     for (const sessionId of ids) {
