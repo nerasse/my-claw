@@ -30,7 +30,9 @@ import type { MobileSessionStore } from "./sessions.ts";
 import { sanitizeThreadId } from "./sessions.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
-const STALE_SOCKET_MS = 90_000;
+// Healthy connections are idle on data frames for long stretches (protocol-level pings keep
+// TCP alive); only reclaim sockets that look dead for 10 minutes.
+const STALE_SOCKET_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30_000;
 const MAX_MEDIA_ENTRIES = 1000;
 

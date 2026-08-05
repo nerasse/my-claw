@@ -66,7 +66,7 @@ export class MobileStreamer {
     this.finished = true;
     this.fullText = finalText;
 
-    if (!this.started && this.fullText.trim().length >= (this.opts.minCharsBeforeDelta ?? 1)) {
+    if (!this.started && this.fullText.trim().length > 0) {
       this.started = true;
       await this.opts.send({
         type: "chat.stream.start",
