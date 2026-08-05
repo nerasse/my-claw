@@ -57,13 +57,20 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
     for (const message of session.messages.slice(-limit)) {
       if (message.role === "user") {
         entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "user", text: message.content, ts: message.timestamp });
-      } else if (message.role === "assistant") {
-        // Reproduce the live tool-use notes so a reopened conversation matches what was streamed.
-        const toolNote = message.toolCalls?.length
-          ? `\n\n> ${message.toolCalls.map((call) => call.name).join(", ")}`
-          : "";
-        const text = `${message.content}${toolNote}`.trim();
-        if (!text) continue;
+        continue;
+      }
+      if (message.role !== "assistant") continue;
+      // Reproduce the live tool-use notes and merge every consecutive assistant message of a
+      // turn into a single bubble (notes + final text), like the streamer does while streaming.
+      const toolNote = message.toolCalls?.length
+        ? `> ${message.toolCalls.map((call) => call.name).join(", ")}`
+        : "";
+      const text = `${message.content}${toolNote ? `\n\n${toolNote}` : ""}`.trim();
+      if (!text) continue;
+      const last = entries[entries.length - 1];
+      if (last && last.role === "assistant") {
+        entries[entries.length - 1] = { ...last, text: `${last.text}\n\n${text}`, id: `h-${message.timestamp}-${entries.length - 1}` };
+      } else {
         entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "assistant", text, ts: message.timestamp });
       }
     }
