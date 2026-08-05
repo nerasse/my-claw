@@ -341,7 +341,7 @@ describe("MobileAdapter", () => {
     assert.equal(card.type, "chat.tool");
     assert.equal(card.ok, false);
     assert.equal(card.truncated, true);
-    assert.equal(card.output.length, 4000);
+    assert.equal(String(card.output).length, 4000);
   });
 
   test("confirmTool returns deny when approvals are disabled", async () => {
