@@ -58,7 +58,13 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
       if (message.role === "user") {
         entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "user", text: message.content, ts: message.timestamp });
       } else if (message.role === "assistant") {
-        entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "assistant", text: message.content, ts: message.timestamp });
+        // Reproduce the live tool-use notes so a reopened conversation matches what was streamed.
+        const toolNote = message.toolCalls?.length
+          ? `\n\n> ${message.toolCalls.map((call) => call.name).join(", ")}`
+          : "";
+        const text = `${message.content}${toolNote}`.trim();
+        if (!text) continue;
+        entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "assistant", text, ts: message.timestamp });
       }
     }
     return entries;
