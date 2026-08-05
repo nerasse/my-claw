@@ -10,6 +10,7 @@ import type {
 import type { MobileChannelConfig } from "../../core/config.ts";
 import { mobileLog } from "../../utils/logger.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { COMMANDS } from "../commands-catalog.ts";
 import type {
   MobileApprovalRequest,
   MobileApprovalResponse,
@@ -326,6 +327,12 @@ export class MobileAdapter implements ChannelAdapter {
         break;
       case "session.list":
         this.handleSessionList(ws, frame);
+        break;
+      case "commands.list":
+        void ws.send(JSON.stringify({
+          type: "commands.list.result",
+          commands: COMMANDS.map(({ command, description }) => ({ name: command, description })),
+        }));
         break;
       case "session.history":
         this.handleSessionHistory(ws, frame);

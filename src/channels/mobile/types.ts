@@ -27,6 +27,10 @@ export interface MobileSessionList {
   type: "session.list";
 }
 
+export interface MobileCommandsList {
+  type: "commands.list";
+}
+
 export interface MobileSessionHistory {
   type: "session.history";
   threadId: string;
@@ -65,6 +69,7 @@ export interface MobilePing {
 export type MobileClientFrame =
   | MobileChatSend
   | MobileSessionList
+  | MobileCommandsList
   | MobileSessionHistory
   | MobileSessionArchive
   | MobileSessionDelete
@@ -155,6 +160,11 @@ export interface MobileSessionListResult {
   sessions: MobileSessionSummary[];
 }
 
+export interface MobileCommandsResult {
+  type: "commands.list.result";
+  commands: Array<{ name: string; description: string }>;
+}
+
 export interface MobileChatHistory {
   type: "chat.history";
   threadId: string;
@@ -175,5 +185,6 @@ export type MobileServerFrame =
   | MobileToolCall
   | MobileApprovalRequest
   | MobileSessionListResult
+  | MobileCommandsResult
   | MobileChatHistory
   | MobileError;

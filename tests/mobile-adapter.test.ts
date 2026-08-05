@@ -392,6 +392,15 @@ describe("MobileAdapter", () => {
     assert.equal(frame.sessions[0]!.threadId, "a");
   });
 
+  test("commands.list returns the shared catalog", async () => {
+    client.ws.send(JSON.stringify({ type: "commands.list" }));
+    const frame = (await nextFrame(client)) as { type: string; commands: Array<{ name: string; description: string }> };
+    assert.equal(frame.type, "commands.list.result");
+    assert.ok(frame.commands.length >= 15);
+    assert.ok(frame.commands.some((c) => c.name === "status" && c.description.length > 0));
+    assert.ok(frame.commands.some((c) => c.name === "help"));
+  });
+
   test("session.history returns stored messages for the thread", async () => {
     store.historyMap.set("a", [
       { id: "h1", role: "user", text: "bonjour", ts: "t1" },

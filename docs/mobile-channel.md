@@ -68,6 +68,7 @@ threads), so each conversation has its own context and runs in parallel.
 ```json
 { "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso" }
 { "type": "session.list" }
+{ "type": "commands.list" }
 { "type": "session.history", "threadId": "projet", "limit": 50 }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
@@ -91,9 +92,14 @@ threads), so each conversation has its own context and runs in parallel.
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso" }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
+{ "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "error", "message": "..." }
 ```
+
+`commands.list.result` carries the shared command catalog (same source as the
+telegram bot menu), so the app's slash-menu can never drift from the server:
+the device asks for it again whenever the menu opens.
 
 `chat.history` is also the ack for `session.archive`/`session.delete` (empty
 messages list). `session.list.result` only lists active (non-archived) threads,
