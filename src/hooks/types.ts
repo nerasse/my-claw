@@ -169,6 +169,7 @@ export interface HookEventMap {
   "session:reset": { sessionId: string; platform: string; archived: boolean };
   "session:cleared": { sessionId: string; previousMessageCount: number };
   "session:archived": { sessionId: string; archivePath: string };
+  "session:deleted": { sessionId: string };
   "session:evicted": { sessionId: string };
   "session:compact:start": { sessionId: string; messageCount: number };
   "session:compact:end": {

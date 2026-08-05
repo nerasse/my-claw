@@ -23,6 +23,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MobileAdapter } from "./channels/mobile/adapter.ts";
+import { MobileSessionStoreImpl } from "./channels/mobile/sessions.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -590,7 +591,7 @@ async function main() {
 
   const startMobileChannel = async (): Promise<void> => {
     if (!isMobileChannelEnabled(config)) return;
-    const mobile = new MobileAdapter(config.channels.mobile!);
+    const mobile = new MobileAdapter(config.channels.mobile!, new MobileSessionStoreImpl(sessionManager));
     mobileRef = mobile;
 
     mobile.onMessage(async (msg) => {
@@ -599,7 +600,7 @@ async function main() {
         await agent.preprocessMessage(msg);
         const echoes = agent.getEchoMessages(msg.id);
         for (const echo of echoes) {
-          await mobile.send(msg.chatId, { ...echo, replyToId: msg.id });
+          await mobile.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
         }
 
         if (mobile.streamingEnabled()) {
@@ -639,14 +640,15 @@ async function main() {
                 text: deliveryText,
                 attachments: textHasMediaRefs ? undefined : response.attachments,
                 replyToId: msg.id,
+                threadId: msg.threadId,
               });
               hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
             } else if (!textHasMediaRefs && response.attachments?.length) {
-              await mobile.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
+              await mobile.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id, threadId: msg.threadId });
               hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: response.attachments.length });
             } else if (textHasMediaRefs) {
               const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
-              await mobile.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
+              await mobile.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id, threadId: msg.threadId });
               hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
             }
           }

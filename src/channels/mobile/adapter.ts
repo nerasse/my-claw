@@ -14,12 +14,20 @@ import type {
   MobileApprovalRequest,
   MobileApprovalResponse,
   MobileAttachmentMeta,
+  MobileChatHistory,
   MobileChatMessage,
   MobileChatSend,
   MobileClientFrame,
   MobileServerFrame,
+  MobileSessionArchive,
+  MobileSessionDelete,
+  MobileSessionHistory,
+  MobileSessionList,
 } from "./types.ts";
+import { DEFAULT_MOBILE_THREAD } from "./types.ts";
 import { MobileStreamer } from "./stream.ts";
+import type { MobileSessionStore } from "./sessions.ts";
+import { sanitizeThreadId } from "./sessions.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 const STALE_SOCKET_MS = 90_000;
@@ -58,7 +66,10 @@ export class MobileAdapter implements ChannelAdapter {
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
   private sweeper?: ReturnType<typeof setInterval>;
 
-  constructor(private config: MobileChannelConfig) {}
+  constructor(
+    private config: MobileChannelConfig,
+    private store: MobileSessionStore,
+  ) {}
 
   /** Actual bound port; 0 until started. Exposed for tests. */
   get port(): number {
@@ -143,6 +154,7 @@ export class MobileAdapter implements ChannelAdapter {
       type: "chat.message",
       id: crypto.randomUUID(),
       text,
+      threadId: message.threadId ?? DEFAULT_MOBILE_THREAD,
       attachments,
       replyToId: message.replyToId,
     };
@@ -158,6 +170,7 @@ export class MobileAdapter implements ChannelAdapter {
     const frame: MobileApprovalRequest = {
       type: "approval.request",
       id,
+      threadId: request.threadId ?? DEFAULT_MOBILE_THREAD,
       toolName: request.toolName,
       args: request.args,
       replyToId: request.messageId,
@@ -179,6 +192,7 @@ export class MobileAdapter implements ChannelAdapter {
     return new MobileStreamer({
       id: crypto.randomUUID(),
       replyToId: message.id,
+      threadId: message.threadId ?? DEFAULT_MOBILE_THREAD,
       minCharsBeforeDelta: this.config.streaming?.minChars,
       send: (frame) => this.sendFrame(ws, frame),
     });
@@ -308,6 +322,18 @@ export class MobileAdapter implements ChannelAdapter {
       case "device.capabilities":
         // Accepted and ignored: capabilities gate the M3 device tools.
         break;
+      case "session.list":
+        this.handleSessionList(ws, frame);
+        break;
+      case "session.history":
+        this.handleSessionHistory(ws, frame);
+        break;
+      case "session.archive":
+        this.handleSessionArchive(ws, frame);
+        break;
+      case "session.delete":
+        this.handleSessionDelete(ws, frame);
+        break;
     }
   }
 
@@ -315,6 +341,8 @@ export class MobileAdapter implements ChannelAdapter {
     const text = frame.text.trim();
     if (!text) return;
     if (!this.messageHandler) return;
+
+    const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_MOBILE_THREAD;
 
     void this.messageHandler({
       id: frame.id,
@@ -326,11 +354,68 @@ export class MobileAdapter implements ChannelAdapter {
       timestamp: frame.ts,
       attachments: [],
       isForwarded: false,
+      threadId,
       sessionScope: "per-user",
       raw: frame,
     }).catch((err) => {
       void mobileLog("error", "mobile message handling failed", { deviceId, error: String(err) });
     });
+  }
+
+  private async handleSessionList(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionList): Promise<void> {
+    try {
+      const sessions = await this.store.list(ws.data.deviceId);
+      this.sendFrame(ws, { type: "session.list.result", sessions });
+    } catch (err) {
+      await mobileLog("error", "mobile session.list failed", { deviceId: ws.data.deviceId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "session list failed" });
+    }
+  }
+
+  private async handleSessionHistory(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionHistory): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      return;
+    }
+    try {
+      const messages = await this.store.history(ws.data.deviceId, threadId, frame.limit);
+      const result: MobileChatHistory = { type: "chat.history", threadId, messages };
+      this.sendFrame(ws, result);
+    } catch (err) {
+      await mobileLog("error", "mobile session.history failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "history failed" });
+    }
+  }
+
+  private async handleSessionArchive(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionArchive): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      return;
+    }
+    try {
+      await this.store.archive(ws.data.deviceId, threadId);
+      this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
+    } catch (err) {
+      await mobileLog("error", "mobile session.archive failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "archive failed" });
+    }
+  }
+
+  private async handleSessionDelete(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionDelete): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      return;
+    }
+    try {
+      await this.store.remove(ws.data.deviceId, threadId);
+      this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
+    } catch (err) {
+      await mobileLog("error", "mobile session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "delete failed" });
+    }
   }
 
   private resolveApproval(frame: MobileApprovalResponse): void {

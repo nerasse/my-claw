@@ -129,13 +129,44 @@ function approvalRequest(): ToolApprovalRequest {
   };
 }
 
+class FakeSessionStore {
+  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string }> = [];
+  historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
+  archived: string[] = [];
+  removed: string[] = [];
+
+  resolveSessionId(deviceId: string, threadId: string): string {
+    return `mobile/thread/${deviceId}/${threadId}`;
+  }
+
+  async list(deviceId: string): Promise<typeof this.summaries> {
+    return this.summaries;
+  }
+
+  async history(deviceId: string, threadId: string): Promise<Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>> {
+    return this.historyMap.get(threadId) ?? [];
+  }
+
+  async archive(deviceId: string, threadId: string): Promise<void> {
+    this.archived.push(threadId);
+    this.historyMap.set(threadId, []);
+  }
+
+  async remove(deviceId: string, threadId: string): Promise<void> {
+    this.removed.push(threadId);
+    this.historyMap.delete(threadId);
+  }
+}
+
 describe("MobileAdapter", () => {
   let adapter: MobileAdapter;
   let client: WsClient;
   let received: UnifiedMessage[];
+  let store: FakeSessionStore;
 
   beforeEach(async () => {
-    adapter = new MobileAdapter(createConfig());
+    store = new FakeSessionStore();
+    adapter = new MobileAdapter(createConfig(), store as never);
     received = [];
     adapter.onMessage(async (msg) => {
       received.push(msg);
@@ -262,8 +293,84 @@ describe("MobileAdapter", () => {
     assert.equal(decision, "deny");
   });
 
+  test("chat.send with threadId routes into that thread", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m9", text: "bonjour", threadId: "projet" }));
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.threadId, "projet");
+    assert.equal(received[0]!.sessionScope, "per-user");
+  });
+
+  test("chat.send with an unsafe threadId falls back to default", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m10", text: "x", threadId: "../evil" }));
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.threadId, "default");
+  });
+
+  test("send and stream frames carry the threadId back", async () => {
+    await adapter.send(DEVICE_ID, { text: "rep", threadId: "projet" });
+    const message = (await nextFrame(client)) as { threadId?: string };
+    assert.equal(message.threadId, "projet");
+
+    const streamer = adapter.createStreamer({
+      ...streamerMessage(adapter, "m1", DEVICE_ID),
+      threadId: "projet",
+    });
+    await streamer.push("hello");
+    const start = (await nextFrame(client)) as { type: string; threadId?: string };
+    assert.equal(start.type, "chat.stream.start");
+    assert.equal(start.threadId, "projet");
+    const delta = (await nextFrame(client)) as { type: string; threadId?: string };
+    assert.equal(delta.type, "chat.stream.delta");
+    assert.equal(delta.threadId, "projet");
+    await streamer.finish();
+  });
+
+  test("session.list returns the store summaries", async () => {
+    store.summaries = [
+      { threadId: "a", title: "salut l'agent", messageCount: 4, createdAt: "t1", lastActiveAt: "t2" },
+    ];
+    client.ws.send(JSON.stringify({ type: "session.list" }));
+    const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ threadId: string }> };
+    assert.equal(frame.type, "session.list.result");
+    assert.equal(frame.sessions.length, 1);
+    assert.equal(frame.sessions[0]!.threadId, "a");
+  });
+
+  test("session.history returns stored messages for the thread", async () => {
+    store.historyMap.set("a", [
+      { id: "h1", role: "user", text: "bonjour", ts: "t1" },
+      { id: "h2", role: "assistant", text: "bonsoir", ts: "t2" },
+    ]);
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; messages: Array<{ text: string }> };
+    assert.equal(frame.type, "chat.history");
+    assert.equal(frame.threadId, "a");
+    assert.equal(frame.messages.length, 2);
+    assert.equal(frame.messages[1]!.text, "bonsoir");
+  });
+
+  test("session.history with an unsafe threadId returns an error frame", async () => {
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "../x" }));
+    const frame = (await nextFrame(client)) as { type: string };
+    assert.equal(frame.type, "error");
+  });
+
+  test("session.archive archives the thread and replies with empty history", async () => {
+    client.ws.send(JSON.stringify({ type: "session.archive", threadId: "a" }));
+    const frame = (await nextFrame(client)) as { type: string; messages: unknown[] };
+    assert.equal(frame.type, "chat.history");
+    assert.deepEqual(frame.messages, []);
+    assert.deepEqual(store.archived, ["a"]);
+  });
+
+  test("session.delete removes the thread", async () => {
+    client.ws.send(JSON.stringify({ type: "session.delete", threadId: "a" }));
+    await nextFrame(client);
+    assert.deepEqual(store.removed, ["a"]);
+  });
+
   test("confirmTool sends approval.request and accepts a response", async () => {
-    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }));
+    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }), store as never);
     approvalsAdapter.onMessage(() => Promise.resolve());
     await approvalsAdapter.start();
     const approvalClient = await connectClient(approvalsAdapter.port);
@@ -282,7 +389,7 @@ describe("MobileAdapter", () => {
   });
 
   test("confirmTool stays pending until timeout (deny)", async () => {
-    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }));
+    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }), store as never);
     approvalsAdapter.onMessage(() => Promise.resolve());
     await approvalsAdapter.start();
     const approvalClient = await connectClient(approvalsAdapter.port);

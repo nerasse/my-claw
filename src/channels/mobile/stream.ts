@@ -3,6 +3,7 @@ import type { MobileServerFrame } from "./types.ts";
 
 export interface MobileStreamerOptions {
   id: string;
+  threadId: string;
   replyToId?: string;
   send: (frame: MobileServerFrame) => Promise<void> | void;
   /** Full text length at which the first delta is pushed. Defaults to 1 (start as soon as text exists). */
@@ -51,12 +52,13 @@ export class MobileStreamer {
       await this.opts.send({
         type: "chat.stream.start",
         id: this.opts.id,
+        threadId: this.opts.threadId,
         replyToId: this.opts.replyToId,
       });
     }
     if (!this.started) return;
 
-    await this.opts.send({ type: "chat.stream.delta", id: this.opts.id, text: token });
+    await this.opts.send({ type: "chat.stream.delta", id: this.opts.id, threadId: this.opts.threadId, text: token });
   }
 
   private async finishInternal(finalText: string): Promise<void> {
@@ -69,17 +71,18 @@ export class MobileStreamer {
       await this.opts.send({
         type: "chat.stream.start",
         id: this.opts.id,
+        threadId: this.opts.threadId,
         replyToId: this.opts.replyToId,
       });
-      await this.opts.send({ type: "chat.stream.delta", id: this.opts.id, text: finalText });
+      await this.opts.send({ type: "chat.stream.delta", id: this.opts.id, threadId: this.opts.threadId, text: finalText });
     }
-    await this.opts.send({ type: "chat.stream.done", id: this.opts.id });
+    await this.opts.send({ type: "chat.stream.done", id: this.opts.id, threadId: this.opts.threadId });
   }
 
   private async abortInternal(errorText?: string): Promise<void> {
     if (this.finished) return;
     this.finished = true;
     const err = errorText?.trim();
-    await this.opts.send({ type: "chat.stream.abort", id: this.opts.id, error: err || undefined });
+    await this.opts.send({ type: "chat.stream.abort", id: this.opts.id, threadId: this.opts.threadId, error: err || undefined });
   }
 }

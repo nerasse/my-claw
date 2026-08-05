@@ -1,5 +1,14 @@
 import type { UnifiedMessage } from "../channels/types.ts";
-import { loadSession, saveSession, deleteSession, archiveSession, purgeSessionArchives, type SessionData } from "./store.ts";
+import {
+  loadSession,
+  saveSession,
+  deleteSession as deleteSessionFile,
+  deleteSessionArchives,
+  archiveSession,
+  purgeSessionArchives,
+  listSessionIdsByPrefix,
+  type SessionData,
+} from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -65,6 +74,14 @@ export class SessionManager {
       return `telegram/group/${chatId}`;
     }
 
+    if (platform === "mobile") {
+      const threadId = meta?.threadId?.trim();
+      if (threadId) {
+        return `mobile/thread/${chatId}/${threadId}`;
+      }
+      return `mobile/dm/${userId}`;
+    }
+
     if (chatType === "dm") return `${platform}/dm/${userId}`;
     return `${platform}/group/${chatId}`;
   }
@@ -111,7 +128,7 @@ export class SessionManager {
     this.sessions.delete(sessionId);
     const archived = await archiveSession(sessionId);
     if (!archived) {
-      await deleteSession(sessionId);
+      await deleteSessionFile(sessionId);
     }
     const session = this.createSession(sessionId, platform, chatType);
     if (previous?.modelOverride !== undefined) {
@@ -124,6 +141,19 @@ export class SessionManager {
 
   async purgeArchives(options: { before?: Date; all?: boolean }): Promise<number> {
     return purgeSessionArchives(options);
+  }
+
+  /** Persisted session ids under a prefix, most recently active first. */
+  async listSessions(prefix: string, limit = 50): Promise<string[]> {
+    return listSessionIdsByPrefix(prefix, limit);
+  }
+
+  /** Hard delete: evict from cache, drop the session file and every archive snapshot. */
+  async deleteSession(sessionId: string): Promise<void> {
+    this.sessions.delete(sessionId);
+    await deleteSessionFile(sessionId);
+    await deleteSessionArchives(sessionId);
+    hooks.emit("session:deleted", { sessionId });
   }
 
   clearHistory(sessionId: string): void {

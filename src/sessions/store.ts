@@ -274,3 +274,25 @@ async function scanSessionFiles(dir: string): Promise<Array<{ path: string; mtim
   }
   return results;
 }
+
+/** All persisted session ids under a prefix, most recently active first. */
+export async function listSessionIdsByPrefix(prefix: string, limit = 50): Promise<string[]> {
+  const files = await scanSessionFiles(SESSIONS_DIR);
+  const ids: Array<{ id: string; mtimeMs: number }> = [];
+  for (const { path, mtimeMs } of files) {
+    if (!path.endsWith(".json")) continue;
+    const rel = path.slice(SESSIONS_DIR.length + 1, -".json".length);
+    const id = rel.replace(/\\/g, "/");
+    if (id.startsWith(prefix)) ids.push({ id, mtimeMs });
+  }
+  return ids
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, limit)
+    .map((entry) => entry.id);
+}
+
+/** Remove every archive snapshot of a session (used by hard delete). */
+export async function deleteSessionArchives(sessionId: string): Promise<void> {
+  const safe = sanitizeSessionId(sessionId);
+  await rm(join(ARCHIVES_DIR, safe), { recursive: true, force: true }).catch(() => {});
+}

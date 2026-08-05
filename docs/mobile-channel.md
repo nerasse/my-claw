@@ -55,26 +55,48 @@ src/channels/mobile/
 JSON frames, both directions. A frame that does not parse as JSON is treated as a
 plain-text `chat.send` (the M1 console sends raw text).
 
+### Conversations (threads)
+
+Each device can hold several independent conversations. Every chat frame carries a
+`threadId` (safe charset `[A-Za-z0-9._-]`, max 64 chars). A `chat.send` without
+`threadId` lands in the default thread. Sessions resolve to
+`mobile/thread/<deviceId>/<threadId>` (per-thread sessions, like Telegram forum
+threads), so each conversation has its own context and runs in parallel.
+
 ### Device -> Server
 
 ```json
-{ "type": "chat.send", "id": "uuid", "text": "...", "ts": "iso" }
+{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso" }
+{ "type": "session.list" }
+{ "type": "session.history", "threadId": "projet", "limit": 50 }
+{ "type": "session.archive", "threadId": "projet" }
+{ "type": "session.delete", "threadId": "projet" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
 { "type": "ping" }
 ```
 
+- `session.archive` archives the thread's history (sessions-archive) and starts a
+  fresh empty conversation on the same threadId.
+- `session.delete` hard-deletes the session file and every archive snapshot.
+
 ### Server -> Device
 
 ```json
-{ "type": "chat.message", "id": "uuid", "text": "...", "attachments": [...], "replyToId": "uuid" }
-{ "type": "chat.stream.start", "id": "uuid", "replyToId": "uuid" }
-{ "type": "chat.stream.delta", "id": "uuid", "text": "..." }
-{ "type": "chat.stream.done", "id": "uuid" }
-{ "type": "chat.stream.abort", "id": "uuid", "error": "..." }
-{ "type": "approval.request", "id": "uuid", "toolName": "bash", "args": {...}, "expiresAt": 123 }
+{ "type": "chat.message", "id": "uuid", "text": "...", "threadId": "projet", "attachments": [...], "replyToId": "uuid" }
+{ "type": "chat.stream.start", "id": "uuid", "threadId": "projet", "replyToId": "uuid" }
+{ "type": "chat.stream.delta", "id": "uuid", "threadId": "projet", "text": "..." }
+{ "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
+{ "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
+{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso" }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
+{ "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "error", "message": "..." }
 ```
+
+`chat.history` is also the ack for `session.archive`/`session.delete` (empty
+messages list). `session.list.result` only lists active (non-archived) threads,
+most recently active first, capped at 50.
 
 ### Attachments
 

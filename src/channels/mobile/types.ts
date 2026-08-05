@@ -12,12 +12,35 @@ export interface MobileAttachmentMeta {
   audioAsVoice?: boolean;
 }
 
-/** The device id is the chatId/userId for the whole session. */
+/** Default conversation for devices that do not send a threadId. */
+export const DEFAULT_MOBILE_THREAD = "default";
+
 export interface MobileChatSend {
   type: "chat.send";
   id: string;
   text: string;
+  threadId?: string;
   ts?: string;
+}
+
+export interface MobileSessionList {
+  type: "session.list";
+}
+
+export interface MobileSessionHistory {
+  type: "session.history";
+  threadId: string;
+  limit?: number;
+}
+
+export interface MobileSessionArchive {
+  type: "session.archive";
+  threadId: string;
+}
+
+export interface MobileSessionDelete {
+  type: "session.delete";
+  threadId: string;
 }
 
 export interface MobileApprovalResponse {
@@ -39,12 +62,36 @@ export interface MobilePing {
 }
 
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
-export type MobileClientFrame = MobileChatSend | MobileApprovalResponse | MobileCapabilitiesFrame | MobilePing;
+export type MobileClientFrame =
+  | MobileChatSend
+  | MobileSessionList
+  | MobileSessionHistory
+  | MobileSessionArchive
+  | MobileSessionDelete
+  | MobileApprovalResponse
+  | MobileCapabilitiesFrame
+  | MobilePing;
+
+export interface MobileHistoryEntry {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  ts: string;
+}
+
+export interface MobileSessionSummary {
+  threadId: string;
+  title: string;
+  messageCount: number;
+  createdAt: string;
+  lastActiveAt: string;
+}
 
 export interface MobileChatMessage {
   type: "chat.message";
   id: string;
   text: string;
+  threadId: string;
   attachments: MobileAttachmentMeta[];
   replyToId?: string;
   ts?: string;
@@ -53,6 +100,7 @@ export interface MobileChatMessage {
 export interface MobileStreamStart {
   type: "chat.stream.start";
   id: string;
+  threadId: string;
   replyToId?: string;
   ts?: string;
 }
@@ -60,27 +108,42 @@ export interface MobileStreamStart {
 export interface MobileStreamDelta {
   type: "chat.stream.delta";
   id: string;
+  threadId: string;
   text: string;
 }
 
 export interface MobileStreamDone {
   type: "chat.stream.done";
   id: string;
+  threadId: string;
 }
 
 export interface MobileStreamAbort {
   type: "chat.stream.abort";
   id: string;
+  threadId: string;
   error?: string;
 }
 
 export interface MobileApprovalRequest {
   type: "approval.request";
   id: string;
+  threadId: string;
   toolName: string;
   args: Record<string, unknown>;
   replyToId?: string;
   expiresAt: number;
+}
+
+export interface MobileSessionListResult {
+  type: "session.list.result";
+  sessions: MobileSessionSummary[];
+}
+
+export interface MobileChatHistory {
+  type: "chat.history";
+  threadId: string;
+  messages: MobileHistoryEntry[];
 }
 
 export interface MobileError {
@@ -95,4 +158,6 @@ export type MobileServerFrame =
   | MobileStreamDone
   | MobileStreamAbort
   | MobileApprovalRequest
+  | MobileSessionListResult
+  | MobileChatHistory
   | MobileError;
