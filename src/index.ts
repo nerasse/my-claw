@@ -41,6 +41,7 @@ import {
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal } from "./core/run-registry.ts";
+import { withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry } from "./tools/registry.ts";
@@ -360,7 +361,7 @@ async function main() {
       reloadConfigNow,
     });
 
-    telegram.onMessage(async (msg) => {
+    telegram.onMessage(async (msg) => withRunContext({ platform: "telegram" }, async () => {
       let response: RouteResult | undefined;
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
@@ -419,7 +420,7 @@ async function main() {
         await cleanupAttachments(msg.attachments);
         await cleanupGeneratedTempFiles(response?.attachments);
       }
-    });
+    }));
 
     telegram.onCommand(commandHandler);
     telegram.onCallbackQuery(callbackHandler);
@@ -487,7 +488,7 @@ async function main() {
       workspaceSkillsDir,
     });
 
-    matrix.onMessage(async (msg) => {
+    matrix.onMessage(async (msg) => withRunContext({ platform: "matrix" }, async () => {
       let response: RouteResult | undefined;
       try {
         // Pre-process audio (STT + echo) before routing so echoes arrive first
@@ -559,7 +560,7 @@ async function main() {
         await cleanupAttachments(msg.attachments);
         await cleanupGeneratedTempFiles(response?.attachments);
       }
-    });
+    }));
 
     matrix.onCommand(commandHandler);
     matrix.onAction(actionHandler);
@@ -630,7 +631,7 @@ async function main() {
       },
     });
 
-    mobile.onMessage(async (msg) => {
+    mobile.onMessage(async (msg) => withRunContext({ platform: "mobile" }, async () => {
       let response: RouteResult | undefined;
       try {
         await agent.preprocessMessage(msg);
@@ -693,7 +694,7 @@ async function main() {
         await cleanupAttachments(msg.attachments);
         await cleanupGeneratedTempFiles(response?.attachments);
       }
-    });
+    }));
 
     try {
       await mobile.start();

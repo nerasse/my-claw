@@ -22,7 +22,15 @@ export function newRunId(): string {
   return Math.random().toString(16).slice(2, 10).padEnd(8, "0");
 }
 
+/**
+ * Opens a run context, or reuses the one already open. Channels open it at ingress so the id
+ * also covers what happens outside the router (building the streamer, flushing the final
+ * bubble after the run returned); the router opens it for anything that reaches it directly,
+ * like cron. Nesting would hand the same message two different ids.
+ */
 export function withRunContext<T>(init: Omit<RunContext, "runId"> & { runId?: string }, fn: () => Promise<T>): Promise<T> {
+  const existing = storage.getStore();
+  if (existing) return fn();
   return storage.run({ ...init, runId: init.runId ?? newRunId() }, fn);
 }
 

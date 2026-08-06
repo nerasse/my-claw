@@ -44,3 +44,33 @@ test("setting a session outside a run is a no-op rather than a crash", () => {
   setRunSession("nowhere");
   expect(currentRun()).toBeUndefined();
 });
+
+test("a nested open reuses the id instead of minting a second one for the same message", async () => {
+  // The channel opens the context at ingress, the router opens it again on the way through:
+  // two ids for one message would make the logs of a single run impossible to pull.
+  const seen: string[] = [];
+  await withRunContext({ platform: "mobile" }, async () => {
+    seen.push(currentRunId()!);
+    await withRunContext({ platform: "mobile" }, async () => {
+      seen.push(currentRunId()!);
+    });
+    seen.push(currentRunId()!);
+  });
+
+  expect(new Set(seen).size).toBe(1);
+});
+
+test("work that outlives the router still belongs to the run", async () => {
+  // The real bug this guards: a short reply is flushed by streamer.finish() after route()
+  // returned, so the frame carried no run id and the behaviour depended on the answer length.
+  let afterRoute: string | undefined;
+  await withRunContext({ platform: "mobile" }, async () => {
+    await (async () => {
+      /* the routing itself */
+    })();
+    await new Promise((r) => setTimeout(r, 1));
+    afterRoute = currentRunId();
+  });
+
+  expect(afterRoute).toMatch(/^[0-9a-f]{8}$/);
+});
