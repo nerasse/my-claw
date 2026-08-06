@@ -161,7 +161,15 @@ export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
 }
 
 export type MyClawAppHistoryEntry =
-  | { id: string; role: "user" | "assistant"; text: string; ts: string; attachments?: MyClawAppHistoryAttachment[] }
+  | {
+      id: string;
+      role: "user" | "assistant";
+      text: string;
+      ts: string;
+      attachments?: MyClawAppHistoryAttachment[];
+      /** What was heard in this turn's voice note, so the replayed bubble matches the live one. */
+      transcript?: string;
+    }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
 export interface MyClawAppSessionSummary {

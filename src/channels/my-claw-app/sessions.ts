@@ -38,6 +38,36 @@ function parseToolArguments(raw: string): Record<string, unknown> {
  * A stored turn names its attachments by server path; the id sits in the file name. Metadata
  * comes from the thread's own listing so a replayed bubble matches what the explorer shows.
  */
+/** `1234 ms` in the block details. The recorder measured it; the server never decodes the file. */
+function durationFrom(details: string[]): number | undefined {
+  for (const detail of details) {
+    const match = /^(\d+) ms$/.exec(detail.trim());
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+/**
+ * The transcript is written into the turn as `[Audio]: "..."` so the model reads words rather
+ * than a file. Replayed as-is it would print that marker in the bubble, where the live message
+ * showed the sentence under its player. Pulled back out here, a reopened thread renders the
+ * same thing it did when it was sent.
+ */
+function splitTranscript(text: string): { text: string; transcript?: string } {
+  const paragraphs = text.split("\n\n");
+  const spoken: string[] = [];
+  const rest: string[] = [];
+  for (const paragraph of paragraphs) {
+    // Only the quoted form: a failed take reads `[Audio]: [Transcription failed: ...]`, and that
+    // is a fact about the turn the owner needs to keep seeing.
+    const match = /^\[Audio(?: \d+)?\]: "([\s\S]*)"$/.exec(paragraph.trim());
+    if (match) spoken.push(match[1]!);
+    else rest.push(paragraph);
+  }
+  if (spoken.length === 0) return { text };
+  return { text: rest.join("\n\n").trim(), transcript: spoken.join("\n") };
+}
+
 function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["attachments"], files: SessionFile[]): MyClawAppHistoryAttachment[] {
   const byId = new Map(files.map((file) => [file.id, file]));
   const out: MyClawAppHistoryAttachment[] = [];
@@ -46,7 +76,15 @@ function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["at
     if (!parsed) continue;
     const file = byId.get(parsed.id);
     if (file) {
-      out.push({ id: file.id, type: file.type, mimeType: file.mimeType, filename: file.filename, sizeBytes: file.sizeBytes });
+      const durationMs = durationFrom(entry.details);
+      out.push({
+        id: file.id,
+        type: file.type,
+        mimeType: file.mimeType,
+        filename: file.filename,
+        sizeBytes: file.sizeBytes,
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
     } else {
       const type = entry.type === "image" || entry.type === "audio" || entry.type === "video" ? entry.type : "file";
       out.push({ id: parsed.id, type, filename: parsed.filename, deleted: true });
@@ -105,13 +143,15 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const entries: MyClawAppHistoryEntry[] = [];
     for (const message of window) {
       if (message.role === "user") {
-        const { text, attachments } = splitAttachmentBlock(message.content);
-        const resolved = historyAttachments(attachments, stored);
+        const block = splitAttachmentBlock(message.content);
+        const { text, transcript } = splitTranscript(block.text);
+        const resolved = historyAttachments(block.attachments, stored);
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "user",
           text,
           ts: message.timestamp,
+          ...(transcript ? { transcript } : {}),
           ...(resolved.length > 0 ? { attachments: resolved } : {}),
         });
         continue;

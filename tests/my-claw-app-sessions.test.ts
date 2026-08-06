@@ -111,6 +111,58 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(missing!.deleted, true);
   });
 
+  test("a replayed voice note carries its duration and its transcript, not the [Audio] marker", async () => {
+    const files = new SessionFileStore();
+    const saved = await files.save(DEVICE, THREAD, "voice-note.m4a", new Uint8Array([1, 2, 3, 4]));
+
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "user",
+        content: `[Audio]: "rappelle-moi demain"\n\n[Attachments]\n- audio: ${filePathFor(DEVICE, THREAD, saved.storedName)} (audio/mp4, 4 bytes, ${saved.filename}, 3100 ms)`,
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const entries = await store.history(DEVICE, THREAD);
+    const turn = entries[0]!;
+    if (turn.role !== "user") throw new Error("expected a user entry");
+
+    // The bubble reads the same as when it was sent: a player, and the words under it.
+    assert.equal(turn.text, "");
+    assert.equal(turn.transcript, "rappelle-moi demain");
+    assert.equal(turn.attachments?.length, 1);
+    assert.equal(turn.attachments![0]!.type, "audio");
+    // Without this the replayed player would show 0:00 where the live one showed 0:03.
+    assert.equal(turn.attachments![0]!.durationMs, 3100);
+  });
+
+  test("a caption sent with a voice note survives the transcript split", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: `regarde ca\n\n[Audio]: "et ecoute"`, timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "user") throw new Error("expected a user entry");
+    assert.equal(turn.text, "regarde ca");
+    assert.equal(turn.transcript, "et ecoute");
+  });
+
+  test("a failed transcription stays visible as text", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "user",
+        content: "[Audio]: [Transcription failed: timeout]",
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "user") throw new Error("expected a user entry");
+    // Hiding this would replay a voice note that silently said nothing.
+    assert.equal(turn.text, "[Audio]: [Transcription failed: timeout]");
+    assert.equal(turn.transcript, undefined);
+  });
+
   test("a turn that merely mentions [Attachments] keeps its text whole", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "le format [Attachments]\nc'est quoi", timestamp: "2026-01-01T00:00:01.000Z" },

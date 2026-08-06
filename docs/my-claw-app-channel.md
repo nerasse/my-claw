@@ -110,7 +110,7 @@ the first answer wins.
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
-{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "deleted": false }] }] }
+{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
@@ -188,6 +188,11 @@ thread's own file listing, so a reopened conversation shows the same bubbles as 
 live one: a thumbnail or a named chip that opens the viewer, never a path. An
 attachment deleted since carries `deleted: true` -- it is still named, but there is
 nothing left to open.
+
+A replayed voice note is rebuilt to match the live bubble rather than the storage format. The
+turn is stored as `[Audio]: "..."` because that is what the model must read; history hands the
+words back as `transcript` and the duration back on the attachment, so the reopened thread shows
+the same player and the same sentence under it instead of printing the marker as body text.
 
 Audio is listed in that block like everything else. It was excluded once, on the grounds that
 its words were already in the text: the cost was that a replayed voice note came back as bare
