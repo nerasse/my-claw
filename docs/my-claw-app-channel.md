@@ -108,7 +108,7 @@ the first answer wins.
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
-{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso" }] }
+{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "deleted": false }] }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
@@ -131,14 +131,28 @@ POST /media?device=<id>&token=<token>
 -> { "id": "uuid", "type": "image", "filename": "...", "mimeType": "...", "sizeBytes": 123 }
 ```
 
-Files are stored per conversation in `$MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/`
-and removed with the session (archive/delete). `GET /media/<id>` serves them back
+Files are stored per conversation as `<id>__<filename>` under
+`$MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/`, and removed with the session
+(archive/delete). The uploader's name is part of the entry so a listing stays a single
+readdir with nothing to keep in sync; entries written before that convention
+(`<id>.<ext>`) still list, under their id as name. `GET /media/<id>` serves them back
 for display/download. Uploads are capped (`channels["my-claw-app"].files.maxSizeBytes`,
 default 10 MB, plus a global `maxTotalBytes` of 2 GB). The agent receives the
 attachment as a path it can read with its tools, and images are routed to a
 vision-capable model when the active model cannot take them. The files outlive
 the run that used them: they are only removed by `files.delete` or with the
 session, and later turns re-read them to keep an image in the conversation.
+
+
+#### Attachments in a replayed conversation
+
+A stored turn keeps the LLM-facing rendering of its attachments, an `[Attachments]`
+block of server paths appended to the user text. `session.history` strips that block
+and returns the attachments as structured metadata instead, resolved against the
+thread's own file listing, so a reopened conversation shows the same bubbles as the
+live one: a thumbnail or a named chip that opens the viewer, never a path. An
+attachment deleted since carries `deleted: true` -- it is still named, but there is
+nothing left to open.
 
 ### Diagnostics
 

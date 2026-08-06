@@ -1,7 +1,10 @@
+import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { loadSession } from "../../sessions/store.ts";
+import { splitAttachmentBlock } from "../../agent/preprocess.ts";
+import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
-import type { MyClawAppHistoryEntry, MyClawAppSessionSummary } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppSessionSummary } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -31,8 +34,32 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
+/**
+ * A stored turn names its attachments by server path; the id sits in the file name. Metadata
+ * comes from the thread's own listing so a replayed bubble matches what the explorer shows.
+ */
+function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["attachments"], files: SessionFile[]): MyClawAppHistoryAttachment[] {
+  const byId = new Map(files.map((file) => [file.id, file]));
+  const out: MyClawAppHistoryAttachment[] = [];
+  for (const entry of entries) {
+    const parsed = parseStoredName(basename(entry.source));
+    if (!parsed) continue;
+    const file = byId.get(parsed.id);
+    if (file) {
+      out.push({ id: file.id, type: file.type, mimeType: file.mimeType, filename: file.filename, sizeBytes: file.sizeBytes });
+    } else {
+      const type = entry.type === "image" || entry.type === "audio" || entry.type === "video" ? entry.type : "file";
+      out.push({ id: parsed.id, type, filename: parsed.filename, deleted: true });
+    }
+  }
+  return out;
+}
+
 export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
-  constructor(private sessionManager: SessionManager) {}
+  constructor(
+    private sessionManager: SessionManager,
+    private files: SessionFileStore,
+  ) {}
 
   resolveSessionId(owner: string, threadId: string): string {
     return SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, {
@@ -48,7 +75,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       const session = await loadSession(sessionId);
       if (!session) continue;
       const firstUser = session.messages.find((m) => m.role === "user");
-      const title = firstUser?.content.trim().replace(/\s+/g, " ").slice(0, 60) || "(new conversation)";
+      // Without the block, a "here, look" + photo would be titled by a server path.
+      const firstText = firstUser ? splitAttachmentBlock(firstUser.content).text : "";
+      const title = firstText.trim().replace(/\s+/g, " ").slice(0, 60) || "(new conversation)";
       summaries.push({
         threadId: sessionId.slice(sessionId.lastIndexOf("/") + 1),
         title,
@@ -71,10 +100,20 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       if (message.role === "tool") outputs.set(message.toolCallId, message.content);
     }
 
+    const stored = window.some((m) => m.role === "user") ? await this.files.list(owner, threadId) : [];
+
     const entries: MyClawAppHistoryEntry[] = [];
     for (const message of window) {
       if (message.role === "user") {
-        entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "user", text: message.content, ts: message.timestamp });
+        const { text, attachments } = splitAttachmentBlock(message.content);
+        const resolved = historyAttachments(attachments, stored);
+        entries.push({
+          id: `h-${message.timestamp}-${entries.length}`,
+          role: "user",
+          text,
+          ts: message.timestamp,
+          ...(resolved.length > 0 ? { attachments: resolved } : {}),
+        });
         continue;
       }
       if (message.role !== "assistant") continue;

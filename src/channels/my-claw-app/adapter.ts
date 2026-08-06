@@ -471,7 +471,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // The stored type comes from the file itself; `ref.type` is whatever the client claimed,
         // and a jpeg announced as "file" would silently skip vision routing.
         type: stored.type,
-        path: filePathFor(owner, threadId, stored.id, stored.filename.split(".").at(-1) ?? "bin"),
+        path: filePathFor(owner, threadId, stored.storedName),
         mimeType: stored.mimeType,
         filename: stored.filename,
         sizeBytes: stored.sizeBytes,

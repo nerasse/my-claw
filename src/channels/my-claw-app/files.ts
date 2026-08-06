@@ -5,18 +5,34 @@ import { MY_CLAW_DIR, type MyClawAppChannelConfig } from "../../core/config.ts";
 
 /**
  * Uploaded attachments live next to their session, one directory per thread:
- *   $MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/<id>.<ext>
+ *   $MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/<id>__<filename>
  * The layout mirrors the session id 1:1, so archiving or deleting a conversation removes its
- * files with it, and the disk usage of a session is the size of its directory.
+ * files with it, and the disk usage of a session is the size of its directory. The uploader's
+ * name is carried by the entry itself: a listing needs one readdir and no sidecar to stay in
+ * sync with. Entries written before that (plain `<id>.<ext>`) still list, under their id.
  */
 
 export interface SessionFile {
   id: string;
+  /** Name the device uploaded, normalised. Shown in the app and given to the agent. */
   filename: string;
+  /** Entry on disk, `<id>__<filename>`. Only the store should need it. */
+  storedName: string;
   type: "image" | "audio" | "video" | "file";
   mimeType: string;
   sizeBytes: number;
   ts: string;
+}
+
+const UUID = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})__(.+)$/;
+
+/** `<id>__<name>` splits on the first separator only, so a name may contain `__` itself. */
+export function parseStoredName(entry: string): { id: string; filename: string } | null {
+  const match = UUID.exec(entry);
+  if (match) return { id: match[1]!, filename: match[2]! };
+  const dot = entry.indexOf(".");
+  if (dot <= 0) return null;
+  return { id: entry.slice(0, dot), filename: entry };
 }
 
 const DEFAULT_MAX_SIZE = 10 * 1024 * 1024;
@@ -32,8 +48,8 @@ export function filesDirFor(owner: string, threadId: string): string {
   return join(MY_CLAW_DIR, "files", "my-claw-app", owner, threadId);
 }
 
-export function filePathFor(owner: string, threadId: string, id: string, ext: string): string {
-  return join(filesDirFor(owner, threadId), `${id}.${ext}`);
+export function filePathFor(owner: string, threadId: string, storedName: string): string {
+  return join(filesDirFor(owner, threadId), storedName);
 }
 
 /** The directory of the owning session, so archive/delete can clean it up. */
@@ -104,15 +120,16 @@ export class SessionFileStore {
       const names = await readdir(threadDir);
       const files: SessionFile[] = [];
       for (const name of names) {
-        const [id, ...rest] = name.split(".");
-        if (!id || rest.length === 0) continue;
+        const parsed = parseStoredName(name);
+        if (!parsed) continue;
+        const { id, filename } = parsed;
         try {
           const info = await stat(join(threadDir, name));
           if (!info.isFile()) continue;
-          const filename = name;
           files.push({
             id,
             filename,
+            storedName: name,
             type: typeFor(filename),
             mimeType: mimeTypeFor(filename),
             sizeBytes: info.size,
@@ -157,25 +174,33 @@ export class SessionFileStore {
       throw new Error("Attachment storage full.");
     }
 
-    const safeName = basename(filename).replace(/[^\w.\-() ]+/g, "_").slice(0, 120) || "attachment";
+    const safeName = basename(filename).replace(/[^\w.\-() ]+/g, "_").slice(0, 120) || `attachment.${ext || "bin"}`;
     const id = randomUUID();
     const dir = filesDirFor(owner, threadId);
     await mkdir(dir, { recursive: true });
-    const path = filePathFor(owner, threadId, id, ext || "bin");
-    await writeFile(path, bytes);
-    return { id, filename: safeName, type: typeFor(safeName), mimeType: mimeTypeFor(safeName), sizeBytes: bytes.byteLength, ts: new Date().toISOString() };
+    const storedName = `${id}__${safeName}`;
+    await writeFile(filePathFor(owner, threadId, storedName), bytes);
+    return {
+      id,
+      filename: safeName,
+      storedName,
+      type: typeFor(safeName),
+      mimeType: mimeTypeFor(safeName),
+      sizeBytes: bytes.byteLength,
+      ts: new Date().toISOString(),
+    };
   }
 
   async read(owner: string, threadId: string, id: string): Promise<{ path: string; file: SessionFile } | null> {
     const file = await this.findById(owner, threadId, id);
     if (!file) return null;
-    return { path: join(filesDirFor(owner, threadId), file.filename), file };
+    return { path: filePathFor(owner, threadId, file.storedName), file };
   }
 
   async remove(owner: string, threadId: string, id: string): Promise<boolean> {
     const file = await this.findById(owner, threadId, id);
     if (!file) return false;
-    await rm(join(filesDirFor(owner, threadId), file.filename), { force: true });
+    await rm(filePathFor(owner, threadId, file.storedName), { force: true });
     return true;
   }
 

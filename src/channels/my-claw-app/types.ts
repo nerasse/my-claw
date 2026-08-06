@@ -12,6 +12,14 @@ export interface MyClawAppAttachmentMeta {
   audioAsVoice?: boolean;
 }
 
+/**
+ * Attachment of a replayed turn. Same shape as the live meta plus `deleted`, set when the blob
+ * is gone from the thread: the app still names it, but has nothing to open.
+ */
+export interface MyClawAppHistoryAttachment extends MyClawAppAttachmentMeta {
+  deleted?: boolean;
+}
+
 /** Default conversation for devices that do not send a threadId. */
 export const DEFAULT_THREAD = "default";
 
@@ -133,7 +141,7 @@ export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
 }
 
 export type MyClawAppHistoryEntry =
-  | { id: string; role: "user" | "assistant"; text: string; ts: string }
+  | { id: string; role: "user" | "assistant"; text: string; ts: string; attachments?: MyClawAppHistoryAttachment[] }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
 export interface MyClawAppSessionSummary {

@@ -22,6 +22,41 @@ interface PreprocessRunState {
   hadAudio: boolean;
 }
 
+export const ATTACHMENT_HEADING = "[Attachments]";
+
+/** One `- <type>: <source> (details)` line of the block built by buildUserContent. */
+export interface AttachmentBlockEntry {
+  type: string;
+  source: string;
+  details: string[];
+}
+
+const BLOCK_LINE = /^- ([a-z]+): (.+?)(?: \((.*)\))?$/;
+
+/**
+ * Reverse of the [Attachments] block: a stored user turn keeps the LLM-facing rendering, and a
+ * client that wants to show real attachments has to read it back. Only strips a trailing block
+ * whose every line parses, so a user typing "[Attachments]" keeps their text intact.
+ */
+export function splitAttachmentBlock(content: string): { text: string; attachments: AttachmentBlockEntry[] } {
+  const marker = content.lastIndexOf(`\n\n${ATTACHMENT_HEADING}\n`);
+  if (marker < 0) return { text: content, attachments: [] };
+
+  const lines = content.slice(marker + ATTACHMENT_HEADING.length + 3).split("\n").filter((line) => line.trim());
+  const attachments: AttachmentBlockEntry[] = [];
+  for (const line of lines) {
+    const match = BLOCK_LINE.exec(line);
+    if (!match) return { text: content, attachments: [] };
+    attachments.push({
+      type: match[1]!,
+      source: match[2]!,
+      details: match[3] ? match[3].split(", ") : [],
+    });
+  }
+  if (attachments.length === 0) return { text: content, attachments: [] };
+  return { text: content.slice(0, marker), attachments };
+}
+
 export class MessagePreprocessor {
   private processed = new Set<string>();
   private runs = new Map<string, PreprocessRunState>();
@@ -253,6 +288,7 @@ export class MessagePreprocessor {
     let content = message.text;
     const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
     if (visibleAttachments.length > 0) {
+      // Kept in sync with splitAttachmentBlock below, which reads it back out of a stored turn.
       const lines = visibleAttachments.map((a) => {
         const source = a.path ?? a.url ?? "unknown";
         const details = [
@@ -264,7 +300,7 @@ export class MessagePreprocessor {
         ].filter(Boolean);
         return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
       });
-      content += `\n\n[Attachments]\n${lines.join("\n")}`;
+      content += `\n\n${ATTACHMENT_HEADING}\n${lines.join("\n")}`;
     }
 
     parts.push(content);

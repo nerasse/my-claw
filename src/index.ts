@@ -24,6 +24,7 @@ import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
+import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -600,7 +601,9 @@ async function main() {
       log("warn", 'channels.mobile is not read anymore, rename it to channels["my-claw-app"]');
     }
     if (!isMyClawAppChannelEnabled(config)) return;
-    const myClawApp = new MyClawAppAdapter(config.channels["my-claw-app"]!, new MyClawAppSessionStoreImpl(sessionManager));
+    const myClawAppConfig = config.channels["my-claw-app"]!;
+    const myClawAppSessions = new MyClawAppSessionStoreImpl(sessionManager, new SessionFileStore(myClawAppConfig));
+    const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawAppRef = myClawApp;
 
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,

@@ -420,13 +420,17 @@ describe("MyClawAppAdapter", () => {
     assert.equal(msg.attachments.length, 1);
     assert.equal(msg.attachments[0]!.type, "file");
     assert.ok(msg.attachments[0]!.path!.includes("files/my-claw-app/test-device/projet"));
+    // The uploader's name reaches the agent and the explorer, not the generated id.
+    assert.equal(msg.attachments[0]!.filename, "note.pdf");
+    assert.ok(msg.attachments[0]!.path!.endsWith(`${meta.id}__note.pdf`));
 
     // The session explorer lists it with its size, and delete empties the list.
     client.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
-    const list = (await nextFrame(client)) as { type: string; files: Array<{ id: string; sizeBytes: number }>; totalBytes: number };
+    const list = (await nextFrame(client)) as { type: string; files: Array<{ id: string; filename: string; sizeBytes: number }>; totalBytes: number };
     assert.equal(list.type, "files.list.result");
     assert.equal(list.files.length, 1);
     assert.equal(list.files[0]!.id, meta.id);
+    assert.equal(list.files[0]!.filename, "note.pdf");
     assert.equal(list.totalBytes, 5);
 
     client.ws.send(JSON.stringify({ type: "files.delete", threadId: "projet", id: meta.id }));
