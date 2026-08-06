@@ -113,12 +113,17 @@ the first answer wins.
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
-{ "type": "error", "message": "..." }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs" }
 ```
 
 `commands.list.result` carries the shared command catalog (same source as the
 telegram bot menu), so the app's slash-menu can never drift from the server:
 the device asks for it again whenever the menu opens.
+
+
+Every refusal goes through one exit that logs it and tags it with the screen that asked
+(`scope`), so the app shows it where the user is looking rather than in an unrelated
+conversation -- and so a server-side bug can never present itself as a dead button.
 
 ### Attachments
 

@@ -248,9 +248,13 @@ export interface MyClawAppChatHistory {
   messages: MyClawAppHistoryEntry[];
 }
 
+/** Which request was refused, so the app can show it where the user is looking. */
+export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs";
+
 export interface MyClawAppError {
   type: "error";
   message: string;
+  scope: MyClawAppErrorScope;
 }
 
 export type MyClawAppServerFrame =

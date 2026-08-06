@@ -24,6 +24,7 @@ import type {
   MyClawAppChatMessage,
   MyClawAppChatSend,
   MyClawAppClientFrame,
+  MyClawAppErrorScope,
   MyClawAppFileDelete,
   MyClawAppFilesList,
   MyClawAppDiagSnapshot,
@@ -496,20 +497,34 @@ export class MyClawAppAdapter implements ChannelAdapter {
     });
   }
 
+  /**
+   * Single exit for every refusal: it reaches the device tagged with the screen that asked,
+   * and it is always logged. A refusal that appears nowhere turned a server-side bug into a
+   * button the user could only report as "dead".
+   */
+  private async refuse(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    scope: MyClawAppErrorScope,
+    message: string,
+    data: Record<string, unknown> = {},
+  ): Promise<void> {
+    await myClawAppLog("warn", `refused: ${message}`, { deviceId: ws.data.deviceId, scope, ...data });
+    this.sendFrame(ws, { type: "error", message, scope });
+  }
+
   private async handleSessionList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionList): Promise<void> {
     try {
       const sessions = await this.store.list(ws.data.owner);
       this.sendFrame(ws, { type: "session.list.result", sessions });
     } catch (err) {
-      await myClawAppLog("error", "session.list failed", { deviceId: ws.data.deviceId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "session list failed" });
+      await this.refuse(ws, "session", "session list failed", { error: String(err) });
     }
   }
 
   private async handleSessionHistory(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionHistory): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
-      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
       return;
     }
     try {
@@ -517,15 +532,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const result: MyClawAppChatHistory = { type: "chat.history", threadId, messages };
       this.sendFrame(ws, result);
     } catch (err) {
-      await myClawAppLog("error", "session.history failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "history failed" });
+      await this.refuse(ws, "session", "history failed", { threadId, error: String(err) });
     }
   }
 
   private async handleSessionArchive(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionArchive): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
-      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
       return;
     }
     try {
@@ -533,15 +547,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.files.removeSessionFiles(ws.data.owner, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
-      await myClawAppLog("error", "session.archive failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "archive failed" });
+      await this.refuse(ws, "session", "archive failed", { threadId, error: String(err) });
     }
   }
 
   private async handleSessionDelete(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionDelete): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
-      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
       return;
     }
     try {
@@ -549,8 +562,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.files.removeSessionFiles(ws.data.owner, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
-      await myClawAppLog("error", "session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "delete failed" });
+      await this.refuse(ws, "session", "delete failed", { threadId, error: String(err) });
     }
   }
 
@@ -560,21 +572,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
     frame: MyClawAppDiagSnapshot,
   ): Promise<void> {
     if (!this.diagnostics) {
-      this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
+      await this.refuse(ws, "diag", "diagnostics unavailable");
       return;
     }
     try {
       const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
       this.sendFrame(ws, { type: "diag.snapshot.result", text: await this.diagnostics.snapshot(deviceId, threadId) });
     } catch (err) {
-      await myClawAppLog("error", "diag.snapshot failed", { deviceId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "diag.snapshot failed" });
+      await this.refuse(ws, "diag", "diag.snapshot failed", { error: String(err) });
     }
   }
 
   private async handleLogsTail(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppLogsTail): Promise<void> {
     if (!this.diagnostics) {
-      this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
+      await this.refuse(ws, "logs", "diagnostics unavailable");
       return;
     }
     const query = {
@@ -588,15 +599,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const { text, lines } = await this.diagnostics.logs(query);
       this.sendFrame(ws, { type: "logs.tail.result", text, lines, query });
     } catch (err) {
-      await myClawAppLog("error", "logs.tail failed", { deviceId: ws.data.deviceId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "logs.tail failed" });
+      await this.refuse(ws, "logs", "logs.tail failed", { error: String(err) });
     }
   }
 
   private async handleFilesList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppFilesList): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
-      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      await this.refuse(ws, "files", "invalid threadId", { threadId: frame.threadId });
       return;
     }
     try {
@@ -606,15 +616,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ]);
       this.sendFrame(ws, { type: "files.list.result", threadId, files, totalBytes });
     } catch (err) {
-      await myClawAppLog("error", "files.list failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "files.list failed" });
+      await this.refuse(ws, "files", "files.list failed", { threadId, error: String(err) });
     }
   }
 
   private async handleFileDelete(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppFileDelete): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
-      this.sendFrame(ws, { type: "error", message: "invalid threadId" });
+      await this.refuse(ws, "files", "invalid threadId", { threadId: frame.threadId });
       return;
     }
     try {
@@ -622,11 +631,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (removed) {
         await this.handleFilesList(ws, { type: "files.list", threadId });
       } else {
-        this.sendFrame(ws, { type: "error", message: "file not found" });
+        await this.refuse(ws, "files", "file not found", { threadId, id: frame.id });
       }
     } catch (err) {
-      await myClawAppLog("error", "files.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
-      this.sendFrame(ws, { type: "error", message: "files.delete failed" });
+      await this.refuse(ws, "files", "files.delete failed", { threadId, error: String(err) });
     }
   }
 

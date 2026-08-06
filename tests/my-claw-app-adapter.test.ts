@@ -544,6 +544,13 @@ describe("MyClawAppAdapter", () => {
       const frame = (await nextFrame(client2)) as { type: string; files?: unknown[]; message?: string };
       assert.equal(frame.type, "files.list.result");
       assert.equal(frame.files!.length, 0);
+
+      // A refusal names the screen that asked, so the app shows it there instead of in the chat.
+      client2.ws.send(JSON.stringify({ type: "files.delete", threadId: "projet", id: meta.id }));
+      const refusal = (await nextFrame(client2)) as { type: string; message: string; scope: string };
+      assert.equal(refusal.type, "error");
+      assert.equal(refusal.message, "file not found");
+      assert.equal(refusal.scope, "files");
     } finally {
       client2.ws.close();
       await owned.stop();
