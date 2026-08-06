@@ -250,6 +250,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.voice = controller;
   }
 
+  /** Delivered to every socket of the owner, like any other frame addressed to a conversation. */
+  sendTranscript(owner: string, threadId: string, replyToId: string, text: string): void {
+    for (const ws of this.socketsFor(owner)) {
+      this.sendFrame(ws, { type: "chat.transcript", threadId, replyToId, text });
+    }
+  }
+
   /** Conversation namespace of a device: its configured owner, else the device id itself. */
   private ownerFor(deviceId: string): string {
     return this.config.devices?.[deviceId]?.owner?.trim() || deviceId;

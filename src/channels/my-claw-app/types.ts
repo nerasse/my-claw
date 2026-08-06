@@ -277,6 +277,19 @@ export interface MyClawAppError {
   scope: MyClawAppErrorScope;
 }
 
+/**
+ * What the server heard in a voice note, addressed to the message that carried it. Sent instead
+ * of the generic echo for this channel: the app renders it inside the recording's own bubble, and
+ * a separate message would push the conversation apart to say something about a bubble above it.
+ */
+export interface MyClawAppChatTranscript {
+  type: "chat.transcript";
+  threadId: string;
+  /** The chat.send id the device generated, so the bubble is found without guessing. */
+  replyToId: string;
+  text: string;
+}
+
 export interface MyClawAppVoiceModeResult {
   type: "voice.mode.result";
   /** What the owner asked for. */
@@ -302,4 +315,5 @@ export type MyClawAppServerFrame =
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
+  | MyClawAppChatTranscript
   | MyClawAppError;

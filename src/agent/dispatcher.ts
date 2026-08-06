@@ -93,6 +93,10 @@ export class BackendDispatcher implements AgentBackend {
     return this.preprocessor.inboundHadAudio(messageId);
   }
 
+  transcriptOf(messageId: string): string | undefined {
+    return this.preprocessor.transcriptOf(messageId);
+  }
+
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.home.setApprovalHandler(handler);
     this.sdk.setApprovalHandler(handler);

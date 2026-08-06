@@ -18,6 +18,8 @@ export interface AgentBackend {
   getEchoMessages(messageId: string): OutgoingMessage[];
   getResponseAttachments(messageId: string): OutgoingMessage["attachments"];
   hadAudioInbound(messageId: string): boolean;
+  /** Raw speech-to-text output of the inbound message, for channels that render it. */
+  transcriptOf(messageId: string): string | undefined;
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void;
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string>;
   handleMessageStreaming(

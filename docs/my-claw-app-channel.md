@@ -115,6 +115,7 @@ the first answer wins.
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
+{ "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "text": "ce que le serveur a entendu" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice" }
 ```
@@ -140,6 +141,12 @@ The flag is not decoration: it selects the language policy of the existing STT p
 gets auto-detection, because forcing a language on unknown speech makes Whisper invent plausible
 words instead of failing. Nothing else in the pipeline is channel-specific -- the transcript, the
 echo, and the `[Audio]: "..."` rewrite are the same code that serves Telegram and Matrix.
+
+The transcript comes back as `chat.transcript`, addressed to the `chat.send` id the device
+generated, so the app renders it inside the recording's own bubble. Telegram and Matrix get the
+same text as an echo message (`voice.stt.echoFormat`); here that echo is dropped, because a
+standalone turn quoting the bubble above it says the same thing twice and pushes the conversation
+apart. A take that failed has no transcript, so its warning still arrives as a message.
 
 `voice.mode.get` / `voice.mode.set` expose the engine choice: `cloud` (Groq whisper-large-v3),
 `local` (faster-whisper, nothing leaves the machine), or `auto`. A set is persisted to

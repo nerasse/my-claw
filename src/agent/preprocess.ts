@@ -20,6 +20,8 @@ interface PreprocessRunState {
   responseAttachments: NonNullable<OutgoingMessage["attachments"]>;
   tempDirs: string[];
   hadAudio: boolean;
+  /** Raw text, before the echo template wraps it: a channel may want to render it itself. */
+  transcripts: string[];
 }
 
 export const ATTACHMENT_HEADING = "[Attachments]";
@@ -69,7 +71,7 @@ export class MessagePreprocessor {
   private stateFor(messageId: string): PreprocessRunState {
     let state = this.runs.get(messageId);
     if (!state) {
-      state = { echoMessages: [], responseAttachments: [], tempDirs: [], hadAudio: false };
+      state = { echoMessages: [], responseAttachments: [], tempDirs: [], hadAudio: false, transcripts: [] };
       this.runs.set(messageId, state);
     }
     return state;
@@ -77,6 +79,12 @@ export class MessagePreprocessor {
 
   inboundHadAudio(messageId: string): boolean {
     return this.runs.get(messageId)?.hadAudio ?? false;
+  }
+
+  /** What was heard, unformatted. Empty when nothing was transcribed or every take failed. */
+  transcriptOf(messageId: string): string | undefined {
+    const parts = this.runs.get(messageId)?.transcripts ?? [];
+    return parts.length > 0 ? parts.join("\n") : undefined;
   }
 
   consumeEchoMessages(messageId: string): OutgoingMessage[] {
@@ -191,6 +199,7 @@ export class MessagePreprocessor {
         const audioPrefix = existingText ? `\n\n` : "";
         message.text = `${existingText}${audioPrefix}${label}: "${result.text}"`;
 
+        state.transcripts.push(result.text);
         const { enabled } = this.voiceManager.getEchoConfig();
         if (enabled) {
           state.echoMessages.push({
