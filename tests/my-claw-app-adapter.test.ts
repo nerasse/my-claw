@@ -1,6 +1,7 @@
 import { test, afterEach, beforeEach, describe } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
@@ -432,6 +433,27 @@ describe("MyClawAppAdapter", () => {
     const after = (await nextFrame(client)) as { type: string; files: unknown[] };
     assert.equal(after.type, "files.list.result");
     assert.equal(after.files.length, 0);
+  });
+
+  test("session.delete takes the uploaded files with it", async () => {
+    const port = adapter.port;
+    const thread = "filedel";
+    const upload = await fetch(`http://127.0.0.1:${port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "note.txt", "x-type": "file", "x-thread-id": thread },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    assert.equal(upload.status, 200);
+
+    // The file is on disk, next to where its session would be.
+    const filesDir = join(MY_CLAW_DIR, "files", "my-claw-app", DEVICE_ID, thread);
+    assert.equal(existsSync(filesDir), true);
+
+    client.ws.send(JSON.stringify({ type: "session.delete", threadId: thread }));
+    // The reply only arrives once both removals have run: wait on it, not on the clock.
+    const frame = (await nextFrame(client)) as { type: string };
+    assert.equal(frame.type, "chat.history");
+    assert.equal(existsSync(filesDir), false);
   });
 
   test("the app can pull a diagnostics snapshot and a filtered log tail", async () => {
