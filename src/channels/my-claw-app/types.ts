@@ -1,6 +1,6 @@
-/** Wire protocol for the mobile channel. Spec: docs/mobile-channel.md. */
+/** Wire protocol for the my-claw-app channel. Spec: docs/my-claw-app-channel.md. */
 
-export interface MobileAttachmentMeta {
+export interface MyClawAppAttachmentMeta {
   id: string;
   type: "image" | "audio" | "video" | "file";
   mimeType?: string;
@@ -13,64 +13,64 @@ export interface MobileAttachmentMeta {
 }
 
 /** Default conversation for devices that do not send a threadId. */
-export const DEFAULT_MOBILE_THREAD = "default";
+export const DEFAULT_THREAD = "default";
 
-export interface MobileAttachmentRef {
+export interface MyClawAppAttachmentRef {
   id: string;
   type: "image" | "audio" | "video" | "file";
 }
 
-export interface MobileChatSend {
+export interface MyClawAppChatSend {
   type: "chat.send";
   id: string;
   text: string;
   threadId?: string;
   ts?: string;
-  attachments?: MobileAttachmentRef[];
+  attachments?: MyClawAppAttachmentRef[];
 }
 
-export interface MobileSessionList {
+export interface MyClawAppSessionList {
   type: "session.list";
 }
 
-export interface MobileCommandsList {
+export interface MyClawAppCommandsList {
   type: "commands.list";
 }
 
-export interface MobileFilesList {
+export interface MyClawAppFilesList {
   type: "files.list";
   threadId: string;
 }
 
-export interface MobileFileDelete {
+export interface MyClawAppFileDelete {
   type: "files.delete";
   threadId: string;
   id: string;
 }
 
-export interface MobileSessionHistory {
+export interface MyClawAppSessionHistory {
   type: "session.history";
   threadId: string;
   limit?: number;
 }
 
-export interface MobileSessionArchive {
+export interface MyClawAppSessionArchive {
   type: "session.archive";
   threadId: string;
 }
 
-export interface MobileSessionDelete {
+export interface MyClawAppSessionDelete {
   type: "session.delete";
   threadId: string;
 }
 
-export interface MobileApprovalResponse {
+export interface MyClawAppApprovalResponse {
   type: "approval.response";
   id: string;
   accepted: boolean;
 }
 
-export interface MobileCapabilitiesFrame {
+export interface MyClawAppCapabilitiesFrame {
   type: "device.capabilities";
   accessibility?: boolean;
   notificationListener?: boolean;
@@ -78,18 +78,18 @@ export interface MobileCapabilitiesFrame {
   version?: string;
 }
 
-export interface MobilePing {
+export interface MyClawAppPing {
   type: "ping";
 }
 
 /** Health snapshot, meant to be copy-pasted out of the app. */
-export interface MobileDiagSnapshot {
+export interface MyClawAppDiagSnapshot {
   type: "diag.snapshot";
   threadId?: string;
 }
 
 /** Tail of the server log files, filtered. `run` is the correlation id stamped on every line. */
-export interface MobileLogsTail {
+export interface MyClawAppLogsTail {
   type: "logs.tail";
   scope?: string;
   level?: "trace" | "debug" | "info" | "warn" | "error";
@@ -99,22 +99,22 @@ export interface MobileLogsTail {
 }
 
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
-export type MobileClientFrame =
-  | MobileChatSend
-  | MobileSessionList
-  | MobileCommandsList
-  | MobileFilesList
-  | MobileFileDelete
-  | MobileSessionHistory
-  | MobileSessionArchive
-  | MobileSessionDelete
-  | MobileApprovalResponse
-  | MobileCapabilitiesFrame
-  | MobileDiagSnapshot
-  | MobileLogsTail
-  | MobilePing;
+export type MyClawAppClientFrame =
+  | MyClawAppChatSend
+  | MyClawAppSessionList
+  | MyClawAppCommandsList
+  | MyClawAppFilesList
+  | MyClawAppFileDelete
+  | MyClawAppSessionHistory
+  | MyClawAppSessionArchive
+  | MyClawAppSessionDelete
+  | MyClawAppApprovalResponse
+  | MyClawAppCapabilitiesFrame
+  | MyClawAppDiagSnapshot
+  | MyClawAppLogsTail
+  | MyClawAppPing;
 
-export interface MobileToolCallEntry {
+export interface MyClawAppToolCallEntry {
   id: string;
   name: string;
   args: Record<string, unknown>;
@@ -125,18 +125,18 @@ export interface MobileToolCallEntry {
 }
 
 /** Tool card, sent between two text bubbles of the same turn. Suppressed when verbose is off. */
-export interface MobileToolCall extends MobileToolCallEntry {
+export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
   type: "chat.tool";
   threadId: string;
   turnId: string;
   ts: string;
 }
 
-export type MobileHistoryEntry =
+export type MyClawAppHistoryEntry =
   | { id: string; role: "user" | "assistant"; text: string; ts: string }
-  | ({ role: "tool"; ts: string } & MobileToolCallEntry);
+  | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
-export interface MobileSessionSummary {
+export interface MyClawAppSessionSummary {
   threadId: string;
   title: string;
   messageCount: number;
@@ -144,19 +144,19 @@ export interface MobileSessionSummary {
   lastActiveAt: string;
 }
 
-export interface MobileChatMessage {
+export interface MyClawAppChatMessage {
   type: "chat.message";
   id: string;
   text: string;
   threadId: string;
-  attachments: MobileAttachmentMeta[];
+  attachments: MyClawAppAttachmentMeta[];
   replyToId?: string;
   ts?: string;
   /** Correlation id of the run that produced this reply, quotable in a bug report. */
   run?: string;
 }
 
-export interface MobileStreamStart {
+export interface MyClawAppStreamStart {
   type: "chat.stream.start";
   id: string;
   threadId: string;
@@ -165,27 +165,27 @@ export interface MobileStreamStart {
   run?: string;
 }
 
-export interface MobileStreamDelta {
+export interface MyClawAppStreamDelta {
   type: "chat.stream.delta";
   id: string;
   threadId: string;
   text: string;
 }
 
-export interface MobileStreamDone {
+export interface MyClawAppStreamDone {
   type: "chat.stream.done";
   id: string;
   threadId: string;
 }
 
-export interface MobileStreamAbort {
+export interface MyClawAppStreamAbort {
   type: "chat.stream.abort";
   id: string;
   threadId: string;
   error?: string;
 }
 
-export interface MobileApprovalRequest {
+export interface MyClawAppApprovalRequest {
   type: "approval.request";
   id: string;
   threadId: string;
@@ -195,17 +195,17 @@ export interface MobileApprovalRequest {
   expiresAt: number;
 }
 
-export interface MobileSessionListResult {
+export interface MyClawAppSessionListResult {
   type: "session.list.result";
-  sessions: MobileSessionSummary[];
+  sessions: MyClawAppSessionSummary[];
 }
 
-export interface MobileCommandsResult {
+export interface MyClawAppCommandsResult {
   type: "commands.list.result";
   commands: Array<{ name: string; description: string }>;
 }
 
-export interface MobileSessionFile {
+export interface MyClawAppSessionFile {
   id: string;
   filename: string;
   type: "image" | "audio" | "video" | "file";
@@ -214,12 +214,12 @@ export interface MobileSessionFile {
   ts: string;
 }
 
-export interface MobileDiagSnapshotResult {
+export interface MyClawAppDiagSnapshotResult {
   type: "diag.snapshot.result";
   text: string;
 }
 
-export interface MobileLogsTailResult {
+export interface MyClawAppLogsTailResult {
   type: "logs.tail.result";
   text: string;
   lines: number;
@@ -227,36 +227,36 @@ export interface MobileLogsTailResult {
   query: { scope?: string; level?: string; run?: string; contains?: string; limit?: number };
 }
 
-export interface MobileFilesListResult {
+export interface MyClawAppFilesListResult {
   type: "files.list.result";
   threadId: string;
-  files: MobileSessionFile[];
+  files: MyClawAppSessionFile[];
   totalBytes: number;
 }
 
-export interface MobileChatHistory {
+export interface MyClawAppChatHistory {
   type: "chat.history";
   threadId: string;
-  messages: MobileHistoryEntry[];
+  messages: MyClawAppHistoryEntry[];
 }
 
-export interface MobileError {
+export interface MyClawAppError {
   type: "error";
   message: string;
 }
 
-export type MobileServerFrame =
-  | MobileChatMessage
-  | MobileStreamStart
-  | MobileStreamDelta
-  | MobileStreamDone
-  | MobileStreamAbort
-  | MobileToolCall
-  | MobileApprovalRequest
-  | MobileSessionListResult
-  | MobileCommandsResult
-  | MobileFilesListResult
-  | MobileDiagSnapshotResult
-  | MobileLogsTailResult
-  | MobileChatHistory
-  | MobileError;
+export type MyClawAppServerFrame =
+  | MyClawAppChatMessage
+  | MyClawAppStreamStart
+  | MyClawAppStreamDelta
+  | MyClawAppStreamDone
+  | MyClawAppStreamAbort
+  | MyClawAppToolCall
+  | MyClawAppApprovalRequest
+  | MyClawAppSessionListResult
+  | MyClawAppCommandsResult
+  | MyClawAppFilesListResult
+  | MyClawAppDiagSnapshotResult
+  | MyClawAppLogsTailResult
+  | MyClawAppChatHistory
+  | MyClawAppError;

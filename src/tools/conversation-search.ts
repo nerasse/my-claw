@@ -114,7 +114,7 @@ export function createConversationSearchTool(): Tool {
         action: { type: "string", enum: ["search", "read"], description: "Search the archive or read a result context." },
         query: { type: "string", description: "Search text, required for action=search." },
         hit_id: { type: "string", description: "A result id such as m_42, required for action=read." },
-        platform: { type: "string", enum: ["telegram", "matrix", "cron", "subagent"], description: "Optional channel/source filter." },
+        platform: { type: "string", enum: ["telegram", "matrix", "my-claw-app", "cron", "subagent"], description: "Optional channel/source filter." },
         chat_id: { type: "string", description: "Optional exact chat or room id filter." },
         from: { type: "string", description: "Optional ISO timestamp lower bound." },
         to: { type: "string", description: "Optional ISO timestamp upper bound." },

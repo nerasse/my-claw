@@ -109,7 +109,7 @@ export function collectSecrets(config: MyClawConfig): string[] {
   add(config.channels.telegram?.token);
   add(config.channels.matrix?.password);
   add(config.channels.matrix?.accessToken);
-  for (const device of Object.values(config.channels.mobile?.devices ?? {})) add(device.token);
+  for (const device of Object.values(config.channels["my-claw-app"]?.devices ?? {})) add(device.token);
   add(config.webSearch?.token);
   return [...secrets];
 }
@@ -197,10 +197,10 @@ export async function buildDiagnostics(input: DiagnosticsInput): Promise<string>
     lines.push(`messages: ${input.session.messages}${input.session.lastActiveAt ? ` | last active ${input.session.lastActiveAt}` : ""}`);
   }
 
-  const mobile = input.config.channels.mobile;
-  if (mobile) {
-    const devices = Object.keys(mobile.devices ?? {}).length;
-    lines.push(`mobile: port ${mobile.port ?? 8080} | ${devices} device(s) | approvals ${mobile.approvals === true ? "on" : "off"} | streaming ${mobile.streaming?.enabled === false ? "off" : "on"}`);
+  const app = input.config.channels["my-claw-app"];
+  if (app) {
+    const devices = Object.keys(app.devices ?? {}).length;
+    lines.push(`my-claw-app: port ${app.port ?? 8080} | ${devices} device(s) | approvals ${app.approvals === true ? "on" : "off"} | streaming ${app.streaming?.enabled === false ? "off" : "on"}`);
   }
 
   // The SDK's own chatter is not a symptom of anything; ask for it explicitly if needed.

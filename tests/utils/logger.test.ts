@@ -26,7 +26,7 @@ afterEach(() => {
 test("every line of a run carries the same correlation id", async () => {
   await freshLogs();
 
-  await withRunContext({ platform: "mobile" }, async () => {
+  await withRunContext({ platform: "my-claw-app" }, async () => {
     await log("info", "step one");
     await log("info", "step two");
   });

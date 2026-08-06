@@ -1,16 +1,16 @@
 import { SessionManager } from "../../sessions/manager.ts";
 import { loadSession } from "../../sessions/store.ts";
-import { MOBILE_TOOL_OUTPUT_LIMIT } from "./stream.ts";
-import type { MobileHistoryEntry, MobileSessionSummary } from "./types.ts";
+import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
+import type { MyClawAppHistoryEntry, MyClawAppSessionSummary } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
-export interface MobileSessionStore {
-  resolveSessionId(deviceId: string, threadId: string): string;
-  list(deviceId: string, limit?: number): Promise<MobileSessionSummary[]>;
-  history(deviceId: string, threadId: string, limit?: number): Promise<MobileHistoryEntry[]>;
-  archive(deviceId: string, threadId: string): Promise<void>;
-  remove(deviceId: string, threadId: string): Promise<void>;
+export interface MyClawAppSessionStore {
+  resolveSessionId(owner: string, threadId: string): string;
+  list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
+  history(owner: string, threadId: string, limit?: number): Promise<MyClawAppHistoryEntry[]>;
+  archive(owner: string, threadId: string): Promise<void>;
+  remove(owner: string, threadId: string): Promise<void>;
 }
 
 /** Thread ids come from the device and later land in file paths; keep them strictly safe. */
@@ -31,19 +31,19 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 }
 
-export class MobileSessionStoreImpl implements MobileSessionStore {
+export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   constructor(private sessionManager: SessionManager) {}
 
-  resolveSessionId(deviceId: string, threadId: string): string {
-    return SessionManager.resolveSessionId("mobile", "dm", deviceId, deviceId, {
+  resolveSessionId(owner: string, threadId: string): string {
+    return SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, {
       threadId,
       sessionScope: "per-user",
     });
   }
 
-  async list(deviceId: string, limit = 200): Promise<MobileSessionSummary[]> {
-    const ids = await this.sessionManager.listSessions(`mobile/thread/${deviceId}/`, limit);
-    const summaries: MobileSessionSummary[] = [];
+  async list(owner: string, limit = 200): Promise<MyClawAppSessionSummary[]> {
+    const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, limit);
+    const summaries: MyClawAppSessionSummary[] = [];
     for (const sessionId of ids) {
       const session = await loadSession(sessionId);
       if (!session) continue;
@@ -60,8 +60,8 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
     return summaries;
   }
 
-  async history(deviceId: string, threadId: string, limit = HISTORY_LIMIT): Promise<MobileHistoryEntry[]> {
-    const session = await loadSession(this.resolveSessionId(deviceId, threadId));
+  async history(owner: string, threadId: string, limit = HISTORY_LIMIT): Promise<MyClawAppHistoryEntry[]> {
+    const session = await loadSession(this.resolveSessionId(owner, threadId));
     if (!session) return [];
 
     const window = session.messages.slice(-limit);
@@ -71,7 +71,7 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
       if (message.role === "tool") outputs.set(message.toolCallId, message.content);
     }
 
-    const entries: MobileHistoryEntry[] = [];
+    const entries: MyClawAppHistoryEntry[] = [];
     for (const message of window) {
       if (message.role === "user") {
         entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "user", text: message.content, ts: message.timestamp });
@@ -85,7 +85,7 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.
       for (const call of message.toolCalls ?? []) {
         const output = outputs.get(call.id) ?? "";
-        const truncated = output.length > MOBILE_TOOL_OUTPUT_LIMIT;
+        const truncated = output.length > TOOL_OUTPUT_LIMIT;
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "tool",
@@ -93,7 +93,7 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
           args: parseToolArguments(call.arguments),
           durationMs: call.durationMs,
           ok: true,
-          output: truncated ? output.slice(0, MOBILE_TOOL_OUTPUT_LIMIT) : output,
+          output: truncated ? output.slice(0, TOOL_OUTPUT_LIMIT) : output,
           truncated,
           ts: message.timestamp,
         });
@@ -102,11 +102,11 @@ export class MobileSessionStoreImpl implements MobileSessionStore {
     return entries;
   }
 
-  async archive(deviceId: string, threadId: string): Promise<void> {
-    await this.sessionManager.resetSession(this.resolveSessionId(deviceId, threadId), "mobile", "dm");
+  async archive(owner: string, threadId: string): Promise<void> {
+    await this.sessionManager.resetSession(this.resolveSessionId(owner, threadId), "my-claw-app", "dm");
   }
 
-  async remove(deviceId: string, threadId: string): Promise<void> {
-    await this.sessionManager.deleteSession(this.resolveSessionId(deviceId, threadId));
+  async remove(owner: string, threadId: string): Promise<void> {
+    await this.sessionManager.deleteSession(this.resolveSessionId(owner, threadId));
   }
 }

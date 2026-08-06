@@ -482,7 +482,7 @@ export class AgentBridge implements AgentBackend {
         });
 
         // Kept as a reference so the tool durations measured below can be written back into the
-        // persisted message: history renderers (mobile bubbles) show the same detail as the
+        // persisted message: history renderers (app bubbles) show the same detail as the
         // live stream only if the timings survive the session file.
         const persistedAssistant = {
           role: "assistant" as const,

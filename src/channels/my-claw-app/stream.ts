@@ -1,15 +1,15 @@
 import { currentRunId } from "../../utils/run-context.ts";
 import type { ToolCallResult } from "../../agent/tool-status.ts";
-import type { MobileServerFrame } from "./types.ts";
+import type { MyClawAppServerFrame } from "./types.ts";
 
 /** Tool output is a debugging view, not context: cap it so a 2 MB result never hits the socket. */
-export const MOBILE_TOOL_OUTPUT_LIMIT = 4000;
+export const TOOL_OUTPUT_LIMIT = 4000;
 
-export interface MobileStreamerOptions {
+export interface MyClawAppStreamerOptions {
   id: string;
   threadId: string;
   replyToId?: string;
-  send: (frame: MobileServerFrame) => Promise<void> | void;
+  send: (frame: MyClawAppServerFrame) => Promise<void> | void;
   /** Full text length at which the first delta is pushed. Defaults to 1 (start as soon as text exists). */
   minCharsBeforeDelta?: number;
 }
@@ -19,7 +19,7 @@ export interface MobileStreamerOptions {
  * bubble is then sealed and the following text opens a new one, so the client renders
  * text -> tool cards -> text in order instead of one bubble with notes glued inside.
  */
-export class MobileStreamer {
+export class MyClawAppStreamer {
   private segmentText = "";
   private segment = 0;
   private toolCount = 0;
@@ -27,7 +27,7 @@ export class MobileStreamer {
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private opts: MobileStreamerOptions) {}
+  constructor(private opts: MyClawAppStreamerOptions) {}
 
   async push(token: string): Promise<void> {
     if (!token) return;
@@ -91,7 +91,7 @@ export class MobileStreamer {
     for (const tool of toolCalls) {
       this.toolCount += 1;
       const output = tool.output ?? "";
-      const truncated = output.length > MOBILE_TOOL_OUTPUT_LIMIT;
+      const truncated = output.length > TOOL_OUTPUT_LIMIT;
       await this.opts.send({
         type: "chat.tool",
         id: `${this.opts.id}:tool:${this.toolCount}`,
@@ -101,7 +101,7 @@ export class MobileStreamer {
         args: tool.arguments,
         durationMs: tool.durationMs,
         ok: tool.ok !== false,
-        output: truncated ? output.slice(0, MOBILE_TOOL_OUTPUT_LIMIT) : output,
+        output: truncated ? output.slice(0, TOOL_OUTPUT_LIMIT) : output,
         truncated,
         ts: new Date().toISOString(),
       });

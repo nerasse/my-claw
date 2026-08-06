@@ -74,12 +74,12 @@ export class SessionManager {
       return `telegram/group/${chatId}`;
     }
 
-    if (platform === "mobile") {
+    if (platform === "my-claw-app") {
       const threadId = meta?.threadId?.trim();
       if (threadId) {
-        return `mobile/thread/${chatId}/${threadId}`;
+        return `my-claw-app/thread/${chatId}/${threadId}`;
       }
-      return `mobile/dm/${userId}`;
+      return `my-claw-app/dm/${userId}`;
     }
 
     if (chatType === "dm") return `${platform}/dm/${userId}`;

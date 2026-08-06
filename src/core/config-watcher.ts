@@ -19,7 +19,7 @@ const DEBOUNCE_MS = 300;
 
 // Channel fields that cannot be hot-swapped on a live adapter. Telegram bakes the token into
 // the Grammy Bot + polling loop; Matrix derives its E2E crypto store from the identity/token.
-// The mobile WSS server binds its socket at start, so its identity is the listen port.
+// The my-claw-app WSS server binds its socket at start, so its identity is the listen port.
 const TELEGRAM_REBOOT_FIELDS = ["enabled", "token", "mode", "webhook"];
 const MATRIX_REBOOT_FIELDS = [
   "enabled",
@@ -31,7 +31,7 @@ const MATRIX_REBOOT_FIELDS = [
   "encryption",
   "initialSyncLimit",
 ];
-const MOBILE_REBOOT_FIELDS = ["enabled", "port"];
+const MY_CLAW_APP_REBOOT_FIELDS = ["enabled", "port"];
 
 // Top-level sections wired at boot (timers, clients, env) that need a restart to re-apply.
 // Only `workspace` remains: changing the path would require re-seeding templates and
@@ -147,7 +147,7 @@ function behavioralDiffers(
 }
 
 function applyChannelReload(
-  name: "telegram" | "matrix" | "mobile",
+  name: "telegram" | "matrix" | "my-claw-app",
   current: MyClawConfig,
   next: MyClawConfig,
   rebootFields: string[],
@@ -212,11 +212,11 @@ export function applyHotReload(current: MyClawConfig, next: MyClawConfig): Reloa
 
   // Telegram supports a live identity recreate (grammy bot.stop() is clean; a sequential swap
   // avoids the 409). Matrix stays reboot-only until its live-homeserver Megolm test passes.
-  // Mobile devices/tokens/streaming are read live per connection; only the socket (port) is
+  // Devices/tokens/streaming are read live per connection; only the socket (port) is
   // reboot-bound.
   applyChannelReload("telegram", current, next, TELEGRAM_REBOOT_FIELDS, changed, rebootRequired, recreate, true);
   applyChannelReload("matrix", current, next, MATRIX_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
-  applyChannelReload("mobile", current, next, MOBILE_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
+  applyChannelReload("my-claw-app", current, next, MY_CLAW_APP_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
 
   for (const key of REBOOT_SECTIONS) {
     // Normalized on both sides: boot resolves workspace to an absolute path, so comparing it

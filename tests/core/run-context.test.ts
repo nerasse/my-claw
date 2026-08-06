@@ -5,7 +5,7 @@ test("a run id is visible from anywhere inside the run, including after an await
   expect(currentRunId()).toBeUndefined();
 
   const seen: Array<string | undefined> = [];
-  await withRunContext({ platform: "mobile" }, async () => {
+  await withRunContext({ platform: "my-claw-app" }, async () => {
     seen.push(currentRunId());
     await new Promise((r) => setTimeout(r, 1));
     // The point of the async storage: nested async work inherits the id without plumbing.
@@ -22,7 +22,7 @@ test("a run id is visible from anywhere inside the run, including after an await
 test("concurrent runs never share their id", async () => {
   const ids = await Promise.all(
     [1, 2, 3].map(() =>
-      withRunContext({ platform: "mobile" }, async () => {
+      withRunContext({ platform: "my-claw-app" }, async () => {
         await new Promise((r) => setTimeout(r, 5));
         return currentRunId()!;
       }),
@@ -49,9 +49,9 @@ test("a nested open reuses the id instead of minting a second one for the same m
   // The channel opens the context at ingress, the router opens it again on the way through:
   // two ids for one message would make the logs of a single run impossible to pull.
   const seen: string[] = [];
-  await withRunContext({ platform: "mobile" }, async () => {
+  await withRunContext({ platform: "my-claw-app" }, async () => {
     seen.push(currentRunId()!);
-    await withRunContext({ platform: "mobile" }, async () => {
+    await withRunContext({ platform: "my-claw-app" }, async () => {
       seen.push(currentRunId()!);
     });
     seen.push(currentRunId()!);
@@ -64,7 +64,7 @@ test("work that outlives the router still belongs to the run", async () => {
   // The real bug this guards: a short reply is flushed by streamer.finish() after route()
   // returned, so the frame carried no run id and the behaviour depended on the answer length.
   let afterRoute: string | undefined;
-  await withRunContext({ platform: "mobile" }, async () => {
+  await withRunContext({ platform: "my-claw-app" }, async () => {
     await (async () => {
       /* the routing itself */
     })();

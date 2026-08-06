@@ -1,6 +1,6 @@
 /**
  * Shared command catalog. Single source of truth for every channel: telegram registers the
- * bot menu from it, the mobile channel answers `commands.list` with it, and the mobile app
+ * bot menu from it, the my-claw-app channel answers `commands.list` with it, and the app
  * renders the slash-menu from the server response.
  */
 export const COMMANDS = [

@@ -2,15 +2,15 @@ import { test, afterEach, beforeEach, describe } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { MobileAdapter } from "../src/channels/mobile/adapter.ts";
-import type { MobileChannelConfig } from "../src/core/config.ts";
+import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
+import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
 
 const DEVICE_ID = "test-device";
 const TOKEN = "secret-token";
 
-function createConfig(overrides: Partial<MobileChannelConfig> = {}): MobileChannelConfig {
+function createConfig(overrides: Partial<MyClawAppChannelConfig> = {}): MyClawAppChannelConfig {
   return {
     port: 0,
     devices: { [DEVICE_ID]: { token: TOKEN, name: "test phone" } },
@@ -27,7 +27,7 @@ interface WsClient {
 
 function connectClient(port: number, device = DEVICE_ID, token = TOKEN): Promise<WsClient> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/mobile?device=${device}&token=${token}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
     const client: WsClient = { ws, frames: [], closed: null };
     let settled = false;
     const timer = setTimeout(() => {
@@ -101,10 +101,10 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 3000): Promise<vo
   }
 }
 
-function streamerMessage(adapter: MobileAdapter, id: string, chatId: string): UnifiedMessage {
+function streamerMessage(adapter: MyClawAppAdapter, id: string, chatId: string): UnifiedMessage {
   return {
     id,
-    platform: "mobile",
+    platform: "my-claw-app",
     userId: chatId,
     chatId,
     chatType: "dm",
@@ -118,7 +118,7 @@ function streamerMessage(adapter: MobileAdapter, id: string, chatId: string): Un
 function approvalRequest(): ToolApprovalRequest {
   return {
     id: "a1",
-    platform: "mobile",
+    platform: "my-claw-app",
     chatId: DEVICE_ID,
     userId: DEVICE_ID,
     chatType: "dm",
@@ -136,7 +136,7 @@ class FakeSessionStore {
   removed: string[] = [];
 
   resolveSessionId(deviceId: string, threadId: string): string {
-    return `mobile/thread/${deviceId}/${threadId}`;
+    return `my-claw-app/thread/${deviceId}/${threadId}`;
   }
 
   async list(deviceId: string): Promise<typeof this.summaries> {
@@ -158,15 +158,15 @@ class FakeSessionStore {
   }
 }
 
-describe("MobileAdapter", () => {
-  let adapter: MobileAdapter;
+describe("MyClawAppAdapter", () => {
+  let adapter: MyClawAppAdapter;
   let client: WsClient;
   let received: UnifiedMessage[];
   let store: FakeSessionStore;
 
   beforeEach(async () => {
     store = new FakeSessionStore();
-    adapter = new MobileAdapter(createConfig(), store as never);
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
     received = [];
     adapter.onMessage(async (msg) => {
       received.push(msg);
@@ -197,7 +197,7 @@ describe("MobileAdapter", () => {
 
     const msg = received[0]!;
     assert.equal(msg.id, "m1");
-    assert.equal(msg.platform, "mobile");
+    assert.equal(msg.platform, "my-claw-app");
     assert.equal(msg.userId, DEVICE_ID);
     assert.equal(msg.chatId, DEVICE_ID);
     assert.equal(msg.chatType, "dm");
@@ -232,7 +232,7 @@ describe("MobileAdapter", () => {
   test("send with a local attachment registers a servable media id", async () => {
     const tmpDir = join(MY_CLAW_DIR, "tmp");
     await mkdir(tmpDir, { recursive: true });
-    const file = join(tmpDir, `mobile-test-${Date.now()}.png`);
+    const file = join(tmpDir, `app-test-${Date.now()}.png`);
     await writeFile(file, "png-bytes");
 
     await adapter.send(DEVICE_ID, {
@@ -418,7 +418,7 @@ describe("MobileAdapter", () => {
     const msg = received[0]!;
     assert.equal(msg.attachments.length, 1);
     assert.equal(msg.attachments[0]!.type, "file");
-    assert.ok(msg.attachments[0]!.path!.includes("files/mobile/test-device/projet"));
+    assert.ok(msg.attachments[0]!.path!.includes("files/my-claw-app/test-device/projet"));
 
     // The session explorer lists it with its size, and delete empties the list.
     client.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
@@ -509,7 +509,7 @@ describe("MobileAdapter", () => {
   });
 
   test("uploads are capped by the configured size limit", async () => {
-    const small = new MobileAdapter(
+    const small = new MyClawAppAdapter(
       createConfig({ files: { maxSizeBytes: 4 } }),
       store as never,
     );
@@ -562,7 +562,7 @@ describe("MobileAdapter", () => {
   });
 
   test("confirmTool sends approval.request and accepts a response", async () => {
-    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }), store as never);
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
     approvalsAdapter.onMessage(() => Promise.resolve());
     await approvalsAdapter.start();
     const approvalClient = await connectClient(approvalsAdapter.port);
@@ -581,7 +581,7 @@ describe("MobileAdapter", () => {
   });
 
   test("confirmTool stays pending until timeout (deny)", async () => {
-    const approvalsAdapter = new MobileAdapter(createConfig({ approvals: true }), store as never);
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
     approvalsAdapter.onMessage(() => Promise.resolve());
     await approvalsAdapter.start();
     const approvalClient = await connectClient(approvalsAdapter.port);
@@ -608,7 +608,104 @@ describe("MobileAdapter", () => {
   test("stop closes live sockets and releases the port", async () => {
     const port = adapter.port;
     await adapter.stop();
-    const probe = await fetch(`http://127.0.0.1:${port}/mobile`).catch(() => null);
+    const probe = await fetch(`http://127.0.0.1:${port}/my-claw-app`).catch(() => null);
     assert.equal(probe, null);
+  });
+});
+
+describe("MyClawAppAdapter owners", () => {
+  // A phone and a browser paired to the same owner are two windows onto one conversation:
+  // same thread namespace, same files, and an answer has to land on both.
+  const OWNER = "neras";
+  let adapter: MyClawAppAdapter;
+  let store: FakeSessionStore & { listedFor: string[] };
+  let received: UnifiedMessage[];
+
+  beforeEach(async () => {
+    const base = new FakeSessionStore() as FakeSessionStore & { listedFor: string[] };
+    base.listedFor = [];
+    base.list = async (key: string) => {
+      base.listedFor.push(key);
+      return base.summaries;
+    };
+    store = base;
+    adapter = new MyClawAppAdapter(
+      {
+        port: 0,
+        devices: {
+          phone: { token: TOKEN, owner: OWNER },
+          browser: { token: TOKEN, owner: OWNER },
+          loner: { token: TOKEN },
+        },
+        streaming: { enabled: true, minChars: 1 },
+      },
+      store as never,
+    );
+    received = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+    await adapter.start();
+  });
+
+  afterEach(async () => {
+    await adapter.stop();
+  });
+
+  test("devices of one owner share the conversation and both receive the reply", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+
+    phone.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "from the phone", threadId: "t-1" }));
+    await waitUntil(() => received.length > 0);
+    assert.equal(received[0]?.chatId, OWNER, "the message must be keyed by owner, not by device");
+    assert.equal(received[0]?.userId, OWNER);
+
+    browser.ws.send(JSON.stringify({ type: "session.list", id: "s1" }));
+    await nextFrame(browser);
+    assert.deepEqual(store.listedFor, [OWNER], "the browser must read the owner's thread list");
+
+    await adapter.send(OWNER, { text: "answered", threadId: "t-1" });
+    const onPhone = await nextFrame(phone);
+    const onBrowser = await nextFrame(browser);
+    assert.equal(onPhone["text"], "answered");
+    assert.equal(onBrowser["text"], "answered");
+
+    phone.ws.close();
+    browser.ws.close();
+  });
+
+  test("a device without an owner stays on its own namespace", async () => {
+    const loner = await connectClient(adapter.port, "loner");
+    const phone = await connectClient(adapter.port, "phone");
+
+    loner.ws.send(JSON.stringify({ type: "chat.send", id: "m2", text: "solo", threadId: "t-1" }));
+    await waitUntil(() => received.length > 0);
+    assert.equal(received[0]?.chatId, "loner");
+
+    await adapter.send("loner", { text: "for the loner", threadId: "t-1" });
+    const onLoner = await nextFrame(loner);
+    assert.equal(onLoner["text"], "for the loner");
+    assert.equal(phone.frames.length, 0, "another owner must not see it");
+
+    loner.ws.close();
+    phone.ws.close();
+  });
+
+  test("a window that joins mid-answer still gets the rest of the stream", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m3", OWNER));
+    await streamer.push("first ");
+    await nextFrame(phone);
+
+    const browser = await connectClient(adapter.port, "browser");
+    await streamer.push("second");
+    await streamer.finish();
+
+    const late = await nextFrame(browser);
+    assert.ok(String(late["type"]).startsWith("chat.stream."), "the late window must receive the remaining frames");
+
+    phone.ws.close();
+    browser.ws.close();
   });
 });

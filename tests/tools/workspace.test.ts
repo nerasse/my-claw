@@ -24,7 +24,7 @@ test("resolveWorkspacePath: no workspace configured returns the input unchanged"
 test("resolveWorkspacePath: session attachment paths under the files root are allowed", () => {
   // The agent must read the files the user attaches without them living in the workspace.
   const filesRoot = resolveWorkspacePath("", "/ws").slice(0, 0) + process.env["MY_CLAW_DIR"] + "/files";
-  const attachment = filesRoot + "/mobile/dev-x/thread-1/uuid.pdf";
+  const attachment = filesRoot + "/my-claw-app/owner-x/thread-1/uuid.pdf";
   const out = resolveWorkspacePath(attachment, "/ws");
   assert.equal(out, attachment);
 });

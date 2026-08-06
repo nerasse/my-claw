@@ -23,7 +23,7 @@ my-claw is a single-tenant personal agent that connects to Telegram and Matrix, 
 - OpenAI-compatible LLM provider (Fireworks AI default)
 - Router + session manager orchestrate inbound messages
 - Agent bridge handles tool call loops (configurable: 90 orchestrator, 50 subagent), parallel execution
-- Channel adapters are self-contained (telegram/, matrix/)
+- Channel adapters are self-contained (telegram/, matrix/, my-claw-app/)
 
 See `docs/architecture.md` for full details.
 

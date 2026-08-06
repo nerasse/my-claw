@@ -1,11 +1,11 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { MY_CLAW_DIR, type MobileChannelConfig } from "../../core/config.ts";
+import { MY_CLAW_DIR, type MyClawAppChannelConfig } from "../../core/config.ts";
 
 /**
  * Uploaded attachments live next to their session, one directory per thread:
- *   $MY_CLAW_DIR/files/mobile/<device>/<threadId>/<id>.<ext>
+ *   $MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/<id>.<ext>
  * The layout mirrors the session id 1:1, so archiving or deleting a conversation removes its
  * files with it, and the disk usage of a session is the size of its directory.
  */
@@ -28,17 +28,17 @@ const TYPE_BY_MIME: Record<string, SessionFile["type"]> = {
   "video/": "video",
 };
 
-export function filesDirFor(deviceId: string, threadId: string): string {
-  return join(MY_CLAW_DIR, "files", "mobile", deviceId, threadId);
+export function filesDirFor(owner: string, threadId: string): string {
+  return join(MY_CLAW_DIR, "files", "my-claw-app", owner, threadId);
 }
 
-export function filePathFor(deviceId: string, threadId: string, id: string, ext: string): string {
-  return join(filesDirFor(deviceId, threadId), `${id}.${ext}`);
+export function filePathFor(owner: string, threadId: string, id: string, ext: string): string {
+  return join(filesDirFor(owner, threadId), `${id}.${ext}`);
 }
 
 /** The directory of the owning session, so archive/delete can clean it up. */
-export function filesRootForDevice(deviceId: string): string {
-  return join(MY_CLAW_DIR, "files", "mobile", deviceId);
+export function filesRootForOwner(owner: string): string {
+  return join(MY_CLAW_DIR, "files", "my-claw-app", owner);
 }
 
 function mimeTypeFor(filename: string): string {
@@ -55,7 +55,7 @@ function mimeTypeFor(filename: string): string {
 }
 
 export class SessionFileStore {
-  constructor(private config?: MobileChannelConfig) {}
+  constructor(private config?: MyClawAppChannelConfig) {}
 
   /** Largest single upload accepted, for the HTTP pre-check. */
   get maxSizeBytes(): number {
@@ -85,15 +85,15 @@ export class SessionFileStore {
 
   private async listRoots(): Promise<string[]> {
     try {
-      return await readdir(join(MY_CLAW_DIR, "files", "mobile"));
+      return await readdir(join(MY_CLAW_DIR, "files", "my-claw-app"));
     } catch {
       return [];
     }
   }
 
-  private async listThreadDirs(deviceId: string): Promise<string[]> {
+  private async listThreadDirs(owner: string): Promise<string[]> {
     try {
-      return await readdir(join(MY_CLAW_DIR, "files", "mobile", deviceId));
+      return await readdir(join(MY_CLAW_DIR, "files", "my-claw-app", owner));
     } catch {
       return [];
     }
@@ -128,23 +128,23 @@ export class SessionFileStore {
     }
   }
 
-  async list(deviceId: string, threadId: string): Promise<SessionFile[]> {
-    const dir = filesDirFor(deviceId, threadId);
+  async list(owner: string, threadId: string): Promise<SessionFile[]> {
+    const dir = filesDirFor(owner, threadId);
     return this.listInThread(dir);
   }
 
   /** Total size of one conversation's attachments, computed on demand. */
-  async sessionSizeBytes(deviceId: string, threadId: string): Promise<number> {
-    const files = await this.list(deviceId, threadId);
+  async sessionSizeBytes(owner: string, threadId: string): Promise<number> {
+    const files = await this.list(owner, threadId);
     return files.reduce((sum, file) => sum + file.sizeBytes, 0);
   }
 
-  async findById(deviceId: string, threadId: string, id: string): Promise<SessionFile | null> {
-    const files = await this.list(deviceId, threadId);
+  async findById(owner: string, threadId: string, id: string): Promise<SessionFile | null> {
+    const files = await this.list(owner, threadId);
     return files.find((file) => file.id === id) ?? null;
   }
 
-  async save(deviceId: string, threadId: string, filename: string, bytes: Uint8Array): Promise<SessionFile> {
+  async save(owner: string, threadId: string, filename: string, bytes: Uint8Array): Promise<SessionFile> {
     const ext = extname(filename).slice(1).toLowerCase();
     const allowed = this.allowedExtensions();
     if (allowed && (!ext || !allowed.has(ext))) {
@@ -159,35 +159,35 @@ export class SessionFileStore {
 
     const safeName = basename(filename).replace(/[^\w.\-() ]+/g, "_").slice(0, 120) || "attachment";
     const id = randomUUID();
-    const dir = filesDirFor(deviceId, threadId);
+    const dir = filesDirFor(owner, threadId);
     await mkdir(dir, { recursive: true });
-    const path = filePathFor(deviceId, threadId, id, ext || "bin");
+    const path = filePathFor(owner, threadId, id, ext || "bin");
     await writeFile(path, bytes);
     return { id, filename: safeName, type: typeFor(safeName), mimeType: mimeTypeFor(safeName), sizeBytes: bytes.byteLength, ts: new Date().toISOString() };
   }
 
-  async read(deviceId: string, threadId: string, id: string): Promise<{ path: string; file: SessionFile } | null> {
-    const file = await this.findById(deviceId, threadId, id);
+  async read(owner: string, threadId: string, id: string): Promise<{ path: string; file: SessionFile } | null> {
+    const file = await this.findById(owner, threadId, id);
     if (!file) return null;
-    return { path: join(filesDirFor(deviceId, threadId), file.filename), file };
+    return { path: join(filesDirFor(owner, threadId), file.filename), file };
   }
 
-  async remove(deviceId: string, threadId: string, id: string): Promise<boolean> {
-    const file = await this.findById(deviceId, threadId, id);
+  async remove(owner: string, threadId: string, id: string): Promise<boolean> {
+    const file = await this.findById(owner, threadId, id);
     if (!file) return false;
-    await rm(join(filesDirFor(deviceId, threadId), file.filename), { force: true });
+    await rm(join(filesDirFor(owner, threadId), file.filename), { force: true });
     return true;
   }
 
   /** Archive/delete of a session must take its files with it. */
-  async removeSessionFiles(deviceId: string, threadId: string): Promise<void> {
-    await rm(filesDirFor(deviceId, threadId), { recursive: true, force: true });
+  async removeSessionFiles(owner: string, threadId: string): Promise<void> {
+    await rm(filesDirFor(owner, threadId), { recursive: true, force: true });
   }
 
-  async readById(deviceId: string, id: string): Promise<{ path: string; file: SessionFile } | null> {
-    const roots = await this.listThreadDirs(deviceId);
+  async readById(owner: string, id: string): Promise<{ path: string; file: SessionFile } | null> {
+    const roots = await this.listThreadDirs(owner);
     for (const threadId of roots) {
-      const found = await this.read(deviceId, threadId, id);
+      const found = await this.read(owner, threadId, id);
       if (found) return found;
     }
     return null;

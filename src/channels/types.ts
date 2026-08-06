@@ -1,6 +1,6 @@
 export interface UnifiedMessage {
   id: string;
-  platform: "telegram" | "matrix" | "cron" | "mobile";
+  platform: "telegram" | "matrix" | "cron" | "my-claw-app";
   userId: string;
   chatId: string;
   chatType: "dm" | "group";

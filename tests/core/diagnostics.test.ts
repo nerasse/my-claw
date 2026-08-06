@@ -15,7 +15,7 @@ async function seedLog(name: string, entries: object[]): Promise<void> {
 function entry(over: Partial<{ level: string; scope: string; run: string; message: string }>): object {
   return {
     timestamp: "2026-08-06T10:00:00.000Z",
-    scope: over.scope ?? "mobile",
+    scope: over.scope ?? "my-claw-app",
     level: over.level ?? "info",
     ...(over.run ? { run: over.run } : {}),
     message: over.message ?? "something happened",
@@ -26,7 +26,7 @@ function config(): MyClawConfig {
   return {
     whitelist: [],
     blacklist: [],
-    channels: { mobile: { devices: { "dev-1": { token: "super-secret-device-token" } } } },
+    channels: { "my-claw-app": { devices: { "dev-1": { token: "super-secret-device-token" } } } },
     llm: { provider: "x", baseUrl: "https://example.com", model: "m", apiKey: "sk-abcdef1234567890" },
     agents: {},
   };
@@ -34,7 +34,7 @@ function config(): MyClawConfig {
 
 test("the log tail filters by run id, which is the whole point of stamping it", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("mobile-2026-08-06.log", [
+  await seedLog("my-claw-app-2026-08-06.log", [
     entry({ run: "aaaa1111", message: "first" }),
     entry({ run: "bbbb2222", message: "other run" }),
     entry({ run: "aaaa1111", message: "second" }),
@@ -61,18 +61,18 @@ test("the log tail filters by level and keeps the newest lines first", async () 
 
 test("the log tail can be scoped to one channel", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("mobile-2026-08-06.log", [entry({ scope: "mobile", message: "from mobile" })]);
+  await seedLog("my-claw-app-2026-08-06.log", [entry({ scope: "my-claw-app", message: "from the app" })]);
   await seedLog("telegram-2026-08-06.log", [entry({ scope: "telegram", message: "from telegram" })]);
 
-  const entries = await readLogEntries({ scope: "mobile" });
+  const entries = await readLogEntries({ scope: "my-claw-app" });
 
-  expect(entries.map((e) => e.message)).toEqual(["from mobile"]);
+  expect(entries.map((e) => e.message)).toEqual(["from the app"]);
 });
 
 test("a noisy scope can be excluded, which is what makes the snapshot readable", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
   await seedLog("matrix-sdk-2026-08-06.log", [entry({ scope: "matrix-sdk", level: "warn", message: "push rule chatter" })]);
-  await seedLog("mobile-2026-08-06.log", [entry({ scope: "mobile", level: "warn", message: "the actual problem" })]);
+  await seedLog("my-claw-app-2026-08-06.log", [entry({ scope: "my-claw-app", level: "warn", message: "the actual problem" })]);
 
   const entries = await readLogEntries({ level: "warn", excludeScopes: ["matrix-sdk"] });
 
@@ -99,7 +99,7 @@ test("secrets never leave the server, whether named in the config or matched by 
 
 test("the formatted tail is redacted and reads oldest to newest", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("mobile-2026-08-06.log", [
+  await seedLog("my-claw-app-2026-08-06.log", [
     entry({ run: "aaaa1111", message: "older" }),
     { ...entry({ run: "aaaa1111", message: "newer" }), data: { token: "super-secret-device-token" } },
   ]);

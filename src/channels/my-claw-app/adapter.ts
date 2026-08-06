@@ -9,34 +9,34 @@ import type {
   ToolApprovalRequest,
   UnifiedMessage,
 } from "../types.ts";
-import type { MobileChannelConfig } from "../../core/config.ts";
-import { mobileLog } from "../../utils/logger.ts";
+import type { MyClawAppChannelConfig } from "../../core/config.ts";
+import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { COMMANDS } from "../commands-catalog.ts";
 import { SessionFileStore, filePathFor } from "./files.ts";
 import type {
-  MobileApprovalRequest,
-  MobileApprovalResponse,
-  MobileAttachmentMeta,
-  MobileAttachmentRef,
-  MobileChatHistory,
-  MobileChatMessage,
-  MobileChatSend,
-  MobileClientFrame,
-  MobileFileDelete,
-  MobileFilesList,
-  MobileDiagSnapshot,
-  MobileLogsTail,
-  MobileServerFrame,
-  MobileSessionArchive,
-  MobileSessionDelete,
-  MobileSessionHistory,
-  MobileSessionList,
+  MyClawAppApprovalRequest,
+  MyClawAppApprovalResponse,
+  MyClawAppAttachmentMeta,
+  MyClawAppAttachmentRef,
+  MyClawAppChatHistory,
+  MyClawAppChatMessage,
+  MyClawAppChatSend,
+  MyClawAppClientFrame,
+  MyClawAppFileDelete,
+  MyClawAppFilesList,
+  MyClawAppDiagSnapshot,
+  MyClawAppLogsTail,
+  MyClawAppServerFrame,
+  MyClawAppSessionArchive,
+  MyClawAppSessionDelete,
+  MyClawAppSessionHistory,
+  MyClawAppSessionList,
 } from "./types.ts";
-import { DEFAULT_MOBILE_THREAD } from "./types.ts";
-import { MobileStreamer } from "./stream.ts";
-import type { MobileSessionStore } from "./sessions.ts";
+import { DEFAULT_THREAD } from "./types.ts";
+import { MyClawAppStreamer } from "./stream.ts";
+import type { MyClawAppSessionStore } from "./sessions.ts";
 import { sanitizeThreadId } from "./sessions.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
@@ -46,8 +46,10 @@ const STALE_SOCKET_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30_000;
 const MAX_MEDIA_ENTRIES = 1000;
 
-interface MobileSessionData {
+interface MyClawAppSessionData {
   deviceId: string;
+  /** Conversation namespace of the device (config `owner`, else the device id). */
+  owner: string;
   lastSeen: number;
 }
 
@@ -69,25 +71,25 @@ interface PendingApproval {
 }
 
 /** Supplied by the entry point: the adapter must not reach into the global config itself. */
-export interface MobileDiagnosticsProvider {
-  snapshot(deviceId: string, threadId: string): Promise<string>;
+export interface MyClawAppDiagnosticsProvider {
+  snapshot(owner: string, threadId: string): Promise<string>;
   logs(query: { scope?: string; level?: string; run?: string; contains?: string; limit: number }): Promise<{ text: string; lines: number }>;
 }
 
-export class MobileAdapter implements ChannelAdapter {
-  readonly platform = "mobile" as const;
-  private server?: Server<MobileSessionData>;
-  private sockets = new Map<string, ServerWebSocket<MobileSessionData>>();
+export class MyClawAppAdapter implements ChannelAdapter {
+  readonly platform = "my-claw-app" as const;
+  private server?: Server<MyClawAppSessionData>;
+  private sockets = new Map<string, ServerWebSocket<MyClawAppSessionData>>();
   private media = new Map<string, MediaEntry>();
   private mediaOrder: string[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
-  private diagnostics?: MobileDiagnosticsProvider;
+  private diagnostics?: MyClawAppDiagnosticsProvider;
   private sweeper?: ReturnType<typeof setInterval>;
 
   constructor(
-    private config: MobileChannelConfig,
-    private store: MobileSessionStore,
+    private config: MyClawAppChannelConfig,
+    private store: MyClawAppSessionStore,
   ) {
     this.files = new SessionFileStore(this.config);
   }
@@ -111,7 +113,7 @@ export class MobileAdapter implements ChannelAdapter {
     });
     this.sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
     this.sweeper.unref?.();
-    await mobileLog("info", "mobile adapter started", { port: this.server.port });
+    await myClawAppLog("info", "adapter started", { port: this.server.port });
   }
 
   async stop(): Promise<void> {
@@ -134,10 +136,10 @@ export class MobileAdapter implements ChannelAdapter {
     this.pendingApprovals.clear();
     this.server?.stop(true);
     this.server = undefined;
-    await mobileLog("info", "mobile adapter stopped");
+    await myClawAppLog("info", "adapter stopped");
   }
 
-  setConfig(config: MobileChannelConfig): void {
+  setConfig(config: MyClawAppChannelConfig): void {
     this.config = config;
   }
 
@@ -145,10 +147,9 @@ export class MobileAdapter implements ChannelAdapter {
     return this.config.streaming?.enabled === true;
   }
 
-  async send(chatId: string, message: OutgoingMessage): Promise<void> {
-    const ws = this.sockets.get(chatId);
-    if (!ws) {
-      await mobileLog("debug", "mobile send skipped: device offline", { deviceId: chatId });
+  async send(owner: string, message: OutgoingMessage): Promise<void> {
+    if (this.socketsFor(owner).length === 0) {
+      await myClawAppLog("debug", "send skipped: no device online", { owner });
       return;
     }
 
@@ -159,48 +160,48 @@ export class MobileAdapter implements ChannelAdapter {
 
     if (!text && !mediaRefs.length && !attachmentsToSend.length) return;
 
-    const attachments: MobileAttachmentMeta[] = [];
+    const attachments: MyClawAppAttachmentMeta[] = [];
     for (const ref of mediaRefs) {
       const meta = this.registerMedia(ref.path, { type: "audio", audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
       if (meta) attachments.push(meta);
     }
     for (const att of attachmentsToSend) {
       if (!att.path) {
-        await mobileLog("debug", "mobile attachment without local path skipped", { type: att.type });
+        await myClawAppLog("debug", "attachment without local path skipped", { type: att.type });
         continue;
       }
       const meta = this.registerMedia(att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
       if (meta) attachments.push(meta);
     }
 
-    const frame: MobileChatMessage = {
+    const frame: MyClawAppChatMessage = {
       type: "chat.message",
       id: crypto.randomUUID(),
       text,
-      threadId: message.threadId ?? DEFAULT_MOBILE_THREAD,
+      threadId: message.threadId ?? DEFAULT_THREAD,
       attachments,
       replyToId: message.replyToId,
       ...(currentRunId() ? { run: currentRunId() } : {}),
     };
-    this.sendFrame(ws, frame);
+    this.broadcast(owner, frame);
   }
 
   async confirmTool(request: ToolApprovalRequest): Promise<ApprovalDecision> {
     if (this.config.approvals !== true) return "deny";
-    const ws = this.sockets.get(request.chatId);
-    if (!ws) return "deny";
+    if (this.socketsFor(request.chatId).length === 0) return "deny";
 
     const id = crypto.randomUUID();
-    const frame: MobileApprovalRequest = {
+    const frame: MyClawAppApprovalRequest = {
       type: "approval.request",
       id,
-      threadId: request.threadId ?? DEFAULT_MOBILE_THREAD,
+      threadId: request.threadId ?? DEFAULT_THREAD,
       toolName: request.toolName,
       args: request.args,
       replyToId: request.messageId,
       expiresAt: Date.now() + CONFIRM_TIMEOUT_MS,
     };
-    this.sendFrame(ws, frame);
+    // Asked on every window of the owner; the first answer wins and clears the pending entry.
+    this.broadcast(request.chatId, frame);
 
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
@@ -211,14 +212,15 @@ export class MobileAdapter implements ChannelAdapter {
     });
   }
 
-  createStreamer(message: UnifiedMessage): MobileStreamer {
-    const ws = this.sockets.get(message.chatId);
-    return new MobileStreamer({
+  createStreamer(message: UnifiedMessage): MyClawAppStreamer {
+    const owner = message.chatId;
+    return new MyClawAppStreamer({
       id: crypto.randomUUID(),
       replyToId: message.id,
-      threadId: message.threadId ?? DEFAULT_MOBILE_THREAD,
+      threadId: message.threadId ?? DEFAULT_THREAD,
       minCharsBeforeDelta: this.config.streaming?.minChars,
-      send: (frame) => this.sendFrame(ws, frame),
+      // Resolved per frame, not captured: a window that joins mid-answer still gets the rest.
+      send: (frame) => this.broadcast(owner, frame),
     });
   }
 
@@ -227,8 +229,21 @@ export class MobileAdapter implements ChannelAdapter {
   }
 
   /** Injected by the entry point: the adapter has no view of the global config or the runtime. */
-  onDiagnostics(provider: MobileDiagnosticsProvider): void {
+  onDiagnostics(provider: MyClawAppDiagnosticsProvider): void {
     this.diagnostics = provider;
+  }
+
+  /** Conversation namespace of a device: its configured owner, else the device id itself. */
+  private ownerFor(deviceId: string): string {
+    return this.config.devices?.[deviceId]?.owner?.trim() || deviceId;
+  }
+
+  private socketsFor(owner: string): ServerWebSocket<MyClawAppSessionData>[] {
+    return [...this.sockets.values()].filter((ws) => ws.data.owner === owner);
+  }
+
+  private broadcast(owner: string, frame: MyClawAppServerFrame): void {
+    for (const ws of this.socketsFor(owner)) this.sendFrame(ws, frame);
   }
 
   private deviceFor(deviceId: string, token: string): boolean {
@@ -241,7 +256,7 @@ export class MobileAdapter implements ChannelAdapter {
     return timingSafeEqual(expected, provided);
   }
 
-  private async handleFetch(req: Request, server: Server<MobileSessionData>): Promise<Response | undefined> {
+  private async handleFetch(req: Request, server: Server<MyClawAppSessionData>): Promise<Response | undefined> {
     const url = new URL(req.url);
 
     if (url.pathname === "/media" && req.method === "POST") {
@@ -249,7 +264,7 @@ export class MobileAdapter implements ChannelAdapter {
       if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      return this.handleUpload(deviceId, req);
+      return this.handleUpload(this.ownerFor(deviceId), req);
     }
 
     if (url.pathname.startsWith("/media/")) {
@@ -258,17 +273,18 @@ export class MobileAdapter implements ChannelAdapter {
       if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      return this.serveMedia(id, deviceId);
+      return this.serveMedia(id, this.ownerFor(deviceId));
     }
 
-    if (url.pathname === "/mobile") {
+    if (url.pathname === "/my-claw-app") {
       if (req.headers.get("upgrade") !== "websocket") {
         return new Response("Upgrade Required", { status: 426 });
       }
       if (!this.deviceFor(url.searchParams.get("device") ?? "", url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      if (server.upgrade(req, { data: { deviceId: url.searchParams.get("device")!, lastSeen: Date.now() } })) {
+      const deviceId = url.searchParams.get("device")!;
+      if (server.upgrade(req, { data: { deviceId, owner: this.ownerFor(deviceId), lastSeen: Date.now() } })) {
         return undefined;
       }
       return new Response("Upgrade Failed", { status: 500 });
@@ -277,7 +293,7 @@ export class MobileAdapter implements ChannelAdapter {
     return new Response("Not Found", { status: 404 });
   }
 
-  private async serveMedia(id: string, deviceId?: string): Promise<Response> {
+  private async serveMedia(id: string, owner?: string): Promise<Response> {
     const entry = this.media.get(id);
     if (entry) {
       const headers: Record<string, string> = {
@@ -288,9 +304,9 @@ export class MobileAdapter implements ChannelAdapter {
       }
       return new Response(Bun.file(entry.path), { headers });
     }
-    // Attachments uploaded by the device itself: served back from the session files.
-    if (deviceId) {
-      const found = await this.files.readById(deviceId, id);
+    // Attachments uploaded from the owner's devices: served back from the session files.
+    if (owner) {
+      const found = await this.files.readById(owner, id);
       if (found) {
         return new Response(Bun.file(found.path), {
           headers: {
@@ -303,35 +319,35 @@ export class MobileAdapter implements ChannelAdapter {
     return new Response("Not Found", { status: 404 });
   }
 
-  private async handleUpload(deviceId: string, req: Request): Promise<Response> {
+  private async handleUpload(owner: string, req: Request): Promise<Response> {
     const threadId = req.headers.get("x-thread-id")?.trim() || "default";
     const safeThread = sanitizeThreadId(threadId);
     const filename = (req.headers.get("x-filename") ?? "attachment").trim();
-    const type = (req.headers.get("x-type") ?? "file").trim() as MobileAttachmentRef["type"];
+    const type = (req.headers.get("x-type") ?? "file").trim() as MyClawAppAttachmentRef["type"];
     if (!safeThread) {
-      await mobileLog("warn", "mobile upload rejected: bad threadId", { deviceId, threadId });
+      await myClawAppLog("warn", "upload rejected: bad threadId", { owner, threadId });
       return new Response("Bad threadId", { status: 400 });
     }
     // Reject oversized payloads from the declared length BEFORE buffering the body: the
     // client decides the bytes we hold in memory, so the cap must apply to the declaration.
     const declared = Number(req.headers.get("content-length") ?? 0);
     if (declared > this.files.maxSizeBytes) {
-      await mobileLog("warn", "mobile upload rejected: too large", { deviceId, threadId: safeThread, declared, max: this.files.maxSizeBytes });
+      await myClawAppLog("warn", "upload rejected: too large", { owner, threadId: safeThread, declared, max: this.files.maxSizeBytes });
       return new Response("File too large", { status: 413 });
     }
     try {
       const bytes = new Uint8Array(await req.arrayBuffer());
-      const file = await this.files.save(deviceId, safeThread, filename, bytes);
-      await mobileLog("info", "mobile file uploaded", { deviceId, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
+      const file = await this.files.save(owner, safeThread, filename, bytes);
+      await myClawAppLog("info", "file uploaded", { owner, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
       return Response.json({ id: file.id, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Upload failed";
-      await mobileLog("warn", "mobile upload failed", { deviceId, threadId: safeThread, filename, reason });
+      await myClawAppLog("warn", "upload failed", { owner, threadId: safeThread, filename, reason });
       return new Response(reason, { status: 413 });
     }
   }
 
-  private registerMedia(path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">): MobileAttachmentMeta | undefined {
+  private registerMedia(path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">): MyClawAppAttachmentMeta | undefined {
     const id = crypto.randomUUID();
     this.media.set(id, { path, ...meta });
     this.mediaOrder.push(id);
@@ -352,7 +368,7 @@ export class MobileAdapter implements ChannelAdapter {
     };
   }
 
-  private handleOpen(ws: ServerWebSocket<MobileSessionData>): void {
+  private handleOpen(ws: ServerWebSocket<MyClawAppSessionData>): void {
     const existing = this.sockets.get(ws.data.deviceId);
     if (existing && existing !== ws) {
       try {
@@ -362,38 +378,38 @@ export class MobileAdapter implements ChannelAdapter {
       }
     }
     this.sockets.set(ws.data.deviceId, ws);
-    void mobileLog("info", "mobile device connected", { deviceId: ws.data.deviceId });
+    void myClawAppLog("info", "device connected", { deviceId: ws.data.deviceId });
   }
 
-  private handleClose(ws: ServerWebSocket<MobileSessionData>): void {
+  private handleClose(ws: ServerWebSocket<MyClawAppSessionData>): void {
     if (this.sockets.get(ws.data.deviceId) === ws) {
       this.sockets.delete(ws.data.deviceId);
     }
-    void mobileLog("info", "mobile device disconnected", { deviceId: ws.data.deviceId });
+    void myClawAppLog("info", "device disconnected", { deviceId: ws.data.deviceId });
   }
 
-  private handleMessage(ws: ServerWebSocket<MobileSessionData>, message: string | Buffer): void {
+  private handleMessage(ws: ServerWebSocket<MyClawAppSessionData>, message: string | Buffer): void {
     ws.data.lastSeen = Date.now();
     const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf8");
 
-    let frame: MobileClientFrame | undefined;
+    let frame: MyClawAppClientFrame | undefined;
     try {
       const parsed = JSON.parse(raw) as unknown;
       if (parsed && typeof parsed === "object" && typeof (parsed as { type?: unknown }).type === "string") {
-        frame = parsed as MobileClientFrame;
+        frame = parsed as MyClawAppClientFrame;
       }
     } catch {
       // Not JSON: treated as a plain-text chat.send (console mode).
     }
 
     if (!frame) {
-      this.emitChatSend(ws.data.deviceId, { type: "chat.send", id: crypto.randomUUID(), text: raw });
+      this.emitChatSend(ws.data.owner, { type: "chat.send", id: crypto.randomUUID(), text: raw });
       return;
     }
 
     switch (frame.type) {
       case "chat.send":
-        void this.emitChatSend(ws.data.deviceId, frame);
+        void this.emitChatSend(ws.data.owner, frame);
         break;
       case "approval.response":
         this.resolveApproval(frame);
@@ -408,7 +424,7 @@ export class MobileAdapter implements ChannelAdapter {
         this.handleSessionList(ws, frame);
         break;
       case "diag.snapshot":
-        void this.handleDiagSnapshot(ws, ws.data.deviceId, frame);
+        void this.handleDiagSnapshot(ws, ws.data.owner, frame);
         break;
       case "logs.tail":
         void this.handleLogsTail(ws, frame);
@@ -437,25 +453,25 @@ export class MobileAdapter implements ChannelAdapter {
     }
   }
 
-  private async emitChatSend(deviceId: string, frame: MobileChatSend): Promise<void> {
+  private async emitChatSend(owner: string, frame: MyClawAppChatSend): Promise<void> {
     const text = frame.text.trim();
     if (!text && !frame.attachments?.length) return;
     if (!this.messageHandler) return;
 
-    const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_MOBILE_THREAD;
+    const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
 
     const attachments: Attachment[] = [];
     for (const ref of frame.attachments ?? []) {
-      const stored = await this.files.findById(deviceId, threadId, ref.id);
+      const stored = await this.files.findById(owner, threadId, ref.id);
       if (!stored) {
-        await mobileLog("warn", "mobile attachment not found, dropped from the message", { deviceId, threadId, id: ref.id });
+        await myClawAppLog("warn", "attachment not found, dropped from the message", { owner, threadId, id: ref.id });
         continue;
       }
       attachments.push({
         // The stored type comes from the file itself; `ref.type` is whatever the client claimed,
         // and a jpeg announced as "file" would silently skip vision routing.
         type: stored.type,
-        path: filePathFor(deviceId, threadId, stored.id, stored.filename.split(".").at(-1) ?? "bin"),
+        path: filePathFor(owner, threadId, stored.id, stored.filename.split(".").at(-1) ?? "bin"),
         mimeType: stored.mimeType,
         filename: stored.filename,
         sizeBytes: stored.sizeBytes,
@@ -464,9 +480,9 @@ export class MobileAdapter implements ChannelAdapter {
 
     void this.messageHandler({
       id: frame.id,
-      platform: "mobile",
-      userId: deviceId,
-      chatId: deviceId,
+      platform: "my-claw-app",
+      userId: owner,
+      chatId: owner,
       chatType: "dm",
       text,
       timestamp: frame.ts,
@@ -476,87 +492,87 @@ export class MobileAdapter implements ChannelAdapter {
       sessionScope: "per-user",
       raw: frame,
     }).catch((err) => {
-      void mobileLog("error", "mobile message handling failed", { deviceId, error: String(err) });
+      void myClawAppLog("error", "message handling failed", { owner, error: String(err) });
     });
   }
 
-  private async handleSessionList(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionList): Promise<void> {
+  private async handleSessionList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionList): Promise<void> {
     try {
-      const sessions = await this.store.list(ws.data.deviceId);
+      const sessions = await this.store.list(ws.data.owner);
       this.sendFrame(ws, { type: "session.list.result", sessions });
     } catch (err) {
-      await mobileLog("error", "mobile session.list failed", { deviceId: ws.data.deviceId, error: String(err) });
+      await myClawAppLog("error", "session.list failed", { deviceId: ws.data.deviceId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "session list failed" });
     }
   }
 
-  private async handleSessionHistory(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionHistory): Promise<void> {
+  private async handleSessionHistory(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionHistory): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       this.sendFrame(ws, { type: "error", message: "invalid threadId" });
       return;
     }
     try {
-      const messages = await this.store.history(ws.data.deviceId, threadId, frame.limit);
-      const result: MobileChatHistory = { type: "chat.history", threadId, messages };
+      const messages = await this.store.history(ws.data.owner, threadId, frame.limit);
+      const result: MyClawAppChatHistory = { type: "chat.history", threadId, messages };
       this.sendFrame(ws, result);
     } catch (err) {
-      await mobileLog("error", "mobile session.history failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      await myClawAppLog("error", "session.history failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "history failed" });
     }
   }
 
-  private async handleSessionArchive(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionArchive): Promise<void> {
+  private async handleSessionArchive(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionArchive): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       this.sendFrame(ws, { type: "error", message: "invalid threadId" });
       return;
     }
     try {
-      await this.store.archive(ws.data.deviceId, threadId);
-      await this.files.removeSessionFiles(ws.data.deviceId, threadId);
+      await this.store.archive(ws.data.owner, threadId);
+      await this.files.removeSessionFiles(ws.data.owner, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
-      await mobileLog("error", "mobile session.archive failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      await myClawAppLog("error", "session.archive failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "archive failed" });
     }
   }
 
-  private async handleSessionDelete(ws: ServerWebSocket<MobileSessionData>, frame: MobileSessionDelete): Promise<void> {
+  private async handleSessionDelete(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionDelete): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       this.sendFrame(ws, { type: "error", message: "invalid threadId" });
       return;
     }
     try {
-      await this.store.remove(ws.data.deviceId, threadId);
-      await this.files.removeSessionFiles(ws.data.deviceId, threadId);
+      await this.store.remove(ws.data.owner, threadId);
+      await this.files.removeSessionFiles(ws.data.owner, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
     } catch (err) {
-      await mobileLog("error", "mobile session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      await myClawAppLog("error", "session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "delete failed" });
     }
   }
 
   private async handleDiagSnapshot(
-    ws: ServerWebSocket<MobileSessionData>,
+    ws: ServerWebSocket<MyClawAppSessionData>,
     deviceId: string,
-    frame: MobileDiagSnapshot,
+    frame: MyClawAppDiagSnapshot,
   ): Promise<void> {
     if (!this.diagnostics) {
       this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
       return;
     }
     try {
-      const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_MOBILE_THREAD;
+      const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
       this.sendFrame(ws, { type: "diag.snapshot.result", text: await this.diagnostics.snapshot(deviceId, threadId) });
     } catch (err) {
-      await mobileLog("error", "mobile diag.snapshot failed", { deviceId, error: String(err) });
+      await myClawAppLog("error", "diag.snapshot failed", { deviceId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "diag.snapshot failed" });
     }
   }
 
-  private async handleLogsTail(ws: ServerWebSocket<MobileSessionData>, frame: MobileLogsTail): Promise<void> {
+  private async handleLogsTail(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppLogsTail): Promise<void> {
     if (!this.diagnostics) {
       this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
       return;
@@ -572,12 +588,12 @@ export class MobileAdapter implements ChannelAdapter {
       const { text, lines } = await this.diagnostics.logs(query);
       this.sendFrame(ws, { type: "logs.tail.result", text, lines, query });
     } catch (err) {
-      await mobileLog("error", "mobile logs.tail failed", { deviceId: ws.data.deviceId, error: String(err) });
+      await myClawAppLog("error", "logs.tail failed", { deviceId: ws.data.deviceId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "logs.tail failed" });
     }
   }
 
-  private async handleFilesList(ws: ServerWebSocket<MobileSessionData>, frame: MobileFilesList): Promise<void> {
+  private async handleFilesList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppFilesList): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       this.sendFrame(ws, { type: "error", message: "invalid threadId" });
@@ -585,17 +601,17 @@ export class MobileAdapter implements ChannelAdapter {
     }
     try {
       const [files, totalBytes] = await Promise.all([
-        this.files.list(ws.data.deviceId, threadId),
-        this.files.sessionSizeBytes(ws.data.deviceId, threadId),
+        this.files.list(ws.data.owner, threadId),
+        this.files.sessionSizeBytes(ws.data.owner, threadId),
       ]);
       this.sendFrame(ws, { type: "files.list.result", threadId, files, totalBytes });
     } catch (err) {
-      await mobileLog("error", "mobile files.list failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      await myClawAppLog("error", "files.list failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "files.list failed" });
     }
   }
 
-  private async handleFileDelete(ws: ServerWebSocket<MobileSessionData>, frame: MobileFileDelete): Promise<void> {
+  private async handleFileDelete(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppFileDelete): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       this.sendFrame(ws, { type: "error", message: "invalid threadId" });
@@ -609,12 +625,12 @@ export class MobileAdapter implements ChannelAdapter {
         this.sendFrame(ws, { type: "error", message: "file not found" });
       }
     } catch (err) {
-      await mobileLog("error", "mobile files.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
+      await myClawAppLog("error", "files.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "files.delete failed" });
     }
   }
 
-  private resolveApproval(frame: MobileApprovalResponse): void {
+  private resolveApproval(frame: MyClawAppApprovalResponse): void {
     const pending = this.pendingApprovals.get(frame.id);
     if (!pending) return;
     clearTimeout(pending.timer);
@@ -622,12 +638,12 @@ export class MobileAdapter implements ChannelAdapter {
     pending.resolve(frame.accepted ? "allow-session" : "deny");
   }
 
-  private sendFrame(ws: ServerWebSocket<MobileSessionData> | undefined, frame: MobileServerFrame): void {
+  private sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void {
     if (!ws) return;
     try {
       ws.send(JSON.stringify(frame));
     } catch (err) {
-      void mobileLog("debug", "mobile send failed", { error: String(err) });
+      void myClawAppLog("debug", "send failed", { error: String(err) });
     }
   }
 

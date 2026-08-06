@@ -111,7 +111,7 @@ export interface MatrixChannelConfig {
   mediaMaxMb?: number;
 }
 
-export interface MobileChannelConfig {
+export interface MyClawAppChannelConfig {
   enabled?: boolean;
   /** Port the WSS server binds. Defaults to 8080. Reboot-only: the socket is created at start. */
   port?: number;
@@ -122,6 +122,12 @@ export interface MobileChannelConfig {
       token: string;
       name?: string;
       enabled?: boolean;
+      /**
+       * Whose conversations this device opens. Devices sharing an owner share the thread list,
+       * the uploaded files and the live replies, so a phone and a browser are two windows onto
+       * the same chat. Defaults to the device id: an unset owner keeps the device on its own.
+       */
+      owner?: string;
     }
   >;
   streaming?: {
@@ -363,7 +369,7 @@ export interface MyClawConfig {
   channels: {
     telegram?: TelegramChannelConfig;
     matrix?: MatrixChannelConfig;
-    mobile?: MobileChannelConfig;
+    "my-claw-app"?: MyClawAppChannelConfig;
   };
   llm: LlmConfig;
   agents: {
@@ -742,8 +748,8 @@ export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
   return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
 }
 
-export function isMobileChannelEnabled(config: MyClawConfig): boolean {
-  return config.channels.mobile?.enabled !== false && Boolean(config.channels.mobile);
+export function isMyClawAppChannelEnabled(config: MyClawConfig): boolean {
+  return config.channels["my-claw-app"]?.enabled !== false && Boolean(config.channels["my-claw-app"]);
 }
 
 const PROMPT_TEMPLATES = ["SYSTEM.md", "CORE.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;

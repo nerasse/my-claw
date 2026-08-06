@@ -3,7 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMobileChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMyClawAppChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import {
   loadConfigOrFallback,
   snapshotProtected,
@@ -22,8 +22,8 @@ import { writeJsonFileAtomically } from "./utils/atomic-write.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
-import { MobileAdapter } from "./channels/mobile/adapter.ts";
-import { MobileSessionStoreImpl } from "./channels/mobile/sessions.ts";
+import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
+import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -141,7 +141,7 @@ async function main() {
 
   const confirmHealthyConfig = async (): Promise<void> => {
     const healthy = isHealthy({
-      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config) || isMobileChannelEnabled(config),
+      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config) || isMyClawAppChannelEnabled(config),
       liveChannels: liveChannels.size,
     });
     const raw = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
@@ -326,7 +326,7 @@ async function main() {
   const adapters: Array<{ stop(): Promise<void> }> = [];
   let telegramRef: TelegramAdapter | undefined;
   let matrixRef: MatrixAdapter | undefined;
-  let mobileRef: MobileAdapter | undefined;
+  let myClawAppRef: MyClawAppAdapter | undefined;
 
   // Factory so the channel can be recreated on an identity/token change (A6b) without a
   // restart: reads config.channels.telegram live, wires all handlers, starts, sets telegramRef.
@@ -433,8 +433,8 @@ async function main() {
           const accepted = await telegram.confirm(request.chatId, text, request.messageId);
           return accepted ? "allow-session" : "deny";
         }
-        if (request.platform === "mobile" && mobileRef) {
-          return await mobileRef.confirmTool(request);
+        if (request.platform === "my-claw-app" && myClawAppRef) {
+          return await myClawAppRef.confirmTool(request);
         }
         return "deny";
       });
@@ -574,8 +574,8 @@ async function main() {
         const accepted = await telegramRef.confirm(request.chatId, text, request.messageId);
         return accepted ? "allow-session" : "deny";
       }
-      if (request.platform === "mobile" && mobileRef) {
-        return await mobileRef.confirmTool(request);
+      if (request.platform === "my-claw-app" && myClawAppRef) {
+        return await myClawAppRef.confirmTool(request);
       }
       return "deny";
     });
@@ -593,16 +593,21 @@ async function main() {
   if (telegramRef) cronScheduler.adapters.set("telegram", telegramRef);
   if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
 
-  const startMobileChannel = async (): Promise<void> => {
-    if (!isMobileChannelEnabled(config)) return;
-    const mobile = new MobileAdapter(config.channels.mobile!, new MobileSessionStoreImpl(sessionManager));
-    mobileRef = mobile;
+  const startMyClawAppChannel = async (): Promise<void> => {
+    // Channel keys are never validated, so a config still on the old name would start the
+    // process with the channel silently missing. Say it out loud instead.
+    if ("mobile" in config.channels) {
+      log("warn", 'channels.mobile is not read anymore, rename it to channels["my-claw-app"]');
+    }
+    if (!isMyClawAppChannelEnabled(config)) return;
+    const myClawApp = new MyClawAppAdapter(config.channels["my-claw-app"]!, new MyClawAppSessionStoreImpl(sessionManager));
+    myClawAppRef = myClawApp;
 
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
     // both redacted here rather than in the adapter, which has no view of the global config.
-    mobile.onDiagnostics({
-      snapshot: async (deviceId, threadId) => {
-        const sessionId = SessionManager.resolveSessionId("mobile", "dm", deviceId, deviceId, { threadId, sessionScope: "per-user" });
+    myClawApp.onDiagnostics({
+      snapshot: async (owner, threadId) => {
+        const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, { threadId, sessionScope: "per-user" });
         const session = await sessionManager.peek(sessionId);
         const resolved = resolveLlmConfig(config.llm, session?.modelOverride);
         return buildDiagnostics({
@@ -631,35 +636,35 @@ async function main() {
       },
     });
 
-    mobile.onMessage(async (msg) => withRunContext({ platform: "mobile" }, async () => {
+    myClawApp.onMessage(async (msg) => withRunContext({ platform: "my-claw-app" }, async () => {
       let response: RouteResult | undefined;
       try {
         await agent.preprocessMessage(msg);
         const echoes = agent.getEchoMessages(msg.id);
         for (const echo of echoes) {
-          await mobile.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
+          await myClawApp.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
         }
 
-        if (mobile.streamingEnabled()) {
+        if (myClawApp.streamingEnabled()) {
           // The streamer owns the output bubble for the whole run; a mid-run injected message
           // finalizes it and opens a fresh bubble replying to that message.
-          let active = mobile.createStreamer(msg);
-          hooks.emit("stream:start", { platform: "mobile", chatId: msg.chatId });
+          let active = myClawApp.createStreamer(msg);
+          hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
           try {
             response = await routeWithReroute(router, msg, {
               onToken: (token) => active.push(token),
               onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
               onTurnSwitch: async (injMsg) => {
                 await active.finish();
-                active = mobile.createStreamer(injMsg);
+                active = myClawApp.createStreamer(injMsg);
               },
             });
             await active.finish();
-            hooks.emit("stream:finish", { platform: "mobile", chatId: msg.chatId });
+            hooks.emit("stream:finish", { platform: "my-claw-app", chatId: msg.chatId });
           } catch (err) {
             const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
             await active.abort(brief);
-            hooks.emit("stream:abort", { platform: "mobile", chatId: msg.chatId, error: err });
+            hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
             throw err;
           }
         } else {
@@ -667,26 +672,26 @@ async function main() {
         }
 
         if (response) {
-          const outGate = await hooks.check("gate:message:outgoing", { platform: "mobile", chatId: msg.chatId, text: response.text });
+          const outGate = await hooks.check("gate:message:outgoing", { platform: "my-claw-app", chatId: msg.chatId, text: response.text });
           if (outGate.allowed) {
             const refs = extractMediaRefs(response.text);
             const textHasMediaRefs = refs.length > 0;
-            if (!mobile.streamingEnabled()) {
-              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "mobile", chatId: msg.chatId })).text;
-              await mobile.send(msg.chatId, {
+            if (!myClawApp.streamingEnabled()) {
+              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "my-claw-app", chatId: msg.chatId })).text;
+              await myClawApp.send(msg.chatId, {
                 text: deliveryText,
                 attachments: textHasMediaRefs ? undefined : response.attachments,
                 replyToId: msg.id,
                 threadId: msg.threadId,
               });
-              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
+              hooks.emit("message:delivered", { platform: "my-claw-app", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
             } else if (!textHasMediaRefs && response.attachments?.length) {
-              await mobile.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id, threadId: msg.threadId });
-              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: response.attachments.length });
+              await myClawApp.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id, threadId: msg.threadId });
+              hooks.emit("message:delivered", { platform: "my-claw-app", chatId: msg.chatId, text: "", attachments: response.attachments.length });
             } else if (textHasMediaRefs) {
               const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
-              await mobile.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id, threadId: msg.threadId });
-              hooks.emit("message:delivered", { platform: "mobile", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
+              await myClawApp.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id, threadId: msg.threadId });
+              hooks.emit("message:delivered", { platform: "my-claw-app", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
             }
           }
         }
@@ -697,16 +702,16 @@ async function main() {
     }));
 
     try {
-      await mobile.start();
-      adapters.push(mobile);
-      hooks.emit("channel:started", { platform: "mobile" });
+      await myClawApp.start();
+      adapters.push(myClawApp);
+      hooks.emit("channel:started", { platform: "my-claw-app" });
     } catch (err) {
-      log("error", "mobile adapter failed to start", { error: String(err) });
-      hooks.emit("channel:error", { platform: "mobile", error: err });
+      log("error", "my-claw-app adapter failed to start", { error: String(err) });
+      hooks.emit("channel:error", { platform: "my-claw-app", error: err });
     }
   };
-  await startMobileChannel();
-  if (mobileRef) cronScheduler.adapters.set("mobile", mobileRef);
+  await startMyClawAppChannel();
+  if (myClawAppRef) cronScheduler.adapters.set("my-claw-app", myClawAppRef);
 
   cronScheduler.start();
   configWatcher = startConfigWatcher(config, {
@@ -812,7 +817,7 @@ async function main() {
   const activeChannels: string[] = [];
   if (telegramRef) activeChannels.push("telegram");
   if (matrixRef) activeChannels.push("matrix");
-  if (mobileRef) activeChannels.push("mobile");
+  if (myClawAppRef) activeChannels.push("my-claw-app");
 
   const shutdown = async (signal = "SIGINT") => {
     log("info", "shutting down...", { signal });

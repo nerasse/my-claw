@@ -2,7 +2,7 @@ import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { saveSession, deleteSession, type SessionData } from "../src/sessions/store.ts";
-import { MobileSessionStoreImpl } from "../src/channels/mobile/sessions.ts";
+import { MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 
 const DEVICE = "dev-test";
 const THREAD = "thread-1";
@@ -10,7 +10,7 @@ const THREAD = "thread-1";
 function session(id: string, messages: SessionData["messages"]): SessionData {
   return {
     id,
-    platform: "mobile",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: "2026-01-01T00:00:00.000Z",
     lastActiveAt: "2026-01-01T00:01:00.000Z",
@@ -18,12 +18,12 @@ function session(id: string, messages: SessionData["messages"]): SessionData {
   };
 }
 
-describe("MobileSessionStoreImpl.history", () => {
-  let store: MobileSessionStoreImpl;
+describe("MyClawAppSessionStoreImpl.history", () => {
+  let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
 
   beforeEach(async () => {
-    store = new MobileSessionStoreImpl(new SessionManager());
+    store = new MyClawAppSessionStoreImpl(new SessionManager());
     sessionId = store.resolveSessionId(DEVICE, THREAD);
     await deleteSession(sessionId);
   });

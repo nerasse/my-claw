@@ -31,6 +31,7 @@
 - `src/index.ts` wires channel adapters into the router/session stack
 - `src/channels/telegram/adapter.ts` — Grammy bot, handler wiring, lifecycle, inbound processing, attachments
 - `src/channels/matrix/adapter.ts` — Matrix timeline ingress, lifecycle, inbound buffering, attachments
+- `src/channels/my-claw-app/adapter.ts` — WSS server for the my-claw client apps (device auth, media, tool cards) -- docs/my-claw-app-channel.md
 - Both channel folders contain split modules: `send.ts`, `context.ts`, `commands.ts`, `errors.ts`, `format.ts`, `policy.ts`, `reactions.ts`, `stream.ts`, `session-handlers.ts`
 - Matrix-specific: `client.ts` (SDK runtime, crypto), `decrypt-bridge.ts`, `ingress.ts`, `inbound-buffer.ts`, `inbound-dedupe.ts`, `sync-lifecycle.ts`
 
@@ -132,9 +133,14 @@
 │   │   │   └── <user_id>.json
 │   │   └── room/
 │   │       └── <room_id>.json
+│   ├── my-claw-app/
+│   │   └── thread/
+│   │       └── <owner>/     # devices sharing an owner share these threads
+│   │           └── <thread_id>.json
 │   └── subagent/            # persistent sub-agent sessions
 │       └── <name>-<hex4>.json
 ├── sessions-archive/        # archived sessions (reset, clear)
+├── files/                   # my-claw-app uploads: <owner>/<thread_id>/<id>.<ext>
 ├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
 ├── memory.db                # SQLite — long-term memory: entries + FTS5 (WAL mode)
 ├── tmp/                     # transient media/temp files (cleaned on boot)
@@ -143,7 +149,7 @@
 
 Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
-- Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`
+- Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`, `my-claw-app`
 - Every command is recorded (`command received`, with the resolved `sessionId`, plus
   `command not recognized`), because a session whose history changed could not otherwise be tied to
   the command that changed it. Menu interactions are recorded too: `telegram button action` and

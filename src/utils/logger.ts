@@ -36,7 +36,7 @@ export function getLogLevel(): LogLevel {
 function shouldWrite(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[getLogLevel()];
 }
-type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram" | "mobile";
+type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram" | "my-claw-app";
 type ConsoleMode = "all" | "errors" | "none";
 
 type ScopedSdkLogger = {
@@ -265,7 +265,7 @@ const orchestratorLogger = createScopedLogger("orchestrator");
 
 export const matrixLog = createScopedLogger("matrix", { console: "errors" });
 export const telegramLog = createScopedLogger("telegram", { console: "errors" });
-export const mobileLog = createScopedLogger("mobile", { console: "errors" });
+export const myClawAppLog = createScopedLogger("my-claw-app", { console: "errors" });
 
 export function createSdkLogger(
   scope: Extract<LogScope, "matrix-sdk">,

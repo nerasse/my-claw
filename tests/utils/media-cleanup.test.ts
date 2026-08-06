@@ -65,9 +65,9 @@ test("cleanupAttachments deletes a channel temp file but never the persistent at
   const temp = join(tmpdir(), `chan-${Date.now()}.jpg`);
   await writeFile(temp, "downloaded");
 
-  // The mobile channel stores uploads under $MY_CLAW_DIR/files and serves them afterwards:
+  // The my-claw-app channel stores uploads under $MY_CLAW_DIR/files and serves them afterwards:
   // deleting them here wiped the user's photo seconds after it landed.
-  const stored = join(attachmentRoot(), "mobile", "dev-1", "thread-1", "photo.jpg");
+  const stored = join(attachmentRoot(), "my-claw-app", "dev-1", "thread-1", "photo.jpg");
   await mkdir(dirname(stored), { recursive: true });
   await writeFile(stored, "uploaded");
 

@@ -38,11 +38,11 @@ function visionConfig(): MyClawConfig {
 
 function session(messages: SessionMessage[]): SessionData {
   const now = new Date().toISOString();
-  return { id: "mobile/thread/dev-1/t-1", platform: "mobile", chatType: "dm", createdAt: now, lastActiveAt: now, messages };
+  return { id: "my-claw-app/thread/owner-1/t-1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages };
 }
 
 function msg(text: string, attachments: UnifiedMessage["attachments"] = []): UnifiedMessage {
-  return { id: "m1", platform: "mobile", userId: "u1", chatId: "c1", chatType: "dm", text, attachments, isForwarded: false, raw: {} };
+  return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments, isForwarded: false, raw: {} };
 }
 
 function llmReply(): never {

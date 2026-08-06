@@ -1,16 +1,22 @@
-# Mobile Channel
+# my-claw-app Channel
 
 ## Overview
 
-Inbound-only WSS channel for the companion Android app (`my-claw-app`). The device
-initiates a WebSocket connection to a `Bun.serve` server inside the my-claw process
-(the VPS can never contact the phone). Each paired device gets its own session;
-the device id doubles as `userId` and `chatId`.
+Inbound-only WSS channel for the my-claw client apps. A device initiates a WebSocket
+connection to a `Bun.serve` server inside the my-claw process (the VPS can never contact
+the device). The Android app is the first client; a browser client is expected to speak the
+same protocol, which is why the channel is named after the app and not after a form factor.
+
+A **device** is one paired client (a phone, a browser). An **owner** is whose conversations
+it opens: devices sharing an owner share the thread list, the uploaded files and the live
+replies, so a phone and a browser are two windows onto the same chat. `owner` defaults to
+the device id, which keeps an unconfigured device on its own. `userId` and `chatId` are the
+owner, never the device id.
 
 ## File Structure
 
 ```
-src/channels/mobile/
+src/channels/my-claw-app/
 ├── adapter.ts          # WSS server, device auth, media serving, frame handling
 ├── stream.ts           # Token streaming (chat.stream.* frames)
 └── types.ts            # Wire protocol types
@@ -21,7 +27,7 @@ src/channels/mobile/
 ```json
 {
   "channels": {
-    "mobile": {
+    "my-claw-app": {
       "enabled": true,
       "port": 8080,
       "approvals": false,
@@ -33,7 +39,8 @@ src/channels/mobile/
         "<deviceId>": {
           "token": "<device secret>",
           "name": "Pixel 8",
-          "enabled": true
+          "enabled": true,
+          "owner": "neras"
         }
       }
     }
@@ -48,7 +55,10 @@ src/channels/mobile/
   is planned with the chat UI.
 - `approvals: true` turns on tool-approval round trips (`approval.request` /
   `approval.response`). Off by default: approval-required tools are denied.
-- The app connects to `ws://<host>:<port>/mobile?device=<id>&token=<token>`.
+- `owner` groups devices onto one conversation namespace. Omit it and the device stands
+  alone under its own id. Changing it moves the device to another namespace: the threads and
+  files of the previous owner stay where they are.
+- The app connects to `ws://<host>:<port>/my-claw-app?device=<id>&token=<token>`.
 
 ## Wire Protocol
 
@@ -57,11 +67,16 @@ plain-text `chat.send` (the M1 console sends raw text).
 
 ### Conversations (threads)
 
-Each device can hold several independent conversations. Every chat frame carries a
+Each owner can hold several independent conversations. Every chat frame carries a
 `threadId` (safe charset `[A-Za-z0-9._-]`, max 64 chars). A `chat.send` without
 `threadId` lands in the default thread. Sessions resolve to
-`mobile/thread/<deviceId>/<threadId>` (per-thread sessions, like Telegram forum
+`my-claw-app/thread/<owner>/<threadId>` (per-thread sessions, like Telegram forum
 threads), so each conversation has its own context and runs in parallel.
+
+Outgoing frames (replies, stream deltas, tool cards, approval requests) go to every
+connected device of the owner. Sockets are resolved per frame, so a window that connects
+mid-answer still receives the rest of the stream. An approval is asked on all of them and
+the first answer wins.
 
 ### Device -> Server
 
@@ -116,9 +131,9 @@ POST /media?device=<id>&token=<token>
 -> { "id": "uuid", "type": "image", "filename": "...", "mimeType": "...", "sizeBytes": 123 }
 ```
 
-Files are stored per conversation in `$MY_CLAW_DIR/files/mobile/<device>/<threadId>/`
+Files are stored per conversation in `$MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/`
 and removed with the session (archive/delete). `GET /media/<id>` serves them back
-for display/download. Uploads are capped (`channels.mobile.files.maxSizeBytes`,
+for display/download. Uploads are capped (`channels["my-claw-app"].files.maxSizeBytes`,
 default 10 MB, plus a global `maxTotalBytes` of 2 GB). The agent receives the
 attachment as a path it can read with its tools, and images are routed to a
 vision-capable model when the active model cannot take them. The files outlive
@@ -131,7 +146,7 @@ session, and later turns re-read them to keep an image in the conversation.
 -> { "type": "diag.snapshot", "threadId": "..." }
 <- { "type": "diag.snapshot.result", "text": "..." }
 
--> { "type": "logs.tail", "scope": "mobile", "level": "warn", "run": "a1b2c3d4",
+-> { "type": "logs.tail", "scope": "my-claw-app", "level": "warn", "run": "a1b2c3d4",
      "contains": "upload", "limit": 200 }
 <- { "type": "logs.tail.result", "text": "...", "lines": 42, "query": { ... } }
 ```
@@ -148,7 +163,7 @@ most recently active first, capped at 50.
 
 ### Tool calls
 
-Unlike the text channels, which glue a formatted note inside the reply, the mobile
+Unlike the text channels, which glue a formatted note inside the reply, this
 channel emits one `chat.tool` frame per executed tool so the client can render a
 collapsed card and expand it on tap. `turnId` is the stream id the run started
 with, which groups the cards of a turn.
@@ -185,18 +200,19 @@ The app builds the URL from its own credentials; the media registry is capped at
 
 ## Security
 
-- No public exposure: the WSS/HTTP server is only reachable where the phone can
+- No public exposure: the WSS/HTTP server is only reachable where the device can
   reach the VPS (private network); the VPS never dials out to the device.
 - Every connection and every media fetch is authenticated by device id + token.
 - Tokens are per-device and revocable (remove the entry from `devices`, or set
-  `enabled: false`).
+  `enabled: false`), so one window can be cut off without touching the others.
 - Approved tools are `allow-session`; unanswered requests time out to `deny`
   (2 minutes).
 - Stale sockets (no inbound frame for 90s) are closed by a sweep every 30s.
 
 ## Limitations / Roadmap
 
-- M1: text chat + streaming + pairing; no commands yet, no attachments upload
-  from the device.
+- Auth is a static per-device token passed as a query parameter, with no expiry. It is
+  adequate for a phone on a private network holding the token in the Android Keystore; it is
+  the first thing to harden before a browser client, where the URL is far more exposed.
 - M3: device tools (accessibility snapshot, notifications, media capture) gated by
   `device.capabilities` and per-action approval in the app.

@@ -8,7 +8,7 @@ export interface ToolCallResult {
   arguments: Record<string, unknown>;
   /** Absent when the call is replayed from a session file written before timings were persisted. */
   durationMs?: number;
-  /** Result handed to the model. Channels that render tool cards (mobile) show it; text channels ignore it. */
+  /** Result handed to the model. Channels that render tool cards (my-claw-app) show it; text channels ignore it. */
   output?: string;
   ok?: boolean;
 }

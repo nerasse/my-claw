@@ -125,34 +125,40 @@ src/
 │   │   ├── session-handlers.ts
 │   │   ├── split.ts
 │   │   └── stream.ts
-│   └── matrix/
-│       ├── adapter.ts     # Timeline ingress, handler wiring, lifecycle
-│       ├── send.ts        # All outgoing send/edit/upload methods
-│       ├── context.ts     # Room history, thread context, reply context
-│       ├── actions.ts
-│       ├── approval-store.ts
-│       ├── client.ts
-│       ├── commands.ts
-│       ├── crypto-idb.ts
-│       ├── decrypt-bridge.ts
-│       ├── errors.ts
-│       ├── file-sync-store.ts
-│       ├── format.ts
-│       ├── helpers.ts
-│       ├── history.ts
-│       ├── inbound-buffer.ts
-│       ├── inbound-dedupe.ts
-│       ├── ingress.ts
-│       ├── policy.ts
-│       ├── polls.ts
-│       ├── reactions.ts
-│       ├── retry.ts
-│       ├── session-handlers.ts
-│       ├── storage.ts
-│       ├── stream.ts
-│       ├── sync-lifecycle.ts
-│       ├── text.ts
-│       └── types.ts
+│   ├── matrix/
+│   │   ├── adapter.ts     # Timeline ingress, handler wiring, lifecycle
+│   │   ├── send.ts        # All outgoing send/edit/upload methods
+│   │   ├── context.ts     # Room history, thread context, reply context
+│   │   ├── actions.ts
+│   │   ├── approval-store.ts
+│   │   ├── client.ts
+│   │   ├── commands.ts
+│   │   ├── crypto-idb.ts
+│   │   ├── decrypt-bridge.ts
+│   │   ├── errors.ts
+│   │   ├── file-sync-store.ts
+│   │   ├── format.ts
+│   │   ├── helpers.ts
+│   │   ├── history.ts
+│   │   ├── inbound-buffer.ts
+│   │   ├── inbound-dedupe.ts
+│   │   ├── ingress.ts
+│   │   ├── policy.ts
+│   │   ├── polls.ts
+│   │   ├── reactions.ts
+│   │   ├── retry.ts
+│   │   ├── session-handlers.ts
+│   │   ├── storage.ts
+│   │   ├── stream.ts
+│   │   ├── sync-lifecycle.ts
+│   │   ├── text.ts
+│   │   └── types.ts
+│   └── my-claw-app/
+│       ├── adapter.ts     # WSS server, device auth, media serving, frame handling
+│       ├── sessions.ts    # Thread list/history/archive, keyed by owner
+│       ├── files.ts       # Per-thread uploads under $MY_CLAW_DIR/files/my-claw-app/
+│       ├── stream.ts      # Token streaming + tool cards (chat.stream.* / chat.tool)
+│       └── types.ts       # Wire protocol types -- docs/my-claw-app-channel.md
 ├── llm/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
 │   ├── tokens.ts          # Token estimation + context window trimming
@@ -227,7 +233,7 @@ src/
 │   ├── image.ts           # Image resize + base64 conversion
 │   └── video.ts           # Video frame extraction (ffmpeg)
 ├── utils/
-│   ├── logger.ts          # Scoped file logger (orchestrator, telegram, matrix)
+│   ├── logger.ts          # Scoped file logger (orchestrator, telegram, matrix, my-claw-app)
 │   ├── media.ts           # Media ref extraction/dedup
 │   ├── errors.ts          # Error formatting
 │   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
@@ -239,7 +245,7 @@ src/
 
 ### Splitting rules
 
-- A channel folder (`channels/telegram/`, `channels/matrix/`) contains:
+- A channel folder (`channels/telegram/`, `channels/matrix/`, `channels/my-claw-app/`) contains:
   - `adapter.ts` : Grammy/SDK boot, handler wiring, lifecycle only
   - `send.ts` : All outgoing methods (send, edit, delete, upload)
   - `context.ts` : Room/thread history, reply context, sender resolution
