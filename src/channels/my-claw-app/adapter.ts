@@ -618,7 +618,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const removed = await this.files.remove(ws.data.deviceId, threadId, frame.id);
+      const removed = await this.files.remove(ws.data.owner, threadId, frame.id);
       if (removed) {
         await this.handleFilesList(ws, { type: "files.list", threadId });
       } else {

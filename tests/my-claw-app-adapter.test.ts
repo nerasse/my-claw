@@ -516,6 +516,34 @@ describe("MyClawAppAdapter", () => {
     assert.equal(received[0]!.attachments[0]!.type, "image");
   });
 
+  test("files.delete works for a device whose owner is not its id", async () => {
+    // Storage is keyed by owner: passing the device id looked in a directory that never
+    // exists, so every delete answered "file not found" and the file stayed.
+    const owned = new MyClawAppAdapter(
+      createConfig({ devices: { [DEVICE_ID]: { token: TOKEN, name: "test phone", owner: "neras" } } }),
+      store as never,
+    );
+    owned.onMessage(async () => {});
+    await owned.start();
+    const client2 = await connectClient(owned.port);
+    try {
+      const upload = await fetch(`http://127.0.0.1:${owned.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+        method: "POST",
+        headers: { "x-filename": "vieux.pdf", "x-type": "file", "x-thread-id": "projet" },
+        body: new Uint8Array([7, 7]),
+      });
+      const meta = (await upload.json()) as { id: string };
+
+      client2.ws.send(JSON.stringify({ type: "files.delete", threadId: "projet", id: meta.id }));
+      const frame = (await nextFrame(client2)) as { type: string; files?: unknown[]; message?: string };
+      assert.equal(frame.type, "files.list.result");
+      assert.equal(frame.files!.length, 0);
+    } finally {
+      client2.ws.close();
+      await owned.stop();
+    }
+  });
+
   test("archiving a session removes its uploaded files", async () => {
     const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
       method: "POST",
