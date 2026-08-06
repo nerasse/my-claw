@@ -131,6 +131,40 @@ export interface MyClawAppVoiceModeSet {
   mode: "cloud" | "local" | "auto";
 }
 
+export interface MyClawAppModelList {
+  type: "model.list";
+}
+
+export interface MyClawAppModelGet {
+  type: "model.get";
+  threadId: string;
+}
+
+export interface MyClawAppModelSet {
+  type: "model.set";
+  threadId: string;
+  /** The default model id hands the conversation back to the configured default. */
+  model: string;
+}
+
+export interface MyClawAppModelEffortSet {
+  type: "model.effort.set";
+  threadId: string;
+  level: string;
+}
+
+/** Stops the run on this thread, whatever backend is driving it (the `/stop` of the app). */
+export interface MyClawAppChatStop {
+  type: "chat.stop";
+  threadId: string;
+}
+
+/** Empties the conversation without touching its name, files or archives. */
+export interface MyClawAppSessionClear {
+  type: "session.clear";
+  threadId: string;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -148,6 +182,12 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionRename
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
+  | MyClawAppModelList
+  | MyClawAppModelGet
+  | MyClawAppModelSet
+  | MyClawAppModelEffortSet
+  | MyClawAppChatStop
+  | MyClawAppSessionClear
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -285,7 +325,7 @@ export interface MyClawAppChatHistory {
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
-export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice";
+export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model";
 
 export interface MyClawAppError {
   type: "error";
@@ -317,6 +357,59 @@ export interface MyClawAppVoiceModeResult {
   cloudAvailable: boolean;
 }
 
+export interface MyClawAppModelOption {
+  id: string;
+  label: string;
+  /** "/"-separated menu path; the app renders groups the way the picker does. */
+  group?: string;
+}
+
+/** Effort state of a thread: what applies now, what is on offer for the active model. */
+export interface MyClawAppEffortState {
+  /** The level in effect ("" when the model discards effort). */
+  level: string;
+  /** Levels the active model accepts; empty means no choice is offered. */
+  levels: string[];
+  supported: boolean;
+}
+
+export interface MyClawAppModelListResult {
+  type: "model.list.result";
+  models: MyClawAppModelOption[];
+  defaultModel: string;
+}
+
+/**
+ * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
+ * never an optimistic echo of what the app hoped for.
+ */
+export interface MyClawAppModelResult {
+  type: "model.result";
+  threadId: string;
+  /** The model that will run on this thread: override or the configured default. */
+  model: string;
+  defaultModel: string;
+  effort: MyClawAppEffortState;
+}
+
+/**
+ * Output of a command executed by the server (`/status`, `/clear`, ...). Rendered by the app as
+ * a distinct bubble so a command result never masquerades as an agent answer.
+ */
+export interface MyClawAppCommandResult {
+  type: "chat.command.result";
+  threadId: string;
+  /** The chat.send id that carried the command, when one did. */
+  replyToId?: string;
+  text: string;
+}
+
+/** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
+export interface MyClawAppChatCleared {
+  type: "chat.cleared";
+  threadId: string;
+}
+
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppStreamStart
@@ -332,5 +425,9 @@ export type MyClawAppServerFrame =
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
+  | MyClawAppModelListResult
+  | MyClawAppModelResult
+  | MyClawAppCommandResult
+  | MyClawAppChatCleared
   | MyClawAppChatTranscript
   | MyClawAppError;

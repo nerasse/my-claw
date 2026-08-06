@@ -15,6 +15,8 @@ export interface MyClawAppSessionStore {
   archive(owner: string, threadId: string): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
   rename(owner: string, threadId: string, title: string): Promise<void>;
+  /** Empties the conversation, keeping its name, model override and archive snapshots. */
+  clear(owner: string, threadId: string): Promise<void>;
 }
 
 /** Long enough for a real name, short enough to stay one line in the drawer. */
@@ -199,6 +201,15 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
   async remove(owner: string, threadId: string): Promise<void> {
     await this.sessionManager.deleteSession(this.resolveSessionId(owner, threadId));
+  }
+
+  async clear(owner: string, threadId: string): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    // No session means nothing to clear; creating one would list a brand-new empty thread.
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) return;
+    this.sessionManager.clearHistory(sessionId);
+    await this.sessionManager.persist(sessionId);
   }
 
   /**

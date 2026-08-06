@@ -165,6 +165,13 @@ class FakeSessionStore {
     if (!entry) throw new Error("conversation not found");
     entry.title = title.trim() || "(new conversation)";
   }
+
+  cleared: string[] = [];
+
+  async clear(deviceId: string, threadId: string): Promise<void> {
+    this.cleared.push(threadId);
+    this.historyMap.set(threadId, []);
+  }
 }
 
 describe("MyClawAppAdapter", () => {
@@ -924,5 +931,136 @@ describe("MyClawAppAdapter owners", () => {
 
     phone.ws.close();
     browser.ws.close();
+  });
+});
+
+describe("model frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onModelController({
+      list: () => ({
+        models: [
+          { id: "fast-1", label: "Fast", group: "Fast/Standard" },
+          { id: "strong-2", label: "Strong", group: "Strong/Advanced" },
+        ],
+        defaultModel: "fast-1",
+      }),
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+      set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+      setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "medium", levels: ["low", "medium", "high"], supported: true } }),
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("model.list answers with the catalog and the default", async () => {
+    client.ws.send(JSON.stringify({ type: "model.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.list.result");
+    assert.equal((frame["models"] as Array<{ id: string }>).length, 2);
+    assert.equal(frame["defaultModel"], "fast-1");
+  });
+
+  test("model.set refuses an id the server does not know", async () => {
+    client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "ghost-model" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "model");
+  });
+
+  test("model.set answers with the state the server stored", async () => {
+    client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "strong-2" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["model"], "strong-2");
+    assert.equal(frame["threadId"], "t1");
+  });
+
+  test("model.effort.set answers with the resulting state", async () => {
+    client.ws.send(JSON.stringify({ type: "model.effort.set", threadId: "t1", level: "medium" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal((frame["effort"] as { level: string }).level, "medium");
+  });
+});
+
+describe("command frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let handled: Array<{ command: string; args: string }>;
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    handled = [];
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onMessage(async () => {
+      throw new Error("a command must never reach the agent");
+    });
+    adapter.onCommandHandler(async (_owner, _threadId, command, args) => {
+      handled.push({ command, args });
+      return `${command} done`;
+    });
+    let stopped: string | null = null;
+    adapter.onStop((sessionId) => {
+      stopped = sessionId;
+      return stopped !== null;
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("a catalog slash command runs on the server and replies with chat.command.result", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c1", text: "/status --full", threadId: "t1" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "chat.command.result");
+    assert.equal(frame["text"], "status done");
+    assert.equal(frame["replyToId"], "c1");
+    assert.deepEqual(handled, [{ command: "status", args: "--full" }]);
+  });
+
+  test("an unknown slash command still reaches the agent", async () => {
+    let gotMessage = false;
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    agent.onMessage(async () => {
+      gotMessage = true;
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "chat.send", id: "c2", text: "/imaginary thing" }));
+    await waitUntil(() => gotMessage);
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("chat.stop resolves the session and answers like /stop", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t9" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "chat.command.result");
+  });
+
+  test("session.clear clears the thread and confirms", async () => {
+    client.ws.send(JSON.stringify({ type: "session.clear", threadId: "t5" }));
+    const first = await nextFrame(client);
+    assert.equal(first["type"], "chat.cleared");
+    assert.equal(store.cleared.length, 1);
+    const second = await nextFrame(client);
+    assert.equal(second["type"], "chat.command.result");
+    assert.equal(second["text"], "History cleared.");
   });
 });

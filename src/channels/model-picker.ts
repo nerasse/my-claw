@@ -182,6 +182,11 @@ export class ModelPicker {
     return this.models.length > 0;
   }
 
+  /** The whole list, for channels that render the menu elsewhere (my-claw-app frames). */
+  options(): readonly ModelOption[] {
+    return this.models;
+  }
+
   effortLevels(): EffortLevel[] {
     return this.effort.enabled ? this.effort.levels : [];
   }

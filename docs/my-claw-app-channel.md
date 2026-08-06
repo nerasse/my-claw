@@ -82,6 +82,7 @@ the first answer wins.
 
 ```json
 { "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }, { "id": "uuid", "type": "audio", "audioAsVoice": true, "durationMs": 4200 }] }
+{ "type": "chat.stop", "threadId": "projet" }
 { "type": "session.list" }
 { "type": "commands.list" }
 { "type": "files.list", "threadId": "projet" }
@@ -89,23 +90,39 @@ the first answer wins.
 { "type": "session.history", "threadId": "projet", "limit": 50 }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
+{ "type": "session.clear", "threadId": "projet" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
 { "type": "voice.mode.get" }
 { "type": "voice.mode.set", "mode": "cloud|local|auto" }
+{ "type": "model.list" }
+{ "type": "model.get", "threadId": "projet" }
+{ "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
+{ "type": "model.effort.set", "threadId": "projet", "level": "medium" }
 { "type": "ping" }
 ```
 
 - `session.archive` archives the thread's history (sessions-archive) and starts a
   fresh empty conversation on the same threadId.
 - `session.delete` hard-deletes the session file and every archive snapshot.
+- `session.clear` empties the conversation without touching its name, model override or
+  archives. Answered with `chat.cleared` then `chat.command.result` ("History cleared.").
+- `chat.stop` stops the run of the thread, whatever backend drives it (the wire version of
+  `/stop`). Answered with a `chat.command.result`.
 - `files.list` / `files.delete` manage the conversation's attachments.
 - `session.rename` names a conversation and answers with the resulting `session.list.result`.
   A blank title hands it back to the automatic one, which is the opening words of the first
   turn -- a summary of how a thread started rather than of what it became. The name is stored
   on the session and survives an archive, since the owner named the thread and not the turns
   inside it. Renaming a thread that was never opened is refused rather than creating one.
+- `model.list` answers with the model catalog and the configured default. `model.get` /
+  `model.set` / `model.effort.set` answer with `model.result` carrying the state the server
+  actually stored (setting the default model id clears the override). `model.set` refuses a
+  model the server does not know.
+- A `chat.send` whose text is a known slash command (the catalog) is executed server-side
+  like on the other channels and answered with `chat.command.result`; it never reaches the
+  agent. Commands outside the catalog still route as normal messages.
 
 ### Server -> Device
 
@@ -122,11 +139,20 @@ the first answer wins.
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
+{ "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
+{ "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice" }
+{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro" }], "defaultModel": "gpt-5.1" }
+{ "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model" }
 ```
 
-`commands.list.result` carries the shared command catalog (same source as the
+- `chat.command.result` is the output of a slash command executed by the server. The app
+  renders it as a distinct bubble so a command result never masquerades as an agent answer.
+- `chat.cleared` is the answer to `session.clear`; the app drops its copy of the thread on
+  this frame rather than guessing from an empty history.
+- `model.list.result` / `model.result` feed the app's model picker and the per-thread
+  indicator. `effort.level` is `""` when the model discards effort.`commands.list.result` carries the shared command catalog (same source as the
 telegram bot menu), so the app's slash-menu can never drift from the server:
 the device asks for it again whenever the menu opens.
 

@@ -23,6 +23,7 @@ import type {
   MyClawAppChatHistory,
   MyClawAppChatMessage,
   MyClawAppChatSend,
+  MyClawAppChatStop,
   MyClawAppClientFrame,
   MyClawAppErrorScope,
   MyClawAppFileDelete,
@@ -35,6 +36,7 @@ import type {
   MyClawAppSessionHistory,
   MyClawAppSessionList,
   MyClawAppSessionRename,
+  MyClawAppSessionClear,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -89,6 +91,39 @@ export interface MyClawAppDiagnosticsProvider {
   logs(query: { scope?: string; level?: string; run?: string; contains?: string; limit: number }): Promise<{ text: string; lines: number }>;
 }
 
+/**
+ * Model control, injected for the same reason as the voice controller: the adapter must not
+ * reach into the global config, the model picker or the session manager itself.
+ */
+export interface MyClawAppModelController {
+  list(): { models: Array<{ id: string; label: string; group?: string }>; defaultModel: string };
+  /** What runs on this thread now: override or configured default, plus effort state. */
+  current(owner: string, threadId: string): Promise<{
+    model: string;
+    defaultModel: string;
+    effort: { level: string; levels: string[]; supported: boolean };
+  }>;
+  /** Persists the override (or clears it, back to the default) and reports what was stored. */
+  set(owner: string, threadId: string, modelId: string): Promise<{
+    model: string;
+    defaultModel: string;
+    effort: { level: string; levels: string[]; supported: boolean };
+  }>;
+  setEffort(owner: string, threadId: string, level: string): Promise<{
+    model: string;
+    defaultModel: string;
+    effort: { level: string; levels: string[]; supported: boolean };
+  }>;
+}
+
+/** Text slash commands, executed server-side like on the other channels. */
+export type MyClawAppCommandHandler = (
+  owner: string,
+  threadId: string,
+  command: string,
+  args: string,
+) => Promise<string | undefined>;
+
 export class MyClawAppAdapter implements ChannelAdapter {
   readonly platform = "my-claw-app" as const;
   private server?: Server<MyClawAppSessionData>;
@@ -99,6 +134,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
   private diagnostics?: MyClawAppDiagnosticsProvider;
   private voice?: MyClawAppVoiceController;
+  private models?: MyClawAppModelController;
+  private commandHandler?: MyClawAppCommandHandler;
+  private stopRun?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -249,6 +287,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onVoiceController(controller: MyClawAppVoiceController): void {
     this.voice = controller;
+  }
+
+  onModelController(controller: MyClawAppModelController): void {
+    this.models = controller;
+  }
+
+  /** Executes text slash commands; when absent, they fall through to the agent like any message. */
+  onCommandHandler(handler: MyClawAppCommandHandler): void {
+    this.commandHandler = handler;
+  }
+
+  /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
+  onStop(stop: (sessionId: string) => boolean): void {
+    this.stopRun = stop;
   }
 
   /**
@@ -487,6 +539,24 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "voice.mode.set":
         void this.handleVoiceMode(ws, frame.mode);
         break;
+      case "model.list":
+        void this.handleModelList(ws);
+        break;
+      case "model.get":
+        void this.handleModel(ws, frame.threadId, undefined);
+        break;
+      case "model.set":
+        void this.handleModel(ws, frame.threadId, frame.model);
+        break;
+      case "model.effort.set":
+        void this.handleModelEffort(ws, frame.threadId, frame.level);
+        break;
+      case "chat.stop":
+        void this.handleChatStop(ws, frame);
+        break;
+      case "session.clear":
+        void this.handleSessionClear(ws, frame);
+        break;
       case "files.delete":
         void this.handleFileDelete(ws, frame);
         break;
@@ -505,9 +575,41 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async emitChatSend(owner: string, frame: MyClawAppChatSend): Promise<void> {
     const text = frame.text.trim();
     if (!text && !frame.attachments?.length) return;
-    if (!this.messageHandler) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
+
+    // Slash commands run on the server, exactly as they do on the other channels: a command
+    // sent to the model as a plain question would be answered from nothing. The user's own
+    // bubble is drawn by the app from its send; only the result is new here. Only the catalog
+    // is intercepted: an unknown /word is a question like any other and must reach the agent.
+    if (text && !frame.attachments?.length && this.commandHandler) {
+      const command = /^\/([a-z-]+)/i.exec(text)?.[1];
+      if (command && COMMANDS.some((c) => c.command === command)) {
+        try {
+          const output = await this.commandHandler(owner, threadId, command, text.slice(command.length + 1).trim());
+          if (output) {
+            this.broadcast(owner, {
+              type: "chat.command.result",
+              threadId,
+              replyToId: frame.id,
+              text: output,
+            });
+          }
+          return;
+        } catch (err) {
+          void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
+          this.broadcast(owner, {
+            type: "chat.command.result",
+            threadId,
+            replyToId: frame.id,
+            text: `error: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+      }
+    }
+
+    if (!this.messageHandler) return;
 
     const attachments: Attachment[] = [];
     for (const ref of frame.attachments ?? []) {
@@ -592,6 +694,121 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "voice.mode.result", ...this.voice.status() });
     } catch (err) {
       await this.refuse(ws, "voice", "voice.mode failed", { mode, error: String(err) });
+    }
+  }
+
+  private async handleModelList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.models) {
+      await this.refuse(ws, "model", "model control unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "model.list.result", ...this.models.list() });
+    } catch (err) {
+      await this.refuse(ws, "model", "model.list failed", { error: String(err) });
+    }
+  }
+
+  /**
+   * One handler for get and set, like voice: the answer is the state the server stored, so the
+   * app has no optimistic branch to keep in sync.
+   */
+  private async handleModel(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    threadId: string,
+    modelId: string | undefined,
+  ): Promise<void> {
+    const safeThread = sanitizeThreadId(threadId);
+    if (!safeThread) {
+      await this.refuse(ws, "model", "invalid threadId", { threadId });
+      return;
+    }
+    if (!this.models) {
+      await this.refuse(ws, "model", "model control unavailable");
+      return;
+    }
+    try {
+      if (modelId !== undefined) {
+        const known = this.models.list().models.some((m) => m.id === modelId);
+        if (!known) {
+          await this.refuse(ws, "model", "unknown model", { threadId: safeThread, model: modelId });
+          return;
+        }
+        const state = await this.models.set(ws.data.owner, safeThread, modelId);
+        this.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+        return;
+      }
+      const state = await this.models.current(ws.data.owner, safeThread);
+      this.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+    } catch (err) {
+      await this.refuse(ws, "model", "model failed", { threadId: safeThread, model: modelId, error: String(err) });
+    }
+  }
+
+  private async handleModelEffort(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    threadId: string,
+    level: string,
+  ): Promise<void> {
+    const safeThread = sanitizeThreadId(threadId);
+    if (!safeThread) {
+      await this.refuse(ws, "model", "invalid threadId", { threadId });
+      return;
+    }
+    if (!this.models) {
+      await this.refuse(ws, "model", "model control unavailable");
+      return;
+    }
+    try {
+      const state = await this.models.setEffort(ws.data.owner, safeThread, level);
+      this.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+    } catch (err) {
+      await this.refuse(ws, "model", "model.effort.set failed", { threadId: safeThread, level, error: String(err) });
+    }
+  }
+
+  private async handleChatStop(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppChatStop,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "chat", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!this.stopRun) {
+      await this.refuse(ws, "chat", "stop unavailable");
+      return;
+    }
+    const sessionId = this.store.resolveSessionId(ws.data.owner, threadId);
+    const stopped = this.stopRun(sessionId);
+    // Same words as the /stop command, so the app and the chat agree on what happened.
+    this.sendFrame(ws, {
+      type: "chat.command.result",
+      threadId,
+      text: stopped ? "Stopped." : "Nothing running.",
+    });
+  }
+
+  private async handleSessionClear(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionClear,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    try {
+      await this.store.clear(ws.data.owner, threadId);
+      this.sendFrame(ws, { type: "chat.cleared", threadId });
+      this.sendFrame(ws, {
+        type: "chat.command.result",
+        threadId,
+        text: "History cleared.",
+      });
+    } catch (err) {
+      await this.refuse(ws, "session", "session.clear failed", { threadId, error: String(err) });
     }
   }
 

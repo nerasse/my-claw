@@ -34,6 +34,8 @@ import {
   createTelegramCommandHandler,
   createTelegramCallbackHandler,
 } from "./channels/telegram/session-handlers.ts";
+import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
+import { effectiveEffort } from "./llm/resolver.ts";
 import {
   createMatrixApprovalHandler,
   createMatrixActionHandler,
@@ -41,7 +43,7 @@ import {
 } from "./channels/matrix/session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
-import { RerouteSignal } from "./core/run-registry.ts";
+import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
@@ -623,6 +625,85 @@ async function main() {
         voiceManager.setFeatureMode("stt", mode);
       },
     });
+
+    // The model menu of the app is built from the same picker as /model on the other channels,
+    // so the two surfaces can never disagree about what is on offer or what is on.
+    const modelSessionId = (owner: string, threadId: string): string =>
+      SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, {
+        threadId,
+        sessionScope: "per-user",
+      });
+    const resolveModelState = async (owner: string, threadId: string) => {
+      const session = await sessionManager.peek(modelSessionId(owner, threadId));
+      const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+      const model = session?.modelOverride ?? defaultModel;
+      const effort = effectiveEffort(config.llm, model, session?.effortOverride);
+      const levels = modelPicker.effortLevelsFor(model);
+      return {
+        model,
+        defaultModel,
+        effort: {
+          level: effort.source === "unsupported" ? "" : effort.level ?? "",
+          levels,
+          supported: effort.source !== "unsupported",
+        },
+      };
+    };
+    myClawApp.onModelController({
+      list: () => ({
+        models: modelPicker.options().map((m) => ({
+          id: m.id,
+          label: m.label,
+          ...(m.group ? { group: m.group } : {}),
+        })),
+        defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
+      }),
+      current: (owner, threadId) => resolveModelState(owner, threadId),
+      set: async (owner, threadId, modelId) => {
+        const sessionId = modelSessionId(owner, threadId);
+        const session = await sessionManager.peek(sessionId);
+        if (!session) throw new Error("conversation not found");
+        const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
+        session.lastActiveAt = new Date().toISOString();
+        await sessionManager.persist(sessionId);
+        hooks.emit("session:model:changed", { sessionId, previousModel, newModel: modelId });
+        return resolveModelState(owner, threadId);
+      },
+      setEffort: async (owner, threadId, level) => {
+        const sessionId = modelSessionId(owner, threadId);
+        const session = await sessionManager.peek(sessionId);
+        if (!session) throw new Error("conversation not found");
+        const activeModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const levels = modelPicker.effortLevelsFor(activeModel);
+        if (!levels.includes(level as never)) throw new Error(`invalid effort level: ${level}`);
+        session.effortOverride = level as never;
+        session.lastActiveAt = new Date().toISOString();
+        await sessionManager.persist(sessionId);
+        return resolveModelState(owner, threadId);
+      },
+    });
+
+    myClawApp.onCommandHandler(createMyClawAppCommandHandler({
+      config,
+      sessionManager,
+      modelPicker,
+      skillRegistry,
+      builtinDir,
+      customDir,
+      workspaceSkillsDir,
+      listCronJobs: () => loadJobs(),
+      sdkCompact: (session) => agent.compactSdkSession(session),
+      postMessage: (owner, text, threadId) => myClawApp.send(owner, { text, threadId }),
+      onAuthChanged,
+      reloadConfigNow,
+      toolRegistry,
+      mcpStatus: () => mcpManager.status(),
+      listSubAgents: (sessionId) => subAgentRunner.list(subAgentRegistry, sessionId),
+      pricing,
+    }));
+
+    myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));
 
     myClawApp.onDiagnostics({
       snapshot: async (owner, threadId) => {
