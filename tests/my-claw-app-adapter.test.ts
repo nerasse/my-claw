@@ -159,6 +159,12 @@ class FakeSessionStore {
     this.removed.push(threadId);
     this.historyMap.delete(threadId);
   }
+
+  async rename(deviceId: string, threadId: string, title: string): Promise<void> {
+    const entry = this.summaries.find((summary) => summary.threadId === threadId);
+    if (!entry) throw new Error("conversation not found");
+    entry.title = title.trim() || "(new conversation)";
+  }
 }
 
 describe("MyClawAppAdapter", () => {
@@ -470,6 +476,28 @@ describe("MyClawAppAdapter", () => {
     const after = (await nextFrame(client)) as { type: string; files: unknown[] };
     assert.equal(after.type, "files.list.result");
     assert.equal(after.files.length, 0);
+  });
+
+  test("renaming a conversation answers with the list it produced", async () => {
+    store.summaries = [
+      { threadId: "projet", title: "salut ca va", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+    ];
+
+    client.ws.send(JSON.stringify({ type: "session.rename", threadId: "projet", title: "Infra maison" }));
+    const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ title: string }> };
+
+    // The device renders what was stored, never the name it hoped for.
+    assert.equal(frame.type, "session.list.result");
+    assert.equal(frame.sessions[0]!.title, "Infra maison");
+  });
+
+  test("renaming an unknown conversation is refused on the session scope", async () => {
+    store.summaries = [];
+    client.ws.send(JSON.stringify({ type: "session.rename", threadId: "fantome", title: "X" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "session");
+    assert.equal(frame.message, "rename failed");
   });
 
   test("the speech-to-text engine can be read and switched from the device", async () => {

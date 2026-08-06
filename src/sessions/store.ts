@@ -112,6 +112,12 @@ export interface SessionData {
   createdAt: string;
   lastActiveAt: string;
   messages: SessionMessage[];
+  /**
+   * Name the owner gave this conversation. Absent means the list falls back to the opening
+   * words of the first turn, which is a summary of how a thread started rather than of what it
+   * became. Only the my-claw-app channel shows a thread list, so only it sets this.
+   */
+  title?: string;
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   // Context ceiling chosen for this conversation alone: "full" for the model's whole window, or an

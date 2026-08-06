@@ -14,7 +14,11 @@ export interface MyClawAppSessionStore {
   history(owner: string, threadId: string, limit?: number): Promise<MyClawAppHistoryEntry[]>;
   archive(owner: string, threadId: string): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
+  rename(owner: string, threadId: string, title: string): Promise<void>;
 }
+
+/** Long enough for a real name, short enough to stay one line in the drawer. */
+export const MAX_TITLE_LENGTH = 60;
 
 /** Thread ids come from the device and later land in file paths; keep them strictly safe. */
 export function sanitizeThreadId(raw: string): string | null {
@@ -115,7 +119,8 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       const firstUser = session.messages.find((m) => m.role === "user");
       // Without the block, a "here, look" + photo would be titled by a server path.
       const firstText = firstUser ? splitAttachmentBlock(firstUser.content).text : "";
-      const title = firstText.trim().replace(/\s+/g, " ").slice(0, 60) || "(new conversation)";
+      const derived = firstText.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
+      const title = session.title?.trim() || derived || "(new conversation)";
       summaries.push({
         threadId: sessionId.slice(sessionId.lastIndexOf("/") + 1),
         title,
@@ -187,5 +192,20 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
   async remove(owner: string, threadId: string): Promise<void> {
     await this.sessionManager.deleteSession(this.resolveSessionId(owner, threadId));
+  }
+
+  /**
+   * Names a conversation, or hands it back to the automatic title when given nothing. The
+   * session has to exist: naming a thread that was never opened would create an empty one that
+   * then shows up in the list.
+   */
+  async rename(owner: string, threadId: string, title: string): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) throw new Error("conversation not found");
+    const clean = title.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
+    if (clean) session.title = clean;
+    else delete session.title;
+    await this.sessionManager.persist(sessionId);
   }
 }

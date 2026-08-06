@@ -2,7 +2,7 @@ import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { saveSession, deleteSession, type SessionData } from "../src/sessions/store.ts";
-import { MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
+import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -161,6 +161,54 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     // Hiding this would replay a voice note that silently said nothing.
     assert.equal(turn.text, "[Audio]: [Transcription failed: timeout]");
     assert.equal(turn.transcript, undefined);
+  });
+
+  test("a renamed conversation keeps its name in the list, and can be handed back", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "comment je configure le dns du serveur", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    // Without a name, the list shows how the thread opened rather than what it is about.
+    let listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "comment je configure le dns du serveur");
+
+    await store.rename(DEVICE, THREAD, "  Infra   maison  ");
+    listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "Infra maison");
+
+    // Blank is not a name: the conversation goes back to its automatic title.
+    await store.rename(DEVICE, THREAD, "   ");
+    listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "comment je configure le dns du serveur");
+  });
+
+  test("a name survives archiving, which starts a fresh conversation on the same thread", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "premier message", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.rename(DEVICE, THREAD, "Infra maison");
+
+    await store.archive(DEVICE, THREAD);
+
+    // The owner named the thread, not the turns inside it.
+    const listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "Infra maison");
+  });
+
+  test("an over-long name is cut to what the drawer can show", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "x", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.rename(DEVICE, THREAD, "n".repeat(200));
+
+    const listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title.length, MAX_TITLE_LENGTH);
+  });
+
+  test("renaming a conversation that was never opened is refused, not invented", async () => {
+    await assert.rejects(() => store.rename(DEVICE, "jamais-ouvert", "Fantome"));
+    const listed = await store.list(DEVICE);
+    assert.equal(listed.some((entry) => entry.threadId === "jamais-ouvert"), false);
   });
 
   test("a turn that merely mentions [Attachments] keeps its text whole", async () => {

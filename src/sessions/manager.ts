@@ -134,6 +134,11 @@ export class SessionManager {
     if (previous?.modelOverride !== undefined) {
       session.modelOverride = previous.modelOverride;
     }
+    // Archiving starts a fresh conversation on the same thread, and the owner named the thread,
+    // not the turns inside it: dropping the name here would rename it back to its first sentence.
+    if (previous?.title !== undefined) {
+      session.title = previous.title;
+    }
     this.sessions.set(sessionId, session);
     await saveSession(sessionId, session);
     hooks.emit("session:reset", { sessionId, platform, archived: Boolean(archived) });

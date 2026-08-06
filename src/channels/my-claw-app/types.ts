@@ -115,6 +115,13 @@ export interface MyClawAppLogsTail {
   limit?: number;
 }
 
+export interface MyClawAppSessionRename {
+  type: "session.rename";
+  threadId: string;
+  /** Blank hands the conversation back to its automatic title. */
+  title: string;
+}
+
 export interface MyClawAppVoiceModeGet {
   type: "voice.mode.get";
 }
@@ -138,6 +145,7 @@ export type MyClawAppClientFrame =
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
   | MyClawAppLogsTail
+  | MyClawAppSessionRename
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
   | MyClawAppPing;

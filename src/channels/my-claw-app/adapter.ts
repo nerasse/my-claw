@@ -34,6 +34,7 @@ import type {
   MyClawAppSessionDelete,
   MyClawAppSessionHistory,
   MyClawAppSessionList,
+  MyClawAppSessionRename,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -462,6 +463,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "files.list":
         void this.handleFilesList(ws, frame);
         break;
+      case "session.rename":
+        void this.handleSessionRename(ws, frame);
+        break;
       case "voice.mode.get":
         void this.handleVoiceMode(ws, undefined);
         break;
@@ -529,6 +533,25 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }).catch((err) => {
       void myClawAppLog("error", "message handling failed", { owner, error: String(err) });
     });
+  }
+
+  private async handleSessionRename(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionRename,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    try {
+      await this.store.rename(ws.data.owner, threadId, frame.title ?? "");
+      // Answered with the whole list, like every other mutation of it: the device renders the
+      // result the server actually stored rather than the name it hoped for.
+      this.handleSessionList(ws, { type: "session.list" });
+    } catch (err) {
+      await this.refuse(ws, "session", "rename failed", { threadId, error: String(err) });
+    }
   }
 
   /**

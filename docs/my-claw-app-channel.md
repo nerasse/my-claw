@@ -89,6 +89,7 @@ the first answer wins.
 { "type": "session.history", "threadId": "projet", "limit": 50 }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
+{ "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
 { "type": "voice.mode.get" }
@@ -100,6 +101,11 @@ the first answer wins.
   fresh empty conversation on the same threadId.
 - `session.delete` hard-deletes the session file and every archive snapshot.
 - `files.list` / `files.delete` manage the conversation's attachments.
+- `session.rename` names a conversation and answers with the resulting `session.list.result`.
+  A blank title hands it back to the automatic one, which is the opening words of the first
+  turn -- a summary of how a thread started rather than of what it became. The name is stored
+  on the session and survives an archive, since the owner named the thread and not the turns
+  inside it. Renaming a thread that was never opened is refused rather than creating one.
 
 ### Server -> Device
 
