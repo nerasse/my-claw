@@ -81,7 +81,7 @@ the first answer wins.
 ### Device -> Server
 
 ```json
-{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }] }
+{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }, { "id": "uuid", "type": "audio", "audioAsVoice": true, "durationMs": 4200 }] }
 { "type": "session.list" }
 { "type": "commands.list" }
 { "type": "files.list", "threadId": "projet" }
@@ -91,6 +91,8 @@ the first answer wins.
 { "type": "session.delete", "threadId": "projet" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
+{ "type": "voice.mode.get" }
+{ "type": "voice.mode.set", "mode": "cloud|local|auto" }
 { "type": "ping" }
 ```
 
@@ -113,7 +115,8 @@ the first answer wins.
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs" }
+{ "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice" }
 ```
 
 `commands.list.result` carries the shared command catalog (same source as the
@@ -124,6 +127,26 @@ the device asks for it again whenever the menu opens.
 Every refusal goes through one exit that logs it and tags it with the screen that asked
 (`scope`), so the app shows it where the user is looking rather than in an unrelated
 conversation -- and so a server-side bug can never present itself as a dead button.
+
+### Voice notes
+
+A recording held on the mic button is uploaded like any other attachment, then referenced
+in `chat.send` with `audioAsVoice: true` and the duration measured while recording. Both are
+honoured only when the stored file really is audio, so a client cannot steer the transcription
+policy by mislabelling a photo.
+
+The flag is not decoration: it selects the language policy of the existing STT pipeline
+(`src/voice/stt.ts`). Dictation gets `voice.stt.language`; an audio file the owner merely picked
+gets auto-detection, because forcing a language on unknown speech makes Whisper invent plausible
+words instead of failing. Nothing else in the pipeline is channel-specific -- the transcript, the
+echo, and the `[Audio]: "..."` rewrite are the same code that serves Telegram and Matrix.
+
+`voice.mode.get` / `voice.mode.set` expose the engine choice: `cloud` (Groq whisper-large-v3),
+`local` (faster-whisper, nothing leaves the machine), or `auto`. A set is persisted to
+`config.json` rather than applied in memory only, because a switch flipped in the app means "from
+now on" and must survive a restart; `voice` is hot-reloaded, so the next recording uses it.
+`cloudAvailable` is false when no `GROQ_API_KEY` is set, so the app can say why cloud is not an
+option instead of offering a choice that fails.
 
 ### Attachments
 
@@ -158,6 +181,11 @@ thread's own file listing, so a reopened conversation shows the same bubbles as 
 live one: a thumbnail or a named chip that opens the viewer, never a path. An
 attachment deleted since carries `deleted: true` -- it is still named, but there is
 nothing left to open.
+
+Audio is listed in that block like everything else. It was excluded once, on the grounds that
+its words were already in the text: the cost was that a replayed voice note came back as bare
+text with no bubble to play, and the agent never saw the file it had just been read from -- so
+"keep that recording" had no path to work with.
 
 ### Diagnostics
 

@@ -57,17 +57,24 @@ export function filesRootForOwner(owner: string): string {
   return join(MY_CLAW_DIR, "files", "my-claw-app", owner);
 }
 
-function mimeTypeFor(filename: string): string {
-  const ext = extname(filename).slice(1).toLowerCase();
-  const known: Record<string, string> = {
-    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif", heic: "image/heic",
-    pdf: "application/pdf", txt: "text/plain", md: "text/markdown", json: "application/json", csv: "text/csv",
-    mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
-    mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg",
-    zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  };
-  return known[ext] ?? "application/octet-stream";
+/**
+ * The only extension table of the channel. An entry missing here does not degrade to a generic
+ * download: `typeFor` reads the type back out of the mime, so an unlisted audio extension is
+ * stored as type "file", and the STT pass -- which only looks at type "audio" -- never sees it.
+ * A voice note would reach the agent as a path instead of as words.
+ */
+export const MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif", heic: "image/heic",
+  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", json: "application/json", csv: "text/csv",
+  mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
+  mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg",
+  oga: "audio/ogg", opus: "audio/ogg", aac: "audio/aac", flac: "audio/flac", amr: "audio/amr", weba: "audio/webm",
+  zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
+export function mimeTypeFor(filename: string): string {
+  return MIME_BY_EXTENSION[extname(filename).slice(1).toLowerCase()] ?? "application/octet-stream";
 }
 
 export class SessionFileStore {

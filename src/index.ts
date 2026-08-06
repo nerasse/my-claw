@@ -98,6 +98,7 @@ import {
   closeMemoryDb,
   type LlmCaller,
 } from "./memory/index.ts";
+import { setVoiceSttMode } from "./core/config-edit.ts";
 import { log, pruneOldLogs, setLogLevelSource } from "./utils/logger.ts";
 import { hooks } from "./hooks/index.ts";
 
@@ -608,6 +609,21 @@ async function main() {
 
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
     // both redacted here rather than in the adapter, which has no view of the global config.
+    myClawApp.onVoiceController({
+      status: () => ({
+        mode: config.voice?.stt?.mode ?? config.voice?.mode ?? "auto",
+        resolved: voiceManager.resolveMode("stt"),
+        cloudAvailable: !!process.env.GROQ_API_KEY,
+      }),
+      setMode: async (mode) => {
+        const result = await setVoiceSttMode(mode);
+        if (!result.ok) throw new Error(result.error);
+        // The file is the source of truth, but the watcher lands a beat later and the reply is
+        // built now: apply it in memory too so the app is not told the old engine.
+        voiceManager.setFeatureMode("stt", mode);
+      },
+    });
+
     myClawApp.onDiagnostics({
       snapshot: async (owner, threadId) => {
         const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, { threadId, sessionScope: "per-user" });

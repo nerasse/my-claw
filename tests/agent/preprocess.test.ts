@@ -90,7 +90,7 @@ describe("MessagePreprocessor", () => {
       expect(result).toContain("800x600");
     });
 
-    test("audio attachment is filtered from visible attachments", () => {
+    test("audio attachment is listed, so the agent can act on the file it just read", () => {
       const msg = createMessage({
         text: "voice note",
         attachments: [
@@ -98,9 +98,9 @@ describe("MessagePreprocessor", () => {
         ],
       });
       const result = pp.buildUserContent(msg);
-      expect(result).not.toContain("[Attachments]");
-      expect(result).not.toContain("audio");
-      expect(result).toBe("voice note");
+      expect(result).toContain("[Attachments]");
+      expect(result).toContain("- audio: /tmp/voice.ogg");
+      expect(result).toContain("voice note");
     });
 
     test("multiple attachment types (image + document) are both listed", () => {

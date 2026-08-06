@@ -26,6 +26,15 @@ export const DEFAULT_THREAD = "default";
 export interface MyClawAppAttachmentRef {
   id: string;
   type: "image" | "audio" | "video" | "file";
+  /**
+   * Held-the-mic recording rather than an audio file the owner picked. Only the device knows,
+   * and the distinction decides the STT language policy: dictation gets the configured language,
+   * an arbitrary file gets auto-detection, because forcing a language on unknown speech makes
+   * Whisper invent plausible words instead of failing. Honoured only on a stored audio file.
+   */
+  audioAsVoice?: boolean;
+  /** Measured while recording; the server would need to decode the file to learn it. */
+  durationMs?: number;
 }
 
 export interface MyClawAppChatSend {
@@ -106,6 +115,15 @@ export interface MyClawAppLogsTail {
   limit?: number;
 }
 
+export interface MyClawAppVoiceModeGet {
+  type: "voice.mode.get";
+}
+
+export interface MyClawAppVoiceModeSet {
+  type: "voice.mode.set";
+  mode: "cloud" | "local" | "auto";
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -120,6 +138,8 @@ export type MyClawAppClientFrame =
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
   | MyClawAppLogsTail
+  | MyClawAppVoiceModeGet
+  | MyClawAppVoiceModeSet
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -249,12 +269,22 @@ export interface MyClawAppChatHistory {
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
-export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs";
+export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice";
 
 export interface MyClawAppError {
   type: "error";
   message: string;
   scope: MyClawAppErrorScope;
+}
+
+export interface MyClawAppVoiceModeResult {
+  type: "voice.mode.result";
+  /** What the owner asked for. */
+  mode: "cloud" | "local" | "auto";
+  /** What "auto" actually resolves to right now, so the app can stop guessing. */
+  resolved: "cloud" | "local";
+  /** False when no GROQ_API_KEY is set: "cloud" would fail, and the app must say so. */
+  cloudAvailable: boolean;
 }
 
 export type MyClawAppServerFrame =
@@ -271,4 +301,5 @@ export type MyClawAppServerFrame =
   | MyClawAppDiagSnapshotResult
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
+  | MyClawAppVoiceModeResult
   | MyClawAppError;

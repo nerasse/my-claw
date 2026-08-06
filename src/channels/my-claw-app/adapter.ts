@@ -14,7 +14,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { COMMANDS } from "../commands-catalog.ts";
-import { SessionFileStore, filePathFor } from "./files.ts";
+import { MIME_BY_EXTENSION, SessionFileStore, filePathFor } from "./files.ts";
 import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
@@ -71,6 +71,17 @@ interface PendingApproval {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * Speech-to-text engine control, injected for the same reason as the diagnostics provider: the
+ * adapter must not reach into the global config or the voice runtime itself.
+ */
+export interface MyClawAppVoiceController {
+  /** Configured choice, what it resolves to now, and whether cloud is usable at all. */
+  status(): { mode: "cloud" | "local" | "auto"; resolved: "cloud" | "local"; cloudAvailable: boolean };
+  /** Persisted, not just applied: a switch flipped in the app must survive a restart. */
+  setMode(mode: "cloud" | "local" | "auto"): Promise<void>;
+}
+
 /** Supplied by the entry point: the adapter must not reach into the global config itself. */
 export interface MyClawAppDiagnosticsProvider {
   snapshot(owner: string, threadId: string): Promise<string>;
@@ -86,6 +97,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private pendingApprovals = new Map<string, PendingApproval>();
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
   private diagnostics?: MyClawAppDiagnosticsProvider;
+  private voice?: MyClawAppVoiceController;
   private sweeper?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -232,6 +244,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** Injected by the entry point: the adapter has no view of the global config or the runtime. */
   onDiagnostics(provider: MyClawAppDiagnosticsProvider): void {
     this.diagnostics = provider;
+  }
+
+  onVoiceController(controller: MyClawAppVoiceController): void {
+    this.voice = controller;
   }
 
   /** Conversation namespace of a device: its configured owner, else the device id itself. */
@@ -439,6 +455,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "files.list":
         void this.handleFilesList(ws, frame);
         break;
+      case "voice.mode.get":
+        void this.handleVoiceMode(ws, undefined);
+        break;
+      case "voice.mode.set":
+        void this.handleVoiceMode(ws, frame.mode);
+        break;
       case "files.delete":
         void this.handleFileDelete(ws, frame);
         break;
@@ -468,6 +490,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         await myClawAppLog("warn", "attachment not found, dropped from the message", { owner, threadId, id: ref.id });
         continue;
       }
+      // Only meaningful on audio, and gated on the type the file actually has: a client that
+      // flags a jpeg as a voice note must not steer the STT policy with it.
+      const voice = stored.type === "audio" && ref.audioAsVoice === true;
       attachments.push({
         // The stored type comes from the file itself; `ref.type` is whatever the client claimed,
         // and a jpeg announced as "file" would silently skip vision routing.
@@ -476,6 +501,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
         mimeType: stored.mimeType,
         filename: stored.filename,
         sizeBytes: stored.sizeBytes,
+        ...(voice ? { audioAsVoice: true } : {}),
+        ...(stored.type === "audio" && typeof ref.durationMs === "number" ? { durationMs: ref.durationMs } : {}),
       });
     }
 
@@ -495,6 +522,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }).catch((err) => {
       void myClawAppLog("error", "message handling failed", { owner, error: String(err) });
     });
+  }
+
+  /**
+   * One handler for both frames: a set is only useful if it answers with the resulting state,
+   * and the app renders that same state either way.
+   */
+  private async handleVoiceMode(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    mode: "cloud" | "local" | "auto" | undefined,
+  ): Promise<void> {
+    if (!this.voice) {
+      await this.refuse(ws, "voice", "voice control unavailable");
+      return;
+    }
+    try {
+      if (mode) {
+        if (mode !== "cloud" && mode !== "local" && mode !== "auto") {
+          await this.refuse(ws, "voice", "invalid voice mode", { mode });
+          return;
+        }
+        await this.voice.setMode(mode);
+      }
+      this.sendFrame(ws, { type: "voice.mode.result", ...this.voice.status() });
+    } catch (err) {
+      await this.refuse(ws, "voice", "voice.mode failed", { mode, error: String(err) });
+    }
   }
 
   /**
@@ -670,26 +723,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 }
 
+/** Serving reuses the store's table: two lists drifted apart once, and .opus was the casualty. */
 function mimeTypeForPath(path: string): string | undefined {
-  const ext = extname(path).toLowerCase();
-  const map: Record<string, string> = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".mp3": "audio/mpeg",
-    ".ogg": "audio/ogg",
-    ".oga": "audio/ogg",
-    ".opus": "audio/ogg",
-    ".wav": "audio/wav",
-    ".m4a": "audio/mp4",
-    ".mp4": "video/mp4",
-    ".webm": "video/webm",
-    ".pdf": "application/pdf",
-    ".md": "text/markdown",
-    ".txt": "text/plain",
-    ".zip": "application/zip",
-  };
-  return map[ext];
+  return MIME_BY_EXTENSION[extname(path).slice(1).toLowerCase()];
 }

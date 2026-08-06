@@ -445,6 +445,101 @@ describe("MyClawAppAdapter", () => {
     assert.equal(after.files.length, 0);
   });
 
+  test("the speech-to-text engine can be read and switched from the device", async () => {
+    let stored: "cloud" | "local" | "auto" = "auto";
+    adapter.onVoiceController({
+      status: () => ({ mode: stored, resolved: stored === "local" ? "local" : "cloud", cloudAvailable: true }),
+      setMode: async (mode) => { stored = mode; },
+    });
+
+    client.ws.send(JSON.stringify({ type: "voice.mode.get" }));
+    const initial = (await nextFrame(client)) as { type: string; mode: string; resolved: string; cloudAvailable: boolean };
+    assert.equal(initial.type, "voice.mode.result");
+    assert.equal(initial.mode, "auto");
+    assert.equal(initial.cloudAvailable, true);
+
+    // A set answers with the resulting state, so the app never renders a stale switch.
+    client.ws.send(JSON.stringify({ type: "voice.mode.set", mode: "local" }));
+    const after = (await nextFrame(client)) as { type: string; mode: string; resolved: string };
+    assert.equal(after.type, "voice.mode.result");
+    assert.equal(after.mode, "local");
+    assert.equal(after.resolved, "local");
+    assert.equal(stored, "local");
+  });
+
+  test("an unusable voice mode is refused on the voice scope, not silently ignored", async () => {
+    adapter.onVoiceController({
+      status: () => ({ mode: "auto", resolved: "cloud", cloudAvailable: true }),
+      setMode: async () => { throw new Error("config.json unreadable"); },
+    });
+
+    client.ws.send(JSON.stringify({ type: "voice.mode.set", mode: "cloud" }));
+    const frame = (await nextFrame(client)) as { type: string; message: string; scope: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "voice");
+    assert.equal(frame.message, "voice.mode failed");
+  });
+
+  test("a held-mic recording is flagged as a voice note, with its measured duration", async () => {
+    const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "voice.m4a", "x-type": "audio", "x-thread-id": "vocal" },
+      body: new Uint8Array([1, 2, 3, 4]),
+    });
+    const meta = (await upload.json()) as { id: string };
+
+    client.ws.send(JSON.stringify({
+      type: "chat.send", id: "v1", text: "", threadId: "vocal",
+      attachments: [{ id: meta.id, type: "audio", audioAsVoice: true, durationMs: 4200 }],
+    }));
+    await waitUntil(() => received.length === 1);
+
+    const att = received[0]!.attachments[0]!;
+    assert.equal(att.type, "audio");
+    // Without the flag the STT pass auto-detects the language instead of using the configured one.
+    assert.equal(att.audioAsVoice, true);
+    assert.equal(att.durationMs, 4200);
+  });
+
+  test("an .opus upload is stored as audio, not as a generic file", async () => {
+    const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "note.opus", "x-type": "audio", "x-thread-id": "opus" },
+      body: new Uint8Array([9, 9, 9]),
+    });
+    const meta = (await upload.json()) as { id: string };
+
+    client.ws.send(JSON.stringify({
+      type: "chat.send", id: "o1", text: "", threadId: "opus",
+      attachments: [{ id: meta.id, type: "audio" }],
+    }));
+    await waitUntil(() => received.length === 1);
+
+    // Typed "file", it would never reach the transcription pass at all.
+    assert.equal(received[0]!.attachments[0]!.type, "audio");
+    assert.equal(received[0]!.attachments[0]!.mimeType, "audio/ogg");
+  });
+
+  test("a non-audio attachment cannot claim to be a voice note", async () => {
+    const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "photo.jpg", "x-type": "image", "x-thread-id": "claim" },
+      body: new Uint8Array([1, 2]),
+    });
+    const meta = (await upload.json()) as { id: string };
+
+    client.ws.send(JSON.stringify({
+      type: "chat.send", id: "c1", text: "", threadId: "claim",
+      attachments: [{ id: meta.id, type: "audio", audioAsVoice: true, durationMs: 999 }],
+    }));
+    await waitUntil(() => received.length === 1);
+
+    const att = received[0]!.attachments[0]!;
+    assert.equal(att.type, "image");
+    assert.equal(att.audioAsVoice, undefined);
+    assert.equal(att.durationMs, undefined);
+  });
+
   test("session.delete takes the uploaded files with it", async () => {
     const port = adapter.port;
     const thread = "filedel";

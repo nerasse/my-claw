@@ -148,7 +148,7 @@ describe("AgentBridge voice integration", () => {
     expect(bridge.hadAudioInbound(message.id)).toBe(false);
   });
 
-  test("hides audio attachments from LLM prompt after transcription", async () => {
+  test("lists the audio file alongside its transcript in the LLM prompt", async () => {
     const config = createConfig();
     const toolRegistry = new ToolRegistry();
     const skillRegistry = new SkillRegistry(new Map());
@@ -179,20 +179,16 @@ describe("AgentBridge voice integration", () => {
       // Expected to fail due to mocked LLM.
     }
 
-    // Check that the user message in session does not contain the audio attachment
+    // The transcript is what the agent reads; the path is what lets it act on the recording.
     const userMessage = session.messages.find((m) => m.role === "user");
     expect(userMessage).toBeDefined();
-    // Audio attachment should not appear in the [Attachments] section
-    // (it was already transcribed into [Audio]: ...)
     const attachmentsMatch = userMessage!.content.match(/\[Attachments\][\s\S]*/);
-    if (attachmentsMatch) {
-      expect(attachmentsMatch[0]).toContain("image");
-      expect(attachmentsMatch[0]).not.toContain("audio");
-      expect(attachmentsMatch[0]).not.toContain("test.ogg");
-    }
+    expect(attachmentsMatch).not.toBeNull();
+    expect(attachmentsMatch![0]).toContain("image");
+    expect(attachmentsMatch![0]).toContain("- audio: /tmp/test.ogg");
   });
 
-  test("hides audio attachments even when STT fails", async () => {
+  test("a failed transcription still leaves the file listed", async () => {
     const config = createConfig();
     const toolRegistry = new ToolRegistry();
     const skillRegistry = new SkillRegistry(new Map());
@@ -224,6 +220,7 @@ describe("AgentBridge voice integration", () => {
     const userMessage = session.messages.find((m) => m.role === "user");
     expect(userMessage).toBeDefined();
     expect(userMessage!.content).toContain("[Audio]: [Transcription failed");
-    expect(userMessage!.content).not.toContain("[Attachments]");
+    // The words are lost, so the file is the only thing left to work with.
+    expect(userMessage!.content).toContain("- audio: /tmp/nonexistent.ogg");
   });
 });

@@ -86,6 +86,28 @@ export async function setAgentContextCap(agent: AgentConfigKey, cap: number | un
   return { ok: true, previous };
 }
 
+/**
+ * Persists the speech-to-text engine choice.
+ *
+ * The `voice_mode` tool only mutates the live config object, which is right for "use local just
+ * for this one": it evaporates on restart. A switch the owner flips in the app means the opposite,
+ * so it is written to the file. `voice` is hot-reloaded and read per call, so the next voice note
+ * uses the new engine without a restart.
+ */
+export async function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const voice = objectAt(read.data, "voice");
+  const stt = objectAt(voice, "stt");
+  stt["mode"] = mode;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule stt ${mode}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { voiceSttMode: mode });
+  return { ok: true, previous: {} };
+}
+
 export async function setAgentModel(
   agent: AgentConfigKey,
   modelId: string,

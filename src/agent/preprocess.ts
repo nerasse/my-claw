@@ -286,7 +286,12 @@ export class MessagePreprocessor {
     }
 
     let content = message.text;
-    const visibleAttachments = message.attachments.filter((a) => a.type !== "audio");
+    // Audio is listed even though its words are already in the text above. The transcript is what
+    // the agent reads, but the file is what it can act on -- keep it and "save that voice note"
+    // has a path to work with. It is also the only join key a replayed turn has: the my-claw-app
+    // history resolves attachments out of this block, so dropping audio here made a voice note
+    // come back as bare text with no bubble to play.
+    const visibleAttachments = message.attachments;
     if (visibleAttachments.length > 0) {
       // Kept in sync with splitAttachmentBlock below, which reads it back out of a stored turn.
       const lines = visibleAttachments.map((a) => {
