@@ -184,7 +184,7 @@ function renderInline(tokens: Token[], isFirstListItem: boolean, skipSpoiler: bo
         result += `<code>${escapeHtml(t.content)}</code>`;
         break;
       case "link_open":
-        result += `<a href="${escapeHtml(t.attrGet("href") ?? "")}">`;
+        result += `<a href="${escapeHtml(String(t.attrGet("href") ?? ""))}">`;
         break;
       case "link_close":
         result += "</a>";
