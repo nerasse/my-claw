@@ -421,7 +421,9 @@ export class MobileAdapter implements ChannelAdapter {
       const stored = await this.files.findById(deviceId, threadId, ref.id);
       if (!stored) continue;
       attachments.push({
-        type: ref.type,
+        // The stored type comes from the file itself; `ref.type` is whatever the client claimed,
+        // and a jpeg announced as "file" would silently skip vision routing.
+        type: stored.type,
         path: filePathFor(deviceId, threadId, stored.id, stored.filename.split(".").at(-1) ?? "bin"),
         mimeType: stored.mimeType,
         filename: stored.filename,

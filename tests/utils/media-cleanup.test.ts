@@ -1,8 +1,9 @@
 import { test, expect } from "bun:test";
 import { writeFile, access, unlink, mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { cleanupGeneratedTempFiles } from "../../src/utils/media.ts";
+import { join, dirname } from "node:path";
+import { cleanupGeneratedTempFiles, cleanupAttachments } from "../../src/utils/media.ts";
+import { attachmentRoot } from "../../src/tools/workspace.ts";
 
 const exists = async (p: string) => {
   try {
@@ -57,4 +58,21 @@ test("cleanupGeneratedTempFiles tolerates empty input and missing files", async 
   await cleanupGeneratedTempFiles();
   await cleanupGeneratedTempFiles([]);
   await cleanupGeneratedTempFiles([{ path: "/tmp/tts-does-not-exist-xyz.mp3" }]);
+});
+
+test("cleanupAttachments deletes a channel temp file but never the persistent attachment store", async () => {
+  // Telegram/Matrix download into the temp root: those are per-run scratch.
+  const temp = join(tmpdir(), `chan-${Date.now()}.jpg`);
+  await writeFile(temp, "downloaded");
+
+  // The mobile channel stores uploads under $MY_CLAW_DIR/files and serves them afterwards:
+  // deleting them here wiped the user's photo seconds after it landed.
+  const stored = join(attachmentRoot(), "mobile", "dev-1", "thread-1", "photo.jpg");
+  await mkdir(dirname(stored), { recursive: true });
+  await writeFile(stored, "uploaded");
+
+  await cleanupAttachments([{ path: temp }, { path: stored }, {}]);
+
+  expect(await exists(temp)).toBe(false);
+  expect(await exists(stored)).toBe(true);
 });

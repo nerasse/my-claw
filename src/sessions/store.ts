@@ -5,8 +5,16 @@ import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 
+/**
+ * An image kept on the stored user turn so later turns can rebuild the same content blocks.
+ * Only the path is kept, never the bytes: sessions are single JSON files rewritten in full on
+ * every turn, and inlining base64 there would rewrite megabytes per message. The file lives in
+ * the channel's own store and is re-read while it exists.
+ */
+export type SessionAttachment = { type: "image"; path: string; mimeType?: string };
+
 export type SessionMessage =
-  | { role: "user"; content: string; timestamp: string }
+  | { role: "user"; content: string; timestamp: string; attachments?: SessionAttachment[] }
   | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string; durationMs?: number }> }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 

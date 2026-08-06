@@ -1,6 +1,7 @@
 import { unlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, basename } from "node:path";
+import { dirname, basename, resolve, sep } from "node:path";
+import { attachmentRoot } from "../tools/workspace.ts";
 
 const MEDIA_PATTERN = /MEDIA:(\/[^\s]+)/g;
 
@@ -29,6 +30,22 @@ export async function cleanupGeneratedTempFiles(attachments?: Array<{ path?: str
     if (isTempRoot(parent) && (basename(p).startsWith("browser-") || basename(p).startsWith("tts-"))) {
       await unlink(p).catch(() => {});
     }
+  }
+}
+
+/**
+ * Deletes the per-run temporaries a channel downloaded (Telegram and Matrix drop theirs in the
+ * temp root). Files under the attachment root are the mobile channel's persistent per-session
+ * store: they outlive the run by design (docs/mobile-channel.md), back files.list and
+ * GET /media, and are re-read on later turns to keep an image in the conversation.
+ */
+export async function cleanupAttachments(attachments: Array<{ path?: string }>): Promise<void> {
+  const persistentRoot = resolve(attachmentRoot());
+  for (const att of attachments) {
+    if (!att.path) continue;
+    const full = resolve(att.path);
+    if (full === persistentRoot || full.startsWith(persistentRoot + sep)) continue;
+    await unlink(full).catch(() => {});
   }
 }
 

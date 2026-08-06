@@ -1,4 +1,4 @@
-import { unlink, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname } from "node:path";
@@ -79,7 +79,7 @@ import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
-import { extractMediaRefs, cleanupGeneratedTempFiles } from "./utils/media.ts";
+import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
@@ -821,14 +821,6 @@ async function main() {
       void shutdown().finally(() => process.exit(1));
     }
   });
-}
-
-async function cleanupAttachments(attachments: Array<{ path?: string }>): Promise<void> {
-  for (const att of attachments) {
-    if (att.path) {
-      await unlink(att.path).catch(() => {});
-    }
-  }
 }
 
 function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | undefined {

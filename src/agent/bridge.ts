@@ -14,7 +14,7 @@ import {
 } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
-import type { SessionData, SessionMessage } from "../sessions/store.ts";
+import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
 import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
@@ -35,7 +35,7 @@ import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
-import { MessagePreprocessor } from "./preprocess.ts";
+import { MessagePreprocessor, imageContentFrom } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
 import { NestedAgentsCollector } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
@@ -107,6 +107,17 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
 
 const MAX_SESSION_MESSAGES = 500;
 const MAX_SESSION_MESSAGES_KEEP = 50;
+
+// How many of the most recent images ride along with every request. They are resent on each
+// turn, so this is a per-turn tax, not a one-off: a photo is worth ~1-2K tokens.
+const MAX_HISTORY_IMAGES = 4;
+
+/** Images the channel resolved for this turn, in the shape the session keeps. */
+function imageAttachmentsOf(message: UnifiedMessage): SessionAttachment[] {
+  return message.attachments
+    .filter((a) => a.type === "image" && a.path)
+    .map((a) => ({ type: "image" as const, path: a.path!, ...(a.mimeType ? { mimeType: a.mimeType } : {}) }));
+}
 
 // A tool result with no content confuses the model (it cannot tell "ran, nothing to show" from a
 // broken tool). Every tool result is normalized to a non-empty, explicit string.
@@ -287,7 +298,13 @@ export class AgentBridge implements AgentBackend {
       const userContent = this.preprocessor.buildUserContent(message);
       const now = new Date().toISOString();
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
-      session.messages.push({ role: "user", content: transformedContent, timestamp: now });
+      const images = imageAttachmentsOf(message);
+      session.messages.push({
+        role: "user",
+        content: transformedContent,
+        timestamp: now,
+        ...(images.length > 0 ? { attachments: images } : {}),
+      });
       messageCountBeforeLoop = session.messages.length;
 
       const openaiTools = toOpenAiToolDefinitions(tools);
@@ -299,15 +316,7 @@ export class AgentBridge implements AgentBackend {
 
       // Vision is resolved per model (resolver merges the model entry over the global flag):
       // the global default may be a text-only model while another configured model has vision.
-      if (llmConfig.vision && message.attachments.some((a) => a.type === "image" && a.path)) {
-        const lastIdx = chatMessages.length - 1;
-        if (chatMessages[lastIdx]?.role === "user") {
-          chatMessages[lastIdx] = {
-            role: "user",
-            content: await this.preprocessor.buildImageContent(message),
-          };
-        }
-      }
+      if (llmConfig.vision) await this.attachImages(chatMessages, session.messages);
 
       await this.injectMemory(message, chatMessages);
 
@@ -951,6 +960,37 @@ export class AgentBridge implements AgentBackend {
       }
     } catch (err) {
       void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
+    }
+  }
+
+  /**
+   * Puts the images back into the turns that carry them, not just the last one. The chat APIs
+   * are stateless: an image only stays visible to the model if it is resent with every request,
+   * which is what opencode and Claude Code do. Without this, "and here, what do you see?" hits
+   * a model that lost the picture one turn ago.
+   *
+   * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
+   * photos, and each one costs its tokens on every single turn.
+   */
+  private async attachImages(chatMessages: ChatMessage[], messages: SessionMessage[]): Promise<void> {
+    const kept = dropLeadingOrphanToolMessages(messages);
+    // chatMessages[0] is the system prompt, the rest maps 1:1 onto `kept`.
+    const withImages: Array<{ index: number; text: string; paths: string[] }> = [];
+    for (const [i, msg] of kept.entries()) {
+      if (msg.role !== "user" || !msg.attachments?.length) continue;
+      const paths = msg.attachments.filter((a) => a.type === "image").map((a) => a.path);
+      if (paths.length > 0) withImages.push({ index: i + 1, text: msg.content, paths });
+    }
+
+    let budget = MAX_HISTORY_IMAGES;
+    for (const turn of withImages.reverse()) {
+      if (budget <= 0) break;
+      const paths = turn.paths.slice(-budget);
+      budget -= paths.length;
+      const target = chatMessages[turn.index];
+      if (target?.role !== "user") continue;
+      const content = await imageContentFrom(turn.text, paths);
+      if (content.length > 1) chatMessages[turn.index] = { role: "user", content };
     }
   }
 

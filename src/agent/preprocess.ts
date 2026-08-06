@@ -5,6 +5,7 @@ import type { ChatMessageContent } from "../llm/provider.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
 import { imageToBase64, extractVideoFrames } from "../media/index.ts";
+import { LruMap } from "../utils/lru-map.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
@@ -270,16 +271,46 @@ export class MessagePreprocessor {
     return normalizeUntrusted(parts.filter((part) => part.trim()).join("\n\n"), "user-turn");
   }
 
-  async buildImageContent(message: UnifiedMessage): Promise<ChatMessageContent[]> {
-    const contents: ChatMessageContent[] = [{ type: "text", text: message.text }];
-
-    for (const att of message.attachments) {
-      if (att.type === "image" && att.path) {
-        const { dataUrl } = await imageToBase64(att.path);
-        contents.push({ type: "image_url", image_url: { url: dataUrl } });
-      }
-    }
-
-    return contents;
+  /**
+   * Image blocks for a turn. `text` is the already-built user content, not the raw message
+   * text: dropping it would strip the [Attachments] block, the reply/thread context and the
+   * untrusted-content normalisation from the only turn that carries an image.
+   */
+  async buildImageContent(message: UnifiedMessage, text?: string): Promise<ChatMessageContent[]> {
+    const paths = message.attachments.filter((a) => a.type === "image" && a.path).map((a) => a.path!);
+    return imageContentFrom(text ?? message.text, paths);
   }
+}
+
+/**
+ * Encoding is cached on (path, mtime, size): an image stays in the conversation for every
+ * later turn, and re-reading plus resizing the same file on each one is pure waste. Small
+ * cap, the values hold base64 payloads.
+ */
+const encodedImages = new LruMap<string, string>(8);
+
+async function encodeImage(path: string): Promise<string | null> {
+  try {
+    const info = await stat(path);
+    const key = `${path}:${info.mtimeMs}:${info.size}`;
+    const cached = encodedImages.get(key);
+    if (cached) return cached;
+    const { dataUrl } = await imageToBase64(path);
+    encodedImages.set(key, dataUrl);
+    return dataUrl;
+  } catch {
+    // The file can legitimately be gone (deleted by the user, session archived): the turn
+    // keeps its text, which still names the attachment.
+    return null;
+  }
+}
+
+/** Text plus one image block per readable path, or null when none of them can be read. */
+export async function imageContentFrom(text: string, paths: string[]): Promise<ChatMessageContent[]> {
+  const contents: ChatMessageContent[] = [{ type: "text", text }];
+  for (const path of paths) {
+    const dataUrl = await encodeImage(path);
+    if (dataUrl) contents.push({ type: "image_url", image_url: { url: dataUrl } });
+  }
+  return contents;
 }

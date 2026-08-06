@@ -121,7 +121,9 @@ and removed with the session (archive/delete). `GET /media/<id>` serves them bac
 for display/download. Uploads are capped (`channels.mobile.files.maxSizeBytes`,
 default 10 MB, plus a global `maxTotalBytes` of 2 GB). The agent receives the
 attachment as a path it can read with its tools, and images are routed to a
-vision-capable model when the active model cannot take them.
+vision-capable model when the active model cannot take them. The files outlive
+the run that used them: they are only removed by `files.delete` or with the
+session, and later turns re-read them to keep an image in the conversation.
 
 `chat.history` is also the ack for `session.archive`/`session.delete` (empty
 messages list). `session.list.result` only lists active (non-archived) threads,

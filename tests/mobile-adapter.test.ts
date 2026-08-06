@@ -434,6 +434,21 @@ describe("MobileAdapter", () => {
     assert.equal(after.files.length, 0);
   });
 
+  test("the attachment type comes from the stored file, not from what the client claims", async () => {
+    const port = adapter.port;
+    const upload = await fetch(`http://127.0.0.1:${port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "photo.jpg", "x-type": "file", "x-thread-id": "projet" },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const meta = (await upload.json()) as { id: string };
+
+    // A jpeg announced as "file" would otherwise skip vision routing entirely.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m2", text: "regarde", threadId: "projet", attachments: [{ id: meta.id, type: "file" }] }));
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.attachments[0]!.type, "image");
+  });
+
   test("archiving a session removes its uploaded files", async () => {
     const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
       method: "POST",

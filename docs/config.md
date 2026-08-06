@@ -69,6 +69,13 @@ run uses the fallback model so it can see the image in context. The target must 
 model with `vision: true`; otherwise the setting is ignored. Provider-agnostic: the switch
 happens in my-claw before the request, so it works with any backend (proxy, direct API, local).
 
+An image stays in the conversation for the turns that follow, not just the one it was attached
+to: chat APIs are stateless, so a picture is only still visible to the model if it is resent
+with every request (this is what opencode and Claude Code do). The session keeps the file path,
+never the bytes, and the blocks are rebuilt from disk while the file exists; a deleted file
+degrades to the text mention. Only the 4 most recent images ride along, because each one costs
+its tokens on every single turn.
+
 ### Claude SDK provider (subscription)
 
 A provider with `"type": "claude-sdk"` runs its models through the Claude Agent SDK on
