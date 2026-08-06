@@ -170,8 +170,8 @@ export class AgentBridge implements AgentBackend {
     return this.preprocessor.inboundHadAudio(messageId);
   }
 
-  transcriptOf(messageId: string): string | undefined {
-    return this.preprocessor.transcriptOf(messageId);
+  transcriptsOf(messageId: string): Array<{ path: string; text: string }> {
+    return this.preprocessor.transcriptsOf(messageId);
   }
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {

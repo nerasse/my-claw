@@ -1,5 +1,5 @@
 import type { Server, ServerWebSocket } from "bun";
-import { extname } from "node:path";
+import { basename, extname } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalDecision,
@@ -14,7 +14,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { COMMANDS } from "../commands-catalog.ts";
-import { MIME_BY_EXTENSION, SessionFileStore, filePathFor } from "./files.ts";
+import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } from "./files.ts";
 import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
@@ -251,10 +251,25 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.voice = controller;
   }
 
-  /** Delivered to every socket of the owner, like any other frame addressed to a conversation. */
-  sendTranscript(owner: string, threadId: string, replyToId: string, text: string): void {
+  /**
+   * Delivered to every socket of the owner, like any other frame addressed to a conversation.
+   * Transcripts arrive keyed by the file they came from; the id in the path is what the device
+   * knows its bubbles by, so the mapping happens here rather than in the agent.
+   */
+  sendTranscript(
+    owner: string,
+    threadId: string,
+    replyToId: string,
+    transcripts: Array<{ path: string; text: string }>,
+  ): void {
+    const items: Array<{ id: string; text: string }> = [];
+    for (const entry of transcripts) {
+      const parsed = parseStoredName(basename(entry.path));
+      if (parsed) items.push({ id: parsed.id, text: entry.text });
+    }
+    if (items.length === 0) return;
     for (const ws of this.socketsFor(owner)) {
-      this.sendFrame(ws, { type: "chat.transcript", threadId, replyToId, text });
+      this.sendFrame(ws, { type: "chat.transcript", threadId, replyToId, items });
     }
   }
 

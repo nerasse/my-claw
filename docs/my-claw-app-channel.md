@@ -121,7 +121,7 @@ the first answer wins.
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
-{ "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "text": "ce que le serveur a entendu" }
+{ "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice" }
 ```
@@ -149,7 +149,9 @@ words instead of failing. Nothing else in the pipeline is channel-specific -- th
 echo, and the `[Audio]: "..."` rewrite are the same code that serves Telegram and Matrix.
 
 The transcript comes back as `chat.transcript`, addressed to the `chat.send` id the device
-generated, so the app renders it inside the recording's own bubble. Telegram and Matrix get the
+generated, with one entry per recording keyed by attachment id, so each note renders its own
+words. A message can carry several: the mic stays available while there is no text, and the
+`[Audio 1]`, `[Audio 2]` labels in the stored turn keep them apart in the prompt too. Telegram and Matrix get the
 same text as an echo message (`voice.stt.echoFormat`); here that echo is dropped, because a
 standalone turn quoting the bubble above it says the same thing twice and pushes the conversation
 apart. A take that failed has no transcript, so its warning still arrives as a message.
@@ -200,7 +202,10 @@ turn is stored as `[Audio]: "..."` because that is what the model must read; his
 words back as `transcript` and the duration back on the attachment, so the reopened thread shows
 the same player and the same sentence under it instead of printing the marker as body text.
 
-Audio is listed in that block like everything else. It was excluded once, on the grounds that
+Audio is listed in that block, but with only its path and duration. Its words are already in the
+text above, so mime, size and file name are three facts the model will not use and pays for on
+every replay of the conversation -- about 14 tokens per recording per turn. Duration stays,
+because it is the one thing that cannot be recovered without decoding the file. It was excluded once, on the grounds that
 its words were already in the text: the cost was that a replayed voice note came back as bare
 text with no bubble to play, and the agent never saw the file it had just been read from -- so
 "keep that recording" had no path to work with.

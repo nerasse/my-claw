@@ -129,11 +129,39 @@ describe("MyClawAppSessionStoreImpl.history", () => {
 
     // The bubble reads the same as when it was sent: a player, and the words under it.
     assert.equal(turn.text, "");
-    assert.equal(turn.transcript, "rappelle-moi demain");
+    assert.deepEqual(turn.transcripts, { [saved.id]: "rappelle-moi demain" });
     assert.equal(turn.attachments?.length, 1);
     assert.equal(turn.attachments![0]!.type, "audio");
     // Without this the replayed player would show 0:00 where the live one showed 0:03.
     assert.equal(turn.attachments![0]!.durationMs, 3100);
+  });
+
+  test("several recordings in one turn each keep their own words", async () => {
+    const files = new SessionFileStore();
+    const first = await files.save(DEVICE, THREAD, "one.m4a", new Uint8Array([1]));
+    const second = await files.save(DEVICE, THREAD, "two.m4a", new Uint8Array([2]));
+
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "user",
+        content:
+          `[Audio 1]: "premier bout"\n\n[Audio 2]: "deuxieme bout"\n\n[Attachments]\n` +
+          `- audio: ${filePathFor(DEVICE, THREAD, first.storedName)} (1200 ms)\n` +
+          `- audio: ${filePathFor(DEVICE, THREAD, second.storedName)} (2400 ms)`,
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "user") throw new Error("expected a user entry");
+
+    // Pairing by position: one blob repeated under both bubbles would say the wrong thing twice.
+    assert.deepEqual(turn.transcripts, {
+      [first.id]: "premier bout",
+      [second.id]: "deuxieme bout",
+    });
+    assert.equal(turn.attachments?.[0]!.durationMs, 1200);
+    assert.equal(turn.attachments?.[1]!.durationMs, 2400);
   });
 
   test("a caption sent with a voice note survives the transcript split", async () => {
@@ -144,7 +172,8 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const turn = (await store.history(DEVICE, THREAD))[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
     assert.equal(turn.text, "regarde ca");
-    assert.equal(turn.transcript, "et ecoute");
+    // No attachment survives to pair it with, so there is nothing to hang the words on.
+    assert.equal(turn.transcripts, undefined);
   });
 
   test("a failed transcription stays visible as text", async () => {
@@ -160,7 +189,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     if (turn.role !== "user") throw new Error("expected a user entry");
     // Hiding this would replay a voice note that silently said nothing.
     assert.equal(turn.text, "[Audio]: [Transcription failed: timeout]");
-    assert.equal(turn.transcript, undefined);
+    assert.equal(turn.transcripts, undefined);
   });
 
   test("a renamed conversation keeps its name in the list, and can be handed back", async () => {

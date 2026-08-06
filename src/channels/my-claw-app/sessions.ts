@@ -57,7 +57,7 @@ function durationFrom(details: string[]): number | undefined {
  * showed the sentence under its player. Pulled back out here, a reopened thread renders the
  * same thing it did when it was sent.
  */
-function splitTranscript(text: string): { text: string; transcript?: string } {
+function splitTranscript(text: string): { text: string; spoken: string[] } {
   const paragraphs = text.split("\n\n");
   const spoken: string[] = [];
   const rest: string[] = [];
@@ -68,8 +68,8 @@ function splitTranscript(text: string): { text: string; transcript?: string } {
     if (match) spoken.push(match[1]!);
     else rest.push(paragraph);
   }
-  if (spoken.length === 0) return { text };
-  return { text: rest.join("\n\n").trim(), transcript: spoken.join("\n") };
+  if (spoken.length === 0) return { text, spoken };
+  return { text: rest.join("\n\n").trim(), spoken };
 }
 
 function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["attachments"], files: SessionFile[]): MyClawAppHistoryAttachment[] {
@@ -149,14 +149,21 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     for (const message of window) {
       if (message.role === "user") {
         const block = splitAttachmentBlock(message.content);
-        const { text, transcript } = splitTranscript(block.text);
+        const { text, spoken } = splitTranscript(block.text);
         const resolved = historyAttachments(block.attachments, stored);
+        // `[Audio 1]`, `[Audio 2]` are written in the order the recordings were attached, and
+        // the block lists them in that same order, so position is what pairs them back up.
+        const transcripts: Record<string, string> = {};
+        const recordings = resolved.filter((entry) => entry.type === "audio");
+        for (let i = 0; i < recordings.length && i < spoken.length; i++) {
+          transcripts[recordings[i]!.id] = spoken[i]!;
+        }
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "user",
           text,
           ts: message.timestamp,
-          ...(transcript ? { transcript } : {}),
+          ...(Object.keys(transcripts).length > 0 ? { transcripts } : {}),
           ...(resolved.length > 0 ? { attachments: resolved } : {}),
         });
         continue;

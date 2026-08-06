@@ -659,13 +659,13 @@ async function main() {
       let response: RouteResult | undefined;
       try {
         await agent.preprocessMessage(msg);
-        const transcript = agent.transcriptOf(msg.id);
+        const transcripts = agent.transcriptsOf(msg.id);
         const echoes = agent.getEchoMessages(msg.id);
-        if (transcript) {
+        if (transcripts.length > 0) {
           // The app owns the rendering: it puts the words inside the voice bubble they belong to.
           // The echo messages are dropped here, since they would repeat the same text as a
           // standalone turn -- warnings from failed takes have no transcript and still come through.
-          myClawApp.sendTranscript(msg.chatId, msg.threadId ?? "default", msg.id, transcript);
+          myClawApp.sendTranscript(msg.chatId, msg.threadId ?? "default", msg.id, transcripts);
         } else {
           for (const echo of echoes) {
             await myClawApp.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });

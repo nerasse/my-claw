@@ -175,8 +175,8 @@ export type MyClawAppHistoryEntry =
       text: string;
       ts: string;
       attachments?: MyClawAppHistoryAttachment[];
-      /** What was heard in this turn's voice note, so the replayed bubble matches the live one. */
-      transcript?: string;
+      /** What was heard, per recording id, so each replayed bubble carries its own words. */
+      transcripts?: Record<string, string>;
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
@@ -303,7 +303,8 @@ export interface MyClawAppChatTranscript {
   threadId: string;
   /** The chat.send id the device generated, so the bubble is found without guessing. */
   replyToId: string;
-  text: string;
+  /** One entry per recording, keyed by attachment id: a message may carry several. */
+  items: Array<{ id: string; text: string }>;
 }
 
 export interface MyClawAppVoiceModeResult {

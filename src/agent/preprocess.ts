@@ -20,8 +20,12 @@ interface PreprocessRunState {
   responseAttachments: NonNullable<OutgoingMessage["attachments"]>;
   tempDirs: string[];
   hadAudio: boolean;
-  /** Raw text, before the echo template wraps it: a channel may want to render it itself. */
-  transcripts: string[];
+  /**
+   * Raw text per audio attachment, before the echo template wraps it. Keyed by the file it came
+   * from: several voice notes can ride on one message, and a channel that renders them next to
+   * their own bubble needs to know which words belong to which recording.
+   */
+  transcripts: Array<{ path: string; text: string }>;
 }
 
 export const ATTACHMENT_HEADING = "[Attachments]";
@@ -81,10 +85,9 @@ export class MessagePreprocessor {
     return this.runs.get(messageId)?.hadAudio ?? false;
   }
 
-  /** What was heard, unformatted. Empty when nothing was transcribed or every take failed. */
-  transcriptOf(messageId: string): string | undefined {
-    const parts = this.runs.get(messageId)?.transcripts ?? [];
-    return parts.length > 0 ? parts.join("\n") : undefined;
+  /** What was heard, per recording. Empty when nothing was transcribed or every take failed. */
+  transcriptsOf(messageId: string): Array<{ path: string; text: string }> {
+    return this.runs.get(messageId)?.transcripts ?? [];
   }
 
   consumeEchoMessages(messageId: string): OutgoingMessage[] {
@@ -199,7 +202,7 @@ export class MessagePreprocessor {
         const audioPrefix = existingText ? `\n\n` : "";
         message.text = `${existingText}${audioPrefix}${label}: "${result.text}"`;
 
-        state.transcripts.push(result.text);
+        state.transcripts.push({ path: att.path, text: result.text });
         const { enabled } = this.voiceManager.getEchoConfig();
         if (enabled) {
           state.echoMessages.push({
@@ -305,13 +308,20 @@ export class MessagePreprocessor {
       // Kept in sync with splitAttachmentBlock below, which reads it back out of a stored turn.
       const lines = visibleAttachments.map((a) => {
         const source = a.path ?? a.url ?? "unknown";
-        const details = [
-          a.mimeType,
-          typeof a.sizeBytes === "number" ? `${a.sizeBytes} bytes` : undefined,
-          a.filename,
-          typeof a.width === "number" && typeof a.height === "number" ? `${a.width}x${a.height}` : undefined,
-          typeof a.durationMs === "number" ? `${a.durationMs} ms` : undefined,
-        ].filter(Boolean);
+        // Audio is listed so the file can be acted on, but its words are already in the text
+        // above: mime, size and name are three facts the model will not use and pays for on
+        // every turn the conversation is replayed. Duration is kept, since it is the one thing
+        // that cannot be recovered without decoding the file.
+        const details = (a.type === "audio"
+          ? [typeof a.durationMs === "number" ? `${a.durationMs} ms` : undefined]
+          : [
+              a.mimeType,
+              typeof a.sizeBytes === "number" ? `${a.sizeBytes} bytes` : undefined,
+              a.filename,
+              typeof a.width === "number" && typeof a.height === "number" ? `${a.width}x${a.height}` : undefined,
+              typeof a.durationMs === "number" ? `${a.durationMs} ms` : undefined,
+            ]
+        ).filter(Boolean);
         return `- ${a.type}: ${source}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
       });
       content += `\n\n${ATTACHMENT_HEADING}\n${lines.join("\n")}`;
