@@ -1,5 +1,7 @@
 import { test, afterEach, beforeEach, describe } from "bun:test";
 import assert from "node:assert/strict";
+import { rm } from "node:fs/promises";
+import { filesRootForOwner } from "../src/channels/my-claw-app/files.ts";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -180,6 +182,10 @@ describe("MyClawAppAdapter", () => {
   afterEach(async () => {
     client?.ws.close();
     await adapter.stop();
+    // Uploads outlive the adapter that stored them: leaving them behind made the file tests
+    // depend on their order (bun test --randomize --seed=2 caught it).
+    await rm(filesRootForOwner(DEVICE_ID), { recursive: true, force: true });
+    await rm(filesRootForOwner("neras"), { recursive: true, force: true });
   });
 
   test("rejects unpaired devices and wrong tokens", async () => {
