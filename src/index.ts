@@ -661,8 +661,11 @@ async function main() {
       current: (owner, threadId) => resolveModelState(owner, threadId),
       set: async (owner, threadId, modelId) => {
         const sessionId = modelSessionId(owner, threadId);
-        const session = await sessionManager.peek(sessionId);
-        if (!session) throw new Error("conversation not found");
+        // Unlike rename, a missing session is not refused: the thread is already in the app's
+        // list, and picking a model for it is exactly what /model does on the other channels.
+        const session =
+          (await sessionManager.peek(sessionId)) ??
+          (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
         const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
         session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
         session.lastActiveAt = new Date().toISOString();
@@ -672,8 +675,9 @@ async function main() {
       },
       setEffort: async (owner, threadId, level) => {
         const sessionId = modelSessionId(owner, threadId);
-        const session = await sessionManager.peek(sessionId);
-        if (!session) throw new Error("conversation not found");
+        const session =
+          (await sessionManager.peek(sessionId)) ??
+          (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
         const activeModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (!levels.includes(level as never)) throw new Error(`invalid effort level: ${level}`);
