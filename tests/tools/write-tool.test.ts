@@ -2,9 +2,13 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { readFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { writeTool } from "../../src/tools/write.ts";
 
-const TMP = "/tmp/opencode/my-claw-tests/write";
+// A fixed path under the shared /tmp is one directory for every process on the machine:
+// two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
+const TMP = mkdtempSync(join(tmpdir(), "my-claw-write-"));
 
 test("write: writes file and verifies content", async () => {
   await mkdir(TMP, { recursive: true });

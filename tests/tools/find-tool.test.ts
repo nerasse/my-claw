@@ -2,9 +2,13 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { findTool } from "../../src/tools/find.ts";
 
-const TMP = "/tmp/opencode/my-claw-tests/find";
+// A fixed path under the shared /tmp is one directory for every process on the machine:
+// two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
+const TMP = mkdtempSync(join(tmpdir(), "my-claw-find-"));
 
 test("find: finds file by name pattern", async () => {
   await mkdir(TMP, { recursive: true });

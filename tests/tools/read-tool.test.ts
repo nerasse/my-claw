@@ -2,9 +2,13 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { readTool } from "../../src/tools/read.ts";
 
-const TMP = "/tmp/opencode/my-claw-tests/read";
+// A fixed path under the shared /tmp is one directory for every process on the machine:
+// two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
+const TMP = mkdtempSync(join(tmpdir(), "my-claw-read-"));
 
 test("read: reads existing file content", async () => {
   await mkdir(TMP, { recursive: true });
@@ -51,7 +55,7 @@ test("read: caps output at 100KB with a truncation notice", async () => {
   const { readTool } = await import("../../src/tools/read.ts");
   const { writeFile, mkdir, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
-  const dir = "/tmp/opencode/my-claw-tests/read-cap";
+  const dir = mkdtempSync(join(tmpdir(), "my-claw-read-cap-"));
   await mkdir(dir, { recursive: true });
   const file = join(dir, "big.txt");
   await writeFile(file, "x".repeat(250_000));

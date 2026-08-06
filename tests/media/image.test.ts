@@ -3,7 +3,7 @@ import { imageToBase64 } from "../../src/media/image.ts";
 import { unlink, stat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { genPpmImage } from "../helpers/gen-test-image.ts";
 
 let smallImagePath: string;
@@ -52,13 +52,21 @@ describe("imageToBase64", () => {
   });
 
   test("removes its temp dir after a resize", async () => {
-    const countImgDirs = async () =>
-      (await readdir(tmpdir())).filter((name) => name.startsWith("img-")).length;
-
-    const before = await countImgDirs();
-    const result = await imageToBase64(largeImagePath, { maxBytes: 50000 });
-    expect(result.wasResized).toBe(true);
-    expect(await countImgDirs()).toBe(before);
+    // Counting img-* in the shared system tmpdir made this test fail whenever anything else
+    // on the machine was resizing at the same time (two CI jobs on one runner). A private
+    // TMPDIR keeps the count about this call only: mkdtemp resolves tmpdir() per call.
+    const previousTmp = process.env["TMPDIR"];
+    const scratch = await mkdtemp(join(tmpdir(), "img-scope-"));
+    process.env["TMPDIR"] = scratch;
+    try {
+      const result = await imageToBase64(largeImagePath, { maxBytes: 50000 });
+      expect(result.wasResized).toBe(true);
+      expect((await readdir(scratch)).filter((name) => name.startsWith("img-"))).toEqual([]);
+    } finally {
+      if (previousTmp === undefined) delete process.env["TMPDIR"];
+      else process.env["TMPDIR"] = previousTmp;
+      await rm(scratch, { recursive: true, force: true });
+    }
   });
 
   test("infers PNG mime type from extension", async () => {

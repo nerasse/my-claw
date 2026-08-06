@@ -2,9 +2,13 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { lsTool } from "../../src/tools/ls.ts";
 
-const TMP = "/tmp/opencode/my-claw-tests/ls";
+// A fixed path under the shared /tmp is one directory for every process on the machine:
+// two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
+const TMP = mkdtempSync(join(tmpdir(), "my-claw-ls-"));
 
 test("ls: lists files and subdirs with f and d prefixes", async () => {
   await mkdir(join(TMP, "subdir"), { recursive: true });
