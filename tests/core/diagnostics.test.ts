@@ -69,6 +69,16 @@ test("the log tail can be scoped to one channel", async () => {
   expect(entries.map((e) => e.message)).toEqual(["from mobile"]);
 });
 
+test("a noisy scope can be excluded, which is what makes the snapshot readable", async () => {
+  await rm(LOGS_DIR, { recursive: true, force: true });
+  await seedLog("matrix-sdk-2026-08-06.log", [entry({ scope: "matrix-sdk", level: "warn", message: "push rule chatter" })]);
+  await seedLog("mobile-2026-08-06.log", [entry({ scope: "mobile", level: "warn", message: "the actual problem" })]);
+
+  const entries = await readLogEntries({ level: "warn", excludeScopes: ["matrix-sdk"] });
+
+  expect(entries.map((e) => e.message)).toEqual(["the actual problem"]);
+});
+
 test("secrets never leave the server, whether named in the config or matched by shape", () => {
   const secrets = collectSecrets(config());
   const text = [

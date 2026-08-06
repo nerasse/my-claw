@@ -32,6 +32,8 @@ export interface LogQuery {
   limit?: number;
   /** Substring match on the message, case-insensitive. */
   contains?: string;
+  /** Scopes to leave out. The matrix SDK alone drowns everything else at warn level. */
+  excludeScopes?: string[];
 }
 
 /** Newest first. Reads whole files: they are capped at 5 MB by the rotation. */
@@ -80,6 +82,7 @@ export async function readLogEntries(query: LogQuery = {}): Promise<LogEntry[]> 
       }
       if ((LEVEL_ORDER[entry.level] ?? 0) < minLevel) continue;
       if (query.run && entry.run !== query.run) continue;
+      if (query.excludeScopes?.includes(entry.scope)) continue;
       if (needle && !entry.message.toLowerCase().includes(needle)) continue;
       out.push(entry);
     }
@@ -200,8 +203,9 @@ export async function buildDiagnostics(input: DiagnosticsInput): Promise<string>
     lines.push(`mobile: port ${mobile.port ?? 8080} | ${devices} device(s) | approvals ${mobile.approvals === true ? "on" : "off"} | streaming ${mobile.streaming?.enabled === false ? "off" : "on"}`);
   }
 
-  const errors = await readLogEntries({ level: "warn", limit: 15 });
-  lines.push("", `last ${errors.length} warnings/errors:`);
+  // The SDK's own chatter is not a symptom of anything; ask for it explicitly if needed.
+  const errors = await readLogEntries({ level: "warn", limit: 15, excludeScopes: ["matrix-sdk"] });
+  lines.push("", `last ${errors.length} warnings/errors (matrix-sdk excluded):`);
   lines.push(errors.length > 0 ? formatLogEntries(errors, secrets) : "  none");
 
   return redactSecrets(lines.join("\n"), secrets);
