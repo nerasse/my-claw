@@ -295,6 +295,33 @@ describe("MyClawAppAdapter", () => {
     assert.equal(abort.error, "boom");
   });
 
+  test("a delayed first delta carries every token buffered before it", async () => {
+    // Production waits for 30 characters before opening the bubble; the default test config
+    // starts at 1, which is exactly the setting that hides this.
+    const held = new MyClawAppAdapter(createConfig({ port: 0, streaming: { enabled: true, minChars: 30 } }), store);
+    held.onMessage(async () => {});
+    await held.start();
+    const listener = await connectClient(held.port);
+    try {
+      const streamer = held.createStreamer(streamerMessage(held, "m9", DEVICE_ID));
+      const tokens = ["Bonjour, ", "je regarde ", "ce que tu ", "m'as demande ", "tout de suite."];
+      for (const token of tokens) await streamer.push(token);
+      await streamer.finish();
+
+      await waitUntil(() => listener.frames.some((f) => (f as { type: string }).type === "chat.stream.done"));
+      const deltas = listener.frames
+        .filter((f) => (f as { type: string }).type === "chat.stream.delta")
+        .map((f) => (f as { text: string }).text);
+
+      // The reader must end up with the whole reply, opening words included.
+      assert.equal(deltas.join(""), tokens.join(""));
+      assert.ok(deltas[0]!.startsWith("Bonjour, "));
+    } finally {
+      listener.ws.close();
+      await held.stop();
+    }
+  });
+
   test("a tool call seals the text bubble, emits a card, and later text opens a new bubble", async () => {
     const streamer = adapter.createStreamer(streamerMessage(adapter, "m3", DEVICE_ID));
 

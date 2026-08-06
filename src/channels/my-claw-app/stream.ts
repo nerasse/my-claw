@@ -72,10 +72,21 @@ export class MyClawAppStreamer {
     if (this.finished) return;
     this.segmentText += token;
 
-    if (!this.started && this.segmentText.trim().length >= (this.opts.minCharsBeforeDelta ?? 1)) {
+    if (!this.started) {
+      if (this.segmentText.trim().length < (this.opts.minCharsBeforeDelta ?? 1)) return;
+      // The whole buffer, not the token that crossed the threshold: everything accumulated
+      // while waiting is text the reader never saw. Sending only the last token dropped the
+      // opening words of every reply, and the bubble read as if it started mid-sentence --
+      // invisible on the server, which stores the full turn and replays it complete.
       await this.startSegment();
+      await this.opts.send({
+        type: "chat.stream.delta",
+        id: this.currentId(),
+        threadId: this.opts.threadId,
+        text: this.segmentText,
+      });
+      return;
     }
-    if (!this.started) return;
 
     await this.opts.send({ type: "chat.stream.delta", id: this.currentId(), threadId: this.opts.threadId, text: token });
   }
