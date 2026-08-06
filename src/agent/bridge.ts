@@ -316,7 +316,12 @@ export class AgentBridge implements AgentBackend {
 
       // Vision is resolved per model (resolver merges the model entry over the global flag):
       // the global default may be a text-only model while another configured model has vision.
-      if (llmConfig.vision) await this.attachImages(chatMessages, session.messages);
+      if (llmConfig.vision) {
+        const attached = await this.attachImages(chatMessages, session.messages);
+        if (attached > 0) void log("debug", "images attached to the prompt", { sessionId: session.id, model: llmConfig.model, images: attached });
+      } else if (imageAttachmentsOf(message).length > 0) {
+        void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
+      }
 
       await this.injectMemory(message, chatMessages);
 
@@ -972,7 +977,7 @@ export class AgentBridge implements AgentBackend {
    * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
    * photos, and each one costs its tokens on every single turn.
    */
-  private async attachImages(chatMessages: ChatMessage[], messages: SessionMessage[]): Promise<void> {
+  private async attachImages(chatMessages: ChatMessage[], messages: SessionMessage[]): Promise<number> {
     const kept = dropLeadingOrphanToolMessages(messages);
     // chatMessages[0] is the system prompt, the rest maps 1:1 onto `kept`.
     const withImages: Array<{ index: number; text: string; paths: string[] }> = [];
@@ -983,6 +988,7 @@ export class AgentBridge implements AgentBackend {
     }
 
     let budget = MAX_HISTORY_IMAGES;
+    let attached = 0;
     for (const turn of withImages.reverse()) {
       if (budget <= 0) break;
       const paths = turn.paths.slice(-budget);
@@ -990,8 +996,12 @@ export class AgentBridge implements AgentBackend {
       const target = chatMessages[turn.index];
       if (target?.role !== "user") continue;
       const content = await imageContentFrom(turn.text, paths);
-      if (content.length > 1) chatMessages[turn.index] = { role: "user", content };
+      if (content.length > 1) {
+        chatMessages[turn.index] = { role: "user", content };
+        attached += content.length - 1;
+      }
     }
+    return attached;
   }
 
   private toChatMessages(messages: SessionMessage[]): ChatMessage[] {

@@ -434,6 +434,47 @@ describe("MobileAdapter", () => {
     assert.equal(after.files.length, 0);
   });
 
+  test("the app can pull a diagnostics snapshot and a filtered log tail", async () => {
+    adapter.onDiagnostics({
+      snapshot: async (deviceId, threadId) => `snapshot for ${deviceId}/${threadId}`,
+      logs: async (query) => ({ text: `tail level=${query.level} run=${query.run} limit=${query.limit}`, lines: 3 }),
+    });
+
+    client.ws.send(JSON.stringify({ type: "diag.snapshot", threadId: "projet" }));
+    const snap = (await nextFrame(client)) as { type: string; text: string };
+    assert.equal(snap.type, "diag.snapshot.result");
+    assert.equal(snap.text, `snapshot for ${DEVICE_ID}/projet`);
+
+    client.ws.send(JSON.stringify({ type: "logs.tail", level: "warn", run: "aaaa1111", limit: 50 }));
+    const tail = (await nextFrame(client)) as { type: string; text: string; lines: number; query: { run?: string } };
+    assert.equal(tail.type, "logs.tail.result");
+    assert.equal(tail.lines, 3);
+    assert.equal(tail.query.run, "aaaa1111");
+    assert.match(tail.text, /level=warn run=aaaa1111 limit=50/);
+  });
+
+  test("a diagnostics request without a provider answers an error instead of hanging", async () => {
+    client.ws.send(JSON.stringify({ type: "diag.snapshot" }));
+    const frame = (await nextFrame(client)) as { type: string; message: string };
+    assert.equal(frame.type, "error");
+    assert.match(frame.message, /diagnostics unavailable/);
+  });
+
+  test("the log tail limit is clamped, a client cannot ask for the whole file", async () => {
+    let seen = 0;
+    adapter.onDiagnostics({
+      snapshot: async () => "",
+      logs: async (query) => {
+        seen = query.limit;
+        return { text: "", lines: 0 };
+      },
+    });
+
+    client.ws.send(JSON.stringify({ type: "logs.tail", limit: 999999 }));
+    await nextFrame(client);
+    assert.equal(seen, 1000);
+  });
+
   test("the attachment type comes from the stored file, not from what the client claims", async () => {
     const port = adapter.port;
     const upload = await fetch(`http://127.0.0.1:${port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {

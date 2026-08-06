@@ -1,3 +1,4 @@
+import { currentRunId } from "../../utils/run-context.ts";
 import type { ToolCallResult } from "../../agent/tool-status.ts";
 import type { MobileServerFrame } from "./types.ts";
 
@@ -63,6 +64,7 @@ export class MobileStreamer {
       id: this.currentId(),
       threadId: this.opts.threadId,
       replyToId: this.segment === 0 ? this.opts.replyToId : undefined,
+      ...(currentRunId() ? { run: currentRunId() } : {}),
     });
   }
 

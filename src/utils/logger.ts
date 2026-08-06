@@ -1,12 +1,41 @@
 import { appendFile, mkdir, stat, readdir as fsReaddir, unlink as fsUnlink } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
+import { currentRunId } from "./run-context.ts";
 
 const LOGS_DIR = join(MY_CLAW_DIR, "logs");
 const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024;
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error";
 type AppLogLevel = Exclude<LogLevel, "trace">;
+
+const LEVEL_ORDER: Record<LogLevel, number> = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 };
+
+export function parseLogLevel(value: string | undefined): LogLevel | undefined {
+  const candidate = value?.trim().toLowerCase();
+  return candidate && candidate in LEVEL_ORDER ? (candidate as LogLevel) : undefined;
+}
+
+/**
+ * Floor for what reaches the files. Default `info`: `debug` and the matrix SDK's `trace` are
+ * opt-in, because the SDK alone can fill a 5 MB file in minutes. Env wins over config so a
+ * debug session never depends on editing (and reloading) config.json.
+ */
+const envLevel = parseLogLevel(process.env["MY_CLAW_LOG_LEVEL"]);
+let configuredLevel: (() => LogLevel | undefined) | undefined;
+
+/** Read live, so a hot-reloaded `logging.level` takes effect without a restart. */
+export function setLogLevelSource(read: () => LogLevel | undefined): void {
+  configuredLevel = read;
+}
+
+export function getLogLevel(): LogLevel {
+  return envLevel ?? configuredLevel?.() ?? "info";
+}
+
+function shouldWrite(level: LogLevel): boolean {
+  return LEVEL_ORDER[level] >= LEVEL_ORDER[getLogLevel()];
+}
 type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram" | "mobile";
 type ConsoleMode = "all" | "errors" | "none";
 
@@ -161,11 +190,15 @@ function enqueueScopedWrite(scope: LogScope, line: string, timestamp: string): P
 function createScopedLogger(scope: LogScope, options: { console?: ConsoleMode } = {}): (level: AppLogLevel, message: string, data?: unknown) => Promise<void> {
   const consoleMode = options.console ?? "all";
   return async (level: AppLogLevel, message: string, data?: unknown): Promise<void> => {
+    if (!shouldWrite(level)) return;
     const timestamp = new Date().toISOString();
+    // `run` is what makes these files usable: every line of one inbound message shares it.
+    const run = currentRunId();
     const payload = JSON.stringify({
       timestamp,
       scope,
       level,
+      ...(run ? { run } : {}),
       message,
       ...(data === undefined ? {} : { data: normalizeLogData(data) }),
     }) + "\n";
@@ -211,6 +244,7 @@ class FileSdkLogger implements ScopedSdkLogger {
   }
 
   private write(level: LogLevel, parts: unknown[]): void {
+    if (!shouldWrite(level)) return;
     const timestamp = new Date().toISOString();
     const message = parts.map((part) => stringifyLogPart(part)).join(" ");
     const payload = JSON.stringify({

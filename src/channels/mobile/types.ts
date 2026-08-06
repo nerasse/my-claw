@@ -82,6 +82,22 @@ export interface MobilePing {
   type: "ping";
 }
 
+/** Health snapshot, meant to be copy-pasted out of the app. */
+export interface MobileDiagSnapshot {
+  type: "diag.snapshot";
+  threadId?: string;
+}
+
+/** Tail of the server log files, filtered. `run` is the correlation id stamped on every line. */
+export interface MobileLogsTail {
+  type: "logs.tail";
+  scope?: string;
+  level?: "trace" | "debug" | "info" | "warn" | "error";
+  run?: string;
+  contains?: string;
+  limit?: number;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MobileClientFrame =
   | MobileChatSend
@@ -94,6 +110,8 @@ export type MobileClientFrame =
   | MobileSessionDelete
   | MobileApprovalResponse
   | MobileCapabilitiesFrame
+  | MobileDiagSnapshot
+  | MobileLogsTail
   | MobilePing;
 
 export interface MobileToolCallEntry {
@@ -134,6 +152,8 @@ export interface MobileChatMessage {
   attachments: MobileAttachmentMeta[];
   replyToId?: string;
   ts?: string;
+  /** Correlation id of the run that produced this reply, quotable in a bug report. */
+  run?: string;
 }
 
 export interface MobileStreamStart {
@@ -142,6 +162,7 @@ export interface MobileStreamStart {
   threadId: string;
   replyToId?: string;
   ts?: string;
+  run?: string;
 }
 
 export interface MobileStreamDelta {
@@ -193,6 +214,19 @@ export interface MobileSessionFile {
   ts: string;
 }
 
+export interface MobileDiagSnapshotResult {
+  type: "diag.snapshot.result";
+  text: string;
+}
+
+export interface MobileLogsTailResult {
+  type: "logs.tail.result";
+  text: string;
+  lines: number;
+  /** Echoed back so the app can show what the tail was filtered on. */
+  query: { scope?: string; level?: string; run?: string; contains?: string; limit?: number };
+}
+
 export interface MobileFilesListResult {
   type: "files.list.result";
   threadId: string;
@@ -222,5 +256,7 @@ export type MobileServerFrame =
   | MobileSessionListResult
   | MobileCommandsResult
   | MobileFilesListResult
+  | MobileDiagSnapshotResult
+  | MobileLogsTailResult
   | MobileChatHistory
   | MobileError;

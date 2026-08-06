@@ -125,6 +125,23 @@ vision-capable model when the active model cannot take them. The files outlive
 the run that used them: they are only removed by `files.delete` or with the
 session, and later turns re-read them to keep an image in the conversation.
 
+### Diagnostics
+
+```
+-> { "type": "diag.snapshot", "threadId": "..." }
+<- { "type": "diag.snapshot.result", "text": "..." }
+
+-> { "type": "logs.tail", "scope": "mobile", "level": "warn", "run": "a1b2c3d4",
+     "contains": "upload", "limit": 200 }
+<- { "type": "logs.tail.result", "text": "...", "lines": 42, "query": { ... } }
+```
+
+Both are read-only and redacted server-side (config secrets by value, plus the usual key
+shapes). `limit` is clamped to 1000 lines. `run` is the correlation id stamped on every log
+line of a single inbound message; it is echoed on `chat.message` and `chat.stream.start` so a
+reply can be traced back to its run. Verbosity is `logging.level` in config (hot-reloaded), or
+`MY_CLAW_LOG_LEVEL` which overrides it.
+
 `chat.history` is also the ack for `session.archive`/`session.delete` (empty
 messages list). `session.list.result` only lists active (non-archived) threads,
 most recently active first, capped at 50.

@@ -84,6 +84,7 @@ import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig } from "./llm/resolver.ts";
+import { buildDiagnostics, readLogEntries, formatLogEntries, collectSecrets } from "./core/diagnostics.ts";
 import {
   warmupEmbedding,
   backfillEmbeddings,
@@ -95,7 +96,7 @@ import {
   closeMemoryDb,
   type LlmCaller,
 } from "./memory/index.ts";
-import { log, pruneOldLogs } from "./utils/logger.ts";
+import { log, pruneOldLogs, setLogLevelSource } from "./utils/logger.ts";
 import { hooks } from "./hooks/index.ts";
 
 const DAY_MS = 86_400_000;
@@ -121,6 +122,8 @@ async function main() {
     log("error", "config.json unusable, started from a snapshot", { ref: fallback.ref, error: fallback.error });
     hooks.emit("config:fallback", fallback);
   }
+  // Live read: a hot-reloaded logging.level applies to the next line written, no restart.
+  setLogLevelSource(() => config.logging?.level);
   pruneOldRecords();
   void pruneOldLogs();
   void pruneOldSessions();
@@ -593,6 +596,39 @@ async function main() {
     if (!isMobileChannelEnabled(config)) return;
     const mobile = new MobileAdapter(config.channels.mobile!, new MobileSessionStoreImpl(sessionManager));
     mobileRef = mobile;
+
+    // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
+    // both redacted here rather than in the adapter, which has no view of the global config.
+    mobile.onDiagnostics({
+      snapshot: async (deviceId, threadId) => {
+        const sessionId = SessionManager.resolveSessionId("mobile", "dm", deviceId, deviceId, { threadId, sessionScope: "per-user" });
+        const session = await sessionManager.peek(sessionId);
+        const resolved = resolveLlmConfig(config.llm, session?.modelOverride);
+        return buildDiagnostics({
+          config,
+          liveChannels: [...liveChannels],
+          model: {
+            id: resolved.model,
+            ...(resolved.vision === undefined ? {} : { vision: resolved.vision }),
+            ...(resolved.backend ? { backend: resolved.backend } : {}),
+          },
+          ...(session
+            ? {
+                session: {
+                  id: session.id,
+                  messages: session.messages.length,
+                  lastActiveAt: session.lastActiveAt,
+                  ...(session.modelOverride ? { model: session.modelOverride } : {}),
+                },
+              }
+            : {}),
+        });
+      },
+      logs: async (query) => {
+        const entries = await readLogEntries(query as Parameters<typeof readLogEntries>[0]);
+        return { text: formatLogEntries(entries, collectSecrets(config)), lines: entries.length };
+      },
+    });
 
     mobile.onMessage(async (msg) => {
       let response: RouteResult | undefined;

@@ -8,6 +8,7 @@ import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "./aborted.ts";
 import { runRegistry } from "./run-registry.ts";
+import { withRunContext, setRunSession } from "../utils/run-context.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 import { archiveAssistantMessage, archiveChannelMessage } from "../conversations/store.ts";
 
@@ -77,6 +78,10 @@ export class MessageRouter {
 
   // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated
   async routeCron(message: UnifiedMessage, sessionId: string, options: RouteOptions = {}): Promise<RouteResult | undefined> {
+    return withRunContext({ platform: message.platform, sessionId }, () => this.routeCronTraced(message, sessionId, options));
+  }
+
+  private async routeCronTraced(message: UnifiedMessage, sessionId: string, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     archiveChannelMessage(message);
     const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
     const current = previous
@@ -92,7 +97,12 @@ export class MessageRouter {
     }
   }
 
+  /** Everything one inbound message triggers shares a run id, stamped on every log line. */
   async route(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
+    return withRunContext({ platform: message.platform }, () => this.routeTraced(message, options));
+  }
+
+  private async routeTraced(message: UnifiedMessage, options: RouteOptions = {}): Promise<RouteResult | undefined> {
     const streaming = Boolean(options.onToken);
 
     const gate = await hooks.check("gate:message:incoming", { message });
@@ -125,6 +135,7 @@ export class MessageRouter {
         sessionScope: message.sessionScope,
       },
     );
+    setRunSession(sessionId);
 
     // Mid-run steering: if a run for this session is already in progress, inject this message into
     // it (addressed at the next iteration boundary) instead of queueing a whole new run behind it.

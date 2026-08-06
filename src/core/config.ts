@@ -389,7 +389,14 @@ export interface MyClawConfig {
   context?: ContextConfig;
   tools?: ToolsConfig;
   skills?: SkillsConfig;
+  logging?: LoggingConfig;
   mcp?: Record<string, McpServerConfig>;
+}
+
+/** Log verbosity. `MY_CLAW_LOG_LEVEL` overrides this, so a debug session needs no config edit. */
+export interface LoggingConfig {
+  /** Floor for what is written to the log files. Default "info". */
+  level?: "trace" | "debug" | "info" | "warn" | "error";
 }
 
 /** Skill system knobs; hot-reloadable (read live per run). */

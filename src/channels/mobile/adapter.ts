@@ -11,6 +11,7 @@ import type {
 } from "../types.ts";
 import type { MobileChannelConfig } from "../../core/config.ts";
 import { mobileLog } from "../../utils/logger.ts";
+import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { COMMANDS } from "../commands-catalog.ts";
 import { SessionFileStore, filePathFor } from "./files.ts";
@@ -25,6 +26,8 @@ import type {
   MobileClientFrame,
   MobileFileDelete,
   MobileFilesList,
+  MobileDiagSnapshot,
+  MobileLogsTail,
   MobileServerFrame,
   MobileSessionArchive,
   MobileSessionDelete,
@@ -65,6 +68,12 @@ interface PendingApproval {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Supplied by the entry point: the adapter must not reach into the global config itself. */
+export interface MobileDiagnosticsProvider {
+  snapshot(deviceId: string, threadId: string): Promise<string>;
+  logs(query: { scope?: string; level?: string; run?: string; contains?: string; limit: number }): Promise<{ text: string; lines: number }>;
+}
+
 export class MobileAdapter implements ChannelAdapter {
   readonly platform = "mobile" as const;
   private server?: Server<MobileSessionData>;
@@ -73,6 +82,7 @@ export class MobileAdapter implements ChannelAdapter {
   private mediaOrder: string[] = [];
   private pendingApprovals = new Map<string, PendingApproval>();
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
+  private diagnostics?: MobileDiagnosticsProvider;
   private sweeper?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -170,6 +180,7 @@ export class MobileAdapter implements ChannelAdapter {
       threadId: message.threadId ?? DEFAULT_MOBILE_THREAD,
       attachments,
       replyToId: message.replyToId,
+      ...(currentRunId() ? { run: currentRunId() } : {}),
     };
     this.sendFrame(ws, frame);
   }
@@ -213,6 +224,11 @@ export class MobileAdapter implements ChannelAdapter {
 
   onMessage(handler: (msg: UnifiedMessage) => Promise<void>): void {
     this.messageHandler = handler;
+  }
+
+  /** Injected by the entry point: the adapter has no view of the global config or the runtime. */
+  onDiagnostics(provider: MobileDiagnosticsProvider): void {
+    this.diagnostics = provider;
   }
 
   private deviceFor(deviceId: string, token: string): boolean {
@@ -292,11 +308,15 @@ export class MobileAdapter implements ChannelAdapter {
     const safeThread = sanitizeThreadId(threadId);
     const filename = (req.headers.get("x-filename") ?? "attachment").trim();
     const type = (req.headers.get("x-type") ?? "file").trim() as MobileAttachmentRef["type"];
-    if (!safeThread) return new Response("Bad threadId", { status: 400 });
+    if (!safeThread) {
+      await mobileLog("warn", "mobile upload rejected: bad threadId", { deviceId, threadId });
+      return new Response("Bad threadId", { status: 400 });
+    }
     // Reject oversized payloads from the declared length BEFORE buffering the body: the
     // client decides the bytes we hold in memory, so the cap must apply to the declaration.
     const declared = Number(req.headers.get("content-length") ?? 0);
     if (declared > this.files.maxSizeBytes) {
+      await mobileLog("warn", "mobile upload rejected: too large", { deviceId, threadId: safeThread, declared, max: this.files.maxSizeBytes });
       return new Response("File too large", { status: 413 });
     }
     try {
@@ -305,7 +325,9 @@ export class MobileAdapter implements ChannelAdapter {
       await mobileLog("info", "mobile file uploaded", { deviceId, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
       return Response.json({ id: file.id, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
     } catch (err) {
-      return new Response(err instanceof Error ? err.message : "Upload failed", { status: 413 });
+      const reason = err instanceof Error ? err.message : "Upload failed";
+      await mobileLog("warn", "mobile upload failed", { deviceId, threadId: safeThread, filename, reason });
+      return new Response(reason, { status: 413 });
     }
   }
 
@@ -385,6 +407,12 @@ export class MobileAdapter implements ChannelAdapter {
       case "session.list":
         this.handleSessionList(ws, frame);
         break;
+      case "diag.snapshot":
+        void this.handleDiagSnapshot(ws, ws.data.deviceId, frame);
+        break;
+      case "logs.tail":
+        void this.handleLogsTail(ws, frame);
+        break;
       case "commands.list":
         void ws.send(JSON.stringify({
           type: "commands.list.result",
@@ -419,7 +447,10 @@ export class MobileAdapter implements ChannelAdapter {
     const attachments: Attachment[] = [];
     for (const ref of frame.attachments ?? []) {
       const stored = await this.files.findById(deviceId, threadId, ref.id);
-      if (!stored) continue;
+      if (!stored) {
+        await mobileLog("warn", "mobile attachment not found, dropped from the message", { deviceId, threadId, id: ref.id });
+        continue;
+      }
       attachments.push({
         // The stored type comes from the file itself; `ref.type` is whatever the client claimed,
         // and a jpeg announced as "file" would silently skip vision routing.
@@ -504,6 +535,45 @@ export class MobileAdapter implements ChannelAdapter {
     } catch (err) {
       await mobileLog("error", "mobile session.delete failed", { deviceId: ws.data.deviceId, threadId, error: String(err) });
       this.sendFrame(ws, { type: "error", message: "delete failed" });
+    }
+  }
+
+  private async handleDiagSnapshot(
+    ws: ServerWebSocket<MobileSessionData>,
+    deviceId: string,
+    frame: MobileDiagSnapshot,
+  ): Promise<void> {
+    if (!this.diagnostics) {
+      this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
+      return;
+    }
+    try {
+      const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_MOBILE_THREAD;
+      this.sendFrame(ws, { type: "diag.snapshot.result", text: await this.diagnostics.snapshot(deviceId, threadId) });
+    } catch (err) {
+      await mobileLog("error", "mobile diag.snapshot failed", { deviceId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "diag.snapshot failed" });
+    }
+  }
+
+  private async handleLogsTail(ws: ServerWebSocket<MobileSessionData>, frame: MobileLogsTail): Promise<void> {
+    if (!this.diagnostics) {
+      this.sendFrame(ws, { type: "error", message: "diagnostics unavailable" });
+      return;
+    }
+    const query = {
+      ...(frame.scope ? { scope: frame.scope } : {}),
+      ...(frame.level ? { level: frame.level } : {}),
+      ...(frame.run ? { run: frame.run } : {}),
+      ...(frame.contains ? { contains: frame.contains } : {}),
+      limit: Math.min(Math.max(frame.limit ?? 200, 1), 1000),
+    };
+    try {
+      const { text, lines } = await this.diagnostics.logs(query);
+      this.sendFrame(ws, { type: "logs.tail.result", text, lines, query });
+    } catch (err) {
+      await mobileLog("error", "mobile logs.tail failed", { deviceId: ws.data.deviceId, error: String(err) });
+      this.sendFrame(ws, { type: "error", message: "logs.tail failed" });
     }
   }
 
