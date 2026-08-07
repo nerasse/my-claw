@@ -140,6 +140,11 @@ export interface MyClawAppSkillsList {
   type: "skills.list";
 }
 
+/** The named workspaces (config.workspaces) plus the default one, for display only. */
+export interface MyClawAppWorkspacesList {
+  type: "workspaces.list";
+}
+
 export interface MyClawAppModelList {
   type: "model.list";
 }
@@ -187,6 +192,7 @@ export type MyClawAppClientFrame =
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
   | MyClawAppSkillsList
+  | MyClawAppWorkspacesList
   | MyClawAppModelList
   | MyClawAppModelGet
   | MyClawAppModelSet
@@ -403,6 +409,18 @@ export interface MyClawAppSkillsListResult {
   skills: MyClawAppSkillEntry[];
 }
 
+export interface MyClawAppWorkspaceEntry {
+  key: string;
+  path: string;
+  /** The configured default workspace. */
+  default: boolean;
+}
+
+export interface MyClawAppWorkspacesListResult {
+  type: "workspaces.list.result";
+  workspaces: MyClawAppWorkspaceEntry[];
+}
+
 /**
  * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
  * never an optimistic echo of what the app hoped for.
@@ -451,6 +469,7 @@ export type MyClawAppServerFrame =
   | MyClawAppVoiceModeResult
   | MyClawAppModelListResult
   | MyClawAppSkillsListResult
+  | MyClawAppWorkspacesListResult
   | MyClawAppModelResult
   | MyClawAppCommandResult
   | MyClawAppChatCleared

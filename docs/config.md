@@ -3,8 +3,8 @@
 ## `~/.my-claw/config.json`
 
 Single JSON file. jq-compatible. Loaded at boot, then **hot-reloaded** on change for safe sections
-(LLM, agents, allowlists, channel behavioral fields, browser, web search, injection). Connection,
-crypto, memory, voice, cron and workspace changes still require a restart. See
+(LLM, agents, allowlists, channel behavioral fields, browser, web search, injection, workspaces).
+Connection, crypto, memory, voice, cron and the default workspace path still require a restart. See
 `docs/config-hot-reload.md`.
 
 Every version that ran is snapshotted, and a config that cannot be parsed -- or that starts but never
@@ -785,6 +785,23 @@ precedence table. A single conversation can opt out for itself, which wins over 
 Windows that no model declares and discovery does not report are filled in from the models.dev
 table (98% coverage of 6 044 models), and `/status` names the source so a surprising number can
 be traced. Anything still unresolved falls back to 262 144.
+
+## Workspaces
+
+```json
+"workspace": "/home/neras/.my-claw/workspace",
+"workspaces": {
+  "sofa": "/home/neras/dev/SOFA",
+  "smartlink": "/home/neras/dev/smartlink"
+}
+```
+
+`workspace` stays the default workspace (reboot-bound as before). `workspaces` maps names to
+absolute paths; paths are validated at parse (absolute only, key `default` reserved) and each
+directory is created at boot with no template seeding. The list is **hot-reloadable**: adding a
+key re-scans the skill layers without a restart. A cron job references a key
+(`workspace: "sofa"`); an unknown key pauses the job with a reason. Sessions are bound to a
+workspace at creation and never change it. See `docs/multi-workspace.md`.
 
 ## Cron
 

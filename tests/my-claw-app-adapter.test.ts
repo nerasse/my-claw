@@ -1125,6 +1125,7 @@ describe("command frames", () => {
         ],
       }),
       read: async () => null,
+      workspaces: () => [],
     });
 
     client.ws.send(JSON.stringify({ type: "skills.list" }));
@@ -1152,6 +1153,10 @@ describe("command frames", () => {
         seen.name = name;
         return name === "nope" ? null : "# Skill\n\nbody\n";
       },
+      workspaces: () => [
+        { key: "default", path: "/w", default: true },
+        { key: "sofa", path: "/s", default: false },
+      ],
     });
 
     const ok = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=forgejo`);
@@ -1172,5 +1177,23 @@ describe("command frames", () => {
 
     const missing = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=nope`);
     assert.equal(missing.status, 404);
+  });
+
+  test("workspaces.list returns the default and the named workspaces", async () => {
+    adapter.onSkillsController({
+      list: () => ({ skills: [] }),
+      read: async () => null,
+      workspaces: () => [
+        { key: "default", path: "/w", default: true },
+        { key: "sofa", path: "/s", default: false },
+      ],
+    });
+
+    client.ws.send(JSON.stringify({ type: "workspaces.list" }));
+    const frame = (await nextFrame(client)) as { type: string; workspaces: Array<{ key: string; default?: boolean }> };
+    assert.equal(frame.type, "workspaces.list.result");
+    assert.equal(frame.workspaces.length, 2);
+    assert.deepEqual(frame.workspaces.map((w) => w.key), ["default", "sofa"]);
+    assert.equal(frame.workspaces[0]?.default, true);
   });
 });

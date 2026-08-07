@@ -53,11 +53,16 @@ Reference files from SKILL.md using relative paths:
 
 ## Resolution Priority
 
-When multiple skills share the same name, the following priority applies:
+When multiple skills share the same name, the following priority applies, **per workspace**
+(see `docs/multi-workspace.md`):
 
-1. **Workspace** (`~/.my-claw/workspace/skills/`) — highest
+1. The run's workspace (`<workspace>/skills/` for the default, each `config.workspaces` entry
+   for a named one) — highest
 2. **Custom** (`~/.my-claw/skills/`)
 3. **Built-in** (`~/.my-claw/skills/.builtin/`) — lowest
+
+A skill in workspace A never shadows the same name in workspace B: resolution happens inside
+the workspace of the run, and a secondary workspace never sees the default workspace's skills.
 
 This allows users and agents to override built-in skills without modifying the repository.
 

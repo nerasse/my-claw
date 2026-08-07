@@ -41,6 +41,15 @@ scheduling. Two config knobs cap that without getting in the way of legitimately
 - `cron.maxIterations` — overrides the tool-calling loop budget for cron runs (defaults to the
   orchestrator's 90). Raise it for jobs that legitimately need many steps.
 
+### Fresh session per run
+
+Every run creates a session `cron/<jobId>/<runId>` seeded with the job's model and workspace
+key, and deletes it when the run ends. One run never inherits the history of the previous one,
+and a change of workspace or model applies to the very next run. The durable record is the job
+state (`lastStatus`, `lastError`, `lastRunAt`) and the output store, not the session. A job
+whose `workspace` key left `config.workspaces` is paused with a `pausedReason` instead of
+running silently in the default workspace. See `docs/multi-workspace.md`.
+
 ### No file locking
 
 Hermes uses `fcntl.flock` for cross-process tick isolation. MyClaw has one process. File locking is unnecessary.

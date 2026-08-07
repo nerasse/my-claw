@@ -100,6 +100,8 @@ the first answer wins.
 { "type": "model.get", "threadId": "projet" }
 { "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
+{ "type": "skills.list" }
+{ "type": "workspaces.list" }
 { "type": "ping" }
 ```
 
@@ -148,8 +150,17 @@ the first answer wins.
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro" }], "defaultModel": "gpt-5.1" }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model" }
+{ "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
+{ "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills" }
 ```
+
+- `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
+  file on the server); reading goes through `GET /skills?device&token&source&name`, which
+  serves the raw `SKILL.md` (`text/markdown`) with the same device auth as `/media`.
+  `workspace` is present only on skills of a named workspace.
+- `workspaces.list.result` feeds the settings page: the default workspace plus every named
+  entry of `config.workspaces`.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
   renders it as a distinct bubble so a command result never masquerades as an agent answer.

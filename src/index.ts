@@ -709,12 +709,17 @@ async function main() {
           ...(s.version ? { version: s.version } : {}),
           source: s.source,
           path: s.path,
+          ...(s.workspace ? { workspace: s.workspace } : {}),
         })),
       }),
       read: async (source, name) => {
         if (source !== "built-in" && source !== "custom" && source !== "workspace") return null;
         return resolveSkillFile(source, name, { builtInDir: builtinDir, customDir, workspaceSkillsDir });
       },
+      workspaces: () => [
+        { key: "default", path: workspacePath, default: true },
+        ...Object.entries(config.workspaces ?? {}).map(([key, path]) => ({ key, path, default: false })),
+      ],
     });
 
     myClawApp.onCommandHandler(createMyClawAppCommandHandler({

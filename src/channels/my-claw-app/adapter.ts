@@ -132,6 +132,8 @@ export interface MyClawAppSkillsController {
   };
   /** Raw SKILL.md text of one skill, or null when it does not exist. */
   read(source: string, name: string): Promise<string | null>;
+  /** The named workspaces plus the default one, for display only. */
+  workspaces(): Array<{ key: string; path: string; default: boolean }>;
 }
 
 /** Text slash commands, executed server-side like on the other channels. */
@@ -592,6 +594,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "skills.list":
         void this.handleSkillsList(ws);
         break;
+      case "workspaces.list":
+        void this.handleWorkspacesList(ws);
+        break;
       case "model.get":
         void this.handleModel(ws, frame.threadId, undefined);
         break;
@@ -772,6 +777,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "skills.list.result", ...this.skills.list() });
     } catch (err) {
       await this.refuse(ws, "skills", "skills.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleWorkspacesList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.skills) {
+      await this.refuse(ws, "skills", "workspace list unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: this.skills.workspaces() });
+    } catch (err) {
+      await this.refuse(ws, "skills", "workspaces.list failed", { error: String(err) });
     }
   }
 
