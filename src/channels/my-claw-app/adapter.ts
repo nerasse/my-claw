@@ -587,6 +587,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (command && COMMANDS.some((c) => c.command === command)) {
         try {
           const output = await this.commandHandler(owner, threadId, command, text.slice(command.length + 1).trim());
+          // /clear and /new emptied the conversation server-side; the device must drop its
+          // screen copy too, or it shows a chat that no longer exists on disk.
+          if (command === "clear" || command === "new") {
+            this.broadcast(owner, { type: "chat.cleared", threadId });
+          }
           if (output) {
             this.broadcast(owner, {
               type: "chat.command.result",

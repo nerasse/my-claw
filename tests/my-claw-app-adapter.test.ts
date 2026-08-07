@@ -1063,4 +1063,25 @@ describe("command frames", () => {
     assert.equal(second["type"], "chat.command.result");
     assert.equal(second["text"], "History cleared.");
   });
+
+  test("a typed /clear or /new also empties the device's screen copy", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c3", text: "/clear", threadId: "t7" }));
+    const cleared = await nextFrame(client);
+    assert.equal(cleared["type"], "chat.cleared");
+    assert.equal(cleared["threadId"], "t7");
+    const reply = await nextFrame(client);
+    assert.equal(reply["type"], "chat.command.result");
+
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c4", text: "/new", threadId: "t8" }));
+    const cleared2 = await nextFrame(client);
+    assert.equal(cleared2["type"], "chat.cleared");
+  });
+
+  test("/model with an agent name keeps the whole argument", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c5", text: "/model general", threadId: "t9" }));
+    const reply = await nextFrame(client);
+    assert.equal(reply["type"], "chat.command.result");
+    assert.equal(reply["replyToId"], "c5");
+    assert.deepEqual(handled, [{ command: "model", args: "general" }]);
+  });
 });

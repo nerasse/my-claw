@@ -8,10 +8,12 @@ import type { ModelPicker } from "../model-picker.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
+import { handleAgentModelCommand } from "../agent-model-commands.ts";
 import { handleStatusCommand } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
 import { getHelpText } from "../commands-catalog.ts";
 import { effectiveEffort, isSdkBackedModel } from "../../llm/resolver.ts";
+import { parseEffortArg, formatEffort } from "../model-picker.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { loadJobs } from "../../cron/store.ts";
@@ -65,6 +67,21 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return getHelpText();
 
       case "model": {
+        // An agent name as the first word edits that agent's persisted default (config.json),
+        // exactly as on the other channels. The app has no button menus, so the menu outcome
+        // becomes a text answer pointing at the typed form.
+        const agentOutcome = await handleAgentModelCommand(args, {
+          config: deps.config,
+          modelPicker: deps.modelPicker,
+          listSubAgents: deps.listSubAgents ? () => deps.listSubAgents!(sessionId) : (async () => []),
+          reloadConfigNow: deps.reloadConfigNow,
+          isDm: true,
+        });
+        if (agentOutcome.kind === "message") return agentOutcome.text;
+        if (agentOutcome.kind === "menu") {
+          return `${agentOutcome.heading} — actuel : ${deps.modelPicker.labelFor(agentOutcome.currentModel)}\nUtilise /model <agent> <modèle> pour le changer.`;
+        }
+        // not-an-agent: the plain `/model <name>` session override below.
         if (!args) {
           const effort = effectiveEffort(deps.config.llm, currentModel, existing?.effortOverride);
           return `Current model: ${deps.modelPicker.labelFor(currentModel)}${deps.modelPicker.effortHeaderSuffix(effort)}\nUse the model menu in the app to switch.`;
@@ -102,18 +119,17 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           return `Effort has no effect on ${deps.modelPicker.labelFor(currentModel)}.`;
         }
         if (args) {
-          const level = args.trim().toLowerCase();
-          if (!levels.includes(level as never)) {
-            return `Unknown effort: ${args}. Options: ${levels.join(", ")}.`;
-          }
+          // Same normalisation as the other channels: /effort HIGH is high, not a rejection.
+          const level = parseEffortArg(args, levels);
+          if (!level) return `Unknown effort: ${args}. Options: ${levels.join(", ")}.`;
           const session =
             existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-          session.effortOverride = level as never;
+          session.effortOverride = level;
           session.lastActiveAt = new Date().toISOString();
           await deps.sessionManager.persist(sessionId);
           return `Effort set to ${level}`;
         }
-        return `Effort — current: ${formatEffortLabel(effort)}. Options: ${levels.join(", ")}.`;
+        return `Effort — current: ${formatEffort(effort)}. Options: ${levels.join(", ")}.`;
       }
 
       case "verbose": {
@@ -249,8 +265,4 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return undefined;
     }
   };
-}
-
-function formatEffortLabel(effort: import("../../llm/resolver.ts").EffectiveEffort): string {
-  return `${effort.level} (${effort.source})`;
 }
