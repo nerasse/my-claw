@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { readFile, rm, mkdir, writeFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
+import { join, dirname } from "node:path";
 import { loadSession, saveSession, deleteSession, pruneOldSessions, trimSessionMessages, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
@@ -37,6 +37,29 @@ afterAll(async () => {
     await rm(path, { force: true }).catch(() => {});
     await rm(path + ".tmp", { force: true }).catch(() => {});
   }
+});
+
+describe("session pruning", () => {
+  test("sweeps stale chat-platform sessions but never app conversations", async () => {
+    const staleAt = new Date(Date.now() - 60 * 86_400_000);
+    const telegramPath = join(SESSIONS_DIR, "telegram", "dm", "prune-victim.json");
+    const appPath = join(SESSIONS_DIR, "my-claw-app", "thread", "owner", "prune-keeper.json");
+
+    for (const path of [telegramPath, appPath]) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify(makeSession("prune")), "utf-8");
+      await utimes(path, staleAt, staleAt);
+    }
+
+    await pruneOldSessions();
+
+    expect(await stat(telegramPath).catch(() => null)).toBeNull();
+    // The app drawer lists this very file: a quiet month must not erase a named conversation.
+    expect(await stat(appPath).catch(() => null)).not.toBeNull();
+
+    await rm(join(SESSIONS_DIR, "telegram"), { recursive: true, force: true }).catch(() => {});
+    await rm(join(SESSIONS_DIR, "my-claw-app"), { recursive: true, force: true }).catch(() => {});
+  });
 });
 
 describe("session store", () => {

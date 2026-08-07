@@ -42,8 +42,9 @@ test("telegram session handlers manage model and status", async () => {
   const directSwitch = await commandHandler("c1", "u1", "dm", "model", "base");
   assert.match(String(directSwitch), /Model changed/);
 
+  // /clear is gone from every channel: the app menu clears, and /new archives then clears.
   const cleared = await commandHandler("c1", "u1", "dm", "clear", "");
-  assert.equal(cleared, "History cleared.");
+  assert.equal(cleared, undefined);
 });
 
 test("telegram model submenu navigates without changing the session, then selects", async () => {

@@ -211,17 +211,34 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(listed[0]!.title, "comment je configure le dns du serveur");
   });
 
-  test("a name survives archiving, which starts a fresh conversation on the same thread", async () => {
+  test("archiving files the conversation away whole, and unarchiving hands it back", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "premier message", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "bien recu", timestamp: "2026-01-01T00:00:02.000Z" },
     ]));
     await store.rename(DEVICE, THREAD, "Infra maison");
 
     await store.archive(DEVICE, THREAD);
 
-    // The owner named the thread, not the turns inside it.
-    const listed = await store.list(DEVICE);
+    let listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.archived, true);
+    // Nothing is moved or dropped: name, turns and count all survive the filing.
     assert.equal(listed[0]!.title, "Infra maison");
+    assert.equal(listed[0]!.messageCount, 2);
+    assert.equal((await store.history(DEVICE, THREAD)).length, 2);
+
+    await store.unarchive(DEVICE, THREAD);
+
+    listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.archived, undefined);
+    assert.equal(listed[0]!.title, "Infra maison");
+    assert.equal((await store.history(DEVICE, THREAD)).length, 2);
+  });
+
+  test("archiving a conversation that was never opened is refused, not invented", async () => {
+    await assert.rejects(() => store.archive(DEVICE, "jamais-ouvert"));
+    const listed = await store.list(DEVICE);
+    assert.equal(listed.some((entry) => entry.threadId === "jamais-ouvert"), false);
   });
 
   test("an over-long name is cut to what the drawer can show", async () => {

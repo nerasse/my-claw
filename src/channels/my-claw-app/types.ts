@@ -76,6 +76,11 @@ export interface MyClawAppSessionArchive {
   threadId: string;
 }
 
+export interface MyClawAppSessionUnarchive {
+  type: "session.unarchive";
+  threadId: string;
+}
+
 export interface MyClawAppSessionDelete {
   type: "session.delete";
   threadId: string;
@@ -159,12 +164,6 @@ export interface MyClawAppChatStop {
   threadId: string;
 }
 
-/** Empties the conversation without touching its name, files or archives. */
-export interface MyClawAppSessionClear {
-  type: "session.clear";
-  threadId: string;
-}
-
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -174,6 +173,7 @@ export type MyClawAppClientFrame =
   | MyClawAppFileDelete
   | MyClawAppSessionHistory
   | MyClawAppSessionArchive
+  | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
   | MyClawAppApprovalResponse
   | MyClawAppCapabilitiesFrame
@@ -187,7 +187,6 @@ export type MyClawAppClientFrame =
   | MyClawAppModelSet
   | MyClawAppModelEffortSet
   | MyClawAppChatStop
-  | MyClawAppSessionClear
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -226,6 +225,11 @@ export interface MyClawAppSessionSummary {
   messageCount: number;
   createdAt: string;
   lastActiveAt: string;
+  /**
+   * Filed away by the owner. The listing carries both states so the app can split them into
+   * its two lists from one round-trip, and show the archived count without asking again.
+   */
+  archived?: boolean;
 }
 
 export interface MyClawAppChatMessage {

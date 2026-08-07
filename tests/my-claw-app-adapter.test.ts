@@ -133,9 +133,10 @@ function approvalRequest(): ToolApprovalRequest {
 }
 
 class FakeSessionStore {
-  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string }> = [];
+  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean }> = [];
   historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
   archived: string[] = [];
+  unarchived: string[] = [];
   removed: string[] = [];
 
   resolveSessionId(deviceId: string, threadId: string): string {
@@ -152,7 +153,14 @@ class FakeSessionStore {
 
   async archive(deviceId: string, threadId: string): Promise<void> {
     this.archived.push(threadId);
-    this.historyMap.set(threadId, []);
+    const entry = this.summaries.find((summary) => summary.threadId === threadId);
+    if (entry) entry.archived = true;
+  }
+
+  async unarchive(deviceId: string, threadId: string): Promise<void> {
+    this.unarchived.push(threadId);
+    const entry = this.summaries.find((summary) => summary.threadId === threadId);
+    if (entry) delete entry.archived;
   }
 
   async remove(deviceId: string, threadId: string): Promise<void> {
@@ -166,12 +174,6 @@ class FakeSessionStore {
     entry.title = title.trim() || "(new conversation)";
   }
 
-  cleared: string[] = [];
-
-  async clear(deviceId: string, threadId: string): Promise<void> {
-    this.cleared.push(threadId);
-    this.historyMap.set(threadId, []);
-  }
 }
 
 describe("MyClawAppAdapter", () => {
@@ -714,7 +716,7 @@ describe("MyClawAppAdapter", () => {
     }
   });
 
-  test("archiving a session removes its uploaded files", async () => {
+  test("archiving a session keeps its uploaded files", async () => {
     const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
       method: "POST",
       headers: { "x-filename": "pic.png", "x-type": "image", "x-thread-id": "projet" },
@@ -723,13 +725,13 @@ describe("MyClawAppAdapter", () => {
     assert.equal(upload.status, 200);
 
     client.ws.send(JSON.stringify({ type: "session.archive", threadId: "projet" }));
-    // The archive ack is sent after the file cleanup completes.
     const ack = (await nextFrame(client)) as { type: string };
-    assert.equal(ack.type, "chat.history");
+    assert.equal(ack.type, "session.list.result");
+    // Unarchiving has to hand the conversation back whole, attachments included.
     client.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
     const list = (await nextFrame(client)) as { type: string; files: unknown[] };
     assert.equal(list.type, "files.list.result");
-    assert.equal(list.files.length, 0);
+    assert.equal(list.files.length, 1);
   });
 
   test("uploads are capped by the configured size limit", async () => {
@@ -771,12 +773,37 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.type, "error");
   });
 
-  test("session.archive archives the thread and replies with empty history", async () => {
+  test("session.archive files the thread away and replies with the refreshed listing", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+    ];
+    store.historyMap.set("a", [{ id: "h1", role: "user", text: "bonjour", ts: "t1" }]);
+
     client.ws.send(JSON.stringify({ type: "session.archive", threadId: "a" }));
-    const frame = (await nextFrame(client)) as { type: string; messages: unknown[] };
-    assert.equal(frame.type, "chat.history");
-    assert.deepEqual(frame.messages, []);
+    const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ threadId: string; archived?: boolean }> };
+    assert.equal(frame.type, "session.list.result");
+    assert.equal(frame.sessions[0]!.archived, true);
     assert.deepEqual(store.archived, ["a"]);
+    // Archiving is a flag: not one message may be dropped on the way.
+    assert.equal(store.historyMap.get("a")!.length, 1);
+  });
+
+  test("session.unarchive brings the thread back to the main listing", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", archived: true },
+    ];
+
+    client.ws.send(JSON.stringify({ type: "session.unarchive", threadId: "a" }));
+    const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ threadId: string; archived?: boolean }> };
+    assert.equal(frame.type, "session.list.result");
+    assert.equal(frame.sessions[0]!.archived, undefined);
+    assert.deepEqual(store.unarchived, ["a"]);
+  });
+
+  test("session.unarchive with an unsafe threadId returns an error frame", async () => {
+    client.ws.send(JSON.stringify({ type: "session.unarchive", threadId: "../x" }));
+    const frame = (await nextFrame(client)) as { type: string };
+    assert.equal(frame.type, "error");
   });
 
   test("session.delete removes the thread", async () => {
@@ -1063,14 +1090,12 @@ describe("command frames", () => {
     assert.equal(frame["type"], "chat.command.result");
   });
 
-  test("session.clear clears the thread and confirms", async () => {
+  test("session.clear is gone: emptying a conversation is not offered anymore", async () => {
     client.ws.send(JSON.stringify({ type: "session.clear", threadId: "t5" }));
-    const first = await nextFrame(client);
-    assert.equal(first["type"], "chat.cleared");
-    assert.equal(store.cleared.length, 1);
-    const second = await nextFrame(client);
-    assert.equal(second["type"], "chat.command.result");
-    assert.equal(second["text"], "History cleared.");
+    // Unknown frames are ignored, so prove it by getting an answer to the next one instead.
+    client.ws.send(JSON.stringify({ type: "session.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "session.list.result");
   });
 
   test("a typed /new also empties the device's screen copy", async () => {

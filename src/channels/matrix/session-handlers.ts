@@ -382,12 +382,6 @@ export function createMatrixCommandHandler({
         await sessionManager.resetSession(sessionId, "matrix", chatType);
         return "New session started.";
 
-      case "clear":
-        await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-        sessionManager.clearHistory(sessionId);
-        await sessionManager.persist(sessionId);
-        return "History cleared.";
-
       case "archive": {
         const trimmed = args.trim();
         if (!trimmed) {

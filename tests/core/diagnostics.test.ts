@@ -7,8 +7,19 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 
 const LOGS_DIR = join(MY_CLAW_DIR, "logs");
 
-async function seedLog(name: string, entries: object[]): Promise<void> {
+/**
+ * Scopes nobody else writes to. The reader aggregates every `.log` in the shared directory,
+ * and the logger writes without being awaited, so a `void log()` fired by an earlier suite can
+ * land in this one's window: wiping the directory first is not enough, the query has to be
+ * narrowed to files only these tests produce.
+ */
+const SCOPE = "probe";
+const APP_SCOPE = `${SCOPE}-app`;
+const NOISY_SCOPE = `${SCOPE}-noisy`;
+
+async function seedLog(scope: string, entries: object[]): Promise<void> {
   await mkdir(LOGS_DIR, { recursive: true });
+  const name = `${scope}-2026-08-06.log`;
   await writeFile(join(LOGS_DIR, name), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
 }
 
@@ -34,13 +45,13 @@ function config(): MyClawConfig {
 
 test("the log tail filters by run id, which is the whole point of stamping it", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("my-claw-app-2026-08-06.log", [
+  await seedLog(APP_SCOPE, [
     entry({ run: "aaaa1111", message: "first" }),
     entry({ run: "bbbb2222", message: "other run" }),
     entry({ run: "aaaa1111", message: "second" }),
   ]);
 
-  const entries = await readLogEntries({ run: "aaaa1111" });
+  const entries = await readLogEntries({ run: "aaaa1111", scope: SCOPE });
 
   expect(entries.length).toBe(2);
   expect(entries.every((e) => e.run === "aaaa1111")).toBe(true);
@@ -48,33 +59,33 @@ test("the log tail filters by run id, which is the whole point of stamping it", 
 
 test("the log tail filters by level and keeps the newest lines first", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("orchestrator-2026-08-06.log", [
+  await seedLog(APP_SCOPE, [
     entry({ level: "debug", message: "noise" }),
     entry({ level: "warn", message: "a warning" }),
     entry({ level: "error", message: "a failure" }),
   ]);
 
-  const entries = await readLogEntries({ level: "warn" });
+  const entries = await readLogEntries({ level: "warn", scope: SCOPE });
 
   expect(entries.map((e) => e.message)).toEqual(["a failure", "a warning"]);
 });
 
 test("the log tail can be scoped to one channel", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("my-claw-app-2026-08-06.log", [entry({ scope: "my-claw-app", message: "from the app" })]);
-  await seedLog("telegram-2026-08-06.log", [entry({ scope: "telegram", message: "from telegram" })]);
+  await seedLog(APP_SCOPE, [entry({ scope: APP_SCOPE, message: "from the app" })]);
+  await seedLog(`${SCOPE}-telegram`, [entry({ scope: `${SCOPE}-telegram`, message: "from telegram" })]);
 
-  const entries = await readLogEntries({ scope: "my-claw-app" });
+  const entries = await readLogEntries({ scope: APP_SCOPE });
 
   expect(entries.map((e) => e.message)).toEqual(["from the app"]);
 });
 
 test("a noisy scope can be excluded, which is what makes the snapshot readable", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("matrix-sdk-2026-08-06.log", [entry({ scope: "matrix-sdk", level: "warn", message: "push rule chatter" })]);
-  await seedLog("my-claw-app-2026-08-06.log", [entry({ scope: "my-claw-app", level: "warn", message: "the actual problem" })]);
+  await seedLog(NOISY_SCOPE, [entry({ scope: NOISY_SCOPE, level: "warn", message: "push rule chatter" })]);
+  await seedLog(APP_SCOPE, [entry({ scope: APP_SCOPE, level: "warn", message: "the actual problem" })]);
 
-  const entries = await readLogEntries({ level: "warn", excludeScopes: ["matrix-sdk"] });
+  const entries = await readLogEntries({ level: "warn", scope: SCOPE, excludeScopes: [NOISY_SCOPE] });
 
   expect(entries.map((e) => e.message)).toEqual(["the actual problem"]);
 });
@@ -99,12 +110,12 @@ test("secrets never leave the server, whether named in the config or matched by 
 
 test("the formatted tail is redacted and reads oldest to newest", async () => {
   await rm(LOGS_DIR, { recursive: true, force: true });
-  await seedLog("my-claw-app-2026-08-06.log", [
+  await seedLog(APP_SCOPE, [
     entry({ run: "aaaa1111", message: "older" }),
     { ...entry({ run: "aaaa1111", message: "newer" }), data: { token: "super-secret-device-token" } },
   ]);
 
-  const text = formatLogEntries(await readLogEntries({}), collectSecrets(config()));
+  const text = formatLogEntries(await readLogEntries({ scope: SCOPE }), collectSecrets(config()));
 
   expect(text.indexOf("older")).toBeLessThan(text.indexOf("newer"));
   expect(text).toContain("run=aaaa1111");

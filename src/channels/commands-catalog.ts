@@ -3,7 +3,19 @@
  * bot menu from it, the my-claw-app channel answers `commands.list` with it, and the app
  * renders the slash-menu from the server response.
  */
-export const COMMANDS = [
+
+export interface CommandInfo {
+  command: string;
+  description: string;
+  /**
+   * Channels that actually run this command. Absent means all of them. A channel must never
+   * advertise what it cannot run, nor quietly run what it does not advertise: the scope is
+   * declared here so the menu, the help text and the interception can never drift apart.
+   */
+  channels?: readonly string[];
+}
+
+export const COMMANDS: readonly CommandInfo[] = [
   { command: "new", description: "Start a fresh session" },
   { command: "model", description: "Show or change current model, or an agent default: /model <agent>" },
   { command: "models", description: "List available models" },
@@ -13,7 +25,9 @@ export const COMMANDS = [
   { command: "verbose", description: "Toggle verbose tool output" },
   { command: "status", description: "Session diagnostics: context, tokens, cost, active runs" },
   { command: "stop", description: "Stop the running agent and its sub-agents" },
-  { command: "archive", description: "Delete archives created by /new" },
+  // Deletes the snapshots that /new leaves behind on the chat platforms. The app never makes
+  // those: it archives by flagging a conversation, reversibly, from its own menu.
+  { command: "archive", description: "Delete archives created by /new", channels: ["telegram"] },
   { command: "cron", description: "List scheduled tasks" },
   { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },
   { command: "claude", description: "Claude subscription: login|set-token|status|logout" },
@@ -23,13 +37,14 @@ export const COMMANDS = [
   { command: "mcp", description: "List MCP servers, optionally for one agent" },
   { command: "instructions", description: "Dump the composed system prompt" },
   { command: "help", description: "List available commands" },
-] as const;
+];
 
-export interface CommandInfo {
-  command: string;
-  description: string;
+export function commandsFor(channel: string): CommandInfo[] {
+  return COMMANDS.filter((c) => !c.channels || c.channels.includes(channel));
 }
 
-export function getHelpText(): string {
-  return COMMANDS.map((c) => `/${c.command} — ${c.description}`).join("\n");
+export function getHelpText(channel: string): string {
+  return commandsFor(channel)
+    .map((c) => `/${c.command} — ${c.description}`)
+    .join("\n");
 }

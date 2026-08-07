@@ -668,7 +668,8 @@ test("TelegramAdapter registers hears handlers for all slash commands", async ()
   await adapter.start();
 
   assert.equal(handlers.has("hears:^\\/new(?:@\\w+)?(\\s|$)"), true);
-  assert.equal(handlers.has("hears:^\\/clear(?:@\\w+)?(\\s|$)"), true);
+  // /clear is gone from every channel, so it must not be routed as a command anymore.
+  assert.equal(handlers.has("hears:^\\/clear(?:@\\w+)?(\\s|$)"), false);
   assert.equal(handlers.has("hears:^\\/model(?:@\\w+)?(\\s|$)"), true);
   assert.equal(handlers.has("hears:^\\/status(?:@\\w+)?(\\s|$)"), true);
   assert.equal(handlers.has("hears:^\\/archive(?:@\\w+)?(\\s|$)"), true);

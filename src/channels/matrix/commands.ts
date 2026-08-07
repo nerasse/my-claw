@@ -9,7 +9,6 @@ export const MATRIX_COMMANDS = [
   { command: "verbose", description: "Toggle verbose tool output" },
   { command: "status", description: "Session diagnostics: context, tokens, cost, active runs" },
   { command: "stop", description: "Stop the running agent and its sub-agents" },
-  { command: "clear", description: "Clear session history" },
   { command: "archive", description: "Delete archives created by /new" },
   { command: "cron", description: "List scheduled tasks" },
   { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },

@@ -53,8 +53,9 @@ test("matrix session handlers manage model and status", async () => {
   const status = await commandHandler("!room:test", "@u1:example.org", "dm", "status", "");
   assert.match(String(status), /base-model/);
 
+  // /clear is gone from every channel: the app menu clears, and /new archives then clears.
   const cleared = await commandHandler("!room:test", "@u1:example.org", "dm", "clear", "");
-  assert.equal(cleared, "History cleared.");
+  assert.equal(cleared, undefined);
 });
 
 test("matrix model submenu navigates and selects within a group", async () => {

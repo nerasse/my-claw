@@ -64,7 +64,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
 
     switch (command) {
       case "help":
-        return getHelpText();
+        return getHelpText("my-claw-app");
 
       case "model": {
         // An agent name as the first word edits that agent's persisted default (config.json),
@@ -233,27 +233,6 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "new":
         await deps.sessionManager.resetSession(sessionId, "my-claw-app", "dm");
         return "New session started.";
-
-      case "archive": {
-        const trimmed = args.trim();
-        if (!trimmed) {
-          return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-        }
-        if (trimmed === "all") {
-          const removed = await deps.sessionManager.purgeArchives({ all: true });
-          return `Archived sessions deleted: ${removed}`;
-        }
-        if (trimmed.startsWith("before ")) {
-          const rawDate = trimmed.slice("before ".length).trim();
-          const date = new Date(rawDate);
-          if (Number.isNaN(date.getTime())) {
-            return "Invalid date. Example: /archive before 2026-05-01";
-          }
-          const removed = await deps.sessionManager.purgeArchives({ before: date });
-          return `Archived sessions deleted: ${removed}`;
-        }
-        return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-      }
 
       default:
         return undefined;

@@ -158,17 +158,15 @@ async function fetchCodexModels(baseUrl: string): Promise<CodexDiscoveredModel[]
 function familyIndex(versioned: LlmModelConfig[]): Map<string, string> {
   const families = new Map<string, string>();
   for (const model of versioned) {
-    const family = model.group?.split("/").pop();
-    if (family) families.set(family.toLowerCase(), family);
+    if (model.family) families.set(model.family.toLowerCase(), model.family);
   }
   return families;
 }
 
 /**
- * Place each moving alias inside its own family submenu instead of beside it. Side by side, an
- * alias and its family read as the same entry twice ("Opus" and "Opus >"), and picking the alias
- * silently skips the version choice the owner came for. Inside the submenu it is unambiguous: the
- * auto-tracking entry sits first, then the pinned versions.
+ * The moving aliases, listed in the provider group next to the pinned versions. The "(auto)"
+ * suffix is what tells them apart: "Opus (auto)" tracks the latest, "Opus 5" stays put. Every
+ * provider lists flat, so this one does too.
  */
 function aliasModels(
   aliases: DiscoveredSdkModel[],
@@ -187,7 +185,7 @@ function aliasModels(
       id: alias.value,
       label: family ? `${displayName} (auto)` : displayName,
       provider,
-      group: family && config.group ? `${config.group}/${family}` : config.group,
+      group: config.group,
       // The SDK omits the flag entirely for models without reasoning, so normalize to a
       // definite false: "unknown" would make the picker offer the whole global list.
       supportsEffort: alias.supportsEffort === true,
@@ -243,8 +241,8 @@ export class ModelCatalog {
   }
 
   /**
-   * Versioned Claude models, one submenu per family. The SDK aliases stay at the provider root
-   * so picking "Sonnet" keeps tracking the latest, while the subgroups let you pin a version.
+   * Versioned Claude models, listed flat in the provider group like every other provider. The
+   * family only orders them: the label already says which is which.
    */
   private async claudeVersionedModels(name: string, provider: LlmProviderConfig): Promise<LlmModelConfig[]> {
     const token = await loadClaudeToken();
@@ -254,7 +252,8 @@ export class ModelCatalog {
       id: m.id,
       label: m.label,
       provider: name,
-      group: provider.group ? `${provider.group}/${m.family}` : m.family,
+      group: provider.group,
+      family: m.family,
       supportsEffort: m.effortLevels.length > 0,
       supportedEffortLevels: m.effortLevels.length > 0 ? m.effortLevels : undefined,
       vision: m.vision,

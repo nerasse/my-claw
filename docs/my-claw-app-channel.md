@@ -89,8 +89,8 @@ the first answer wins.
 { "type": "files.delete", "threadId": "projet", "id": "uuid" }
 { "type": "session.history", "threadId": "projet", "limit": 50 }
 { "type": "session.archive", "threadId": "projet" }
+{ "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
-{ "type": "session.clear", "threadId": "projet" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
@@ -103,11 +103,15 @@ the first answer wins.
 { "type": "ping" }
 ```
 
-- `session.archive` archives the thread's history (sessions-archive) and starts a
-  fresh empty conversation on the same threadId.
-- `session.delete` hard-deletes the session file and every archive snapshot.
-- `session.clear` empties the conversation without touching its name, model override or
-  archives. Answered with `chat.cleared` then `chat.command.result` ("History cleared.").
+- `session.archive` / `session.unarchive` move a conversation between the drawer and the
+  archived list by setting or clearing `archivedAt` on the session. Nothing is moved,
+  snapshotted or deleted: messages, uploads, name and model override all stay put, and
+  unarchiving hands the conversation back exactly as it was. Both answer with the refreshed
+  `session.list.result`. Archiving a thread that was never opened is refused rather than
+  creating one.
+- `session.delete` hard-deletes the session file and every archive snapshot. There is no way
+  to merely empty a conversation: archiving files it away reversibly and deleting destroys it,
+  which leaves nothing for a third verb to do.
 - `chat.stop` stops the run of the thread, whatever backend drives it (the wire version of
   `/stop`). Answered with a `chat.command.result`.
 - `files.list` / `files.delete` manage the conversation's attachments.
@@ -134,7 +138,7 @@ the first answer wins.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "..." }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true }] }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
@@ -149,8 +153,8 @@ the first answer wins.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
   renders it as a distinct bubble so a command result never masquerades as an agent answer.
-- `chat.cleared` is the answer to `session.clear`; the app drops its copy of the thread on
-  this frame rather than guessing from an empty history.
+- `chat.cleared` says the server dropped the thread's history (a typed `/new`); the app drops
+  its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread
   indicator. `effort.level` is `""` when the model discards effort.`commands.list.result` carries the shared command catalog (same source as the
 telegram bot menu), so the app's slash-menu can never drift from the server:
@@ -253,9 +257,14 @@ line of a single inbound message; it is echoed on `chat.message` and `chat.strea
 reply can be traced back to its run. Verbosity is `logging.level` in config (hot-reloaded), or
 `MY_CLAW_LOG_LEVEL` which overrides it.
 
-`chat.history` is also the ack for `session.archive`/`session.delete` (empty
-messages list). `session.list.result` only lists active (non-archived) threads,
-most recently active first, capped at 50.
+`chat.history` is also the ack for `session.delete` (empty messages list).
+`session.list.result` carries both halves in one round-trip: archived threads are
+flagged `archived: true` rather than left out, so the app can fill its two lists and
+show the archived count without asking twice. Most recently active first, capped at 50.
+
+App conversations are never swept: `pruneOldSessions` drops stale sessions on the chat
+platforms only. A thread the owner can see listed, named and archived must still be there
+after a quiet month.
 
 ### Tool calls
 

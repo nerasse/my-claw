@@ -1,5 +1,5 @@
 import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, stat } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, relative, sep } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
@@ -118,6 +118,12 @@ export interface SessionData {
    * became. Only the my-claw-app channel shows a thread list, so only it sets this.
    */
   title?: string;
+  /**
+   * When the owner filed this conversation away. Archiving is a flag, not a move: the history
+   * stays exactly where it was, the thread simply leaves the main list for the archived one,
+   * and clearing the flag brings it back untouched. Only the my-claw-app channel sets this.
+   */
+  archivedAt?: string;
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   // Context ceiling chosen for this conversation alone: "full" for the model's whole window, or an
@@ -252,16 +258,29 @@ export async function purgeSessionArchives(options: {
 
 const SESSION_STALE_DAYS = 30;
 
+/**
+ * Channels whose sessions the owner sees listed, names by hand and expects to find again.
+ * The app's drawer reads this very directory, so dropping a file after a quiet month made a
+ * conversation vanish from a list the owner was still looking at. Chat platforms keep the
+ * sweep: their sessions are transient per-chat state nobody browses.
+ */
+const PRUNE_EXEMPT_PREFIXES = [`my-claw-app${sep}`];
+
+function isPruneExempt(filePath: string): boolean {
+  const rel = relative(SESSIONS_DIR, filePath);
+  return PRUNE_EXEMPT_PREFIXES.some((prefix) => rel.startsWith(prefix));
+}
+
 export async function pruneOldSessions(): Promise<number> {
   const cutoffMs = Date.now() - SESSION_STALE_DAYS * 86_400_000;
   let removed = 0;
   try {
     const entries = await scanSessionFiles(SESSIONS_DIR);
     for (const { path: filePath, mtimeMs } of entries) {
-      if (mtimeMs < cutoffMs) {
-        await rm(filePath, { force: true }).catch(() => {});
-        removed += 1;
-      }
+      if (mtimeMs >= cutoffMs) continue;
+      if (isPruneExempt(filePath)) continue;
+      await rm(filePath, { force: true }).catch(() => {});
+      removed += 1;
     }
   } catch {
     // sessions dir may not exist

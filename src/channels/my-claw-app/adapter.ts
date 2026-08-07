@@ -13,7 +13,10 @@ import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
-import { COMMANDS } from "../commands-catalog.ts";
+import { commandsFor } from "../commands-catalog.ts";
+
+/** What this channel advertises and what it intercepts, from one list so they cannot diverge. */
+const APP_COMMANDS = commandsFor("my-claw-app");
 import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
@@ -31,11 +34,11 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppLogsTail,
   MyClawAppServerFrame,
   MyClawAppSessionArchive,
+  MyClawAppSessionUnarchive,
   MyClawAppSessionDelete,
   MyClawAppSessionHistory,
   MyClawAppSessionList,
   MyClawAppSessionRename,
-  MyClawAppSessionClear,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -523,7 +526,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "commands.list":
         void ws.send(JSON.stringify({
           type: "commands.list.result",
-          commands: COMMANDS.map(({ command, description }) => ({ name: command, description })),
+          commands: APP_COMMANDS.map(({ command, description }) => ({ name: command, description })),
         }));
         break;
       case "files.list":
@@ -553,9 +556,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.stop":
         void this.handleChatStop(ws, frame);
         break;
-      case "session.clear":
-        void this.handleSessionClear(ws, frame);
-        break;
+
       case "files.delete":
         void this.handleFileDelete(ws, frame);
         break;
@@ -563,6 +564,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         this.handleSessionHistory(ws, frame);
         break;
       case "session.archive":
+      case "session.unarchive":
         void this.handleSessionArchive(ws, frame);
         break;
       case "session.delete":
@@ -583,7 +585,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // is intercepted: an unknown /word is a question like any other and must reach the agent.
     if (text && !frame.attachments?.length && this.commandHandler) {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
-      if (command && COMMANDS.some((c) => c.command === command)) {
+      if (command && APP_COMMANDS.some((c) => c.command === command)) {
         try {
           const output = await this.commandHandler(owner, threadId, command, text.slice(command.length + 1).trim());
           // /new emptied the conversation server-side; the device must drop its screen copy
@@ -794,28 +796,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
     });
   }
 
-  private async handleSessionClear(
-    ws: ServerWebSocket<MyClawAppSessionData>,
-    frame: MyClawAppSessionClear,
-  ): Promise<void> {
-    const threadId = sanitizeThreadId(frame.threadId);
-    if (!threadId) {
-      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
-      return;
-    }
-    try {
-      await this.store.clear(ws.data.owner, threadId);
-      this.sendFrame(ws, { type: "chat.cleared", threadId });
-      this.sendFrame(ws, {
-        type: "chat.command.result",
-        threadId,
-        text: "History cleared.",
-      });
-    } catch (err) {
-      await this.refuse(ws, "session", "session.clear failed", { threadId, error: String(err) });
-    }
-  }
-
   /**
    * Single exit for every refusal: it reaches the device tagged with the screen that asked,
    * and it is always logged. A refusal that appears nowhere turned a server-side bug into a
@@ -855,18 +835,28 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
-  private async handleSessionArchive(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionArchive): Promise<void> {
+  /**
+   * Archiving keeps everything: messages, uploads and title all stay put, and the reply is the
+   * refreshed listing so the thread moves between the two lists in one round-trip.
+   */
+  private async handleSessionArchive(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionArchive | MyClawAppSessionUnarchive,
+  ): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
       await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
       return;
     }
+    const archiving = frame.type === "session.archive";
     try {
-      await this.store.archive(ws.data.owner, threadId);
-      await this.files.removeSessionFiles(ws.data.owner, threadId);
-      this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
+      if (archiving) await this.store.archive(ws.data.owner, threadId);
+      else await this.store.unarchive(ws.data.owner, threadId);
+      const sessions = await this.store.list(ws.data.owner);
+      this.sendFrame(ws, { type: "session.list.result", sessions });
     } catch (err) {
-      await this.refuse(ws, "session", "archive failed", { threadId, error: String(err) });
+      const action = archiving ? "archive" : "unarchive";
+      await this.refuse(ws, "session", `${action} failed`, { threadId, error: String(err) });
     }
   }
 

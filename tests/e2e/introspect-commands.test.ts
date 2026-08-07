@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createTelegramCommandHandler } from "../../src/channels/telegram/session-handlers.ts";
 import { createMatrixCommandHandler } from "../../src/channels/matrix/session-handlers.ts";
-import { getHelpText, COMMANDS } from "../../src/channels/telegram/commands.ts";
+import { getHelpText, COMMANDS, commandsFor } from "../../src/channels/telegram/commands.ts";
 import { getMatrixHelpText, MATRIX_COMMANDS, parseMatrixCommand } from "../../src/channels/matrix/commands.ts";
 import { isMetaCommand } from "../../src/channels/meta-commands.ts";
 import { ModelPicker } from "../../src/channels/model-picker.ts";
@@ -195,11 +195,27 @@ describe("E2E introspection commands", () => {
       // Drives /help and the Telegram native menu.
       expect(COMMANDS.some((c) => c.command === command)).toBe(true);
       expect(MATRIX_COMMANDS.some((c) => c.command === command)).toBe(true);
-      expect(getHelpText()).toContain(`/${command}`);
+      expect(getHelpText("telegram")).toContain(`/${command}`);
+      expect(getHelpText("my-claw-app")).toContain(`/${command}`);
       expect(getMatrixHelpText()).toContain(`/${command}`);
       // Matrix parses generically; the name must survive that regex, which excludes hyphens.
       expect(parseMatrixCommand(`/${command} general`)).toEqual({ command, args: "general" });
     }
+  });
+
+  test("a channel advertises exactly what it runs, and /clear is gone from all of them", () => {
+    // The app archives from its own menu, reversibly; /archive deletes the snapshots that
+    // /new leaves behind, which only the chat platforms produce.
+    expect(commandsFor("telegram").some((c) => c.command === "archive")).toBe(true);
+    expect(commandsFor("my-claw-app").some((c) => c.command === "archive")).toBe(false);
+    expect(getHelpText("my-claw-app")).not.toContain("/archive");
+
+    // A command that is advertised nowhere must not run anywhere either: a hidden command
+    // that still works is exactly what we refuse to ship.
+    for (const catalog of [COMMANDS, MATRIX_COMMANDS]) {
+      expect(catalog.some((c) => c.command === "clear")).toBe(false);
+    }
+    expect(isMetaCommand("/clear")).toBe(false);
   });
 
   test("an unknown agent name is reported, not silently treated as the orchestrator", async () => {

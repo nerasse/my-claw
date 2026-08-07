@@ -177,7 +177,7 @@ const VERSIONED_FIXTURE = [
   },
 ];
 
-test("claude-sdk provider: an alias joins its family submenu, ahead of the pinned versions", async () => {
+test("claude-sdk provider: aliases and pinned versions list flat, like every other provider", async () => {
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
   const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
@@ -190,17 +190,17 @@ test("claude-sdk provider: an alias joins its family submenu, ahead of the pinne
     ]);
     await catalog.refresh();
 
-    // Beside its family the alias reads as the same entry twice and skips the version choice, so
-    // it belongs inside the submenu, marked as the auto-tracking one.
+    // One group per provider, no submenu: the label is what tells the moving alias from the
+    // pinned versions.
     const alias = catalog.discovered().find((m) => m.id === "sonnet");
-    assert.equal(alias?.group, "Claude (abo)/Sonnet");
+    assert.equal(alias?.group, "Claude (abo)");
     assert.equal(alias?.label, "Sonnet (auto)");
-    // It must come before the pinned versions so the submenu opens on the auto entry.
+    // The aliases still come first, so the list opens on the auto-tracking entries.
     const ids = catalog.discovered().map((m) => m.id);
     assert.ok(ids.indexOf("sonnet") < ids.indexOf("claude-sonnet-4-6"));
 
     const opus = catalog.discovered().find((m) => m.id === "claude-opus-4-8");
-    assert.equal(opus?.group, "Claude (abo)/Opus");
+    assert.equal(opus?.group, "Claude (abo)");
     assert.equal(opus?.label, "Opus 4.8");
     assert.equal(opus?.provider, "anthropic");
     assert.equal(opus?.supportsEffort, true);
@@ -209,7 +209,7 @@ test("claude-sdk provider: an alias joins its family submenu, ahead of the pinne
 
     // Effort is per model: a model that reports none must not inherit the global list.
     const sonnet46 = catalog.discovered().find((m) => m.id === "claude-sonnet-4-6");
-    assert.equal(sonnet46?.group, "Claude (abo)/Sonnet");
+    assert.equal(sonnet46?.group, "Claude (abo)");
     assert.equal(sonnet46?.supportsEffort, false);
     assert.equal(sonnet46?.supportedEffortLevels, undefined);
   } finally {
@@ -240,7 +240,7 @@ test("claude-sdk provider: losing the version endpoint keeps the aliases and the
     await catalog.refresh();
     const ids = catalog.discovered().map((m) => m.id).sort();
     assert.deepEqual(ids, ["claude-opus-4-8", "claude-sonnet-4-6", "sonnet"]);
-    assert.equal(catalog.discovered().find((m) => m.id === "claude-opus-4-8")?.group, "Claude (abo)/Opus");
+    assert.equal(catalog.discovered().find((m) => m.id === "claude-opus-4-8")?.group, "Claude (abo)");
   } finally {
     mock?.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
@@ -261,7 +261,7 @@ test("claude-sdk provider: no token means aliases only, not a failed refresh", a
   }
 });
 
-test("claude-sdk provider: an alias with no matching family stays where it was", async () => {
+test("claude-sdk provider: an alias is marked (auto) only when its family is known", async () => {
   const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
   const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
@@ -276,9 +276,11 @@ test("claude-sdk provider: an alias with no matching family stays where it was",
     ]);
     await catalog.refresh();
 
-    // A variant marker names the same family as the plain alias.
-    assert.equal(catalog.discovered().find((m) => m.id === "opus[1m]")?.group, "Claude (abo)/Opus");
-    // An alias the versioned list knows nothing about must not invent a submenu.
+    // A variant marker names the same family as the plain alias, so it tracks a family too.
+    const variant = catalog.discovered().find((m) => m.id === "opus[1m]");
+    assert.equal(variant?.group, "Claude (abo)");
+    assert.equal(variant?.label, "Opus (1M context) (auto)");
+    // An alias the versioned list knows nothing about tracks nothing: no "(auto)" on it.
     const mystery = catalog.discovered().find((m) => m.id === "mystery");
     assert.equal(mystery?.group, "Claude (abo)");
     assert.equal(mystery?.label, "Mystery");

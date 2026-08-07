@@ -237,6 +237,10 @@ export interface LlmModelConfig {
   // collapsed behind a single "<group> >" entry in /model. A "/"-separated value nests
   // submenus (e.g. "Claude/Opus"). Ungrouped models stay at root.
   group?: string;
+  // Model family as the provider names it ("Opus", "Sonnet"). Discovery fills it in so a moving
+  // alias can tell which family it tracks. Carried on the model rather than read back out of
+  // `group`, which is a display choice and says nothing once the provider lists flat.
+  family?: string;
   // Per-model default effort (overrides the global llm.effort). Session /effort wins over both.
   effort?: EffortLevel;
   // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Ignored for

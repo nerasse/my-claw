@@ -137,12 +137,6 @@ export function createTelegramCommandHandler({
         await sessionManager.resetSession(sessionId, "telegram", chatType);
         return "New session started.";
 
-      case "clear":
-        await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-        sessionManager.clearHistory(sessionId);
-        await sessionManager.persist(sessionId);
-        return "History cleared.";
-
       case "archive": {
         const trimmed = args.trim();
         if (!trimmed) {

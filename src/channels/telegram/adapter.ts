@@ -411,7 +411,6 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/agents(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "agents"));
     this.bot.hears(/^\/mcp(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "mcp"));
     this.bot.hears(/^\/instructions(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "instructions"));
-    this.bot.hears(/^\/clear(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "clear"));
     this.bot.hears(/^\/archive(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "archive"));
     this.bot.hears(/^\/help(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
     this.bot.hears(/^\/commands(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "help"));
@@ -451,7 +450,7 @@ export class TelegramAdapter implements ChannelAdapter {
     });
 
     if (command === "help" || command === "commands") {
-      await ctx.reply(getHelpText());
+      await ctx.reply(getHelpText("telegram"));
       await this.commitProcessedUpdate(ctx.update.update_id);
       return;
     }
@@ -651,7 +650,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "clear", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "codex", "claude", "config", "archive", "skills", "agents", "mcp", "instructions", "help", "commands"].includes(command)) {
+      if (["new", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "codex", "claude", "config", "archive", "skills", "agents", "mcp", "instructions", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command, true);
         return;
       }
