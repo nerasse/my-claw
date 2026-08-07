@@ -9,6 +9,7 @@ import {
   createMatrixCommandHandler,
   createMatrixActionHandler,
 } from "../../src/channels/matrix/session-handlers.ts";
+import { AgentRegistry } from "../../src/agents/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { ModelPicker } from "../../src/channels/model-picker.ts";
 import { CONFIG_PATH, type MyClawConfig } from "../../src/core/config.ts";
@@ -39,14 +40,26 @@ function config(): MyClawConfig {
   return { whitelist: ["u1"], blacklist: [], channels: {}, llm: structuredClone(LLM), agents: {} } as MyClawConfig;
 }
 
+/** The two shipped built-ins: `/model <agent>` targets come from the registry, not a union. */
+function agentRegistry(): AgentRegistry {
+  const meta = (base: "general" | "research") =>
+    ({ description: `${base} agent`, base, instructions: ["CORE", "SOUL", "AGENTS", "USER"] as const });
+  return new AgentRegistry(new Map([
+    ["general", { name: "general", meta: { ...meta("general"), instructions: [...meta("general").instructions] }, prompt: "", path: "/g.md", source: "built-in" as const }],
+    ["research", { name: "research", meta: { ...meta("research"), instructions: [...meta("research").instructions] }, prompt: "", path: "/r.md", source: "built-in" as const }],
+  ]));
+}
+
 function harness(cfg: MyClawConfig) {
   const sessionManager = new SessionManager();
-  const modelPicker = new ModelPicker([]);
+  const registry = agentRegistry();
+  const modelPicker = new ModelPicker([], undefined, () => registry.names());
   modelPicker.syncFromConfig(cfg.llm);
   const deps = {
     config: cfg,
     sessionManager,
     modelPicker,
+    agentRegistry: registry,
     listSubAgents: async () => INSTANCES,
     reloadConfigNow: async () => ({ changed: [], rebootRequired: [] }),
   };
@@ -90,8 +103,11 @@ describe("both channels", () => {
     ]) {
       expect(menu.text).toContain("research");
       expect(menu.text).toContain("Context: 262k");
-      // The target letter is what survives the round trip through callback_data.
-      expect(actionFor(menu, "Opus")).toMatch(/@r$/);
+      // A code, not a letter: agent names are open now, so the suffix is a hash of the name. What
+      // matters is that it survives the round trip and resolves back to the same agent.
+      const action = actionFor(menu, "Opus");
+      expect(action).toMatch(/@[a-z0-9]{1,4}$/);
+      expect(h.modelPicker.parseCallbackAction(action)).toMatchObject({ target: "research" });
     }
   });
 

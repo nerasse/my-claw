@@ -201,6 +201,13 @@ src/
 │   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset) -- docs/subagent-visibility.md
 │   ├── registry.ts        # Sub-agent ID generation + listing
 │   └── types.ts
+├── agents/                # File-defined sub-agents (agents/*.md) -- docs/file-agents.md
+│   ├── loader.ts          # 3-tier scan, frontmatter, per-tier cap, last-good retention
+│   ├── registry.ts        # Name -> agent, spawn catalog vs browse catalog
+│   ├── resolve.ts         # config entry > agent file > default: the one place a name becomes behaviour
+│   ├── reload.ts, watcher.ts, sync.ts
+│   ├── builtin/           # general.md, research.md, browser.md (repo-synced by hash at boot)
+│   └── types.ts
 ├── skills/
 │   ├── registry.ts        # Skill registry (3-tier: built-in/custom/workspace), per-agent scope
 │   ├── loader.ts          # Skill file loader + YAML frontmatter parser
@@ -239,6 +246,7 @@ src/
 │   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
 │   ├── invisible.ts       # Invisible-character class, shared -- docs/untrusted-content.md
 │   ├── glob.ts            # `*` matching for flat ids (CDP methods, model ids)
+│   ├── frontmatter.ts     # Flat `key: value` frontmatter, shared by skills/ and agents/
 │   └── lru-map.ts         # LruMap + TtlSet utilities
 └── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```
@@ -252,6 +260,9 @@ src/
 - Any file over **500 lines** is a candidate for extraction. Not automatic, but a signal.
 - `core/` avoids dependencies on `channels/`, `agent/`, `tools/` where possible. `router.ts` bridges `channels/` and `agent/` by design.
 - `skills/` contains the 3-tier skill system (registry, loader, sync). `subagents/` contains the sub-agent runner and registry.
+- `agents/` contains the *definitions* (what an agent is: prompt, baseline, scopes); `subagents/`
+  contains the *instances* (a spawned agent's session and lifecycle). Neither imports the other.
+- The frontmatter parser is shared: `utils/frontmatter.ts`, used by both `skills/` and `agents/`.
 
 ### Workspace
 

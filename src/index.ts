@@ -5,16 +5,16 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
-  AGENT_KEYS,
+  agentConfigOf,
   resolveAgentLlm,
   isMatrixChannelEnabled,
   isTelegramChannelEnabled,
   isMyClawAppChannelEnabled,
   findUnknownScopeEntries,
   findUnknownAgentWorkspaces,
+  findUnknownAgents,
   CONFIG_PATH,
   MY_CLAW_DIR,
-  type AgentConfigKey,
   type AgentToolType,
   type EffortLevel,
   type MyClawConfig,
@@ -42,6 +42,16 @@ import type { MyClawAppAgentsConfigResult } from "./channels/my-claw-app/types.t
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
+import {
+  INSTRUCTION_FILES,
+  MAX_INSTRUCTION_BYTES,
+  listInstructions,
+  readInstruction,
+  readNestedInstruction,
+  scanNestedInstructions,
+  writeInstruction,
+  type InstructionRoots,
+} from "./channels/my-claw-app/instructions.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -96,6 +106,11 @@ import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { startSkillsWatcher } from "./skills/watcher.ts";
 import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.ts";
+import { AgentRegistry } from "./agents/registry.ts";
+import { loadAllAgents } from "./agents/loader.ts";
+import { syncBuiltInAgents } from "./agents/sync.ts";
+import { startAgentsWatcher } from "./agents/watcher.ts";
+import { reloadAgents, editableAgentTierDirs, type AgentDirs } from "./agents/reload.ts";
 import { McpManager } from "./mcp/manager.ts";
 import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
@@ -205,7 +220,9 @@ async function main() {
   const memoryPurgeTimer = initMemory(config);
   // Left empty on purpose: applyModelCatalog() below is the single place that projects the merged
   // model list into the picker, and it runs synchronously before anything can read the menu.
-  const modelPicker = new ModelPicker([]);
+  // The agent list is a closure, not a snapshot: the registry is built further down and its
+  // contents change with the files, while a menu is only ever parsed long after boot.
+  const modelPicker = new ModelPicker([], undefined, () => agentRegistry.names());
 
   // Reads the live config so a hot-reloaded provider is priced without a restart, and the live
   // model list so an alias resolves to whatever version discovery last reported. Declared ahead of
@@ -300,9 +317,6 @@ async function main() {
     if (config.webSearch?.baseUrl) toolRegistry.register(createWebSearchTool(config.webSearch));
   };
   registerWebSearch();
-  // Always register: the tool reads config.browser.enabled live and no-ops when disabled,
-  // so the hot-reload watcher can toggle the browser without a restart.
-  toolRegistry.register(createDelegateBrowserTool(config));
 
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const repoSkillsDir = join(repoRoot, "src", "skills");
@@ -330,6 +344,32 @@ async function main() {
   const skillRegistry = new SkillRegistry(allSkills);
   hooks.emit("skills:loaded", { count: allSkills.size });
 
+  // File-defined agents, same three tiers as skills. See docs/file-agents.md.
+  const repoAgentsDir = join(repoRoot, "src", "agents", "builtin");
+  const builtinAgentsDir = join(MY_CLAW_DIR, "agents", ".builtin");
+  const customAgentsDir = join(MY_CLAW_DIR, "agents");
+  const workspaceAgentsDir = join(workspacePath, "agents");
+  const agentsDirs = (): AgentDirs => ({
+    builtInDir: builtinAgentsDir,
+    customDir: customAgentsDir,
+    workspaceDir: workspaceAgentsDir,
+    workspaces: Object.entries(config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "agents") })),
+  });
+
+  const changedAgents = await syncBuiltInAgents(repoAgentsDir, builtinAgentsDir);
+  if (changedAgents.length > 0) {
+    void log("info", "built-in agents synced", { changed: changedAgents });
+  }
+
+  const allAgents = await loadAllAgents(agentsDirs());
+  const agentRegistry = new AgentRegistry(allAgents);
+  hooks.emit("agents:loaded", { count: allAgents.size });
+
+  // Always register: the tool reads config.browser.enabled live and no-ops when disabled, so the
+  // hot-reload watcher can toggle the browser without a restart. Registered after the agent
+  // registry because the browser reads its prompt from `agents/browser.md` through it.
+  toolRegistry.register(createDelegateBrowserTool(config, agentRegistry));
+
   // Scope entries pointing at nothing narrow an agent silently, so they are reported. Validated
   // against the *declared* MCP servers rather than the connected ones: a server that failed to
   // connect is still a real name, and flagging it as a typo would send the owner the wrong way.
@@ -348,9 +388,17 @@ async function main() {
     log("warn", "agent workspace keys match nothing in config.workspaces", { entries: unknownAgentWorkspaces });
   }
 
+  // An `agents.<name>` section addressing neither a reserved role nor a file in `agents/`. Config
+  // is an override layer, so such a section is read by nobody and the setting silently never
+  // applies -- the exact failure the two checks above exist to surface.
+  const unknownAgents = findUnknownAgents(config, agentRegistry.names());
+  if (unknownAgents.length > 0) {
+    log("warn", "config sections address agents that do not exist", { agents: unknownAgents });
+  }
+
   const subAgentRegistry = new SubAgentRegistry();
-  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
-  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config);
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, agentRegistry);
+  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry);
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
@@ -358,7 +406,7 @@ async function main() {
   if (backfilledConversations > 0) {
     void log("info", "conversation archive backfilled", { messages: backfilledConversations });
   }
-  const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline);
+  const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, undefined, agentRegistry);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
   toolRegistry.register(createCronTool(cronScheduler));
@@ -380,6 +428,8 @@ async function main() {
       sessionManager,
       modelPicker,
       skillRegistry,
+      agentRegistry,
+      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
       builtinDir,
       customDir,
       workspaceSkillsDir,
@@ -501,6 +551,8 @@ async function main() {
       sessionManager,
       modelPicker,
       skillRegistry,
+      agentRegistry,
+      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
       builtinDir,
       customDir,
       workspaceSkillsDir,
@@ -523,6 +575,8 @@ async function main() {
       reloadConfigNow,
       approvalHandler,
       skillRegistry,
+      agentRegistry,
+      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
       builtinDir,
       customDir,
       workspaceSkillsDir,
@@ -730,10 +784,11 @@ async function main() {
     // Agent defaults for the phone app: the same writers as `/model <agent>`, plus the global
     // default that had no writer until now. Every answer is a fresh snapshot of the config so a
     // stale page can never survive a server-side change.
-    const toolTypeFor = (key: AgentConfigKey): AgentToolType => (key === "orchestrator" ? "main" : key);
-    const agentModelOf = (key: AgentConfigKey): string => {
+    const toolTypeFor = (key: string): AgentToolType => (key === "orchestrator" ? "main" : key);
+    const agentModelOf = (key: string): string => {
       try {
-        return resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeFor(key)), config.llm).model ?? "";
+        const file = agentRegistry.get(key);
+        return resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeFor(key), file?.meta.model), config.llm).model ?? "";
       } catch {
         // A removed provider must not take the whole page down: the row shows an empty model.
         return "";
@@ -741,6 +796,40 @@ async function main() {
     };
     const providerCountOf = (providerKey: string): number =>
       modelPicker.options().filter((m) => (m.provider ?? config.llm.defaultProvider) === providerKey).length;
+
+    /** The two agents that exist without a file. Spawnable agents come from the registry. */
+    const AGENT_ROLES = ["orchestrator", "cron"] as const;
+
+    /** One row of the agents page: the config entry over the file, marked with where it came from. */
+    const agentRow = (
+      key: string,
+      label: string,
+      description: string,
+      inheritsFrom: "global" | "orchestrator",
+      file?: { source: string; path: string; base: string; layer?: string },
+    ) => {
+      const entry = agentConfigOf(config, toolTypeFor(key));
+      const llm = entry?.llm;
+      const model = agentModelOf(key);
+      const definition = agentRegistry.get(key);
+      return {
+        key,
+        label,
+        description,
+        model,
+        ...(model ? { provider: modelPicker.providerFor(model) ?? config.llm.defaultProvider } : {}),
+        pinned: llm?.defaultModel !== undefined || llm?.defaultProvider !== undefined,
+        inheritsFrom,
+        // Config over file, so the page shows what the agent actually resolves to rather than what
+        // one of the two layers happens to say.
+        skills: entry?.skills ?? (Array.isArray(definition?.meta.skills) ? definition.meta.skills : null),
+        mcp: entry?.mcp ?? (Array.isArray(definition?.meta.mcp) ? definition.meta.mcp : null),
+        workspace: entry?.workspace ?? definition?.meta.workspace ?? null,
+        contextCap: entry?.context?.cap ?? definition?.meta.contextCap ?? null,
+        maxIterations: entry?.maxIterations ?? definition?.meta.maxIterations ?? null,
+        ...(file ? { source: file.source, path: file.path, base: file.base, ...(file.layer ? { layer: file.layer } : {}) } : {}),
+      };
+    };
     const agentsConfigSnapshot = () => {
       const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
       return {
@@ -758,27 +847,27 @@ async function main() {
           ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
           keyPresent: provider.apiKeyEnv ? Boolean(process.env[provider.apiKeyEnv]) : false,
         })),
-        agents: AGENT_KEYS.map((key) => {
-          const entry = config.agents?.[key];
-          const llm = entry?.llm;
-          const model = agentModelOf(key);
-          return {
-            key,
-            label: AGENTS[key].label,
-            description: AGENTS[key].description,
-            model,
-            ...(model ? { provider: modelPicker.providerFor(model) ?? config.llm.defaultProvider } : {}),
-            pinned: llm?.defaultModel !== undefined || llm?.defaultProvider !== undefined,
-            inheritsFrom: AGENTS[key].inheritsFrom,
-            skills: entry?.skills ?? null,
-            mcp: entry?.mcp ?? null,
-            workspace: entry?.workspace ?? null,
-            contextCap: entry?.context?.cap ?? null,
-            maxIterations: entry?.maxIterations ?? null,
-          };
-        }),
+        // The two reserved roles, then every file-defined agent. The page is a browse surface, so
+        // it lists the whole catalog and marks each agent's tier rather than filtering by workspace.
+        agents: [
+          ...AGENT_ROLES.map((key) => agentRow(key, AGENTS[key].label, AGENTS[key].description, AGENTS[key].inheritsFrom)),
+          ...agentRegistry.listAll().map((agent) => agentRow(
+            agent.name,
+            agent.name,
+            agent.description,
+            "global",
+            { source: agent.source, path: agent.path, base: agent.base, ...(agent.layer ? { layer: agent.layer } : {}) },
+          )),
+        ],
       };
     };
+    /**
+     * Whether a name may receive config overrides: a reserved role, or an agent that has a file.
+     * Accepting anything would let the app create an `agents.<typo>` section that nothing reads.
+     */
+    const writableAgent = (agent: string): boolean =>
+      (AGENT_ROLES as readonly string[]).includes(agent) || agentRegistry.exists(agent);
+
     const writeAgentsConfig = async (note: string): Promise<MyClawAppAgentsConfigResult> => {
       // The file is the source of truth, but the watcher lands a beat later and the answer is
       // built now: reload explicitly so the reply describes the running config, like /model does.
@@ -797,15 +886,15 @@ async function main() {
           if (!result.ok) throw new Error(result.error);
           return writeAgentsConfig(`défaut global ${modelId}`);
         }
-        if (!AGENT_KEYS.includes(agent as AgentConfigKey)) throw new Error(`unknown agent: ${agent}`);
-        const result = await setAgentModel(agent as AgentConfigKey, modelId, provider);
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentModel(agent, modelId, provider);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`modèle ${agent} ${modelId}`);
       },
       clearModel: async (agent) => {
         if (agent === "global") throw new Error("global has no model pin to clear");
-        if (!AGENT_KEYS.includes(agent as AgentConfigKey)) throw new Error(`unknown agent: ${agent}`);
-        const result = await clearAgentModel(agent as AgentConfigKey);
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await clearAgentModel(agent);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`clear modèle ${agent}`);
       },
@@ -846,11 +935,67 @@ async function main() {
       ],
     });
 
+    // Field by field on purpose: a projection keeps a field later added to McpServerStatus from
+    // reaching devices on its own, and the wiring (command, args, env, url, headers) carries
+    // credentials that have no business on the wire.
+    myClawApp.onMcpController({
+      list: () =>
+        mcpManager.status().map((s) => ({
+          name: s.name,
+          transport: s.transport,
+          state: s.state,
+          toolCount: s.toolCount,
+          ...(s.lastError ? { lastError: s.lastError } : {}),
+          ...(s.lastAttemptAt ? { lastAttemptAt: s.lastAttemptAt } : {}),
+        })),
+    });
+
+    // config.workspaces is hot-reloadable, so the roots are read per call from the live config
+    // rather than captured: a workspace added while the app is open must show up on the page.
+    const instructionRoots = (): InstructionRoots => ({
+      defaultDir: workspacePath,
+      ...(config.workspaces ? { workspaces: config.workspaces } : {}),
+    });
+
+    myClawApp.onInstructionsController({
+      list: async () => ({
+        entries: await listInstructions(instructionRoots()),
+        nested: await scanNestedInstructions(instructionRoots()),
+        files: [...INSTRUCTION_FILES],
+        maxBytes: MAX_INSTRUCTION_BYTES,
+      }),
+      read: async (workspace, file, nested) => {
+        if (nested) {
+          const content = await readNestedInstruction(instructionRoots(), workspace, nested);
+          if (content === null) return null;
+          return {
+            workspace,
+            file: nested,
+            content,
+            origin: "nested" as const,
+            from: workspace,
+            sha: contentSha(content),
+            editable: false,
+          };
+        }
+        const read = await readInstruction(instructionRoots(), workspace, file ?? "");
+        if (!read) return null;
+        return { workspace, file: file ?? "", ...read, editable: true };
+      },
+      write: async (workspace, file, content, sha) => {
+        const res = await writeInstruction(instructionRoots(), workspace, file, content, sha);
+        if (res.ok) return { ok: true, sha: res.sha, conflict: false };
+        return { ok: false, sha: "", conflict: res.conflict === true, error: res.error };
+      },
+    });
+
     myClawApp.onCommandHandler(createMyClawAppCommandHandler({
       config,
       sessionManager,
       modelPicker,
       skillRegistry,
+      agentRegistry,
+      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
       builtinDir,
       customDir,
       workspaceSkillsDir,
@@ -1002,6 +1147,11 @@ async function main() {
     reloadMemory: (memory) => void reloadMemoryEmbedding(memory),
     reloadSkills: () => void reloadSkills(skillsDirs(), skillRegistry).then((count) => {
       void log("info", "skills reloaded from config change", { count });
+    }).then(() => reloadAgents(agentsDirs(), agentRegistry)).then((count) => {
+      // A workspace added to config.workspaces brings a `agents` tier with it, so the two
+      // registries have to follow the same config change or the new workspace has skills and
+      // no agents until the next restart.
+      void log("info", "agents reloaded from config change", { count });
     }),
     recreateTelegram: () => void recreateTelegramChannel(),
   });
@@ -1029,6 +1179,15 @@ async function main() {
     {
       getTierDirs: () => editableTierDirs(skillsDirs()),
       reload: () => reloadSkills(skillsDirs(), skillRegistry),
+    },
+  );
+
+  const stopAgentsWatcher = startAgentsWatcher(
+    agentsDirs(),
+    agentRegistry,
+    {
+      getTierDirs: () => editableAgentTierDirs(agentsDirs()),
+      reload: () => reloadAgents(agentsDirs(), agentRegistry),
     },
   );
 
@@ -1102,6 +1261,7 @@ async function main() {
     clearTimeout(confirmTimer);
     configWatcher.stop();
     stopSkillsWatcher();
+    stopAgentsWatcher();
     pluginLoader?.stop();
     await mcpManager.stop().catch(() => undefined);
     cronScheduler.stop();
@@ -1221,8 +1381,16 @@ function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPi
 
 function registerSubAgentTools(
   registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry, config: MyClawConfig,
+  agentRegistry: AgentRegistry,
 ): void {
-  registry.register(createSpawnTool(runner, subRegistry, () => (config.llm.models ?? []).map((m) => m.id)));
+  // Both lists are read live: the spawn schema is rebuilt per run, so an agent file dropped in
+  // `agents/` is spawnable on the next message without a restart.
+  registry.register(createSpawnTool(
+    runner,
+    subRegistry,
+    () => (config.llm.models ?? []).map((m) => m.id),
+    () => agentRegistry.list(),
+  ));
   registry.register(createSendTool(runner, subRegistry));
   registry.register(createListAgentsTool(runner, subRegistry));
   registry.register(createKillAgentTool(runner));

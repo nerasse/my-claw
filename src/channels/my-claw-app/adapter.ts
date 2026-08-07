@@ -36,7 +36,12 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppFileDelete,
   MyClawAppFilesList,
   MyClawAppDiagSnapshot,
+  MyClawAppInstructionsFile,
+  MyClawAppInstructionsGet,
+  MyClawAppInstructionsListResult,
+  MyClawAppInstructionsSet,
   MyClawAppLogsTail,
+  MyClawAppMcpEntry,
   MyClawAppServerFrame,
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
@@ -156,6 +161,23 @@ export interface MyClawAppSkillsController {
   workspaces(): Array<{ key: string; path: string; default: boolean }>;
 }
 
+/** Declared MCP servers and their live state, injected so the adapter never touches the manager. */
+export interface MyClawAppMcpController {
+  list(): MyClawAppMcpEntry[];
+}
+
+/** The prompt files the app may read and edit. See docs/instructions-page.md. */
+export interface MyClawAppInstructionsController {
+  list(): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
+  read(workspace: string, file: string | undefined, nested: string | undefined): Promise<Omit<MyClawAppInstructionsFile, "type"> | null>;
+  write(
+    workspace: string,
+    file: string,
+    content: string,
+    sha: string | undefined,
+  ): Promise<{ ok: boolean; sha: string; conflict: boolean; error?: string }>;
+}
+
 /** Text slash commands, executed server-side like on the other channels. */
 export type MyClawAppCommandHandler = (
   owner: string,
@@ -177,6 +199,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private models?: MyClawAppModelController;
   private agents?: MyClawAppAgentsController;
   private skills?: MyClawAppSkillsController;
+  private mcp?: MyClawAppMcpController;
+  private instructions?: MyClawAppInstructionsController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -341,6 +365,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onSkillsController(controller: MyClawAppSkillsController): void {
     this.skills = controller;
+  }
+
+  onMcpController(controller: MyClawAppMcpController): void {
+    this.mcp = controller;
+  }
+
+  onInstructionsController(controller: MyClawAppInstructionsController): void {
+    this.instructions = controller;
   }
 
   /** Executes text slash commands; when absent, they fall through to the agent like any message. */
@@ -630,6 +662,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "workspaces.list":
         void this.handleWorkspacesList(ws);
         break;
+      case "mcp.list":
+        void this.handleMcpList(ws);
+        break;
+      case "instructions.list":
+        void this.handleInstructionsList(ws);
+        break;
+      case "instructions.get":
+        void this.handleInstructionsGet(ws, frame);
+        break;
+      case "instructions.set":
+        void this.handleInstructionsSet(ws, frame);
+        break;
       case "model.get":
         void this.handleModel(ws, frame.threadId, undefined);
         break;
@@ -902,6 +946,91 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "workspaces.list.result", workspaces: this.skills.workspaces() });
     } catch (err) {
       await this.refuse(ws, "skills", "workspaces.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleMcpList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.mcp) {
+      await this.refuse(ws, "mcp", "MCP status unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "mcp.list.result", servers: this.mcp.list() });
+    } catch (err) {
+      await this.refuse(ws, "mcp", "mcp.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleInstructionsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.instructions) {
+      await this.refuse(ws, "instructions", "instructions unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "instructions.list.result", ...(await this.instructions.list()) });
+    } catch (err) {
+      await this.refuse(ws, "instructions", "instructions.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleInstructionsGet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppInstructionsGet,
+  ): Promise<void> {
+    if (!this.instructions) {
+      await this.refuse(ws, "instructions", "instructions unavailable");
+      return;
+    }
+    try {
+      const read = await this.instructions.read(frame.workspace, frame.file, frame.nested);
+      if (!read) {
+        await this.refuse(ws, "instructions", "unknown instruction file", {
+          workspace: frame.workspace,
+          file: frame.file ?? frame.nested ?? "",
+        });
+        return;
+      }
+      this.sendFrame(ws, { type: "instructions.file", ...read });
+    } catch (err) {
+      await this.refuse(ws, "instructions", "instructions.get failed", { error: String(err) });
+    }
+  }
+
+  private async handleInstructionsSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppInstructionsSet,
+  ): Promise<void> {
+    if (!this.instructions) {
+      await this.refuse(ws, "instructions", "instructions unavailable");
+      return;
+    }
+    if (typeof frame.content !== "string") {
+      await this.refuse(ws, "instructions", "instructions.set without content");
+      return;
+    }
+    try {
+      const res = await this.instructions.write(frame.workspace, frame.file, frame.content, frame.sha);
+      // A refused write answers on its own frame rather than through the error scope: the editor
+      // has to tell a conflict apart from a failure, and only one of them means "reload first".
+      this.sendFrame(ws, {
+        type: "instructions.saved",
+        workspace: frame.workspace,
+        file: frame.file,
+        ok: res.ok,
+        sha: res.sha,
+        conflict: res.conflict,
+        ...(res.error ? { error: res.error } : {}),
+      });
+      if (!res.ok) {
+        await myClawAppLog("warn", "instructions.set refused", {
+          deviceId: ws.data.deviceId,
+          workspace: frame.workspace,
+          file: frame.file,
+          error: res.error ?? "",
+        });
+      }
+    } catch (err) {
+      await this.refuse(ws, "instructions", "instructions.set failed", { error: String(err) });
     }
   }
 

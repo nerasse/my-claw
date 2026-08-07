@@ -33,6 +33,7 @@ import {
   createBrowserPageState,
 } from "../../tools/browser/index.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
 import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
 
 export interface BrowserSubagentResult {
@@ -98,25 +99,37 @@ const LOW_LEVEL_PROMPT = `Low-level tools (enabled in this deployment, use only 
 - browser_cdp(method, params): Raw Chrome DevTools Protocol on this page, restricted to an allowlist.
 Prefer the normal tools: these two bypass what the page shows you, so a mistake is harder to notice.`;
 
+/**
+ * The browser's own prompt and the workspace layers it sits on, from `agents/browser.md`.
+ *
+ * `BROWSER_PROMPT` above is the fallback, exactly as `CORE_PROMPT` backs a missing `CORE.md`: the
+ * file is repo-synced at boot, but a browser run between a deleted file and the next boot must not
+ * lose its instructions altogether. The omission of AGENTS.md is the file's `instructions:` field
+ * now, not a hardcoded list here.
+ */
 async function buildBrowserSystemPrompt(
   extraLayers: string[] = [],
   workspaceDir?: string,
   defaultWorkspaceDir?: string,
+  agentRegistry?: AgentRegistry,
 ): Promise<string> {
+  const definition = agentRegistry?.get("browser");
+  const wanted = definition?.meta.instructions ?? ["CORE", "SOUL", "USER"];
   const layers: string[] = [];
 
-  layers.push(await loadCorePrompt(workspaceDir, defaultWorkspaceDir));
+  if (wanted.includes("CORE")) layers.push(await loadCorePrompt(workspaceDir, defaultWorkspaceDir));
 
   const files = await loadAllPromptFiles(workspaceDir, defaultWorkspaceDir);
-  for (const name of ["SOUL.md", "USER.md"] as const) {
-    const content = files[name];
+  for (const [file, layer] of [["SOUL.md", "SOUL"], ["AGENTS.md", "AGENTS"], ["USER.md", "USER"]] as const) {
+    if (!wanted.includes(layer)) continue;
+    const content = files[file];
     if (content) {
-      const safe = normalizeUntrusted(content, name);
+      const safe = normalizeUntrusted(content, file);
       if (safe) layers.push(safe);
     }
   }
 
-  layers.push(BROWSER_PROMPT);
+  layers.push(definition?.prompt || BROWSER_PROMPT);
   layers.push(...extraLayers);
   return layers.filter(Boolean).join("\n\n");
 }
@@ -165,6 +178,8 @@ export class BrowserSubagent {
     // Workspace of the run that spawned this sub-agent: its prompt files and tool roots follow
     // the parent, not the process-wide default.
     private workspaceDir?: string,
+    /** Supplies `agents/browser.md`; absent falls back to the constant above. */
+    private agentRegistry?: AgentRegistry,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
     this.client = new BrowserClient(sidecarUrl, config.browser?.viewport, config.browser?.timeoutsMs);
@@ -218,7 +233,7 @@ export class BrowserSubagent {
   }
 
   async run(task: string, startUrl?: string, signal?: AbortSignal): Promise<BrowserSubagentResult> {
-    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers, this.workspaceDir, this.config.workspace)}\n\n${await this.formatOpenTabs()}`;
+    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers, this.workspaceDir, this.config.workspace, this.agentRegistry)}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: `Task: ${task}${startUrl ? `\nStart URL: ${startUrl}` : ""}` },

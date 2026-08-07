@@ -4,7 +4,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { resolveAgentMcp } from "../../src/core/config.ts";
 import { applyHotReload } from "../../src/core/config-watcher.ts";
 import type { Tool } from "../../src/tools/types.ts";
-import type { MyClawConfig } from "../../src/core/config.ts";
+import type { AgentToolType, MyClawConfig } from "../../src/core/config.ts";
 
 function stub(name: string): Tool {
   return {
@@ -43,6 +43,18 @@ test("denylist stacks on top of the per-agent exclusion (research is read-only)"
 test("an unknown disabled name is a harmless no-op", () => {
   const r = registry(["read", "write"]);
   assert.equal(r.getForAgent("main", ["does-not-exist"]).length, 2);
+});
+
+test("an agent name the chain does not know falls back to the sub-agent set, not the full one", () => {
+  // The cast is the point: file-defined agents will hand this method names that no union covers,
+  // and a typo must not be the difference between a sandboxed agent and a privileged one.
+  const r = registry(["read", "write", "bash", "spawn", "memory", "manage_skills"]);
+  const names = r.getForAgent("reviewer" as AgentToolType).map((t) => t.name);
+  assert.ok(names.includes("read"));
+  assert.ok(names.includes("bash"), "an unknown agent still gets the general baseline");
+  for (const escalation of ["spawn", "memory", "manage_skills"]) {
+    assert.ok(!names.includes(escalation), `an unknown agent must not receive ${escalation}`);
+  }
 });
 
 function baseConfig(): MyClawConfig {

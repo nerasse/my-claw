@@ -102,6 +102,10 @@ the first answer wins.
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
 { "type": "skills.list" }
 { "type": "workspaces.list" }
+{ "type": "mcp.list" }
+{ "type": "instructions.list" }
+{ "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md" }
+{ "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a" }
 { "type": "agents.config.get" }
 { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1" }
 { "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
@@ -131,6 +135,12 @@ the first answer wins.
   `model.get` / `model.set` / `model.effort.set` answer with `model.result` carrying the state
   the server actually stored (setting the default model id clears the override). `model.set`
   refuses a model the server does not know.
+- `instructions.list` / `instructions.get` / `instructions.set` drive the instructions page: the
+  four files `buildSystemPrompt` reads (`CORE.md`, `SOUL.md`, `AGENTS.md`, `USER.md`), per
+  workspace. `instructions.get` takes either a `file` or a `nested` path from the last list.
+  `instructions.set` carries the `sha` the editor loaded, and an absent `sha` means "create this
+  override" -- the server refuses a stale sha and an already existing file alike, because
+  `AGENTS.md` is a file the agent writes too. See `docs/instructions-page.md`.
 - `agents.config.get` answers with the whole agent-defaults snapshot: the global default
   model and effort, the configured providers (never a secret, only whether the env key is
   set) and one entry per agent with the model that actually runs for it (own pin or
@@ -140,6 +150,13 @@ the first answer wins.
   again; `agents.effort.set` sets or removes (empty string) the global `llm.effort`. Every
   mutation answers with a fresh `agents.config.result`, never an optimistic echo, and a
   mutation that fails is refused with scope `agents`.
+  The `agents` array is the two reserved roles followed by every file-defined agent
+  (docs/file-agents.md), so a file dropped in `agents/` appears with no app release. A
+  file-defined entry additionally carries `source`, `path`, `base` and, for a workspace tier,
+  `layer`; a reserved role carries none of the four because it exists without a file. `skills`,
+  `mcp`, `workspace`, `contextCap` and `maxIterations` show the effective value, config entry over
+  file. Writes are refused for a name that is neither a role nor an existing agent, so the app
+  cannot create an `agents.<typo>` section nothing reads.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.
@@ -166,8 +183,12 @@ the first answer wins.
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
+{ "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso" }] }
+{ "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a" }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144 }
+{ "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
+{ "type": "instructions.saved", "workspace": "sofa", "file": "AGENTS.md", "ok": false, "sha": "", "conflict": true, "error": "changed on the server since it was opened" }
 { "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents" }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|instructions" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
@@ -176,6 +197,22 @@ the first answer wins.
   `workspace` is present only on skills of a named workspace.
 - `workspaces.list.result` feeds the settings page: the default workspace plus every named
   entry of `config.workspaces`.
+- `mcp.list.result` is the wire version of `/mcp`: every server declared under `config.mcp`,
+  with the state the manager holds for it. A server that failed to connect is listed with
+  `state: "failed"` and its `lastError`, since dropping it would hide exactly the entry worth
+  reporting, and a disabled one is listed with no `lastAttemptAt` because it was never tried.
+  The wiring never leaves the server: `command`, `args`, `env`, `url` and `headers` routinely
+  carry credentials and say nothing about whether a server answers. The frame exists so the
+  app can name the servers an agent's `mcp` scope refers to instead of asking the owner to
+  type names it cannot check.
+- `instructions.list.result` never reports a file as missing: a workspace that does not carry
+  one inherits the default workspace's copy, and that is what the agent reads, so the entry
+  carries `origin` and `from` instead of a hole. `files` and `maxBytes` come from the server so
+  the app never hardcodes limits the server enforces.
+- `instructions.saved` answers every `instructions.set`, refusals included. A refusal does not
+  go through the error scope because the editor must tell a conflict (`conflict: true`, meaning
+  reload before saving again) apart from a plain failure. The previous content is snapshotted
+  before every write, so `/config rollback` can undo an edit made from the app.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
   renders it as a distinct bubble so a command result never masquerades as an agent answer.

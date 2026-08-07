@@ -9,6 +9,7 @@ import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../l
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
 import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg, type PickerTarget } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { createMatrixApprovalStore, type PersistedPendingMatrixApproval } from "./approval-store.ts";
 import { MATRIX_REACTION_BUTTON_EMOJIS } from "./actions.ts";
@@ -16,7 +17,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, TOOL_TYPE } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -66,6 +67,10 @@ interface MatrixSessionHandlerDeps {
   modelPicker: ModelPicker;
   approvalHandler?: MatrixApprovalHandler;
   skillRegistry?: SkillRegistry;
+  agentRegistry?: AgentRegistry;
+  /** Rescan of `agents/`, injected rather than rebuilt from dirs here: the host already owns the
+   *  tier list and it changes with `config.workspaces`. */
+  reloadAgents?: () => Promise<number>;
   builtinDir?: string;
   customDir?: string;
   workspaceSkillsDir?: string;
@@ -335,6 +340,8 @@ export function createMatrixCommandHandler({
   sessionManager,
   modelPicker,
   skillRegistry,
+  agentRegistry,
+  reloadAgents,
   builtinDir,
   customDir,
   workspaceSkillsDir,
@@ -410,6 +417,7 @@ export function createMatrixCommandHandler({
           config,
           modelPicker,
           listSubAgents: listSubAgents ? () => listSubAgents(sessionId) : (async () => []),
+          listAgents: () => agentRegistry?.names() ?? [],
           reloadConfigNow,
           isDm: chatType === "dm",
         });
@@ -418,8 +426,8 @@ export function createMatrixCommandHandler({
           return buildMatrixAgentModelMenu({
             modelPicker,
             outcome: agentOutcome,
-            contextInfo: formatContextInfo(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]),
-            contextChoice: contextChoiceFor(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]).available,
+            contextInfo: formatContextInfo(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target)),
+            contextChoice: contextChoiceFor(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target)).available,
           });
         }
 
@@ -535,6 +543,12 @@ export function createMatrixCommandHandler({
         return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
+      case "reload-agents": {
+        if (!reloadAgents) return "Agent registry not available.";
+        const count = await reloadAgents();
+        return `Agents reloaded. ${count} agents available.`;
+      }
+
       case "cron": {
         if (!listCronJobs) return "Cron not available.";
         const jobs = await listCronJobs();
@@ -589,13 +603,14 @@ export function createMatrixCommandHandler({
       case "agents":
       case "mcp":
       case "instructions": {
-        if (!skillRegistry || !toolRegistry) {
+        if (!skillRegistry || !toolRegistry || !agentRegistry) {
           return "Introspection indisponible : les registres ne sont pas injectes.";
         }
         const params = {
           args,
           config,
           skillRegistry,
+          agentRegistry,
           toolRegistry,
           // Absent means the host wired no MCP manager or sub-agent runner, which reads as "none"
           // rather than crashing a read-only command.
@@ -693,7 +708,7 @@ export function createMatrixActionHandler({
       if (action.kind === "select") {
         return { text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }) };
       }
-      const agentChoice = contextChoiceFor(config, currentModel, undefined, TOOL_TYPE[target]);
+      const agentChoice = contextChoiceFor(config, currentModel, undefined, toolTypeOf(target));
       if (action.kind === "setContext") {
         return { text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }) };
       }
@@ -709,7 +724,7 @@ export function createMatrixActionHandler({
           `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""}`,
           "",
           `Actuel : ${modelPicker.labelFor(currentModel)}`,
-          formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target]),
+          formatContextInfo(config, currentModel, undefined, toolTypeOf(target)),
           "Réponds avec un numéro/nom ou réagis à ce message :",
           ...buttons.map((button, index) => `${MATRIX_REACTION_BUTTON_EMOJIS[index] ?? `${index + 1}.`} ${button.label}`),
         ].join("\n"),

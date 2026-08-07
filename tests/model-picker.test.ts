@@ -466,11 +466,29 @@ test("chained after effort, the escape keeps the current window instead of going
 });
 
 test("an agent target rides along on every context action, or the submenu edits the wrong thing", () => {
-  const picker = new ModelPicker(models);
+  // The picker has to be told which agents exist: targets are now names from `agents/`, not a
+  // closed union, so a code it cannot resolve is refused rather than guessed.
+  const picker = new ModelPicker(models, undefined, () => ["general", "research"]);
   for (const button of picker.buildContextButtons(tiers, { target: "research" })) {
     const parsed = picker.parseCallbackAction(button.action);
     assert.ok(parsed && "target" in parsed && parsed.target === "research", button.action);
   }
+});
+
+test("a target the picker does not know is refused, never resolved to another agent", () => {
+  const picker = new ModelPicker(models, undefined, () => ["general"]);
+  const stale = new ModelPicker(models, undefined, () => ["general", "research"])
+    .buildContextButtons(tiers, { target: "research" })[0]!.action;
+  // `research` vanished from `agents/` while the menu was open. Writing config for whichever
+  // agent happened to share the slot is the outcome this must make impossible.
+  assert.equal(picker.parseCallbackAction(stale), null);
+});
+
+test("the orchestrator keeps its historic one-letter code", () => {
+  const picker = new ModelPicker(models, undefined, () => []);
+  const action = picker.buildContextButtons(tiers, { target: "orchestrator" })[0]!.action;
+  assert.ok(action.endsWith("@o"), action);
+  assert.deepEqual(picker.parseCallbackAction(action), { kind: "setContext", choice: "full", target: "orchestrator" });
 });
 
 test("context callbacks round-trip through the parser", () => {

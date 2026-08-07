@@ -70,7 +70,9 @@ export function sealDanglingToolCalls(messages: SessionMessage[]): number {
 
 export interface SubAgentMeta {
   displayName: string;
-  type: "general" | "research";
+  /** The agent name this was spawned as. Open set since agents are file-defined, and the two names
+   *  that used to be the whole union stay valid, so no stored session needs migrating. */
+  type: string;
   workspaceDir?: string;
   // Session that spawned this agent. Recorded once, at creation, because parentage is a property
   // of the agent rather than of a run -- so it survives restarts and needs no argument threading.

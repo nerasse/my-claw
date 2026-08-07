@@ -3,47 +3,30 @@ import { join } from "node:path";
 import type { Skill, SkillMeta } from "./types.ts";
 import { snapshot } from "../core/config-store.ts";
 import { log } from "../utils/logger.ts";
+import { parseFrontmatter } from "../utils/frontmatter.ts";
 
-const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
+function parseSkill(text: string): { meta: SkillMeta; content: string } | null {
+  const parsed = parseFrontmatter(text);
+  if (!parsed) return null;
 
-function parseFrontmatter(text: string): { meta: SkillMeta; content: string } | null {
-  const match = FRONTMATTER_RE.exec(text.trimStart());
-  if (!match) return null;
-
-  const rawYaml = match[1]!;
-  const content = match[2]!.trimStart();
-
-  const meta: Record<string, unknown> = {};
-  for (const line of rawYaml.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const colon = trimmed.indexOf(":");
-    if (colon === -1) continue;
-    const key = trimmed.slice(0, colon).trim();
-    const value = trimmed.slice(colon + 1).trim();
-    meta[key] = value;
-  }
-
-  const name = meta["name"];
-  const description = meta["description"];
-  if (typeof name !== "string" || typeof description !== "string") {
-    return null;
-  }
+  const name = parsed.fields["name"];
+  const description = parsed.fields["description"];
+  if (name === undefined || description === undefined) return null;
 
   return {
     meta: {
-      name: name.trim(),
-      description: description.trim(),
-      version: typeof meta["version"] === "string" ? meta["version"].trim() : undefined,
+      name,
+      description,
+      version: parsed.fields["version"],
     },
-    content,
+    content: parsed.body,
   };
 }
 
 /** Single definition of "this text is a loadable skill", so a writer can check what a reader will
  *  accept instead of re-implementing the frontmatter rules. */
 export function parsesAsSkill(text: string): boolean {
-  return parseFrontmatter(text) !== null;
+  return parseSkill(text) !== null;
 }
 
 /** Last version of each SKILL.md that parsed. A reload rebuilds the registry wholesale, so without
@@ -64,7 +47,7 @@ async function loadSkillFromFile(path: string, source: Skill["source"]): Promise
     lastGood.delete(path);
     return null;
   }
-  const parsed = parseFrontmatter(text);
+  const parsed = parseSkill(text);
   if (!parsed) {
     const kept = lastGood.get(path);
     void log("warn", kept ? "SKILL.md no longer parses, keeping the last good version" : "SKILL.md does not parse", { path });

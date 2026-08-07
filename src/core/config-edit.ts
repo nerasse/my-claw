@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, type AgentConfigKey, type EffortLevel } from "./config.ts";
+import { CONFIG_PATH, type EffortLevel } from "./config.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
 /**
@@ -66,7 +66,7 @@ function objectAt(parent: Record<string, unknown>, key: string): Record<string, 
  * Per-agent context ceiling. `undefined` removes the key so the agent falls back on the global
  * `context.cap`, which is how a menu offers a way back to the standing policy.
  */
-export async function setAgentContextCap(agent: AgentConfigKey, cap: number | undefined): Promise<ConfigEditResult> {
+export async function setAgentContextCap(agent: string, cap: number | undefined): Promise<ConfigEditResult> {
   const read = await readConfigFile();
   if (!read.ok) return read;
 
@@ -109,7 +109,8 @@ export async function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise
 }
 
 export async function setAgentModel(
-  agent: AgentConfigKey,
+  /** Any agent name, not just a reserved role: config is the override layer for file agents too. */
+  agent: string,
   modelId: string,
   provider: string | undefined,
 ): Promise<ConfigEditResult> {
@@ -194,7 +195,7 @@ export async function setDefaultEffort(level: EffortLevel | undefined): Promise<
  * Removes an agent's model pin so it falls back on the inherited default again. The emptied `llm`
  * object is dropped with it, so an unpinned agent leaves no meaningless `llm: {}` behind.
  */
-export async function clearAgentModel(agent: AgentConfigKey): Promise<ConfigEditResult> {
+export async function clearAgentModel(agent: string): Promise<ConfigEditResult> {
   const read = await readConfigFile();
   if (!read.ok) return read;
 

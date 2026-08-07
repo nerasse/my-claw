@@ -12,6 +12,8 @@ import { SessionManager } from "../../src/sessions/manager.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { loadAllSkills } from "../../src/skills/loader.ts";
+import { AgentRegistry } from "../../src/agents/registry.ts";
+import { loadAllAgents } from "../../src/agents/loader.ts";
 import { McpManager } from "../../src/mcp/manager.ts";
 import { startConfigWatcher } from "../../src/core/config-watcher.ts";
 import { parseConfig, type MyClawConfig } from "../../src/core/config.ts";
@@ -45,6 +47,14 @@ async function realSkills(): Promise<SkillRegistry> {
   return new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir }));
 }
 
+/** The agents the release actually ships, so the e2e sees the catalog a real boot would have. */
+async function realAgents(): Promise<AgentRegistry> {
+  return new AgentRegistry(await loadAllAgents({
+    builtInDir: join(import.meta.dir, "..", "..", "src", "agents", "builtin"),
+    customDir: join(tmpdir(), "no-such-agents-dir"),
+  }));
+}
+
 function toolRegistry(): ToolRegistry {
   const tools = new ToolRegistry();
   for (const n of ["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "manage_skills", "bash"]) {
@@ -63,6 +73,7 @@ async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ teleg
     sessionManager: new SessionManager(),
     modelPicker: new ModelPicker(config.llm.models ?? []),
     skillRegistry: skills,
+    agentRegistry: await realAgents(),
     toolRegistry: toolRegistry(),
     mcpStatus: () => mcp?.status() ?? [],
     listSubAgents: async () => [
@@ -234,6 +245,7 @@ describe("E2E introspection commands", () => {
       sessionManager: new SessionManager(),
       modelPicker: new ModelPicker([]),
       skillRegistry: await realSkills(),
+      agentRegistry: await realAgents(),
       toolRegistry: toolRegistry(),
     }) as Handler;
     expect(text(await handler("c1", "u1", "dm", "mcp", ""))).toContain("Aucun serveur déclaré");

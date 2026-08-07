@@ -15,23 +15,18 @@ import { formatContextInfo } from "./context-menu.ts";
  * and are told apart by whether the first word is an agent name. See docs/agent-model.md.
  */
 
-/** The tool-axis type an agent target resolves to, for reading its currently effective model. */
-export const TOOL_TYPE: Record<PickerTarget, AgentToolType> = {
-  orchestrator: "main",
-  general: "general",
-  research: "research",
-  cron: "cron",
-};
+/**
+ * The tool-axis type a target resolves to. Only the orchestrator's two spellings differ; every
+ * other target is already its own name on both axes, which is what removed the lookup table here.
+ */
+export function toolTypeOf(target: PickerTarget): AgentToolType {
+  return target === "orchestrator" ? "main" : target;
+}
 
-const ALIASES: Record<string, PickerTarget> = {
-  main: "orchestrator",
-  orchestrator: "orchestrator",
-  general: "general",
-  research: "research",
-  cron: "cron",
-};
-
-export const AGENT_TARGET_HELP = "orchestrator (ou main), general, research, cron, ou un id de sous-agent";
+/** Built from the registry, so an agent file adds a target to the help without a release. */
+export function agentTargetHelp(listAgents: () => string[]): string {
+  return `orchestrator (ou main), ${[...listAgents()].sort().join(", ")}, cron, ou un id de sous-agent`;
+}
 
 /**
  * Strips one matching pair of quotes. No general-purpose tokeniser exists in this codebase and one
@@ -59,22 +54,25 @@ function splitFirst(args: string): { first: string; rest: string } {
 export async function resolveAgentTarget(
   token: string,
   listSubAgents: () => Promise<SubAgentInfo[]>,
+  listAgents: () => string[],
 ): Promise<PickerTarget | null> {
   const lower = token.toLowerCase();
   if (!lower) return null;
-  const direct = ALIASES[lower];
-  if (direct) return direct;
+  if (lower === "main" || lower === "orchestrator") return "orchestrator";
+  if (lower === "cron") return "cron";
+  if (listAgents().includes(lower)) return lower;
 
   const instances = await listSubAgents().catch(() => [] as SubAgentInfo[]);
   const found = instances.find((a) => a.id === token || a.id.toLowerCase() === lower || a.displayName.toLowerCase() === lower);
-  if (!found) return null;
-  return found.type === "research" ? "research" : "general";
+  // An instance whose type no longer has a file would write config for an agent that cannot run.
+  if (!found || !listAgents().includes(found.type)) return null;
+  return found.type;
 }
 
 /** The model an agent resolves to right now, config defaults included. */
 export function currentAgentModel(config: MyClawConfig, target: PickerTarget): string {
   try {
-    return resolveAgentLlmConfig(resolveAgentLlm(config, TOOL_TYPE[target]), config.llm).model || "";
+    return resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeOf(target)), config.llm).model || "";
   } catch {
     return "";
   }
@@ -90,6 +88,8 @@ export interface AgentModelDeps {
   config: MyClawConfig;
   modelPicker: ModelPicker;
   listSubAgents: () => Promise<SubAgentInfo[]>;
+  /** Spawnable agent names, read live so `/model <agent>` follows the files. */
+  listAgents: () => string[];
   /** Applied after the write so the reply describes the running config, not the intended one. */
   reloadConfigNow?: () => Promise<unknown>;
   /** Config edits are owner business and the reply names a persisted default, so DM only. */
@@ -104,7 +104,7 @@ export async function applyAgentModel(
   modelId: string,
   deps: Pick<AgentModelDeps, "config" | "modelPicker" | "reloadConfigNow">,
 ): Promise<string> {
-  const key = agentConfigKey(TOOL_TYPE[target]);
+  const key = agentConfigKey(toolTypeOf(target));
   // Taken from the runtime list, which includes discovered models absent from the file.
   const provider = deps.modelPicker.providerFor(modelId);
   const result = await setAgentModel(key, modelId, provider);
@@ -119,7 +119,7 @@ export async function applyAgentModel(
   const providerNote = provider ? ` (provider ${provider})` : "";
   return [
     `Agent ${key} : ${before} -> ${label}${providerNote}`,
-    formatContextInfo(deps.config, modelId, undefined, TOOL_TYPE[target]),
+    formatContextInfo(deps.config, modelId, undefined, toolTypeOf(target)),
     "Enregistré dans config.json. `/config diff config` pour voir l'écriture, `/config rollback` pour l'annuler.",
     target === "orchestrator"
       ? "Le `/model` d'une conversation reste prioritaire sur ce défaut."
@@ -142,7 +142,7 @@ export async function applyAgentContext(
   choice: import("../llm/context-window.ts").ContextOverride,
   deps: Pick<AgentModelDeps, "config" | "reloadConfigNow">,
 ): Promise<string> {
-  const key = agentConfigKey(TOOL_TYPE[target]);
+  const key = agentConfigKey(toolTypeOf(target));
   const cap = choice === "full" ? 0 : choice;
   const result = await setAgentContextCap(key, cap);
   if (!result.ok) return `Échec de l'écriture : ${result.error}`;
@@ -159,19 +159,19 @@ export async function handleAgentModelCommand(args: string, deps: AgentModelDeps
   const { first, rest } = splitFirst(args);
   if (!first) return { kind: "not-an-agent" };
 
-  const target = await resolveAgentTarget(first, deps.listSubAgents);
+  const target = await resolveAgentTarget(first, deps.listSubAgents, deps.listAgents);
   if (!target) return { kind: "not-an-agent" };
 
   if (!deps.isDm) return { kind: "message", text: AGENT_MODEL_DM_ONLY };
 
   const currentModel = currentAgentModel(deps.config, target);
-  const key = agentConfigKey(TOOL_TYPE[target]);
+  const key = agentConfigKey(toolTypeOf(target));
 
   if (!rest) {
     if (!deps.modelPicker.hasModels()) {
       return {
         kind: "message",
-        text: `Agent ${key} : ${deps.modelPicker.labelFor(currentModel)}\n${formatContextInfo(deps.config, currentModel, undefined, TOOL_TYPE[target])}\n(aucun modèle configuré à proposer)`,
+        text: `Agent ${key} : ${deps.modelPicker.labelFor(currentModel)}\n${formatContextInfo(deps.config, currentModel, undefined, toolTypeOf(target))}\n(aucun modèle configuré à proposer)`,
       };
     }
     return {

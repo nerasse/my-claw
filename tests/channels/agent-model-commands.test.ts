@@ -56,8 +56,11 @@ function config(): MyClawConfig {
   return JSON.parse(JSON.stringify(FILE)) as MyClawConfig;
 }
 
+/** The agents a real boot would carry: the two shipped built-ins. */
+const listAgents = (): string[] => ["general", "research"];
+
 function deps(over?: Partial<Parameters<typeof handleAgentModelCommand>[1]>) {
-  return { config: config(), modelPicker: picker(), listSubAgents, isDm: true, ...over };
+  return { config: config(), modelPicker: picker(), listSubAgents, listAgents, isDm: true, ...over };
 }
 
 afterEach(async () => {
@@ -66,20 +69,20 @@ afterEach(async () => {
 
 describe("resolveAgentTarget", () => {
   test("accepts the config names and the main alias", async () => {
-    expect(await resolveAgentTarget("orchestrator", listSubAgents)).toBe("orchestrator");
-    expect(await resolveAgentTarget("main", listSubAgents)).toBe("orchestrator");
-    expect(await resolveAgentTarget("RESEARCH", listSubAgents)).toBe("research");
-    expect(await resolveAgentTarget("cron", listSubAgents)).toBe("cron");
+    expect(await resolveAgentTarget("orchestrator", listSubAgents, listAgents)).toBe("orchestrator");
+    expect(await resolveAgentTarget("main", listSubAgents, listAgents)).toBe("orchestrator");
+    expect(await resolveAgentTarget("RESEARCH", listSubAgents, listAgents)).toBe("research");
+    expect(await resolveAgentTarget("cron", listSubAgents, listAgents)).toBe("cron");
   });
 
   test("a live sub-agent resolves to its type, since config has no per-instance section", async () => {
-    expect(await resolveAgentTarget("subagent/digger-c3d4", listSubAgents)).toBe("research");
-    expect(await resolveAgentTarget("deploy", listSubAgents)).toBe("general");
+    expect(await resolveAgentTarget("subagent/digger-c3d4", listSubAgents, listAgents)).toBe("research");
+    expect(await resolveAgentTarget("deploy", listSubAgents, listAgents)).toBe("general");
   });
 
   test("a model name is not an agent", async () => {
-    expect(await resolveAgentTarget("opus", listSubAgents)).toBeNull();
-    expect(await resolveAgentTarget("", listSubAgents)).toBeNull();
+    expect(await resolveAgentTarget("opus", listSubAgents, listAgents)).toBeNull();
+    expect(await resolveAgentTarget("", listSubAgents, listAgents)).toBeNull();
   });
 });
 

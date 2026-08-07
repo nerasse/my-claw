@@ -6,7 +6,7 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult } from "../src/channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppMcpEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
@@ -1156,6 +1156,218 @@ describe("agents frames", () => {
       c.ws.close();
     } finally {
       await failing.stop();
+    }
+  });
+});
+
+describe("mcp frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  const SERVERS: MyClawAppMcpEntry[] = [
+    { name: "mailcow", transport: "stdio", state: "connected", toolCount: 2, lastAttemptAt: "2026-02-01T10:00:00.000Z" },
+    { name: "weather", transport: "http", state: "failed", toolCount: 0, lastError: "spawn ENOENT", lastAttemptAt: "2026-02-01T10:00:01.000Z" },
+    { name: "off", transport: "sse", state: "disabled", toolCount: 0 },
+  ];
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onMcpController({ list: () => SERVERS });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("mcp.list answers with every declared server, failed and disabled included", async () => {
+    client.ws.send(JSON.stringify({ type: "mcp.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "mcp.list.result");
+    const servers = frame["servers"] as Array<Record<string, unknown>>;
+    assert.deepEqual(servers.map((s) => s["name"]), ["mailcow", "weather", "off"]);
+    assert.deepEqual(servers.map((s) => s["state"]), ["connected", "failed", "disabled"]);
+    assert.equal(servers[1]?.["lastError"], "spawn ENOENT");
+    assert.equal(servers[2]?.["lastAttemptAt"], undefined);
+  });
+
+  test("mcp.list never carries the wiring, which holds credentials", async () => {
+    client.ws.send(JSON.stringify({ type: "mcp.list" }));
+    const frame = await nextFrame(client);
+    const keys = new Set((frame["servers"] as Array<Record<string, unknown>>).flatMap((s) => Object.keys(s)));
+    for (const secret of ["command", "args", "env", "url", "headers"]) {
+      assert.equal(keys.has(secret), false, `${secret} must never reach a device`);
+    }
+  });
+
+  test("mcp.list without a controller answers an error instead of hanging", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "mcp.list" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "mcp");
+      assert.match(frame["message"] as string, /MCP status unavailable/);
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  test("a throwing controller surfaces as a refused error", async () => {
+    const failing = new MyClawAppAdapter(createConfig(), store as never);
+    failing.onMcpController({
+      list: () => {
+        throw new Error("manager down");
+      },
+    });
+    await failing.start();
+    try {
+      const c = await connectClient(failing.port);
+      c.ws.send(JSON.stringify({ type: "mcp.list" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "mcp");
+      c.ws.close();
+    } finally {
+      await failing.stop();
+    }
+  });
+});
+
+describe("instructions frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let written: Array<{ workspace: string; file: string; content: string; sha?: string }>;
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    written = [];
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onInstructionsController({
+      list: async () => ({
+        entries: [
+          { workspace: "default", file: "AGENTS.md", origin: "own", from: "default", bytes: 12, sha: "abc123abc123" },
+          { workspace: "sofa", file: "AGENTS.md", origin: "inherited", from: "default", bytes: 12, sha: "abc123abc123" },
+        ],
+        nested: [{ workspace: "default", path: "svc/AGENTS.md", bytes: 40 }],
+        files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
+        maxBytes: 262144,
+      }),
+      read: async (workspace, file, nested) => {
+        if (nested) {
+          return { workspace, file: nested, content: "nested body", origin: "nested", from: workspace, sha: "n1", editable: false };
+        }
+        if (file !== "AGENTS.md") return null;
+        return { workspace, file, content: "body", origin: "own", from: workspace, sha: "abc123abc123", editable: true };
+      },
+      write: async (workspace, file, content, sha) => {
+        written.push({ workspace, file, content, ...(sha ? { sha } : {}) });
+        if (sha === "stale") return { ok: false, sha: "", conflict: true, error: "changed on the server since it was opened" };
+        return { ok: true, sha: "newsha", conflict: false };
+      },
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("instructions.list carries the entries, the nested files and the server's own limits", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.list.result");
+    assert.equal((frame["entries"] as unknown[]).length, 2);
+    assert.equal((frame["nested"] as unknown[]).length, 1);
+    // The app must not hardcode the list the server enforces.
+    assert.deepEqual(frame["files"], ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"]);
+    assert.equal(frame["maxBytes"], 262144);
+  });
+
+  test("instructions.get answers with the content and whether it can be written back", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.get", workspace: "default", file: "AGENTS.md" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.file");
+    assert.equal(frame["content"], "body");
+    assert.equal(frame["editable"], true);
+    assert.equal(frame["sha"], "abc123abc123");
+  });
+
+  test("a nested AGENTS.md comes back read-only", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.get", workspace: "default", nested: "svc/AGENTS.md" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["origin"], "nested");
+    assert.equal(frame["editable"], false);
+  });
+
+  test("an unknown file is refused with the instructions scope", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.get", workspace: "default", file: "MEMORY.md" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "instructions");
+  });
+
+  test("instructions.set forwards the sha and answers with the stored one", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.set", workspace: "sofa", file: "AGENTS.md", content: "new", sha: "abc123abc123" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.saved");
+    assert.equal(frame["ok"], true);
+    assert.equal(frame["sha"], "newsha");
+    assert.equal(frame["conflict"], false);
+    assert.deepEqual(written, [{ workspace: "sofa", file: "AGENTS.md", content: "new", sha: "abc123abc123" }]);
+  });
+
+  test("a create carries no sha at all, so the server can refuse an existing file", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.set", workspace: "sofa", file: "AGENTS.md", content: "new" }));
+    await nextFrame(client);
+    assert.equal(written[0]?.sha, undefined);
+  });
+
+  test("a conflict answers on its own frame, not through the error scope", async () => {
+    // The editor has to tell "reload first" apart from "the server is broken".
+    client.ws.send(JSON.stringify({ type: "instructions.set", workspace: "sofa", file: "AGENTS.md", content: "new", sha: "stale" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.saved");
+    assert.equal(frame["ok"], false);
+    assert.equal(frame["conflict"], true);
+    assert.match(frame["error"] as string, /changed on the server/);
+  });
+
+  test("instructions.set without content is refused instead of writing an empty file", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.set", workspace: "sofa", file: "AGENTS.md" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "instructions");
+    assert.equal(written.length, 0);
+  });
+
+  test("without a controller every instructions frame is refused, not dropped", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      for (const frame of [
+        { type: "instructions.list" },
+        { type: "instructions.get", workspace: "default", file: "AGENTS.md" },
+        { type: "instructions.set", workspace: "default", file: "AGENTS.md", content: "x" },
+      ]) {
+        c.ws.send(JSON.stringify(frame));
+        const answer = await nextFrame(c);
+        assert.equal(answer["type"], "error");
+        assert.equal(answer["scope"], "instructions");
+      }
+      c.ws.close();
+    } finally {
+      await bare.stop();
     }
   });
 });

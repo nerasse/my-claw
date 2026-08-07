@@ -222,6 +222,10 @@ export interface HookEventMap {
   "skill:updated": { name: string };
   "skill:deleted": { name: string };
 
+  // === AGENT DEFINITION LIFECYCLE ===
+  "agents:loaded": { count: number };
+  "agents:reloaded": { count: number };
+
   // === SUBAGENT LIFECYCLE ===
   "subagent:spawn": {
     id: string;

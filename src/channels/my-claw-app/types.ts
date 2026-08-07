@@ -145,6 +145,38 @@ export interface MyClawAppWorkspacesList {
   type: "workspaces.list";
 }
 
+/** The declared MCP servers with their connection state, for display only. */
+export interface MyClawAppMcpList {
+  type: "mcp.list";
+}
+
+/** The prompt files of every workspace, with their inheritance. See docs/instructions-page.md. */
+export interface MyClawAppInstructionsList {
+  type: "instructions.list";
+}
+
+/** Full text of one prompt file, or of a nested AGENTS.md when `nested` is set. */
+export interface MyClawAppInstructionsGet {
+  type: "instructions.get";
+  workspace: string;
+  /** One of CORE.md, SOUL.md, AGENTS.md, USER.md. Ignored when `nested` is set. */
+  file?: string;
+  /** Path relative to the workspace root, as returned by instructions.list.result. */
+  nested?: string;
+}
+
+export interface MyClawAppInstructionsSet {
+  type: "instructions.set";
+  workspace: string;
+  file: string;
+  content: string;
+  /**
+   * The sha the editor loaded. Absent means "create this override": the server refuses if the
+   * file already exists, just as it refuses a stale sha.
+   */
+  sha?: string;
+}
+
 export interface MyClawAppModelList {
   type: "model.list";
 }
@@ -216,6 +248,10 @@ export type MyClawAppClientFrame =
   | MyClawAppVoiceModeSet
   | MyClawAppSkillsList
   | MyClawAppWorkspacesList
+  | MyClawAppMcpList
+  | MyClawAppInstructionsList
+  | MyClawAppInstructionsGet
+  | MyClawAppInstructionsSet
   | MyClawAppModelList
   | MyClawAppModelGet
   | MyClawAppModelSet
@@ -367,7 +403,18 @@ export interface MyClawAppChatHistory {
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
-export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model" | "skills" | "agents";
+export type MyClawAppErrorScope =
+  | "chat"
+  | "files"
+  | "session"
+  | "diag"
+  | "logs"
+  | "voice"
+  | "model"
+  | "skills"
+  | "agents"
+  | "mcp"
+  | "instructions";
 
 export interface MyClawAppError {
   type: "error";
@@ -451,6 +498,88 @@ export interface MyClawAppWorkspacesListResult {
 }
 
 /**
+ * One declared MCP server, for display only. The wiring stays on the server: `command`, `args`,
+ * `env`, `url` and `headers` routinely carry credentials, and none of them is needed to say which
+ * servers exist and which ones answer. A server that failed to connect is listed too, since
+ * hiding it removes exactly the entry worth reporting.
+ */
+export interface MyClawAppMcpEntry {
+  /** The config key under `mcp`, which is also the tool namespace `mcp__<name>__`. */
+  name: string;
+  transport: "stdio" | "sse" | "http";
+  state: "connected" | "disabled" | "failed";
+  toolCount: number;
+  /** Present only for `failed`, same text `/mcp` already shows the owner. */
+  lastError?: string;
+  /** Absent for a server never attempted, i.e. a disabled one. */
+  lastAttemptAt?: string;
+}
+
+export interface MyClawAppMcpListResult {
+  type: "mcp.list.result";
+  servers: MyClawAppMcpEntry[];
+}
+
+/**
+ * One prompt file in one workspace. There is never a "missing" entry: a workspace that does not
+ * carry the file inherits the default workspace's copy, and that is what the agent reads, so the
+ * page shows the resolution rather than a hole.
+ */
+export interface MyClawAppInstructionEntry {
+  workspace: string;
+  file: string;
+  /** `own` is a file in this workspace, `inherited` the default one's, `fallback` the template. */
+  origin: "own" | "inherited" | "fallback";
+  /** Workspace the content comes from, empty for `fallback`. */
+  from: string;
+  bytes: number;
+  /** sha of the content that applies; a write must echo it back to prove it is not stale. */
+  sha: string;
+}
+
+/** A nested AGENTS.md found under a workspace. Read-only: injected in tool results, not in the prompt. */
+export interface MyClawAppNestedInstruction {
+  workspace: string;
+  path: string;
+  bytes: number;
+}
+
+export interface MyClawAppInstructionsListResult {
+  type: "instructions.list.result";
+  entries: MyClawAppInstructionEntry[];
+  nested: MyClawAppNestedInstruction[];
+  /** The editable names, so the app never hardcodes the list the server enforces. */
+  files: string[];
+  maxBytes: number;
+}
+
+export interface MyClawAppInstructionsFile {
+  type: "instructions.file";
+  workspace: string;
+  file: string;
+  content: string;
+  origin: "own" | "inherited" | "fallback" | "nested";
+  from: string;
+  sha: string;
+  /** A nested AGENTS.md cannot be written back. */
+  editable: boolean;
+}
+
+/**
+ * Answer to instructions.set. `conflict` marks the one failure the app must handle differently:
+ * the file changed on the server, so the editor has to reload before offering to save again.
+ */
+export interface MyClawAppInstructionsSaved {
+  type: "instructions.saved";
+  workspace: string;
+  file: string;
+  ok: boolean;
+  sha: string;
+  conflict: boolean;
+  error?: string;
+}
+
+/**
  * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
  * never an optimistic echo of what the app hoped for.
  */
@@ -485,6 +614,16 @@ export interface MyClawAppAgentInfo {
   workspace?: string | null;
   contextCap?: number | null;
   maxIterations?: number | null;
+  /**
+   * Set only for file-defined agents (docs/file-agents.md). Absent marks a reserved role, which
+   * exists without a file and therefore has nothing to show a tier or a path for.
+   */
+  source?: string;
+  path?: string;
+  /** The tool baseline the agent narrows from: `general` or `research`. */
+  base?: string;
+  /** Workspace layer the file was found in. Distinct from `workspace`, which is where it runs. */
+  layer?: string;
 }
 
 /** A configured provider, for display only: never a secret, only whether its env key is set. */
@@ -552,6 +691,10 @@ export type MyClawAppServerFrame =
   | MyClawAppModelListResult
   | MyClawAppSkillsListResult
   | MyClawAppWorkspacesListResult
+  | MyClawAppMcpListResult
+  | MyClawAppInstructionsListResult
+  | MyClawAppInstructionsFile
+  | MyClawAppInstructionsSaved
   | MyClawAppModelResult
   | MyClawAppCommandResult
   | MyClawAppChatCleared

@@ -71,7 +71,12 @@ export class ToolRegistry {
    * defaults to "all" so a caller that forgets it never silently narrows an agent; the negative
    * default for the research agent lives in `resolveAgentMcp`, not here.
    */
-  getForAgent(agentType: AgentToolType, disabled: readonly string[] = [], mcpScope: AgentScope = "all"): Tool[] {
+  getForAgent(
+    agentType: AgentToolType,
+    disabled: readonly string[] = [],
+    mcpScope: AgentScope = "all",
+    allow?: readonly string[],
+  ): Tool[] {
     // Plugins share the dynamic provider with MCP but are not servers, so the scope must not touch
     // them: only names carrying the mcp__<server>__ namespace are filtered.
     const dynamic = (this.dynamicProvider?.() ?? []).filter((t) => {
@@ -79,17 +84,26 @@ export class ToolRegistry {
       return server === undefined || scopeAllows(mcpScope, server);
     });
     let set: Tool[];
-    if (agentType === "research") {
+    if (agentType === "main") {
+      set = [...this.tools.values(), ...dynamic];
+    } else if (agentType === "research") {
       // The read-only built-in allowlist still applies. MCP used to be denied here unconditionally;
       // it now comes from the scope, which resolves to none for research unless explicitly granted.
       set = [...this.getByNames(READ_ONLY_TOOLS), ...dynamic];
-    } else if (agentType === "general") {
-      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
     } else if (agentType === "cron") {
       set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name));
     } else {
-      set = [...this.tools.values(), ...dynamic];
+      // `general` and anything unrecognised. The orchestrator is the only agent granted the whole
+      // registry, and it is named explicitly above: a name this chain does not know must land on a
+      // sub-agent set, never on the full one. Before file-defined agents the union was closed and
+      // the fallthrough was `main`, so a typo in an agent name would have handed out `spawn`,
+      // `memory` and `manage_skills`. See docs/file-agents.md.
+      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
     }
+    // An agent file's `tools:` intersects the baseline, it never adds to it. A workspace is often a
+    // cloned repository, so a file that could grant tools would turn `git clone` into a privilege
+    // escalation; naming a tool outside the baseline drops it rather than widening the set.
+    if (allow) set = set.filter((t) => allow.includes(t.name));
     return disabled.length ? set.filter((t) => !disabled.includes(t.name)) : set;
   }
 

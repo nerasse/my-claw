@@ -1,6 +1,7 @@
 import { type Tool, type ToolResult, str } from "../types.ts";
 import { BrowserSubagent } from "../../agent/subagents/browser.ts";
 import type { MyClawConfig } from "../../core/config.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
 
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
@@ -15,7 +16,7 @@ export function enqueueBrowserTask<T>(run: () => Promise<T>): Promise<T> {
   return result;
 }
 
-export function createDelegateBrowserTool(config: MyClawConfig): Tool {
+export function createDelegateBrowserTool(config: MyClawConfig, agentRegistry?: AgentRegistry): Tool {
   return {
     name: "delegate_browser_task",
     description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. There is ONE shared browser: tasks run strictly one at a time, and parallel calls are queued — prefer a single well-scoped task (or sequential calls) over a parallel batch. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
@@ -38,7 +39,7 @@ export function createDelegateBrowserTool(config: MyClawConfig): Tool {
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : undefined;
       const workspaceDir = typeof args["__workspaceDir"] === "string" ? args["__workspaceDir"] : undefined;
-      const subagent = new BrowserSubagent(config, sidecarUrl, callerSessionId, workspaceDir);
+      const subagent = new BrowserSubagent(config, sidecarUrl, callerSessionId, workspaceDir, agentRegistry);
       try {
         const task = enqueueBrowserTask(() => subagent.run(instructions, url, signal));
         // If /stop fires while this task is still queued behind another, return promptly instead

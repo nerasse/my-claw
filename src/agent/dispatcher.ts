@@ -10,6 +10,7 @@ import { runRegistry } from "../core/run-registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
+import type { AgentRegistry } from "../agents/registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 
 /**
@@ -32,15 +33,16 @@ export class BackendDispatcher implements AgentBackend {
     sttPipeline?: SttPipeline,
     // Test seam: routing behavior is observable without spinning real engines.
     overrides?: { home?: AgentBridge; sdk?: ClaudeSdkBackend },
+    agentRegistry?: AgentRegistry,
   ) {
     this.preprocessor = new MessagePreprocessor(voiceManager, sttPipeline);
     this.home = overrides?.home ?? new AgentBridge(
       config, toolRegistry, skillRegistry, voiceManager, sttPipeline,
-      0, undefined, undefined, undefined, this.preprocessor,
+      0, undefined, undefined, undefined, this.preprocessor, agentRegistry,
     );
     this.sdk = overrides?.sdk ?? new ClaudeSdkBackend(
       config, toolRegistry, skillRegistry, voiceManager, sttPipeline,
-      0, undefined, undefined, undefined, this.preprocessor,
+      0, undefined, undefined, undefined, this.preprocessor, undefined, agentRegistry,
     );
   }
 

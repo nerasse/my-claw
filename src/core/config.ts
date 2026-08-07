@@ -357,12 +357,20 @@ export const AGENTS = {
 export type AgentConfigKey = keyof typeof AGENTS;
 export const AGENT_KEYS = Object.keys(AGENTS) as AgentConfigKey[];
 
-/** The agent types a spawn can create: the config keys minus the two singletons. */
-export type SubAgentConfigKey = Exclude<AgentConfigKey, "orchestrator" | "cron">;
-export const SUB_AGENT_TYPES = ["general", "research"] as const satisfies readonly SubAgentConfigKey[];
+// The spawnable set used to live here as a hand-written literal next to AGENTS. It is now the agent
+// registry (`src/agents/registry.ts`), read live: a file in `agents/` adds a spawn target without
+// a release, so a constant here could only ever be a stale copy. See docs/file-agents.md.
 
-/** The tool-axis vocabulary: `main` is the orchestrator, the rest are their own key. */
-export type AgentToolType = "main" | Exclude<AgentConfigKey, "orchestrator">;
+/**
+ * The tool axis. `main` is the orchestrator and `cron` a scheduled run; anything else is an agent
+ * name resolved through the agent registry.
+ *
+ * A plain string because the set is open: a file dropped in `agents/` adds a name without a
+ * release, so no union could stay true. The exhaustiveness a union used to give is replaced by
+ * `resolveAgent` (`src/agents/resolve.ts`) being the single place a name is turned into behaviour.
+ * See docs/file-agents.md.
+ */
+export type AgentToolType = string;
 
 export interface AgentConfig {
   maxIterations?: number;
@@ -435,7 +443,13 @@ export interface MyClawConfig {
     "my-claw-app"?: MyClawAppChannelConfig;
   };
   llm: LlmConfig;
-  agents: Partial<Record<AgentConfigKey, AgentConfig>> & {
+  /**
+   * Overrides keyed by agent name: the four reserved roles and any file-defined agent. This is an
+   * override layer, not a definition layer -- an entry here retunes an agent that exists, it cannot
+   * bring one into existence. Read through `agentConfigOf`, never indexed directly, so the `nested`
+   * key below can never be mistaken for an agent. See docs/file-agents.md.
+   */
+  agents: Partial<Record<string, AgentConfig>> & {
     /** Lazy nested AGENTS.md discovery settings, not an agent. See docs/nested-agents.md. */
     nested?: NestedAgentsConfig;
   };
@@ -558,7 +572,7 @@ export const DEFAULT_CONTEXT_CAP = 512_000;
  * refuse it.
  */
 export function resolveContextCap(config: MyClawConfig, agent?: AgentToolType | "orchestrator"): number | undefined {
-  const own = agent ? config.agents?.[agent === "orchestrator" ? "orchestrator" : configKeyForAgent(agent)]?.context?.cap : undefined;
+  const own = agent ? agentConfigOf(config, agent)?.context?.cap : undefined;
   const cap = own ?? config.context?.cap;
   if (cap === undefined) return DEFAULT_CONTEXT_CAP;
   if (!Number.isFinite(cap) || cap <= 0) return undefined;
@@ -620,12 +634,15 @@ export function resolveNestedAgentsMaxBytes(config: MyClawConfig): number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : DEFAULT_NESTED_AGENTS_MAX_BYTES;
 }
 
-export function resolveMaxIterations(config: MyClawConfig, type: Exclude<AgentConfigKey, "cron">): number {
-  const agentCfg = config.agents?.[type];
+/** `fileDefault` is the agent file's `maxIterations`, which sits between the config entry and the
+ *  built-in default. See docs/file-agents.md. */
+export function resolveMaxIterations(config: MyClawConfig, type: AgentToolType, fileDefault?: number): number {
+  const agentCfg = agentConfigOf(config, type);
   if (agentCfg?.maxIterations !== undefined && Number.isFinite(agentCfg.maxIterations) && agentCfg.maxIterations > 0) {
     return agentCfg.maxIterations;
   }
-  return type === "orchestrator" ? DEFAULT_ORCHESTRATOR_MAX_ITERATIONS : DEFAULT_SUBAGENT_MAX_ITERATIONS;
+  if (fileDefault !== undefined && Number.isFinite(fileDefault) && fileDefault > 0) return fileDefault;
+  return configKeyForAgent(type) === "orchestrator" ? DEFAULT_ORCHESTRATOR_MAX_ITERATIONS : DEFAULT_SUBAGENT_MAX_ITERATIONS;
 }
 
 /**
@@ -641,7 +658,7 @@ export type AgentScope = string[] | "all";
 
 const SCOPE_WILDCARD = "*";
 
-function configKeyForAgent(type: AgentToolType): AgentConfigKey {
+function configKeyForAgent(type: AgentToolType): string {
   // `cron` was long absent from the config axis so that no key would carry a name existing on only
   // one axis. It now has one, which brings the two axes closer instead of further apart. Absence
   // still inherits the orchestrator, so nothing that predates the key moved.
@@ -650,17 +667,30 @@ function configKeyForAgent(type: AgentToolType): AgentConfigKey {
 }
 
 /** The config key an agent reads, in the caller's own vocabulary. `main` and `orchestrator` are one. */
-export function agentConfigKey(type: AgentToolType): AgentConfigKey {
+export function agentConfigKey(type: AgentToolType): string {
   return configKeyForAgent(type);
+}
+
+/**
+ * The config overrides for one agent. `nested` shares the `agents` namespace without being an agent,
+ * so it is excluded here rather than at each of the dozen call sites -- an agent file named
+ * `nested.md` is refused for the same reason, and the two guards must not disagree.
+ */
+export function agentConfigOf(config: MyClawConfig, type: AgentToolType): AgentConfig | undefined {
+  const key = configKeyForAgent(type);
+  if (key === "nested") return undefined;
+  return config.agents?.[key];
 }
 
 /**
  * The agent's own model/provider defaults, or the orchestrator's when it has none. Returning
  * `undefined` rather than the global config keeps the merge in the resolver, which owns precedence.
  */
-export function resolveAgentLlm(config: MyClawConfig, type: AgentToolType): AgentLlmConfig | undefined {
-  const own = config.agents?.[configKeyForAgent(type)]?.llm;
+export function resolveAgentLlm(config: MyClawConfig, type: AgentToolType, fileModel?: string): AgentLlmConfig | undefined {
+  const own = agentConfigOf(config, type)?.llm;
   if (own?.defaultModel !== undefined || own?.defaultProvider !== undefined) return own;
+  // The agent file's `model:`, below the config entry so `/model <agent>` still wins from chat.
+  if (fileModel) return { defaultModel: fileModel };
   // Only cron inherits: general and research are separate agents whose absent entry means "global
   // default", not "whatever the owner picked for the chat he is sitting in".
   if (type === "cron") return config.agents?.orchestrator?.llm;
@@ -681,15 +711,29 @@ function readScope(agent: AgentConfig | undefined, field: "skills" | "mcp"): Age
   return Array.isArray(list) ? normalizeScope(list) : undefined;
 }
 
+/**
+ * The scope this agent's own config entry declares, with no inheritance. Exported so the file-agent
+ * resolver can slot a file's scope between the config entry and the orchestrator's, which is a
+ * precedence the all-in-one resolvers below cannot express.
+ */
+export function readAgentScope(config: MyClawConfig, type: AgentToolType, field: "skills" | "mcp"): AgentScope | undefined {
+  return readScope(agentConfigOf(config, type), field);
+}
+
+/** The orchestrator's scope, the last stop before "all" for every agent that inherits. */
+export function inheritedScope(config: MyClawConfig, field: "skills" | "mcp"): AgentScope | undefined {
+  return readScope(config.agents?.orchestrator, field);
+}
+
 export function resolveAgentSkills(config: MyClawConfig, type: AgentToolType): AgentScope {
-  const own = readScope(config.agents?.[configKeyForAgent(type)], "skills");
+  const own = readScope(agentConfigOf(config, type), "skills");
   if (own !== undefined) return own;
   const inherited = readScope(config.agents?.orchestrator, "skills");
   return inherited ?? "all";
 }
 
 export function resolveAgentMcp(config: MyClawConfig, type: AgentToolType): AgentScope {
-  const own = readScope(config.agents?.[configKeyForAgent(type)], "mcp");
+  const own = readScope(agentConfigOf(config, type), "mcp");
   if (own !== undefined) return own;
   // The one override of the inheritance rule: the research agent got zero MCP tools before this
   // existed, so inheriting the orchestrator's list would hand it every server on upgrade -- a
@@ -708,8 +752,8 @@ export function scopeAllows(scope: AgentScope, name: string): boolean {
  * and mcp there is no inheritance from the orchestrator: pinning the main agent to a project must
  * not silently drag every sub-agent and cron job into it.
  */
-export function resolveAgentWorkspace(config: MyClawConfig, type: AgentToolType): string | undefined {
-  const key = config.agents?.[configKeyForAgent(type)]?.workspace;
+export function resolveAgentWorkspace(config: MyClawConfig, type: AgentToolType, fileWorkspace?: string): string | undefined {
+  const key = agentConfigOf(config, type)?.workspace ?? fileWorkspace;
   return key ? key : undefined;
 }
 
@@ -730,12 +774,31 @@ export function workspaceKeyForDir(config: MyClawConfig, dir: string | undefined
  *  unknown scope entry: a typo would otherwise pin an agent to nothing and fail at run time. */
 export function findUnknownAgentWorkspaces(config: MyClawConfig): Array<{ path: string; key: string }> {
   const out: Array<{ path: string; key: string }> = [];
-  for (const agentKey of AGENT_KEYS) {
-    const key = config.agents?.[agentKey]?.workspace;
+  for (const agentKey of configuredAgentKeys(config)) {
+    const key = agentConfigOf(config, agentKey)?.workspace;
     if (!key) continue;
     if (!config.workspaces?.[key]) out.push({ path: `agents.${agentKey}.workspace`, key });
   }
   return out;
+}
+
+/**
+ * The agent sections the owner actually wrote, `nested` excluded. Iterating this rather than the
+ * reserved roles is what makes the boot checks cover file-defined agents: a typo under
+ * `agents.reviewer` used to be invisible because `reviewer` was not one of the four known keys.
+ */
+export function configuredAgentKeys(config: MyClawConfig): string[] {
+  return Object.keys(config.agents ?? {}).filter((key) => key !== "nested");
+}
+
+/**
+ * Config sections addressing an agent that does not exist: neither a reserved role nor a file in
+ * `agents/`. Reported at boot for the same reason as an unknown scope entry -- the section is read
+ * by nothing, so the setting silently does not apply. See docs/file-agents.md.
+ */
+export function findUnknownAgents(config: MyClawConfig, knownAgents: readonly string[]): string[] {
+  const known = new Set<string>([...AGENT_KEYS, ...knownAgents]);
+  return configuredAgentKeys(config).filter((key) => !known.has(key));
 }
 
 export interface UnknownScopeEntry {
@@ -759,8 +822,8 @@ export function findUnknownScopeEntries(
   const out: UnknownScopeEntry[] = [];
   // cron is absent on purpose: its scope is resolved through resolveAgentSkills/Mcp like any
   // agent's, but the boot report predates the cron key and nothing changed since.
-  for (const key of AGENT_KEYS.filter((k): k is Exclude<AgentConfigKey, "cron"> => k !== "cron")) {
-    const agent = config.agents?.[key];
+  for (const key of configuredAgentKeys(config).filter((k) => k !== "cron")) {
+    const agent = agentConfigOf(config, key);
     if (!agent) continue;
     for (const [field, kind, pool] of [
       ["skills", "skill", known.skills],

@@ -1,9 +1,12 @@
 import type { MyClawConfig } from "../../core/config.ts";
-import { join } from "node:path";
+import { readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import type { SessionData } from "../../sessions/store.ts";
+import type { OutgoingMessage } from "../types.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import type { SkillRegistry } from "../../skills/registry.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { ModelPicker } from "../model-picker.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
@@ -33,6 +36,10 @@ export interface MyClawAppCommandDeps {
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
   skillRegistry?: SkillRegistry;
+  agentRegistry?: AgentRegistry;
+  /** Rescan of `agents/`, injected rather than rebuilt from dirs here: the host already owns the
+   *  tier list and it changes with `config.workspaces`. */
+  reloadAgents?: () => Promise<number>;
   builtinDir?: string;
   customDir?: string;
   workspaceSkillsDir?: string;
@@ -45,6 +52,22 @@ export interface MyClawAppCommandDeps {
   mcpStatus?: () => import("../../mcp/manager.ts").McpServerStatus[];
   listSubAgents?: (sessionId: string) => Promise<import("../../subagents/types.ts").SubAgentInfo[]>;
   pricing?: import("../../llm/pricing.ts").ModelPricing;
+}
+
+/**
+ * `/instructions` answers with the prompt dump as a file attachment, which the other two channels
+ * upload. A command result on this channel is plain text, so the dump goes inline and the temp
+ * file the helper wrote is removed here: stringifying the message object sent "[object Object]"
+ * to the device and leaked the file on every call. Inlining is safe here and not on the others:
+ * a frame carries the whole text, where their splitter would cut 14 KB inside a code fence.
+ */
+export async function instructionsText(result: OutgoingMessage | string): Promise<string> {
+  if (typeof result === "string") return result;
+  const dump = result.attachments?.[0]?.path;
+  if (!dump) return result.text;
+  const prompt = await readFile(dump, "utf-8").catch(() => "");
+  await rm(dirname(dump), { recursive: true, force: true }).catch(() => {});
+  return prompt ? `${result.text}\n\n---\n\n${prompt}` : result.text;
 }
 
 export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyClawAppCommandHandler {
@@ -75,6 +98,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           config: deps.config,
           modelPicker: deps.modelPicker,
           listSubAgents: deps.listSubAgents ? () => deps.listSubAgents!(sessionId) : (async () => []),
+          listAgents: () => deps.agentRegistry?.names() ?? [],
           reloadConfigNow: deps.reloadConfigNow,
           isDm: true,
         });
@@ -171,6 +195,12 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
+      case "reload-agents": {
+        if (!deps.reloadAgents) return "Agent registry not available.";
+        const count = await deps.reloadAgents();
+        return `Agents reloaded. ${count} agents available.`;
+      }
+
       case "cron": {
         if (!deps.listCronJobs) return "Cron not available.";
         const jobs = await deps.listCronJobs();
@@ -214,13 +244,14 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "agents":
       case "mcp":
       case "instructions": {
-        if (!deps.skillRegistry || !deps.toolRegistry) {
+        if (!deps.skillRegistry || !deps.toolRegistry || !deps.agentRegistry) {
           return "Introspection unavailable: registries not injected.";
         }
         const params = {
           args,
           config: deps.config,
           skillRegistry: deps.skillRegistry,
+          agentRegistry: deps.agentRegistry,
           toolRegistry: deps.toolRegistry,
           mcpStatus: deps.mcpStatus ?? (() => []),
           listSubAgents: deps.listSubAgents ? () => deps.listSubAgents!(sessionId) : (async () => []),
@@ -229,7 +260,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         if (command === "skills") return handleSkillsCommand(params);
         if (command === "agents") return handleAgentsCommand(params);
         if (command === "mcp") return handleMcpCommand(params);
-        return String(await handleInstructionsCommand(params));
+        return instructionsText(await handleInstructionsCommand(params));
       }
 
       case "new":

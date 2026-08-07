@@ -9,7 +9,9 @@ import {
   type IntrospectParams,
 } from "../../src/channels/introspect-commands.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
+import { AgentRegistry } from "../../src/agents/registry.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
+import type { FileAgent } from "../../src/agents/types.ts";
 import { cleanupGeneratedTempFiles } from "../../src/utils/media.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { McpServerStatus } from "../../src/mcp/manager.ts";
@@ -24,6 +26,24 @@ afterEach(async () => {
 
 function skill(name: string): Skill {
   return { meta: { name, description: `${name} does things` }, content: `# ${name}`, path: `/s/${name}/SKILL.md`, source: "custom" };
+}
+
+function agent(name: string, base: "general" | "research", extra: Partial<FileAgent["meta"]> = {}): FileAgent {
+  return {
+    name,
+    meta: { description: `${name} agent`, base, instructions: ["CORE", "SOUL", "AGENTS", "USER"], ...extra },
+    prompt: `Mandate of ${name}.`,
+    path: `/a/${name}.md`,
+    source: "built-in",
+  };
+}
+
+/** The two shipped built-ins, so the command tests see the catalog a real boot would have. */
+function agentRegistry(): AgentRegistry {
+  return new AgentRegistry(new Map([
+    ["general", agent("general", "general")],
+    ["research", agent("research", "research")],
+  ]));
 }
 
 function tool(name: string) {
@@ -54,6 +74,7 @@ function params(agents: MyClawConfig["agents"], args = "", overrides: Partial<In
       agents,
     },
     skillRegistry: new SkillRegistry(new Map([["alpha", skill("alpha")], ["beta", skill("beta")]])),
+    agentRegistry: agentRegistry(),
     toolRegistry: tools,
     mcpStatus: () => SERVERS,
     listSubAgents: async () => INSTANCES,
@@ -110,22 +131,50 @@ describe("/skills", () => {
 });
 
 describe("/agents", () => {
-  test("lists the four config types, live instances and the browser agent", async () => {
+  test("separates the reserved roles from the file-defined agents", async () => {
     const out = await handleAgentsCommand(params({ general: { skills: ["beta"], mcp: ["mailcow"] } }));
-    expect(out).toContain("Types configurés");
-    for (const t of ["orchestrator", "general", "research"]) expect(out).toContain(`- ${t} |`);
+    // Roles are not spawnable and have no file, so they cannot sit in the same list as the agents.
+    expect(out).toContain("Rôles");
+    expect(out).toContain("- orchestrator |");
     // cron inherits the orchestrator and the output must say why rather than omit it.
     expect(out).toContain("- cron (hérite de orchestrator) |");
+    expect(out).toContain("Agents (fichiers)");
+    for (const t of ["general", "research"]) expect(out).toContain(`- ${t} [built-in] |`);
     expect(out).toContain("subagent/deploy-a1b2 | deploy | general | 14 messages | idle");
     // The one agent invisible to list_agents, which is why it is named explicitly.
     expect(out).toContain("browser :");
   });
 
-  test("reports each type's iterations, scope and tool count", async () => {
+  test("shows each agent's tier and description, so shadowing is visible", async () => {
+    const registry = agentRegistry();
+    registry.setAll(new Map([
+      ["reviewer", { ...agent("reviewer", "research"), source: "workspace" as const, layer: "proj" }],
+    ]));
+    const out = await handleAgentsCommand(params({}, "", { agentRegistry: registry }));
+    expect(out).toContain("- reviewer [workspace:proj] |");
+    expect(out).toContain("reviewer agent");
+  });
+
+  test("an agent with no file at all reads as none, not as a missing section", async () => {
+    const out = await handleAgentsCommand(params({}, "", { agentRegistry: new AgentRegistry() }));
+    expect(out).toContain("Agents (fichiers)\n- (aucun)");
+    // The roles still stand: they exist without a file.
+    expect(out).toContain("- orchestrator |");
+  });
+
+  test("reports each agent's iterations, scope and tool count", async () => {
     const out = await handleAgentsCommand(params({ orchestrator: { maxIterations: 7 }, research: { mcp: ["mailcow"] } }));
     expect(out).toMatch(/- orchestrator \| 7 itérations/);
-    expect(out).toMatch(/- research \|.*mcp: mailcow/);
+    expect(out).toMatch(/- research \[built-in\] \|.*mcp: mailcow/);
     expect(out).toMatch(/outils: research \(\d+\)/);
+  });
+
+  test("a file's tools narrow the count the command reports", async () => {
+    const registry = new AgentRegistry(new Map([
+      ["narrow", agent("narrow", "general", { tools: ["read", "grep"] })],
+    ]));
+    const out = await handleAgentsCommand(params({}, "", { agentRegistry: registry }));
+    expect(out).toContain("outils: general (2)");
   });
 
   test("says none when no sub-agent is alive", async () => {

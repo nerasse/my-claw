@@ -1,12 +1,8 @@
 import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
 import { resolveWorkspaceKey } from "../core/config.ts";
 import {
-  resolveMaxIterations,
   resolveInjectionBudgetBonus,
   nestedAgentsEnabled,
-  resolveAgentSkills,
-  resolveAgentMcp,
-  resolveAgentLlm,
   resolveNestedAgentsMaxBytes,
   contextPruningEnabled,
   resolveContextPruning,
@@ -32,6 +28,8 @@ import { recordApiCall } from "../analytics/usage-db.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
+import type { AgentRegistry } from "../agents/registry.ts";
+import { resolveAgent } from "../agents/resolve.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { ToolApprovalManager } from "./approvals.ts";
@@ -154,6 +152,9 @@ export class AgentBridge implements AgentBackend {
     // Injected by the dispatcher so both backends share one echo/attachment store; a
     // preprocessed message must be retrievable no matter which backend runs it.
     sharedPreprocessor?: MessagePreprocessor,
+    // File-defined agents. Optional and last: absent resolves to the same baselines this had
+    // before agents could come from a file, which keeps every existing caller honest.
+    private agentRegistry?: AgentRegistry,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(this.voiceManager, this.sttPipeline);
@@ -242,11 +243,12 @@ export class AgentBridge implements AgentBackend {
       ? "cron"
       : this.depth === 0
         ? "main"
-        : this.agentKind === "research" ? "research" : "general";
-    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
+        : this.agentKind ?? "general";
+    const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace);
+    const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
     const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,
-      resolveAgentLlm(this.config, agentToolType),
+      agent.llm,
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       session.effortOverride,
@@ -259,7 +261,7 @@ export class AgentBridge implements AgentBackend {
     const cronMaxIter = this.config.cron?.maxIterations;
     const maxIterations = isCron && cronMaxIter !== undefined && Number.isFinite(cronMaxIter) && cronMaxIter > 0
       ? cronMaxIter
-      : resolveMaxIterations(this.config, agentType);
+      : agent.maxIterations;
     const budget = new IterationBudget(maxIterations);
     const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
@@ -303,7 +305,7 @@ export class AgentBridge implements AgentBackend {
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
-      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType), session.workspace);
+      const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
       const runWorkspace = this.workspaceFor(session);
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
@@ -313,6 +315,8 @@ export class AgentBridge implements AgentBackend {
         skills: allSkills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
+        ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
+        instructions: agent.instructions,
         suggestedSkills: await selectRelevantSkills(
           allSkills,
           message.text,

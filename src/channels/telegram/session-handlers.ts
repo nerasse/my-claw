@@ -8,12 +8,13 @@ import { isSdkBackedModel, effectiveEffort } from "../../llm/resolver.ts";
 import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, TOOL_TYPE } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -55,6 +56,10 @@ interface TelegramSessionHandlerDeps {
   sessionManager: SessionManager;
   modelPicker: ModelPicker;
   skillRegistry?: SkillRegistry;
+  agentRegistry?: AgentRegistry;
+  /** Rescan of `agents/`, injected rather than rebuilt from dirs here: the host already owns the
+   *  tier list and it changes with `config.workspaces`. */
+  reloadAgents?: () => Promise<number>;
   builtinDir?: string;
   customDir?: string;
   workspaceSkillsDir?: string;
@@ -91,6 +96,8 @@ export function createTelegramCommandHandler({
   sessionManager,
   modelPicker,
   skillRegistry,
+  agentRegistry,
+  reloadAgents,
   builtinDir,
   customDir,
   workspaceSkillsDir,
@@ -165,14 +172,15 @@ export function createTelegramCommandHandler({
           config,
           modelPicker,
           listSubAgents: listSubAgents ? () => listSubAgents(sessionId) : (async () => []),
+          listAgents: () => agentRegistry?.names() ?? [],
           reloadConfigNow,
           isDm: chatType === "dm",
         });
         if (agentOutcome.kind === "message") return agentOutcome.text;
         if (agentOutcome.kind === "menu") {
-          const agentContext = contextChoiceFor(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target]);
+          const agentContext = contextChoiceFor(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target));
           return {
-            text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}\n${formatContextInfo(config, agentOutcome.currentModel, undefined, TOOL_TYPE[agentOutcome.target])}`,
+            text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}\n${formatContextInfo(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target))}`,
             buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target, { contextChoice: agentContext.available }),
           };
         }
@@ -289,6 +297,12 @@ export function createTelegramCommandHandler({
         return `Skills reloaded. ${allSkills.size} skills available.`;
       }
 
+      case "reload-agents": {
+        if (!reloadAgents) return "Agent registry not available.";
+        const count = await reloadAgents();
+        return `Agents reloaded. ${count} agents available.`;
+      }
+
       case "cron": {
         if (!listCronJobs) return "Cron not available.";
         const jobs = await listCronJobs();
@@ -337,13 +351,14 @@ export function createTelegramCommandHandler({
       case "agents":
       case "mcp":
       case "instructions": {
-        if (!skillRegistry || !toolRegistry) {
+        if (!skillRegistry || !toolRegistry || !agentRegistry) {
           return "Introspection indisponible : les registres ne sont pas injectes.";
         }
         const params = {
           args,
           config,
           skillRegistry,
+          agentRegistry,
           toolRegistry,
           // Absent means the host wired no MCP manager or sub-agent runner, which reads as "none"
           // rather than crashing a read-only command.
@@ -425,7 +440,7 @@ export function createTelegramCallbackHandler({
           answerText: "Config mise à jour",
         };
       }
-      const agentChoice = contextChoiceFor(config, currentModel, undefined, TOOL_TYPE[target]);
+      const agentChoice = contextChoiceFor(config, currentModel, undefined, toolTypeOf(target));
       if (action.kind === "setContext") {
         return {
           text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }),
@@ -434,7 +449,7 @@ export function createTelegramCallbackHandler({
       }
       if (action.kind === "openContext") {
         return {
-          text: `Fenetre de contexte de l'agent ${target} — ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target])}`,
+          text: `Fenetre de contexte de l'agent ${target} — ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, toolTypeOf(target))}`,
           buttons: modelPicker.buildContextButtons(agentChoice.tiers, { target }),
           answerText: "Contexte",
         };
@@ -445,7 +460,7 @@ export function createTelegramCallbackHandler({
           : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
-        text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, TOOL_TYPE[target])}`,
+        text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, toolTypeOf(target))}`,
         buttons,
         answerText: groupLabel ?? "Retour",
       };

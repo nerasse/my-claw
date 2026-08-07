@@ -228,12 +228,17 @@ Live sub-agents
 (none)
 
 Special
-- browser: hardcoded sub-agent, own tool registry, no skills, no MCP, invisible to list_agents
+- browser: prompt in agents/browser.md, private runner and tool registry, reached through
+  delegate_browser_task rather than spawn, no skills, no MCP, invisible to list_agents
 ```
 
-The browser line is static text. It is included because it is a real agent the owner can reach via
-`delegate_browser_task`, and it is the one agent whose prompt has nothing to do with the others
-(`src/agent/subagents/browser.ts:101-118`).
+The command reads the agent registry, so a file dropped in `agents/` shows up with no restart and
+no release (docs/file-agents.md). Roles and agents are listed apart because the two reserved roles
+exist without a file and cannot be spawned.
+
+The browser line is still static text. Its prompt is a file now, but everything else about it --
+its own loop, its private tool registry, the single serialised Chromium behind it -- is not agent
+configuration and stays out of the generic path.
 
 ### `/mcp [agent]`
 
@@ -389,11 +394,16 @@ despite being advertised in `MATRIX_COMMANDS:8`, matched by `META_COMMAND_PATTER
   explicit `[]` elsewhere is still none; `cron` maps to orchestrator; the orchestrator's own list
   restricts the orchestrator.
 - Boot validation: an unknown skill name and an unknown server name are both reported, a boot is
-  never refused, and a fully valid config produces no alert.
+  never refused, and a fully valid config produces no alert. The checks iterate the agent sections
+  the owner actually wrote, not the reserved roles, so a typo under a file-defined agent is caught;
+  a config predating file agents still validates clean.
 - Prompt: layer 5 and layer 9 restricted to the scope; an out-of-scope skill never appears.
 - `list_skills` scoped by `__agentType`; `read_skill` refuses out-of-scope with a clear message.
 - `getForAgent`: MCP filtered per agent; `research` with an explicit list gets exactly it; built-in
-  tools unaffected by the MCP scope.
+  tools unaffected by the MCP scope; an agent name the chain does not know falls back to the
+  sub-agent set rather than the orchestrator's, so a typo cannot hand out `spawn` or `memory`.
+- File agents (docs/file-agents.md): a file's `tools:` only ever narrows the baseline; `research`
+  keeps the read-only baseline even with no file on disk; the config entry outranks the file.
 - `McpManager.status()`: declared-but-disabled, connected with tool count, failed with `lastError`.
 - Each command: no argument is the orchestrator; a valid type; a live sub-agent id; an unknown name
   lists the valid ones; a configured-but-missing skill is reported.

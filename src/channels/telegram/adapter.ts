@@ -399,6 +399,9 @@ export class TelegramAdapter implements ChannelAdapter {
     this.bot.hears(/^\/models(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "models"));
     this.bot.hears(/^\/effort(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "effort"));
     this.bot.hears(/^\/compact(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "compact"));
+    // Registered before /reload only for readability: the hyphen already fails that pattern's
+    // trailing (\s|$), so the two cannot shadow each other.
+    this.bot.hears(/^\/reload-agents(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "reload-agents"));
     this.bot.hears(/^\/reload(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "reload"));
     this.bot.hears(/^\/verbose(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "verbose"));
     this.bot.hears(/^\/status(?:@\w+)?(\s|$)/, (ctx) => this.handleCommand(ctx, "status"));
@@ -650,7 +653,7 @@ export class TelegramAdapter implements ChannelAdapter {
     if (text.startsWith("/")) {
       const raw = text.slice(1).split(/\s+/)[0]!;
       const command = raw.split("@")[0]!;
-      if (["new", "model", "models", "effort", "compact", "reload", "verbose", "status", "stop", "cron", "codex", "claude", "config", "archive", "skills", "agents", "mcp", "instructions", "help", "commands"].includes(command)) {
+      if (["new", "model", "models", "effort", "compact", "reload", "reload-agents", "verbose", "status", "stop", "cron", "codex", "claude", "config", "archive", "skills", "agents", "mcp", "instructions", "help", "commands"].includes(command)) {
         await this.handleCommand(ctx, command, true);
         return;
       }

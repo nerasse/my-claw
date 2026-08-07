@@ -24,6 +24,8 @@ import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
+import type { AgentRegistry } from "../../agents/registry.ts";
+import { resolveAgent } from "../../agents/resolve.ts";
 import { log } from "../../utils/logger.ts";
 import { errorLogData } from "../../utils/errors.ts";
 import { ToolApprovalManager } from "../approvals.ts";
@@ -196,6 +198,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     private llmOverride?: ResolvedLlmConfig,
     sharedPreprocessor?: MessagePreprocessor,
     queryFn?: SdkQueryFn,
+    // See the same parameter on AgentBridge. Last, after the queryFn test seam: inserting it
+    // before would silently shift the fake SDK into this slot and send the suite at the real CLI.
+    private agentRegistry?: AgentRegistry,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist);
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(voiceManager, sttPipeline);
@@ -332,11 +337,12 @@ export class ClaudeSdkBackend implements AgentBackend {
       ? "cron"
       : this.depth === 0
         ? "main"
-        : this.agentKind === "research" ? "research" : "general";
-    const tools = this.toolRegistry.getForAgent(agentToolType, this.config.tools?.disabled, resolveAgentMcp(this.config, agentToolType));
+        : this.agentKind ?? "general";
+    const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace);
+    const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
     const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,
-      resolveAgentLlm(this.config, agentToolType),
+      agent.llm,
       session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       session.effortOverride,
@@ -347,7 +353,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     const cronMaxIter = this.config.cron?.maxIterations;
     const maxTurns = isCron && cronMaxIter !== undefined && Number.isFinite(cronMaxIter) && cronMaxIter > 0
       ? cronMaxIter
-      : resolveMaxIterations(this.config, agentType);
+      : agent.maxIterations;
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
     const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth) : undefined;
 
@@ -384,7 +390,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     try {
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
-      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType), session.workspace);
+      const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
       const runWorkspace = this.workspaceFor(session);
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
@@ -394,6 +400,8 @@ export class ClaudeSdkBackend implements AgentBackend {
         skills: allSkills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
+        ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
+        instructions: agent.instructions,
         suggestedSkills: await selectRelevantSkills(
           allSkills,
           message.text,

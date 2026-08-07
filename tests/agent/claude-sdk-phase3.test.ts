@@ -5,6 +5,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { createSpawnTool } from "../../src/tools/spawn.ts";
+import type { AgentInfo } from "../../src/agents/types.ts";
 import { resolveAgentLlmConfig } from "../../src/llm/resolver.ts";
 import type { MessagePreprocessor } from "../../src/agent/preprocess.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -77,10 +78,15 @@ test("spawn tool exposes a live model enum and validates the model", async () =>
     },
   } as unknown as SubAgentRunner;
   const registry = { listExistingIds: async () => new Set<string>(), generateId: (n: string) => `subagent/${n}` } as unknown as SubAgentRegistry;
-  const tool = createSpawnTool(runner, registry, () => models);
+  let agents: AgentInfo[] = [
+    { name: "research", description: "Read-only", base: "research", source: "built-in", path: "/r.md" },
+    { name: "general", description: "Full", base: "general", source: "built-in", path: "/g.md" },
+  ];
+  const tool = createSpawnTool(runner, registry, () => models, () => agents);
 
   const params = tool.parameters as { properties: Record<string, { enum?: string[] }> };
   assert.deepEqual(params.properties["model"]?.enum, ["mimo", "claude-sonnet-5"]);
+  assert.deepEqual(params.properties["type"]?.enum, ["research", "general"]);
   models = ["mimo"];
   const params2 = tool.parameters as { properties: Record<string, { enum?: string[] }> };
   assert.deepEqual(params2.properties["model"]?.enum, ["mimo"]);
@@ -94,6 +100,17 @@ test("spawn tool exposes a live model enum and validates the model", async () =>
   const ok = await tool.execute({ name: "a", type: "research", mode: "run", task: "t", model: "claude-sonnet-5", __message: message });
   assert.equal(ok.success, true);
   assert.equal(runnerCalls[0]?.model, "claude-sonnet-5");
+
+  // The agent list is live for the same reason the model list is: a file dropped in `agents/`
+  // must be spawnable on the next run, and one deleted must stop being offered.
+  agents = [{ name: "reviewer", description: "Reviews", base: "research", source: "custom", path: "/rev.md" }];
+  const params3 = tool.parameters as { properties: Record<string, { enum?: string[] }> };
+  assert.deepEqual(params3.properties["type"]?.enum, ["reviewer"]);
+  assert.match(tool.description, /reviewer: Reviews/, "the description is how the model learns an agent exists");
+
+  const gone = await tool.execute({ name: "a", type: "research", mode: "run", task: "t", __message: message });
+  assert.equal(gone.success, false);
+  assert.match(gone.error ?? "", /Unknown agent 'research'/);
 });
 
 test("agent llm resolution honors an explicit sub-agent model across backends", () => {

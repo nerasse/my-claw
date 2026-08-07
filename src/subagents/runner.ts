@@ -5,6 +5,7 @@ import { MY_CLAW_DIR, resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyFo
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
+import type { AgentRegistry } from "../agents/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import { ClaudeSdkBackend } from "../agent/claude-sdk/backend.ts";
 import type { AgentBackend } from "../agent/backend.ts";
@@ -44,6 +45,8 @@ export class SubAgentRunner {
     private skillRegistry: SkillRegistry,
     private voiceManager: VoiceManager,
     private sttPipeline: SttPipeline,
+    /** File-defined agents, handed to whichever backend runs the sub-agent. */
+    private agentRegistry?: AgentRegistry,
   ) {}
 
   canSpawn(depth: number): boolean {
@@ -306,6 +309,9 @@ export class SubAgentRunner {
           workspaceDir,
           type,
           resolved,
+          undefined,
+          undefined,
+          this.agentRegistry,
         )
       : new AgentBridge(
           this.config,
@@ -317,6 +323,8 @@ export class SubAgentRunner {
           workspaceDir,
           type,
           resolved,
+          undefined,
+          this.agentRegistry,
         );
 
     const subMessage: UnifiedMessage = {

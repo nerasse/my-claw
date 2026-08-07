@@ -40,21 +40,28 @@ export interface EffortOptions {
  * Encoded as a single letter inside callback_data: Telegram caps it at 64 bytes and the model ref
  * already spends 12 of them, so the target must not cost a word.
  */
-export type PickerTarget = AgentConfigKey;
+export type PickerTarget = string;
 
-const TARGET_CODES: Record<PickerTarget, string> = {
-  orchestrator: "o",
-  general: "g",
-  research: "r",
-  cron: "c",
-};
-const TARGET_BY_CODE = new Map<string, PickerTarget>(
-  Object.entries(TARGET_CODES).map(([target, code]) => [code, target as PickerTarget]),
-);
+/**
+ * The code an agent rides under inside callback_data.
+ *
+ * The two reserved roles keep their historic letter. Everything else is a hash of the name rather
+ * than an index into the listing: an index would silently retarget when an agent file appears or
+ * disappears under a menu left open, and writing config for the wrong agent is the one outcome
+ * this encoding must make impossible. Four base36 characters keep the suffix inside Telegram's
+ * 64-byte cap, which the model ref already spends 12 of.
+ */
+function targetCode(target: PickerTarget): string {
+  if (target === "orchestrator") return "o";
+  if (target === "cron") return "c";
+  let hash = 0;
+  for (let i = 0; i < target.length; i++) hash = (Math.imul(hash, 31) + target.charCodeAt(i)) >>> 0;
+  return hash.toString(36).padStart(4, "0").slice(-4);
+}
 
 /** Suffix appended to every action of an agent-targeted menu, so navigation keeps its target. */
 function targetSuffix(target?: PickerTarget): string {
-  return target ? `@${TARGET_CODES[target]}` : "";
+  return target ? `@${targetCode(target)}` : "";
 }
 
 // A picker callback is a model selection, a submenu navigation step, or an effort change.
@@ -149,6 +156,8 @@ export class ModelPicker {
   constructor(
     private models: ModelOption[],
     private effort: EffortOptions = { enabled: false, levels: [] },
+    /** Spawnable agent names, read live so a menu built after a `agents/` drop-in can target it. */
+    private listAgentTargets: () => string[] = () => [],
   ) {}
 
   /** Replace the model list at runtime (used by the config hot-reload watcher). */
@@ -364,13 +373,25 @@ export class ModelPicker {
     return this.groupOrder().includes(groupPath) ? groupPath.split("/").pop() : undefined;
   }
 
+  /**
+   * The agent a code refers to, or undefined when nothing (or more than one thing) matches.
+   *
+   * Two agents hashing to the same code is refused rather than resolved to the first: a menu that
+   * does nothing is recoverable, one that writes the wrong agent's config is not.
+   */
+  private targetByCode(code: string): PickerTarget | undefined {
+    const candidates = ["orchestrator", "cron", ...this.listAgentTargets()]
+      .filter((target) => targetCode(target) === code);
+    return candidates.length === 1 ? candidates[0] : undefined;
+  }
+
   /** Full callback intent (selection, navigation, or effort). */
   parseCallbackAction(data: string): PickerCallback | null {
     // The target is stripped first so every branch below parses the same shapes it always did.
     // An unknown letter is treated as no target rather than as a target: falling back to the
     // session is recoverable, writing config for the wrong agent is not.
-    const targeted = /^(.*)@([a-z])$/.exec(data);
-    const target = targeted ? TARGET_BY_CODE.get(targeted[2] ?? "") : undefined;
+    const targeted = /^(.*)@([a-z0-9]{1,4})$/.exec(data);
+    const target = targeted ? this.targetByCode(targeted[2] ?? "") : undefined;
     if (targeted && !target) return null;
     const bare = target ? targeted?.[1] ?? data : data;
 
