@@ -118,6 +118,22 @@ export interface MyClawAppModelController {
   }>;
 }
 
+/** Skill catalog, injected for the same reason as the model controller: the adapter must not
+ *  reach into the skill registry or the filesystem itself. */
+export interface MyClawAppSkillsController {
+  list(): {
+    skills: Array<{
+      name: string;
+      description: string;
+      version?: string;
+      source: "built-in" | "custom" | "workspace";
+      path: string;
+    }>;
+  };
+  /** Raw SKILL.md text of one skill, or null when it does not exist. */
+  read(source: string, name: string): Promise<string | null>;
+}
+
 /** Text slash commands, executed server-side like on the other channels. */
 export type MyClawAppCommandHandler = (
   owner: string,
@@ -137,6 +153,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private diagnostics?: MyClawAppDiagnosticsProvider;
   private voice?: MyClawAppVoiceController;
   private models?: MyClawAppModelController;
+  private skills?: MyClawAppSkillsController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -295,6 +312,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.models = controller;
   }
 
+  onSkillsController(controller: MyClawAppSkillsController): void {
+    this.skills = controller;
+  }
+
   /** Executes text slash commands; when absent, they fall through to the agent like any message. */
   onCommandHandler(handler: MyClawAppCommandHandler): void {
     this.commandHandler = handler;
@@ -370,6 +391,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return this.serveMedia(id, this.ownerFor(deviceId));
     }
 
+    if (url.pathname === "/skills") {
+      const deviceId = url.searchParams.get("device") ?? "";
+      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      return this.serveSkill(url.searchParams.get("source") ?? "", url.searchParams.get("name") ?? "");
+    }
+
     if (url.pathname === "/my-claw-app") {
       if (req.headers.get("upgrade") !== "websocket") {
         return new Response("Upgrade Required", { status: 426 });
@@ -385,6 +414,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     return new Response("Not Found", { status: 404 });
+  }
+
+  private async serveSkill(source: string, name: string): Promise<Response> {
+    if (!this.skills) return new Response("Skill catalog unavailable", { status: 503 });
+    if (source !== "built-in" && source !== "custom" && source !== "workspace") {
+      return new Response("Bad Request", { status: 400 });
+    }
+    // First fence: the name only ever feeds the controller, and the controller re-checks the
+    // resolved path against the tier root, but a name that could smuggle path segments has no
+    // legitimate use and is refused before anything touches the filesystem.
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      return new Response("Bad Request", { status: 400 });
+    }
+    const content = await this.skills.read(source, name);
+    if (content === null) return new Response("Not Found", { status: 404 });
+    return new Response(content, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
   }
 
   private async serveMedia(id: string, owner?: string): Promise<Response> {
@@ -543,6 +588,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "model.list":
         void this.handleModelList(ws);
+        break;
+      case "skills.list":
+        void this.handleSkillsList(ws);
         break;
       case "model.get":
         void this.handleModel(ws, frame.threadId, undefined);
@@ -712,6 +760,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "model.list.result", ...this.models.list() });
     } catch (err) {
       await this.refuse(ws, "model", "model.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleSkillsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.skills) {
+      await this.refuse(ws, "skills", "skill catalog unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "skills.list.result", ...this.skills.list() });
+    } catch (err) {
+      await this.refuse(ws, "skills", "skills.list failed", { error: String(err) });
     }
   }
 

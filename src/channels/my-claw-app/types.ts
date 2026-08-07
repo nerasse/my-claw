@@ -136,6 +136,10 @@ export interface MyClawAppVoiceModeSet {
   mode: "cloud" | "local" | "auto";
 }
 
+export interface MyClawAppSkillsList {
+  type: "skills.list";
+}
+
 export interface MyClawAppModelList {
   type: "model.list";
 }
@@ -182,6 +186,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionRename
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
+  | MyClawAppSkillsList
   | MyClawAppModelList
   | MyClawAppModelGet
   | MyClawAppModelSet
@@ -329,7 +334,7 @@ export interface MyClawAppChatHistory {
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
-export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model";
+export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model" | "skills";
 
 export interface MyClawAppError {
   type: "error";
@@ -383,6 +388,21 @@ export interface MyClawAppModelListResult {
   defaultModel: string;
 }
 
+/** One skill of the server catalog. `path` is display-only: where the file lives on the server,
+ *  so the owner knows where to edit. Reading goes through source+name, never through this path. */
+export interface MyClawAppSkillEntry {
+  name: string;
+  description: string;
+  version?: string;
+  source: "built-in" | "custom" | "workspace";
+  path: string;
+}
+
+export interface MyClawAppSkillsListResult {
+  type: "skills.list.result";
+  skills: MyClawAppSkillEntry[];
+}
+
 /**
  * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
  * never an optimistic echo of what the app hoped for.
@@ -430,6 +450,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
   | MyClawAppModelListResult
+  | MyClawAppSkillsListResult
   | MyClawAppModelResult
   | MyClawAppCommandResult
   | MyClawAppChatCleared

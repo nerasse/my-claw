@@ -16,6 +16,7 @@ export interface Skill {
 export interface SkillInfo {
   name: string;
   description: string;
+  version?: string;
   source: Skill["source"];
   path: string;
 }

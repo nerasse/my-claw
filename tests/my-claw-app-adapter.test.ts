@@ -1114,4 +1114,63 @@ describe("command frames", () => {
     assert.equal(reply["replyToId"], "c5");
     assert.deepEqual(handled, [{ command: "model", args: "general" }]);
   });
+
+  test("skills.list returns the catalog from the injected controller", async () => {
+    adapter.onSkillsController({
+      list: () => ({
+        skills: [
+          { name: "voice", description: "Voice mode plumbing", version: "1.0.0", source: "built-in", path: "/s/.builtin/voice/SKILL.md" },
+          { name: "forgejo", description: "Forgejo operations", source: "custom", path: "/s/forgejo/SKILL.md" },
+          { name: "mailcow", description: "Mail server chores", source: "workspace", path: "/w/skills/mailcow/SKILL.md" },
+        ],
+      }),
+      read: async () => null,
+    });
+
+    client.ws.send(JSON.stringify({ type: "skills.list" }));
+    const frame = (await nextFrame(client)) as { type: string; skills: Array<{ name: string; source: string; version?: string }> };
+    assert.equal(frame.type, "skills.list.result");
+    assert.equal(frame.skills.length, 3);
+    assert.deepEqual(frame.skills.map((s) => s.source), ["built-in", "custom", "workspace"]);
+    assert.equal(frame.skills[0]?.version, "1.0.0");
+  });
+
+  test("skills.list without a controller answers an error instead of hanging", async () => {
+    client.ws.send(JSON.stringify({ type: "skills.list" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "skills");
+    assert.match(frame.message, /skill catalog unavailable/);
+  });
+
+  test("the skills endpoint serves a raw SKILL.md to a paired device", async () => {
+    const seen: { source?: string; name?: string } = {};
+    adapter.onSkillsController({
+      list: () => ({ skills: [] }),
+      read: async (source, name) => {
+        seen.source = source;
+        seen.name = name;
+        return name === "nope" ? null : "# Skill\n\nbody\n";
+      },
+    });
+
+    const ok = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=forgejo`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get("content-type"), "text/markdown; charset=utf-8");
+    assert.equal(await ok.text(), "# Skill\n\nbody\n");
+    assert.deepEqual(seen, { source: "custom", name: "forgejo" });
+
+    const unauthorized = await fetch(`http://127.0.0.1:${adapter.port}/skills?source=custom&name=forgejo`);
+    assert.equal(unauthorized.status, 401);
+
+    const badSource = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=../&name=x`);
+    assert.equal(badSource.status, 400);
+
+    const badName = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=..%2F..%2Fetc%2Fpasswd`);
+    assert.equal(badName.status, 400);
+    assert.equal(seen.name, "forgejo", "the crafted name must never reach the controller");
+
+    const missing = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=nope`);
+    assert.equal(missing.status, 404);
+  });
 });

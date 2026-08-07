@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMyClawAppChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import {
@@ -25,6 +25,7 @@ import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
+import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
@@ -685,6 +686,22 @@ async function main() {
         session.lastActiveAt = new Date().toISOString();
         await sessionManager.persist(sessionId);
         return resolveModelState(owner, threadId);
+      },
+    });
+
+    myClawApp.onSkillsController({
+      list: () => ({
+        skills: skillRegistry.list("all").map((s) => ({
+          name: s.name,
+          description: s.description,
+          ...(s.version ? { version: s.version } : {}),
+          source: s.source,
+          path: s.path,
+        })),
+      }),
+      read: async (source, name) => {
+        if (source !== "built-in" && source !== "custom" && source !== "workspace") return null;
+        return resolveSkillFile(source, name, { builtInDir: builtinDir, customDir, workspaceSkillsDir });
       },
     });
 

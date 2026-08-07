@@ -33,6 +33,7 @@ export class SkillRegistry {
       .map((s) => ({
         name: s.meta.name,
         description: s.meta.description,
+        ...(s.meta.version ? { version: s.meta.version } : {}),
         source: s.source,
         path: s.path,
       }));
