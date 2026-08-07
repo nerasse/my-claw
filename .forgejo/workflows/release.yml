@@ -136,7 +136,7 @@ jobs:
 
           echo "Upload complete."
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.GIT_TOKEN }}
 
       - name: Create Forgejo Release
         run: |
@@ -173,7 +173,7 @@ jobs:
 
           echo "Release created."
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.GIT_TOKEN }}
 
       - name: Cleanup old versions
         run: |
@@ -181,5 +181,5 @@ jobs:
           export FORGEJO_USER="${FORGEJO_USER:-neras}"
           bash packaging/cleanup-versions.sh
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.GIT_TOKEN }}
           KEEP_VERSIONS: 15
