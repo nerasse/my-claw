@@ -691,6 +691,9 @@ async function main() {
           id: m.id,
           label: m.label,
           ...(m.group ? { group: m.group } : {}),
+          // The provider key rides along so the app can group the catalog by provider without
+          // asking for a second list that could disagree with this one.
+          ...(m.provider ? { provider: m.provider } : {}),
         })),
         defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
       }),

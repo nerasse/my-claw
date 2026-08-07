@@ -999,6 +999,35 @@ describe("model frames", () => {
     assert.equal(frame["defaultModel"], "fast-1");
   });
 
+  test("model.list passes the provider key through for the app to group by", async () => {
+    store = new FakeSessionStore();
+    const withProviders = new MyClawAppAdapter(createConfig(), store as never);
+    withProviders.onModelController({
+      list: () => ({
+        models: [
+          { id: "fast-1", label: "Fast", provider: "litellm" },
+          { id: "naked", label: "Naked" },
+        ],
+        defaultModel: "fast-1",
+      }),
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+    });
+    await withProviders.start();
+    try {
+      const c = await connectClient(withProviders.port);
+      c.ws.send(JSON.stringify({ type: "model.list" }));
+      const frame = await nextFrame(c);
+      const models = frame["models"] as Array<{ id: string; provider?: string }>;
+      assert.equal(models[0]!["provider"], "litellm");
+      assert.equal(models[1]!["provider"], undefined);
+      c.ws.close();
+    } finally {
+      await withProviders.stop();
+    }
+  });
+
   test("model.set refuses an id the server does not know", async () => {
     client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "ghost-model" }));
     const frame = await nextFrame(client);

@@ -126,10 +126,11 @@ the first answer wins.
   turn -- a summary of how a thread started rather than of what it became. The name is stored
   on the session and survives an archive, since the owner named the thread and not the turns
   inside it. Renaming a thread that was never opened is refused rather than creating one.
-- `model.list` answers with the model catalog and the configured default. `model.get` /
-  `model.set` / `model.effort.set` answer with `model.result` carrying the state the server
-  actually stored (setting the default model id clears the override). `model.set` refuses a
-  model the server does not know.
+- `model.list` answers with the model catalog and the configured default. Each model carries
+  its provider key, so the app groups the catalog the same way the server counts it.
+  `model.get` / `model.set` / `model.effort.set` answer with `model.result` carrying the state
+  the server actually stored (setting the default model id clears the override). `model.set`
+  refuses a model the server does not know.
 - `agents.config.get` answers with the whole agent-defaults snapshot: the global default
   model and effort, the configured providers (never a secret, only whether the env key is
   set) and one entry per agent with the model that actually runs for it (own pin or
@@ -161,7 +162,7 @@ the first answer wins.
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
-{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro" }], "defaultModel": "gpt-5.1" }
+{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai" }], "defaultModel": "gpt-5.1" }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
