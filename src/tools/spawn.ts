@@ -4,6 +4,7 @@ import { SubAgentRunner } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
+import { SUB_AGENT_TYPES, type SubAgentConfigKey } from "../core/config.ts";
 
 export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegistry, listModelIds?: () => string[]): Tool {
   return {
@@ -22,7 +23,7 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         type: "object",
         properties: {
           name: { type: "string", description: "Display name for the sub-agent (e.g. 'researcher', 'coder')" },
-          type: { type: "string", enum: ["general", "research"], description: "Sub-agent type" },
+          type: { type: "string", enum: SUB_AGENT_TYPES, description: "Sub-agent type" },
           mode: { type: "string", enum: ["run", "session"], description: "'run' = one-shot, 'session' = persistent" },
           task: { type: "string", description: "Task description for the sub-agent" },
           workspaceDir: { type: "string", description: "Optional absolute workspace directory for the sub-agent" },
@@ -58,7 +59,7 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         if (!message) {
           return { success: false, output: "", error: "Missing parent message context" };
         }
-        if (type !== "general" && type !== "research") {
+        if (!SUB_AGENT_TYPES.includes(type as SubAgentConfigKey)) {
           return { success: false, output: "", error: `Invalid type '${type}'` };
         }
         if (mode !== "run" && mode !== "session") {

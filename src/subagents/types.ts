@@ -1,4 +1,6 @@
-export type SubAgentType = "general" | "research";
+import type { SubAgentConfigKey } from "../core/config.ts";
+
+export type SubAgentType = SubAgentConfigKey;
 
 export type { SubAgentMeta } from "../sessions/store.ts";
 

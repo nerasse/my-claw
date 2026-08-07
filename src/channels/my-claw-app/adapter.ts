@@ -18,6 +18,11 @@ import { commandsFor } from "../commands-catalog.ts";
 /** What this channel advertises and what it intercepts, from one list so they cannot diverge. */
 const APP_COMMANDS = commandsFor("my-claw-app");
 import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
+  MyClawAppAgentsConfigGet,
+  MyClawAppAgentsConfigResult,
+  MyClawAppAgentsEffortSet,
+  MyClawAppAgentsModelClear,
+  MyClawAppAgentsModelSet,
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
   MyClawAppAttachmentMeta,
@@ -118,6 +123,21 @@ export interface MyClawAppModelController {
   }>;
 }
 
+/**
+ * Agent defaults (model, effort) and the read-only provider table, injected for the same reason
+ * as the model controller: the adapter must not reach into config.json or the model picker itself.
+ * Every mutation answers with the whole config snapshot, never an optimistic echo.
+ */
+export interface MyClawAppAgentsController {
+  get(): MyClawAppAgentsConfigResult;
+  /** Pins `agents.<agent>.llm.defaultModel`, or `llm.defaultModel` for agent "global". */
+  setModel(agent: string, modelId: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Unpins an agent so it inherits again. Refuses "global". */
+  clearModel(agent: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Sets or removes (empty string) the global default effort. */
+  setEffort(level: string): Promise<MyClawAppAgentsConfigResult>;
+}
+
 /** Skill catalog, injected for the same reason as the model controller: the adapter must not
  *  reach into the skill registry or the filesystem itself. */
 export interface MyClawAppSkillsController {
@@ -155,6 +175,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private diagnostics?: MyClawAppDiagnosticsProvider;
   private voice?: MyClawAppVoiceController;
   private models?: MyClawAppModelController;
+  private agents?: MyClawAppAgentsController;
   private skills?: MyClawAppSkillsController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
@@ -312,6 +333,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onModelController(controller: MyClawAppModelController): void {
     this.models = controller;
+  }
+
+  onAgentsController(controller: MyClawAppAgentsController): void {
+    this.agents = controller;
   }
 
   onSkillsController(controller: MyClawAppSkillsController): void {
@@ -614,6 +639,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "model.effort.set":
         void this.handleModelEffort(ws, frame.threadId, frame.level);
         break;
+      case "agents.config.get":
+        void this.handleAgentsConfigGet(ws, frame);
+        break;
+      case "agents.model.set":
+        void this.handleAgentsModelSet(ws, frame);
+        break;
+      case "agents.model.clear":
+        void this.handleAgentsModelClear(ws, frame);
+        break;
+      case "agents.effort.set":
+        void this.handleAgentsEffortSet(ws, frame);
+        break;
       case "chat.stop":
         void this.handleChatStop(ws, frame);
         break;
@@ -773,6 +810,74 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "model.list.result", ...this.models.list() });
     } catch (err) {
       await this.refuse(ws, "model", "model.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleAgentsConfigGet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    _frame: MyClawAppAgentsConfigGet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, this.agents.get());
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.config.get failed", { error: String(err) });
+    }
+  }
+
+  private async handleAgentsModelSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsModelSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.model || !frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent or model", { agent: frame.agent, model: frame.model });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setModel(frame.agent, frame.model));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.model.set failed", { agent: frame.agent, model: frame.model, error: String(err) });
+    }
+  }
+
+  private async handleAgentsModelClear(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsModelClear,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.clearModel(frame.agent));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.model.clear failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentsEffortSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsEffortSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setEffort(frame.level));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.effort.set failed", { level: frame.level, error: String(err) });
     }
   }
 

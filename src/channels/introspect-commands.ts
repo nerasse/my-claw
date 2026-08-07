@@ -2,15 +2,18 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  resolveAgentSkills,
-  resolveAgentMcp,
+  AGENTS,
+  AGENT_KEYS,
   resolveAgentLlm,
+  resolveAgentMcp,
+  resolveAgentSkills,
   resolveMaxIterations,
   scopeAllows,
   type AgentScope,
   type AgentToolType,
   type MyClawConfig,
 } from "../core/config.ts";
+
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { buildSystemPrompt } from "../agent/prompt/builder.ts";
 import { OWNER_STEERING_NOTE } from "../agent/claude-sdk/backend.ts";
@@ -37,7 +40,6 @@ export interface IntrospectParams {
   platform: string;
 }
 
-const CONFIG_AGENTS = ["orchestrator", "general", "research"] as const;
 const VALID = "orchestrator (ou main), general, research, cron, ou un id de sous-agent (`subagent/nom-xxxx`)";
 
 interface ResolvedAgent {
@@ -136,21 +138,19 @@ export async function handleSkillsCommand(p: IntrospectParams): Promise<string> 
 
 export async function handleAgentsCommand(p: IntrospectParams): Promise<string> {
   const lines: string[] = ["Types configurés"];
-  for (const key of CONFIG_AGENTS) {
+  for (const key of AGENT_KEYS) {
     const toolType: AgentToolType = key === "orchestrator" ? "main" : key;
     const skills = resolveAgentSkills(p.config, toolType);
     const mcp = resolveAgentMcp(p.config, toolType);
+    // cron has its own maxIterations under `cron`, so the per-agent value would mislead.
+    const iterationNote = key === "cron" ? "" : `${resolveMaxIterations(p.config, key)} itérations | `;
+    // The one inheritance that exists: state it where the reader would wonder why it is absent.
+    const inheritNote = AGENTS[key].inheritsFrom === "orchestrator" ? " (hérite de orchestrator)" : "";
     lines.push(
-      `- ${key} | ${resolveMaxIterations(p.config, key)} itérations | ${modelFor(p.config, toolType)}` +
+      `- ${key}${inheritNote} | ${iterationNote}${modelFor(p.config, toolType)}` +
         ` | outils: ${toolType} (${toolCount(p, toolType)}) | skills: ${scopeLabel(skills)} | mcp: ${scopeLabel(mcp)}`,
     );
   }
-  // cron has no config entry of its own and inherits the orchestrator, which is worth stating rather
-  // than leaving the reader to wonder why it is missing.
-  lines.push(
-    `- cron (pas d'entrée de config, hérite de orchestrator) | outils: cron (${toolCount(p, "cron")})` +
-      ` | skills: ${scopeLabel(resolveAgentSkills(p.config, "cron"))} | mcp: ${scopeLabel(resolveAgentMcp(p.config, "cron"))}`,
-  );
 
   lines.push("", "Sous-agents vivants");
   const instances = await p.listSubAgents();

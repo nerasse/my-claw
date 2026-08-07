@@ -102,6 +102,10 @@ the first answer wins.
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
 { "type": "skills.list" }
 { "type": "workspaces.list" }
+{ "type": "agents.config.get" }
+{ "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1" }
+{ "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
+{ "type": "agents.effort.set", "level": "medium" }
 { "type": "ping" }
 ```
 
@@ -126,6 +130,15 @@ the first answer wins.
   `model.set` / `model.effort.set` answer with `model.result` carrying the state the server
   actually stored (setting the default model id clears the override). `model.set` refuses a
   model the server does not know.
+- `agents.config.get` answers with the whole agent-defaults snapshot: the global default
+  model and effort, the configured providers (never a secret, only whether the env key is
+  set) and one entry per agent with the model that actually runs for it (own pin or
+  inherited) and its raw `skills`/`mcp`/`workspace`/`context.cap`/`maxIterations` config.
+  `agents.model.set` with `agent: "global"` writes `llm.defaultModel`, with an agent key it
+  writes `agents.<key>.llm`; `agents.model.clear` removes an agent's pin so it inherits
+  again; `agents.effort.set` sets or removes (empty string) the global `llm.effort`. Every
+  mutation answers with a fresh `agents.config.result`, never an optimistic echo, and a
+  mutation that fails is refused with scope `agents`.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.
@@ -152,7 +165,8 @@ the first answer wins.
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills" }
+{ "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the

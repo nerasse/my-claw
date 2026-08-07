@@ -311,6 +311,59 @@ export interface AgentLlmConfig {
   defaultModel?: string;
 }
 
+/** Display metadata of a config-defaultable agent, served to the phone app's settings. */
+export interface AgentMeta {
+  /** Display label, e.g. in the app's settings. */
+  label: string;
+  /** One line: what this agent is for. */
+  description: string;
+  /** Whose default this agent follows when it has no pin of its own. */
+  inheritsFrom: "global" | "orchestrator";
+}
+
+/**
+ * The one place the config-defaultable agents are named. The set is closed today; keeping the
+ * list here alone means a future config-declared agent is one entry, not six lists that drift.
+ */
+export const AGENTS = {
+  orchestrator: {
+    label: "Orchestrator",
+    description: "The agent you talk to",
+    inheritsFrom: "global",
+  },
+  general: {
+    label: "General sub-agent",
+    description: "Spawned with full tool access",
+    inheritsFrom: "global",
+  },
+  research: {
+    label: "Research sub-agent",
+    description: "Spawned with read-only tools",
+    inheritsFrom: "global",
+  },
+  /**
+   * Cron runs used to be indistinguishable from the orchestrator in config, so a scheduled job
+   * could not be pinned to a cheap model without moving the owner's own default. The key is
+   * optional and absent inherits the orchestrator, so adding it changed nothing that existed.
+   * `maxIterations` here is ignored: cron already has `cron.maxIterations`.
+   */
+  cron: {
+    label: "Scheduled tasks",
+    description: "Jobs on a schedule",
+    inheritsFrom: "orchestrator",
+  },
+} as const satisfies Record<string, AgentMeta>;
+
+export type AgentConfigKey = keyof typeof AGENTS;
+export const AGENT_KEYS = Object.keys(AGENTS) as AgentConfigKey[];
+
+/** The agent types a spawn can create: the config keys minus the two singletons. */
+export type SubAgentConfigKey = Exclude<AgentConfigKey, "orchestrator" | "cron">;
+export const SUB_AGENT_TYPES = ["general", "research"] as const satisfies readonly SubAgentConfigKey[];
+
+/** The tool-axis vocabulary: `main` is the orchestrator, the rest are their own key. */
+export type AgentToolType = "main" | Exclude<AgentConfigKey, "orchestrator">;
+
 export interface AgentConfig {
   maxIterations?: number;
   llm?: AgentLlmConfig;
@@ -382,17 +435,8 @@ export interface MyClawConfig {
     "my-claw-app"?: MyClawAppChannelConfig;
   };
   llm: LlmConfig;
-  agents: {
-    orchestrator?: AgentConfig;
-    general?: AgentConfig;
-    research?: AgentConfig;
-    /**
-     * Cron runs used to be indistinguishable from the orchestrator in config, so a scheduled job
-     * could not be pinned to a cheap model without moving the owner's own default. The key is
-     * optional and absent inherits the orchestrator, so adding it changed nothing that existed.
-     * `maxIterations` here is ignored: cron already has `cron.maxIterations`.
-     */
-    cron?: AgentConfig;
+  agents: Partial<Record<AgentConfigKey, AgentConfig>> & {
+    /** Lazy nested AGENTS.md discovery settings, not an agent. See docs/nested-agents.md. */
     nested?: NestedAgentsConfig;
   };
   voice?: VoiceConfig;
@@ -576,7 +620,7 @@ export function resolveNestedAgentsMaxBytes(config: MyClawConfig): number {
   return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : DEFAULT_NESTED_AGENTS_MAX_BYTES;
 }
 
-export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" | "general" | "research"): number {
+export function resolveMaxIterations(config: MyClawConfig, type: Exclude<AgentConfigKey, "cron">): number {
   const agentCfg = config.agents?.[type];
   if (agentCfg?.maxIterations !== undefined && Number.isFinite(agentCfg.maxIterations) && agentCfg.maxIterations > 0) {
     return agentCfg.maxIterations;
@@ -586,19 +630,16 @@ export function resolveMaxIterations(config: MyClawConfig, type: "orchestrator" 
 
 /**
  * Agent scoping. Two vocabularies exist for agents: the tool axis is
- * `main | general | research | cron` and the config axis is `orchestrator | general | research`.
- * `main` and `orchestrator` are the same agent, and `cron` has no config entry of its own.
- * Callers pass the tool-axis value; the mapping below is the single place they meet.
+ * `main | general | research | cron` and the config axis names the keys of `AGENTS`, the one
+ * table where the set lives. `main` and `orchestrator` are the same agent. Callers pass the
+ * tool-axis value; the mapping below is the single place they meet.
  * See docs/agent-scoping.md.
  */
-export type AgentToolType = "main" | "general" | "research" | "cron";
 
 /** `"all"` is a distinct value, not a sentinel array, so it cannot be mistaken for a list. */
 export type AgentScope = string[] | "all";
 
 const SCOPE_WILDCARD = "*";
-
-export type AgentConfigKey = "orchestrator" | "general" | "research" | "cron";
 
 function configKeyForAgent(type: AgentToolType): AgentConfigKey {
   // `cron` was long absent from the config axis so that no key would carry a name existing on only
@@ -689,7 +730,7 @@ export function workspaceKeyForDir(config: MyClawConfig, dir: string | undefined
  *  unknown scope entry: a typo would otherwise pin an agent to nothing and fail at run time. */
 export function findUnknownAgentWorkspaces(config: MyClawConfig): Array<{ path: string; key: string }> {
   const out: Array<{ path: string; key: string }> = [];
-  for (const agentKey of ["orchestrator", "general", "research", "cron"] as const) {
+  for (const agentKey of AGENT_KEYS) {
     const key = config.agents?.[agentKey]?.workspace;
     if (!key) continue;
     if (!config.workspaces?.[key]) out.push({ path: `agents.${agentKey}.workspace`, key });
@@ -716,7 +757,9 @@ export function findUnknownScopeEntries(
   known: { skills: readonly string[]; mcpServers: readonly string[] },
 ): UnknownScopeEntry[] {
   const out: UnknownScopeEntry[] = [];
-  for (const key of ["orchestrator", "general", "research"] as const) {
+  // cron is absent on purpose: its scope is resolved through resolveAgentSkills/Mcp like any
+  // agent's, but the boot report predates the cron key and nothing changed since.
+  for (const key of AGENT_KEYS.filter((k): k is Exclude<AgentConfigKey, "cron"> => k !== "cron")) {
     const agent = config.agents?.[key];
     if (!agent) continue;
     for (const [field, kind, pool] of [
@@ -938,7 +981,7 @@ export function parseConfig(raw: string): MyClawConfig {
   // Every agent key, not just the two that had a working model override: `orchestrator` was skipped
   // here for as long as its model was dead config, so a legacy `{"model": ...}` under it stayed
   // legacy and would now resolve to nothing.
-  for (const key of ["orchestrator", "general", "research", "cron"] as const) {
+  for (const key of AGENT_KEYS) {
     const agent = config.agents?.[key];
     if (agent?.llm && isLegacyLlmConfig(agent.llm)) {
       agent.llm = migrateLegacyAgentLlmConfig(agent.llm);

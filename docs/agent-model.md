@@ -112,6 +112,15 @@ would suggest the config edit pins it too.
   against the live catalogue by `find()`; a network call would make a config edit fail when the
   provider is merely unreachable.
 
+## The phone app writes the same pins
+
+The my-claw-app channel exposes the same writers over WebSocket: `agents.model.set` with
+`agent: "global"` writes `llm.defaultModel`, with an agent key it writes
+`agents.<key>.llm.defaultModel` (plus `defaultProvider`), and `agents.model.clear` unpins an
+agent so it inherits again — the same `config-edit.ts` functions the command uses, through the
+same snapshot + atomic-write path. The app also writes the global `llm.effort` via
+`agents.effort.set`. See `docs/my-claw-app-channel.md`.
+
 ## Tests
 
 - `tests/channels/agent-model-commands.test.ts` — target resolution, quotes, fall-through for

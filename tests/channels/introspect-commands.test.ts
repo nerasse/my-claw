@@ -110,12 +110,12 @@ describe("/skills", () => {
 });
 
 describe("/agents", () => {
-  test("lists the three config types, cron, live instances and the browser agent", async () => {
+  test("lists the four config types, live instances and the browser agent", async () => {
     const out = await handleAgentsCommand(params({ general: { skills: ["beta"], mcp: ["mailcow"] } }));
     expect(out).toContain("Types configurés");
     for (const t of ["orchestrator", "general", "research"]) expect(out).toContain(`- ${t} |`);
-    // cron has no config entry and the output must say why rather than omit it.
-    expect(out).toContain("cron (pas d'entrée de config, hérite de orchestrator)");
+    // cron inherits the orchestrator and the output must say why rather than omit it.
+    expect(out).toContain("- cron (hérite de orchestrator) |");
     expect(out).toContain("subagent/deploy-a1b2 | deploy | general | 14 messages | idle");
     // The one agent invisible to list_agents, which is why it is named explicitly.
     expect(out).toContain("browser :");

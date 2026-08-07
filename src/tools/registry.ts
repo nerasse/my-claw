@@ -1,7 +1,5 @@
 import type { Tool } from "./types.ts";
-import { scopeAllows, type AgentScope } from "../core/config.ts";
-
-type AgentType = "main" | "general" | "research" | "cron";
+import { scopeAllows, type AgentScope, type AgentToolType } from "../core/config.ts";
 
 const MCP_PREFIX = "mcp__";
 
@@ -73,7 +71,7 @@ export class ToolRegistry {
    * defaults to "all" so a caller that forgets it never silently narrows an agent; the negative
    * default for the research agent lives in `resolveAgentMcp`, not here.
    */
-  getForAgent(agentType: AgentType, disabled: readonly string[] = [], mcpScope: AgentScope = "all"): Tool[] {
+  getForAgent(agentType: AgentToolType, disabled: readonly string[] = [], mcpScope: AgentScope = "all"): Tool[] {
     // Plugins share the dynamic provider with MCP but are not servers, so the scope must not touch
     // them: only names carrying the mcp__<server>__ namespace are filtered.
     const dynamic = (this.dynamicProvider?.() ?? []).filter((t) => {

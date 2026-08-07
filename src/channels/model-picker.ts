@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
-import type { EffortLevel, LlmConfig } from "../core/config.ts";
+import type { AgentConfigKey, EffortLevel, LlmConfig } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
@@ -40,7 +40,7 @@ export interface EffortOptions {
  * Encoded as a single letter inside callback_data: Telegram caps it at 64 bytes and the model ref
  * already spends 12 of them, so the target must not cost a word.
  */
-export type PickerTarget = "orchestrator" | "general" | "research" | "cron";
+export type PickerTarget = AgentConfigKey;
 
 const TARGET_CODES: Record<PickerTarget, string> = {
   orchestrator: "o",

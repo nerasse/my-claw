@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, type AgentConfigKey } from "./config.ts";
+import { CONFIG_PATH, type AgentConfigKey, type EffortLevel } from "./config.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
 /**
@@ -137,5 +137,93 @@ export async function setAgentModel(
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} ${modelId}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { agent, model: modelId, provider: provider ?? null });
+  return { ok: true, previous };
+}
+
+/**
+ * Pins the global default model. Same shape as `setAgentModel`, one level up: `llm.defaultModel`
+ * is what every agent and session falls back to when neither has its own choice, and the legacy
+ * `llm.model` key is deliberately left alone (deleting it can flip the file into the legacy
+ * migration path; `defaultModel` wins over it anyway).
+ */
+export async function setDefaultModel(modelId: string, provider: string | undefined): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const llm = objectAt(read.data, "llm");
+
+  const previous = {
+    model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
+    provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+  };
+
+  llm["defaultModel"] = modelId;
+  if (provider) {
+    llm["defaultProvider"] = provider;
+  } else {
+    // Same rule as the agent pin: a stale provider would send the model to the wrong endpoint.
+    delete llm["defaultProvider"];
+  }
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null });
+  return { ok: true, previous };
+}
+
+/**
+ * Sets the global default reasoning effort, or removes the key when `undefined` so a model's own
+ * level (or the provider's default) applies again.
+ */
+export async function setDefaultEffort(level: EffortLevel | undefined): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const llm = objectAt(read.data, "llm");
+
+  if (level === undefined) delete llm["effort"];
+  else llm["effort"] = level;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant effort global ${level ?? "défaut"}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { defaultEffort: level ?? null });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Removes an agent's model pin so it falls back on the inherited default again. The emptied `llm`
+ * object is dropped with it, so an unpinned agent leaves no meaningless `llm: {}` behind.
+ */
+export async function clearAgentModel(agent: AgentConfigKey): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const agents = objectAt(read.data, "agents");
+  const entry = agents[agent];
+  // An agent with no entry at all has no pin: nothing to remove, and nothing to create either,
+  // or an unpinned agent would leave an empty `agents.<key>: {}` behind.
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return { ok: true, previous: {} };
+  }
+  const cast = entry as Record<string, unknown>;
+  const raw = cast["llm"];
+  const llm = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
+  const previous = {
+    model: typeof llm?.["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
+    provider: typeof llm?.["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+  };
+
+  if (llm) {
+    delete llm["defaultModel"];
+    delete llm["defaultProvider"];
+    // An emptied object left behind would read as a deliberate, meaningless setting.
+    if (Object.keys(llm).length === 0) delete cast["llm"];
+  }
+  // Same for the agent entry: `agents.<key>: {}` means nothing but looks like a setting.
+  if (Object.keys(cast).length === 0) delete agents[agent];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant clear modèle ${agent}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, model: null });
   return { ok: true, previous };
 }

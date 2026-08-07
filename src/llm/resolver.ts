@@ -171,7 +171,7 @@ export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {
   return config.models ?? [];
 }
 
-const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /**
  * Whether the effort UI should be offered, and the levels to show. Enabled when any model can

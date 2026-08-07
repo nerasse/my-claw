@@ -6,6 +6,7 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
+import type { MyClawAppAgentsConfigResult } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
@@ -1018,6 +1019,115 @@ describe("model frames", () => {
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "model.result");
     assert.equal((frame["effort"] as { level: string }).level, "medium");
+  });
+});
+
+describe("agents frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  const SNAPSHOT: MyClawAppAgentsConfigResult = {
+    type: "agents.config.result",
+    defaultModel: "fast-1",
+    defaultProvider: "prov-a",
+    defaultEffort: "high",
+    effortLevels: ["low", "medium", "high"],
+    providers: [{ key: "prov-a", type: "openai", discover: true, models: 2, keyEnv: "PROV_A_KEY", keyPresent: true }],
+    agents: [
+      { key: "orchestrator", label: "Orchestrator", description: "The agent you talk to", model: "fast-1", pinned: false, inheritsFrom: "global" },
+      { key: "cron", label: "Scheduled tasks", description: "Jobs on a schedule", model: "fast-1", pinned: false, inheritsFrom: "orchestrator" },
+    ],
+  };
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onAgentsController({
+      get: () => SNAPSHOT,
+      setModel: async (agent, modelId) => ({ ...SNAPSHOT, defaultModel: modelId, agents: SNAPSHOT.agents }),
+      clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
+      setEffort: async (level) => ({ ...SNAPSHOT, defaultEffort: level }),
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("agents.config.get answers with the whole snapshot", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.config.get" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["defaultModel"], "fast-1");
+    assert.equal((frame["agents"] as unknown[]).length, 2);
+    assert.equal((frame["providers"] as unknown[]).length, 1);
+  });
+
+  test("agents.model.set forwards agent and model and answers with the stored state", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.model.set", agent: "cron", model: "strong-2" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["defaultModel"], "strong-2");
+  });
+
+  test("agents.model.set refuses a missing controller with the agents scope", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "agents.model.set", agent: "cron", model: "strong-2" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "agents");
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  test("agents.model.clear answers with the unpinned state", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.model.clear", agent: "cron" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal((frame["agents"] as Array<{ pinned: boolean }>)[1]!["pinned"], false);
+  });
+
+  test("agents.effort.set answers with the stored effort", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.effort.set", level: "medium" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["defaultEffort"], "medium");
+  });
+
+  test("a throwing controller surfaces as a refused error", async () => {
+    store = new FakeSessionStore();
+    const failing = new MyClawAppAdapter(createConfig(), store as never);
+    failing.onAgentsController({
+      get: () => SNAPSHOT,
+      setModel: async () => {
+        throw new Error("unknown model: ghost");
+      },
+      clearModel: async () => {
+        throw new Error("nope");
+      },
+      setEffort: async () => {
+        throw new Error("nope");
+      },
+    });
+    await failing.start();
+    try {
+      const c = await connectClient(failing.port);
+      c.ws.send(JSON.stringify({ type: "agents.model.set", agent: "cron", model: "ghost" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "agents");
+      c.ws.close();
+    } finally {
+      await failing.stop();
+    }
   });
 });
 

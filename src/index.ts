@@ -3,7 +3,22 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMyClawAppChannelEnabled, findUnknownScopeEntries, findUnknownAgentWorkspaces, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import {
+  AGENTS,
+  AGENT_KEYS,
+  resolveAgentLlm,
+  isMatrixChannelEnabled,
+  isTelegramChannelEnabled,
+  isMyClawAppChannelEnabled,
+  findUnknownScopeEntries,
+  findUnknownAgentWorkspaces,
+  CONFIG_PATH,
+  MY_CLAW_DIR,
+  type AgentConfigKey,
+  type AgentToolType,
+  type EffortLevel,
+  type MyClawConfig,
+} from "./core/config.ts";
 import {
   loadConfigOrFallback,
   snapshotProtected,
@@ -23,6 +38,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
+import type { MyClawAppAgentsConfigResult } from "./channels/my-claw-app/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
@@ -36,7 +52,7 @@ import {
   createTelegramCallbackHandler,
 } from "./channels/telegram/session-handlers.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
-import { effectiveEffort } from "./llm/resolver.ts";
+import { effectiveEffort, EFFORT_LEVELS } from "./llm/resolver.ts";
 import {
   createMatrixApprovalHandler,
   createMatrixActionHandler,
@@ -89,7 +105,7 @@ import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments } from 
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
 import { buildDiagnostics, readLogEntries, formatLogEntries, collectSecrets } from "./core/diagnostics.ts";
 import {
   warmupEmbedding,
@@ -102,7 +118,7 @@ import {
   closeMemoryDb,
   type LlmCaller,
 } from "./memory/index.ts";
-import { setVoiceSttMode } from "./core/config-edit.ts";
+import { setVoiceSttMode, setDefaultModel, setDefaultEffort, clearAgentModel, setAgentModel } from "./core/config-edit.ts";
 import { log, pruneOldLogs, setLogLevelSource } from "./utils/logger.ts";
 import { hooks } from "./hooks/index.ts";
 
@@ -705,6 +721,97 @@ async function main() {
         session.lastActiveAt = new Date().toISOString();
         await sessionManager.persist(sessionId);
         return resolveModelState(owner, threadId);
+      },
+    });
+
+    // Agent defaults for the phone app: the same writers as `/model <agent>`, plus the global
+    // default that had no writer until now. Every answer is a fresh snapshot of the config so a
+    // stale page can never survive a server-side change.
+    const toolTypeFor = (key: AgentConfigKey): AgentToolType => (key === "orchestrator" ? "main" : key);
+    const agentModelOf = (key: AgentConfigKey): string => {
+      try {
+        return resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeFor(key)), config.llm).model ?? "";
+      } catch {
+        // A removed provider must not take the whole page down: the row shows an empty model.
+        return "";
+      }
+    };
+    const providerCountOf = (providerKey: string): number =>
+      modelPicker.options().filter((m) => (m.provider ?? config.llm.defaultProvider) === providerKey).length;
+    const agentsConfigSnapshot = () => {
+      const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
+      return {
+        type: "agents.config.result" as const,
+        defaultModel,
+        ...(config.llm.defaultProvider ? { defaultProvider: config.llm.defaultProvider } : {}),
+        defaultEffort: config.llm.effort ?? "",
+        effortLevels: EFFORT_LEVELS,
+        providers: Object.entries(config.llm.providers ?? {}).map(([key, provider]) => ({
+          key,
+          type: provider.type ?? "openai",
+          ...(provider.group ? { group: provider.group } : {}),
+          discover: provider.discover === true,
+          models: providerCountOf(key),
+          ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
+          keyPresent: provider.apiKeyEnv ? Boolean(process.env[provider.apiKeyEnv]) : false,
+        })),
+        agents: AGENT_KEYS.map((key) => {
+          const entry = config.agents?.[key];
+          const llm = entry?.llm;
+          const model = agentModelOf(key);
+          return {
+            key,
+            label: AGENTS[key].label,
+            description: AGENTS[key].description,
+            model,
+            ...(model ? { provider: modelPicker.providerFor(model) ?? config.llm.defaultProvider } : {}),
+            pinned: llm?.defaultModel !== undefined || llm?.defaultProvider !== undefined,
+            inheritsFrom: AGENTS[key].inheritsFrom,
+            skills: entry?.skills ?? null,
+            mcp: entry?.mcp ?? null,
+            workspace: entry?.workspace ?? null,
+            contextCap: entry?.context?.cap ?? null,
+            maxIterations: entry?.maxIterations ?? null,
+          };
+        }),
+      };
+    };
+    const writeAgentsConfig = async (note: string): Promise<MyClawAppAgentsConfigResult> => {
+      // The file is the source of truth, but the watcher lands a beat later and the answer is
+      // built now: reload explicitly so the reply describes the running config, like /model does.
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after agents edit failed", { note, error: String(err) });
+      });
+      return agentsConfigSnapshot();
+    };
+    myClawApp.onAgentsController({
+      get: () => agentsConfigSnapshot(),
+      setModel: async (agent, modelId) => {
+        if (!modelPicker.options().some((m) => m.id === modelId)) throw new Error(`unknown model: ${modelId}`);
+        const provider = modelPicker.providerFor(modelId);
+        if (agent === "global") {
+          const result = await setDefaultModel(modelId, provider);
+          if (!result.ok) throw new Error(result.error);
+          return writeAgentsConfig(`défaut global ${modelId}`);
+        }
+        if (!AGENT_KEYS.includes(agent as AgentConfigKey)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentModel(agent as AgentConfigKey, modelId, provider);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`modèle ${agent} ${modelId}`);
+      },
+      clearModel: async (agent) => {
+        if (agent === "global") throw new Error("global has no model pin to clear");
+        if (!AGENT_KEYS.includes(agent as AgentConfigKey)) throw new Error(`unknown agent: ${agent}`);
+        const result = await clearAgentModel(agent as AgentConfigKey);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`clear modèle ${agent}`);
+      },
+      setEffort: async (level) => {
+        const value = level === "" ? undefined : EFFORT_LEVELS.includes(level as EffortLevel) ? (level as EffortLevel) : null;
+        if (value === null) throw new Error(`invalid effort level: ${level}`);
+        const result = await setDefaultEffort(value);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`effort global ${value ?? "défaut"}`);
       },
     });
 

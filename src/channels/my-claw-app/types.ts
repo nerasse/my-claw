@@ -173,6 +173,29 @@ export interface MyClawAppChatStop {
   threadId: string;
 }
 
+export interface MyClawAppAgentsConfigGet {
+  type: "agents.config.get";
+}
+
+export interface MyClawAppAgentsModelSet {
+  type: "agents.model.set";
+  /** "global" writes `llm.defaultModel`; any agent key writes `agents.<key>.llm`. */
+  agent: string;
+  model: string;
+}
+
+/** Removes an agent's model pin so it inherits again. Never valid for "global". */
+export interface MyClawAppAgentsModelClear {
+  type: "agents.model.clear";
+  agent: string;
+}
+
+/** Global default reasoning effort; `level: ""` removes the key so model/provider defaults apply. */
+export interface MyClawAppAgentsEffortSet {
+  type: "agents.effort.set";
+  level: string;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -198,6 +221,10 @@ export type MyClawAppClientFrame =
   | MyClawAppModelSet
   | MyClawAppModelEffortSet
   | MyClawAppChatStop
+  | MyClawAppAgentsConfigGet
+  | MyClawAppAgentsModelSet
+  | MyClawAppAgentsModelClear
+  | MyClawAppAgentsEffortSet
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -340,7 +367,7 @@ export interface MyClawAppChatHistory {
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
-export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model" | "skills";
+export type MyClawAppErrorScope = "chat" | "files" | "session" | "diag" | "logs" | "voice" | "model" | "skills" | "agents";
 
 export interface MyClawAppError {
   type: "error";
@@ -377,6 +404,8 @@ export interface MyClawAppModelOption {
   label: string;
   /** "/"-separated menu path; the app renders groups the way the picker does. */
   group?: string;
+  /** Provider key this model belongs to, so the app can group models by provider. */
+  provider?: string;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */
@@ -435,6 +464,59 @@ export interface MyClawAppModelResult {
 }
 
 /**
+ * One agent, as it resolves right now: its own pin when it has one, otherwise what it inherits.
+ * `skills`/`mcp`/`workspace`/`contextCap`/`maxIterations` are the raw config entry; null means
+ * absent (and inherited), [] is a deliberate "nothing".
+ */
+export interface MyClawAppAgentInfo {
+  /** The config key, e.g. "orchestrator". The app renders whatever the server sends. */
+  key: string;
+  label: string;
+  description: string;
+  /** The model that runs for this agent: own pin or inherited. */
+  model: string;
+  provider?: string;
+  /** There is an entry in `agents.<key>.llm`. */
+  pinned: boolean;
+  /** Where the effective default comes from: "global", "orchestrator", or the key itself. */
+  inheritsFrom: string;
+  skills?: string[] | null;
+  mcp?: string[] | null;
+  workspace?: string | null;
+  contextCap?: number | null;
+  maxIterations?: number | null;
+}
+
+/** A configured provider, for display only: never a secret, only whether its env key is set. */
+export interface MyClawAppProviderInfo {
+  key: string;
+  type: string;
+  group?: string;
+  discover: boolean;
+  /** Models currently known to belong to this provider. */
+  models: number;
+  keyEnv?: string;
+  keyPresent: boolean;
+}
+
+/**
+ * Answer to agents.config.get and to every agents.* mutation: the state the server stored. The
+ * payload is deliberately one whole snapshot, so the app never stitches fields from separate
+ * answers and a failed write cannot masquerade as a success.
+ */
+export interface MyClawAppAgentsConfigResult {
+  type: "agents.config.result";
+  defaultModel: string;
+  defaultProvider?: string;
+  /** "" when no global effort is set. */
+  defaultEffort: string;
+  /** Levels on offer for the global effort, in canonical order. */
+  effortLevels: string[];
+  providers: MyClawAppProviderInfo[];
+  agents: MyClawAppAgentInfo[];
+}
+
+/**
  * Output of a command executed by the server (`/status`, `/clear`, ...). Rendered by the app as
  * a distinct bubble so a command result never masquerades as an agent answer.
  */
@@ -474,4 +556,5 @@ export type MyClawAppServerFrame =
   | MyClawAppCommandResult
   | MyClawAppChatCleared
   | MyClawAppChatTranscript
+  | MyClawAppAgentsConfigResult
   | MyClawAppError;
