@@ -3,7 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMyClawAppChannelEnabled, findUnknownScopeEntries, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
+import { isMatrixChannelEnabled, isTelegramChannelEnabled, isMyClawAppChannelEnabled, findUnknownScopeEntries, findUnknownAgentWorkspaces, CONFIG_PATH, MY_CLAW_DIR, type MyClawConfig } from "./core/config.ts";
 import {
   loadConfigOrFallback,
   snapshotProtected,
@@ -323,6 +323,13 @@ async function main() {
   });
   if (unknownScopes.length > 0) {
     log("warn", "agent scope entries match nothing", { entries: unknownScopes });
+  }
+
+  // Same reasoning for workspaces: a typo would pin an agent to a workspace that does not
+  // exist, and the failure would only surface on that agent's first run.
+  const unknownAgentWorkspaces = findUnknownAgentWorkspaces(config);
+  if (unknownAgentWorkspaces.length > 0) {
+    log("warn", "agent workspace keys match nothing in config.workspaces", { entries: unknownAgentWorkspaces });
   }
 
   const subAgentRegistry = new SubAgentRegistry();

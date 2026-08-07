@@ -452,3 +452,91 @@ test("driving a shared sub-agent moves the bill to the chat that drove it", asyn
     fetchMock.restore();
   }
 });
+
+test("a sub-agent runs in its agent's configured workspace, skills included", async () => {
+  const sofa = await setupDir();
+  const pinned: MyClawConfig = {
+    ...config,
+    workspaces: { sofa },
+    agents: { research: { workspace: "sofa" } },
+  };
+  const runner = new SubAgentRunner(pinned, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never);
+
+  try {
+    const { id } = await runner.spawn({
+      displayName: "pinned", type: "research", mode: "session", task: "init",
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global",
+    });
+    const session = await loadSession(id);
+    // The directory alone is not enough: without the key the sub-agent would run in SOFA while
+    // being handed the default workspace's skills.
+    assert.equal(session?.meta?.workspaceDir, sofa);
+    assert.equal(session?.workspace, "sofa");
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+    await rm(sofa, { recursive: true, force: true });
+  }
+});
+
+test("a sub-agent inherits the parent run's workspace when its agent pins none", async () => {
+  const sofa = await setupDir();
+  const inherited: MyClawConfig = { ...config, workspaces: { sofa }, agents: {} };
+  const runner = new SubAgentRunner(inherited, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never);
+
+  try {
+    const { id } = await runner.spawn({
+      displayName: "inherit", type: "research", mode: "session", task: "init",
+      parentWorkspaceDir: sofa,
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global",
+    });
+    const session = await loadSession(id);
+    assert.equal(session?.workspace, "sofa");
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+    await rm(sofa, { recursive: true, force: true });
+  }
+});
+
+test("an explicit workspaceDir may narrow inside the agent's workspace, never escape it", async () => {
+  const sofa = await setupDir();
+  const elsewhere = await setupDir();
+  const pinned: MyClawConfig = {
+    ...config,
+    workspaces: { sofa },
+    agents: { research: { workspace: "sofa" } },
+  };
+  const runner = new SubAgentRunner(pinned, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+
+  const escaping = await runner.spawn({
+    displayName: "escape", type: "research", mode: "session", task: "init",
+    workspaceDir: elsewhere,
+    parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+    generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global",
+  });
+  assert.match(escaping.result, /must be within the agent's workspace/);
+
+  await rm(sofa, { recursive: true, force: true });
+  await rm(elsewhere, { recursive: true, force: true });
+});
+
+test("an agent pinned to a missing workspace key refuses to spawn", async () => {
+  const broken: MyClawConfig = { ...config, workspaces: {}, agents: { research: { workspace: "ghost" } } };
+  const runner = new SubAgentRunner(broken, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+
+  const result = await runner.spawn({
+    displayName: "ghost", type: "research", mode: "session", task: "init",
+    parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+    generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global",
+  });
+  assert.match(result.result, /not in config.workspaces/);
+});

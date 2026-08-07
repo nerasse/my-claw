@@ -207,11 +207,16 @@ export class ClaudeSdkBackend implements AgentBackend {
 
   /** The run's workspace: the session's own key's directory, else the default workspace. */
   private workspaceFor(session: SessionData): { workspaceDir: string; defaultWorkspaceDir: string } {
-    const fallback = this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
-    if (!session.workspace) return { workspaceDir: fallback, defaultWorkspaceDir: fallback };
+    // Always the default workspace, never this run's: it is the fallback layer for prompt files
+    // a secondary workspace does not override.
+    const defaultDir = process.env["MY_CLAW_WORKSPACE"] ?? this.config.workspace ?? process.cwd();
+    // An injected dir (the sub-agent runner) has already resolved the agent's workspace and any
+    // narrowing inside it, so it wins; the session key covers runs that have no injected dir.
+    if (this.workspaceDir) return { workspaceDir: this.workspaceDir, defaultWorkspaceDir: defaultDir };
+    if (!session.workspace) return { workspaceDir: defaultDir, defaultWorkspaceDir: defaultDir };
     return {
       workspaceDir: resolveWorkspaceKey(this.config, session.workspace),
-      defaultWorkspaceDir: fallback,
+      defaultWorkspaceDir: defaultDir,
     };
   }
 

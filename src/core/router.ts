@@ -1,6 +1,6 @@
 import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "./config.ts";
-import { injectionEnabled } from "./config.ts";
+import { injectionEnabled, resolveAgentWorkspace } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 import { log } from "../utils/logger.ts";
@@ -175,7 +175,14 @@ export class MessageRouter {
     const { signal, end } = runRegistry.startRoot(sessionId);
 
     try {
-      const session = await this.sessionManager.getOrCreate(sessionId, message);
+      // The orchestrator's configured workspace applies to conversations, and only at creation:
+      // an existing thread keeps the workspace it was born in. See docs/multi-workspace.md.
+      const session = await this.sessionManager.getOrCreateWithMeta(
+        sessionId,
+        message.platform,
+        message.chatType,
+        this.config ? resolveAgentWorkspace(this.config, "main") : undefined,
+      );
       hooks.emit("message:route:start", { message, sessionId });
       void log("info", "routing message", {
         ...messageLogData(message),

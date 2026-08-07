@@ -10,8 +10,11 @@ import { SkillRegistry } from "../src/skills/registry.ts";
 import { applyHotReload } from "../src/core/config-watcher.ts";
 import {
   parseConfig,
+  findUnknownAgentWorkspaces,
+  resolveAgentWorkspace,
   resolveWorkspaceDir,
   resolveWorkspaceKey,
+  workspaceKeyForDir,
   MY_CLAW_DIR,
   type MyClawConfig,
 } from "../src/core/config.ts";
@@ -206,6 +209,39 @@ test("read_skill and list_skills follow the run's workspace", async () => {
   assert.match(inDefault.output, /custom copy/);
   const listed = await list.execute({ __workspaceDir: a });
   assert.match(listed.output, /shared/);
+});
+
+// --- Per-agent workspaces ---
+
+test("an agent's configured workspace resolves, without inheriting from the orchestrator", () => {
+  const config = {
+    ...configWith({ sofa: "/tmp/sofa" }),
+    agents: { orchestrator: { workspace: "sofa" }, research: {} },
+  } as MyClawConfig;
+
+  assert.equal(resolveAgentWorkspace(config, "main"), "sofa");
+  // No inheritance: pinning the main agent must not drag every sub-agent and cron job with it.
+  assert.equal(resolveAgentWorkspace(config, "research"), undefined);
+  assert.equal(resolveAgentWorkspace(config, "cron"), undefined);
+});
+
+test("an agent workspace key that matches nothing is reported at boot", () => {
+  const config = {
+    ...configWith({ sofa: "/tmp/sofa" }),
+    agents: { research: { workspace: "ghost" }, cron: { workspace: "sofa" } },
+  } as MyClawConfig;
+
+  assert.deepEqual(findUnknownAgentWorkspaces(config), [
+    { path: "agents.research.workspace", key: "ghost" },
+  ]);
+});
+
+test("a directory maps back to its workspace key", () => {
+  const config = configWith({ sofa: "/tmp/sofa" });
+  assert.equal(workspaceKeyForDir(config, "/tmp/sofa"), "sofa");
+  assert.equal(workspaceKeyForDir(config, resolveWorkspaceDir(config.workspace)), undefined);
+  assert.equal(workspaceKeyForDir(config, "/tmp/elsewhere"), undefined);
+  assert.equal(workspaceKeyForDir(config, undefined), undefined);
 });
 
 // --- Cron workspace field ---

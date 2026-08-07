@@ -43,6 +43,42 @@ coherent for the whole lifetime of the session.
 - Changing a cron job's workspace does not migrate its session: cron runs are ephemeral
   anyway (see below).
 
+### Where the workspace comes from
+
+Resolved once, when the session is created, in this order:
+
+1. An explicit request — a cron job's `workspace` key.
+2. The agent's configured workspace — `agents.<type>.workspace`.
+3. The default workspace.
+
+A config change therefore moves **new** sessions only, which is what keeps the "a session
+never changes workspace" invariant true.
+
+## Per-agent workspaces
+
+`AgentConfig` already carries per-agent scoping (`llm`, `context`, `skills`, `mcp`);
+`workspace` is the same shape:
+
+```json
+"agents": {
+  "research": { "workspace": "sofa" },
+  "cron": { "workspace": "smartlink" }
+}
+```
+
+Any run of that agent type — including a sub-agent spawned as that type — is created in that
+workspace, with its prompt files, its skills and its cwd. An unknown key fails loudly rather
+than falling back to the default: boot reports it like an unknown scope entry, and a run that
+resolves it throws instead of silently working in the wrong directory.
+
+### Config may escape the parent workspace, a tool argument may not
+
+`spawn`'s `workspaceDir` argument stays confined to the calling run's workspace: it is written
+by the agent, and letting it point anywhere would make the boundary decorative. A workspace
+configured under `agents.<type>` is written by the owner, so it *is* allowed to sit outside the
+parent's workspace — that is the whole point of pinning an agent to a project. The confinement
+check therefore runs against the sub-agent's own resolved workspace, not the parent's.
+
 ## Per-file prompt resolution with fallback
 
 Prompt files are resolved per file: the file is read from the session's workspace when it

@@ -1,5 +1,6 @@
 import type { ChannelAdapter, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "../core/config.ts";
+import { resolveAgentWorkspace } from "../core/config.ts";
 import type { MessageRouter } from "../core/router.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import {
@@ -22,7 +23,11 @@ const SILENT_MARKER = "[SILENT]";
 const DEFAULT_CRON_TIMEOUT_MS = 30 * 60_000;
 
 /** A job referenced a workspace key that left the config: it must pause, not run elsewhere. */
-class CronWorkspaceMissingError extends Error {}
+class CronWorkspaceMissingError extends Error {
+  constructor(readonly key: string) {
+    super(`workspace "${key}" is not in config.workspaces`);
+  }
+}
 
 export class CronScheduler {
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -92,10 +97,10 @@ export class CronScheduler {
             // The workspace left the config: pausing is the only honest state. A scheduled
             // job would otherwise tick forever, failing at every run.
             job.state = "paused";
-            job.pausedReason = `workspace "${job.workspace}" is not in config.workspaces`;
+            job.pausedReason = err.message;
             job.enabled = false;
             void log("warn", "cron job paused: workspace missing", {
-              jobId: job.id, jobName: job.name, workspace: job.workspace,
+              jobId: job.id, jobName: job.name, workspace: err.key,
             });
           } else {
             const errMsg = err instanceof Error ? err.message : String(err);
@@ -134,16 +139,18 @@ export class CronScheduler {
       // nothing is left behind. See docs/multi-workspace.md.
       const sessionId = `cron/${job.id}/${Date.now()}`;
 
-      // An unknown workspace key would silently run the job in the default workspace — the
+      // The job's own key wins over the cron agent's configured workspace, which wins over the
+      // default. An unknown key would silently run the job in the default workspace — the
       // opposite of what the owner configured. The job pauses loudly instead.
-      if (job.workspace && !this.config.workspaces?.[job.workspace]) {
-        throw new CronWorkspaceMissingError(job.workspace);
+      const workspace = job.workspace ?? resolveAgentWorkspace(this.config, "cron");
+      if (workspace && !this.config.workspaces?.[workspace]) {
+        throw new CronWorkspaceMissingError(workspace);
       }
       const session = await this.sessionManager.getOrCreateWithMeta(
         sessionId,
         synthMessage.platform,
         synthMessage.chatType,
-        job.workspace,
+        workspace,
       );
       session.modelOverride = job.model || undefined;
 

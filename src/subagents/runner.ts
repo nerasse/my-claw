@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { MyClawConfig } from "../core/config.ts";
-import { MY_CLAW_DIR } from "../core/config.ts";
+import { MY_CLAW_DIR, resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyForDir } from "../core/config.ts";
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
@@ -59,6 +59,8 @@ export class SubAgentRunner {
     mode: "run" | "session";
     task: string;
     workspaceDir?: string;
+    /** Workspace of the run that asked for this spawn; inherited when the agent has none configured. */
+    parentWorkspaceDir?: string;
     parentMessage: UnifiedMessage;
     existingIds: Set<string>;
     generateId: (name: string, existing: Set<string>) => string;
@@ -70,35 +72,68 @@ export class SubAgentRunner {
     // run is still going races it on the session file (and the SDK session resume).
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
   }): Promise<{ id: string; result: string }> {
-    const { displayName, type, mode, task, workspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
+    const { displayName, type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
+
+    const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
+    if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}` };
+
     if (mode === "run") {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, workspaceDir, parentMessage, parentSessionId, signal, model);
+      return this.runOneShot(type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model);
     }
 
     const id = generateId(displayName, existingIds);
     const meta: SubAgentMeta = {
       displayName,
       type,
-      workspaceDir,
+      workspaceDir: resolved.dir,
       parentSessionId,
       visibility,
       createdAt: new Date().toISOString(),
     };
 
-    const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta);
+    const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
     session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
     await saveSession(id, session);
     indexSessionArchive(session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode });
-    const run = () => this.executeRun(id, type, workspaceDir, parentMessage, signal, model);
+    const run = () => this.executeRun(id, type, resolved.dir, parentMessage, signal, model);
     const result = await (enqueue ? enqueue(id, run) : run());
     hooks.emit("subagent:complete", { id, resultLength: result.length });
     return { id, result };
+  }
+
+  /**
+   * Where this sub-agent runs and which workspace it belongs to. The agent's configured
+   * workspace wins over the parent's (that is what pinning an agent to a project means), and
+   * an explicit `workspaceDir` may only narrow inside that base — it is written by the agent,
+   * so letting it point anywhere would make the boundary decorative.
+   * See docs/multi-workspace.md.
+   */
+  private resolveWorkspace(
+    type: SubAgentType,
+    workspaceDir: string | undefined,
+    parentWorkspaceDir: string | undefined,
+  ): { dir: string | undefined; key: string | undefined } | { error: string } {
+    const configuredKey = resolveAgentWorkspace(this.config, type);
+    if (configuredKey && !this.config.workspaces?.[configuredKey]) {
+      return { error: `agents.${type}.workspace points at "${configuredKey}", which is not in config.workspaces.` };
+    }
+    const base = configuredKey ? resolveWorkspaceKey(this.config, configuredKey) : parentWorkspaceDir;
+    if (workspaceDir && base) {
+      const target = resolve(workspaceDir);
+      if (target !== base && !target.startsWith(base + "/")) {
+        return { error: `workspaceDir "${workspaceDir}" must be within the agent's workspace (${base}).` };
+      }
+    }
+    return {
+      dir: workspaceDir ?? base,
+      key: configuredKey ?? workspaceKeyForDir(this.config, parentWorkspaceDir),
+    };
   }
 
   async send(
@@ -154,7 +189,9 @@ export class SubAgentRunner {
       return `Error: sub-agent ${id} not found.`;
     }
     await archiveSession(id);
-    const fresh = this.createSession(id, session.platform, session.chatType, session.meta);
+    // The workspace survives a reset like the rest of the identity: a sub-agent pinned to a
+    // project must not silently come back in the default one.
+    const fresh = this.createSession(id, session.platform, session.chatType, session.meta, session.workspace);
     await saveSession(id, fresh);
     hooks.emit("subagent:reset", { id });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
@@ -189,6 +226,7 @@ export class SubAgentRunner {
     type: SubAgentType,
     task: string,
     workspaceDir: string | undefined,
+    workspaceKey: string | undefined,
     parentMessage: UnifiedMessage,
     parentSessionId: string,
     signal?: AbortSignal,
@@ -205,7 +243,7 @@ export class SubAgentRunner {
       parentSessionId,
       visibility: "private",
       createdAt: new Date().toISOString(),
-    });
+    }, workspaceKey);
     session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
 
@@ -306,7 +344,13 @@ export class SubAgentRunner {
     }
   }
 
-  private createSession(id: string, platform: string, chatType: string, meta: SubAgentMeta | undefined): SessionData {
+  private createSession(
+    id: string,
+    platform: string,
+    chatType: string,
+    meta: SubAgentMeta | undefined,
+    workspace?: string,
+  ): SessionData {
     return {
       id,
       platform,
@@ -315,6 +359,7 @@ export class SubAgentRunner {
       lastActiveAt: new Date().toISOString(),
       messages: [],
       meta,
+      ...(workspace ? { workspace } : {}),
     };
   }
 

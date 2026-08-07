@@ -327,6 +327,12 @@ export interface AgentConfig {
   skills?: string[];
   /** MCP server names whose tools reach this agent. Same semantics as `skills`. */
   mcp?: string[];
+  /**
+   * Workspace key (from `workspaces`) this agent runs in. Applied when a session is created,
+   * so a config change moves new runs only and a live conversation never switches workspace.
+   * Absent = the default workspace. See docs/multi-workspace.md.
+   */
+  workspace?: string;
 }
 
 /** Lazy nested AGENTS.md discovery. See `docs/nested-agents.md`. */
@@ -654,6 +660,41 @@ export function resolveAgentMcp(config: MyClawConfig, type: AgentToolType): Agen
 
 export function scopeAllows(scope: AgentScope, name: string): boolean {
   return scope === "all" || scope.includes(name);
+}
+
+/**
+ * The workspace key an agent type runs in, or undefined for the default workspace. Unlike skills
+ * and mcp there is no inheritance from the orchestrator: pinning the main agent to a project must
+ * not silently drag every sub-agent and cron job into it.
+ */
+export function resolveAgentWorkspace(config: MyClawConfig, type: AgentToolType): string | undefined {
+  const key = config.agents?.[configKeyForAgent(type)]?.workspace;
+  return key ? key : undefined;
+}
+
+/**
+ * Reverse lookup: the key of the workspace a directory belongs to, or undefined for the default
+ * one. Used where only the resolved directory travels (tool args, sub-agent inheritance) and the
+ * key is needed to scope skills.
+ */
+export function workspaceKeyForDir(config: MyClawConfig, dir: string | undefined): string | undefined {
+  if (!dir || dir === resolveWorkspaceDir(config.workspace)) return undefined;
+  for (const [key, root] of Object.entries(config.workspaces ?? {})) {
+    if (dir === root) return key;
+  }
+  return undefined;
+}
+
+/** Agent entries pointing at a workspace key that does not exist. Reported at boot like an
+ *  unknown scope entry: a typo would otherwise pin an agent to nothing and fail at run time. */
+export function findUnknownAgentWorkspaces(config: MyClawConfig): Array<{ path: string; key: string }> {
+  const out: Array<{ path: string; key: string }> = [];
+  for (const agentKey of ["orchestrator", "general", "research", "cron"] as const) {
+    const key = config.agents?.[agentKey]?.workspace;
+    if (!key) continue;
+    if (!config.workspaces?.[key]) out.push({ path: `agents.${agentKey}.workspace`, key });
+  }
+  return out;
 }
 
 export interface UnknownScopeEntry {

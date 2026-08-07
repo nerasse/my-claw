@@ -803,6 +803,20 @@ key re-scans the skill layers without a restart. A cron job references a key
 (`workspace: "sofa"`); an unknown key pauses the job with a reason. Sessions are bound to a
 workspace at creation and never change it. See `docs/multi-workspace.md`.
 
+An agent type can be pinned to a workspace, alongside its other per-agent settings:
+
+```json
+"agents": {
+  "research": { "workspace": "sofa" }
+}
+```
+
+Applied when a session is created, so a live conversation never switches workspace and a config
+change moves new runs only. No inheritance from the orchestrator: pinning the main agent must not
+drag every sub-agent and cron job into it. A sub-agent of that type runs there too — with that
+workspace's prompt files *and* its skills — and its own `workspaceDir` argument may only narrow
+inside it. An unknown key is reported at boot and refuses the run.
+
 ## Cron
 
 ```json
