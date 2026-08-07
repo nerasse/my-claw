@@ -1,5 +1,6 @@
 import { query as sdkQuery, type Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentToolType, EffortLevel, MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
+import { resolveWorkspaceKey } from "../../core/config.ts";
 import {
   MY_CLAW_DIR,
   nestedAgentsEnabled,
@@ -204,6 +205,16 @@ export class ClaudeSdkBackend implements AgentBackend {
     this.queryFn = queryFn ?? (sdkQuery as unknown as SdkQueryFn);
   }
 
+  /** The run's workspace: the session's own key's directory, else the default workspace. */
+  private workspaceFor(session: SessionData): { workspaceDir: string; defaultWorkspaceDir: string } {
+    const fallback = this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
+    if (!session.workspace) return { workspaceDir: fallback, defaultWorkspaceDir: fallback };
+    return {
+      workspaceDir: resolveWorkspaceKey(this.config, session.workspace),
+      defaultWorkspaceDir: fallback,
+    };
+  }
+
   getEchoMessages(messageId: string): OutgoingMessage[] {
     return this.preprocessor.consumeEchoMessages(messageId);
   }
@@ -368,13 +379,16 @@ export class ClaudeSdkBackend implements AgentBackend {
     try {
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
-      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType));
+      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType), session.workspace);
+      const runWorkspace = this.workspaceFor(session);
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         sessionId: session.id,
         tools,
         skills: allSkills,
+        workspaceDir: runWorkspace.workspaceDir,
+        defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
         suggestedSkills: await selectRelevantSkills(
           allSkills,
           message.text,
@@ -415,11 +429,11 @@ export class ClaudeSdkBackend implements AgentBackend {
         depth: this.depth,
         agentType: agentToolType,
         signal,
-        workspaceDir: this.workspaceDir,
+        workspaceDir: this.workspaceFor(session).workspaceDir,
         addAttachment: (att) => this.preprocessor.addResponseAttachment(message.id, att),
         nestedAgents: nestedAgentsEnabled(this.config)
           ? new NestedAgentsCollector(
-              this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+              this.workspaceFor(session).workspaceDir,
               resolveNestedAgentsMaxBytes(this.config),
             )
           : undefined,
@@ -462,7 +476,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         effort: toSdkEffort(llmConfig.effort),
         maxTurns,
         systemPrompt,
-        cwd: this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
+        cwd: this.workspaceFor(session).workspaceDir,
         resume: session.sdkSessionId,
         abortController,
         includePartialMessages: streaming,

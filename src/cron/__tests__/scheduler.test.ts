@@ -4,6 +4,15 @@ import { loadJobs, saveJobs, createJob } from "../store.ts";
 import { hooks } from "../../hooks/index.ts";
 import type { MessageRouter } from "../../core/router.ts";
 import type { SessionManager } from "../../sessions/manager.ts";
+
+const makeSession = () => ({
+  id: "test",
+  platform: "cron",
+  chatType: "dm",
+  createdAt: new Date().toISOString(),
+  lastActiveAt: new Date().toISOString(),
+  messages: [],
+});
 import type { MyClawConfig } from "../../core/config.ts";
 import type { ChannelAdapter } from "../../channels/types.ts";
 import type { RouteResult } from "../../core/router.ts";
@@ -36,17 +45,10 @@ describe("cron scheduler", () => {
       stop: () => {},
     } as unknown as MessageRouter;
 
-    const makeSession = () => ({
-      id: "test",
-      platform: "cron",
-      chatType: "dm",
-      createdAt: new Date().toISOString(),
-      lastActiveAt: new Date().toISOString(),
-      messages: [],
-    });
     sessionManager = {
       getOrCreateWithMeta: async () => makeSession(),
       getOrCreate: async () => makeSession(),
+      deleteSession: async () => {},
     } as unknown as SessionManager;
 
     config = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, agents: {}, cron: { enabled: true } } as MyClawConfig;
@@ -194,7 +196,8 @@ describe("cron scheduler", () => {
 
       const result = await scheduler.tick();
       expect(result).toBe(0); // timed-out job is not counted as executed
-      expect(stopCalls).toContain(`cron/${job.id}`); // router.stop fired for this session
+      // The session id is per-run now; router.stop fired for that run's session.
+      expect(stopCalls.some((id) => id.startsWith(`cron/${job.id}/`))).toBe(true);
       expect(sentMessages).toHaveLength(0); // nothing delivered
 
       const jobs = await loadJobs();
@@ -223,6 +226,61 @@ describe("cron scheduler", () => {
       const [r1, r2] = await Promise.all([scheduler.tick(), scheduler.tick()]);
       expect(r1 + r2).toBe(1); // Only one should execute
     });
+  });
+
+  test("a job whose workspace key left the config pauses instead of running elsewhere", async () => {
+    let routed = 0;
+    router.routeCron = async () => {
+      routed++;
+      return { text: "never" };
+    };
+
+    const job = createJob({
+      prompt: "test",
+      schedule: "every 30m",
+      origin: { platform: "telegram", chatId: "123" },
+      deliver: "origin",
+      workspace: "sofa",
+    });
+    job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+    await saveJobs([job]);
+
+    config.workspaces = {}; // the key is gone
+    const result = await scheduler.tick();
+
+    expect(result).toBe(0);
+    expect(routed).toBe(0);
+    const [after] = await loadJobs();
+    expect(after!.state).toBe("paused");
+    expect(after!.enabled).toBe(false);
+    expect(after!.pausedReason).toContain("sofa");
+    expect(after!.lastStatus).toBeNull(); // not a run failure: a refusal to run
+  });
+
+  test("a job in a configured workspace runs with the workspace on its session", async () => {
+    const job = createJob({
+      prompt: "test",
+      schedule: "every 30m",
+      origin: { platform: "telegram", chatId: "123" },
+      deliver: "origin",
+      workspace: "sofa",
+    });
+    job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+    await saveJobs([job]);
+    config.workspaces = { sofa: "/tmp/sofa" };
+
+    const sessions: Array<{ sessionId: string; workspace?: string }> = [];
+    sessionManager.getOrCreateWithMeta = async (sessionId: string, _platform: string, _chatType: string, workspace?: string) => {
+      const session = makeSession();
+      sessions.push({ sessionId, workspace });
+      return session;
+    };
+
+    const result = await scheduler.tick();
+    expect(result).toBe(1);
+    expect(sessions.length).toBe(1);
+    expect(sessions[0]!.workspace).toBe("sofa");
+    expect(sessions[0]!.sessionId.startsWith(`cron/${job.id}/`)).toBe(true);
   });
 
   describe("deliverResult", () => {

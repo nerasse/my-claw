@@ -9,7 +9,14 @@ import { parsesAsSkill } from "../skills/loader.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { snapshot } from "../core/config-store.ts";
-import { resolveAgentSkills, scopeAllows, type AgentScope, type AgentToolType, type MyClawConfig } from "../core/config.ts";
+import {
+  resolveAgentSkills,
+  resolveWorkspaceDir,
+  scopeAllows,
+  type AgentScope,
+  type AgentToolType,
+  type MyClawConfig,
+} from "../core/config.ts";
 
 /**
  * The calling agent's skill scope, read from the `__agentType` the backends attach to every tool
@@ -20,6 +27,18 @@ function scopeFromArgs(config: MyClawConfig, args: Record<string, unknown>): Age
   const raw = args["__agentType"];
   const type: AgentToolType = raw === "general" || raw === "research" || raw === "cron" ? raw : "main";
   return resolveAgentSkills(config, type);
+}
+
+/** Key of the workspace this run belongs to, from the dir the backends injected. Undefined for
+ *  default-workspace runs: they resolve to the unscoped global skills. */
+function workspaceKeyFromArgs(config: MyClawConfig, args: Record<string, unknown>): string | undefined {
+  const workspaceDir = args["__workspaceDir"];
+  if (typeof workspaceDir !== "string" || !workspaceDir) return undefined;
+  if (workspaceDir === resolveWorkspaceDir(config.workspace)) return undefined;
+  for (const [key, dir] of Object.entries(config.workspaces ?? {})) {
+    if (workspaceDir === dir) return key;
+  }
+  return undefined;
 }
 
 const MAX_NAME_LENGTH = 64;
@@ -49,8 +68,9 @@ export function createListSkillsTool(registry: SkillRegistry, config: MyClawConf
     },
     execute: async (args: Record<string, unknown>) => {
       // Must match the prompt catalog: listing more than the scope would advertise skills that
-      // read_skill then refuses.
-      const skills = registry.list(scopeFromArgs(config, args));
+      // read_skill then refuses. Same for the run's workspace: a secondary workspace must not
+      // be told about another project's skills.
+      const skills = registry.list(scopeFromArgs(config, args), workspaceKeyFromArgs(config, args));
       if (skills.length === 0) {
         return { success: true, output: "No skills available." };
       }
@@ -77,7 +97,7 @@ export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfi
     execute: async (args: Record<string, unknown>) => {
       const name = String(args["name"] ?? "");
       const filePath = args["file_path"] ? String(args["file_path"]) : undefined;
-      const skill = registry.get(name);
+      const skill = registry.get(name, workspaceKeyFromArgs(config, args));
       if (!skill) {
         return { success: false, output: `Skill "${name}" not found. Use list_skills() to see available skills.` };
       }
@@ -113,12 +133,37 @@ export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfi
 
 export function createManageSkillsTool(
   skillRegistry: SkillRegistry,
+  config: MyClawConfig,
   builtinDir: string,
   customDir: string,
   workspaceSkillsDir: string,
 ): Tool {
   async function refreshRegistry(): Promise<void> {
-    await reloadSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir }, skillRegistry);
+    await reloadSkills(
+      {
+        builtInDir: builtinDir,
+        customDir,
+        workspaceDir: workspaceSkillsDir,
+        workspaces: Object.entries(config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "skills") })),
+      },
+      skillRegistry,
+    );
+  }
+
+  /** The dir a skill lives in, whatever workspace it belongs to. */
+  function skillBaseDir(skill: { source: string; workspace?: string }): string {
+    if (skill.source !== "workspace") return customDir;
+    const dir = skill.workspace ? config.workspaces?.[skill.workspace] : undefined;
+    if (dir) return join(dir, "skills");
+    return workspaceSkillsDir;
+  }
+
+  /** Where this run's created skills land: its own workspace's skills dir when in one. */
+  function runWorkspaceSkillsDir(args: Record<string, unknown>): string {
+    const key = workspaceKeyFromArgs(config, args);
+    const dir = key ? config.workspaces?.[key] : undefined;
+    if (dir) return join(dir, "skills");
+    return workspaceSkillsDir;
   }
 
   return {
@@ -180,7 +225,7 @@ export function createManageSkillsTool(
           return { success: false, output: "instructions is required (cannot be empty)." };
         }
 
-        const skillDir = join(workspaceSkillsDir, name);
+        const skillDir = join(runWorkspaceSkillsDir(args), name);
         try {
           await mkdir(skillDir, { recursive: true });
         } catch (err) {
@@ -208,7 +253,7 @@ export function createManageSkillsTool(
           return { success: false, output: "instructions is required for update." };
         }
 
-        const skill = skillRegistry.get(name);
+        const skill = skillRegistry.get(name, workspaceKeyFromArgs(config, args));
         if (!skill) {
           return { success: false, output: `Skill "${name}" not found.` };
         }
@@ -216,7 +261,7 @@ export function createManageSkillsTool(
           return { success: false, output: `Cannot modify built-in skill "${name}".` };
         }
 
-        const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customDir;
+        const baseDir = skillBaseDir(skill);
         const skillFile = join(baseDir, name, "SKILL.md");
 
         try {
@@ -254,7 +299,7 @@ export function createManageSkillsTool(
       }
 
       if (action === "delete") {
-        const skill = skillRegistry.get(name);
+        const skill = skillRegistry.get(name, workspaceKeyFromArgs(config, args));
         if (!skill) {
           return { success: false, output: `Skill "${name}" not found.` };
         }
@@ -262,8 +307,7 @@ export function createManageSkillsTool(
           return { success: false, output: `Cannot delete built-in skill "${name}".` };
         }
 
-        const baseDir = skill.source === "workspace" ? workspaceSkillsDir : customDir;
-        const skillDir = join(baseDir, name);
+        const skillDir = join(skillBaseDir(skill), name);
 
         try {
           await rm(skillDir, { recursive: true, force: true });

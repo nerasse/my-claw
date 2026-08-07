@@ -11,6 +11,10 @@ export interface Skill {
   content: string;
   path: string;
   source: "built-in" | "custom" | "workspace";
+  /** Key of the workspace layer this skill came from (config.workspaces). Unset for the
+   *  default workspace's skills, so a default-workspace session keeps seeing them as the
+   *  legacy unscoped workspace tier. See docs/multi-workspace.md. */
+  workspace?: string;
 }
 
 export interface SkillInfo {
@@ -19,4 +23,6 @@ export interface SkillInfo {
   version?: string;
   source: Skill["source"];
   path: string;
+  /** Key of the workspace this skill belongs to, when it is a secondary workspace's. */
+  workspace?: string;
 }

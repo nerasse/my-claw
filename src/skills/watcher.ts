@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
 import type { SkillRegistry } from "./registry.ts";
-import { reloadSkills, type SkillDirs } from "./reload.ts";
+import { reloadSkills, editableTierDirs, type SkillDirs } from "./reload.ts";
 
 const DEBOUNCE_MS = 300;
 
@@ -12,6 +12,9 @@ export interface SkillsWatcherOptions {
   debounceMs?: number;
   // Test seam: override the rescan so tests can assert without touching real dirs.
   reload?: () => Promise<number>;
+  // Tier dirs may change at runtime (config.workspaces is hot-reloadable): re-derived on
+  // every event so a newly added workspace is picked up without a restart.
+  getTierDirs?: () => string[];
 }
 
 /**
@@ -31,7 +34,7 @@ export function startSkillsWatcher(
 ): () => void {
   const debounceMs = options.debounceMs ?? DEBOUNCE_MS;
   const reload = options.reload ?? (() => reloadSkills(dirs, registry));
-  const tierDirs = [dirs.customDir, dirs.workspaceDir];
+  const getTierDirs = options.getTierDirs ?? (() => editableTierDirs(dirs));
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const tierWatchers = new Map<string, FSWatcher>();
@@ -55,7 +58,7 @@ export function startSkillsWatcher(
   const syncChildWatchers = async (): Promise<void> => {
     if (stopped) return;
     const present = new Set<string>();
-    for (const tier of tierDirs) {
+    for (const tier of getTierDirs()) {
       let entries;
       try {
         entries = await readdir(tier, { withFileTypes: true });
@@ -83,12 +86,27 @@ export function startSkillsWatcher(
   };
 
   const onTierEvent = (): void => {
+    // A new tier dir (config.workspaces edited) gets its own watcher before the rescan.
+    syncTierWatchers();
     void syncChildWatchers();
     scheduleReload();
   };
 
+  /** Attach watchers to tier dirs that appeared since the last event (hot workspaces). */
+  const syncTierWatchers = (): void => {
+    for (const tier of getTierDirs()) {
+      if (tierWatchers.has(tier)) continue;
+      void mkdir(tier, { recursive: true }).catch(() => undefined);
+      try {
+        tierWatchers.set(tier, watch(tier, () => onTierEvent()));
+      } catch {
+        // Race with mkdir: the next event retries.
+      }
+    }
+  };
+
   void (async () => {
-    for (const tier of tierDirs) {
+    for (const tier of getTierDirs()) {
       // Watching a missing dir throws; create it so a later mkdir by the agent is seen.
       await mkdir(tier, { recursive: true }).catch(() => undefined);
       if (stopped) return;

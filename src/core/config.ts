@@ -393,6 +393,12 @@ export interface MyClawConfig {
   webSearch?: WebSearchConfig;
   browser?: BrowserConfig;
   workspace?: string;
+  /**
+   * Named secondary workspaces, each an absolute path. A cron job or future feature references
+   * the key, never the path, so moving a project is a one-line config change. The key `default`
+   * is reserved for `workspace`. Hot-reloadable; see docs/multi-workspace.md.
+   */
+  workspaces?: Record<string, string>;
   cron?: CronConfig;
   memory?: MemoryConfig;
   injection?: InjectionConfig;
@@ -832,7 +838,7 @@ export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
  * so the structural guard below can share the exact same lists instead of drifting from them.
  */
 export const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces",
 ] as const;
 /** Array sections whose identity must be preserved (consumers hold the same array reference). */
 export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
@@ -883,6 +889,7 @@ export function parseConfig(raw: string): MyClawConfig {
     throw new Error(`Invalid config: ${CONFIG_PATH} must contain a JSON object`);
   }
   assertStructure(config);
+  validateWorkspaces(config);
 
   if (isLegacyLlmConfig(config.llm)) {
     config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);
@@ -925,6 +932,35 @@ export function resolveWorkspaceDir(raw?: string): string {
   return raw ?? join(MY_CLAW_DIR, "workspace");
 }
 
+/** Resolve a workspace key against the named list, or the default workspace when absent. */
+export function resolveWorkspaceKey(config: MyClawConfig, key?: string): string {
+  if (!key) return resolveWorkspaceDir(config.workspace);
+  const dir = config.workspaces?.[key];
+  if (!dir) throw new Error(`Unknown workspace key "${key}" (see config.workspaces)`);
+  return dir;
+}
+
+/**
+ * A workspace list with a relative path or a reserved key would silently point runs at the
+ * wrong directory later: refuse the config as a whole, like any other structural violation.
+ * Throws in parseConfig, so boot and hot-reload reject it the same way.
+ */
+function validateWorkspaces(config: MyClawConfig): void {
+  const workspaces = config.workspaces;
+  if (workspaces === undefined) return;
+  if (typeof workspaces !== "object" || Array.isArray(workspaces)) {
+    throw new Error('Invalid config: "workspaces" must be an object mapping names to absolute paths');
+  }
+  for (const [key, dir] of Object.entries(workspaces)) {
+    if (!key || key === "default" || key.includes("/")) {
+      throw new Error(`Invalid config: "workspaces.${key}" — the key "default" is reserved and keys cannot contain "/"`);
+    }
+    if (typeof dir !== "string" || !dir.startsWith("/")) {
+      throw new Error(`Invalid config: "workspaces.${key}" must be an absolute path, got "${String(dir)}"`);
+    }
+  }
+}
+
 /**
  * Filesystem side effects a parsed config needs before use: resolve and create the workspace, seed
  * the prompt templates. Split out of loadConfig so the boot fallback can run them on a config that
@@ -935,6 +971,9 @@ export async function finalizeConfig(config: MyClawConfig): Promise<MyClawConfig
   await mkdir(workspacePath, { recursive: true });
   await seedWorkspaceTemplates(workspacePath);
   config.workspace = workspacePath;
+  for (const dir of Object.values(config.workspaces ?? {})) {
+    await mkdir(dir, { recursive: true });
+  }
   return config;
 }
 

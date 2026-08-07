@@ -1,4 +1,5 @@
 import { handleStatusCommand } from "../status-command.ts";
+import { join } from "node:path";
 import type { ModelPricing } from "../../llm/pricing.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
@@ -277,7 +278,12 @@ export function createTelegramCommandHandler({
         if (!skillRegistry || !builtinDir || !customDir || !workspaceSkillsDir) {
           return "Skill registry not available.";
         }
-        const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+        const allSkills = await loadAllSkills({
+          builtInDir: builtinDir,
+          customDir: customDir,
+          workspaceDir: workspaceSkillsDir,
+          workspaces: Object.entries(config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "skills") })),
+        });
         skillRegistry.setAll(allSkills);
         hooks.emit("skills:reloaded", { count: allSkills.size });
         return `Skills reloaded. ${allSkills.size} skills available.`;

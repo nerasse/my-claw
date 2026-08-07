@@ -21,6 +21,9 @@ const SILENT_MARKER = "[SILENT]";
 // (deep research, many sub-agents) can finish. Override per install via cron.timeoutMs.
 const DEFAULT_CRON_TIMEOUT_MS = 30 * 60_000;
 
+/** A job referenced a workspace key that left the config: it must pause, not run elsewhere. */
+class CronWorkspaceMissingError extends Error {}
+
 export class CronScheduler {
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
@@ -85,9 +88,20 @@ export class CronScheduler {
           markJobRun(job, true);
           executed++;
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          markJobRun(job, false, errMsg);
-          void log("error", "cron job failed", { jobId: job.id, jobName: job.name, error: errMsg });
+          if (err instanceof CronWorkspaceMissingError) {
+            // The workspace left the config: pausing is the only honest state. A scheduled
+            // job would otherwise tick forever, failing at every run.
+            job.state = "paused";
+            job.pausedReason = `workspace "${job.workspace}" is not in config.workspaces`;
+            job.enabled = false;
+            void log("warn", "cron job paused: workspace missing", {
+              jobId: job.id, jobName: job.name, workspace: job.workspace,
+            });
+          } else {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            markJobRun(job, false, errMsg);
+            void log("error", "cron job failed", { jobId: job.id, jobName: job.name, error: errMsg });
+          }
         }
       }
 
@@ -115,9 +129,22 @@ export class CronScheduler {
     try {
       const prompt = this.buildCronPrompt(job);
       const synthMessage = this.buildSyntheticMessage(job, prompt);
-      const sessionId = `cron/${job.id}`;
+      // A fresh session per run, so one run never inherits the history of the previous one:
+      // the prompt runs against its own workspace and model from the first message, and
+      // nothing is left behind. See docs/multi-workspace.md.
+      const sessionId = `cron/${job.id}/${Date.now()}`;
 
-      const session = await this.sessionManager.getOrCreate(sessionId, synthMessage);
+      // An unknown workspace key would silently run the job in the default workspace — the
+      // opposite of what the owner configured. The job pauses loudly instead.
+      if (job.workspace && !this.config.workspaces?.[job.workspace]) {
+        throw new CronWorkspaceMissingError(job.workspace);
+      }
+      const session = await this.sessionManager.getOrCreateWithMeta(
+        sessionId,
+        "telegram",
+        "dm",
+        job.workspace,
+      );
       session.modelOverride = job.model || undefined;
 
       const timeoutMs = this.config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS;
@@ -137,6 +164,10 @@ export class CronScheduler {
       if (timedOut) {
         throw new Error(`Cron job timed out after ${Math.round(timeoutMs / 1000)}s (cron.timeoutMs)`);
       }
+      // The run's history is ephemeral by design: the durable record is the job output.
+      await this.sessionManager.deleteSession(sessionId).catch((err) => {
+        void log("warn", "cron session cleanup failed", { jobId: job.id, error: String(err) });
+      });
       const responseText = result?.text ?? "";
       const attachments = result?.attachments ?? [];
 

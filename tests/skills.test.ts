@@ -72,7 +72,7 @@ test("parse frontmatter with name and description", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "test-skill", "---\nname: test-skill\ndescription: A test skill\n---\n\nInstructions here.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   assert.equal(skills.size, 1);
 
   const skill = skills.get("test-skill")!;
@@ -87,7 +87,7 @@ test("parse frontmatter with version", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "versioned", "---\nname: versioned\ndescription: With version\nversion: 1.2.3\n---\n\nContent.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const skill = skills.get("versioned")!;
   assert.equal(skill.meta.version, "1.2.3");
 
@@ -98,7 +98,7 @@ test("reject skill without name or description", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "bad", "---\nfoo: bar\n---\n\nNo name here.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   assert.equal(skills.size, 0);
 
   await rm(dir, { recursive: true, force: true });
@@ -114,7 +114,8 @@ test("merge priority: workspace > custom > built-in", async () => {
   await writeSkill(workspace, "shared", "---\nname: shared\ndescription: workspace\n---\n\nWorkspace content.");
 
   const skills = await loadAllSkills({ builtInDir: builtIn, customDir: custom, workspaceDir: workspace });
-  const skill = skills.get("shared")!;
+  const registry = new SkillRegistry(skills);
+  const skill = registry.get("shared")!;
   assert.equal(skill.source, "workspace");
   assert.equal(skill.content, "Workspace content.");
 
@@ -128,7 +129,7 @@ test("SkillRegistry get and list", async () => {
   await writeSkill(dir, "alpha", "---\nname: alpha\ndescription: Alpha skill\n---\n\nAlpha.");
   await writeSkill(dir, "beta", "---\nname: beta\ndescription: Beta skill\n---\n\nBeta.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
 
   assert.ok(registry.exists("alpha"));
@@ -196,7 +197,7 @@ test("list_skills tool", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "s1", "---\nname: s1\ndescription: First\n---\n\nOne.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createListSkillsTool(registry, noScope);
 
@@ -212,7 +213,7 @@ test("read_skill tool", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "s2", "---\nname: s2\ndescription: Second\n---\n\nDetailed instructions.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -232,7 +233,7 @@ test("manage_skills create action", async () => {
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({
     action: "create",
@@ -262,7 +263,7 @@ test("manage_skills update action modifies workspace skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({ action: "update", name: "updatable", instructions: "New content." });
   assert.equal(result.success, true);
@@ -285,7 +286,7 @@ test("manage_skills update rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({ action: "update", name: "protected", instructions: "Hack." });
   assert.equal(result.success, false);
@@ -305,7 +306,7 @@ test("manage_skills delete removes workspace skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({ action: "delete", name: "deletable" });
   assert.equal(result.success, true);
@@ -326,7 +327,7 @@ test("manage_skills delete rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({ action: "delete", name: "protected2" });
   assert.equal(result.success, false);
@@ -341,7 +342,7 @@ test("skill index appears in system prompt via buildSystemPrompt", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "prompt-skill", "---\nname: prompt-skill\ndescription: A prompt test skill\n---\n\nDo this.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
 
   const { buildSystemPrompt } = await import("../src/agent/prompt/builder.ts");
@@ -379,7 +380,7 @@ test("sub-agent receives same skills as main agent", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "shared", "---\nname: shared\ndescription: Shared skill\n---\n\nShared.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const skillRegistry = new SkillRegistry(skills);
 
   const { SubAgentRunner } = await import("../src/subagents/runner.ts");
@@ -408,7 +409,7 @@ test("read_skill returns full content for loaded skill", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "deep", "---\nname: deep\ndescription: Deep skill\n---\n\nStep 1: Analyze\nStep 2: Execute\nStep 3: Verify");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -427,7 +428,7 @@ test("read_skill with file_path reads referenced file", async () => {
   await mkdir(join(dir, "multi", "references"), { recursive: true });
   await writeFile(join(dir, "multi", "references", "detail.md"), "# Detail\n\nDeep instructions here.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -442,7 +443,7 @@ test("read_skill with bad file_path returns error", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "single", "---\nname: single\ndescription: Single file\n---\n\nAlone.");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -457,7 +458,7 @@ test("read_skill substitutes ${SKILL_DIR} with absolute path", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "scripted", "---\nname: scripted\ndescription: Scripted skill\n---\n\nRun: bash ${SKILL_DIR}/scripts/run.sh");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -475,7 +476,7 @@ test("read_skill substitutes ${SKILL_DIR} in referenced files too", async () => 
   await mkdir(join(dir, "multi-ref", "references"), { recursive: true });
   await writeFile(join(dir, "multi-ref", "references", "detail.md"), "Run script: bash ${SKILL_DIR}/scripts/helper.py");
 
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
   const tool = createReadSkillTool(registry, noScope);
 
@@ -529,7 +530,7 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
   await writeFile(join(dir, "docker-deploy", "scripts", "build.sh"), "#!/bin/sh\ndocker build -t app .");
 
   // Load skills
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
 
   // 1. Agent sees skill in index (system prompt test already covers this)
@@ -565,7 +566,7 @@ test("manage_skills create validates name format", async () => {
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   // Empty name
   const empty = await tool.execute({ action: "create", name: "", description: "d", instructions: "i" });
@@ -602,7 +603,7 @@ test("manage_skills create validates description and instructions", async () => 
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   // Empty description
   const noDesc = await tool.execute({ action: "create", name: "test", description: "", instructions: "i" });
@@ -630,7 +631,7 @@ test("manage_skills create writes to correct workspace path", async () => {
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, builtin, custom, ws);
+  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
 
   const result = await tool.execute({
     action: "create",
@@ -690,7 +691,7 @@ async function twoSkillRegistry(): Promise<{ registry: SkillRegistry; dir: strin
   const dir = await setupDir();
   await writeSkill(dir, "allowed", "---\nname: allowed\ndescription: In scope\n---\n\nBody A.");
   await writeSkill(dir, "hidden", "---\nname: hidden\ndescription: Out of scope\n---\n\nBody B.");
-  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir, workspaceDir: dir });
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   return { registry: new SkillRegistry(skills), dir };
 }
 

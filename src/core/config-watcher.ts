@@ -72,6 +72,8 @@ export interface ConfigReloadContext {
   reloadCron?: () => void;
   reloadMemory?: (memory: MyClawConfig["memory"]) => void;
   recreateTelegram?: () => void;
+  /** Re-scan the skill layers: the workspace list is hot, so new keys take effect without a restart. */
+  reloadSkills?: () => void;
 }
 
 export interface ConfigWatcherOptions {
@@ -259,6 +261,8 @@ export function runReloadAppliers(
   if (changed.includes("cron")) ctx.reloadCron?.();
   // memory: recall knobs are live, but a changed embedding model needs a re-warm + backfill.
   if (changed.includes("memory")) ctx.reloadMemory?.(config.memory);
+  // workspaces: added keys open new skills layers; the watcher re-targets on its own tier list.
+  if (changed.includes("workspaces")) ctx.reloadSkills?.();
   // agents, injection, browser, tools, skills, voice, blacklist are read live through the shared config; no applier.
 }
 

@@ -24,6 +24,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
         job_id: { type: "string", description: "Job ID (update/pause/resume/remove/trigger)" },
         deliver: { type: "string", description: "Delivery target: 'origin' (same chat as creation), 'local' (no delivery), or 'platform:chatId'. Default: origin (create/update)" },
         model: { type: "string", description: "Model override for this job (create/update)" },
+        workspace: { type: "string", description: "Workspace key from config.workspaces the job runs in; absent = the default workspace. The key is validated against the config on the next run, and an unknown key pauses the job (create/update)" },
         reason: { type: "string", description: "Pause reason (pause)" },
         enabled: { type: "boolean", description: "Include disabled jobs in list (list)" },
       },
@@ -60,11 +61,13 @@ export function createCronTool(scheduler: CronScheduler): Tool {
             origin,
             deliver: deliverInput,
             model: strOpt(args, "model"),
+            workspace: strOpt(args, "workspace"),
           });
           jobs.push(job);
           await saveJobs(jobs);
           hooks.emit("cron:job:created", { jobId: job.id, jobName: job.name });
-          return { success: true, output: `Scheduled task created.\nID: ${job.id}\nName: ${job.name}\nSchedule: ${job.schedule.display}\nNext run: ${job.nextRunAt ?? "none"}` };
+          const workspaceNote = job.workspace ? `\nWorkspace: ${job.workspace}` : "";
+          return { success: true, output: `Scheduled task created.\nID: ${job.id}\nName: ${job.name}\nSchedule: ${job.schedule.display}\nNext run: ${job.nextRunAt ?? "none"}${workspaceNote}` };
         }
 
         case "list": {
@@ -103,6 +106,7 @@ export function createCronTool(scheduler: CronScheduler): Tool {
             model: strOpt(args, "model"),
             schedule,
             deliver,
+            workspace: strOpt(args, "workspace"),
           });
           if (!updated) return { success: false, output: `Job not found: ${jobId}` };
           await saveJobs(jobs);

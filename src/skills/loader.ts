@@ -78,7 +78,7 @@ async function loadSkillFromFile(path: string, source: Skill["source"]): Promise
   return skill;
 }
 
-async function scanDir(dir: string, source: Skill["source"]): Promise<Skill[]> {
+async function scanDir(dir: string, source: Skill["source"], workspace?: string): Promise<Skill[]> {
   const skills: Skill[] = [];
   try {
     await access(dir);
@@ -92,30 +92,50 @@ async function scanDir(dir: string, source: Skill["source"]): Promise<Skill[]> {
     const skillDir = join(dir, entry.name);
     const skillFile = join(skillDir, "SKILL.md");
     const skill = await loadSkillFromFile(skillFile, source);
-    if (skill) skills.push(skill);
+    if (skill) {
+      if (workspace) skill.workspace = workspace;
+      skills.push(skill);
+    }
   }
 
   return skills;
+}
+
+/** One workspace skills layer: its key and its <workspace>/skills directory. */
+export interface WorkspaceSkillLayer {
+  key: string;
+  dir: string;
+}
+
+export interface SkillDirs {
+  builtInDir: string;
+  customDir: string;
+  /** The default workspace's skills layer, tagged "default" so secondary workspaces never see
+   *  another project's skills while default-workspace runs keep the legacy single-workspace view. */
+  workspaceDir?: string;
+  workspaces?: WorkspaceSkillLayer[];
 }
 
 function mergeSkills(layers: Skill[][]): Map<string, Skill> {
   const merged = new Map<string, Skill>();
   for (const layer of layers) {
     for (const skill of layer) {
-      merged.set(skill.meta.name, skill);
+      // Workspace skills are keyed by workspace so the same name in workspace A and workspace B
+      // never collides globally; built-in and custom stay on the shared name.
+      const key = skill.workspace ? `${skill.workspace}/${skill.meta.name}` : skill.meta.name;
+      merged.set(key, skill);
     }
   }
   return merged;
 }
 
-export async function loadAllSkills(options: {
-  builtInDir: string;
-  customDir: string;
-  workspaceDir: string;
-}): Promise<Map<string, Skill>> {
+export async function loadAllSkills(options: SkillDirs): Promise<Map<string, Skill>> {
   const builtIn = await scanDir(options.builtInDir, "built-in");
   const custom = await scanDir(options.customDir, "custom");
-  const workspace = await scanDir(options.workspaceDir, "workspace");
-
-  return mergeSkills([builtIn, custom, workspace]);
+  const layers: Skill[][] = [builtIn, custom];
+  if (options.workspaceDir) layers.push(await scanDir(options.workspaceDir, "workspace", "default"));
+  for (const workspace of options.workspaces ?? []) {
+    layers.push(await scanDir(workspace.dir, "workspace", workspace.key));
+  }
+  return mergeSkills(layers);
 }

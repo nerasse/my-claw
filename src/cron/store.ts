@@ -174,6 +174,8 @@ export interface CreateJobParams {
   origin: CronOrigin | null;
   deliver?: string;
   model?: string;
+  /** Key of the workspace this job runs in (config.workspaces); absent = the default. */
+  workspace?: string;
 }
 
 export function createJob(params: CreateJobParams): CronJob {
@@ -193,6 +195,7 @@ export function createJob(params: CreateJobParams): CronJob {
     origin: params.origin,
     deliver,
     model: params.model,
+    workspace: params.workspace,
     nextRunAt: computeNextRun(schedule),
     lastRunAt: null,
     lastStatus: null,
@@ -208,6 +211,7 @@ export interface UpdateJobParams {
   enabled?: boolean;
   deliver?: string;
   schedule?: string;
+  workspace?: string;
 }
 
 export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobParams): CronJob | null {
@@ -224,6 +228,7 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.deliver !== undefined) {
     job.deliver = parseDeliver(updates.deliver, job.origin);
   }
+  if (updates.workspace !== undefined) job.workspace = updates.workspace || undefined;
   if (updates.schedule !== undefined) {
     job.schedule = parseSchedule(updates.schedule);
     job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);
@@ -274,6 +279,7 @@ export async function persistJobRunUpdates(updated: CronJob[]): Promise<void> {
     target.completedRuns = job.completedRuns;
     target.state = job.state;
     target.enabled = job.enabled;
+    target.pausedReason = job.pausedReason;
     changed = true;
   }
   if (changed) await saveJobs(current);

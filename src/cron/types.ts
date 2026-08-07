@@ -33,6 +33,10 @@ export interface CronJob {
   origin: CronOrigin | null;
   deliver: CronDeliver;
   model?: string;
+  /** Key of the workspace this job runs in (config.workspaces). Absent = the default
+   *  workspace. A key that leaves the config pauses the job: it must never run silently
+   *  in the wrong workspace. See docs/multi-workspace.md. */
+  workspace?: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "ok" | "error" | null;

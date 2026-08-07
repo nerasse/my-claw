@@ -1,4 +1,5 @@
 import type { MyClawConfig } from "../../core/config.ts";
+import { join } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import type { SessionData } from "../../sessions/store.ts";
 import { loadAllSkills } from "../../skills/loader.ts";
@@ -163,6 +164,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           builtInDir: deps.builtinDir,
           customDir: deps.customDir,
           workspaceDir: deps.workspaceSkillsDir,
+          workspaces: Object.entries(deps.config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "skills") })),
         });
         deps.skillRegistry.setAll(allSkills);
         hooks.emit("skills:reloaded", { count: allSkills.size });

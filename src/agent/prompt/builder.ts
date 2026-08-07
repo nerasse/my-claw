@@ -10,6 +10,9 @@ export interface PromptContext {
   sessionId: string;
   tools: Tool[];
   skills: SkillInfo[];
+  /** Secondary workspace of the run; prompt files missing there fall back to the default. */
+  workspaceDir?: string;
+  defaultWorkspaceDir?: string;
   // Skills the retrieval layer flagged as likely relevant to this message; rendered as a soft
   // reminder at the very end so it never mutates the cacheable prefix (see docs/skill-suggestions.md).
   suggestedSkills?: SkillInfo[];
@@ -19,10 +22,10 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   const layers: string[] = [];
 
   // Layer 0: Core directives. Owner-editable via workspace CORE.md, hardcoded fallback.
-  layers.push(await loadCorePrompt());
+  layers.push(await loadCorePrompt(ctx.workspaceDir, ctx.defaultWorkspaceDir));
 
   // Layer 1-4: Workspace files (scanned for injection)
-  const files = await loadAllPromptFiles();
+  const files = await loadAllPromptFiles(ctx.workspaceDir, ctx.defaultWorkspaceDir);
   const fileOrder: Array<keyof typeof files> = ["SOUL.md", "AGENTS.md", "USER.md"];
   for (const name of fileOrder) {
     const content = files[name];

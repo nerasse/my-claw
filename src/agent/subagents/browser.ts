@@ -98,12 +98,16 @@ const LOW_LEVEL_PROMPT = `Low-level tools (enabled in this deployment, use only 
 - browser_cdp(method, params): Raw Chrome DevTools Protocol on this page, restricted to an allowlist.
 Prefer the normal tools: these two bypass what the page shows you, so a mistake is harder to notice.`;
 
-async function buildBrowserSystemPrompt(extraLayers: string[] = []): Promise<string> {
+async function buildBrowserSystemPrompt(
+  extraLayers: string[] = [],
+  workspaceDir?: string,
+  defaultWorkspaceDir?: string,
+): Promise<string> {
   const layers: string[] = [];
 
-  layers.push(await loadCorePrompt());
+  layers.push(await loadCorePrompt(workspaceDir, defaultWorkspaceDir));
 
-  const files = await loadAllPromptFiles();
+  const files = await loadAllPromptFiles(workspaceDir, defaultWorkspaceDir);
   for (const name of ["SOUL.md", "USER.md"] as const) {
     const content = files[name];
     if (content) {
@@ -158,6 +162,9 @@ export class BrowserSubagent {
     // Passed explicitly rather than derived from the run's abort signal, because a sub-agent shares
     // the root signal and would attribute its browsing to the top-level chat instead of itself.
     private callerSessionId?: string,
+    // Workspace of the run that spawned this sub-agent: its prompt files and tool roots follow
+    // the parent, not the process-wide default.
+    private workspaceDir?: string,
   ) {
     this.maxSteps = config.browser?.maxSteps ?? DEFAULT_MAX_STEPS;
     this.client = new BrowserClient(sidecarUrl, config.browser?.viewport, config.browser?.timeoutsMs);
@@ -165,7 +172,7 @@ export class BrowserSubagent {
     const pageState = createBrowserPageState();
     const lowLevel: BrowserLowLevelOptions = {
       config: config.browser,
-      workspaceDir: config.workspace,
+      workspaceDir: this.workspaceDir ?? config.workspace,
     };
     this.toolRegistry.register(createBrowserNavigateTool(this.client, pageState));
     this.toolRegistry.register(createBrowserSnapshotTool(this.client, pageState));
@@ -211,7 +218,7 @@ export class BrowserSubagent {
   }
 
   async run(task: string, startUrl?: string, signal?: AbortSignal): Promise<BrowserSubagentResult> {
-    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers)}\n\n${await this.formatOpenTabs()}`;
+    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers, this.workspaceDir, this.config.workspace)}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: `Task: ${task}${startUrl ? `\nStart URL: ${startUrl}` : ""}` },

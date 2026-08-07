@@ -126,6 +126,13 @@ export interface SessionData {
   archivedAt?: string;
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
+  /**
+   * Key of the workspace this conversation was born in (config.workspaces). Absent = the
+   * default workspace. Immutable by design: the prompt files, the skill set and the SDK resume
+   * all depend on it, so a mid-thread switch would lie to the agent about its own context.
+   * See docs/multi-workspace.md.
+   */
+  workspace?: string;
   // Context ceiling chosen for this conversation alone: "full" for the model's whole window, or an
   // explicit number that may also sit below the standing cap. Sub-agents are sessions too, so each
   // one carries its own independently of the chat that spawned it. See docs/context-window.md.

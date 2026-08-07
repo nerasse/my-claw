@@ -40,7 +40,8 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
         const type = str(args, "type") || "research";
         const mode = str(args, "mode") || "run";
         const task = str(args, "task");
-        const workspaceDir = strOpt(args, "workspaceDir");
+        const workspaceDir = strOpt(args, "workspaceDir") ??
+          (typeof args["__workspaceDir"] === "string" ? args["__workspaceDir"] : undefined);
         const model = strOpt(args, "model");
         if (model) {
           const known = listModelIds?.() ?? [];
@@ -48,11 +49,16 @@ export function createSpawnTool(runner: SubAgentRunner, registry: SubAgentRegist
             return { success: false, output: "", error: `Unknown model "${model}". Available: ${known.join(", ") || "none"}` };
           }
         }
-        const mainWorkspace = process.env["MY_CLAW_WORKSPACE"];
-        if (workspaceDir && mainWorkspace) {
+        // The run's own workspace is the boundary, not the process-wide default: with multiple
+        // workspaces a secondary-workspace run must spawn sub-agents inside *its* project, and a
+        // workspaceDir argument is only ever allowed to drill down from there.
+        const parentWorkspace = typeof args["__workspaceDir"] === "string"
+          ? args["__workspaceDir"]
+          : process.env["MY_CLAW_WORKSPACE"];
+        if (workspaceDir && parentWorkspace) {
           const resolved = resolve(workspaceDir);
-          if (!resolved.startsWith(mainWorkspace + "/") && resolved !== mainWorkspace) {
-            return { success: false, output: "", error: `workspaceDir "${workspaceDir}" must be within the main workspace.` };
+          if (!resolved.startsWith(parentWorkspace + "/") && resolved !== parentWorkspace) {
+            return { success: false, output: "", error: `workspaceDir "${workspaceDir}" must be within the parent workspace.` };
           }
         }
         const message = args["__message"] as UnifiedMessage | undefined;

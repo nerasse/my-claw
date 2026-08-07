@@ -1,10 +1,17 @@
-import { loadAllSkills } from "./loader.ts";
+import { loadAllSkills, type WorkspaceSkillLayer } from "./loader.ts";
 import type { SkillRegistry } from "./registry.ts";
 
 export interface SkillDirs {
   builtInDir: string;
   customDir: string;
-  workspaceDir: string;
+  /** The default workspace's skills layer, unscoped (legacy single-workspace behavior). */
+  workspaceDir?: string;
+  workspaces?: WorkspaceSkillLayer[];
+}
+
+/** The editable tier dirs the watcher must attach to, in watch order. */
+export function editableTierDirs(dirs: SkillDirs): string[] {
+  return [dirs.customDir, ...(dirs.workspaceDir ? [dirs.workspaceDir] : []), ...(dirs.workspaces ?? []).map((w) => w.dir)];
 }
 
 // Single source of truth for "rescan skill dirs and swap the registry contents".

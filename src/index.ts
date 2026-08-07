@@ -79,6 +79,7 @@ import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { startSkillsWatcher } from "./skills/watcher.ts";
+import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.ts";
 import { McpManager } from "./mcp/manager.ts";
 import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
@@ -293,12 +294,23 @@ async function main() {
   const customDir = join(MY_CLAW_DIR, "skills");
   const workspaceSkillsDir = join(workspacePath, "skills");
 
+  /** Every workspace's skills layer: the default (unscoped) plus each named one. Live-derived
+   *  from the config object, so a hot-reloaded workspaces map is picked up by re-scans. */
+  const skillWorkspaceLayers = (): SkillDirs["workspaces"] =>
+    Object.entries(config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "skills") }));
+  const skillsDirs = (): SkillDirs => ({
+    builtInDir: builtinDir,
+    customDir,
+    workspaceDir: workspaceSkillsDir,
+    workspaces: skillWorkspaceLayers(),
+  });
+
   const changedBuiltins = await syncBuiltIn(repoSkillsDir, builtinDir);
   if (changedBuiltins.length > 0) {
     void log("info", "skills synced", { changed: changedBuiltins });
   }
 
-  const allSkills = await loadAllSkills({ builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir });
+  const allSkills = await loadAllSkills(skillsDirs());
   const skillRegistry = new SkillRegistry(allSkills);
   hooks.emit("skills:loaded", { count: allSkills.size });
 
@@ -859,6 +871,9 @@ async function main() {
     syncMcp: (mcp) => void mcpManager.sync(mcp),
     reloadCron: () => cronScheduler.restart(),
     reloadMemory: (memory) => void reloadMemoryEmbedding(memory),
+    reloadSkills: () => void reloadSkills(skillsDirs(), skillRegistry).then((count) => {
+      void log("info", "skills reloaded from config change", { count });
+    }),
     recreateTelegram: () => void recreateTelegramChannel(),
   });
 
@@ -880,8 +895,12 @@ async function main() {
   }
 
   const stopSkillsWatcher = startSkillsWatcher(
-    { builtInDir: builtinDir, customDir, workspaceDir: workspaceSkillsDir },
+    skillsDirs(),
     skillRegistry,
+    {
+      getTierDirs: () => editableTierDirs(skillsDirs()),
+      reload: () => reloadSkills(skillsDirs(), skillRegistry),
+    },
   );
 
   // Opt-in tool-code plugins. Created after all built-ins are registered so the collision
@@ -1089,7 +1108,7 @@ function registerSkillTools(
   // effect on the next tool call without re-registering anything.
   registry.register(createListSkillsTool(skillRegistry, config));
   registry.register(createReadSkillTool(skillRegistry, config));
-  registry.register(createManageSkillsTool(skillRegistry, builtinDir, customDir, workspaceSkillsDir));
+  registry.register(createManageSkillsTool(skillRegistry, config, builtinDir, customDir, workspaceSkillsDir));
 }
 
 // CLI subcommands for the Codex (ChatGPT subscription) backend. Device-code login is the only

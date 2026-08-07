@@ -9,8 +9,8 @@ const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md"] as const;
 
 export type PromptFile = (typeof PROMPT_FILES)[number];
 
-function promptDir(): string {
-  return process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
+function promptRoot(workspaceDir?: string): string {
+  return workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
 }
 
 interface CacheEntry {
@@ -32,8 +32,7 @@ const warned = new Set<string>();
  * silently removed a whole prompt layer (`builder.ts` skips empty layers), so a truncated SOUL.md
  * used to mute the agent's personality with nothing logged anywhere.
  */
-export async function loadPromptFile(name: string): Promise<string> {
-  const path = join(promptDir(), name);
+async function readPromptPath(path: string, name: string): Promise<string | null> {
   const cached = cache.get(path);
 
   try {
@@ -57,8 +56,34 @@ export async function loadPromptFile(name: string): Promise<string> {
         keptPreviousContent: cached !== undefined,
       });
     }
-    return cached?.content ?? "";
+    return null;
   }
+}
+
+/**
+ * Read one prompt file for a run. With a secondary workspace, the file is looked up there first
+ * and falls back to the default workspace when missing: a project directory only needs the files
+ * it actually overrides (typically AGENTS.md), and still gets the owner's persona and core
+ * directives. The mtime cache is keyed on absolute paths, so every workspace coexists in it.
+ */
+export async function loadPromptFile(
+  name: string,
+  workspaceDir?: string,
+  defaultWorkspaceDir?: string,
+): Promise<string> {
+  const primary = join(promptRoot(workspaceDir), name);
+  const fallback =
+    defaultWorkspaceDir !== undefined && defaultWorkspaceDir !== promptRoot(workspaceDir)
+      ? join(defaultWorkspaceDir, name)
+      : null;
+
+  const fromPrimary = await readPromptPath(primary, name);
+  if (fromPrimary !== null) return fromPrimary;
+  if (fallback !== null) {
+    const fromFallback = await readPromptPath(fallback, name);
+    if (fromFallback !== null) return fromFallback;
+  }
+  return cache.get(primary)?.content ?? "";
 }
 
 /** Drops the mtime cache. Only needed by tests: the cache is keyed on the workspace path,
@@ -68,9 +93,12 @@ export function resetPromptFileCache(): void {
   warned.clear();
 }
 
-export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> {
+export async function loadAllPromptFiles(
+  workspaceDir?: string,
+  defaultWorkspaceDir?: string,
+): Promise<Record<PromptFile, string>> {
   const entries = await Promise.all(
-    PROMPT_FILES.map(async (name) => [name, await loadPromptFile(name)] as const),
+    PROMPT_FILES.map(async (name) => [name, await loadPromptFile(name, workspaceDir, defaultWorkspaceDir)] as const),
   );
   return Object.fromEntries(entries) as Record<PromptFile, string>;
 }
@@ -81,8 +109,11 @@ export async function loadAllPromptFiles(): Promise<Record<PromptFile, string>> 
  * CORE_PROMPT when the file is missing or blank, so the structural prompt can never be silently
  * emptied. OWNER_STEERING stays in code by design.
  */
-export async function loadCorePrompt(): Promise<string> {
-  const content = (await loadPromptFile("CORE.md")).trim();
+export async function loadCorePrompt(
+  workspaceDir?: string,
+  defaultWorkspaceDir?: string,
+): Promise<string> {
+  const content = (await loadPromptFile("CORE.md", workspaceDir, defaultWorkspaceDir)).trim();
   if (!content) return CORE_PROMPT;
   return normalizeUntrusted(content, "CORE.md");
 }

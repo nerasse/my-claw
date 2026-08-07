@@ -1,4 +1,5 @@
 import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
+import { resolveWorkspaceKey } from "../core/config.ts";
 import {
   resolveMaxIterations,
   resolveInjectionBudgetBonus,
@@ -158,6 +159,26 @@ export class AgentBridge implements AgentBackend {
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(this.voiceManager, this.sttPipeline);
   }
 
+  /** The run's workspace: the session's own key's directory, else the default workspace. */
+  private workspaceFor(session: SessionData): { workspaceDir: string; defaultWorkspaceDir: string } {
+    const fallback = this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
+    if (!session.workspace) return { workspaceDir: fallback, defaultWorkspaceDir: fallback };
+    return {
+      workspaceDir: resolveWorkspaceKey(this.config, session.workspace),
+      defaultWorkspaceDir: fallback,
+    };
+  }
+
+  /** Run-local (never persisted to session): tracks which nested AGENTS.md were already
+   *  injected this run and the byte budget spent, so each file lands at most once. */
+  private nestedAgentsCollectorFor(session: SessionData): NestedAgentsCollector | undefined {
+    if (!nestedAgentsEnabled(this.config)) return undefined;
+    return new NestedAgentsCollector(
+      this.workspaceFor(session).workspaceDir,
+      resolveNestedAgentsMaxBytes(this.config),
+    );
+  }
+
   getEchoMessages(messageId: string): OutgoingMessage[] {
     return this.preprocessor.consumeEchoMessages(messageId);
   }
@@ -261,12 +282,7 @@ export class AgentBridge implements AgentBackend {
 
     // Run-local (never persisted to session): tracks which nested AGENTS.md were already
     // injected this run and the byte budget spent, so each file lands at most once.
-    const nestedAgents = nestedAgentsEnabled(this.config)
-      ? new NestedAgentsCollector(
-          this.workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd(),
-          resolveNestedAgentsMaxBytes(this.config),
-        )
-      : undefined;
+    const nestedAgents = this.nestedAgentsCollectorFor(session);
 
     const gate = await hooks.check("gate:agent:before:reply", { sessionId: session.id, message });
     if (!gate.allowed) {
@@ -282,13 +298,16 @@ export class AgentBridge implements AgentBackend {
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
-      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType));
+      const allSkills = this.skillRegistry.list(resolveAgentSkills(this.config, agentToolType), session.workspace);
+      const runWorkspace = this.workspaceFor(session);
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         sessionId: session.id,
         tools,
         skills: allSkills,
+        workspaceDir: runWorkspace.workspaceDir,
+        defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
         suggestedSkills: await selectRelevantSkills(
           allSkills,
           message.text,
@@ -893,7 +912,7 @@ export class AgentBridge implements AgentBackend {
         __depth: this.depth,
         __agentType: params.agentType,
         __message: params.message,
-        __workspaceDir: this.workspaceDir,
+        __workspaceDir: this.workspaceFor(params.session).workspaceDir,
         __signal: params.signal,
         // Identity of the calling session, so a tool that creates or drives a sub-agent can record
         // who owns the work. Derived from the session, never from the message: the message alone

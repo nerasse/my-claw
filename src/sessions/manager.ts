@@ -27,7 +27,12 @@ export class SessionManager {
     });
   }
 
-  private createSession(sessionId: string, platform: string, chatType: string): SessionData {
+  private createSession(
+    sessionId: string,
+    platform: string,
+    chatType: string,
+    workspace?: string,
+  ): SessionData {
     return {
       id: sessionId,
       platform,
@@ -35,6 +40,7 @@ export class SessionManager {
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
       messages: [],
+      ...(workspace ? { workspace } : {}),
     };
   }
 
@@ -90,7 +96,12 @@ export class SessionManager {
     return this.getOrCreateWithMeta(sessionId, message.platform, message.chatType);
   }
 
-  async getOrCreateWithMeta(sessionId: string, platform: string, chatType: string): Promise<SessionData> {
+  async getOrCreateWithMeta(
+    sessionId: string,
+    platform: string,
+    chatType: string,
+    workspace?: string,
+  ): Promise<SessionData> {
     let session = this.sessions.get(sessionId);
     if (session) {
       session.lastActiveAt = new Date().toISOString();
@@ -105,9 +116,9 @@ export class SessionManager {
       return session;
     }
 
-    session = this.createSession(sessionId, platform, chatType);
+    session = this.createSession(sessionId, platform, chatType, workspace);
     this.sessions.set(sessionId, session);
-    hooks.emit("session:created", { sessionId, platform, chatType });
+    hooks.emit("session:created", { sessionId, platform, chatType, workspace });
     return session;
   }
 
