@@ -8,7 +8,7 @@ const MCP_PREFIX = "mcp__";
  * tool. The first `__` after the prefix wins, matching how `mcpToolName` builds the name; a server
  * whose own name contained `__` would be ambiguous, and config keys are owner-chosen.
  */
-function mcpServerOf(toolName: string): string | undefined {
+export function mcpServerOf(toolName: string): string | undefined {
   if (!toolName.startsWith(MCP_PREFIX)) return undefined;
   const rest = toolName.slice(MCP_PREFIX.length);
   const separator = rest.indexOf("__");

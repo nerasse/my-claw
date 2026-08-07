@@ -101,6 +101,7 @@ the first answer wins.
 { "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
 { "type": "skills.list" }
+{ "type": "tools.list" }
 { "type": "workspaces.list" }
 { "type": "mcp.list" }
 { "type": "instructions.list" }
@@ -182,19 +183,27 @@ the first answer wins.
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai" }], "defaultModel": "gpt-5.1" }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
+{ "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
 { "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso" }] }
 { "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a" }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144 }
 { "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
 { "type": "instructions.saved", "workspace": "sofa", "file": "AGENTS.md", "ok": false, "sha": "", "conflict": true, "error": "changed on the server since it was opened" }
 { "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|instructions" }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
   file on the server); reading goes through `GET /skills?device&token&source&name`, which
   serves the raw `SKILL.md` (`text/markdown`) with the same device auth as `/media`.
   `workspace` is present only on skills of a named workspace.
+- `tools.list.result` feeds the app's tools page: the whole catalog as the orchestrator sees
+  it (per-agent narrowing is a run-time concern, not a reading surface). `source` tells where
+  each tool comes from -- built into the server, an owner-authored `tools.d/` plugin, or an
+  external MCP server; MCP tools carry their `server` name so the page can group them, and
+  the MCP *settings* stay on the `mcp.list` page. `disabled` mirrors the global
+  `tools.disabled` denylist, read live so a hot-reloaded edit shows up on the next visit.
+  Parameters are deliberately absent: the wire carries a catalog to read, not schemas to edit.
 - `workspaces.list.result` feeds the settings page: the default workspace plus every named
   entry of `config.workspaces`.
 - `mcp.list.result` is the wire version of `/mcp`: every server declared under `config.mcp`,

@@ -6,7 +6,7 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppMcpEntry } from "../src/channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppMcpEntry, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
@@ -1233,6 +1233,80 @@ describe("mcp frames", () => {
       const frame = await nextFrame(c);
       assert.equal(frame["type"], "error");
       assert.equal(frame["scope"], "mcp");
+      c.ws.close();
+    } finally {
+      await failing.stop();
+    }
+  });
+});
+
+describe("tools frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  const TOOLS: MyClawAppToolEntry[] = [
+    { name: "read", description: "Read a file", source: "built-in", disabled: false },
+    { name: "bash", description: "Run a command", source: "built-in", disabled: true },
+    { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false },
+    { name: "mcp__mailcow__get_status", description: "Mail server status", source: "mcp", server: "mailcow", disabled: false },
+    { name: "mcp__mailcow__send_mail", description: "Send a mail", source: "mcp", server: "mailcow", disabled: false },
+  ];
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onToolsController({ list: () => ({ tools: TOOLS }) });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("tools.list answers the whole catalog, sources and server names included", async () => {
+    client.ws.send(JSON.stringify({ type: "tools.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tools.list.result");
+    const tools = frame["tools"] as Array<Record<string, unknown>>;
+    assert.equal(tools.length, TOOLS.length);
+    assert.deepEqual(tools[0], { name: "read", description: "Read a file", source: "built-in", disabled: false });
+    assert.deepEqual(tools[1], { name: "bash", description: "Run a command", source: "built-in", disabled: true });
+    assert.deepEqual(tools[2], { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false });
+    assert.equal(tools[3]?.["server"], "mailcow");
+  });
+
+  test("tools.list without a controller answers an error instead of hanging", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "tools.list" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "tools");
+      assert.match(frame["message"] as string, /tool catalog unavailable/);
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  test("a throwing controller surfaces as a refused error", async () => {
+    const failing = new MyClawAppAdapter(createConfig(), store as never);
+    failing.onToolsController({
+      list: () => {
+        throw new Error("registry down");
+      },
+    });
+    await failing.start();
+    try {
+      const c = await connectClient(failing.port);
+      c.ws.send(JSON.stringify({ type: "tools.list" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "tools");
       c.ws.close();
     } finally {
       await failing.stop();

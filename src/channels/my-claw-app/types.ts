@@ -140,6 +140,10 @@ export interface MyClawAppSkillsList {
   type: "skills.list";
 }
 
+export interface MyClawAppToolsList {
+  type: "tools.list";
+}
+
 /** The named workspaces (config.workspaces) plus the default one, for display only. */
 export interface MyClawAppWorkspacesList {
   type: "workspaces.list";
@@ -247,6 +251,7 @@ export type MyClawAppClientFrame =
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
   | MyClawAppSkillsList
+  | MyClawAppToolsList
   | MyClawAppWorkspacesList
   | MyClawAppMcpList
   | MyClawAppInstructionsList
@@ -414,6 +419,7 @@ export type MyClawAppErrorScope =
   | "skills"
   | "agents"
   | "mcp"
+  | "tools"
   | "instructions";
 
 export interface MyClawAppError {
@@ -518,6 +524,28 @@ export interface MyClawAppMcpEntry {
 export interface MyClawAppMcpListResult {
   type: "mcp.list.result";
   servers: MyClawAppMcpEntry[];
+}
+
+/**
+ * One tool of the server catalog. `source` tells where it comes from: statically built into the
+ * server, an owner-authored plugin from `tools.d/`, or an external MCP server. MCP tools carry
+ * their server name; the others never do. `disabled` mirrors the global `tools.disabled`
+ * denylist, so the page can show what is off without hiding it. Parameters are deliberately
+ * absent: the wire is for reading a catalog, and a schema dump belongs to a detail page.
+ */
+export interface MyClawAppToolEntry {
+  name: string;
+  description: string;
+  source: "built-in" | "plugin" | "mcp";
+  /** Present for source "mcp": the config key under `mcp`, also the tool namespace prefix. */
+  server?: string;
+  /** Whether the global tools.disabled denylist switches it off. */
+  disabled: boolean;
+}
+
+export interface MyClawAppToolsListResult {
+  type: "tools.list.result";
+  tools: MyClawAppToolEntry[];
 }
 
 /**
@@ -690,6 +718,7 @@ export type MyClawAppServerFrame =
   | MyClawAppVoiceModeResult
   | MyClawAppModelListResult
   | MyClawAppSkillsListResult
+  | MyClawAppToolsListResult
   | MyClawAppWorkspacesListResult
   | MyClawAppMcpListResult
   | MyClawAppInstructionsListResult

@@ -74,7 +74,7 @@ import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
-import { ToolRegistry } from "./tools/registry.ts";
+import { ToolRegistry, mcpServerOf } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";
 import { readTool } from "./tools/read.ts";
 import { writeTool } from "./tools/write.ts";
@@ -948,6 +948,42 @@ async function main() {
           ...(s.lastError ? { lastError: s.lastError } : {}),
           ...(s.lastAttemptAt ? { lastAttemptAt: s.lastAttemptAt } : {}),
         })),
+    });
+
+    // The full catalog as the orchestrator sees it: this is a reading surface, not a run, and an
+    // agent's own view stays narrowed by getForAgent. Built-ins are read through staticNames so a
+    // plugin or MCP tool that ever clashed with a built-in name cannot shadow it here either.
+    // `disabled` is read live from config, so a hot-reloaded denylist edit shows up next visit.
+    myClawApp.onToolsController({
+      list: () => {
+        const disabled = new Set(config.tools?.disabled ?? []);
+        const tools: Array<{
+          name: string;
+          description: string;
+          source: "built-in" | "plugin" | "mcp";
+          server?: string;
+          disabled: boolean;
+        }> = [];
+        for (const name of toolRegistry.staticNames()) {
+          const tool = toolRegistry.get(name);
+          if (!tool) continue;
+          tools.push({ name, description: tool.description, source: "built-in", disabled: disabled.has(name) });
+        }
+        for (const tool of pluginLoader?.getTools() ?? []) {
+          tools.push({ name: tool.name, description: tool.description, source: "plugin", disabled: disabled.has(tool.name) });
+        }
+        for (const tool of mcpManager.getTools()) {
+          const server = mcpServerOf(tool.name);
+          tools.push({
+            name: tool.name,
+            description: tool.description,
+            source: "mcp",
+            ...(server ? { server } : {}),
+            disabled: disabled.has(tool.name),
+          });
+        }
+        return { tools: tools.sort((a, b) => a.name.localeCompare(b.name)) };
+      },
     });
 
     // config.workspaces is hot-reloadable, so the roots are read per call from the live config

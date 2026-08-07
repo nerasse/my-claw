@@ -49,6 +49,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppSessionHistory,
   MyClawAppSessionList,
   MyClawAppSessionRename,
+  MyClawAppToolEntry,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -166,6 +167,11 @@ export interface MyClawAppMcpController {
   list(): MyClawAppMcpEntry[];
 }
 
+/** Tool catalog (built-in + plugins + MCP), injected so the adapter never reaches into the registry. */
+export interface MyClawAppToolsController {
+  list(): { tools: MyClawAppToolEntry[] };
+}
+
 /** The prompt files the app may read and edit. See docs/instructions-page.md. */
 export interface MyClawAppInstructionsController {
   list(): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
@@ -200,6 +206,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private agents?: MyClawAppAgentsController;
   private skills?: MyClawAppSkillsController;
   private mcp?: MyClawAppMcpController;
+  private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
@@ -369,6 +376,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onMcpController(controller: MyClawAppMcpController): void {
     this.mcp = controller;
+  }
+
+  onToolsController(controller: MyClawAppToolsController): void {
+    this.tools = controller;
   }
 
   onInstructionsController(controller: MyClawAppInstructionsController): void {
@@ -665,6 +676,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "mcp.list":
         void this.handleMcpList(ws);
         break;
+      case "tools.list":
+        void this.handleToolsList(ws);
+        break;
       case "instructions.list":
         void this.handleInstructionsList(ws);
         break;
@@ -958,6 +972,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "mcp.list.result", servers: this.mcp.list() });
     } catch (err) {
       await this.refuse(ws, "mcp", "mcp.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleToolsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.tools) {
+      await this.refuse(ws, "tools", "tool catalog unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "tools.list.result", ...this.tools.list() });
+    } catch (err) {
+      await this.refuse(ws, "tools", "tools.list failed", { error: String(err) });
     }
   }
 
