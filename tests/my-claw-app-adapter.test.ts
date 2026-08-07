@@ -1034,6 +1034,15 @@ describe("command frames", () => {
     assert.deepEqual(handled, [{ command: "status", args: "--full" }]);
   });
 
+  test("a command removed from the catalog is no longer intercepted", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c7", text: "/clear", threadId: "t11" }));
+    // The adapter must not answer: /clear no longer exists as a channel command. Give any
+    // stray reply a beat to arrive, then check the command handler was never consulted.
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepEqual(handled, []);
+    assert.equal(client.frames.length, 0);
+  });
+
   test("an unknown slash command still reaches the agent", async () => {
     let gotMessage = false;
     const agent = new MyClawAppAdapter(createConfig(), store as never);
@@ -1064,17 +1073,13 @@ describe("command frames", () => {
     assert.equal(second["text"], "History cleared.");
   });
 
-  test("a typed /clear or /new also empties the device's screen copy", async () => {
-    client.ws.send(JSON.stringify({ type: "chat.send", id: "c3", text: "/clear", threadId: "t7" }));
+  test("a typed /new also empties the device's screen copy", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c4", text: "/new", threadId: "t8" }));
     const cleared = await nextFrame(client);
     assert.equal(cleared["type"], "chat.cleared");
-    assert.equal(cleared["threadId"], "t7");
+    assert.equal(cleared["threadId"], "t8");
     const reply = await nextFrame(client);
     assert.equal(reply["type"], "chat.command.result");
-
-    client.ws.send(JSON.stringify({ type: "chat.send", id: "c4", text: "/new", threadId: "t8" }));
-    const cleared2 = await nextFrame(client);
-    assert.equal(cleared2["type"], "chat.cleared");
   });
 
   test("/model with an agent name keeps the whole argument", async () => {

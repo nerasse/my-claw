@@ -234,12 +234,6 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         await deps.sessionManager.resetSession(sessionId, "my-claw-app", "dm");
         return "New session started.";
 
-      case "clear":
-        await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm");
-        deps.sessionManager.clearHistory(sessionId);
-        await deps.sessionManager.persist(sessionId);
-        return "History cleared.";
-
       case "archive": {
         const trimmed = args.trim();
         if (!trimmed) {
