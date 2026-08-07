@@ -131,7 +131,7 @@ export interface MyClawAppSkillsController {
     }>;
   };
   /** Raw SKILL.md text of one skill, or null when it does not exist. */
-  read(source: string, name: string): Promise<string | null>;
+  read(source: string, name: string, workspace?: string): Promise<string | null>;
   /** The named workspaces plus the default one, for display only. */
   workspaces(): Array<{ key: string; path: string; default: boolean }>;
 }
@@ -398,7 +398,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      return this.serveSkill(url.searchParams.get("source") ?? "", url.searchParams.get("name") ?? "");
+      return this.serveSkill(
+        url.searchParams.get("source") ?? "",
+        url.searchParams.get("name") ?? "",
+        url.searchParams.get("workspace") ?? undefined,
+      );
     }
 
     if (url.pathname === "/my-claw-app") {
@@ -418,18 +422,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return new Response("Not Found", { status: 404 });
   }
 
-  private async serveSkill(source: string, name: string): Promise<Response> {
+  private async serveSkill(source: string, name: string, workspace?: string): Promise<Response> {
     if (!this.skills) return new Response("Skill catalog unavailable", { status: 503 });
     if (source !== "built-in" && source !== "custom" && source !== "workspace") {
       return new Response("Bad Request", { status: 400 });
     }
     // First fence: the name only ever feeds the controller, and the controller re-checks the
     // resolved path against the tier root, but a name that could smuggle path segments has no
-    // legitimate use and is refused before anything touches the filesystem.
+    // legitimate use and is refused before anything touches the filesystem. The workspace key
+    // is a config key, never a path, and is held to the same charset.
     if (!/^[A-Za-z0-9._-]+$/.test(name)) {
       return new Response("Bad Request", { status: 400 });
     }
-    const content = await this.skills.read(source, name);
+    if (workspace !== undefined && !/^[A-Za-z0-9._-]+$/.test(workspace)) {
+      return new Response("Bad Request", { status: 400 });
+    }
+    const content = await this.skills.read(source, name, workspace);
     if (content === null) return new Response("Not Found", { status: 404 });
     return new Response(content, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
   }

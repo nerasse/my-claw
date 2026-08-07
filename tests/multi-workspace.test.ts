@@ -173,6 +173,14 @@ test("the same skill name in two workspaces never collides globally", async () =
   assert.ok(!names("b").includes("default-ws-skill"));
   assert.ok(names(undefined).includes("default-ws-skill"));
   assert.ok(!names(undefined).includes("from A"));
+
+  // The browse catalog is the opposite: every workspace, so the app can show them all.
+  const catalog = registry.listAll();
+  assert.deepEqual(
+    catalog.filter((s) => s.name === "shared").map((s) => s.workspace ?? "-").sort(),
+    ["-", "a", "b"],
+  );
+  assert.ok(catalog.some((s) => s.name === "default-ws-skill" && s.workspace === "default"));
 });
 
 test("read_skill and list_skills follow the run's workspace", async () => {

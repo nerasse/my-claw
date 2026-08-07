@@ -141,8 +141,8 @@ export class CronScheduler {
       }
       const session = await this.sessionManager.getOrCreateWithMeta(
         sessionId,
-        "telegram",
-        "dm",
+        synthMessage.platform,
+        synthMessage.chatType,
         job.workspace,
       );
       session.modelOverride = job.model || undefined;
@@ -160,14 +160,15 @@ export class CronScheduler {
         result = await this.router.routeCron(synthMessage, sessionId);
       } finally {
         clearTimeout(timer);
+        // In the finally, not on the happy path: a timed-out or failed run would otherwise
+        // leave one session file behind per attempt. The durable record is the job output.
+        await this.sessionManager.deleteSession(sessionId).catch((err) => {
+          void log("warn", "cron session cleanup failed", { jobId: job.id, error: String(err) });
+        });
       }
       if (timedOut) {
         throw new Error(`Cron job timed out after ${Math.round(timeoutMs / 1000)}s (cron.timeoutMs)`);
       }
-      // The run's history is ephemeral by design: the durable record is the job output.
-      await this.sessionManager.deleteSession(sessionId).catch((err) => {
-        void log("warn", "cron session cleanup failed", { jobId: job.id, error: String(err) });
-      });
       const responseText = result?.text ?? "";
       const attachments = result?.attachments ?? [];
 

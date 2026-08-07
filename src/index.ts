@@ -702,8 +702,10 @@ async function main() {
     });
 
     myClawApp.onSkillsController({
+      // The browse catalog, every workspace included: this is a reading surface, not an agent
+      // run, and an agent's own view stays narrowed by list(scope, workspace).
       list: () => ({
-        skills: skillRegistry.list("all").map((s) => ({
+        skills: skillRegistry.listAll().map((s) => ({
           name: s.name,
           description: s.description,
           ...(s.version ? { version: s.version } : {}),
@@ -712,9 +714,14 @@ async function main() {
           ...(s.workspace ? { workspace: s.workspace } : {}),
         })),
       }),
-      read: async (source, name) => {
+      read: async (source, name, workspace) => {
         if (source !== "built-in" && source !== "custom" && source !== "workspace") return null;
-        return resolveSkillFile(source, name, { builtInDir: builtinDir, customDir, workspaceSkillsDir });
+        return resolveSkillFile(
+          source,
+          name,
+          { builtInDir: builtinDir, customDir, workspaceSkillsDir, workspaces: config.workspaces },
+          workspace,
+        );
       },
       workspaces: () => [
         { key: "default", path: workspacePath, default: true },

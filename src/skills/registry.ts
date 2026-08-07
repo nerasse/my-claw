@@ -66,6 +66,22 @@ export class SkillRegistry {
     return this.get(name, workspace) !== undefined;
   }
 
+  /**
+   * The whole catalog, every workspace included. For browse surfaces (the app's skills page)
+   * rather than agent runs: an agent must never be handed skills outside its own workspace,
+   * which is what `list(scope, workspace)` is for.
+   */
+  listAll(): SkillInfo[] {
+    return Array.from(this.skills.values()).map((s) => ({
+      name: s.meta.name,
+      description: s.meta.description,
+      ...(s.meta.version ? { version: s.meta.version } : {}),
+      source: s.source,
+      path: s.path,
+      ...(s.workspace ? { workspace: s.workspace } : {}),
+    }));
+  }
+
   /** Every known skill name, unscoped. For the boot check that reports scope entries matching nothing. */
   names(): string[] {
     return Array.from(

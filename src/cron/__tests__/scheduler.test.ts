@@ -269,10 +269,10 @@ describe("cron scheduler", () => {
     await saveJobs([job]);
     config.workspaces = { sofa: "/tmp/sofa" };
 
-    const sessions: Array<{ sessionId: string; workspace?: string }> = [];
-    sessionManager.getOrCreateWithMeta = async (sessionId: string, _platform: string, _chatType: string, workspace?: string) => {
+    const sessions: Array<{ sessionId: string; platform: string; workspace?: string }> = [];
+    sessionManager.getOrCreateWithMeta = async (sessionId: string, platform: string, _chatType: string, workspace?: string) => {
       const session = makeSession();
-      sessions.push({ sessionId, workspace });
+      sessions.push({ sessionId, platform, workspace });
       return session;
     };
 
@@ -281,6 +281,35 @@ describe("cron scheduler", () => {
     expect(sessions.length).toBe(1);
     expect(sessions[0]!.workspace).toBe("sofa");
     expect(sessions[0]!.sessionId.startsWith(`cron/${job.id}/`)).toBe(true);
+    // The synthetic message's platform, not a hardcoded channel: a cron session says "cron".
+    expect(sessions[0]!.platform).toBe("cron");
+  });
+
+  test("the ephemeral session is deleted even when the run fails", async () => {
+    router.routeCron = async () => {
+      throw new Error("boom");
+    };
+    const deleted: string[] = [];
+    sessionManager.deleteSession = async (sessionId: string) => {
+      deleted.push(sessionId);
+    };
+
+    const job = createJob({
+      prompt: "test",
+      schedule: "every 30m",
+      origin: { platform: "telegram", chatId: "123" },
+      deliver: "origin",
+    });
+    job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+    await saveJobs([job]);
+
+    const result = await scheduler.tick();
+    expect(result).toBe(0);
+    // One session file per failed attempt would be worse than the single one it replaced.
+    expect(deleted.length).toBe(1);
+    expect(deleted[0]!.startsWith(`cron/${job.id}/`)).toBe(true);
+    const [after] = await loadJobs();
+    expect(after!.lastStatus).toBe("error");
   });
 
   describe("deliverResult", () => {

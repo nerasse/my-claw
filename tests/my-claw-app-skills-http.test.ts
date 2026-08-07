@@ -38,3 +38,23 @@ test("a crafted name cannot escape the tier root", async () => {
   assert.equal(await resolveSkillFile("custom", "../pwned.txt", dirs), null);
   assert.equal(await resolveSkillFile("custom", "..", dirs), null);
 });
+
+test("a named workspace's skill is read from that workspace, not the default", async () => {
+  const sofa = join(dirs.root, "SOFA");
+  await mkdir(join(sofa, "skills", "deploy"), { recursive: true });
+  await writeFile(join(sofa, "skills", "deploy", "SKILL.md"), "# Deploy SOFA\n");
+  await mkdir(join(dirs.workspaceSkillsDir, "deploy"), { recursive: true });
+  await writeFile(join(dirs.workspaceSkillsDir, "deploy", "SKILL.md"), "# Deploy default\n");
+
+  const withWorkspaces = { ...dirs, workspaces: { sofa } };
+  assert.equal(await resolveSkillFile("workspace", "deploy", withWorkspaces, "sofa"), "# Deploy SOFA\n");
+  assert.equal(await resolveSkillFile("workspace", "deploy", withWorkspaces, "default"), "# Deploy default\n");
+  assert.equal(await resolveSkillFile("workspace", "deploy", withWorkspaces), "# Deploy default\n");
+});
+
+test("an unknown workspace key reads nothing rather than falling back", async () => {
+  await mkdir(join(dirs.workspaceSkillsDir, "deploy"), { recursive: true });
+  await writeFile(join(dirs.workspaceSkillsDir, "deploy", "SKILL.md"), "# Deploy default\n");
+  // Falling back to the default workspace would serve another project's file under its name.
+  assert.equal(await resolveSkillFile("workspace", "deploy", dirs, "ghost"), null);
+});
