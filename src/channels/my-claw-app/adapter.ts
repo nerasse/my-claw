@@ -20,6 +20,7 @@ const APP_COMMANDS = commandsFor("my-claw-app");
 import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
   MyClawAppAgentsConfigGet,
   MyClawAppAgentsConfigResult,
+  MyClawAppAgentFileResult,
   MyClawAppAgentsEffortSet,
   MyClawAppAgentsModelClear,
   MyClawAppAgentsModelSet,
@@ -50,6 +51,20 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppSessionList,
   MyClawAppSessionRename,
   MyClawAppToolEntry,
+  MyClawAppAgentsScopeSet,
+  MyClawAppAgentsWorkspaceSet,
+  MyClawAppAgentsIterationsSet,
+  MyClawAppAgentsContextCapSet,
+  MyClawAppAgentFileGet,
+  MyClawAppAgentFileSet,
+  MyClawAppAgentFileCreate,
+  MyClawAppAgentFileDelete,
+  MyClawAppToolsToggle,
+  MyClawAppMcpAdd,
+  MyClawAppMcpRemove,
+  MyClawAppMcpEnable,
+  MyClawAppConfigGet,
+  MyClawAppConfigSet,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -142,6 +157,22 @@ export interface MyClawAppAgentsController {
   clearModel(agent: string): Promise<MyClawAppAgentsConfigResult>;
   /** Sets or removes (empty string) the global default effort. */
   setEffort(level: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes the `agents.<agent>.skills|mcp` override. */
+  setScope(agent: string, field: "skills" | "mcp", mode: "inherit" | "all" | "list", names: string[]): Promise<MyClawAppAgentsConfigResult>;
+  /** Pins `agents.<agent>.workspace`; null removes the pin. */
+  setWorkspace(agent: string, workspace: string | null): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes `agents.<agent>.maxIterations`; null removes it. */
+  setMaxIterations(agent: string, value: number | null): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes `agents.<agent>.context.cap`; null removes it. */
+  setContextCap(agent: string, value: number | null): Promise<MyClawAppAgentsConfigResult>;
+  /** The structured file of a file-defined agent, or null for a reserved role. */
+  fileGet(agent: string): Promise<MyClawAppAgentFileResult | null>;
+  /** Writes the agent file back; throws on conflict or a file the loader would reject. */
+  fileSet(agent: string, fields: MyClawAppAgentFileSet): Promise<MyClawAppAgentFileResult>;
+  /** Creates a custom-tier agent file. */
+  fileCreate(name: string, description: string): Promise<MyClawAppAgentFileResult>;
+  /** Deletes a file-defined agent (custom/workspace tiers only). */
+  fileDelete(agent: string): Promise<void>;
 }
 
 /** Skill catalog, injected for the same reason as the model controller: the adapter must not
@@ -165,11 +196,33 @@ export interface MyClawAppSkillsController {
 /** Declared MCP servers and their live state, injected so the adapter never touches the manager. */
 export interface MyClawAppMcpController {
   list(): MyClawAppMcpEntry[];
+  /** Declares a new server; returns the fresh listing. */
+  add(spec: MyClawAppMcpAdd): Promise<MyClawAppMcpEntry[]>;
+  /** Removes a declared server; returns the fresh listing. */
+  remove(name: string): Promise<MyClawAppMcpEntry[]>;
+  /** Enables/disables a declared server; returns the fresh listing. */
+  setEnabled(name: string, enabled: boolean): Promise<MyClawAppMcpEntry[]>;
 }
 
 /** Tool catalog (built-in + plugins + MCP), injected so the adapter never reaches into the registry. */
 export interface MyClawAppToolsController {
-  list(): { tools: MyClawAppToolEntry[] };
+  list(): { tools: MyClawAppToolEntry[]; missing: string[] };
+  /** Toggles the global tools.disabled denylist; returns the fresh catalog. */
+  toggle(name: string, disabled: boolean): Promise<{ tools: MyClawAppToolEntry[]; missing: string[] }>;
+}
+
+/** The raw config.json, for the one surface with no structured editor. */
+export interface MyClawAppConfigController {
+  get(): Promise<{ content: string; sha: string; maxBytes: number }>;
+  /** Validates through the config parser before writing; returns what the hot reload applied. */
+  set(sha: string, content: string): Promise<{
+    ok: boolean;
+    sha: string;
+    conflict: boolean;
+    changed: string[];
+    rebootRequired: string[];
+    error?: string;
+  }>;
 }
 
 /** The prompt files the app may read and edit. See docs/instructions-page.md. */
@@ -208,6 +261,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
+  private configEditor?: MyClawAppConfigController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -384,6 +438,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onInstructionsController(controller: MyClawAppInstructionsController): void {
     this.instructions = controller;
+  }
+
+  onConfigController(controller: MyClawAppConfigController): void {
+    this.configEditor = controller;
   }
 
   /** Executes text slash commands; when absent, they fall through to the agent like any message. */
@@ -709,6 +767,48 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "agents.effort.set":
         void this.handleAgentsEffortSet(ws, frame);
         break;
+      case "agents.scope.set":
+        void this.handleAgentsScopeSet(ws, frame);
+        break;
+      case "agents.workspace.set":
+        void this.handleAgentsWorkspaceSet(ws, frame);
+        break;
+      case "agents.iterations.set":
+        void this.handleAgentsIterationsSet(ws, frame);
+        break;
+      case "agents.contextcap.set":
+        void this.handleAgentsContextCapSet(ws, frame);
+        break;
+      case "agents.file.get":
+        void this.handleAgentFileGet(ws, frame);
+        break;
+      case "agents.file.set":
+        void this.handleAgentFileSet(ws, frame);
+        break;
+      case "agents.file.create":
+        void this.handleAgentFileCreate(ws, frame);
+        break;
+      case "agents.file.delete":
+        void this.handleAgentFileDelete(ws, frame);
+        break;
+      case "tools.toggle":
+        void this.handleToolsToggle(ws, frame);
+        break;
+      case "mcp.add":
+        void this.handleMcpAdd(ws, frame);
+        break;
+      case "mcp.remove":
+        void this.handleMcpRemove(ws, frame);
+        break;
+      case "mcp.enable":
+        void this.handleMcpEnable(ws, frame);
+        break;
+      case "config.get":
+        void this.handleConfigGet(ws, frame);
+        break;
+      case "config.set":
+        void this.handleConfigSet(ws, frame);
+        break;
       case "chat.stop":
         void this.handleChatStop(ws, frame);
         break;
@@ -936,6 +1036,267 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, await this.agents.setEffort(frame.level));
     } catch (err) {
       await this.refuse(ws, "agents", "agents.effort.set failed", { level: frame.level, error: String(err) });
+    }
+  }
+
+  private async handleAgentsScopeSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsScopeSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent || (frame.field !== "skills" && frame.field !== "mcp") || !["inherit", "all", "list"].includes(frame.mode)) {
+      await this.refuse(ws, "agents", "invalid scope request", { agent: frame.agent, field: frame.field, mode: frame.mode });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setScope(frame.agent, frame.field, frame.mode, frame.names ?? []));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.scope.set failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentsWorkspaceSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsWorkspaceSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setWorkspace(frame.agent, frame.workspace));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.workspace.set failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentsIterationsSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsIterationsSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setMaxIterations(frame.agent, frame.value));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.iterations.set failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentsContextCapSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsContextCapSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setContextCap(frame.agent, frame.value));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.contextcap.set failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentFileGet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentFileGet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      const file = await this.agents.fileGet(frame.agent);
+      if (!file) {
+        await this.refuse(ws, "agents", "not a file-defined agent", { agent: frame.agent });
+        return;
+      }
+      this.sendFrame(ws, file);
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.file.get failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentFileSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentFileSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.fileSet(frame.agent, frame));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.file.set failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentFileCreate(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentFileCreate,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.name || !frame.description) {
+      await this.refuse(ws, "agents", "name and description are required", { name: frame.name });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.fileCreate(frame.name, frame.description));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.file.create failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleAgentFileDelete(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentFileDelete,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (!frame.agent) {
+      await this.refuse(ws, "agents", "invalid agent", { agent: frame.agent });
+      return;
+    }
+    try {
+      await this.agents.fileDelete(frame.agent);
+      this.sendFrame(ws, { type: "agents.file.saved", name: frame.agent, ok: true, sha: "", conflict: false });
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.file.delete failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleToolsToggle(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppToolsToggle,
+  ): Promise<void> {
+    if (!this.tools) {
+      await this.refuse(ws, "tools", "tool catalog unavailable");
+      return;
+    }
+    if (!frame.name) {
+      await this.refuse(ws, "tools", "invalid tool", { name: frame.name });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "tools.list.result", ...(await this.tools.toggle(frame.name, frame.disabled)) });
+    } catch (err) {
+      await this.refuse(ws, "tools", "tools.toggle failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleMcpAdd(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppMcpAdd,
+  ): Promise<void> {
+    if (!this.mcp) {
+      await this.refuse(ws, "mcp", "MCP status unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "mcp.list.result", servers: await this.mcp.add(frame) });
+    } catch (err) {
+      await this.refuse(ws, "mcp", "mcp.add failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleMcpRemove(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppMcpRemove,
+  ): Promise<void> {
+    if (!this.mcp) {
+      await this.refuse(ws, "mcp", "MCP status unavailable");
+      return;
+    }
+    if (!frame.name) {
+      await this.refuse(ws, "mcp", "invalid MCP server", { name: frame.name });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "mcp.list.result", servers: await this.mcp.remove(frame.name) });
+    } catch (err) {
+      await this.refuse(ws, "mcp", "mcp.remove failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleMcpEnable(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppMcpEnable,
+  ): Promise<void> {
+    if (!this.mcp) {
+      await this.refuse(ws, "mcp", "MCP status unavailable");
+      return;
+    }
+    if (!frame.name) {
+      await this.refuse(ws, "mcp", "invalid MCP server", { name: frame.name });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "mcp.list.result", servers: await this.mcp.setEnabled(frame.name, frame.enabled) });
+    } catch (err) {
+      await this.refuse(ws, "mcp", "mcp.enable failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleConfigGet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    _frame: MyClawAppConfigGet,
+  ): Promise<void> {
+    if (!this.configEditor) {
+      await this.refuse(ws, "config", "config editor unavailable");
+      return;
+    }
+    try {
+      const file = await this.configEditor.get();
+      this.sendFrame(ws, { type: "config.result", ...file });
+    } catch (err) {
+      await this.refuse(ws, "config", "config.get failed", { error: String(err) });
+    }
+  }
+
+  private async handleConfigSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppConfigSet,
+  ): Promise<void> {
+    if (!this.configEditor) {
+      await this.refuse(ws, "config", "config editor unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "config.saved", ...(await this.configEditor.set(frame.sha, frame.content)) });
+    } catch (err) {
+      await this.refuse(ws, "config", "config.set failed", { error: String(err) });
     }
   }
 

@@ -111,6 +111,20 @@ the first answer wins.
 { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1" }
 { "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
 { "type": "agents.effort.set", "level": "medium" }
+{ "type": "agents.scope.set", "agent": "cron", "field": "skills|mcp", "mode": "inherit|all|list", "names": ["code-review"] }
+{ "type": "agents.workspace.set", "agent": "cron", "workspace": "sofa" }
+{ "type": "agents.iterations.set", "agent": "cron", "value": 12 }
+{ "type": "agents.contextcap.set", "agent": "cron", "value": 200000 }
+{ "type": "agents.file.get", "agent": "reviewer" }
+{ "type": "agents.file.set", "agent": "reviewer", "sha": "9f2b1c4d5e6a", "description": "...", "base": "general|research", "tools": ["read"], "skillsMode": "absent|all|list", "skills": [...], "mcpMode": "absent|all|list", "mcp": [...], "model": "opus", "workspace": "sofa", "maxIterations": 10, "contextCap": 0, "instructions": ["CORE"], "prompt": "..." }
+{ "type": "agents.file.create", "name": "reviewer", "description": "Reviews a diff" }
+{ "type": "agents.file.delete", "agent": "reviewer" }
+{ "type": "tools.toggle", "name": "cron", "disabled": true }
+{ "type": "mcp.add", "name": "gitlab", "transport": "stdio|sse|http", "command": "mcp-gitlab", "args": ["--token-file", "/run/secrets/t"] }
+{ "type": "mcp.remove", "name": "gitlab" }
+{ "type": "mcp.enable", "name": "gitlab", "enabled": false }
+{ "type": "config.get" }
+{ "type": "config.set", "sha": "9f2b1c4d5e6a", "content": "{ ... }" }
 { "type": "ping" }
 ```
 
@@ -158,6 +172,50 @@ the first answer wins.
   `mcp`, `workspace`, `contextCap` and `maxIterations` show the effective value, config entry over
   file. Writes are refused for a name that is neither a role nor an existing agent, so the app
   cannot create an `agents.<typo>` section nothing reads.
+  Each agent row additionally carries `unknownSkills` / `unknownMcp` (scope entries, from the
+  config entry or the agent file, that match no installed skill and no declared MCP server) and
+  `unknownWorkspace` (a workspace key absent from `config.workspaces`). The app renders them
+  in red: an entry that exists in config but not in any live catalog is dead weight, and hiding
+  it would make it unremovable.
+- `agents.scope.set` writes the `agents.<key>.skills|mcp` override in the resolver's own
+  vocabulary: `"inherit"` removes the key (the orchestrator's list applies, or everything),
+  `"all"` is the `["*"]` wildcard, `"list"` the names picked (`[]` means "nothing", kept as a
+  decision). Names are never validated against the live catalogs: the config is the truth, and
+  a stale name is flagged red, not refused. `agents.workspace.set` pins or removes (null)
+  `agents.<key>.workspace` and refuses a key that is not in `config.workspaces`. `agents.iterations.set`
+  writes `maxIterations` (positive integer, null removes it); `agents.contextcap.set` writes
+  `context.cap` (0 lifts the ceiling, null falls back on the global cap). Every mutation answers
+  with a fresh `agents.config.result`.
+- `agents.file.get` opens a file-defined agent as structured fields (`agents.file.result`):
+  the frontmatter the loader reads (`description`, `base`, `tools`, `skills`, `mcp`, `model`,
+  `workspace`, `maxIterations`, `contextCap`, `instructions`) plus the prompt body, the file's
+  sha and `toolOptions` — the tool names of the agent's baseline, what the `tools:` picker may
+  offer. `tools:` entries outside the baseline are reported in `unknownTools`: they are dropped
+  at run time, so they are flagged instead of being silently saved into a set that never applies.
+  `editable` is false for the built-in tier (repo-synced at boot); the app offers a fork, which
+  is an `agents.file.create` with the same name in the custom tier. `agents.file.set` sends
+  structured fields back; the server serializes the flat frontmatter itself (so a client can
+  never produce a file the loader would reject), validates through the same `parseAgentFile` as
+  the loader, and refuses a stale sha as a conflict. `agents.file.create` takes a name (the
+  loader's own name rules) and the mandatory description; `agents.file.delete` removes a
+  custom/workspace tier file and refuses the built-in tier. Writes land through the same atomic
+  write + snapshot path as the other config edits, and the agent watcher reloads the registry,
+  so the new agent or the edited scope applies on the next run with no restart.
+- `tools.toggle` adds or removes a name in the global `tools.disabled` denylist and answers
+  with the fresh `tools.list.result`. The listing carries `missing`, the denylist entries no
+  tool carries anymore: the page shows them red so they can be cleaned, the same way a stale
+  agent scope entry is.
+- `mcp.add` declares a server under `mcp.<name>` (`stdio` needs a `command`, `sse`/`http` a
+  `url`); `mcp.remove` deletes it; `mcp.enable` toggles `enabled` (absent is enabled). All
+  three answer with the fresh `mcp.list.result`. The listing shows the declared wiring minus
+  the secrets: `command`, `args` and `url` are shown, `env` and `headers` never leave the
+  server. The config watcher's mcp applier opens/closes the connections, so the toggle applies
+  live.
+- `config.get` / `config.set` are the one surface without a structured editor: the raw
+  config.json text with a sha round-trip. `config.set` runs the content through the same
+  parser as boot before writing, so a structurally broken file never reaches disk; the watcher
+  hot-reloads what survives, and the `config.saved` answer reports which sections changed and
+  which ones need a reboot (channel tokens, the bind port, the workspace path).
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.
@@ -183,14 +241,18 @@ the first answer wins.
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai" }], "defaultModel": "gpt-5.1" }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
-{ "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }] }
+{ "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
-{ "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso" }] }
+{ "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso", "enabled": false, "command": "mcp-mail", "args": ["--port", "2525"], "url": "http://mcp.local" }] }
 { "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a" }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144 }
 { "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
 { "type": "instructions.saved", "workspace": "sofa", "file": "AGENTS.md", "ok": false, "sha": "", "conflict": true, "error": "changed on the server since it was opened" }
 { "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions" }
+{ "type": "agents.file.result", "name": "reviewer", "source": "custom", "path": "/home/neras/.my-claw/agents/reviewer.md", "editable": true, "sha": "9f2b1c4d5e6a", "description": "Reviews a diff", "base": "research", "tools": ["read", "grep"], "skillsMode": "list", "skills": ["code-review"], "mcpMode": "absent", "prompt": "You review code.", "toolOptions": ["read", "grep", "find", "ls"], "unknownTools": [] }
+{ "type": "agents.file.saved", "name": "reviewer", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false }
+{ "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
+{ "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
@@ -210,10 +272,10 @@ the first answer wins.
   with the state the manager holds for it. A server that failed to connect is listed with
   `state: "failed"` and its `lastError`, since dropping it would hide exactly the entry worth
   reporting, and a disabled one is listed with no `lastAttemptAt` because it was never tried.
-  The wiring never leaves the server: `command`, `args`, `env`, `url` and `headers` routinely
-  carry credentials and say nothing about whether a server answers. The frame exists so the
-  app can name the servers an agent's `mcp` scope refers to instead of asking the owner to
-  type names it cannot check.
+  The declared wiring is shown minus the secrets: `command`, `args` and `url` reach the device
+  so the page can display what a server is and offer add/remove/enable, while `env` and
+  `headers` never leave the server. The frame exists so the app can name the servers an agent's
+  `mcp` scope refers to instead of asking the owner to type names it cannot check.
 - `instructions.list.result` never reports a file as missing: a workspace that does not carry
   one inherits the default workspace's copy, and that is what the agent reads, so the entry
   carries `origin` and `from` instead of a hole. `files` and `maxBytes` come from the server so

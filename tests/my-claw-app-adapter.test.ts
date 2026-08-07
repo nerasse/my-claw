@@ -1076,6 +1076,20 @@ describe("agents frames", () => {
       setModel: async (agent, modelId) => ({ ...SNAPSHOT, defaultModel: modelId, agents: SNAPSHOT.agents }),
       clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
       setEffort: async (level) => ({ ...SNAPSHOT, defaultEffort: level }),
+      setScope: async (agent, field, mode, names) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, [field]: mode === "inherit" ? null : mode === "all" ? ["*"] : names } : a)) }),
+      setWorkspace: async (agent, workspace) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, workspace } : a)) }),
+      setMaxIterations: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, maxIterations: value } : a)) }),
+      setContextCap: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, contextCap: value } : a)) }),
+      fileGet: async () => null,
+      fileSet: async (agent, fields) => {
+        throw new Error("no file for reserved roles");
+      },
+      fileCreate: async (name, description) => {
+        throw new Error("nope");
+      },
+      fileDelete: async (agent) => {
+        throw new Error("nope");
+      },
     });
     await adapter.start();
     client = await connectClient(adapter.port);
@@ -1131,6 +1145,102 @@ describe("agents frames", () => {
     assert.equal(frame["defaultEffort"], "medium");
   });
 
+  test("agents.scope.set forwards mode and names and answers with the stored snapshot", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.scope.set", agent: "cron", field: "skills", mode: "list", names: ["code-review"] }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.deepEqual((frame["agents"] as Array<Record<string, unknown>>)[1]?.["skills"], ["code-review"]);
+  });
+
+  test("agents.scope.set refuses an invalid mode", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.scope.set", agent: "cron", field: "skills", mode: "sometimes" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "agents");
+  });
+
+  test("agents.workspace.set forwards the workspace key", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.workspace.set", agent: "cron", workspace: "sofa" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal((frame["agents"] as Array<Record<string, unknown>>)[1]?.["workspace"], "sofa");
+  });
+
+  test("agents.iterations.set forwards the value", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.iterations.set", agent: "cron", value: 12 }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal((frame["agents"] as Array<Record<string, unknown>>)[1]?.["maxIterations"], 12);
+  });
+
+  test("agents.contextcap.set forwards the value", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.contextcap.set", agent: "cron", value: 200_000 }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal((frame["agents"] as Array<Record<string, unknown>>)[1]?.["contextCap"], 200_000);
+  });
+
+  test("agents.file.get answers the structured file of a file-defined agent", async () => {
+    const storeB = new FakeSessionStore();
+    const withFile = new MyClawAppAdapter(createConfig(), storeB as never);
+    withFile.onAgentsController({
+      get: () => SNAPSHOT,
+      setModel: async () => SNAPSHOT,
+      clearModel: async () => SNAPSHOT,
+      setEffort: async () => SNAPSHOT,
+      setScope: async () => SNAPSHOT,
+      setWorkspace: async () => SNAPSHOT,
+      setMaxIterations: async () => SNAPSHOT,
+      setContextCap: async () => SNAPSHOT,
+      fileGet: async (agent) => ({
+        type: "agents.file.result",
+        name: agent,
+        source: "custom",
+        path: "/tmp/agents/reviewer.md",
+        editable: true,
+        sha: "aaaabbbbcccc",
+        description: "Reviews a diff",
+        base: "research",
+        skillsMode: "list",
+        skills: ["code-review"],
+        mcpMode: "absent",
+        prompt: "You review code.",
+        toolOptions: ["read", "grep"],
+        unknownTools: [],
+      }),
+      fileSet: async () => {
+        throw new Error("nope");
+      },
+      fileCreate: async () => {
+        throw new Error("nope");
+      },
+      fileDelete: async () => {
+        throw new Error("nope");
+      },
+    });
+    await withFile.start();
+    try {
+      const c = await connectClient(withFile.port);
+      c.ws.send(JSON.stringify({ type: "agents.file.get", agent: "reviewer" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "agents.file.result");
+      assert.equal(frame["description"], "Reviews a diff");
+      assert.equal(frame["editable"], true);
+      assert.equal(frame["skillsMode"], "list");
+      c.ws.close();
+    } finally {
+      await withFile.stop();
+    }
+  });
+
+  test("agents.file.get refuses a reserved role without a file", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.file.get", agent: "orchestrator" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "agents");
+    assert.match(frame["message"] as string, /not a file-defined agent/);
+  });
+
   test("a throwing controller surfaces as a refused error", async () => {
     store = new FakeSessionStore();
     const failing = new MyClawAppAdapter(createConfig(), store as never);
@@ -1143,6 +1253,28 @@ describe("agents frames", () => {
         throw new Error("nope");
       },
       setEffort: async () => {
+        throw new Error("nope");
+      },
+      setScope: async () => {
+        throw new Error("nope");
+      },
+      setWorkspace: async () => {
+        throw new Error("nope");
+      },
+      setMaxIterations: async () => {
+        throw new Error("nope");
+      },
+      setContextCap: async () => {
+        throw new Error("nope");
+      },
+      fileGet: async () => null,
+      fileSet: async () => {
+        throw new Error("nope");
+      },
+      fileCreate: async () => {
+        throw new Error("nope");
+      },
+      fileDelete: async () => {
         throw new Error("nope");
       },
     });
@@ -1173,7 +1305,12 @@ describe("mcp frames", () => {
   beforeEach(async () => {
     store = new FakeSessionStore();
     adapter = new MyClawAppAdapter(createConfig(), store as never);
-    adapter.onMcpController({ list: () => SERVERS });
+    adapter.onMcpController({
+      list: () => SERVERS,
+      add: async (spec) => [...SERVERS, { name: spec.name, transport: spec.transport, state: "disabled", toolCount: 0 }],
+      remove: async (name) => SERVERS.filter((s) => s.name !== name),
+      setEnabled: async (name, enabled) => SERVERS.map((s) => (s.name === name ? { ...s, enabled: enabled ? undefined : false, state: enabled ? "connected" : "disabled" } : s)),
+    });
     await adapter.start();
     client = await connectClient(adapter.port);
   });
@@ -1194,12 +1331,31 @@ describe("mcp frames", () => {
     assert.equal(servers[2]?.["lastAttemptAt"], undefined);
   });
 
-  test("mcp.list never carries the wiring, which holds credentials", async () => {
-    client.ws.send(JSON.stringify({ type: "mcp.list" }));
-    const frame = await nextFrame(client);
-    const keys = new Set((frame["servers"] as Array<Record<string, unknown>>).flatMap((s) => Object.keys(s)));
-    for (const secret of ["command", "args", "env", "url", "headers"]) {
-      assert.equal(keys.has(secret), false, `${secret} must never reach a device`);
+  test("mcp.list shows the declared wiring minus the secrets (env/headers)", async () => {
+    const withDeclared: MyClawAppMcpEntry[] = [
+      { name: "mailcow", transport: "stdio", state: "connected", toolCount: 2, command: "mcp-mail", args: ["--port", "2525"], enabled: false },
+    ];
+    const rich = new MyClawAppAdapter(createConfig(), store as never);
+    rich.onMcpController({
+      list: () => withDeclared,
+      add: async () => withDeclared,
+      remove: async () => withDeclared,
+      setEnabled: async () => withDeclared,
+    });
+    await rich.start();
+    try {
+      const c = await connectClient(rich.port);
+      c.ws.send(JSON.stringify({ type: "mcp.list" }));
+      const frame = await nextFrame(c);
+      const entry = (frame["servers"] as Array<Record<string, unknown>>)[0]!;
+      assert.equal(entry["command"], "mcp-mail");
+      assert.equal(entry["enabled"], false);
+      for (const secret of ["env", "headers"]) {
+        assert.equal(secret in entry, false, `${secret} must never reach a device`);
+      }
+      c.ws.close();
+    } finally {
+      await rich.stop();
     }
   });
 
@@ -1219,10 +1375,45 @@ describe("mcp frames", () => {
     }
   });
 
+  test("mcp.add declares a server and answers with the fresh listing", async () => {
+    client.ws.send(JSON.stringify({ type: "mcp.add", name: "gitlab", transport: "http", url: "http://mcp.local" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "mcp.list.result");
+    const servers = frame["servers"] as Array<Record<string, unknown>>;
+    assert.deepEqual(servers.map((s) => s["name"]), [...SERVERS.map((s) => s.name), "gitlab"]);
+    assert.equal((servers.at(-1) as Record<string, unknown>)["transport"], "http");
+  });
+
+  test("mcp.remove drops the server and answers with the fresh listing", async () => {
+    client.ws.send(JSON.stringify({ type: "mcp.remove", name: "weather" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "mcp.list.result");
+    const servers = frame["servers"] as Array<Record<string, unknown>>;
+    assert.deepEqual(servers.map((s) => s["name"]), ["mailcow", "off"]);
+  });
+
+  test("mcp.enable toggles the enabled key", async () => {
+    client.ws.send(JSON.stringify({ type: "mcp.enable", name: "mailcow", enabled: false }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "mcp.list.result");
+    const mailcow = (frame["servers"] as Array<Record<string, unknown>>).find((s) => s["name"] === "mailcow");
+    assert.equal(mailcow?.["enabled"], false);
+    assert.equal(mailcow?.["state"], "disabled");
+  });
+
   test("a throwing controller surfaces as a refused error", async () => {
     const failing = new MyClawAppAdapter(createConfig(), store as never);
     failing.onMcpController({
       list: () => {
+        throw new Error("manager down");
+      },
+      add: async () => {
+        throw new Error("manager down");
+      },
+      remove: async () => {
+        throw new Error("manager down");
+      },
+      setEnabled: async () => {
         throw new Error("manager down");
       },
     });
@@ -1255,7 +1446,13 @@ describe("tools frames", () => {
   beforeEach(async () => {
     store = new FakeSessionStore();
     adapter = new MyClawAppAdapter(createConfig(), store as never);
-    adapter.onToolsController({ list: () => ({ tools: TOOLS }) });
+    adapter.onToolsController({
+      list: () => ({ tools: TOOLS, missing: [] }),
+      toggle: async (name, disabled) => ({
+        tools: TOOLS.map((t) => (t.name === name ? { ...t, disabled } : t)),
+        missing: [],
+      }),
+    });
     await adapter.start();
     client = await connectClient(adapter.port);
   });
@@ -1275,6 +1472,15 @@ describe("tools frames", () => {
     assert.deepEqual(tools[1], { name: "bash", description: "Run a command", source: "built-in", disabled: true });
     assert.deepEqual(tools[2], { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false });
     assert.equal(tools[3]?.["server"], "mailcow");
+  });
+
+  test("tools.toggle forwards name and disabled and answers with the fresh catalog", async () => {
+    client.ws.send(JSON.stringify({ type: "tools.toggle", name: "bash", disabled: false }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tools.list.result");
+    const bash = (frame["tools"] as Array<Record<string, unknown>>).find((t) => t["name"] === "bash");
+    assert.equal(bash?.["disabled"], false);
+    assert.deepEqual(frame["missing"], []);
   });
 
   test("tools.list without a controller answers an error instead of hanging", async () => {
@@ -1297,6 +1503,9 @@ describe("tools frames", () => {
     const failing = new MyClawAppAdapter(createConfig(), store as never);
     failing.onToolsController({
       list: () => {
+        throw new Error("registry down");
+      },
+      toggle: async () => {
         throw new Error("registry down");
       },
     });
@@ -1620,5 +1829,76 @@ describe("command frames", () => {
     assert.equal(frame.workspaces.length, 2);
     assert.deepEqual(frame.workspaces.map((w) => w.key), ["default", "sofa"]);
     assert.equal(frame.workspaces[0]?.default, true);
+  });
+});
+
+describe("config frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  const CONFIG_TEXT = '{\n  "llm": { "defaultModel": "fast-1" }\n}';
+  const SHA = "cafebabe12345678";
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onConfigController({
+      get: async () => ({ content: CONFIG_TEXT, sha: SHA, maxBytes: 1024 }),
+      set: async (sha, content) => ({
+        ok: true,
+        sha: SHA,
+        conflict: false,
+        changed: ["llm"],
+        rebootRequired: [],
+        ...(content.includes("brocken") ? { ok: false, error: "Invalid config: llm must be an object" } : {}),
+      }),
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("config.get answers the raw text and the sha a write must echo", async () => {
+    client.ws.send(JSON.stringify({ type: "config.get" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "config.result");
+    assert.equal(frame["content"], CONFIG_TEXT);
+    assert.equal(frame["sha"], SHA);
+  });
+
+  test("config.set forwards the round-trip and reports what the reload applied", async () => {
+    client.ws.send(JSON.stringify({ type: "config.set", sha: SHA, content: CONFIG_TEXT }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "config.saved");
+    assert.equal(frame["ok"], true);
+    assert.deepEqual(frame["changed"], ["llm"]);
+    assert.deepEqual(frame["rebootRequired"], []);
+  });
+
+  test("config.set surfaces a controller refusal as a config-scoped error", async () => {
+    client.ws.send(JSON.stringify({ type: "config.set", sha: SHA, content: "brocken json" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "config.saved");
+    assert.equal(frame["ok"], false);
+    assert.match(frame["error"] as string, /Invalid config/);
+  });
+
+  test("config.get without a controller answers an error instead of hanging", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "config.get" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "config");
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
   });
 });

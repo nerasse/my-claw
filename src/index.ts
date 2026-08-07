@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
@@ -15,6 +15,7 @@ import {
   findUnknownAgents,
   CONFIG_PATH,
   MY_CLAW_DIR,
+  parseConfig,
   type AgentToolType,
   type EffortLevel,
   type MyClawConfig,
@@ -33,12 +34,12 @@ import {
   HEALTH_GATE_MS,
 } from "./core/config-store.ts";
 import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-health.ts";
-import { writeJsonFileAtomically } from "./utils/atomic-write.ts";
+import { writeJsonFileAtomically, writeFileAtomically } from "./utils/atomic-write.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppMcpEntry, MyClawAppToolEntry } from "./channels/my-claw-app/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
@@ -74,7 +75,7 @@ import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
-import { ToolRegistry, mcpServerOf } from "./tools/registry.ts";
+import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
 import { bashTool } from "./tools/bash.ts";
 import { readTool } from "./tools/read.ts";
 import { writeTool } from "./tools/write.ts";
@@ -108,6 +109,7 @@ import { startSkillsWatcher } from "./skills/watcher.ts";
 import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.ts";
 import { AgentRegistry } from "./agents/registry.ts";
 import { loadAllAgents } from "./agents/loader.ts";
+import type { FileAgent, PromptLayerName } from "./agents/types.ts";
 import { syncBuiltInAgents } from "./agents/sync.ts";
 import { startAgentsWatcher } from "./agents/watcher.ts";
 import { reloadAgents, editableAgentTierDirs, type AgentDirs } from "./agents/reload.ts";
@@ -133,11 +135,36 @@ import {
   closeMemoryDb,
   type LlmCaller,
 } from "./memory/index.ts";
-import { setVoiceSttMode, setDefaultModel, setDefaultEffort, clearAgentModel, setAgentModel } from "./core/config-edit.ts";
+import {
+  setVoiceSttMode,
+  setDefaultModel,
+  setDefaultEffort,
+  clearAgentModel,
+  setAgentModel,
+  setAgentScope,
+  setAgentWorkspace,
+  setAgentMaxIterations,
+  setAgentContextCap,
+  setToolDisabled,
+  addMcpServer,
+  removeMcpServer,
+  setMcpEnabled,
+} from "./core/config-edit.ts";
+import {
+  readAgentFile,
+  writeAgentFile,
+  createAgentFile,
+  deleteAgentFile,
+  serializeAgentFile,
+  fieldsOfMeta,
+} from "./agents/edit.ts";
+import { parseAgentFile } from "./agents/loader.ts";
 import { log, pruneOldLogs, setLogLevelSource } from "./utils/logger.ts";
 import { hooks } from "./hooks/index.ts";
 
 const DAY_MS = 86_400_000;
+/** Raw config.json editor ceiling, generous for a hand-edited file with a 28-provider catalog. */
+const MAX_CONFIG_BYTES = 512 * 1024;
 
 // A mid-run injected message whose run ended without addressing it (forced close) is rerouted
 // here as a fresh, non-injectable run so it is never lost.
@@ -812,6 +839,16 @@ async function main() {
       const llm = entry?.llm;
       const model = agentModelOf(key);
       const definition = agentRegistry.get(key);
+      const skills = entry?.skills ?? (Array.isArray(definition?.meta.skills) ? definition.meta.skills : null);
+      const mcp = entry?.mcp ?? (Array.isArray(definition?.meta.mcp) ? definition.meta.mcp : null);
+      const workspace = entry?.workspace ?? definition?.meta.workspace ?? null;
+      // Scope entries matching nothing are the whole reason the page flags them: an entry that
+      // exists in config but not in any live catalog is dead weight, and hiding it would make it
+      // unremovable. Same catalogs as the boot report (findUnknownScopeEntries), read live.
+      const knownSkills = new Set(skillRegistry.names());
+      const knownMcp = new Set(Object.keys(config.mcp ?? {}));
+      const unknownOf = (list: string[] | null, known: Set<string>): string[] =>
+        list && !list.includes("*") ? list.filter((n) => !known.has(n)) : [];
       return {
         key,
         label,
@@ -822,11 +859,14 @@ async function main() {
         inheritsFrom,
         // Config over file, so the page shows what the agent actually resolves to rather than what
         // one of the two layers happens to say.
-        skills: entry?.skills ?? (Array.isArray(definition?.meta.skills) ? definition.meta.skills : null),
-        mcp: entry?.mcp ?? (Array.isArray(definition?.meta.mcp) ? definition.meta.mcp : null),
-        workspace: entry?.workspace ?? definition?.meta.workspace ?? null,
+        skills,
+        mcp,
+        workspace,
         contextCap: entry?.context?.cap ?? definition?.meta.contextCap ?? null,
         maxIterations: entry?.maxIterations ?? definition?.meta.maxIterations ?? null,
+        ...(unknownOf(skills, knownSkills).length > 0 ? { unknownSkills: unknownOf(skills, knownSkills) } : {}),
+        ...(unknownOf(mcp, knownMcp).length > 0 ? { unknownMcp: unknownOf(mcp, knownMcp) } : {}),
+        ...(workspace !== null && !config.workspaces?.[workspace] ? { unknownWorkspace: true } : {}),
         ...(file ? { source: file.source, path: file.path, base: file.base, ...(file.layer ? { layer: file.layer } : {}) } : {}),
       };
     };
@@ -876,6 +916,42 @@ async function main() {
       });
       return agentsConfigSnapshot();
     };
+    // The agent file editor's payload: structured fields from the actual file on disk. Built from
+    // the file rather than the registry so the sha is the sha of what the next write would edit.
+    const agentFileResult = async (file: FileAgent): Promise<MyClawAppAgentFileResult | null> => {
+      const doc = await readAgentFile(file.path);
+      if (!doc) return null;
+      const parsed = parseAgentFile(doc.text, file.name, file.path);
+      if ("rejected" in parsed) return null;
+      const fields = fieldsOfMeta(parsed.meta);
+      const toolOptions = baselineToolNames(parsed.meta.base, toolRegistry.staticNames());
+      return {
+        type: "agents.file.result",
+        name: file.name,
+        source: file.source,
+        path: file.path,
+        editable: file.source !== "built-in",
+        sha: doc.sha,
+        description: fields.description,
+        ...(fields.base ? { base: fields.base } : {}),
+        ...(fields.tools ? { tools: fields.tools } : {}),
+        skillsMode: fields.skillsMode,
+        ...(fields.skills ? { skills: fields.skills } : {}),
+        mcpMode: fields.mcpMode,
+        ...(fields.mcp ? { mcp: fields.mcp } : {}),
+        ...(fields.model ? { model: fields.model } : {}),
+        ...(fields.workspace ? { workspace: fields.workspace } : {}),
+        ...(fields.maxIterations !== undefined ? { maxIterations: fields.maxIterations } : {}),
+        ...(fields.contextCap !== undefined ? { contextCap: fields.contextCap } : {}),
+        ...(fields.instructions ? { instructions: fields.instructions } : {}),
+        prompt: parsed.prompt,
+        toolOptions,
+        // A tools: entry outside the baseline is dropped at run time, so it is flagged instead of
+        // being silently saved into a set that never applies.
+        unknownTools: (fields.tools ?? []).filter((t) => !toolOptions.includes(t)),
+      };
+    };
+    const reloadAgentsNow = (): Promise<number> => reloadAgents(agentsDirs(), agentRegistry);
     myClawApp.onAgentsController({
       get: () => agentsConfigSnapshot(),
       setModel: async (agent, modelId) => {
@@ -904,6 +980,81 @@ async function main() {
         const result = await setDefaultEffort(value);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`effort global ${value ?? "défaut"}`);
+      },
+      setScope: async (agent, field, mode, names) => {
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentScope(agent, field, mode, names);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`scope ${agent}.${field}`);
+      },
+      setWorkspace: async (agent, workspace) => {
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentWorkspace(agent, workspace);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`workspace ${agent}`);
+      },
+      setMaxIterations: async (agent, value) => {
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentMaxIterations(agent, value);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`itérations ${agent}`);
+      },
+      setContextCap: async (agent, value) => {
+        if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
+        const result = await setAgentContextCap(agent, value ?? undefined);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`context cap ${agent}`);
+      },
+      fileGet: async (agent) => {
+        const file = agentRegistry.get(agent);
+        if (!file) return null;
+        return agentFileResult(file);
+      },
+      fileSet: async (agent, fields) => {
+        const file = agentRegistry.get(agent);
+        if (!file) throw new Error(`unknown agent: ${agent}`);
+        if (file.source === "built-in") throw new Error("built-in agents are repo-synced; fork to a custom file first");
+        const text = serializeAgentFile(
+          {
+            description: fields.description,
+            ...(fields.base ? { base: fields.base } : {}),
+            ...(fields.tools ? { tools: fields.tools } : {}),
+            skillsMode: fields.skillsMode,
+            ...(fields.skills ? { skills: fields.skills } : {}),
+            mcpMode: fields.mcpMode,
+            ...(fields.mcp ? { mcp: fields.mcp } : {}),
+            ...(fields.model ? { model: fields.model } : {}),
+            ...(fields.workspace ? { workspace: fields.workspace } : {}),
+            ...(fields.maxIterations !== undefined ? { maxIterations: fields.maxIterations } : {}),
+            ...(fields.contextCap !== undefined ? { contextCap: fields.contextCap } : {}),
+            ...(fields.instructions ? { instructions: fields.instructions as PromptLayerName[] } : {}),
+          },
+          fields.prompt,
+        );
+        const written = await writeAgentFile(file.path, text, fields.sha, agent);
+        if (!written.ok) {
+          throw new Error(written.conflict ? `conflict: ${written.error}` : written.error);
+        }
+        const result = await agentFileResult(await reloadAgentsNow().then(() => agentRegistry.get(agent) ?? file));
+        if (!result) throw new Error("agent file unreadable after write");
+        return result;
+      },
+      fileCreate: async (name, description) => {
+        const created = await createAgentFile(customAgentsDir, name, description);
+        if (!created.ok) throw new Error(created.error);
+        await reloadAgentsNow();
+        const file = agentRegistry.get(name);
+        if (!file) throw new Error("agent file did not load");
+        const result = await agentFileResult(file);
+        if (!result) throw new Error("agent file unreadable");
+        return result;
+      },
+      fileDelete: async (agent) => {
+        const file = agentRegistry.get(agent);
+        if (!file) throw new Error(`unknown agent: ${agent}`);
+        if (file.source === "built-in") throw new Error("built-in agents are repo-synced and cannot be deleted");
+        await deleteAgentFile(file.path);
+        await reloadAgentsNow();
       },
     });
 
@@ -937,52 +1088,102 @@ async function main() {
 
     // Field by field on purpose: a projection keeps a field later added to McpServerStatus from
     // reaching devices on its own, and the wiring (command, args, env, url, headers) carries
-    // credentials that have no business on the wire.
-    myClawApp.onMcpController({
-      list: () =>
-        mcpManager.status().map((s) => ({
+    // credentials that have no business on the wire. The declared wiring is shown (command/args/url
+    // minus env/headers) so the page can display what a server is and offer add/remove/enable.
+    const mcpEntries = (): MyClawAppMcpEntry[] =>
+      mcpManager.status().map((s) => {
+        const declared = config.mcp?.[s.name];
+        return {
           name: s.name,
           transport: s.transport,
           state: s.state,
           toolCount: s.toolCount,
           ...(s.lastError ? { lastError: s.lastError } : {}),
           ...(s.lastAttemptAt ? { lastAttemptAt: s.lastAttemptAt } : {}),
-        })),
+          ...(declared?.enabled === false ? { enabled: false } : {}),
+          ...(declared?.command ? { command: declared.command } : {}),
+          ...(declared?.args ? { args: declared.args } : {}),
+          ...(declared?.url ? { url: declared.url } : {}),
+        };
+      });
+    const writeMcpEntries = async (note: string): Promise<MyClawAppMcpEntry[]> => {
+      // The config watcher's mcp applier reconnects/opens connections; reload now so the answer
+      // reflects the declared set, and the manager's sync lands a beat later.
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after mcp edit failed", { note, error: String(err) });
+      });
+      return mcpEntries();
+    };
+    myClawApp.onMcpController({
+      list: () => mcpEntries(),
+      add: async (spec) => {
+        const result = await addMcpServer(spec.name, spec);
+        if (!result.ok) throw new Error(result.error);
+        return writeMcpEntries(`ajout mcp ${spec.name}`);
+      },
+      remove: async (name) => {
+        const result = await removeMcpServer(name);
+        if (!result.ok) throw new Error(result.error);
+        return writeMcpEntries(`retrait mcp ${name}`);
+      },
+      setEnabled: async (name, enabled) => {
+        const result = await setMcpEnabled(name, enabled);
+        if (!result.ok) throw new Error(result.error);
+        return writeMcpEntries(`bascule mcp ${name}`);
+      },
     });
 
     // The full catalog as the orchestrator sees it: this is a reading surface, not a run, and an
     // agent's own view stays narrowed by getForAgent. Built-ins are read through staticNames so a
     // plugin or MCP tool that ever clashed with a built-in name cannot shadow it here either.
     // `disabled` is read live from config, so a hot-reloaded denylist edit shows up next visit.
+    const toolsCatalog = (): { tools: MyClawAppToolEntry[]; missing: string[] } => {
+      const disabled = new Set(config.tools?.disabled ?? []);
+      const tools: Array<{
+        name: string;
+        description: string;
+        source: "built-in" | "plugin" | "mcp";
+        server?: string;
+        disabled: boolean;
+      }> = [];
+      for (const name of toolRegistry.staticNames()) {
+        const tool = toolRegistry.get(name);
+        if (!tool) continue;
+        tools.push({ name, description: tool.description, source: "built-in", disabled: disabled.has(name) });
+      }
+      for (const tool of pluginLoader?.getTools() ?? []) {
+        tools.push({ name: tool.name, description: tool.description, source: "plugin", disabled: disabled.has(tool.name) });
+      }
+      for (const tool of mcpManager.getTools()) {
+        const server = mcpServerOf(tool.name);
+        tools.push({
+          name: tool.name,
+          description: tool.description,
+          source: "mcp",
+          ...(server ? { server } : {}),
+          disabled: disabled.has(tool.name),
+        });
+      }
+      const known = new Set(tools.map((t) => t.name));
+      return {
+        tools: tools.sort((a, b) => a.name.localeCompare(b.name)),
+        // Denylist entries no tool carries are dead weight: flagged so the page can show and
+        // clean them, exactly like an agent scope entry that matches nothing.
+        missing: (config.tools?.disabled ?? []).filter((n) => !known.has(n)).sort(),
+      };
+    };
+    const writeToolsCatalog = async (note: string): Promise<{ tools: MyClawAppToolEntry[]; missing: string[] }> => {
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after tools edit failed", { note, error: String(err) });
+      });
+      return toolsCatalog();
+    };
     myClawApp.onToolsController({
-      list: () => {
-        const disabled = new Set(config.tools?.disabled ?? []);
-        const tools: Array<{
-          name: string;
-          description: string;
-          source: "built-in" | "plugin" | "mcp";
-          server?: string;
-          disabled: boolean;
-        }> = [];
-        for (const name of toolRegistry.staticNames()) {
-          const tool = toolRegistry.get(name);
-          if (!tool) continue;
-          tools.push({ name, description: tool.description, source: "built-in", disabled: disabled.has(name) });
-        }
-        for (const tool of pluginLoader?.getTools() ?? []) {
-          tools.push({ name: tool.name, description: tool.description, source: "plugin", disabled: disabled.has(tool.name) });
-        }
-        for (const tool of mcpManager.getTools()) {
-          const server = mcpServerOf(tool.name);
-          tools.push({
-            name: tool.name,
-            description: tool.description,
-            source: "mcp",
-            ...(server ? { server } : {}),
-            disabled: disabled.has(tool.name),
-          });
-        }
-        return { tools: tools.sort((a, b) => a.name.localeCompare(b.name)) };
+      list: () => toolsCatalog(),
+      toggle: async (name, disabled) => {
+        const result = await setToolDisabled(name, disabled);
+        if (!result.ok) throw new Error(result.error);
+        return writeToolsCatalog(`toggle tool ${name}`);
       },
     });
 
@@ -1022,6 +1223,51 @@ async function main() {
         const res = await writeInstruction(instructionRoots(), workspace, file, content, sha);
         if (res.ok) return { ok: true, sha: res.sha, conflict: false };
         return { ok: false, sha: "", conflict: res.conflict === true, error: res.error };
+      },
+    });
+
+    // The one surface without a structured editor: the raw config.json, read from disk exactly as
+    // the watcher sees it. Every write goes through parseConfig first, so a structurally broken
+    // file (the only class the parser catches) never reaches the disk; what survives the parser is
+    // hot-reloaded by the watcher like any hand edit, and the answer reports what it applied.
+    myClawApp.onConfigController({
+      get: async () => {
+        const raw = await readFile(CONFIG_PATH, "utf-8");
+        return { content: raw, sha: contentSha(raw), maxBytes: MAX_CONFIG_BYTES };
+      },
+      set: async (sha, content) => {
+        const current = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
+        if (current && sha !== "" && contentSha(current) !== sha) {
+          return { ok: false, sha: "", conflict: true, changed: [], rebootRequired: [], error: "changed on the server since it was opened" };
+        }
+        if (Buffer.byteLength(content, "utf-8") > MAX_CONFIG_BYTES) {
+          return { ok: false, sha: "", conflict: false, changed: [], rebootRequired: [], error: `config too large to save (max ${MAX_CONFIG_BYTES} bytes)` };
+        }
+        try {
+          parseConfig(content);
+        } catch (err) {
+          return {
+            ok: false,
+            sha: "",
+            conflict: false,
+            changed: [],
+            rebootRequired: [],
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+        const mode = await stat(CONFIG_PATH).then((s) => s.mode & 0o777, () => 0o600);
+        await snapshotConfigFile(CONFIG_PATH, { origin: "pre-write", note: "avant config.set depuis l'app" });
+        await writeFileAtomically(CONFIG_PATH, content, { mode });
+        let changed: string[] = [];
+        let rebootRequired: string[] = [];
+        try {
+          const result = await reloadConfigNow?.();
+          changed = result?.changed ?? [];
+          rebootRequired = result?.rebootRequired ?? [];
+        } catch (err) {
+          void log("warn", "config reload after config.set failed", { error: String(err) });
+        }
+        return { ok: true, sha: contentSha(content), conflict: false, changed, rebootRequired };
       },
     });
 

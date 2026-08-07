@@ -228,3 +228,195 @@ export async function clearAgentModel(agent: string): Promise<ConfigEditResult> 
   await journal("edit", artifactId(CONFIG_PATH), { agent, model: null });
   return { ok: true, previous };
 }
+
+/**
+ * An agent's skills/MCP scope in config.json.
+ *
+ * The three values mirror the resolver's vocabulary exactly: `"inherit"` removes the key (the
+ * agent follows the orchestrator's list, or everything), `"all"` writes the `["*"]` wildcard, and
+ * `"list"` writes the names the user picked — `[]` is kept as a deliberate "nothing", never
+ * conflated with an absent field. Names are not validated against the live catalogs on purpose:
+ * the config is the truth and the app's red highlighting is what flags a name that no longer
+ * exists, so saving an entry that will come back is allowed.
+ */
+export async function setAgentScope(
+  agent: string,
+  field: "skills" | "mcp",
+  mode: "inherit" | "all" | "list",
+  names: string[] = [],
+): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const agents = objectAt(read.data, "agents");
+  const entry = objectAt(agents, agent);
+  // A config entry reduced to nothing is a meaningless setting, so it is dropped with it.
+  if (mode === "inherit") {
+    delete entry[field];
+  } else if (mode === "all") {
+    entry[field] = ["*"];
+  } else {
+    entry[field] = [...new Set(names)].filter((n) => n.length > 0);
+  }
+  if (Object.keys(entry).length === 0) delete agents[agent];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant scope ${agent}.${field}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, [field]: mode });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Pins an agent to a workspace key, or removes the pin (`null` or `"default"`). A key that is not
+ * in `config.workspaces` is refused: `resolveWorkspaceKey` throws on it at run time, so saving it
+ * would only queue a failure for that agent's first run.
+ */
+export async function setAgentWorkspace(agent: string, workspace: string | null): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  if (workspace && workspace !== "default") {
+    const workspaces = read.data["workspaces"];
+    if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || !(workspace in (workspaces as Record<string, unknown>))) {
+      return { ok: false, error: `Unknown workspace key: ${workspace}` };
+    }
+  }
+
+  const agents = objectAt(read.data, "agents");
+  const entry = objectAt(agents, agent);
+  if (!workspace || workspace === "default") delete entry["workspace"];
+  else entry["workspace"] = workspace;
+  if (Object.keys(entry).length === 0) delete agents[agent];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant workspace ${agent}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, workspace: workspace ?? null });
+  return { ok: true, previous: {} };
+}
+
+/** Sets an agent's per-agent iteration budget, or removes it (`null`) so the default applies. */
+export async function setAgentMaxIterations(agent: string, value: number | null): Promise<ConfigEditResult> {
+  if (value !== null && (!Number.isInteger(value) || value <= 0)) {
+    return { ok: false, error: "maxIterations must be a positive integer" };
+  }
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const agents = objectAt(read.data, "agents");
+  const entry = objectAt(agents, agent);
+  if (value === null) delete entry["maxIterations"];
+  else entry["maxIterations"] = value;
+  if (Object.keys(entry).length === 0) delete agents[agent];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant itérations ${agent}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, maxIterations: value ?? null });
+  return { ok: true, previous: {} };
+}
+
+/** Adds or removes one name in the global `tools.disabled` denylist. Absent list = nothing off. */
+export async function setToolDisabled(name: string, disabled: boolean): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const tools = objectAt(read.data, "tools");
+  const list = Array.isArray(tools["disabled"]) ? (tools["disabled"] as unknown[]) : [];
+  if (disabled) {
+    if (!list.includes(name)) list.push(name);
+    tools["disabled"] = list;
+  } else {
+    const next = list.filter((n) => n !== name);
+    if (next.length > 0) tools["disabled"] = next;
+    else delete tools["disabled"];
+  }
+  if (Object.keys(tools).length === 0) delete read.data["tools"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant toggle tool ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { tool: name, disabled });
+  return { ok: true, previous: {} };
+}
+
+export interface McpAddSpec {
+  transport: "stdio" | "sse" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+}
+
+const MCP_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
+ * Declares a new MCP server under `mcp.<name>`. The name becomes the tool namespace
+ * `mcp__<name>__`, so it must be typable; the spec must match the transport. Credentials
+ * (`env`, `headers`) are deliberately not in the spec: they belong to a config the app only
+ * reads, never writes.
+ */
+export async function addMcpServer(name: string, spec: McpAddSpec): Promise<ConfigEditResult> {
+  if (!MCP_NAME_RE.test(name)) {
+    return { ok: false, error: `Invalid MCP server name: "${name}" (letters, digits, "-", "_")` };
+  }
+  if (spec.transport === "stdio" && !spec.command?.trim()) {
+    return { ok: false, error: "stdio servers need a command" };
+  }
+  if (spec.transport !== "stdio" && !spec.url?.trim()) {
+    return { ok: false, error: `${spec.transport} servers need a url` };
+  }
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const mcp = objectAt(read.data, "mcp");
+  if (mcp[name] !== undefined) {
+    return { ok: false, error: `MCP server already exists: ${name}` };
+  }
+  mcp[name] = {
+    transport: spec.transport,
+    ...(spec.command ? { command: spec.command } : {}),
+    ...(spec.args && spec.args.length > 0 ? { args: spec.args } : {}),
+    ...(spec.url ? { url: spec.url } : {}),
+  };
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout mcp ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { mcpAdded: name, transport: spec.transport });
+  return { ok: true, previous: {} };
+}
+
+/** Removes a declared MCP server. Agent scopes referencing it are left alone: they show up red
+ *  in the app until the owner cleans them, which is exactly what the flag exists for. */
+export async function removeMcpServer(name: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const mcp = objectAt(read.data, "mcp");
+  if (mcp[name] === undefined) {
+    return { ok: false, error: `MCP server not declared: ${name}` };
+  }
+  delete mcp[name];
+  if (Object.keys(mcp).length === 0) delete read.data["mcp"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait mcp ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { mcpRemoved: name });
+  return { ok: true, previous: {} };
+}
+
+/** Enables or disables a declared MCP server. Enabling removes the key: absent is enabled. */
+export async function setMcpEnabled(name: string, enabled: boolean): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const mcp = objectAt(read.data, "mcp");
+  const server = mcp[name];
+  if (server === null || typeof server !== "object" || Array.isArray(server)) {
+    return { ok: false, error: `MCP server not declared: ${name}` };
+  }
+  const cast = server as Record<string, unknown>;
+  if (enabled) delete cast["enabled"];
+  else cast["enabled"] = false;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule mcp ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { mcpEnabled: name, enabled });
+  return { ok: true, previous: {} };
+}

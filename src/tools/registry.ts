@@ -21,6 +21,13 @@ export const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "fetch", "web_sear
 const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron"];
 const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "conversation_search"];
 
+/** The tool names a file agent of the given base may narrow from. Exported so the app channel can
+ *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */
+export function baselineToolNames(base: "general" | "research", staticNames: readonly string[]): string[] {
+  if (base === "research") return READ_ONLY_TOOLS.filter((n) => staticNames.includes(n));
+  return staticNames.filter((n) => !SUBAGENT_EXCLUDED_TOOLS.includes(n));
+}
+
 /**
  * Tools whose output is content my-claw did not author, so it is normalised before the model reads
  * it (invisible characters stripped -- see docs/untrusted-content.md).

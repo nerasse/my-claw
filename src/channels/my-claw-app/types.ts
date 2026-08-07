@@ -232,6 +232,125 @@ export interface MyClawAppAgentsEffortSet {
   level: string;
 }
 
+/**
+ * An agent's skills or MCP scope, in the resolver's own vocabulary: `"inherit"` removes the key
+ * (the orchestrator's list applies, or everything), `"all"` is the `["*"]` wildcard, `"list"` the
+ * names picked — `[]` means "nothing", kept as a decision. Names are never validated against the
+ * live catalogs: the config is the truth, and a stale name is flagged red, not refused.
+ */
+export interface MyClawAppAgentsScopeSet {
+  type: "agents.scope.set";
+  agent: string;
+  field: "skills" | "mcp";
+  mode: "inherit" | "all" | "list";
+  names?: string[];
+}
+
+/** Pins an agent to a workspace key; `null` or `"default"` removes the pin. Refused if the key
+ *  does not exist in `config.workspaces`: the resolver throws on it at run time. */
+export interface MyClawAppAgentsWorkspaceSet {
+  type: "agents.workspace.set";
+  agent: string;
+  workspace: string | null;
+}
+
+/** Per-agent iteration budget; `null` removes it so the default applies. */
+export interface MyClawAppAgentsIterationsSet {
+  type: "agents.iterations.set";
+  agent: string;
+  value: number | null;
+}
+
+/** Per-agent context ceiling; `null` removes it so the global cap applies, `0` lifts it. */
+export interface MyClawAppAgentsContextCapSet {
+  type: "agents.contextcap.set";
+  agent: string;
+  value: number | null;
+}
+
+/** Opens one file-defined agent for editing. Refused for a reserved role (no file). */
+export interface MyClawAppAgentFileGet {
+  type: "agents.file.get";
+  agent: string;
+}
+
+/**
+ * Writes one file-defined agent back. The app sends *structured fields*; the server owns the flat
+ * frontmatter serialization, so a client can never produce a file the loader would reject. The sha
+ * round-trip is the same conflict contract as instructions.set. Absent optional fields remove the
+ * file's frontmatter key (the tier below applies again).
+ */
+export interface MyClawAppAgentFileSet {
+  type: "agents.file.set";
+  agent: string;
+  sha: string;
+  description: string;
+  base?: "general" | "research";
+  tools?: string[];
+  skillsMode: "absent" | "all" | "list";
+  skills?: string[];
+  mcpMode: "absent" | "all" | "list";
+  mcp?: string[];
+  model?: string;
+  workspace?: string;
+  maxIterations?: number;
+  contextCap?: number;
+  instructions?: string[];
+  prompt: string;
+}
+
+/** Creates a new agent as a custom-tier file with the mandatory description. */
+export interface MyClawAppAgentFileCreate {
+  type: "agents.file.create";
+  name: string;
+  description: string;
+}
+
+/** Deletes a file-defined agent. Refused for the built-in tier (repo-synced, resyncs anyway). */
+export interface MyClawAppAgentFileDelete {
+  type: "agents.file.delete";
+  agent: string;
+}
+
+/** Adds or removes one name in the global `tools.disabled` denylist. */
+export interface MyClawAppToolsToggle {
+  type: "tools.toggle";
+  name: string;
+  disabled: boolean;
+}
+
+/** Declares a new MCP server. Credentials (env/headers) are deliberately absent from the spec. */
+export interface MyClawAppMcpAdd {
+  type: "mcp.add";
+  name: string;
+  transport: "stdio" | "sse" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+}
+
+export interface MyClawAppMcpRemove {
+  type: "mcp.remove";
+  name: string;
+}
+
+export interface MyClawAppMcpEnable {
+  type: "mcp.enable";
+  name: string;
+  enabled: boolean;
+}
+
+/** The raw config.json text, for the one surface that has no structured editor yet. */
+export interface MyClawAppConfigGet {
+  type: "config.get";
+}
+
+export interface MyClawAppConfigSet {
+  type: "config.set";
+  sha: string;
+  content: string;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -266,6 +385,20 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentsModelSet
   | MyClawAppAgentsModelClear
   | MyClawAppAgentsEffortSet
+  | MyClawAppAgentsScopeSet
+  | MyClawAppAgentsWorkspaceSet
+  | MyClawAppAgentsIterationsSet
+  | MyClawAppAgentsContextCapSet
+  | MyClawAppAgentFileGet
+  | MyClawAppAgentFileSet
+  | MyClawAppAgentFileCreate
+  | MyClawAppAgentFileDelete
+  | MyClawAppToolsToggle
+  | MyClawAppMcpAdd
+  | MyClawAppMcpRemove
+  | MyClawAppMcpEnable
+  | MyClawAppConfigGet
+  | MyClawAppConfigSet
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -420,7 +553,8 @@ export type MyClawAppErrorScope =
   | "agents"
   | "mcp"
   | "tools"
-  | "instructions";
+  | "instructions"
+  | "config";
 
 export interface MyClawAppError {
   type: "error";
@@ -519,6 +653,12 @@ export interface MyClawAppMcpEntry {
   lastError?: string;
   /** Absent for a server never attempted, i.e. a disabled one. */
   lastAttemptAt?: string;
+  /** Declared `mcp.<name>.enabled`. Absent is enabled; the app toggles this key. */
+  enabled?: boolean;
+  /** Declared wiring, minus secrets (`env`/`headers` stay on the server). */
+  command?: string;
+  args?: string[];
+  url?: string;
 }
 
 export interface MyClawAppMcpListResult {
@@ -546,6 +686,9 @@ export interface MyClawAppToolEntry {
 export interface MyClawAppToolsListResult {
   type: "tools.list.result";
   tools: MyClawAppToolEntry[];
+  /** Names in `tools.disabled` that no tool carries anymore. Shown red so the denylist can be
+   *  cleaned: an entry like that does nothing, so it has to be visible to be removed. */
+  missing: string[];
 }
 
 /**
@@ -643,6 +786,15 @@ export interface MyClawAppAgentInfo {
   contextCap?: number | null;
   maxIterations?: number | null;
   /**
+   * Scope entries (config override or the agent file) that match nothing in the live catalogs:
+   * a skill that was removed, an MCP server undeclared, a workspace key gone. The app highlights
+   * them in red instead of hiding them — the entry still exists in config, so it must be visible
+   * to be cleaned up.
+   */
+  unknownSkills?: string[];
+  unknownMcp?: string[];
+  unknownWorkspace?: boolean;
+  /**
    * Set only for file-defined agents (docs/file-agents.md). Absent marks a reserved role, which
    * exists without a file and therefore has nothing to show a tier or a path for.
    */
@@ -681,6 +833,71 @@ export interface MyClawAppAgentsConfigResult {
   effortLevels: string[];
   providers: MyClawAppProviderInfo[];
   agents: MyClawAppAgentInfo[];
+}
+
+/**
+ * Answer to agents.file.get, agents.file.set and agents.file.create: the file as structured
+ * fields, never raw markdown — the app edits fields, the server serializes. `editable` is false
+ * for the built-in tier (repo-synced at boot); the app offers a fork instead. The sha round-trip
+ * is the conflict contract of instructions.set.
+ */
+export interface MyClawAppAgentFileResult {
+  type: "agents.file.result";
+  name: string;
+  source: "built-in" | "custom" | "workspace";
+  path: string;
+  editable: boolean;
+  sha: string;
+  description: string;
+  base?: "general" | "research";
+  tools?: string[];
+  skillsMode: "absent" | "all" | "list";
+  skills?: string[];
+  mcpMode: "absent" | "all" | "list";
+  mcp?: string[];
+  model?: string;
+  workspace?: string;
+  maxIterations?: number;
+  contextCap?: number;
+  instructions?: string[];
+  prompt: string;
+  /** The names the `tools:` picker may offer: this agent's baseline, narrowed to what exists. */
+  toolOptions: string[];
+  /** `tools:` entries outside the baseline. They are dropped at run time, so they are flagged
+   *  red instead of being silently saved into a set that never applies. */
+  unknownTools: string[];
+}
+
+export interface MyClawAppAgentFileSaved {
+  type: "agents.file.saved";
+  name: string;
+  ok: boolean;
+  sha: string;
+  conflict: boolean;
+  error?: string;
+}
+
+/** The raw config.json text and the sha the next write must echo. */
+export interface MyClawAppConfigResult {
+  type: "config.result";
+  content: string;
+  sha: string;
+  maxBytes: number;
+}
+
+/**
+ * Answer to config.set. `conflict` is the failure the editor must handle on its own: the file
+ * changed, so it has to reload before saving again. On success the hot-reload watcher has already
+ * applied the change; `changed`/`rebootRequired` tell the app what the reload did.
+ */
+export interface MyClawAppConfigSaved {
+  type: "config.saved";
+  ok: boolean;
+  sha: string;
+  conflict: boolean;
+  changed: string[];
+  rebootRequired: string[];
+  error?: string;
 }
 
 /**
@@ -729,4 +946,8 @@ export type MyClawAppServerFrame =
   | MyClawAppChatCleared
   | MyClawAppChatTranscript
   | MyClawAppAgentsConfigResult
+  | MyClawAppAgentFileResult
+  | MyClawAppAgentFileSaved
+  | MyClawAppConfigResult
+  | MyClawAppConfigSaved
   | MyClawAppError;
