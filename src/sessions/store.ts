@@ -1,4 +1,4 @@
-import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, stat } from "node:fs/promises";
+import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, rmdir, stat } from "node:fs/promises";
 import { join, dirname, relative, sep } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
@@ -195,12 +195,18 @@ export async function saveSession(sessionId: string, data: SessionData): Promise
   await writeJsonFileAtomically(path, data, true);
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
+export async function deleteSessionFile(sessionId: string): Promise<void> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     await unlink(path);
   } catch {
     // file may not exist
+  }
+  // Nested session ids (cron/<jobId>/<runId>) leave an empty parent directory behind: rmdir
+  // only removes empty dirs, so the call is safe when siblings still exist.
+  const parent = dirname(path);
+  if (parent !== SESSIONS_DIR) {
+    await rmdir(parent).catch(() => {});
   }
 }
 
@@ -336,3 +342,6 @@ export async function deleteSessionArchives(sessionId: string): Promise<void> {
   const safe = sanitizeSessionId(sessionId);
   await rm(join(ARCHIVES_DIR, safe), { recursive: true, force: true }).catch(() => {});
 }
+
+/** Raw file-level delete, used by the sub-agent runner. */
+export const deleteSession = deleteSessionFile;

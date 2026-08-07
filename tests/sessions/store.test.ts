@@ -107,6 +107,26 @@ describe("session store", () => {
     expect(after).toBeNull();
   });
 
+  test("delete removes the empty parent directory of a nested session id", async () => {
+    await saveSession("cron/job-abc/run-1", makeSession("cron/job-abc/run-1"));
+    const dir = join(SESSIONS_DIR, "cron", "job-abc");
+    expect(await stat(dir).then(() => true).catch(() => false)).toBe(true);
+
+    await deleteSession("cron/job-abc/run-1");
+    expect(await stat(dir).then(() => true).catch(() => false)).toBe(false);
+  });
+
+  test("delete keeps a parent directory that still holds siblings", async () => {
+    await saveSession("cron/job-def/run-1", makeSession("cron/job-def/run-1"));
+    await saveSession("cron/job-def/run-2", makeSession("cron/job-def/run-2"));
+
+    await deleteSession("cron/job-def/run-1");
+    const dir = join(SESSIONS_DIR, "cron", "job-def");
+    expect(await stat(dir).then(() => true).catch(() => false)).toBe(true);
+    expect(await loadSession("cron/job-def/run-2")).not.toBeNull();
+    await deleteSession("cron/job-def/run-2");
+  });
+
   test("load returns null for missing session", async () => {
     const result = await loadSession("test-store-missing");
     expect(result).toBeNull();
