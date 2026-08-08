@@ -221,7 +221,7 @@ if [ ! -d "$EXTRACT_DIR" ]; then
   echo "Error: expected directory missing in tarball: $(basename "$EXTRACT_DIR")" >&2
   exit 1
 fi
-for required in package.json src/index.ts node_modules scripts/myclaw.sh packaging/update.sh templates; do
+for required in package.json src/index.ts node_modules scripts/myclaw.sh packaging/update.sh packaging/auto-update.sh templates templates/my-claw-auto-update.timer; do
   if [ ! -e "${EXTRACT_DIR}/${required}" ]; then
     echo "Error: tarball is missing '${required}' — refusing to install a broken payload" >&2
     exit 1

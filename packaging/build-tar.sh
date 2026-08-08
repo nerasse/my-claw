@@ -33,6 +33,7 @@ mkdir -p "${TAR_DIR}/packaging"
 cp "${SCRIPT_DIR}/install.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/uninstall.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/update.sh" "${TAR_DIR}/packaging/"
+cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
 
 # Copy CLI wrapper
@@ -47,10 +48,11 @@ cp "${SCRIPT_DIR}/.env.example" "${TAR_DIR}/etc/"
 chmod 644 "${TAR_DIR}/etc/config.json"
 chmod 600 "${TAR_DIR}/etc/.env.example"
 
-# Copy systemd service templates
+# Copy systemd unit templates (services and timers)
 mkdir -p "${TAR_DIR}/templates"
 cp "${SCRIPT_DIR}/templates/"*.service "${TAR_DIR}/templates/"
-chmod 644 "${TAR_DIR}/templates/"*.service
+cp "${SCRIPT_DIR}/templates/"*.timer "${TAR_DIR}/templates/"
+chmod 644 "${TAR_DIR}/templates/"*.service "${TAR_DIR}/templates/"*.timer
 
 # Build tarball
 cd "${BUILD_DIR}"

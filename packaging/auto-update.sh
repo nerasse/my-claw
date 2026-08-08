@@ -83,7 +83,11 @@ if systemctl is-active --quiet my-claw.service 2>/dev/null; then
       DID="${DEVICE%%$'\t'*}"
       TOKEN="${DEVICE#*$'\t'}"
       HEALTH="$(curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/health?device=${DID}&token=${TOKEN}" 2>/dev/null || true)"
-      ACTIVE="$(echo "$HEALTH" | jq -r '.activeRun // "unknown"' 2>/dev/null || echo unknown)"
+      # Not `.activeRun // "unknown"`: jq's alternative operator treats false as absent, so the
+      # idle answer -- the one case that must let the update through -- read as unknown and the
+      # gate never opened. Ask for the type instead, and let anything else be unknown.
+      ACTIVE="$(echo "$HEALTH" | jq -r 'if (.activeRun | type) == "boolean" then (.activeRun | tostring) else "unknown" end' 2>/dev/null || echo unknown)"
+      [ -n "$ACTIVE" ] || ACTIVE="unknown"
       if [ "$ACTIVE" = "true" ]; then
         echo "my-claw auto-update: ${LATEST} available, but an agent run is in flight — retrying in 15 minutes"
         exit 0
