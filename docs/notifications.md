@@ -33,11 +33,14 @@ termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comm
    envoyée dès la connexion du socket). Le distributeur répond par une *subscription* de forme
    Web-Push : `{ url, pubKey, auth }`. L'app l'envoie au serveur via la frame
    `notifications.register`.
-4. **Publication** : quand un run se termine, le serveur POSTe un JSON plaintext sur l'endpoint
-   `url` reçu. Le secret de l'endpoint (`/up/<secret>`) suffit à l'authentifier — **aucune
-   signature VAPID ni librairie web-push côté serveur**. ntfy achemine le message au
-   distributeur, qui le délivre à l'app même si celle-ci est **tuée** (le rendu se fait dans un
-   service Kotlin natif, sans JS).
+4. **Publication** : quand un run se termine, le serveur envoie le payload **chiffré Web Push
+   (RFC 8291)** à l'endpoint `url` reçu, avec une signature VAPID. Le connecteur Android du
+   téléphone déchiffre avec les clés `p256dh`/`auth` qu'il a générées à l'enregistrement — et
+   **jette tout ce qu'il ne peut pas déchiffrer** : un plaintext n'est jamais affiché. C'est
+   pourquoi `web-push` (la bibliothèque npm) construit la requête (body chiffré + en-têtes
+   VAPID), le transport restant un simple POST. Un endpoint qui répond 404/410 est considéré
+   mort et retiré de la liste, au lieu d'être retenté à chaque run. Le secret de l'endpoint
+   (`/up/<secret>`) authentifie le push côté ntfy.
 5. **Rendu** : `expo-unified-push` (côté app) rend la notification système à partir du JSON
    `{ id, title, body, url }`. Le tap ouvre le deep link `url` (voir plus bas).
 
@@ -76,8 +79,8 @@ Règles :
 ## Files et stockage (`~/.my-claw/push/`)
 
 - `vapid.json` : la paire de clés VAPID générée au premier boot (publique + privée). La clé
-  publique part à l'app via `notifications.info` ; la privée est conservée pour un futur
-  passage à du Web-Push chiffré (inutilisée aujourd'hui, la publication est plaintext).
+  publique part à l'app via `notifications.info` et identifie notre serveur dans la signature
+  VAPID ; la privée signe chaque push.
 - `endpoints.json` : endpoints UnifiedPush par device id (`notifications.register` /
   endpoint vide = désinscription).
 - `foreground.json` : dernier état premier-plan par device.
@@ -131,7 +134,7 @@ corriger dans le module natif si ça dérange.
 
 ## Implémentation
 
-- Serveur : `src/notifications/push.ts` (clés, stores, publication), frames dans
+- Serveur : `src/notifications/push.ts` (clés, stores, publication Web Push chiffrée via `web-push`), frames dans
   `src/channels/my-claw-app/{types,adapter}.ts`, câblage des hooks dans `src/index.ts`.
 - App : `expo-unified-push` (enregistrement + rendu natif) — voir `docs/notifications.md`
   dans le dépôt my-claw-app pour le côté client.

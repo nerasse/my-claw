@@ -12,9 +12,14 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
+import webpush from "web-push";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
+
+// VAPID requires a contact the push service can reach about a misbehaving sender. Nothing
+// reads it here, but the spec (and some push servers) refuse a request without one.
+const VAPID_SUBJECT = "mailto:my-claw@localhost";
 
 const PUSH_DIR = join(MY_CLAW_DIR, "push");
 const VAPID_PATH = join(PUSH_DIR, "vapid.json");
@@ -147,6 +152,7 @@ export async function publishNotification(
   const targets = await endpointStore.endpoints();
   if (targets.length === 0) return 0;
 
+  const vapid = await loadOrCreateVapid();
   const payload = JSON.stringify({
     id: notificationCounter++,
     title: notification.title,
@@ -157,17 +163,44 @@ export async function publishNotification(
   let delivered = 0;
   await Promise.all(targets.map(async ({ deviceId, endpoint }) => {
     if (options?.skipDevice && (await options.skipDevice(deviceId))) return;
+    if (!endpoint.pubKey || !endpoint.auth) {
+      void log("warn", "push endpoint has no encryption keys; skipping", { deviceId });
+      return;
+    }
     try {
-      const response = await fetch(endpoint.endpoint, {
+      // The UnifiedPush connector decrypts with the keys it generated at registration and
+      // drops anything it cannot decrypt, so the payload MUST be Web Push encrypted
+      // (RFC 8291). web-push builds the encrypted body and the VAPID headers; the transport
+      // stays plain fetch.
+      const request = webpush.generateRequestDetails(
+        { endpoint: endpoint.endpoint, keys: { p256dh: endpoint.pubKey, auth: endpoint.auth } },
+        payload,
+        {
+          contentEncoding: "aes128gcm",
+          vapidDetails: {
+            subject: VAPID_SUBJECT,
+            publicKey: vapid.publicKey,
+            privateKey: vapid.privateKey,
+          },
+        },
+      );
+      const response = await fetch(request.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-UnifiedPush": "1" },
-        body: payload,
+        headers: request.headers as Record<string, string>,
+        body: request.body as Uint8Array,
       });
       if (response.ok) {
         delivered += 1;
-      } else {
-        void log("warn", "push publish rejected by the push server", { deviceId, status: response.status, body: (await response.text()).slice(0, 200) });
+        return;
       }
+      // Web Push says these two are permanent: the subscription is gone, and every later
+      // publish would fail the same way. Drop it instead of retrying forever.
+      if (response.status === 404 || response.status === 410) {
+        await endpointStore.unregister(deviceId);
+        void log("info", "push endpoint gone; unregistered", { deviceId, status: response.status });
+        return;
+      }
+      void log("warn", "push publish rejected by the push server", { deviceId, status: response.status, body: (await response.text()).slice(0, 200) });
     } catch (err) {
       void log("warn", "push publish failed", { deviceId, error: String(err) });
     }
