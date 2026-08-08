@@ -525,3 +525,29 @@ test("every button the context submenu renders parses back into an intent", () =
     ["setContext", "setContext", "setContext", "keepContext"],
   );
 });
+
+test("syncFromConfig prepends the virtual Default tag and one entry per tag under Tags", () => {
+  const picker = new ModelPicker(models);
+  picker.syncFromConfig(
+    {
+      defaultModel: "claude-sonnet-4",
+      providers: {},
+      models,
+    },
+    { opus: { model: "claude-opus-4-8" }, sonnet: { model: "claude-sonnet-4" } },
+  );
+  const options = picker.options();
+  assert.equal(options.length, models.length + 3);
+  assert.deepEqual(options.slice(0, 3).map((m) => m.id), ["tag:Default", "tag:opus", "tag:sonnet"]);
+  assert.ok(options.every((m) => m.group === "Tags" || m.group === undefined));
+  assert.equal(options[0]?.provider, "tags");
+  assert.equal(picker.providerFor("tag:opus"), "tags");
+  assert.equal(picker.labelFor("tag:opus"), "opus");
+});
+
+test("syncFromConfig with no tags still rows the virtual Default tag", () => {
+  const picker = new ModelPicker(models);
+  picker.syncFromConfig({ defaultModel: "claude-sonnet-4", providers: {}, models });
+  assert.equal(picker.options()[0]?.id, "tag:Default");
+  assert.equal(picker.options().length, models.length + 1);
+});

@@ -80,6 +80,9 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppJobEntry,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
+  MyClawAppTagsDelete,
+  MyClawAppTagsResult,
+  MyClawAppTagsUpsert,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -188,6 +191,15 @@ export interface MyClawAppAgentsController {
   fileCreate(name: string, description: string): Promise<MyClawAppAgentFileResult>;
   /** Deletes a file-defined agent (custom/workspace tiers only). */
   fileDelete(agent: string): Promise<void>;
+}
+
+/** Tag CRUD (docs/tags.md): named aliases for a model/effort/context combo. The virtual
+ *  `Default` tag is synthesized into the listing by the entry point. Every mutation answers
+ *  with the fresh listing, never an optimistic echo. */
+export interface MyClawAppTagsController {
+  list(): MyClawAppTagsResult;
+  upsert(fields: { name: string; model: string; effort?: string; contextCap?: number }): Promise<MyClawAppTagsResult>;
+  delete(name: string): Promise<MyClawAppTagsResult>;
 }
 
 /** Skill catalog, injected for the same reason as the model controller: the adapter must not
@@ -323,6 +335,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private voice?: MyClawAppVoiceController;
   private models?: MyClawAppModelController;
   private agents?: MyClawAppAgentsController;
+  private tags?: MyClawAppTagsController;
   private skills?: MyClawAppSkillsController;
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
@@ -491,6 +504,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onAgentsController(controller: MyClawAppAgentsController): void {
     this.agents = controller;
+  }
+
+  onTagsController(controller: MyClawAppTagsController): void {
+    this.tags = controller;
   }
 
   onSkillsController(controller: MyClawAppSkillsController): void {
@@ -864,6 +881,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "agents.config.get":
         void this.handleAgentsConfigGet(ws, frame);
         break;
+      case "tags.list":
+        void this.handleTagsList(ws);
+        break;
+      case "tags.upsert":
+        void this.handleTagsUpsert(ws, frame);
+        break;
+      case "tags.delete":
+        void this.handleTagsDelete(ws, frame);
+        break;
       case "agents.model.set":
         void this.handleAgentsModelSet(ws, frame);
         break;
@@ -1113,6 +1139,56 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, this.agents.get());
     } catch (err) {
       await this.refuse(ws, "agents", "agents.config.get failed", { error: String(err) });
+    }
+  }
+
+  private async handleTagsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.tags) {
+      await this.refuse(ws, "tags", "tags unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, this.tags.list());
+    } catch (err) {
+      await this.refuse(ws, "tags", "tags.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleTagsUpsert(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppTagsUpsert,
+  ): Promise<void> {
+    if (!this.tags) {
+      await this.refuse(ws, "tags", "tags unavailable");
+      return;
+    }
+    if (!frame.name || !frame.model) {
+      await this.refuse(ws, "tags", "invalid tag name or model", { name: frame.name, model: frame.model });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.tags.upsert(frame));
+    } catch (err) {
+      await this.refuse(ws, "tags", "tags.upsert failed", { name: frame.name, model: frame.model, error: String(err) });
+    }
+  }
+
+  private async handleTagsDelete(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppTagsDelete,
+  ): Promise<void> {
+    if (!this.tags) {
+      await this.refuse(ws, "tags", "tags unavailable");
+      return;
+    }
+    if (!frame.name) {
+      await this.refuse(ws, "tags", "invalid tag name");
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.tags.delete(frame.name));
+    } catch (err) {
+      await this.refuse(ws, "tags", "tags.delete failed", { name: frame.name, error: String(err) });
     }
   }
 

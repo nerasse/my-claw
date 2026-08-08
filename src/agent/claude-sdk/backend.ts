@@ -486,7 +486,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       // Typed against the real SDK Options: a key typo here is a compile error, never a
       // silently ignored setting.
       const queryOptions: SdkOptions = {
-        model: llmConfig.model,
+        model: llmConfig.apiModel ?? llmConfig.model,
         fallbackModel: llmConfig.fallbackModel,
         effort: toSdkEffort(llmConfig.effort),
         maxTurns,

@@ -17,6 +17,9 @@ export interface CommandInfo {
 
 export const COMMANDS: readonly CommandInfo[] = [
   { command: "new", description: "Start a fresh session" },
+  // The app intercepts `/tag` natively (it opens the tags page / tag editor); the other
+  // channels get the catalog entry only so the app's slash-menu can complete the command.
+  { command: "tag", description: "Model tags: /tag new \"name\"", channels: ["my-claw-app"] },
   { command: "model", description: "Show or change current model, or an agent default: /model <agent>" },
   { command: "models", description: "List available models" },
   { command: "effort", description: "Show or set reasoning effort" },

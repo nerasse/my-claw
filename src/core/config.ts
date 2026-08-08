@@ -281,6 +281,30 @@ export interface LlmModelConfig {
   defaultProvider?: string;
   defaultModel?: string;
   providers?: Record<string, LlmProviderConfig>;
+  // Tag aliases this view resolves through. Attached to the llm section by the boot/reload
+  // sync from the top-level `tags` section; see docs/tags.md.
+  tags?: Record<string, TagConfig>;
+}
+
+/**
+ * A tag aliases a provider/model/effort/context combo under a name. Configs (agent pins, cron
+ * jobs, session overrides) reference it as `tag:<name>`; when the underlying model changes
+ * version the tag is updated once and every config follows. The name `Default` is reserved for
+ * a virtual tag that always points at the current default model (never stored). Resolved in
+ * `src/llm/resolver.ts`, applied to the context cap in `src/llm/context-window.ts`.
+ */
+export interface TagConfig {
+  model: string;
+  effort?: EffortLevel;
+  contextCap?: number;
+}
+
+export const TAG_REF_PREFIX = "tag:";
+
+/** The name a model id refers to when it is a tag reference, else undefined. */
+export function tagNameOf(modelId: string): string | undefined {
+  if (modelId.startsWith(TAG_REF_PREFIX)) return modelId.slice(TAG_REF_PREFIX.length);
+  return undefined;
 }
 
 export interface ResolvedLlmConfig {
@@ -290,6 +314,10 @@ export interface ResolvedLlmConfig {
   backend?: "openai" | "claude-sdk" | "codex";
   baseUrl: string;
   model: string;
+  // The model id the API actually receives. When `model` is a tag reference (`tag:<name>`)
+  // this is the tag's underlying model, so the request never carries the alias; analytics and
+  // status keep the tag id as the run's identity. Absent = `model` is already the wire id.
+  apiModel?: string;
   // The provider entry that owns this model ("default" when the config predates named
   // providers). The dispatcher compares it across resolutions to decide whether an outage on
   // this run can be rerouted to the default provider at all.
@@ -467,6 +495,11 @@ export interface MyClawConfig {
    * is reserved for `workspace`. Hot-reloadable; see docs/multi-workspace.md.
    */
   workspaces?: Record<string, string>;
+  /**
+   * Named model aliases: each tag pins a provider/model/effort/context combo under a name and
+   * configs reference it as `tag:<name>`. Hot-reloadable; see docs/tags.md.
+   */
+  tags?: Record<string, TagConfig>;
   cron?: CronConfig;
   memory?: MemoryConfig;
   injection?: InjectionConfig;
@@ -989,7 +1022,7 @@ export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
  * so the structural guard below can share the exact same lists instead of drifting from them.
  */
 export const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces", "tags",
 ] as const;
 /** Array sections whose identity must be preserved (consumers hold the same array reference). */
 export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;

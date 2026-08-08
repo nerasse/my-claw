@@ -87,6 +87,44 @@ export async function setAgentContextCap(agent: string, cap: number | undefined)
 }
 
 /**
+ * Creates or replaces a tag: a named alias for a provider/model/effort/context combo that
+ * configs reference as `tag:<name>` (docs/tags.md). The reserved name `Default` is virtual and
+ * must not be written. An emptied tags section is removed so the file does not carry a
+ * deliberate, meaningless setting.
+ */
+export async function setTag(
+  name: string,
+  value: { model: string; effort?: string; contextCap?: number },
+): Promise<ConfigEditResult> {
+  if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const tags = objectAt(read.data, "tags");
+  tags[name] = { model: value.model, ...(value.effort ? { effort: value.effort } : {}), ...(value.contextCap ? { contextCap: value.contextCap } : {}) };
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant tag ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { tag: name, model: value.model });
+  return { ok: true, previous: { model: value.model } };
+}
+
+export async function deleteTag(name: string): Promise<ConfigEditResult> {
+  if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const tags = objectAt(read.data, "tags");
+  delete tags[name];
+  if (Object.keys(tags).length === 0) delete (read.data as Record<string, unknown>)["tags"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression tag ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { tag: name, removed: true });
+  return { ok: true, previous: { model: undefined } };
+}
+
+/**
  * Persists the speech-to-text engine choice.
  *
  * The `voice_mode` tool only mutates the live config object, which is right for "use local just

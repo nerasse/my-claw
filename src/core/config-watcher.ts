@@ -59,7 +59,7 @@ interface ChannelTarget {
 
 export interface ConfigReloadContext {
   modelPicker?: {
-    syncFromConfig(llm: import("./config.ts").LlmConfig): void;
+    syncFromConfig(llm: import("./config.ts").LlmConfig, tags?: Record<string, import("./config.ts").TagConfig>): void;
   };
   // Owns the base/discovered merge into config.llm.models + the picker sync. When provided it
   // supersedes the built-in modelPicker sync (which only knows the curated config models).
@@ -240,11 +240,14 @@ export function runReloadAppliers(
 ): void {
   // Identity recreate: stop the old adapter and start a fresh one with the new config.
   if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
-  if (changed.includes("llm")) {
+  if (changed.includes("llm") || changed.includes("tags")) {
+    // The resolver reads tags off the llm view; a section reload drops the attached reference
+    // (replaceContents deletes keys absent from the file), so it is re-attached here.
+    config.llm.tags = config.tags;
     if (ctx.syncModels) {
       ctx.syncModels();
     } else if (ctx.modelPicker) {
-      ctx.modelPicker.syncFromConfig(config.llm);
+      ctx.modelPicker.syncFromConfig(config.llm, config.tags);
     }
   }
   if (changed.includes("whitelist")) {

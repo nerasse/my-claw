@@ -1,4 +1,5 @@
-import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig } from "../core/config.ts";
+import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig, TagConfig } from "../core/config.ts";
+import { tagNameOf } from "../core/config.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -24,6 +25,29 @@ function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefin
 }
 
 /**
+ * Expand a tag reference (`tag:<name>`, docs/tags.md) into the model id it aliases. The
+ * reserved name `Default` is virtual and tracks the current default model. A tag may point at
+ * another tag: the chain is followed to a real model, keeping the outer tag's own effort (the
+ * most explicit pin wins). An unknown tag name passes through unchanged so it resolves like any
+ * other stale id instead of throwing.
+ */
+function expandTag(
+  merged: LlmConfig,
+  modelId: string,
+): { tag?: TagConfig; modelId: string } {
+  const name = tagNameOf(modelId);
+  if (name === undefined) return { modelId };
+  const tag = name === "Default" ? { model: merged.defaultModel ?? merged.model ?? "" } : merged.tags?.[name];
+  if (!tag) return { modelId };
+  if (tagNameOf(tag.model) === undefined) return { tag, modelId: tag.model };
+  const leaf = expandTag(merged, tag.model);
+  return {
+    tag: { model: leaf.modelId, effort: tag.effort ?? leaf.tag?.effort, contextCap: tag.contextCap ?? leaf.tag?.contextCap },
+    modelId: leaf.modelId,
+  };
+}
+
+/**
  * Effective effort for a run: session override > per-model default > global default. Only
  * emitted when it should actually be sent — claude-sdk and codex accept it natively; other
  * openai-compatible providers get it only when the model opts in via `supportsEffort`.
@@ -45,13 +69,18 @@ function resolveFromMerged(
   modelId?: string,
   effortOverride?: EffortLevel,
 ): ResolvedLlmConfig {
-  const effectiveModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
+  const rawModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
+  // A tag reference keeps its identity on the resolved config (status, context cap, analytics)
+  // while the API receives the tag's underlying model via `apiModel`.
+  const expanded = expandTag(merged, rawModelId);
+  const effectiveModelId = expanded.modelId;
 
   if (!isNewFormat(merged)) {
     const provider = buildImplicitProvider(merged);
     return {
       baseUrl: provider.baseUrl || "https://api.fireworks.ai/inference/v1",
-      model: effectiveModelId,
+      model: rawModelId,
+      ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
       provider: "default",
       apiKey: resolveApiKey(provider, merged.apiKey),
       vision: merged.vision,
@@ -67,17 +96,24 @@ function resolveFromMerged(
     throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(merged.providers ?? {}).join(", ")}`);
   }
 
+  // The tag's effort pins the model's own: session override > tag > model > global.
+  const effortModel =
+    model !== undefined && expanded.tag?.effort !== undefined
+      ? { ...model, effort: expanded.tag.effort }
+      : model;
+
   if (provider.type === "claude-sdk") {
     return {
       backend: "claude-sdk",
       // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
       baseUrl: "claude-sdk",
-      model: effectiveModelId,
+      model: rawModelId,
+      ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
       provider: providerName,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       fallbackModel: provider.fallbackModel,
-      effort: computeEffort(merged, model, true, effortOverride),
+      effort: computeEffort(merged, effortModel, true, effortOverride),
     };
   }
 
@@ -87,24 +123,26 @@ function resolveFromMerged(
       // ChatGPT subscription via the Codex Responses backend; auth is the stored OAuth token,
       // fetched by the transport (no apiKey here). See docs/codex-backend.md.
       baseUrl: provider.baseUrl ?? "https://chatgpt.com/backend-api",
-      model: effectiveModelId,
+      model: rawModelId,
+      ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
       provider: providerName,
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
-      effort: computeEffort(merged, model, true, effortOverride),
+      effort: computeEffort(merged, effortModel, true, effortOverride),
     };
   }
 
   return {
     baseUrl: provider.baseUrl ?? "",
-    model: effectiveModelId,
+    model: rawModelId,
+    ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
     provider: providerName,
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,
     limit: model?.limit ?? merged.limit,
-    effort: computeEffort(merged, model, false, effortOverride),
+    effort: computeEffort(merged, effortModel, false, effortOverride),
     promptCache: provider.promptCache,
   };
 }
@@ -230,7 +268,8 @@ export function effectiveEffort(
     return { source: "unsupported" };
   }
 
-  const model = findModel(config, modelId ?? config.defaultModel ?? config.model ?? "");
+  const model = findModel(config, expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").modelId);
+  const tag = expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").tag;
   const native = backend === "claude-sdk" || backend === "codex";
   // Explicit `false` is the provider stating this model has no effort at all, which outranks the
   // backend being effort-native (Haiku on the SDK). `undefined` only blocks non-native backends,
@@ -239,6 +278,7 @@ export function effectiveEffort(
   if (!native && !model?.supportsEffort) return { source: "unsupported" };
 
   if (sessionOverride) return { level: sessionOverride, source: "session" };
+  if (tag?.effort) return { level: tag.effort, source: "model" };
   if (model?.effort) return { level: model.effort, source: "model" };
   if (config.effort) return { level: config.effort, source: "config" };
   if (backend === "claude-sdk") return { level: SDK_DEFAULT_EFFORT, source: "sdk-default" };

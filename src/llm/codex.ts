@@ -277,7 +277,7 @@ async function runCodex(
   const { instructions, input } = buildInput(messages);
   const responsesTools = convertTools(tools);
   const body: Record<string, unknown> = {
-    model: config.model,
+    model: config.apiModel ?? config.model,
     store: false,
     stream: true,
     instructions,

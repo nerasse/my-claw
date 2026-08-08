@@ -227,8 +227,8 @@ function buildRequestBody(
   tools?: unknown[],
   stream?: boolean,
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    model: config.model,
+const body: Record<string, unknown> = {
+  model: config.apiModel ?? config.model,
     messages: config.promptCache ? applyPromptCache(messages) : messages,
   };
 

@@ -1,8 +1,21 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
-import { resolveContextCap, type MyClawConfig, type AgentToolType } from "../core/config.ts";
+import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType } from "../core/config.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
+
+/**
+ * The ceiling a tag pins for runs resolved through it (`tag:<name>` in config.tags, docs/tags.md).
+ * A tag's cap is deliberate per-model policy, so it outranks the agent/global standing cap; a
+ * session's own override still wins over everything.
+ */
+function resolveTagContextCap(config: MyClawConfig, modelId: string): number | undefined {
+  const name = tagNameOf(modelId);
+  if (name === undefined) return undefined;
+  const tag = name === "Default" ? undefined : config.tags?.[name];
+  const cap = tag?.contextCap;
+  return cap !== undefined && Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : undefined;
+}
 
 /**
  * How much context a model may hold, and how full it currently is.
@@ -65,8 +78,10 @@ export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContex
   const out: ResolvedContextWindow = { raw, effective: raw, rawSource };
   if (approximate) out.approximate = true;
 
-  // Precedence: session override, then exemption, then the cap. A conversation has said the most
-  // recent and most specific thing, so it wins over both -- in either direction.
+  // Precedence: session override, then the tag's own ceiling, then the agent cap, then the
+  // global cap. A conversation has said the most recent and most specific thing, so it wins
+  // over both -- in either direction. A tag pins its combo (docs/tags.md), so its cap outranks
+  // the agent's standing ceiling for runs that go through it.
   const override = opts.sessionOverride;
   if (typeof override === "number" && override > 0) {
     if (override < raw) {
@@ -77,7 +92,8 @@ export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContex
     return out;
   }
 
-  const cap = resolveContextCap(opts.config, opts.agent);
+  const tagCap = resolveTagContextCap(opts.config, opts.model);
+  const cap = tagCap ?? resolveContextCap(opts.config, opts.agent);
   const exempt = matchesAnyGlob(opts.model, opts.config.context?.capExempt);
   if (cap === undefined || override === "full" || exempt || raw <= cap) {
     // Only claim an override when it changed something, so /status does not advertise a session

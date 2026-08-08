@@ -104,6 +104,37 @@ export interface MyClawAppPing {
   type: "ping";
 }
 
+/** One entry of the tags page: a named alias for a model/effort/context combo (docs/tags.md). */
+export interface MyClawAppTagInfo {
+  name: string;
+  /** The model id the tag pins, or "" for the virtual `Default` tag. */
+  model: string;
+  effort?: string;
+  contextCap?: number;
+}
+
+export interface MyClawAppTagsList {
+  type: "tags.list";
+}
+
+export interface MyClawAppTagsUpsert {
+  type: "tags.upsert";
+  name: string;
+  model: string;
+  effort?: string;
+  contextCap?: number;
+}
+
+export interface MyClawAppTagsDelete {
+  type: "tags.delete";
+  name: string;
+}
+
+export interface MyClawAppTagsResult {
+  type: "tags.result";
+  tags: MyClawAppTagInfo[];
+}
+
 /** Health snapshot, meant to be copy-pasted out of the app. */
 export interface MyClawAppDiagSnapshot {
   type: "diag.snapshot";
@@ -437,6 +468,9 @@ export type MyClawAppClientFrame =
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
   | MyClawAppNotificationsState
+  | MyClawAppTagsList
+  | MyClawAppTagsUpsert
+  | MyClawAppTagsDelete
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -596,7 +630,8 @@ export type MyClawAppErrorScope =
   | "workspaces"
   | "status"
   | "jobs"
-  | "notifications";
+  | "notifications"
+  | "tags";
 
 export interface MyClawAppError {
   type: "error";
@@ -1231,4 +1266,5 @@ export type MyClawAppServerFrame =
   | MyClawAppJobsListResult
   | MyClawAppJobsRunsResult
   | MyClawAppNotificationsInfo
+  | MyClawAppTagsResult
   | MyClawAppError;

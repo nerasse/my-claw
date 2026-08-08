@@ -18,6 +18,7 @@ import {
   CONFIG_PATH,
   MY_CLAW_DIR,
   parseConfig,
+  tagNameOf,
   type AgentToolType,
   type EffortLevel,
   type MyClawConfig,
@@ -41,7 +42,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
@@ -157,6 +158,8 @@ import {
   removeWorkspace,
   renameWorkspace,
   setWorkspacePath,
+  setTag,
+  deleteTag,
 } from "./core/config-edit.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
 import {
@@ -275,7 +278,8 @@ async function main() {
     // Provider-first: models with no explicit group nest under their provider's group label.
     const grouped = applyProviderGroups(merged, config.llm.providers ?? {});
     config.llm.models = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
-    modelPicker.syncFromConfig(config.llm);
+    config.llm.tags = config.tags;
+    modelPicker.syncFromConfig(config.llm, config.tags);
   };
   modelCatalog.onUpdate(applyModelCatalog);
   applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)
@@ -960,15 +964,27 @@ async function main() {
         ...(config.llm.defaultProvider ? { defaultProvider: config.llm.defaultProvider } : {}),
         defaultEffort: config.llm.effort ?? "",
         effortLevels: EFFORT_LEVELS,
-        providers: Object.entries(config.llm.providers ?? {}).map(([key, provider]) => ({
-          key,
-          type: provider.type ?? "openai",
-          ...(provider.group ? { group: provider.group } : {}),
-          discover: provider.discover === true,
-          models: providerCountOf(key),
-          ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
-          keyPresent: provider.apiKeyEnv ? Boolean(process.env[provider.apiKeyEnv]) : false,
-        })),
+        providers: [
+          // The virtual "Tags" provider rows at the top of the app's provider list: one entry
+          // for the reserved `Default` tag plus one per configured tag (docs/tags.md). The app
+          // opens the tags page instead of a provider page when this row is tapped.
+          {
+            key: "tags",
+            type: "tags",
+            discover: false,
+            models: 1 + Object.keys(config.tags ?? {}).length,
+            keyPresent: true,
+          },
+          ...Object.entries(config.llm.providers ?? {}).map(([key, provider]) => ({
+            key,
+            type: provider.type ?? "openai",
+            ...(provider.group ? { group: provider.group } : {}),
+            discover: provider.discover === true,
+            models: providerCountOf(key),
+            ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
+            keyPresent: provider.apiKeyEnv ? Boolean(process.env[provider.apiKeyEnv]) : false,
+          })),
+        ],
         // The two reserved roles, then every file-defined agent. The page is a browse surface, so
         // it lists the whole catalog and marks each agent's tier rather than filtering by workspace.
         agents: [
@@ -1038,7 +1054,9 @@ async function main() {
       get: () => agentsConfigSnapshot(),
       setModel: async (agent, modelId) => {
         if (!modelPicker.options().some((m) => m.id === modelId)) throw new Error(`unknown model: ${modelId}`);
-        const provider = modelPicker.providerFor(modelId);
+        // A tag id must not pin a provider: the tag resolves through config.tags and its model
+        // carries its own provider. The "tags" provider key exists only in the UI (docs/tags.md).
+        const provider = tagNameOf(modelId) !== undefined ? undefined : modelPicker.providerFor(modelId);
         if (agent === "global") {
           const result = await setDefaultModel(modelId, provider);
           if (!result.ok) throw new Error(result.error);
@@ -1137,6 +1155,43 @@ async function main() {
         if (file.source === "built-in") throw new Error("built-in agents are repo-synced and cannot be deleted");
         await deleteAgentFile(file.path);
         await reloadAgentsNow();
+      },
+    });
+
+    // Tags: named aliases for a model/effort/context combo (docs/tags.md). The listing is a
+    // fresh read of the config after every mutation, like the agents snapshot: a stale page can
+    // never survive a server-side edit. The virtual `Default` tag is synthesized, not stored.
+    const tagsSnapshot = (): MyClawAppTagsResult => ({
+      type: "tags.result",
+      tags: [
+        { name: "Default", model: config.llm.defaultModel ?? config.llm.model ?? "" },
+        ...Object.entries(config.tags ?? {}).map(([name, tag]) => ({
+          name,
+          model: tag.model,
+          ...(tag.effort ? { effort: tag.effort } : {}),
+          ...(tag.contextCap !== undefined ? { contextCap: tag.contextCap } : {}),
+        })),
+      ],
+    });
+    const writeTagsConfig = async (note: string): Promise<MyClawAppTagsResult> => {
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after tags edit failed", { note, error: String(err) });
+      });
+      return tagsSnapshot();
+    };
+    myClawApp.onTagsController({
+      list: () => tagsSnapshot(),
+      upsert: async (fields) => {
+        if (!modelPicker.options().some((m) => m.id === fields.model)) throw new Error(`unknown model: ${fields.model}`);
+        if (fields.effort && !EFFORT_LEVELS.includes(fields.effort as EffortLevel)) throw new Error(`invalid effort level: ${fields.effort}`);
+        const result = await setTag(fields.name, fields);
+        if (!result.ok) throw new Error(result.error);
+        return writeTagsConfig(`tag ${fields.name}`);
+      },
+      delete: async (name) => {
+        const result = await deleteTag(name);
+        if (!result.ok) throw new Error(result.error);
+        return writeTagsConfig(`suppression tag ${name}`);
       },
     });
 

@@ -1,4 +1,4 @@
-import { resolveAgentLlm, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
+import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
@@ -84,7 +84,12 @@ export class BackendDispatcher implements AgentBackend {
     // reroute id comes from the resolver, so it is always real.
     const modelId = forcedModelId ?? session.modelOverride;
     const models = this.config.llm.models;
-    if (!forcedModelId && session.modelOverride && models?.length && !models.some((m) => m.id === session.modelOverride)) {
+    // A tag reference stays live even though it is absent from `llm.models`: it resolves
+    // through config.tags, which the llm view carries (see docs/tags.md). Only a tag that no
+    // longer exists self-heals like a removed model.
+    const tagName = tagNameOf(session.modelOverride ?? "");
+    const liveTag = tagName !== undefined && (tagName === "Default" || this.config.tags?.[tagName] !== undefined);
+    if (!forcedModelId && session.modelOverride && models?.length && !liveTag && !models.some((m) => m.id === session.modelOverride)) {
       void log("warn", "session modelOverride no longer in config; falling back to default", {
         sessionId: session.id,
         modelOverride: session.modelOverride,

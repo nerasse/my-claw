@@ -1294,6 +1294,65 @@ describe("agents frames", () => {
   });
 });
 
+describe("tags frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  const TAGS_RESULT = {
+    type: "tags.result" as const,
+    tags: [
+      { name: "Default", model: "fast-1" },
+      { name: "opus", model: "claude-opus-4-8", effort: "xhigh", contextCap: 50000 },
+    ],
+  };
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onTagsController({
+      list: () => TAGS_RESULT,
+      upsert: async (fields) => ({ type: "tags.result", tags: [...TAGS_RESULT.tags, { name: fields.name, model: fields.model }] }),
+      delete: async (name) => ({ type: "tags.result", tags: TAGS_RESULT.tags.filter((t) => t.name !== name) }),
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("tags.list answers with the fresh listing", async () => {
+    client.ws.send(JSON.stringify({ type: "tags.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tags.result");
+    assert.equal((frame["tags"] as unknown[]).length, 2);
+    assert.equal((frame["tags"] as Array<{ name: string }>)[1]?.["name"], "opus");
+  });
+
+  test("tags.upsert forwards name and model and answers with the listing", async () => {
+    client.ws.send(JSON.stringify({ type: "tags.upsert", name: "sonnet", model: "claude-sonnet-4" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tags.result");
+    assert.ok((frame["tags"] as Array<{ name: string }>).some((t) => t.name === "sonnet"));
+  });
+
+  test("tags.upsert with a missing name is refused", async () => {
+    client.ws.send(JSON.stringify({ type: "tags.upsert", model: "claude-opus-4-8" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "tags");
+  });
+
+  test("tags.delete forwards the name and answers with the listing", async () => {
+    client.ws.send(JSON.stringify({ type: "tags.delete", name: "opus" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tags.result");
+    assert.ok(!(frame["tags"] as Array<{ name: string }>).some((t) => t.name === "opus"));
+  });
+});
+
 describe("mcp frames", () => {
   let adapter: MyClawAppAdapter;
   let client: WsClient;

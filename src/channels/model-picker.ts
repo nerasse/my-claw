@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
-import type { AgentConfigKey, EffortLevel, LlmConfig } from "../core/config.ts";
+import type { AgentConfigKey, EffortLevel, LlmConfig, TagConfig } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
@@ -173,17 +173,40 @@ export class ModelPicker {
    * Sync the model list and the effort options from a resolved llm config. Both callers (boot
    * catalog merge, hot reload) need the same projection, and `effortApplies` can only be derived
    * here from the backend, so a hand-written field list at each call site would drop it silently.
+   *
+   * User tags ride on the llm view as synthetic entries: the virtual `tag:Default` first, then
+   * one entry per tag, all under a single "Tags" group so the picker reads as one submenu and
+   * the provider list gets its top row for free (docs/tags.md).
    */
-  syncFromConfig(llm: LlmConfig): void {
-    this.models = (llm.models ?? []).map((model) => ({
-      id: model.id,
-      label: model.label,
-      provider: model.provider,
-      group: model.group,
-      supportedEffortLevels: model.supportedEffortLevels,
-      supportsEffort: model.supportsEffort,
-      effortApplies: effectiveEffort(llm, model.id).source !== "unsupported",
-    }));
+  syncFromConfig(llm: LlmConfig, tags?: Record<string, TagConfig>): void {
+    const tagEntries: ModelOption[] = [
+      {
+        id: "tag:Default",
+        label: "Default",
+        group: "Tags",
+        provider: "tags",
+        effortApplies: effectiveEffort(llm, "tag:Default").source !== "unsupported",
+      },
+      ...Object.entries(tags ?? {}).map(([name, tag]) => ({
+        id: `tag:${name}`,
+        label: name,
+        group: "Tags",
+        provider: "tags",
+        effortApplies: effectiveEffort(llm, `tag:${name}`).source !== "unsupported",
+      })),
+    ];
+    this.models = [
+      ...tagEntries,
+      ...(llm.models ?? []).map((model) => ({
+        id: model.id,
+        label: model.label,
+        provider: model.provider,
+        group: model.group,
+        supportedEffortLevels: model.supportedEffortLevels,
+        supportsEffort: model.supportsEffort,
+        effortApplies: effectiveEffort(llm, model.id).source !== "unsupported",
+      })),
+    ];
     this.effort = effortOptionsFor(llm);
   }
 
