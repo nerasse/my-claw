@@ -1800,6 +1800,10 @@ test("MatrixAdapter restores pending action menus after restart", async () => {
       }),
     });
 
+    await waitFor(() => secondRuntime.calls.some((call) =>
+      call.method === "sendMessage"
+      && (call.args[1] as Record<string, unknown>)?.["m.new_content"] !== undefined));
+
     const sendCalls = secondRuntime.calls.filter((call) => call.method === "sendMessage");
     const edited = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
     assert.match(String((edited["m.new_content"] as Record<string, unknown>)?.["body"] ?? ""), /Model changed to Alt/);
@@ -1832,6 +1836,10 @@ test("MatrixAdapter restores generic confirms after restart as expired prompts",
         content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$evt1", key: "1️⃣" } },
       }),
     });
+
+    await waitFor(() => secondRuntime.calls.some((call) =>
+      call.method === "sendMessage"
+      && /expired or already resolved/i.test(String((call.args[1] as Record<string, unknown>)?.["body"] ?? ""))));
 
     const sendCalls = secondRuntime.calls.filter((call) => call.method === "sendMessage");
     const replyPayload = sendCalls.at(-1)?.args[1] as Record<string, unknown>;
