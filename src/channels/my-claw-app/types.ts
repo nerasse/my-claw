@@ -234,6 +234,14 @@ export interface MyClawAppModelEffortSet {
   level: string;
 }
 
+/** This conversation's context ceiling: a number of tokens, or "full" for the model's own window.
+ *  Never above the full window -- the server clamps and answers with what it stored. */
+export interface MyClawAppModelContextSet {
+  type: "model.context.set";
+  threadId: string;
+  choice: number | "full";
+}
+
 /** Stops the run on this thread, whatever backend is driving it (the `/stop` of the app). */
 export interface MyClawAppChatStop {
   type: "chat.stop";
@@ -438,6 +446,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelGet
   | MyClawAppModelSet
   | MyClawAppModelEffortSet
+  | MyClawAppModelContextSet
   | MyClawAppChatStop
   | MyClawAppAgentsConfigGet
   | MyClawAppAgentsModelSet
@@ -670,6 +679,14 @@ export interface MyClawAppModelOption {
   group?: string;
   /** Provider key this model belongs to, so the app can group models by provider. */
   provider?: string;
+  /**
+   * Effort levels this model accepts; empty means it discards effort. Carried per model so the
+   * app's chained picker can offer the step for the model being staged rather than only for the
+   * one currently in force.
+   */
+  effortLevels?: string[];
+  /** The model's own full context window, so the app can offer ceilings under it and no higher. */
+  context?: number;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */
@@ -679,6 +696,23 @@ export interface MyClawAppEffortState {
   /** Levels the active model accepts; empty means no choice is offered. */
   levels: string[];
   supported: boolean;
+}
+
+/**
+ * What window this thread may use, and what the owner may pick from. The app builds the ceiling
+ * list itself (full window, the standing cap, then the graduations under it), so this carries the
+ * three numbers that list is derived from rather than a pre-rendered menu. See
+ * docs/context-window.md.
+ */
+export interface MyClawAppContextState {
+  /** The model's full window. */
+  raw: number;
+  /** What the run may actually use once the session choice and the standing cap are applied. */
+  effective: number;
+  /** The standing agent/global cap, when one is set and actually below the full window. */
+  cap?: number;
+  /** This conversation's own choice: a ceiling, "full", or absent when it follows policy. */
+  choice?: number | "full";
 }
 
 export interface MyClawAppModelListResult {
@@ -831,13 +865,18 @@ export interface MyClawAppInstructionsSaved {
  * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
  * never an optimistic echo of what the app hoped for.
  */
-export interface MyClawAppModelResult {
-  type: "model.result";
-  threadId: string;
+/** The whole model state of a thread, shared by the frame and the controller that produces it. */
+export interface MyClawAppModelState {
   /** The model that will run on this thread: override or the configured default. */
   model: string;
   defaultModel: string;
   effort: MyClawAppEffortState;
+  context: MyClawAppContextState;
+}
+
+export interface MyClawAppModelResult extends MyClawAppModelState {
+  type: "model.result";
+  threadId: string;
 }
 
 /**

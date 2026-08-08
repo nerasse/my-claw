@@ -56,7 +56,7 @@ test("an exempt model still gets the list, because a tier can now tighten it", (
 });
 
 test("a disabled cap drops its tier but keeps the lower ones", () => {
-  expect(labels(contextChoiceFor(cfg(big, { cap: 0 }), "big", undefined))).toEqual(["Full: 1,048,576", "256,000", "128,000", "64,000"]);
+  expect(labels(contextChoiceFor(cfg(big, { cap: 0 }), "big", undefined))).toEqual(["Full: 1,048,576", "512,000", "256,000", "128,000", "64,000"]);
 });
 
 test("an agent's own ceiling is the one offered and marked", () => {
@@ -65,7 +65,8 @@ test("an agent's own ceiling is the one offered and marked", () => {
   expect(c.effective).toBe(128_000);
   expect(c.tiers.find((t) => t.selected)?.label).toBe("128,000 (cap)");
   // The global cap is not the agent's, so it is not labelled as one for it.
-  expect(labels(c)).toEqual(["Full: 1,048,576", "128,000 (cap)", "256,000", "64,000"]);
+  // Descending, so the list reads like a volume scale whatever the cap happens to be.
+  expect(labels(c)).toEqual(["Full: 1,048,576", "512,000", "256,000", "128,000 (cap)", "64,000"]);
 });
 
 test("an unknown model still resolves, falling back to the default window", () => {

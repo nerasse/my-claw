@@ -18,6 +18,7 @@ import {
   CONFIG_PATH,
   MY_CLAW_DIR,
   parseConfig,
+  resolveContextCap,
   tagNameOf,
   type AgentToolType,
   type EffortLevel,
@@ -58,6 +59,7 @@ import {
   type InstructionRoots,
 } from "./channels/my-claw-app/instructions.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
+import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
@@ -836,12 +838,25 @@ async function main() {
         threadId,
         sessionScope: "per-user",
       });
+    /** A model's own full window, for the app's ceiling list (never offered above it). */
+    const contextWindowOf = (modelId: string): number | undefined => {
+      try {
+        return contextChoiceFor(config, modelId, undefined).raw;
+      } catch {
+        // A model whose provider vanished must not take the whole catalog down.
+        return undefined;
+      }
+    };
     const resolveModelState = async (owner: string, threadId: string) => {
       const session = await sessionManager.peek(modelSessionId(owner, threadId));
       const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
       const model = session?.modelOverride ?? defaultModel;
       const effort = effectiveEffort(config.llm, model, session?.effortOverride);
       const levels = modelPicker.effortLevelsFor(model);
+      // The app builds its own ceiling list from these three numbers, the same way the picker
+      // menus do on the other channels (docs/context-window.md).
+      const choice = contextChoiceFor(config, model, session?.contextOverride);
+      const cap = resolveContextCap(config, "main");
       return {
         model,
         defaultModel,
@@ -849,6 +864,12 @@ async function main() {
           level: effort.source === "unsupported" ? "" : effort.level ?? "",
           levels,
           supported: effort.source !== "unsupported",
+        },
+        context: {
+          raw: choice.raw,
+          effective: choice.effective,
+          ...(cap !== undefined && cap < choice.raw ? { cap } : {}),
+          ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
         },
       };
     };
@@ -861,6 +882,10 @@ async function main() {
           // The provider key rides along so the app can group the catalog by provider without
           // asking for a second list that could disagree with this one.
           ...(m.provider ? { provider: m.provider } : {}),
+          // Per-model effort levels and full window: the app's chained picker offers those two
+          // steps for the model being staged, which is not necessarily the one in force.
+          ...(modelPicker.effortLevelsFor(m.id).length > 0 ? { effortLevels: modelPicker.effortLevelsFor(m.id) } : {}),
+          ...(contextWindowOf(m.id) === undefined ? {} : { context: contextWindowOf(m.id) }),
         })),
         defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
       }),
@@ -888,6 +913,25 @@ async function main() {
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (!levels.includes(level as never)) throw new Error(`invalid effort level: ${level}`);
         session.effortOverride = level as never;
+        session.lastActiveAt = new Date().toISOString();
+        await sessionManager.persist(sessionId);
+        return resolveModelState(owner, threadId);
+      },
+      setContext: async (owner, threadId, choice) => {
+        const sessionId = modelSessionId(owner, threadId);
+        const session =
+          (await sessionManager.peek(sessionId)) ??
+          (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        const activeModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        // "full" is the model's own window, so it is stored as the marker rather than a number
+        // that would go stale the day the model's window changes. A ceiling is clamped to the
+        // window: a conversation may lower it, never lift it above what the model can hold.
+        if (choice === "full") {
+          session.contextOverride = "full";
+        } else {
+          const raw = contextChoiceFor(config, activeModel, undefined).raw;
+          session.contextOverride = Math.min(Math.floor(choice), raw);
+        }
         session.lastActiveAt = new Date().toISOString();
         await sessionManager.persist(sessionId);
         return resolveModelState(owner, threadId);

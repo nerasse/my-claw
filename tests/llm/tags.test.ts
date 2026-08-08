@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { resolveLlmConfig, effectiveEffort } from "../../src/llm/resolver.ts";
 import { resolveContextWindow } from "../../src/llm/context-window.ts";
 import { setTag, deleteTag } from "../../src/core/config-edit.ts";
-import { CONFIG_PATH, type LlmConfig, type MyClawConfig } from "../../src/core/config.ts";
+import { CONFIG_PATH, type EffortLevel, type LlmConfig, type MyClawConfig } from "../../src/core/config.ts";
 import { writeFile } from "node:fs/promises";
 
-function llmConfig(tags: Record<string, { model: string; effort?: string; contextCap?: number }> = {}): LlmConfig {
+function llmConfig(tags: Record<string, { model: string; effort?: EffortLevel; contextCap?: number }> = {}): LlmConfig {
   return {
     defaultProvider: "anthropic",
     defaultModel: "claude-sonnet-4-5",

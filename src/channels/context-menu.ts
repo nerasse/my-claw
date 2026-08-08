@@ -13,7 +13,7 @@ import { resolveContextWindow, type ContextOverride } from "../llm/context-windo
 
 /** Ceilings offered below the standing cap. Lowering a window is not only about lifting a policy:
  *  a shorter prompt is cheaper and faster, and sometimes worth it for one conversation. */
-const LOWER_TIERS = [256_000, 128_000, 64_000];
+const LOWER_TIERS = [512_000, 256_000, 128_000, 64_000];
 
 export interface ContextTier {
   /** `undefined` marks the full window, which is the model's own number rather than a ceiling. */
@@ -74,10 +74,12 @@ export function contextChoiceFor(
   const raw = window.raw;
   const cap = resolveContextCap(config, agent);
 
-  // The standing policy first, so the list always contains the option that undoes a session
-  // choice, then anything strictly smaller. Ceilings at or above the window are dropped: they
-  // would render as the same number twice.
-  const ceilings = [...(cap !== undefined ? [cap] : []), ...LOWER_TIERS].filter((c) => c < raw);
+  // The standing policy is offered alongside the graduations so the list always contains the
+  // option that undoes a session choice. Ceilings at or above the window are dropped (they would
+  // render as the same number twice), and the rest reads top-down like a volume scale.
+  const ceilings = [...new Set([...(cap !== undefined ? [cap] : []), ...LOWER_TIERS])]
+    .filter((c) => c < raw)
+    .sort((a, b) => b - a);
   const tiers: ContextTier[] = [
     {
       tokens: raw,
@@ -85,7 +87,7 @@ export function contextChoiceFor(
       selected: window.effective === raw,
     },
   ];
-  for (const ceiling of [...new Set(ceilings)]) {
+  for (const ceiling of ceilings) {
     tiers.push({
       ceiling,
       tokens: ceiling,

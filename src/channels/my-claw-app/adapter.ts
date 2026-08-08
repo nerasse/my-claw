@@ -80,6 +80,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppJobEntry,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
+  MyClawAppModelContextSet,
+  MyClawAppModelState,
   MyClawAppTagsDelete,
   MyClawAppTagsResult,
   MyClawAppTagsUpsert,
@@ -142,24 +144,14 @@ export interface MyClawAppDiagnosticsProvider {
  * reach into the global config, the model picker or the session manager itself.
  */
 export interface MyClawAppModelController {
-  list(): { models: Array<{ id: string; label: string; group?: string }>; defaultModel: string };
-  /** What runs on this thread now: override or configured default, plus effort state. */
-  current(owner: string, threadId: string): Promise<{
-    model: string;
-    defaultModel: string;
-    effort: { level: string; levels: string[]; supported: boolean };
-  }>;
+  list(): { models: Array<{ id: string; label: string; group?: string; effortLevels?: string[]; context?: number }>; defaultModel: string };
+  /** What runs on this thread now: override or configured default, plus effort and context state. */
+  current(owner: string, threadId: string): Promise<MyClawAppModelState>;
   /** Persists the override (or clears it, back to the default) and reports what was stored. */
-  set(owner: string, threadId: string, modelId: string): Promise<{
-    model: string;
-    defaultModel: string;
-    effort: { level: string; levels: string[]; supported: boolean };
-  }>;
-  setEffort(owner: string, threadId: string, level: string): Promise<{
-    model: string;
-    defaultModel: string;
-    effort: { level: string; levels: string[]; supported: boolean };
-  }>;
+  set(owner: string, threadId: string, modelId: string): Promise<MyClawAppModelState>;
+  setEffort(owner: string, threadId: string, level: string): Promise<MyClawAppModelState>;
+  /** Persists this conversation's context ceiling ("full" for the model's own window). */
+  setContext(owner: string, threadId: string, choice: number | "full"): Promise<MyClawAppModelState>;
 }
 
 /**
@@ -877,6 +869,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "model.effort.set":
         void this.handleModelEffort(ws, frame.threadId, frame.level);
+        break;
+      case "model.context.set":
+        void this.handleModelContext(ws, frame);
         break;
       case "agents.config.get":
         void this.handleAgentsConfigGet(ws, frame);
@@ -1853,6 +1848,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
     } catch (err) {
       await this.refuse(ws, "model", "model.effort.set failed", { threadId: safeThread, level, error: String(err) });
+    }
+  }
+
+  private async handleModelContext(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppModelContextSet,
+  ): Promise<void> {
+    const safeThread = sanitizeThreadId(frame.threadId);
+    if (!safeThread) {
+      await this.refuse(ws, "model", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!this.models) {
+      await this.refuse(ws, "model", "model control unavailable");
+      return;
+    }
+    const choice = frame.choice;
+    if (choice !== "full" && (typeof choice !== "number" || !Number.isFinite(choice) || choice <= 0)) {
+      await this.refuse(ws, "model", "invalid context choice", { threadId: safeThread, choice: String(choice) });
+      return;
+    }
+    try {
+      const state = await this.models.setContext(ws.data.owner, safeThread, choice);
+      this.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+    } catch (err) {
+      await this.refuse(ws, "model", "model.context.set failed", { threadId: safeThread, error: String(err) });
     }
   }
 

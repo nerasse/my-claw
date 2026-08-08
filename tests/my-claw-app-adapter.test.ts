@@ -980,9 +980,10 @@ describe("model frames", () => {
         ],
         defaultModel: "fast-1",
       }),
-      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
-      set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
-      setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "medium", levels: ["low", "medium", "high"], supported: true } }),
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "medium", levels: ["low", "medium", "high"], supported: true }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async (_o, _t, choice) => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: choice === "full" ? 200000 : choice, ...(choice === "full" ? {} : { choice }) } }),
     });
     await adapter.start();
     client = await connectClient(adapter.port);
@@ -1012,9 +1013,10 @@ describe("model frames", () => {
         ],
         defaultModel: "fast-1",
       }),
-      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
-      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
-      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false } }),
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
     });
     await withProviders.start();
     try {
@@ -1043,6 +1045,27 @@ describe("model frames", () => {
     assert.equal(frame["type"], "model.result");
     assert.equal(frame["model"], "strong-2");
     assert.equal(frame["threadId"], "t1");
+  });
+
+  test("model.context.set stores the ceiling and answers with the state", async () => {
+    client.ws.send(JSON.stringify({ type: "model.context.set", threadId: "t1", choice: 128000 }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.deepEqual(frame["context"], { raw: 200000, effective: 128000, choice: 128000 });
+  });
+
+  test("model.context.set accepts full, the model's own window", async () => {
+    client.ws.send(JSON.stringify({ type: "model.context.set", threadId: "t1", choice: "full" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.deepEqual(frame["context"], { raw: 200000, effective: 200000 });
+  });
+
+  test("model.context.set refuses a ceiling that is not a positive number", async () => {
+    client.ws.send(JSON.stringify({ type: "model.context.set", threadId: "t1", choice: 0 }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "model");
   });
 
   test("model.effort.set answers with the resulting state", async () => {

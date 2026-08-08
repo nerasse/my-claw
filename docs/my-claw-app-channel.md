@@ -100,6 +100,7 @@ the first answer wins.
 { "type": "model.get", "threadId": "projet" }
 { "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
+{ "type": "model.context.set", "threadId": "projet", "choice": 128000 }
 { "type": "skills.list" }
 { "type": "tools.list" }
 { "type": "workspaces.list" }
@@ -290,8 +291,8 @@ the first answer wins.
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
-{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai" }], "defaultModel": "gpt-5.1" }
-{ "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true } }
+{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }], "defaultModel": "gpt-5.1" }
+{ "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000 } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
