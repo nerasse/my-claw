@@ -1,0 +1,190 @@
+// Push notifications for the app channel, delivered over UnifiedPush with a self-hosted
+// UnifiedPush server (ntfy) acting as the push server — no Firebase, no Google. Full design
+// and setup in docs/notifications.md.
+//
+// The app registers with a UnifiedPush distributor on the device (the ntfy app) and receives
+// a Web-Push-shaped subscription (endpoint + p256dh + auth). It sends the endpoint to us via
+// the notifications.register frame; we then publish plaintext JSON to that endpoint whenever a
+// run or a job completes. The distributor delivers it to the device even when the app is
+// killed, and the app's native renderer (expo-unified-push) turns it into a system
+// notification. Publishing to a UnifiedPush endpoint is a plain HTTP POST — the endpoint URL
+// itself carries the secret, so no Web-Push/VAPID signing library is needed.
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { generateKeyPairSync } from "node:crypto";
+import { MY_CLAW_DIR } from "../core/config.ts";
+import { log } from "../utils/logger.ts";
+import { writeFileAtomically } from "../utils/atomic-write.ts";
+
+const PUSH_DIR = join(MY_CLAW_DIR, "push");
+const VAPID_PATH = join(PUSH_DIR, "vapid.json");
+const ENDPOINTS_PATH = join(PUSH_DIR, "endpoints.json");
+const FOREGROUND_PATH = join(PUSH_DIR, "foreground.json");
+
+// The `id` the ntfy app's notification renderer reads first; any number works, it only has
+// to be unique per notification the native side keeps track of.
+let notificationCounter = Date.now();
+
+export interface PushEndpoint {
+  endpoint: string;
+  pubKey?: string;
+  auth?: string;
+  updatedAt: string;
+}
+
+export interface VapidKeys {
+  publicKey: string;
+  privateKey: string;
+}
+
+async function readJson<T>(path: string): Promise<T | undefined> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFileAtomically(path, JSON.stringify(value, null, 2));
+}
+
+/**
+ * The VAPID keypair the distributor expects at registration (`registerDevice(vapid)`). The app
+ * receives the public key in the notifications.info frame; the private key is kept here for
+ * future use if publishing ever moves to Web-Push encryption. Both are generated once on first
+ * boot and stable across restarts.
+ */
+export async function loadOrCreateVapid(): Promise<VapidKeys> {
+  const existing = await readJson<VapidKeys>(VAPID_PATH);
+  if (existing?.publicKey && existing.privateKey) return existing;
+
+  // Application-server key in the web-push scheme: the public key is the raw P-256 point
+  // (0x04 || X || Y, 65 bytes) and the private key is the raw 32-byte scalar, both base64url.
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const pub = publicKey.export({ type: "spki", format: "der" }) as Buffer;
+  const priv = privateKey.export({ type: "pkcs8", format: "der" }) as Buffer;
+
+  const keys: VapidKeys = {
+    publicKey: pub.subarray(pub.length - 65).toString("base64url"),
+    privateKey: priv.subarray(priv.length - 32).toString("base64url"),
+  };
+  await writeJson(VAPID_PATH, keys);
+  return keys;
+}
+
+export interface EndpointStore {
+  register(deviceId: string, endpoint: PushEndpoint): Promise<void>;
+  unregister(deviceId: string): Promise<void>;
+  endpoints(): Promise<Array<{ deviceId: string; endpoint: PushEndpoint }>>;
+}
+
+function jsonEndpointStore(path: string): EndpointStore {
+  async function load(): Promise<Record<string, PushEndpoint>> {
+    return (await readJson<Record<string, PushEndpoint>>(path)) ?? {};
+  }
+  return {
+    async register(deviceId, endpoint) {
+      const all = await load();
+      all[deviceId] = endpoint;
+      await writeJson(path, all);
+    },
+    async unregister(deviceId) {
+      const all = await load();
+      if (!all[deviceId]) return;
+      delete all[deviceId];
+      await writeJson(path, all);
+    },
+    async endpoints() {
+      const all = await load();
+      return Object.entries(all).map(([deviceId, endpoint]) => ({ deviceId, endpoint }));
+    },
+  };
+}
+
+export const endpointStore = jsonEndpointStore(ENDPOINTS_PATH);
+
+export interface ForegroundState {
+  foreground: boolean;
+  threadId?: string;
+}
+
+export interface DeviceForegroundStore {
+  set(deviceId: string, state: ForegroundState): Promise<void>;
+  get(deviceId: string): Promise<ForegroundState | undefined>;
+}
+
+export const foregroundStore: DeviceForegroundStore = {
+  async set(deviceId, state) {
+    const all = (await readJson<Record<string, ForegroundState>>(FOREGROUND_PATH)) ?? {};
+    all[deviceId] = state;
+    await writeJson(FOREGROUND_PATH, all);
+  },
+  async get(deviceId) {
+    const all = (await readJson<Record<string, ForegroundState>>(FOREGROUND_PATH)) ?? {};
+    return all[deviceId];
+  },
+};
+
+export interface PushNotification {
+  title: string;
+  body: string;
+  /** Deep link opened when the notification is tapped: myclaw://thread/<id> or myclaw://job/<id>. */
+  url?: string;
+}
+
+/**
+ * Deliver a notification to every registered device. Best-effort: a dead endpoint (the app
+ * changed distributor or the endpoint was revoked) fails here, not in the run path.
+ * `skipDevice` filters per device before publishing — the run-completion notification skips a
+ * device that is foreground on the very thread that just finished.
+ */
+export async function publishNotification(
+  notification: PushNotification,
+  options?: { skipDevice?: (deviceId: string) => Promise<boolean> },
+): Promise<number> {
+  const targets = await endpointStore.endpoints();
+  if (targets.length === 0) return 0;
+
+  const payload = JSON.stringify({
+    id: notificationCounter++,
+    title: notification.title,
+    body: notification.body,
+    ...(notification.url ? { url: notification.url } : {}),
+  });
+
+  let delivered = 0;
+  await Promise.all(targets.map(async ({ deviceId, endpoint }) => {
+    if (options?.skipDevice && (await options.skipDevice(deviceId))) return;
+    try {
+      const response = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-UnifiedPush": "1" },
+        body: payload,
+      });
+      if (response.ok) {
+        delivered += 1;
+      } else {
+        void log("warn", "push publish rejected by the push server", { deviceId, status: response.status, body: (await response.text()).slice(0, 200) });
+      }
+    } catch (err) {
+      void log("warn", "push publish failed", { deviceId, error: String(err) });
+    }
+  }));
+  return delivered;
+}
+
+/** Whether a device is foreground on the given thread — the one case the run notification is skipped. */
+export async function isForegroundOn(deviceId: string, threadId: string): Promise<boolean> {
+  const state = await foregroundStore.get(deviceId);
+  return Boolean(state?.foreground && state.threadId === threadId);
+}
+
+/** Test seam: drops the stored endpoints and foreground state (setup-globals.ts). */
+export async function resetPushState(): Promise<void> {
+  for (const path of [ENDPOINTS_PATH, FOREGROUND_PATH]) {
+    await rm(path, { force: true }).catch(() => {});
+  }
+  await mkdir(PUSH_DIR, { recursive: true });
+}

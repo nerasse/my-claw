@@ -2298,3 +2298,83 @@ describe("scheduled jobs (jobs.*)", () => {
     }
   });
 });
+
+describe("notifications", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  const registrations: Array<{ deviceId: string; endpoint?: string; pubKey?: string; auth?: string }> = [];
+  const states: Array<{ deviceId: string; foreground: boolean; threadId?: string }> = [];
+
+  const until = async (predicate: () => boolean, timeoutMs = 3000): Promise<void> => {
+    const start = Date.now();
+    while (!predicate()) {
+      if (Date.now() - start > timeoutMs) throw new Error("condition not met within timeout");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+
+  beforeEach(async () => {
+    adapter = new MyClawAppAdapter(createConfig(), new FakeSessionStore() as never);
+    adapter.onMessage(async () => {});
+    adapter.onNotificationsController({
+      info: async () => "vapid-public-key",
+      register: async (deviceId, frame) => { registrations.push({ deviceId, endpoint: frame.endpoint, pubKey: frame.pubKey, auth: frame.auth }); },
+      unregister: async (deviceId) => { registrations.push({ deviceId, endpoint: undefined }); },
+      setForeground: async (deviceId, state) => { states.push({ deviceId, ...state }); },
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client?.ws.close();
+    await adapter.stop();
+    registrations.length = 0;
+    states.length = 0;
+  });
+
+  test("a connecting device is greeted with the VAPID public key", async () => {
+    const info = await nextFrame(client);
+    assert.equal(info["type"], "notifications.info");
+    assert.equal(info["vapidPublicKey"], "vapid-public-key");
+  });
+
+  test("notifications.register hands the endpoint to the controller", async () => {
+    client.ws.send(JSON.stringify({
+      type: "notifications.register",
+      endpoint: "https://push.example/up/secret",
+      pubKey: "pub",
+      auth: "auth",
+    }));
+    await until(() => registrations.length === 1);
+    assert.deepEqual(registrations, [{ deviceId: DEVICE_ID, endpoint: "https://push.example/up/secret", pubKey: "pub", auth: "auth" }]);
+  });
+
+  test("notifications.register with an empty endpoint unregisters the device", async () => {
+    client.ws.send(JSON.stringify({ type: "notifications.register", endpoint: "" }));
+    await until(() => registrations.length === 1);
+    assert.deepEqual(registrations, [{ deviceId: DEVICE_ID, endpoint: undefined }]);
+  });
+
+  test("notifications.state forwards the foreground state", async () => {
+    client.ws.send(JSON.stringify({ type: "notifications.state", foreground: true, threadId: "t1" }));
+    await until(() => states.length === 1);
+    assert.deepEqual(states, [{ deviceId: DEVICE_ID, foreground: true, threadId: "t1" }]);
+  });
+
+  test("notifications.register without a controller is refused on the notifications scope", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), new FakeSessionStore() as never);
+    bare.onMessage(async () => {});
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "notifications.register", endpoint: "https://x/y" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "notifications");
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
+  });
+});

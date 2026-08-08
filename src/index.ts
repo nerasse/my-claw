@@ -102,6 +102,7 @@ import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
+import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn } from "./notifications/push.ts";
 import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
@@ -444,6 +445,69 @@ async function main() {
   const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, undefined, agentRegistry);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
+
+  // Run-completion notifications to the app's devices (docs/notifications.md). Best-effort by
+  // design: a dead push endpoint must never fail the run that produced the result.
+  const formatDuration = (ms: number): string => {
+    const seconds = Math.round(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  };
+  const firstChars = (text: string, max = 160): string => {
+    const clean = text.trim().replace(/\s+/g, " ");
+    return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
+  };
+  const threadTitle = async (sessionId: string, fallback: string): Promise<string> => {
+    const session = await sessionManager.peek(sessionId);
+    return session?.title?.trim() || firstChars(fallback, 60);
+  };
+
+  hooks.on("message:route:complete", ({ message, sessionId, response, durationMs }) => {
+    const threadId = message.threadId ?? "default";
+    void threadTitle(sessionId, message.text).then((title) =>
+      publishNotification(
+        {
+          title,
+          body: `Run finished in ${formatDuration(durationMs)} — ${firstChars(response)}`,
+          url: `myclaw://thread/${threadId}`,
+        },
+        // The one case the user chose to stay silent: a device that is already looking at
+        // the very thread that just finished (the stream is on screen).
+        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
+      ),
+    );
+  });
+  hooks.on("message:route:error", ({ message, sessionId, error, durationMs }) => {
+    const threadId = message.threadId ?? "default";
+    void threadTitle(sessionId, message.text).then((title) =>
+      publishNotification(
+        {
+          title,
+          body: `Run failed after ${formatDuration(durationMs)} — ${String(error).slice(0, 200)}`,
+          url: `myclaw://thread/${threadId}`,
+        },
+        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
+      ),
+    );
+  });
+  // Silent jobs suppress their output by design; a completion notification would be just as
+  // noisy, so it is skipped with the delivery.
+  hooks.on("cron:job:end", ({ jobId, jobName, success, silent }) => {
+    if (silent) return;
+    void publishNotification({
+      title: jobName,
+      body: success ? "Job finished" : "Job failed",
+      url: `myclaw://job/${jobId}`,
+    });
+  });
+  hooks.on("cron:job:error", ({ jobId, jobName, error }) => {
+    void publishNotification({
+      title: jobName,
+      body: `Job failed — ${String(error).slice(0, 200)}`,
+      url: `myclaw://job/${jobId}`,
+    });
+  });
+
   toolRegistry.register(createCronTool(cronScheduler, {
     // Live catalogs, read per call: a workspace or a skill added while the server runs must
     // show up on the next `cron list` without a restart.
@@ -1422,6 +1486,19 @@ async function main() {
         await saveJobs(jobs);
         return jobsListing();
       },
+    });
+
+    myClawApp.onNotificationsController({
+      info: () => loadOrCreateVapid().then((keys) => keys.publicKey).catch(() => undefined),
+      register: (deviceId, frame) =>
+        endpointStore.register(deviceId, {
+          endpoint: frame.endpoint,
+          pubKey: frame.pubKey,
+          auth: frame.auth,
+          updatedAt: new Date().toISOString(),
+        }),
+      unregister: (deviceId) => endpointStore.unregister(deviceId),
+      setForeground: (deviceId, state) => foregroundStore.set(deviceId, state),
     });
 
     myClawApp.onCommandHandler(createMyClawAppCommandHandler({

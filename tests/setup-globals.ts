@@ -12,6 +12,7 @@ import { runRegistry } from "../src/core/run-registry.ts";
 import { resetBinaryCache } from "../src/voice/tts.ts";
 import { resetSkillLastGood } from "../src/skills/loader.ts";
 import { resetAgentLastGood } from "../src/agents/loader.ts";
+import { resetPushState } from "../src/notifications/push.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -36,6 +37,9 @@ beforeEach(() => {
   // Session ids are reused across files ("s1", "sess-A"), so a leaked controller makes
   // isRunning() true and leaves a mailbox accepting injections.
   runRegistry.clear();
+  // A stored push endpoint would keep deliver()ing to it and a stored foreground state would
+  // skip notifications for a whole file.
+  void resetPushState();
   // A binary path resolved by an earlier file would defeat a test that simulates edge-tts or
   // piper being absent.
   resetBinaryCache();

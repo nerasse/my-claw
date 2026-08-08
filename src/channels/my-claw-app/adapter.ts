@@ -76,6 +76,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppJobDelete,
   MyClawAppJobSave,
   MyClawAppJobEntry,
+  MyClawAppNotificationsRegister,
+  MyClawAppNotificationsState,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -277,6 +279,18 @@ export interface MyClawAppJobsController {
 }
 
 /**
+ * Push endpoints and foreground state for the device notifications (docs/notifications.md).
+ * Injected so the adapter never writes the push store itself.
+ */
+export interface MyClawAppNotificationsController {
+  /** The VAPID public key the device hands its distributor at registration, if push is on. */
+  info(): Promise<string | undefined>;
+  register(deviceId: string, frame: MyClawAppNotificationsRegister): Promise<void>;
+  unregister(deviceId: string): Promise<void>;
+  setForeground(deviceId: string, state: { foreground: boolean; threadId?: string }): Promise<void>;
+}
+
+/**
  * A command handler can answer plain text, or -- for /status -- the text plus the structured
  * payload the app draws as a fullscreen page.
  */
@@ -310,6 +324,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
   private jobs?: MyClawAppJobsController;
+  private notifications?: MyClawAppNotificationsController;
   private configEditor?: MyClawAppConfigController;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
@@ -492,6 +507,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onJobsController(controller: MyClawAppJobsController): void {
     this.jobs = controller;
+  }
+
+  onNotificationsController(controller: MyClawAppNotificationsController): void {
+    this.notifications = controller;
   }
 
   onConfigController(controller: MyClawAppConfigController): void {
@@ -720,6 +739,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     this.sockets.set(ws.data.deviceId, ws);
     void myClawAppLog("info", "device connected", { deviceId: ws.data.deviceId });
+    // The device needs the VAPID public key before it can register with its distributor;
+    // sent at connect so the app can register on startup without another round-trip.
+    void this.notifications?.info().then((vapidPublicKey) => {
+      if (vapidPublicKey) this.sendFrame(ws, { type: "notifications.info", vapidPublicKey });
+    });
   }
 
   private handleClose(ws: ServerWebSocket<MyClawAppSessionData>): void {
@@ -901,6 +925,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "jobs.delete":
         void this.handleJobDelete(ws, frame);
+        break;
+      case "notifications.register":
+        void this.handleNotificationsRegister(ws, frame);
+        break;
+      case "notifications.state":
+        void this.handleNotificationsState(ws, frame);
         break;
 
       case "files.delete":
@@ -1565,6 +1595,36 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       await this.refuse(ws, "jobs", "jobs.delete failed", { id: frame.id, error: String(err) });
     }
+  }
+
+  private async handleNotificationsRegister(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppNotificationsRegister,
+  ): Promise<void> {
+    if (!this.notifications) {
+      await this.refuse(ws, "notifications", "notifications unavailable");
+      return;
+    }
+    try {
+      if (frame.endpoint) {
+        await this.notifications.register(ws.data.deviceId, frame);
+      } else {
+        await this.notifications.unregister(ws.data.deviceId);
+      }
+    } catch (err) {
+      await this.refuse(ws, "notifications", "notifications.register failed", { error: String(err) });
+    }
+  }
+
+  private async handleNotificationsState(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppNotificationsState,
+  ): Promise<void> {
+    if (!this.notifications) return;
+    await this.notifications.setForeground(ws.data.deviceId, {
+      foreground: Boolean(frame.foreground),
+      threadId: frame.threadId || undefined,
+    });
   }
 
   private async handleInstructionsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {

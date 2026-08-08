@@ -434,6 +434,8 @@ export type MyClawAppClientFrame =
   | MyClawAppJobsList
   | MyClawAppJobSave
   | MyClawAppJobDelete
+  | MyClawAppNotificationsRegister
+  | MyClawAppNotificationsState
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -592,7 +594,8 @@ export type MyClawAppErrorScope =
   | "config"
   | "workspaces"
   | "status"
-  | "jobs";
+  | "jobs"
+  | "notifications";
 
 export interface MyClawAppError {
   type: "error";
@@ -1133,6 +1136,35 @@ export interface MyClawAppJobsListResult {
   jobs: MyClawAppJobEntry[];
 }
 
+/**
+ * The app just registered with a UnifiedPush distributor and hands us its subscription
+ * (a Web-Push-shaped endpoint: the URL carries the secret). An empty endpoint unregisters
+ * the device. See docs/notifications.md.
+ */
+export interface MyClawAppNotificationsRegister {
+  type: "notifications.register";
+  endpoint: string;
+  pubKey?: string;
+  auth?: string;
+}
+
+/**
+ * The app's foreground state, sent on AppState changes and when the active thread changes:
+ * the one case the "run finished" notification is skipped is a device that is foreground on
+ * the very thread that just finished. Everything else is published.
+ */
+export interface MyClawAppNotificationsState {
+  type: "notifications.state";
+  foreground: boolean;
+  threadId?: string;
+}
+
+/** The VAPID public key the device must hand to its distributor at registration. */
+export interface MyClawAppNotificationsInfo {
+  type: "notifications.info";
+  vapidPublicKey: string;
+}
+
 /** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
 export interface MyClawAppChatCleared {
   type: "chat.cleared";
@@ -1173,4 +1205,5 @@ export type MyClawAppServerFrame =
   | MyClawAppConfigResult
   | MyClawAppConfigSaved
   | MyClawAppJobsListResult
+  | MyClawAppNotificationsInfo
   | MyClawAppError;

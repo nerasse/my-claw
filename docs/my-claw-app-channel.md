@@ -256,6 +256,11 @@ the first answer wins.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.
+- `notifications.register` hands the device's UnifiedPush subscription (`endpoint`, plus
+  `pubKey`/`auth`) to the push store; an empty `endpoint` unregisters the device.
+  `notifications.state` reports the device's foreground state (`foreground`, optional
+  `threadId` of the active thread) so the server can skip run-completion notifications for the
+  thread that is already on screen. Full design: `docs/notifications.md`.
 
 ### Server -> Device
 
@@ -289,7 +294,8 @@ the first answer wins.
 { "type": "agents.file.saved", "name": "reviewer", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false }
 { "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
 { "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces" }
+{ "type": "notifications.info", "vapidPublicKey": "..." }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces|jobs|notifications" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
