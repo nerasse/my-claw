@@ -33,6 +33,9 @@ export interface CronJob {
   origin: CronOrigin | null;
   deliver: CronDeliver;
   model?: string;
+  // The job's own effort pin, the sibling of `model`: slotted above agents.cron exactly like it.
+  // Only a tag referenced by `model` or a session-level /effort outranks it (docs/agent-model.md).
+  effort?: import("../core/config.ts").EffortLevel;
   /** Key of the workspace this job runs in (config.workspaces). Absent = the default
    *  workspace. A key that leaves the config pauses the job: it must never run silently
    *  in the wrong workspace. See docs/multi-workspace.md. */

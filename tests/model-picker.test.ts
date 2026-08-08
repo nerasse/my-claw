@@ -273,7 +273,8 @@ test("effort: header suffix names the level and where it comes from", () => {
   assert.equal(effortPicker().effortHeaderSuffix(at("high")), " — Effort: high (session)");
   assert.equal(effortPicker().effortHeaderSuffix(at("high", "sdk-default")), " — Effort: high (SDK default)");
   assert.equal(effortPicker().effortHeaderSuffix(at("medium", "config")), " — Effort: medium (config)");
-  assert.equal(effortPicker().effortHeaderSuffix(at("low", "model")), " — Effort: low (model default)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("low", "tag")), " — Effort: low (tag pin)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("low", "scope")), " — Effort: low (job or agent pin)");
   assert.equal(effortPicker().effortHeaderSuffix(NOT_SET), " — Effort: provider default (nothing sent)");
 });
 
@@ -443,11 +444,39 @@ test("the context entry appears only when there is more than one ceiling to choo
   assert.ok(!picker.buildButtons("llama-3.3-70b").some((b) => b.label === "Context >"));
 });
 
-test("the context entry is offered on an agent menu too, unlike effort", () => {
+test("the context entry is offered on an agent menu too", () => {
   const picker = new ModelPicker(models);
   // A research sub-agent and a cron job do not want the same window, and each is set independently.
   const buttons = picker.buildButtons("llama-3.3-70b", "research", { contextChoice: true });
   assert.ok(buttons.some((b) => b.label === "Context >"));
+});
+
+test("the effort entry is offered on an agent menu too, but never for a tag model", () => {
+  const picker = effortPicker();
+  const buttons = picker.buildButtons("a", "research");
+  assert.ok(buttons.some((b) => b.label === "Effort >"));
+  // A tag's own pin would always win, so writing one on the agent would be dead config.
+  const tagPicker = new ModelPicker([{ id: "tag:opus", label: "opus", group: "Tags" }], { enabled: true, levels: ["low", "medium"] });
+  assert.ok(!tagPicker.buildButtons("tag:opus", "research").some((b) => b.label === "Effort >"));
+});
+
+test("an agent target rides along on every effort action", () => {
+  const picker = new ModelPicker([{ id: "a", label: "A" }], { enabled: true, levels: ["low", "medium", "high"] }, () => ["general", "research"]);
+  for (const button of picker.buildEffortButtons(at("low", "tag"), { currentModelId: "a", target: "research" })) {
+    const parsed = picker.parseCallbackAction(button.action);
+    assert.ok(parsed && "target" in parsed && parsed.target === "research", button.action);
+  }
+  // openEffort from the root menu carries the target too.
+  const effm = picker.buildButtons("a", "research").find((b) => b.label === "Effort >");
+  const parsed = picker.parseCallbackAction(effm!.action);
+  assert.ok(parsed && parsed.kind === "openEffort" && parsed.target === "research");
+  // A session menu keeps the effort session-scoped: no target on the same actions.
+  const sessionButtons = picker.buildEffortButtons(at("low", "tag"), { currentModelId: "a" });
+  for (const button of sessionButtons) {
+    const parsedSession = picker.parseCallbackAction(button.action);
+    if (!parsedSession || !("target" in parsedSession)) continue;
+    assert.equal(parsedSession.target, undefined);
+  }
 });
 
 test("every tier is rendered and the active one is marked", () => {

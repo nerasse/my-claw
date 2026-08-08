@@ -48,17 +48,21 @@ function expandTag(
 }
 
 /**
- * Effective effort for a run: session override > per-model default > global default. Only
- * emitted when it should actually be sent — claude-sdk and codex accept it natively; other
- * openai-compatible providers get it only when the model opts in via `supportsEffort`.
+ * Effective effort for a run: session override > the tag's own pin > the scope's pin (a cron
+ * job first, then the agent) > the global default. The tag is indivisible: referencing it
+ * accepts the effort it carries, and only the session sits above it. Only emitted when it
+ * should actually be sent — claude-sdk and codex accept it natively; other openai-compatible
+ * providers get it only when the model opts in via `supportsEffort`.
  */
 function computeEffort(
   merged: LlmConfig,
   model: LlmModelConfig | undefined,
   nativeEffort: boolean,
   effortOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
+  tagEffort?: EffortLevel,
 ): EffortLevel | undefined {
-  const chosen = effortOverride ?? model?.effort ?? merged.effort;
+  const chosen = effortOverride ?? tagEffort ?? scopeEffort ?? merged.effort;
   if (!chosen) return undefined;
   if (nativeEffort) return chosen;
   return model?.supportsEffort ? chosen : undefined;
@@ -68,12 +72,14 @@ function resolveFromMerged(
   merged: LlmConfig,
   modelId?: string,
   effortOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
 ): ResolvedLlmConfig {
   const rawModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
   // A tag reference keeps its identity on the resolved config (status, context cap, analytics)
   // while the API receives the tag's underlying model via `apiModel`.
   const expanded = expandTag(merged, rawModelId);
   const effectiveModelId = expanded.modelId;
+  const tagEffort = expanded.tag?.effort;
 
   if (!isNewFormat(merged)) {
     const provider = buildImplicitProvider(merged);
@@ -96,12 +102,7 @@ function resolveFromMerged(
     throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(merged.providers ?? {}).join(", ")}`);
   }
 
-  // The tag's effort pins the model's own: session override > tag > model > global.
-  const effortModel =
-    model !== undefined && expanded.tag?.effort !== undefined
-      ? { ...model, effort: expanded.tag.effort }
-      : model;
-
+  // The tag's own pin rides above every scope: referencing a tag accepts both halves of it.
   if (provider.type === "claude-sdk") {
     return {
       backend: "claude-sdk",
@@ -113,7 +114,7 @@ function resolveFromMerged(
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       fallbackModel: provider.fallbackModel,
-      effort: computeEffort(merged, effortModel, true, effortOverride),
+      effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
     };
   }
 
@@ -129,7 +130,7 @@ function resolveFromMerged(
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
-      effort: computeEffort(merged, effortModel, true, effortOverride),
+      effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
     };
   }
 
@@ -142,13 +143,18 @@ function resolveFromMerged(
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,
     limit: model?.limit ?? merged.limit,
-    effort: computeEffort(merged, effortModel, false, effortOverride),
+    effort: computeEffort(merged, model, false, effortOverride, scopeEffort, tagEffort),
     promptCache: provider.promptCache,
   };
 }
 
-export function resolveLlmConfig(config: LlmConfig, modelId?: string, effortOverride?: EffortLevel): ResolvedLlmConfig {
-  return resolveFromMerged(config, modelId, effortOverride);
+export function resolveLlmConfig(
+  config: LlmConfig,
+  modelId?: string,
+  effortOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
+): ResolvedLlmConfig {
+  return resolveFromMerged(config, modelId, effortOverride, scopeEffort);
 }
 
 /**
@@ -161,8 +167,9 @@ export function resolveLlmConfigForMessage(
   modelId: string | undefined,
   hasImages: boolean,
   effortOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
 ): ResolvedLlmConfig {
-  const resolved = resolveLlmConfig(config, modelId, effortOverride);
+  const resolved = resolveLlmConfig(config, modelId, effortOverride, scopeEffort);
   if (!hasImages || resolved.vision) return resolved;
 
   const fallbackId = config.visionFallback;
@@ -170,10 +177,14 @@ export function resolveLlmConfigForMessage(
   const fallbackModel = findModel(config, fallbackId);
   if (!fallbackModel?.vision) return resolved;
 
-  return resolveLlmConfig(config, fallbackId, effortOverride);
+  return resolveLlmConfig(config, fallbackId, effortOverride, scopeEffort);
 }
 
-/** An agent's defaults layered over the global ones. Only the two keys an agent may override. */
+/**
+ * An agent's defaults layered over the global ones. Only the two keys an agent may override:
+ * the effort of the scope is passed to the resolvers explicitly, never merged here, so it
+ * stays under the tag's pin (a merge would slot it where the global default sits).
+ */
 function mergeAgentLlm(agentConfig: AgentLlmConfig | undefined, globalConfig: LlmConfig): LlmConfig {
   return {
     ...globalConfig,
@@ -186,8 +197,14 @@ export function resolveAgentLlmConfig(
   agentConfig: AgentLlmConfig | undefined,
   globalConfig: LlmConfig,
   modelId?: string,
+  scopeEffort?: EffortLevel,
 ): ResolvedLlmConfig {
-  return resolveFromMerged(mergeAgentLlm(agentConfig, globalConfig), modelId);
+  return resolveFromMerged(
+    mergeAgentLlm(agentConfig, globalConfig),
+    modelId,
+    undefined,
+    scopeEffort ?? agentConfig?.effort,
+  );
 }
 
 /**
@@ -205,8 +222,15 @@ export function resolveLlmConfigForAgentMessage(
   modelId: string | undefined,
   hasImages: boolean,
   effortOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
 ): ResolvedLlmConfig {
-  return resolveLlmConfigForMessage(mergeAgentLlm(agentConfig, globalConfig), modelId, hasImages, effortOverride);
+  return resolveLlmConfigForMessage(
+    mergeAgentLlm(agentConfig, globalConfig),
+    modelId,
+    hasImages,
+    effortOverride,
+    scopeEffort ?? agentConfig?.effort,
+  );
 }
 
 export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {
@@ -239,7 +263,7 @@ export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels:
 // document no such value, so their unset state stays unnamed instead of guessed.
 const SDK_DEFAULT_EFFORT: EffortLevel = "high";
 
-export type EffortSource = "session" | "model" | "config" | "sdk-default" | "provider-default" | "unsupported";
+export type EffortSource = "session" | "tag" | "scope" | "config" | "sdk-default" | "provider-default" | "unsupported";
 
 export interface EffectiveEffort {
   // Absent when nothing sets a level and the provider documents no default of its own.
@@ -254,11 +278,14 @@ export interface EffectiveEffort {
  * on two counts: it skipped the per-model default, and it reported "default" even for models
  * that discard effort outright. Callers need the origin too, because "high because you asked for
  * it" and "high because the SDK falls back to it" are different answers to the same question.
+ * The scope's pin (a cron job first, then the agent) arrives as a single value: the two merge
+ * before this is called, so the source is one "scope" whatever its owner.
  */
 export function effectiveEffort(
   config: LlmConfig,
   modelId?: string,
   sessionOverride?: EffortLevel,
+  scopeEffort?: EffortLevel,
 ): EffectiveEffort {
   let backend: ResolvedLlmConfig["backend"];
   try {
@@ -278,8 +305,8 @@ export function effectiveEffort(
   if (!native && !model?.supportsEffort) return { source: "unsupported" };
 
   if (sessionOverride) return { level: sessionOverride, source: "session" };
-  if (tag?.effort) return { level: tag.effort, source: "model" };
-  if (model?.effort) return { level: model.effort, source: "model" };
+  if (tag?.effort) return { level: tag.effort, source: "tag" };
+  if (scopeEffort) return { level: scopeEffort, source: "scope" };
   if (config.effort) return { level: config.effort, source: "config" };
   if (backend === "claude-sdk") return { level: SDK_DEFAULT_EFFORT, source: "sdk-default" };
   return { source: "provider-default" };

@@ -1098,9 +1098,13 @@ describe("agents frames", () => {
     adapter = new MyClawAppAdapter(createConfig(), store as never);
     adapter.onAgentsController({
       get: () => SNAPSHOT,
-      setModel: async (agent, modelId) => ({ ...SNAPSHOT, defaultModel: modelId, agents: SNAPSHOT.agents }),
+      setModel: async (agent, modelId, effort) => ({
+        ...SNAPSHOT,
+        defaultModel: modelId,
+        defaultEffort: effort ?? SNAPSHOT.defaultEffort,
+        agents: SNAPSHOT.agents,
+      }),
       clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
-      setEffort: async (level) => ({ ...SNAPSHOT, defaultEffort: level }),
       setScope: async (agent, field, mode, names) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, [field]: mode === "inherit" ? null : mode === "all" ? ["*"] : names } : a)) }),
       setWorkspace: async (agent, workspace) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, workspace } : a)) }),
       setMaxIterations: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, maxIterations: value } : a)) }),
@@ -1163,10 +1167,11 @@ describe("agents frames", () => {
     assert.equal((frame["agents"] as Array<{ pinned: boolean }>)[1]!["pinned"], false);
   });
 
-  test("agents.effort.set answers with the stored effort", async () => {
-    client.ws.send(JSON.stringify({ type: "agents.effort.set", level: "medium" }));
+  test("agents.model.set carries the effort pin in the same pass", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.model.set", agent: "cron", model: "strong-2", effort: "medium" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["defaultModel"], "strong-2");
     assert.equal(frame["defaultEffort"], "medium");
   });
 
@@ -1212,7 +1217,6 @@ describe("agents frames", () => {
       get: () => SNAPSHOT,
       setModel: async () => SNAPSHOT,
       clearModel: async () => SNAPSHOT,
-      setEffort: async () => SNAPSHOT,
       setScope: async () => SNAPSHOT,
       setWorkspace: async () => SNAPSHOT,
       setMaxIterations: async () => SNAPSHOT,
@@ -1275,9 +1279,6 @@ describe("agents frames", () => {
         throw new Error("unknown model: ghost");
       },
       clearModel: async () => {
-        throw new Error("nope");
-      },
-      setEffort: async () => {
         throw new Error("nope");
       },
       setScope: async () => {
@@ -2189,6 +2190,7 @@ describe("scheduled jobs (jobs.*)", () => {
         completedRuns: job.completedRuns,
         deliver: job.deliver === "local" || job.deliver === "origin" ? job.deliver : `${job.deliver.platform}:${job.deliver.chatId}`,
         ...(job.model ? { model: job.model } : {}),
+        ...(job.effort ? { effort: job.effort } : {}),
         ...(job.workspace ? { workspace: job.workspace } : {}),
         skillsMode,
         ...(job.skills ? { skills: job.skills } : {}),
@@ -2234,8 +2236,11 @@ describe("scheduled jobs (jobs.*)", () => {
         ];
       },
       save: async (fields) => {
+        const jobEffort: import("../src/cron/types.ts").CronJob["effort"] | "" | undefined =
+          fields.effort === undefined ? undefined : fields.effort === "" ? "" : (fields.effort as import("../src/core/config.ts").EffortLevel);
         const stored = {
           ...(fields.model ? { model: fields.model } : {}),
+          ...(jobEffort === undefined ? {} : { effort: jobEffort }),
           ...(fields.workspace ? { workspace: fields.workspace } : {}),
           skills: fields.skills.mode === "inherit" ? undefined : fields.skills.mode === "all" ? ["*"] : (fields.skills.names ?? []),
           mcp: fields.mcp.mode === "inherit" ? undefined : fields.mcp.mode === "all" ? ["*"] : (fields.mcp.names ?? []),
@@ -2321,6 +2326,40 @@ describe("scheduled jobs (jobs.*)", () => {
     assert.equal(job["mcpMode"], "all");
     assert.equal(job["toolsMode"], "inherit");
     assert.equal(jobs.length, 1);
+  });
+
+  test("jobs.save carries the effort pin and an empty string clears it", async () => {
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      name: "Digest",
+      prompt: "sum up",
+      schedule: "every 24h",
+      enabled: true,
+      model: "fast-1",
+      effort: "high",
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+      tools: { mode: "inherit" },
+    }));
+    const frame = await nextFrame(client);
+    const listed = (frame["jobs"] as Array<Record<string, unknown>>);
+    assert.equal(listed[0]!["effort"], "high");
+
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      id: (listed[0]!["id"] as string),
+      name: "Digest",
+      prompt: "sum up",
+      schedule: "every 24h",
+      enabled: true,
+      effort: "",
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+      tools: { mode: "inherit" },
+    }));
+    const frame2 = await nextFrame(client);
+    const cleared = (frame2["jobs"] as Array<Record<string, unknown>>);
+    assert.equal(cleared[0]!["effort"], undefined);
   });
 
   test("jobs.save updates by id and keeps the untouched scope fields", async () => {

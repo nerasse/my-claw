@@ -243,19 +243,17 @@ test("effort: home model with supportsEffort carries the global default", () => 
   assert.equal(resolveLlmConfig(effortConfig, "grok-reasoner").effort, "high");
 });
 
-test("effort: session override beats global and per-model", () => {
+test("effort: session override beats the scope pin", () => {
   assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5", "max").effort, "max");
   // gating still applies to home models
   assert.equal(resolveLlmConfig(effortConfig, "mimo", "max").effort, undefined);
 });
 
-test("effort: per-model default applies when no override", () => {
-  const cfg: LlmConfig = {
-    ...effortConfig,
-    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", effort: "low" }],
-    effort: undefined,
-  };
-  assert.equal(resolveLlmConfig(cfg, "claude-sonnet-5").effort, "low");
+test("effort: the scope pin rides under the session override and over the global", () => {
+  // scopeEffort is the job/agent pin, passed by the caller: it must beat the global default
+  // but lose to the session's /effort.
+  assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5", undefined, "low").effort, "low");
+  assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5", "max", "low").effort, "max");
 });
 
 test("effortOptionsFor enabled when any SDK model, supportsEffort, or global effort", () => {
@@ -282,15 +280,11 @@ test("effectiveEffort: reports the level and its origin", () => {
   assert.deepEqual(effectiveEffort(effortConfig, "grok-reasoner"), { level: "high", source: "config" });
 });
 
-test("effectiveEffort: a per-model default is reported, not skipped", () => {
-  // The menus resolved session > global only, so a model-level effort displayed as "default"
-  // while the run actually used it.
-  const cfg: LlmConfig = {
-    ...effortConfig,
-    effort: undefined,
-    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", effort: "low" }],
-  };
-  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5"), { level: "low", source: "model" });
+test("effectiveEffort: a scope pin is reported, not skipped", () => {
+  // The menus resolved session > global only, so a job/agent-level effort displayed as
+  // "default" while the run actually used it.
+  const cfg: LlmConfig = { ...effortConfig, effort: undefined };
+  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5", undefined, "low"), { level: "low", source: "scope" });
 });
 
 test("effectiveEffort: an unset SDK model names the documented SDK fallback", () => {

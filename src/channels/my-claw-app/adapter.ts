@@ -22,7 +22,6 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppAgentsConfigGet,
   MyClawAppAgentsConfigResult,
   MyClawAppAgentFileResult,
-  MyClawAppAgentsEffortSet,
   MyClawAppAgentsModelClear,
   MyClawAppAgentsModelSet,
   MyClawAppApprovalRequest,
@@ -161,12 +160,13 @@ export interface MyClawAppModelController {
  */
 export interface MyClawAppAgentsController {
   get(): MyClawAppAgentsConfigResult;
-  /** Pins `agents.<agent>.llm.defaultModel`, or `llm.defaultModel` for agent "global". */
-  setModel(agent: string, modelId: string): Promise<MyClawAppAgentsConfigResult>;
+  /**
+   * Pins `agents.<agent>.llm.defaultModel`, or `llm.defaultModel` for agent "global". The effort
+   * rides in the same pass: `""` removes the pin, undefined leaves the target's own value.
+   */
+  setModel(agent: string, modelId: string, effort?: string): Promise<MyClawAppAgentsConfigResult>;
   /** Unpins an agent so it inherits again. Refuses "global". */
   clearModel(agent: string): Promise<MyClawAppAgentsConfigResult>;
-  /** Sets or removes (empty string) the global default effort. */
-  setEffort(level: string): Promise<MyClawAppAgentsConfigResult>;
   /** Writes the `agents.<agent>.skills|mcp` override. */
   setScope(agent: string, field: "skills" | "mcp", mode: "inherit" | "all" | "list", names: string[]): Promise<MyClawAppAgentsConfigResult>;
   /** Pins `agents.<agent>.workspace`; null removes the pin. */
@@ -891,9 +891,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "agents.model.clear":
         void this.handleAgentsModelClear(ws, frame);
         break;
-      case "agents.effort.set":
-        void this.handleAgentsEffortSet(ws, frame);
-        break;
       case "agents.scope.set":
         void this.handleAgentsScopeSet(ws, frame);
         break;
@@ -1200,9 +1197,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      this.sendFrame(ws, await this.agents.setModel(frame.agent, frame.model));
+      this.sendFrame(ws, await this.agents.setModel(frame.agent, frame.model, frame.effort));
     } catch (err) {
-      await this.refuse(ws, "agents", "agents.model.set failed", { agent: frame.agent, model: frame.model, error: String(err) });
+      await this.refuse(ws, "agents", "agents.model.set failed", { agent: frame.agent, model: frame.model, effort: frame.effort, error: String(err) });
     }
   }
 
@@ -1222,21 +1219,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, await this.agents.clearModel(frame.agent));
     } catch (err) {
       await this.refuse(ws, "agents", "agents.model.clear failed", { agent: frame.agent, error: String(err) });
-    }
-  }
-
-  private async handleAgentsEffortSet(
-    ws: ServerWebSocket<MyClawAppSessionData>,
-    frame: MyClawAppAgentsEffortSet,
-  ): Promise<void> {
-    if (!this.agents) {
-      await this.refuse(ws, "agents", "agent defaults unavailable");
-      return;
-    }
-    try {
-      this.sendFrame(ws, await this.agents.setEffort(frame.level));
-    } catch (err) {
-      await this.refuse(ws, "agents", "agents.effort.set failed", { level: frame.level, error: String(err) });
     }
   }
 

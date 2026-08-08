@@ -129,6 +129,12 @@ export interface SessionData {
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**
+   * Effort of the scope this run belongs to (a cron job's own pin). Sits under the session's
+   * `/effort` and under a tag's pin: it is the config of the run, not a per-chat choice. Never
+   * persisted: a cron session is deleted after each run, exactly like `scopeOverride`.
+   */
+  scopeEffort?: import("../core/config.ts").EffortLevel;
+  /**
    * Per-job scope of a cron run, set by the scheduler from the job's own fields and slotted
    * above `agents.cron` when the agent's scope is resolved. Never persisted: a cron session is
    * deleted after each run, so the override lives exactly as long as the run it belongs to.

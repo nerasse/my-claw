@@ -4,7 +4,6 @@ import { dirname } from "node:path";
 import {
   setAgentModel,
   setDefaultModel,
-  setDefaultEffort,
   clearAgentModel,
   setAgentScope,
   setAgentWorkspace,
@@ -92,19 +91,23 @@ describe("setDefaultModel", () => {
   });
 });
 
-describe("setDefaultEffort", () => {
-  test("writes llm.effort", async () => {
+describe("setDefaultModel with an effort pin", () => {
+  test("writes llm.effort in the same pass as the model", async () => {
     await writeConfigFile();
-    await setDefaultEffort("high");
-    expect((await readConfigFile()).llm.effort).toBe("high");
+    await setDefaultModel("mimo", "litellm", "high");
+    const file = await readConfigFile();
+    expect(file.llm.defaultModel).toBe("mimo");
+    expect(file.llm.effort).toBe("high");
   });
 
-  test("undefined removes the key", async () => {
+  test("\"clear\" removes the key and undefined leaves it alone", async () => {
     await writeConfigFile();
-    await setDefaultEffort("high");
-    await setDefaultEffort(undefined);
-    const file = await readConfigFile();
-    expect(file.llm.effort).toBeUndefined();
+    await setDefaultModel("mimo", "litellm", "high");
+    await setDefaultModel("mimo", "litellm", "clear");
+    expect((await readConfigFile()).llm.effort).toBeUndefined();
+    await setDefaultModel("mimo", "litellm", "high");
+    await setDefaultModel("mimo", "litellm");
+    expect((await readConfigFile()).llm.effort).toBe("high");
   });
 });
 
@@ -124,7 +127,29 @@ describe("clearAgentModel", () => {
     await setAgentModel("cron", "opus", "anthropic");
     const result = await clearAgentModel("cron");
     if (!result.ok) throw new Error(result.error);
-    expect(result.previous).toEqual({ model: "opus", provider: "anthropic" });
+    expect(result.previous).toEqual({ model: "opus", provider: "anthropic", effort: undefined });
+  });
+
+  test("clearing the model removes its effort sibling too", async () => {
+    await writeConfigFile();
+    await setAgentModel("cron", "opus", "anthropic", "high");
+    expect((await readConfigFile()).agents.cron?.llm?.effort).toBe("high");
+    await clearAgentModel("cron");
+    const file = await readConfigFile();
+    expect(file.agents.cron).toBeUndefined();
+  });
+
+  test("the effort pin rides on the model pin in the same pass", async () => {
+    await writeConfigFile();
+    await setAgentModel("cron", "opus", "anthropic", "high");
+    const file = await readConfigFile();
+    expect(file.agents.cron?.llm).toEqual({ defaultModel: "opus", defaultProvider: "anthropic", effort: "high" });
+    await setAgentModel("cron", "opus", "anthropic", "clear");
+    expect((await readConfigFile()).agents.cron?.llm?.effort).toBeUndefined();
+    // Absent effort leaves an existing pin alone.
+    await setAgentModel("cron", "opus", "anthropic", "high");
+    await setAgentModel("cron", "opus", "anthropic");
+    expect((await readConfigFile()).agents.cron?.llm?.effort).toBe("high");
   });
 
   test("drops the emptied llm object and the emptied agent entry", async () => {

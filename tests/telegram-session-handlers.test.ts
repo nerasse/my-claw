@@ -6,7 +6,12 @@ import {
 } from "../src/channels/telegram/session-handlers.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
+import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { MyClawConfig } from "../src/core/config.ts";
+import { CONFIG_PATH } from "../src/core/config.ts";
+
+const readConfigFile = async (): Promise<Record<string, any>> => JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -204,6 +209,50 @@ test("telegram chains model into effort into context, and persists the window ch
   // The full window is stored as such, not as the number, so it survives a model change.
   await press("ctx:full");
   assert.equal((await sessionManager.peek(sessionId))?.contextOverride, "full");
+});
+
+test("telegram chains an agent model into effort into context, writing config on the way", async () => {
+  await mkdir(dirname(CONFIG_PATH), { recursive: true });
+  await writeFile(CONFIG_PATH, `${JSON.stringify({ whitelist: ["u1"], channels: {}, llm: {}, agents: {} }, null, 2)}\n`);
+  try {
+    const effortConfig: MyClawConfig = {
+      ...config,
+      llm: {
+        ...config.llm,
+        defaultModel: "claude-sonnet-5",
+        providers: { anthropic: { type: "claude-sdk" } },
+        models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }],
+      },
+    };
+    const sessionManager = new SessionManager();
+    const modelPicker = new ModelPicker(effortConfig.llm.models ?? [], { enabled: true, levels: ["low", "high"] });
+    const callbackHandler = createTelegramCallbackHandler({
+      config: effortConfig,
+      sessionManager,
+      modelPicker,
+      reloadConfigNow: async () => ({ changed: [], rebootRequired: [] }),
+    });
+    const press = (data: string) => callbackHandler({ chatId: "c1", userId: "u1", chatType: "dm", data });
+
+    // Selecting a model for an agent ("c" is cron's fixed target code) chains into the effort
+    // keyboard, every action carrying the target so it never edits the wrong scope.
+    const selected = await press(`mdl:${modelPicker.refForModel("claude-sonnet-5")}@c`);
+    assert.ok(selected?.buttons?.some((b) => b.action === "eff:low@c"));
+    assert.ok(selected?.buttons?.some((b) => b.action === "effk@c"));
+
+    // Picking the effort writes the agent's own pin and hands over to the context step.
+    const afterEffort = await press("eff:low@c");
+    assert.match(afterEffort?.text ?? "", /fenêtre de contexte/i);
+    assert.ok(afterEffort?.buttons?.some((b) => b.action === "ctx:full@c"));
+    assert.equal((await readConfigFile()).agents.cron?.llm?.effort, "low");
+
+    // The window closes the flow and is written for the same agent.
+    const afterContext = await press("ctx:128000@c");
+    assert.equal(afterContext?.buttons, undefined);
+    assert.equal((await readConfigFile()).agents.cron?.context?.cap, 128000);
+  } finally {
+    await rm(CONFIG_PATH, { force: true });
+  }
 });
 
 test("telegram keepEffort still reaches the context step, and keepContext writes nothing", async () => {

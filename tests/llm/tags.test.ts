@@ -31,19 +31,19 @@ test("a tag reference resolves to the tag's model, keeping the tag id as the run
   assert.deepEqual(resolved.limit, { context: 320000 });
 });
 
-test("the tag's effort pins the run between the session override and the model's own", () => {
+test("the tag's effort pins the run between the session override and the scope", () => {
   const config = llmConfig({ opus: { model: "claude-opus-4-8", effort: "xhigh" } });
   assert.equal(resolveLlmConfig(config, "tag:opus").effort, "xhigh");
   assert.equal(resolveLlmConfig(config, "tag:opus", "low").effort, "low");
+  // A scope pin (job/agent) loses to the tag: referencing a tag accepts both halves of it.
+  assert.equal(resolveLlmConfig(config, "tag:opus", undefined, "medium").effort, "xhigh");
   assert.equal(resolveLlmConfig(config, "claude-opus-4-8").effort, undefined);
 });
 
-test("a tag without its own effort inherits the model's effort", () => {
-  const config: LlmConfig = {
-    ...llmConfig({ opus: { model: "claude-opus-4-8" } }),
-    models: [{ id: "claude-opus-4-8", label: "Opus 4.8", provider: "anthropic", effort: "high" }],
-  };
-  assert.equal(resolveLlmConfig(config, "tag:opus").effort, "high");
+test("a tag without its own effort lets the scope pin through", () => {
+  const config = llmConfig({ opus: { model: "claude-opus-4-8" } });
+  assert.equal(resolveLlmConfig(config, "tag:opus").effort, undefined);
+  assert.equal(resolveLlmConfig(config, "tag:opus", undefined, "medium").effort, "medium");
 });
 
 test("a tag may point at another tag: the chain ends at a real model with the outer effort", () => {
@@ -71,9 +71,9 @@ test("an unknown tag name passes through like a stale model id instead of throwi
   assert.equal(resolved.provider, "anthropic");
 });
 
-test("effectiveEffort reports a tag's pinned level as a model-level choice", () => {
+test("effectiveEffort reports a tag's pinned level as a tag choice", () => {
   const config = llmConfig({ opus: { model: "claude-opus-4-8", effort: "xhigh" } });
-  assert.deepEqual(effectiveEffort(config, "tag:opus"), { level: "xhigh", source: "model" });
+  assert.deepEqual(effectiveEffort(config, "tag:opus"), { level: "xhigh", source: "tag" });
   assert.deepEqual(effectiveEffort(config, "tag:opus", "low"), { level: "low", source: "session" });
 });
 

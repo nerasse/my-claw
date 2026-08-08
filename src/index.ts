@@ -145,7 +145,6 @@ import {
 import {
   setVoiceSttMode,
   setDefaultModel,
-  setDefaultEffort,
   clearAgentModel,
   setAgentModel,
   setAgentScope,
@@ -274,6 +273,15 @@ async function main() {
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,
   // so the merge writes there; baseModels is the curated disk set re-merged on each refresh.
   let baseModels = [...(config.llm.models ?? [])];
+  for (const entry of baseModels) {
+    const leftover = (entry as unknown as Record<string, unknown>)["effort"];
+    if (leftover !== undefined) {
+      log("warn", "llm.models[].effort is gone: effort now belongs to the tag, job, agent or global scope", {
+        model: entry.id,
+        effort: leftover,
+      });
+    }
+  }
   const modelCatalog = new ModelCatalog(() => config.llm, discoverSdkModels);
   const applyModelCatalog = () => {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
@@ -886,6 +894,13 @@ async function main() {
           // steps for the model being staged, which is not necessarily the one in force.
           ...(modelPicker.effortLevelsFor(m.id).length > 0 ? { effortLevels: modelPicker.effortLevelsFor(m.id) } : {}),
           ...(contextWindowOf(m.id) === undefined ? {} : { context: contextWindowOf(m.id) }),
+          // A tag entry names the effort it pins, so a config flow that stages it can say what
+          // applies instead of silently inheriting the scope's own pin.
+          ...(() => {
+            const tagName = tagNameOf(m.id);
+            const tagEffort = tagName !== undefined ? config.tags?.[tagName]?.effort : undefined;
+            return tagEffort ? { effort: tagEffort } : {};
+          })(),
         })),
         defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
       }),
@@ -985,6 +1000,7 @@ async function main() {
         description,
         model,
         ...(model ? { provider: modelPicker.providerFor(model) ?? config.llm.defaultProvider } : {}),
+        ...(llm?.effort !== undefined ? { effort: llm.effort } : {}),
         pinned: llm?.defaultModel !== undefined || llm?.defaultProvider !== undefined,
         inheritsFrom,
         // Config over file, so the page shows what the agent actually resolves to rather than what
@@ -1096,18 +1112,24 @@ async function main() {
     const reloadAgentsNow = (): Promise<number> => reloadAgents(agentsDirs(), agentRegistry);
     myClawApp.onAgentsController({
       get: () => agentsConfigSnapshot(),
-      setModel: async (agent, modelId) => {
+      setModel: async (agent, modelId, effort) => {
         if (!modelPicker.options().some((m) => m.id === modelId)) throw new Error(`unknown model: ${modelId}`);
         // A tag id must not pin a provider: the tag resolves through config.tags and its model
         // carries its own provider. The "tags" provider key exists only in the UI (docs/tags.md).
         const provider = tagNameOf(modelId) !== undefined ? undefined : modelPicker.providerFor(modelId);
+        // The effort travels with the model: "" clears the pin, a level writes it, and neither
+        // says anything when the frame omits it.
+        const effortArg = effort === undefined ? undefined : effort === "" ? ("clear" as const) : (effort as EffortLevel);
+        if (effort !== undefined && effort !== "" && !EFFORT_LEVELS.includes(effort as EffortLevel)) {
+          throw new Error(`invalid effort level: ${effort}`);
+        }
         if (agent === "global") {
-          const result = await setDefaultModel(modelId, provider);
+          const result = await setDefaultModel(modelId, provider, effortArg);
           if (!result.ok) throw new Error(result.error);
           return writeAgentsConfig(`défaut global ${modelId}`);
         }
         if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
-        const result = await setAgentModel(agent, modelId, provider);
+        const result = await setAgentModel(agent, modelId, provider, effortArg);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`modèle ${agent} ${modelId}`);
       },
@@ -1117,13 +1139,6 @@ async function main() {
         const result = await clearAgentModel(agent);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`clear modèle ${agent}`);
-      },
-      setEffort: async (level) => {
-        const value = level === "" ? undefined : EFFORT_LEVELS.includes(level as EffortLevel) ? (level as EffortLevel) : null;
-        if (value === null) throw new Error(`invalid effort level: ${level}`);
-        const result = await setDefaultEffort(value);
-        if (!result.ok) throw new Error(result.error);
-        return writeAgentsConfig(`effort global ${value ?? "défaut"}`);
       },
       setScope: async (agent, field, mode, names) => {
         if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
@@ -1520,6 +1535,7 @@ async function main() {
             completedRuns: job.completedRuns,
             deliver: deliverDisplay(job.deliver),
             ...(job.model ? { model: job.model } : {}),
+            ...(job.effort ? { effort: job.effort } : {}),
             ...(job.workspace ? { workspace: job.workspace } : {}),
             skillsMode: scopeToWire(job.skills).mode,
             ...(job.skills ? { skills: job.skills } : {}),
@@ -1544,8 +1560,16 @@ async function main() {
     myClawApp.onJobsController({
       list: () => jobsListing(),
       save: async (fields) => {
+        if (fields.effort !== undefined && fields.effort !== "" && !EFFORT_LEVELS.includes(fields.effort as EffortLevel)) {
+          throw new Error(`invalid effort level: ${fields.effort}`);
+        }
+        // "" is a deliberate clear on update, so it must reach updateJob rather than vanish
+        // as falsy; undefined means "don't touch".
+        const jobEffort: EffortLevel | "" | undefined =
+          fields.effort === undefined ? undefined : fields.effort === "" ? "" : (fields.effort as EffortLevel);
         const stored = {
           ...(fields.model ? { model: fields.model } : {}),
+          ...(jobEffort === undefined ? {} : { effort: jobEffort }),
           ...(fields.workspace ? { workspace: fields.workspace } : {}),
           skills: scopeToStored(fields.skills),
           mcp: scopeToStored(fields.mcp),

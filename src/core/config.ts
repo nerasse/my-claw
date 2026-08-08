@@ -241,8 +241,6 @@ export interface LlmModelConfig {
   // alias can tell which family it tracks. Carried on the model rather than read back out of
   // `group`, which is a display choice and says nothing once the provider lists flat.
   family?: string;
-  // Per-model default effort (overrides the global llm.effort). Session /effort wins over both.
-  effort?: EffortLevel;
   // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Ignored for
   // claude-sdk models (they always accept effort natively).
   supportsEffort?: boolean;
@@ -341,6 +339,9 @@ export interface ResolvedLlmConfig {
 export interface AgentLlmConfig {
   defaultProvider?: string;
   defaultModel?: string;
+  // The agent's own effort pin, the sibling of defaultModel: a run on this agent uses it
+  // unless a tag or the session says otherwise. See docs/agent-model.md.
+  effort?: EffortLevel;
 }
 
 /** Display metadata of a config-defaultable agent, served to the phone app's settings. */

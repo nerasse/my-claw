@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
 import type { AgentConfigKey, EffortLevel, LlmConfig, TagConfig } from "../core/config.ts";
+import { tagNameOf } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
@@ -71,9 +72,9 @@ export type PickerCallback =
   | { kind: "select"; modelId: string; target?: PickerTarget }
   | { kind: "openGroup"; groupPath: string; target?: PickerTarget }
   | { kind: "back"; target?: PickerTarget }
-  | { kind: "openEffort" }
-  | { kind: "setEffort"; level: EffortLevel }
-  | { kind: "keepEffort" }
+  | { kind: "openEffort"; target?: PickerTarget }
+  | { kind: "setEffort"; level: EffortLevel; target?: PickerTarget }
+  | { kind: "keepEffort"; target?: PickerTarget }
   | { kind: "openContext"; target?: PickerTarget }
   | { kind: "setContext"; choice: ContextOverride; target?: PickerTarget }
   | { kind: "keepContext" }
@@ -316,10 +317,11 @@ export class ModelPicker {
    */
   buildButtons(currentModelId: string, target?: PickerTarget, opts?: { contextChoice?: boolean }): ConfirmationButton[] {
     const buttons = this.nodeButtons([], currentModelId, target);
-    // No effort entry on an agent menu: effort is a per-session choice, and offering it here would
-    // suggest the config edit also pins it. Same reasoning for the context entry.
-    if (!target && this.effortLevelsFor(currentModelId).length > 0) {
-      buttons.push({ label: "Effort >", action: EFFORT_ACTION });
+    // Effort rides on agent menus too since the config edit pins it now. The entry stays off
+    // when the model discards effort, and off an agent whose model is a tag: the tag's own pin
+    // would always win, so writing one here would be dead config.
+    if (this.effortLevelsFor(currentModelId).length > 0 && (!target || tagNameOf(currentModelId) === undefined)) {
+      buttons.push({ label: "Effort >", action: `${EFFORT_ACTION}${targetSuffix(target)}` });
     }
     // Only when there is more than one ceiling worth offering: otherwise the submenu would show a
     // single option, which is not a choice. Unlike effort, this is offered on an agent menu too --
@@ -378,16 +380,17 @@ export class ModelPicker {
    * model selection, where going back to the model menu would defeat the point of the chain).
    * When `currentModelId` is provided, only levels that model supports are shown.
    */
-  buildEffortButtons(effort: EffectiveEffort, opts?: { chained?: boolean; currentModelId?: string }): ConfirmationButton[] {
+  buildEffortButtons(effort: EffectiveEffort, opts?: { chained?: boolean; currentModelId?: string; target?: PickerTarget }): ConfirmationButton[] {
+    const suffix = targetSuffix(opts?.target);
     const levels = opts?.currentModelId ? this.effortLevelsFor(opts.currentModelId) : this.effort.levels;
     const buttons: ConfirmationButton[] = levels.map((level) => ({
       label: mark(level, level === effort.level),
-      action: `eff:${level}`,
+      action: `eff:${level}${suffix}`,
     }));
     if (opts?.chained) {
-      buttons.push({ label: `Keep current: ${formatEffort(effort)}`, action: KEEP_EFFORT_ACTION });
+      buttons.push({ label: `Keep current: ${formatEffort(effort)}`, action: `${KEEP_EFFORT_ACTION}${suffix}` });
     } else {
-      buttons.push({ label: "< Back", action: "mdlb" });
+      buttons.push({ label: "< Back", action: `mdlb${suffix}` });
     }
     return buttons;
   }
@@ -419,7 +422,7 @@ export class ModelPicker {
     const bare = target ? targeted?.[1] ?? data : data;
 
     if (bare === "mdlb") return { kind: "back", ...(target ? { target } : {}) };
-    if (bare === EFFORT_ACTION) return { kind: "openEffort" };
+    if (bare === EFFORT_ACTION) return { kind: "openEffort", ...(target ? { target } : {}) };
     if (bare === CONTEXT_ACTION) return { kind: "openContext", ...(target ? { target } : {}) };
     if (bare === KEEP_CONTEXT_ACTION) return { kind: "keepContext" };
 
@@ -431,12 +434,12 @@ export class ModelPicker {
       if (choice !== "full" && !(choice > 0)) return null;
       return { kind: "setContext", choice, ...(target ? { target } : {}) };
     }
-    if (bare === KEEP_EFFORT_ACTION) return { kind: "keepEffort" };
+    if (bare === KEEP_EFFORT_ACTION) return { kind: "keepEffort", ...(target ? { target } : {}) };
 
     const effort = /^eff:(.+)$/.exec(bare);
     if (effort) {
       const level = effort[1] as EffortLevel;
-      return this.effort.levels.includes(level) ? { kind: "setEffort", level } : null;
+      return this.effort.levels.includes(level) ? { kind: "setEffort", level, ...(target ? { target } : {}) } : null;
     }
 
     const group = /^mdlg:([0-9a-f]+)$/.exec(bare);
@@ -504,8 +507,10 @@ export function formatEffort(effort: EffectiveEffort): string {
   switch (effort.source) {
     case "session":
       return `${effort.level} (session)`;
-    case "model":
-      return `${effort.level} (model default)`;
+    case "tag":
+      return `${effort.level} (tag pin)`;
+    case "scope":
+      return `${effort.level} (job or agent pin)`;
     case "config":
       return `${effort.level} (config)`;
     case "sdk-default":

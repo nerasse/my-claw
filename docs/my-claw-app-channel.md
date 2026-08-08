@@ -109,10 +109,9 @@ the first answer wins.
 { "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md" }
 { "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a" }
 { "type": "agents.config.get" }
-{ "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1" }
-{ "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
-{ "type": "agents.effort.set", "level": "medium" }
-{ "type": "agents.scope.set", "agent": "cron", "field": "skills|mcp", "mode": "inherit|all|list", "names": ["code-review"] }
+ { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
+ { "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
+ { "type": "agents.scope.set", "agent": "cron", "field": "skills|mcp", "mode": "inherit|all|list", "names": ["code-review"] }
 { "type": "agents.workspace.set", "agent": "cron", "workspace": "sofa" }
 { "type": "agents.iterations.set", "agent": "cron", "value": 12 }
 { "type": "agents.contextcap.set", "agent": "cron", "value": 200000 }
@@ -169,10 +168,13 @@ the first answer wins.
   set) and one entry per agent with the model that actually runs for it (own pin or
   inherited) and its raw `skills`/`mcp`/`workspace`/`context.cap`/`maxIterations` config.
   `agents.model.set` with `agent: "global"` writes `llm.defaultModel`, with an agent key it
-  writes `agents.<key>.llm`; `agents.model.clear` removes an agent's pin so it inherits
-  again; `agents.effort.set` sets or removes (empty string) the global `llm.effort`. Every
+  writes `agents.<key>.llm`; the effort rides in the same frame — a level, or `""` to remove
+  the pin — and writes `llm.effort` for the global target, `agents.<key>.llm.effort` for an
+  agent. `agents.model.clear` removes an agent's model pin *and* its effort, so an unpinned
+  agent never keeps the effort of a model it no longer runs. Every
   mutation answers with a fresh `agents.config.result`, never an optimistic echo, and a
-  mutation that fails is refused with scope `agents`.
+  mutation that fails is refused with scope `agents`. Each agent row carries its own
+  `effort` (absent when the agent pins none).
   The `agents` array is the two reserved roles followed by every file-defined agent
   (docs/file-agents.md), so a file dropped in `agents/` appears with no app release. A
   file-defined entry additionally carries `source`, `path`, `base` and, for a workspace tier,
@@ -246,12 +248,13 @@ the first answer wins.
   a phone has no chat of origin, so no other target is honest; the listing's `deliver` shows
   what existing jobs carry anyway.
   Each entry carries the job's editable fields (`name`, `prompt`, `schedule`, `enabled`,
-  `model`, `workspace`), its run bookkeeping (`state`, `repeat`, `completedRuns`,
+  `model`, `effort`, `workspace`), its run bookkeeping (`state`, `repeat`, `completedRuns`,
   `nextRunAt`, `lastRunAt`, `lastStatus`, `lastError`, `createdAt`, `pausedReason`) and the
   per-job scope overrides in the app's editing vocabulary: `skillsMode`/`mcpMode`/`toolsMode`
   is `"inherit" | "all" | "list"` with the `skills`/`mcp`/`tools` names when a list applies.
   The overrides are slotted above `agents.cron` at run time exactly like the job's `model`
-  override (the scheduler hands them to the session; `resolveAgent` applies them first), so a
+  and `effort` pins (the scheduler hands them to the session; `resolveAgent` applies them
+  first), so a
   job with no scope field inherits the cron agent as before. Like the agent rows, each job
   carries `unknownModel`, `unknownWorkspace` and `unknownSkills`/`unknownMcp`/`unknownTools`
   computed against the live catalogs; the app paints them red but never refuses the save — the
@@ -291,7 +294,7 @@ the first answer wins.
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
-{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }], "defaultModel": "gpt-5.1" }
+{ "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000 } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }

@@ -2,6 +2,7 @@ import { handleStatusCommand } from "../status-command.ts";
 import { join } from "node:path";
 import type { ModelPricing } from "../../llm/pricing.ts";
 import type { MyClawConfig } from "../../core/config.ts";
+import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel, effectiveEffort } from "../../llm/resolver.ts";
@@ -14,7 +15,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, applyAgentEffort, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -434,13 +435,57 @@ export function createTelegramCallbackHandler({
     if ("target" in action && action.target) {
       const target = action.target;
       const currentModel = currentAgentModel(config, target);
+      const agentChoice = contextChoiceFor(config, currentModel, undefined, toolTypeOf(target));
+      // The effort this agent would run with: its own pin, unless a tag or a session override
+      // speaks first. The config view has no session, so the session never applies here.
+      const agentEffort = () =>
+        effectiveEffort(config.llm, currentModel, undefined, resolveAgentLlm(config, toolTypeOf(target))?.effort);
       if (action.kind === "select") {
+        const text = await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow });
+        // The flow continues: model, then effort, then window, exactly like the session flow.
+        // No effort step when the staged model is a tag: the tag's own pin would always win, so
+        // writing one here would be dead config.
+        const levels = modelPicker.effortLevelsFor(action.modelId);
+        const effort = effectiveEffort(config.llm, action.modelId, undefined, resolveAgentLlm(config, toolTypeOf(target))?.effort);
+        if (tagNameOf(action.modelId) === undefined && effort.source !== "unsupported" && levels.length > 0) {
+          return {
+            text: `${text}\nChoisissez maintenant l'effort. Actuel : ${formatEffort(effort)}`,
+            buttons: modelPicker.buildEffortButtons(effort, { chained: true, currentModelId: action.modelId, target }),
+            answerText: "Config mise à jour",
+          };
+        }
+        return { text, answerText: "Config mise à jour" };
+      }
+      if (action.kind === "setEffort") {
+        const text = await applyAgentEffort(target, action.level, { config, reloadConfigNow });
+        if (agentChoice.available) {
+          return {
+            text: `${text}\n${formatContextInfo(config, currentModel, undefined, toolTypeOf(target))}\nChoisissez maintenant la fenêtre de contexte`,
+            buttons: modelPicker.buildContextButtons(agentChoice.tiers, { chained: true, target }),
+            answerText: "Config mise à jour",
+          };
+        }
+        return { text, answerText: "Config mise à jour" };
+      }
+      if (action.kind === "keepEffort") {
+        const effort = agentEffort();
+        const text = `Effort de l'agent ${target} inchangé : ${formatEffort(effort)}`;
+        if (agentChoice.available) {
+          return {
+            text: `${text}\n${formatContextInfo(config, currentModel, undefined, toolTypeOf(target))}\nChoisissez maintenant la fenêtre de contexte`,
+            buttons: modelPicker.buildContextButtons(agentChoice.tiers, { chained: true, target }),
+            answerText: "Effort conservé",
+          };
+        }
+        return { text, answerText: "Effort conservé" };
+      }
+      if (action.kind === "openEffort") {
         return {
-          text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }),
-          answerText: "Config mise à jour",
+          text: `Effort de l'agent ${target} — ${modelPicker.labelFor(currentModel)} — actuel : ${formatEffort(agentEffort())}`,
+          buttons: modelPicker.buildEffortButtons(agentEffort(), { currentModelId: currentModel, target }),
+          answerText: "Effort",
         };
       }
-      const agentChoice = contextChoiceFor(config, currentModel, undefined, toolTypeOf(target));
       if (action.kind === "setContext") {
         return {
           text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }),

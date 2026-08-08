@@ -257,18 +257,17 @@ export interface MyClawAppAgentsModelSet {
   /** "global" writes `llm.defaultModel`; any agent key writes `agents.<key>.llm`. */
   agent: string;
   model: string;
+  /**
+   * The effort pin written in the same pass as the model, because the two are picked together.
+   * `""` removes the pin; absent keeps whatever the target already had.
+   */
+  effort?: string;
 }
 
 /** Removes an agent's model pin so it inherits again. Never valid for "global". */
 export interface MyClawAppAgentsModelClear {
   type: "agents.model.clear";
   agent: string;
-}
-
-/** Global default reasoning effort; `level: ""` removes the key so model/provider defaults apply. */
-export interface MyClawAppAgentsEffortSet {
-  type: "agents.effort.set";
-  level: string;
 }
 
 /**
@@ -451,7 +450,6 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentsConfigGet
   | MyClawAppAgentsModelSet
   | MyClawAppAgentsModelClear
-  | MyClawAppAgentsEffortSet
   | MyClawAppAgentsScopeSet
   | MyClawAppAgentsWorkspaceSet
   | MyClawAppAgentsIterationsSet
@@ -687,6 +685,8 @@ export interface MyClawAppModelOption {
   effortLevels?: string[];
   /** The model's own full context window, so the app can offer ceilings under it and no higher. */
   context?: number;
+  /** For a tag entry: the effort the tag pins, so a config flow can name what applies. */
+  effort?: string;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */
@@ -894,6 +894,8 @@ export interface MyClawAppAgentInfo {
   provider?: string;
   /** There is an entry in `agents.<key>.llm`. */
   pinned: boolean;
+  /** The agent's own effort pin, absent when it has none (then the global applies). */
+  effort?: string;
   /** Where the effective default comes from: "global", "orchestrator", or the key itself. */
   inheritsFrom: string;
   skills?: string[] | null;
@@ -1158,6 +1160,8 @@ export interface MyClawAppJobEntry {
   /** Display form of the delivery target: "local", "origin", or "telegram:chatId". */
   deliver: string;
   model?: string;
+  /** The job's own effort pin, the sibling of `model`. */
+  effort?: string;
   workspace?: string;
   skillsMode: "inherit" | "all" | "list";
   skills?: string[];
@@ -1218,6 +1222,8 @@ export interface MyClawAppJobSave {
   schedule: string;
   enabled: boolean;
   model?: string;
+  /** The job's own effort pin; "" clears it so the cron agent's setting applies. */
+  effort?: string;
   workspace?: string;
   skills: MyClawAppJobScope;
   mcp: MyClawAppJobScope;

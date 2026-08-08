@@ -1,7 +1,7 @@
-import type { AgentToolType, MyClawConfig } from "../core/config.ts";
+import type { AgentToolType, EffortLevel, MyClawConfig } from "../core/config.ts";
 import { agentConfigKey, resolveAgentLlm } from "../core/config.ts";
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
-import { setAgentContextCap, setAgentModel } from "../core/config-edit.ts";
+import { setAgentContextCap, setAgentEffort, setAgentModel } from "../core/config-edit.ts";
 import type { ModelPicker, PickerTarget } from "./model-picker.ts";
 import type { SubAgentInfo } from "../subagents/types.ts";
 import { log } from "../utils/logger.ts";
@@ -133,6 +133,28 @@ export async function applyAgentModel(
  * Entry point for `/model <args>`. Returns `not-an-agent` for everything that is not an agent name,
  * leaving `/model <model>` untouched.
  */
+/**
+ * Per-agent effort pin from the picker. `"clear"` removes it so the agent falls back on the
+ * global default, exactly like `setAgentModel`'s own effort argument — but this writes the
+ * effort alone, without touching the model.
+ */
+export async function applyAgentEffort(
+  target: PickerTarget,
+  effort: EffortLevel | "clear",
+  deps: Pick<AgentModelDeps, "config" | "reloadConfigNow">,
+): Promise<string> {
+  const key = agentConfigKey(toolTypeOf(target));
+  const result = await setAgentEffort(key, effort);
+  if (!result.ok) return `Échec de l'écriture : ${result.error}`;
+
+  await deps.reloadConfigNow?.().catch((err) => {
+    void log("warn", "config reload after agent effort write failed", { agent: key, error: String(err) });
+  });
+  return effort === "clear"
+    ? `Effort de l'agent ${target} : défaut (hérité)`
+    : `Effort de l'agent ${target} : ${effort}`;
+}
+
 /**
  * Per-agent context ceiling from the picker. `"full"` writes `0`, which is how the config spells
  * "no ceiling for this agent"; a number is written as-is so it can also sit below the global cap.

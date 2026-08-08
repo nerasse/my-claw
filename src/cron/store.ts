@@ -174,6 +174,8 @@ export interface CreateJobParams {
   origin: CronOrigin | null;
   deliver?: string;
   model?: string;
+  /** The job's own effort pin, the sibling of `model`; an empty string means none. */
+  effort?: import("../core/config.ts").EffortLevel | "";
   /** Key of the workspace this job runs in (config.workspaces); absent = the default. */
   workspace?: string;
   skills?: string[];
@@ -198,6 +200,7 @@ export function createJob(params: CreateJobParams): CronJob {
     origin: params.origin,
     deliver,
     model: params.model,
+    effort: params.effort || undefined,
     workspace: params.workspace,
     ...(params.skills ? { skills: params.skills } : {}),
     ...(params.mcp ? { mcp: params.mcp } : {}),
@@ -214,6 +217,8 @@ export interface UpdateJobParams {
   name?: string;
   prompt?: string;
   model?: string;
+  /** The job's own effort pin; an empty string clears it, exactly like `workspace`. */
+  effort?: import("../core/config.ts").EffortLevel | "";
   enabled?: boolean;
   deliver?: string;
   schedule?: string;
@@ -230,6 +235,7 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.name !== undefined) job.name = updates.name;
   if (updates.prompt !== undefined) job.prompt = updates.prompt;
   if (updates.model !== undefined) job.model = updates.model;
+  if (updates.effort !== undefined) job.effort = updates.effort || undefined;
   if (updates.enabled !== undefined) {
     job.enabled = updates.enabled;
     job.state = updates.enabled ? "scheduled" : "paused";

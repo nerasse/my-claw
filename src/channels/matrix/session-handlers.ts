@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ModelPricing } from "../../llm/pricing.ts";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { EffortLevel, MyClawConfig } from "../../core/config.ts";
+import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
@@ -17,7 +18,7 @@ import { hooks } from "../../hooks/index.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
-import { handleAgentModelCommand, applyAgentModel, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
+import { handleAgentModelCommand, applyAgentModel, applyAgentEffort, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
@@ -705,10 +706,79 @@ export function createMatrixActionHandler({
     if ("target" in action && action.target) {
       const target = action.target;
       const currentModel = currentAgentModel(config, target);
-      if (action.kind === "select") {
-        return { text: await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow }) };
-      }
       const agentChoice = contextChoiceFor(config, currentModel, undefined, toolTypeOf(target));
+      // The effort this agent would run with: its own pin, unless a tag speaks first. The config
+      // view has no session, so the session never applies here.
+      const agentEffort = () =>
+        effectiveEffort(config.llm, currentModel, undefined, resolveAgentLlm(config, toolTypeOf(target))?.effort);
+      if (action.kind === "select") {
+        const text = await applyAgentModel(target, action.modelId, { config, modelPicker, reloadConfigNow });
+        // The flow continues: model, then effort, then window, exactly like the session flow.
+        // No effort step when the staged model is a tag: the tag's own pin would always win.
+        const levels = modelPicker.effortLevelsFor(action.modelId);
+        const effort = effectiveEffort(config.llm, action.modelId, undefined, resolveAgentLlm(config, toolTypeOf(target))?.effort);
+        if (tagNameOf(action.modelId) === undefined && effort.source !== "unsupported" && levels.length > 0) {
+          return {
+            ...buildMatrixMenuFromButtons({
+              modelPicker,
+              currentModel: action.modelId,
+              buttons: modelPicker.buildEffortButtons(effort, { chained: true, currentModelId: action.modelId, target }),
+              effort,
+              heading: `${text}\nChoisissez maintenant l'effort :`,
+              contextInfo: formatContextInfo(config, action.modelId, undefined, toolTypeOf(target)),
+            }),
+            supersededText: `Agent ${target} > effort`,
+          };
+        }
+        return { text };
+      }
+      if (action.kind === "setEffort") {
+        const text = await applyAgentEffort(target, action.level, { config, reloadConfigNow });
+        if (agentChoice.available) {
+          return {
+            ...buildMatrixMenuFromButtons({
+              modelPicker,
+              currentModel,
+              buttons: modelPicker.buildContextButtons(agentChoice.tiers, { chained: true, target }),
+              effort: agentEffort(),
+              heading: `${text}\nChoisissez maintenant la fenêtre de contexte :`,
+              contextInfo: formatContextInfo(config, currentModel, undefined, toolTypeOf(target)),
+            }),
+            supersededText: `Agent ${target} > contexte`,
+          };
+        }
+        return { text };
+      }
+      if (action.kind === "keepEffort") {
+        const effort = agentEffort();
+        if (agentChoice.available) {
+          return {
+            ...buildMatrixMenuFromButtons({
+              modelPicker,
+              currentModel,
+              buttons: modelPicker.buildContextButtons(agentChoice.tiers, { chained: true, target }),
+              effort,
+              heading: `Effort de l'agent ${target} inchangé : ${formatEffort(effort)}\nChoisissez maintenant la fenêtre de contexte :`,
+              contextInfo: formatContextInfo(config, currentModel, undefined, toolTypeOf(target)),
+            }),
+            supersededText: `Agent ${target} > contexte`,
+          };
+        }
+        return { text: `Effort de l'agent ${target} inchangé : ${formatEffort(effort)}` };
+      }
+      if (action.kind === "openEffort") {
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildEffortButtons(agentEffort(), { currentModelId: currentModel, target }),
+            effort: agentEffort(),
+            heading: `Effort de l'agent ${target} — ${modelPicker.labelFor(currentModel)} — actuel : ${formatEffort(agentEffort())}`,
+            contextInfo: formatContextInfo(config, currentModel, undefined, toolTypeOf(target)),
+          }),
+          supersededText: `Agent ${target} > effort`,
+        };
+      }
       if (action.kind === "setContext") {
         return { text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }) };
       }

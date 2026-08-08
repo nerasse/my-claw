@@ -164,6 +164,11 @@ export class CronScheduler {
         minute: "2-digit",
       })}`;
       session.modelOverride = job.model || undefined;
+      // The job's own effort pin, the sibling of the model override: it slots above the cron
+      // agent's config entry but stays under a tag's pin and the session's /effort. It lives on
+      // the session rather than in effortOverride for exactly that reason — effortOverride is the
+      // session level and would outrank the tag.
+      session.scopeEffort = job.effort || undefined;
       // Job-level scope, slotted above the cron agent's config entry exactly like the model
       // override above: the job's own choices win, an absent field inherits agents.cron.
       session.scopeOverride = {

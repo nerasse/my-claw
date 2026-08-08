@@ -27,7 +27,10 @@ A tag is referenced as `tag:<name>` wherever a model id is expected:
   the context cap all talk about the tag;
 - the API receives the tag's underlying model via `apiModel` (the three call sites:
   `src/llm/provider.ts`, `src/llm/codex.ts`, `src/agent/claude-sdk/backend.ts`);
-- effort precedence: session override > tag effort > the model's own effort > global;
+- effort precedence: session override > tag effort > the job's own pin > the agent's own pin >
+  global (`llm.effort`). The tag is indivisible: referencing it accepts both halves of it, so a
+  scope-level pin (job, agent, global default) is only consulted when the tag pins none of its
+  own. `llm.models[].effort` no longer exists;
 - a tag may point at another tag; the chain is followed to a real model and the outer tag's
   effort/cap win;
 - the reserved name `Default` is a virtual tag that always tracks the current default model

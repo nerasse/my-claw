@@ -93,8 +93,19 @@ to the session is recoverable, writing config for the wrong agent is not.
 Both channels get it from one place: Matrix renders the same buttons as a numbered list, so its
 numeric replies and reactions work with no extra machinery.
 
-The effort entry is dropped from an agent menu. Effort is a per-session choice, and offering it there
-would suggest the config edit pins it too.
+## Effort and the window ride on the same menu
+
+Picking a model for an agent chains into the effort step (model → effort → window), exactly like
+the session flow. The effort the menu writes is `agents.<key>.llm.effort`, the sibling of
+`defaultModel` — both halves of the agent's config live in one `llm` object.
+
+The effort step is skipped when the staged model is a tag: the tag's own effort pin would always
+win at run time, so writing one on the agent would be dead config. `Effort >` on the agent's root
+menu behaves the same way.
+
+The whole ladder is `session > tag > job > agent > global` for effort, and the same shape for the
+model itself (`session.modelOverride > job.model > agents.<key>.llm.defaultModel >
+llm.defaultModel`).
 
 ## Rejected
 
@@ -116,10 +127,11 @@ would suggest the config edit pins it too.
 
 The my-claw-app channel exposes the same writers over WebSocket: `agents.model.set` with
 `agent: "global"` writes `llm.defaultModel`, with an agent key it writes
-`agents.<key>.llm.defaultModel` (plus `defaultProvider`), and `agents.model.clear` unpins an
+`agents.<key>.llm.defaultModel` (plus `defaultProvider`), and the effort is carried in the same
+frame: an `effort` field (a level, or `""` to remove the pin) writes or clears
+`agents.<key>.llm.effort`, or `llm.effort` for the global target. `agents.model.clear` unpins an
 agent so it inherits again — the same `config-edit.ts` functions the command uses, through the
-same snapshot + atomic-write path. The app also writes the global `llm.effort` via
-`agents.effort.set`. See `docs/my-claw-app-channel.md`.
+same snapshot + atomic-write path. See `docs/my-claw-app-channel.md`.
 
 ## Tests
 

@@ -16,7 +16,7 @@ import { snapshot, journal, artifactId } from "./config-store.ts";
  */
 
 export type ConfigEditResult =
-  | { ok: true; previous: { model?: string; provider?: string } }
+  | { ok: true; previous: { model?: string; provider?: string; effort?: EffortLevel } }
   | { ok: false; error: string };
 
 const INDENT = 2;
@@ -62,6 +62,34 @@ function objectAt(parent: Record<string, unknown>, key: string): Record<string, 
  * be -- an Anthropic model id sent to a local endpoint. Recording the provider makes the pin
  * survive a cold, offline start.
  */
+/**
+ * Per-agent effort pin, written without touching the model: `agents.<agent>.llm.effort`.
+ * `"clear"` removes it so the agent falls back on the global default. An emptied `llm` or
+ * agent entry is dropped, exactly like `clearAgentModel` does.
+ */
+export async function setAgentEffort(agent: string, effort: EffortLevel | "clear"): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const agents = objectAt(read.data, "agents");
+  const entry = objectAt(agents, agent);
+  const llm = objectAt(entry, "llm");
+  const previous = {
+    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
+  };
+
+  if (effort === "clear") delete llm["effort"];
+  else llm["effort"] = effort;
+  // An emptied object left behind would read as a deliberate, meaningless setting.
+  if (Object.keys(llm).length === 0) delete entry["llm"];
+  if (Object.keys(entry).length === 0) delete agents[agent];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant effort agent ${agent} ${effort === "clear" ? "défaut" : effort}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, effort: effort === "clear" ? null : effort });
+  return { ok: true, previous };
+}
+
 /**
  * Per-agent context ceiling. `undefined` removes the key so the agent falls back on the global
  * `context.cap`, which is how a menu offers a way back to the standing policy.
@@ -151,6 +179,11 @@ export async function setAgentModel(
   agent: string,
   modelId: string,
   provider: string | undefined,
+  /**
+   * The effort written in the same pass as the model, because the two are picked together.
+   * `"clear"` removes the pin; `undefined` leaves whatever the agent already had.
+   */
+  effort?: EffortLevel | "clear",
 ): Promise<ConfigEditResult> {
   const read = await readConfigFile();
   if (!read.ok) return read;
@@ -162,6 +195,7 @@ export async function setAgentModel(
   const previous = {
     model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
     provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
   };
 
   llm["defaultModel"] = modelId;
@@ -172,10 +206,12 @@ export async function setAgentModel(
     // behind would pin it to the wrong endpoint.
     delete llm["defaultProvider"];
   }
+  if (effort === "clear") delete llm["effort"];
+  else if (effort !== undefined) llm["effort"] = effort;
 
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} ${modelId}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, model: modelId, provider: provider ?? null });
+  await journal("edit", artifactId(CONFIG_PATH), { agent, model: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
   return { ok: true, previous };
 }
 
@@ -185,7 +221,11 @@ export async function setAgentModel(
  * `llm.model` key is deliberately left alone (deleting it can flip the file into the legacy
  * migration path; `defaultModel` wins over it anyway).
  */
-export async function setDefaultModel(modelId: string, provider: string | undefined): Promise<ConfigEditResult> {
+export async function setDefaultModel(
+  modelId: string,
+  provider: string | undefined,
+  effort?: EffortLevel | "clear",
+): Promise<ConfigEditResult> {
   const read = await readConfigFile();
   if (!read.ok) return read;
 
@@ -194,6 +234,7 @@ export async function setDefaultModel(modelId: string, provider: string | undefi
   const previous = {
     model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
     provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
   };
 
   llm["defaultModel"] = modelId;
@@ -203,30 +244,13 @@ export async function setDefaultModel(modelId: string, provider: string | undefi
     // Same rule as the agent pin: a stale provider would send the model to the wrong endpoint.
     delete llm["defaultProvider"];
   }
+  if (effort === "clear") delete llm["effort"];
+  else if (effort !== undefined) llm["effort"] = effort;
 
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null });
+  await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
   return { ok: true, previous };
-}
-
-/**
- * Sets the global default reasoning effort, or removes the key when `undefined` so a model's own
- * level (or the provider's default) applies again.
- */
-export async function setDefaultEffort(level: EffortLevel | undefined): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
-
-  const llm = objectAt(read.data, "llm");
-
-  if (level === undefined) delete llm["effort"];
-  else llm["effort"] = level;
-
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant effort global ${level ?? "défaut"}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { defaultEffort: level ?? null });
-  return { ok: true, previous: {} };
 }
 
 /**
@@ -250,11 +274,15 @@ export async function clearAgentModel(agent: string): Promise<ConfigEditResult> 
   const previous = {
     model: typeof llm?.["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
     provider: typeof llm?.["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+    effort: typeof llm?.["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
   };
 
   if (llm) {
     delete llm["defaultModel"];
     delete llm["defaultProvider"];
+    // The effort is the model's sibling: a cleared model pin must not leave an orphaned effort
+    // behind, or the agent would silently keep the effort of a model it no longer runs.
+    delete llm["effort"];
     // An emptied object left behind would read as a deliberate, meaningless setting.
     if (Object.keys(llm).length === 0) delete cast["llm"];
   }
