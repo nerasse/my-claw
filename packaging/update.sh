@@ -314,11 +314,26 @@ for template in "${APP_DIR}/templates/"*.service; do
   GENERATED_SERVICES="${GENERATED_SERVICES} ${svc_name}"
 done
 
+# Timer units carry no placeholders, but regenerate them through the same path so a new or
+# edited timer template is picked up on every update.
+for template in "${APP_DIR}/templates/"*.timer; do
+  [ -e "$template" ] || continue
+  svc_name="$(basename "$template")"
+  cp "$template" "/etc/systemd/system/${svc_name}"
+  chmod 644 "/etc/systemd/system/${svc_name}"
+  GENERATED_SERVICES="${GENERATED_SERVICES} ${svc_name}"
+done
+
 # Re-install update script atomically: cp onto the SAME inode this running script is still
 # being read from executes garbage mid-update once the file grows; write a temp then rename.
 cp "${APP_DIR}/packaging/update.sh" /usr/local/bin/my-claw-update.new
 chmod 755 /usr/local/bin/my-claw-update.new
 mv -f /usr/local/bin/my-claw-update.new /usr/local/bin/my-claw-update
+
+# Re-install auto-update gate (same rename dance; a timer may fire mid-update).
+cp "${APP_DIR}/packaging/auto-update.sh" /usr/local/bin/my-claw-auto-update.new
+chmod 755 /usr/local/bin/my-claw-auto-update.new
+mv -f /usr/local/bin/my-claw-auto-update.new /usr/local/bin/my-claw-auto-update
 
 # Re-install CLI wrapper (same rename dance: myclaw wraps this updater and can be running).
 cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw.new
@@ -332,6 +347,10 @@ systemctl daemon-reload
 for svc in $GENERATED_SERVICES; do
   systemctl enable "$svc" >/dev/null 2>&1 || true
 done
+# The timer runs the auto-update gate on the installed cadence; start it on its own clock so
+# the first check does not wait for a reboot.
+systemctl enable my-claw-auto-update.timer >/dev/null 2>&1 || true
+systemctl start my-claw-auto-update.timer 2>/dev/null || true
 
 echo "Starting services..."
 start_services

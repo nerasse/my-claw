@@ -92,6 +92,11 @@ class RunRegistry {
     return this.controllers.has(sessionId);
   }
 
+  /** True while any top-level run is in flight, across every session. */
+  hasAny(): boolean {
+    return this.controllers.size > 0;
+  }
+
   /** Live nodes for a session's run subtree (main + sub-agents), for /status. */
   list(sessionId: string): RunNode[] {
     const controller = this.controllers.get(sessionId);

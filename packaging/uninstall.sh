@@ -33,11 +33,15 @@ for svc in my-claw my-claw-browser-sidecar my-claw-whisper my-claw-chromium my-c
   systemctl stop "${svc}.service" 2>/dev/null || true
   systemctl disable "${svc}.service" 2>/dev/null || true
 done
+systemctl stop my-claw-auto-update.timer 2>/dev/null || true
+systemctl disable my-claw-auto-update.timer 2>/dev/null || true
 
 # Remove files
 rm -f /usr/local/bin/myclaw
 rm -f /usr/local/bin/my-claw-update
+rm -f /usr/local/bin/my-claw-auto-update
 rm -f /etc/systemd/system/my-claw*.service
+rm -f /etc/systemd/system/my-claw*.timer
 rm -rf /opt/my-claw
 rm -rf /etc/my-claw
 rm -rf /var/log/my-claw

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppMcpEntry, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
+import { runRegistry } from "../src/core/run-registry.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
 
@@ -1977,6 +1978,30 @@ describe("command frames", () => {
       c.ws.close();
     } finally {
       await bare.stop();
+    }
+  });
+
+  test("GET /health answers the maintenance gate to a paired device", async () => {
+    const res = await fetch(`http://127.0.0.1:${adapter.port}/health?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { activeRun: boolean };
+    assert.equal(body.activeRun, false);
+  });
+
+  test("GET /health refuses unpaired devices", async () => {
+    const res = await fetch(`http://127.0.0.1:${adapter.port}/health?device=unknown-device&token=${TOKEN}`);
+    assert.equal(res.status, 401);
+  });
+
+  test("GET /health reports an in-flight run", async () => {
+    const handle = runRegistry.startRoot("health-test-session");
+    try {
+      const res = await fetch(`http://127.0.0.1:${adapter.port}/health?device=${DEVICE_ID}&token=${TOKEN}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { activeRun: boolean };
+      assert.equal(body.activeRun, true);
+    } finally {
+      handle.end();
     }
   });
 });

@@ -167,9 +167,21 @@ for template in "${PROJECT_DIR}/templates/"*.service; do
   chmod 644 "/etc/systemd/system/${svc_name}"
 done
 
+# Timer units carry no placeholders.
+for template in "${PROJECT_DIR}/templates/"*.timer; do
+  [ -e "$template" ] || continue
+  svc_name="$(basename "$template")"
+  cp "$template" "/etc/systemd/system/${svc_name}"
+  chmod 644 "/etc/systemd/system/${svc_name}"
+done
+
 # Install update script
 cp "${SCRIPT_DIR}/update.sh" /usr/local/bin/my-claw-update
 chmod 755 /usr/local/bin/my-claw-update
+
+# Install auto-update gate
+cp "${SCRIPT_DIR}/auto-update.sh" /usr/local/bin/my-claw-auto-update
+chmod 755 /usr/local/bin/my-claw-auto-update
 
 # Install CLI wrapper
 cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw
@@ -195,6 +207,7 @@ systemctl enable my-claw-whisper.service
 systemctl enable my-claw-vnc.service
 systemctl enable my-claw-novnc.service
 systemctl enable my-claw.service
+systemctl enable my-claw-auto-update.timer
 
 echo ""
 echo "my-claw installed for user: ${TARGET_USER}"

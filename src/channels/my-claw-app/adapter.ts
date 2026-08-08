@@ -10,6 +10,7 @@ import type {
   UnifiedMessage,
 } from "../types.ts";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
+import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
@@ -564,6 +565,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
         url.searchParams.get("name") ?? "",
         url.searchParams.get("workspace") ?? undefined,
       );
+    }
+
+    if (url.pathname === "/health") {
+      const deviceId = url.searchParams.get("device") ?? "";
+      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      return Response.json({ activeRun: runRegistry.hasAny() });
     }
 
     if (url.pathname === "/my-claw-app") {
