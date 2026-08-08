@@ -13,7 +13,7 @@ import { handleAuthCommand } from "../auth-commands.ts";
 import { handleConfigCommand } from "../config-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import { handleAgentModelCommand } from "../agent-model-commands.ts";
-import { handleStatusCommand } from "../status-command.ts";
+import { handleStatusCommand, statusReport } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
 import { getHelpText } from "../commands-catalog.ts";
 import { effectiveEffort, isSdkBackedModel } from "../../llm/resolver.ts";
@@ -214,7 +214,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
 
       case "status":
-        return handleStatusCommand({
+        return statusReport({
           config: deps.config,
           sessionId,
           session: existing,

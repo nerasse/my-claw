@@ -70,6 +70,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppWorkspacesRemove,
   MyClawAppWorkspacesRename,
   MyClawAppWorkspacesSetPath,
+  MyClawAppStatusGet,
+  MyClawAppStatusPayload,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -256,13 +258,22 @@ export interface MyClawAppInstructionsController {
   ): Promise<{ ok: boolean; sha: string; conflict: boolean; error?: string }>;
 }
 
+/**
+ * A command handler can answer plain text, or -- for /status -- the text plus the structured
+ * payload the app draws as a fullscreen page.
+ */
+export type MyClawAppCommandOutput = {
+  text: string;
+  status?: MyClawAppStatusPayload;
+};
+
 /** Text slash commands, executed server-side like on the other channels. */
 export type MyClawAppCommandHandler = (
   owner: string,
   threadId: string,
   command: string,
   args: string,
-) => Promise<string | undefined>;
+) => Promise<string | MyClawAppCommandOutput | undefined>;
 
 export class MyClawAppAdapter implements ChannelAdapter {
   readonly platform = "my-claw-app" as const;
@@ -848,6 +859,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.stop":
         void this.handleChatStop(ws, frame);
         break;
+      case "status.get":
+        void this.handleStatusGet(ws, frame);
+        break;
 
       case "files.delete":
         void this.handleFileDelete(ws, frame);
@@ -886,11 +900,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
             this.broadcast(owner, { type: "chat.cleared", threadId });
           }
           if (output) {
+            const text = typeof output === "string" ? output : output.text;
+            const status = typeof output === "string" ? undefined : output.status;
             this.broadcast(owner, {
               type: "chat.command.result",
               threadId,
               replyToId: frame.id,
-              text: output,
+              text,
+              ...(status ? { status } : {}),
             });
           }
           return;
@@ -1615,8 +1632,36 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * The fullscreen status page asks directly, without typing a command: same server-side report,
+   * delivered as a dedicated frame so the app does not have to fake a chat.send to get it.
+   */
+  private async handleStatusGet(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppStatusGet): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "status", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!this.commandHandler) {
+      await this.refuse(ws, "status", "status unavailable");
+      return;
+    }
+    const output = await this.commandHandler(ws.data.owner, threadId, "status", "");
+    if (!output) {
+      await this.refuse(ws, "status", "status unavailable");
+      return;
+    }
+    const text = typeof output === "string" ? output : output.text;
+    const status = typeof output === "string" ? undefined : output.status;
+    if (!status) {
+      await this.refuse(ws, "status", "status unavailable");
+      return;
+    }
+    this.sendFrame(ws, { type: "status.result", threadId, text, status });
+  }
+
+  /**
    * Single exit for every refusal: it reaches the device tagged with the screen that asked,
-   * and it is always logged. A refusal that appears nowhere turned a server-side bug into a
+   * and it is always logged. A refusal that appeared nowhere turned a server-side bug into a
    * button the user could only report as "dead".
    */
   private async refuse(

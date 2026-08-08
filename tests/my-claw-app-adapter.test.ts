@@ -1695,6 +1695,102 @@ describe("command frames", () => {
     assert.deepEqual(handled, [{ command: "status", args: "--full" }]);
   });
 
+  const STATUS_PAYLOAD = {
+    session: {
+      id: "my-claw-app/dm/test-device/t9",
+      platform: "my-claw-app",
+      chatType: "dm",
+      createdAt: "2026-08-08T10:00:00.000Z",
+      lastActiveAt: "2026-08-08T11:00:00.000Z",
+      messages: 2,
+    },
+    model: {
+      current: "claude-opus-5",
+      selfHosted: false,
+      contextLimit: 512_000,
+      contextNotes: ["declared", "capped from 1,000,000"],
+    },
+    context: {
+      measured: { tokens: 12_345, pctOfLimit: 2.4 },
+      estimated: 60_000,
+      occupied: 70_000,
+      autoCompactOn: true,
+      autoCompactThresholdPct: 80,
+      autoCompactThresholdTokens: 409_600,
+    },
+    conversation: { calls: 1, promptTokens: 12_345, cacheReadTokens: 0, completionTokens: 10 },
+    analytics: {
+      calls: 4,
+      errors: 0,
+      durationMs: 4000,
+      billedUsd: 2.0,
+      referenceUsd: 5.0,
+      unpriced: 0,
+      rows: [
+        {
+          model: "claude-opus-5",
+          calls: 4,
+          promptTokens: 1000,
+          cacheReadTokens: 0,
+          completionTokens: 100,
+          costUsd: 2.0,
+          costBilled: true,
+          costApproximate: false,
+        },
+      ],
+    },
+    delegated: null,
+    runtime: { activeRun: "none", verbose: true, approvedTools: ["bash"], sdkSessionId: "sdk-1" },
+  };
+
+  test("a /status reply carries the structured payload for the fullscreen page", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    agent.onCommandHandler(async () => ({ text: "status text", status: STATUS_PAYLOAD }));
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "chat.send", id: "c9", text: "/status", threadId: "t9" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "chat.command.result");
+    assert.equal(frame["text"], "status text");
+    assert.deepEqual(frame["status"], STATUS_PAYLOAD);
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("status.get answers the report the menu opened", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    agent.onCommandHandler(async (_owner, threadId) => ({ text: `status of ${threadId}`, status: STATUS_PAYLOAD }));
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "status.get", threadId: "t9" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "status.result");
+    assert.equal(frame["threadId"], "t9");
+    assert.equal(frame["text"], "status of t9");
+    assert.deepEqual(frame["status"], STATUS_PAYLOAD);
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("status.get for a thread id that cannot land in a file path is refused", async () => {
+    client.ws.send(JSON.stringify({ type: "status.get", threadId: "bad/id!" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "status");
+  });
+
+  test("status.get without a command handler is refused where the page asked", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "status.get", threadId: "t9" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "status");
+    client2.ws.close();
+    await agent.stop();
+  });
+
   test("a command removed from the catalog is no longer intercepted", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "c7", text: "/clear", threadId: "t11" }));
     // The adapter must not answer: /clear no longer exists as a channel command. Give any

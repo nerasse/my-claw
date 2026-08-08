@@ -1,7 +1,13 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm } from "../core/config.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { getSessionModelUsage, getLastContextTokens, getSessionUsage, type SessionModelRow } from "../analytics/usage-db.ts";
+import {
+  getSessionModelUsage,
+  getLastContextTokens,
+  getSessionUsage,
+  type SessionModelRow,
+  type UsageSummary,
+} from "../analytics/usage-db.ts";
 import type { ModelPricing, CostBreakdown } from "../llm/pricing.ts";
 import { estimateMessagesTokens } from "../llm/tokens.ts";
 
@@ -10,12 +16,14 @@ import type { RunNode } from "../core/run-registry.ts";
 import { resolveContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
+import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
 
 /**
  * `/status` -- one screen, always the whole thing. See docs/status-command.md.
  *
- * Shared by both channels because the two bodies were byte-identical copies, and this one is three
- * times the size.
+ * The report is collected once into StatusData and rendered two ways: the text the chat channels
+ * have always shown, and the structured payload the app draws as a fullscreen page. Both tell the
+ * same story, so they share the collection step.
  */
 
 export interface StatusParams {
@@ -88,20 +96,105 @@ function totals(rows: PricedRow[]): { billed: number; reference: number; unprice
   return { billed, reference, unpriced };
 }
 
-export function handleStatusCommand(p: StatusParams): string {
-  const lines: string[] = [];
-  const configured = resolveAgentLlm(p.config, "main");
-  const currentModel = p.session?.modelOverride ?? configured?.defaultModel ?? p.config.llm.defaultModel ?? p.config.llm.model ?? "unknown";
-  const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
+interface StatusData {
+  sessionId: string;
+  session: SessionData | null;
+  currentModel: string;
+  /** The configured default of the resolved agent, for the "config default" line. */
+  configDefault?: string;
+  live: string;
+  contextLimit: number;
+  contextNotes: string[];
+  measured?: number;
+  estimated: number;
+  occupied: number;
+  autoCompactOn: boolean;
+  autoCompactThresholdPct: number;
+  autoCompactThresholdTokens: number;
+  conversation: SessionData["tokenUsage"] | undefined;
+  own: PricedRow[];
+  ownCalls: number;
+  ownErrors: number;
+  ownTotals: { billed: number; reference: number; unpriced: number };
+  rollup: UsageSummary | null;
+  delegated: PricedRow[];
+  verboseOff: boolean;
+}
 
-  if (!p.session) {
-    return [`Model: ${currentModel}`, "Session: none active", `Active run: ${live}`].join("\n");
+function collectStatusData(p: StatusParams): StatusData {
+  const configured = resolveAgentLlm(p.config, "main");
+  const currentModel =
+    p.session?.modelOverride ?? configured?.defaultModel ?? p.config.llm.defaultModel ?? p.config.llm.model ?? "unknown";
+  const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
+  const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
+  const model = p.config.llm.models?.find((m) => m.id === currentModel);
+  const window = resolveContextWindow({
+    model: currentModel,
+    config: p.config,
+    declared: model?.limit?.context,
+    declaredSource: model?.contextFrom,
+    sessionOverride: p.session?.contextOverride,
+    agent: contextAgent,
+  });
+  // Every clause here is a reason the number can look wrong, so each one that applies is named.
+  const contextNotes = [window.rawSource === "default" ? "default, not declared for this model" : window.rawSource];
+  if (window.approximate) contextNotes.push("matched id");
+  if (window.cappedFrom) contextNotes.push(`capped from ${window.cappedFrom.toLocaleString("en-US")}`);
+  if (window.overridden) contextNotes.push("session override: full");
+
+  // Two numbers, deliberately side by side: the measured one is exact, the estimate is what
+  // actually decides when compaction fires. A wide gap means the trigger is mis-tuned.
+  // The session's own figure first: it is the one the compaction gate uses, so showing anything
+  // else here would let the two lines below contradict each other. Analytics is the fallback for
+  // sessions that predate the field, but only while there is a history for it to describe: after a
+  // /new the last recorded call is not in this context any more, and reporting it as a share of the
+  // window would be a straight falsehood.
+  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] =>
+    msgs.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
+  const measured = p.session
+    ? p.session.lastPrompt?.tokens ?? (p.session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
+    : undefined;
+  const estimated = p.session ? estimateMessagesTokens(toChat(p.session.messages)) : 0;
+  const occupied = p.session ? occupiedContextTokens(p.session.messages, toChat, p.session.lastPrompt) : 0;
+  const autoCompactOn = autoCompactEnabled(p.config);
+  const threshold = resolveAutoCompactThreshold(p.config);
+  const own = p.session ? priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing) : [];
+  const delegated = p.session ? priceRows(getSessionModelUsage(p.sessionId, "delegated"), p.pricing) : [];
+
+  return {
+    sessionId: p.sessionId,
+    session: p.session ?? null,
+    currentModel,
+    ...(p.session?.modelOverride ? { configDefault: configured?.defaultModel ?? p.config.llm.defaultModel } : {}),
+    live,
+    contextLimit: window.effective,
+    contextNotes,
+    ...(measured ? { measured } : {}),
+    estimated,
+    occupied,
+    autoCompactOn,
+    autoCompactThresholdPct: Math.round(threshold * 100),
+    autoCompactThresholdTokens: autoCompactOn ? Math.round(window.effective * threshold) : 0,
+    conversation: p.session?.tokenUsage,
+    own,
+    ownCalls: own.reduce((s, r) => s + r.calls, 0),
+    ownErrors: own.reduce((s, r) => s + r.errorCount, 0),
+    ownTotals: own.length > 0 ? totals(own) : { billed: 0, reference: 0, unpriced: 0 },
+    rollup: own.length > 0 ? getSessionUsage(p.sessionId) : null,
+    delegated,
+    verboseOff: p.session?.verbose === false,
+  };
+}
+
+function formatStatusText(d: StatusData): string {
+  if (!d.session) {
+    return [`Model: ${d.currentModel}`, "Session: none active", `Active run: ${d.live}`].join("\n");
   }
-  const session = p.session;
-  const contextAgent = session.platform === "cron" ? "cron" : session.meta?.type ?? "main";
+  const session = d.session;
+  const lines: string[] = [];
 
   lines.push("**Session**");
-  lines.push(`  id            \`${p.sessionId}\``);
+  lines.push(`  id            \`${d.sessionId}\``);
   lines.push(`  platform      ${session.platform} - ${session.chatType}`);
   lines.push(`  created       ${session.createdAt.slice(0, 16).replace("T", " ")} (${ago(session.createdAt)})`);
   lines.push(`  last active   ${session.lastActiveAt.slice(0, 16).replace("T", " ")} (${ago(session.lastActiveAt)})`);
@@ -111,54 +204,26 @@ export function handleStatusCommand(p: StatusParams): string {
     lines.push(`  spawned by    \`${session.meta.parentSessionId}\``);
   }
 
-  const model = p.config.llm.models?.find((m) => m.id === currentModel);
-  const window = resolveContextWindow({
-    model: currentModel,
-    config: p.config,
-    declared: model?.limit?.context,
-    declaredSource: model?.contextFrom,
-    sessionOverride: session.contextOverride,
-    agent: contextAgent,
-  });
   lines.push("");
   lines.push("**Model**");
-  lines.push(`  current       ${currentModel}${session.modelOverride ? " (session override)" : ""}`);
-  if (session.modelOverride) lines.push(`  config default ${configured?.defaultModel ?? p.config.llm.defaultModel ?? "-"}`);
+  lines.push(`  current       ${d.currentModel}${session.modelOverride ? " (session override)" : ""}`);
+  if (session.modelOverride) lines.push(`  config default ${d.configDefault ?? "-"}`);
   if (session.effortOverride) lines.push(`  effort        ${session.effortOverride}`);
-  if (isSelfHosted(currentModel)) lines.push("  billing       self-hosted, no marginal cost");
-  // Every clause here is a reason the number can look wrong, so each one that applies is named.
-  const notes = [window.rawSource === "default" ? "default, not declared for this model" : window.rawSource];
-  if (window.approximate) notes.push("matched id");
-  if (window.cappedFrom) notes.push(`capped from ${window.cappedFrom.toLocaleString("en-US")}`);
-  if (window.overridden) notes.push("session override: full");
-  lines.push(`  context limit ${short(window.effective)} (${notes.join(", ")})`);
+  if (isSelfHosted(d.currentModel)) lines.push("  billing       self-hosted, no marginal cost");
+  lines.push(`  context limit ${short(d.contextLimit)} (${d.contextNotes.join(", ")})`);
 
-  // Two numbers, deliberately side by side: the measured one is exact, the estimate is what
-  // actually decides when compaction fires. A wide gap means the trigger is mis-tuned.
-  // The session's own figure first: it is the one the compaction gate uses, so showing anything
-  // else here would let the two lines below contradict each other. Analytics is the fallback for
-  // sessions that predate the field, but only while there is a history for it to describe: after a
-  // /new the last recorded call is not in this context any more, and reporting it as a share of the
-  // window would be a straight falsehood.
-  const measured =
-    session.lastPrompt?.tokens ?? (session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined);
-  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] =>
-    msgs.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
-  const estimated = estimateMessagesTokens(toChat(session.messages));
-  const occupied = occupiedContextTokens(session.messages, toChat, session.lastPrompt);
-  const limit = window.effective;
+  const limit = d.contextLimit;
   lines.push("");
   lines.push("**Context**");
-  if (measured) {
-    lines.push(`  measured      ${short(measured)} on the last call - ${((measured / limit) * 100).toFixed(1)}% of the limit`);
+  if (d.measured) {
+    lines.push(`  measured      ${short(d.measured)} on the last call - ${((d.measured / limit) * 100).toFixed(1)}% of the limit`);
   } else {
     lines.push("  measured      no call recorded yet");
   }
-  lines.push(`  estimated     ${short(estimated)} (chars/4, under-counts)`);
-  lines.push(`  occupied      ${short(occupied)} (measured prompt plus the turns since, drives auto-compaction)`);
-  if (autoCompactEnabled(p.config)) {
-    const threshold = resolveAutoCompactThreshold(p.config);
-    lines.push(`  auto-compact  on, threshold ${Math.round(threshold * 100)}% = ${short(Math.round(limit * threshold))}`);
+  lines.push(`  estimated     ${short(d.estimated)} (chars/4, under-counts)`);
+  lines.push(`  occupied      ${short(d.occupied)} (measured prompt plus the turns since, drives auto-compaction)`);
+  if (d.autoCompactOn) {
+    lines.push(`  auto-compact  on, threshold ${d.autoCompactThresholdPct}% = ${short(d.autoCompactThresholdTokens)}`);
   } else {
     lines.push("  auto-compact  off");
   }
@@ -179,19 +244,15 @@ export function handleStatusCommand(p: StatusParams): string {
     lines.push("  no calls yet");
   }
 
-  const own = priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing);
-  if (own.length > 0) {
-    const t = totals(own);
-    const calls = own.reduce((s, r) => s + r.calls, 0);
-    const errors = own.reduce((s, r) => s + r.errorCount, 0);
-    const rollup = getSessionUsage(p.sessionId);
+  if (d.own.length > 0) {
+    const t = d.ownTotals;
     lines.push("");
     lines.push("**This session, 90 d** (analytics)");
-    lines.push(`  ${calls} calls - ${errors} errors${rollup ? ` - ${duration(rollup.totalDurationMs)} of API time` : ""}`);
+    lines.push(`  ${d.ownCalls} calls - ${d.ownErrors} errors${d.rollup ? ` - ${duration(d.rollup.totalDurationMs)} of API time` : ""}`);
     if (t.billed > 0) lines.push(`  billed        ${money(t.billed)}`);
     if (t.reference > 0) lines.push(`  reference    *${money(t.reference)}   flat plans, subscriptions, self-hosted`);
     lines.push("```");
-    for (const row of own) {
+    for (const row of d.own) {
       lines.push(formatModelRow(row));
     }
     lines.push("```");
@@ -199,11 +260,10 @@ export function handleStatusCommand(p: StatusParams): string {
     if (t.unpriced > 0) lines.push(`  ${t.unpriced} model(s) unpriced`);
   }
 
-  const delegated = priceRows(getSessionModelUsage(p.sessionId, "delegated"), p.pricing);
-  if (delegated.length > 0) {
-    const t = totals(delegated);
-    const calls = delegated.reduce((s, r) => s + r.calls, 0);
-    const tokens = delegated.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0);
+  if (d.delegated.length > 0) {
+    const t = totals(d.delegated);
+    const calls = d.delegated.reduce((s, r) => s + r.calls, 0);
+    const tokens = d.delegated.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0);
     lines.push("");
     lines.push("**Delegated by this session** (sub-agents, browser)");
     lines.push(`  ${calls} calls - ${short(tokens)} tokens - billed ${money(t.billed)}${t.reference > 0 ? ` - reference *${money(t.reference)}` : ""}`);
@@ -211,12 +271,117 @@ export function handleStatusCommand(p: StatusParams): string {
 
   lines.push("");
   lines.push("**Runtime**");
-  lines.push(`  active run    ${live}`);
-  lines.push(`  verbose       ${session.verbose === false ? "off" : "on"}`);
+  lines.push(`  active run    ${d.live}`);
+  lines.push(`  verbose       ${d.verboseOff ? "off" : "on"}`);
   if (session.approvedTools?.length) lines.push(`  approved      ${session.approvedTools.join(", ")}`);
   if (session.sdkSessionId) lines.push(`  sdk session   \`${session.sdkSessionId}\``);
 
   return lines.join("\n");
+}
+
+function statusPayload(d: StatusData): MyClawAppStatusPayload {
+  const session = d.session;
+  const limit = d.contextLimit;
+  return {
+    session: session
+      ? {
+          id: d.sessionId,
+          platform: session.platform,
+          chatType: session.chatType,
+          createdAt: session.createdAt,
+          lastActiveAt: session.lastActiveAt,
+          messages: session.messages.length,
+          ...(session.meta
+            ? {
+                subAgent: {
+                  displayName: session.meta.displayName,
+                  type: session.meta.type,
+                  visibility: session.meta.visibility,
+                  parentSessionId: session.meta.parentSessionId,
+                },
+              }
+            : {}),
+        }
+      : null,
+    model: {
+      current: d.currentModel,
+      ...(session?.modelOverride ? { configDefault: d.configDefault } : {}),
+      ...(session?.effortOverride ? { effort: session.effortOverride } : {}),
+      selfHosted: isSelfHosted(d.currentModel),
+      contextLimit: limit,
+      contextNotes: d.contextNotes,
+    },
+    context: {
+      ...(d.measured ? { measured: { tokens: d.measured, pctOfLimit: (d.measured / limit) * 100 } } : {}),
+      estimated: d.estimated,
+      occupied: d.occupied,
+      autoCompactOn: d.autoCompactOn,
+      autoCompactThresholdPct: d.autoCompactThresholdPct,
+      autoCompactThresholdTokens: d.autoCompactThresholdTokens,
+      ...(session?.contextTransfer
+        ? {
+            carried: {
+              model: session.contextTransfer.model,
+              messages: session.contextTransfer.messages,
+              tokens: session.contextTransfer.tokens,
+              dropped: session.contextTransfer.dropped,
+            },
+          }
+        : {}),
+    },
+    conversation: session?.tokenUsage
+      ? {
+          calls: session.tokenUsage.apiCalls,
+          promptTokens: session.tokenUsage.promptTokens,
+          cacheReadTokens: session.tokenUsage.cacheReadTokens ?? 0,
+          completionTokens: session.tokenUsage.completionTokens,
+        }
+      : null,
+    analytics: d.own.length > 0
+      ? {
+          calls: d.ownCalls,
+          errors: d.ownErrors,
+          ...(d.rollup ? { durationMs: d.rollup.totalDurationMs } : {}),
+          billedUsd: d.ownTotals.billed,
+          referenceUsd: d.ownTotals.reference,
+          unpriced: d.ownTotals.unpriced,
+          rows: d.own.map((row) => ({
+            model: row.model,
+            calls: row.calls,
+            promptTokens: row.promptTokens,
+            cacheReadTokens: row.cacheReadTokens,
+            completionTokens: row.completionTokens,
+            ...(row.cost
+              ? { costUsd: row.cost.usd, costBilled: row.cost.billed, costApproximate: row.cost.approximate }
+              : { costBilled: false, costApproximate: false }),
+          })),
+        }
+      : null,
+    delegated: d.delegated.length > 0
+      ? {
+          calls: d.delegated.reduce((s, r) => s + r.calls, 0),
+          tokens: d.delegated.reduce((s, r) => s + r.promptTokens + r.completionTokens, 0),
+          billedUsd: totals(d.delegated).billed,
+          referenceUsd: totals(d.delegated).reference,
+        }
+      : null,
+    runtime: {
+      activeRun: d.live,
+      verbose: !d.verboseOff,
+      approvedTools: session?.approvedTools ?? [],
+      ...(session?.sdkSessionId ? { sdkSessionId: session.sdkSessionId } : {}),
+    },
+  };
+}
+
+export function handleStatusCommand(p: StatusParams): string {
+  return formatStatusText(collectStatusData(p));
+}
+
+/** The same report twice: the chat text and the structured payload the app page draws. */
+export function statusReport(p: StatusParams): { text: string; payload: MyClawAppStatusPayload } {
+  const data = collectStatusData(p);
+  return { text: formatStatusText(data), payload: statusPayload(data) };
 }
 
 function formatModelRow(row: PricedRow): string {
