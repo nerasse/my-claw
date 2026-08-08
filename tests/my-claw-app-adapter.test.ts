@@ -1814,12 +1814,23 @@ describe("command frames", () => {
   });
 
   test("workspaces.list returns the default and the named workspaces", async () => {
-    adapter.onSkillsController({
-      list: () => ({ skills: [] }),
-      read: async () => null,
-      workspaces: () => [
+    adapter.onWorkspacesController({
+      list: () => [
         { key: "default", path: "/w", default: true },
         { key: "sofa", path: "/s", default: false },
+      ],
+      add: async (key, path) => [
+        { key: "default", path: "/w", default: true },
+        { key: key, path, default: false },
+      ],
+      remove: async (key) => [{ key: "default", path: "/w", default: true }],
+      rename: async (from, to) => [
+        { key: "default", path: "/w", default: true },
+        { key: to, path: "/s", default: false },
+      ],
+      setPath: async (key, path) => [
+        { key: "default", path: "/w", default: true },
+        { key, path, default: false },
       ],
     });
 
@@ -1829,6 +1840,48 @@ describe("command frames", () => {
     assert.equal(frame.workspaces.length, 2);
     assert.deepEqual(frame.workspaces.map((w) => w.key), ["default", "sofa"]);
     assert.equal(frame.workspaces[0]?.default, true);
+  });
+
+  test("workspaces.add/remove/rename/path.set answer with the fresh listing", async () => {
+    adapter.onWorkspacesController({
+      list: () => [],
+      add: async (key, path) => [{ key, path, default: false }],
+      remove: async (key) => [],
+      rename: async (from, to) => [{ key: to, path: "/s", default: false }],
+      setPath: async (key, path) => [{ key, path, default: false }],
+    });
+
+    client.ws.send(JSON.stringify({ type: "workspaces.add", key: "sofa", path: "/srv/sofa" }));
+    let frame = await nextFrame(client);
+    assert.equal(frame["type"], "workspaces.list.result");
+    assert.deepEqual((frame["workspaces"] as Array<Record<string, unknown>>).map((w) => w["key"]), ["sofa"]);
+
+    client.ws.send(JSON.stringify({ type: "workspaces.remove", key: "sofa" }));
+    frame = await nextFrame(client);
+    assert.deepEqual(frame["workspaces"], []);
+
+    client.ws.send(JSON.stringify({ type: "workspaces.rename", from: "sofa", to: "couch" }));
+    frame = await nextFrame(client);
+    assert.deepEqual((frame["workspaces"] as Array<Record<string, unknown>>).map((w) => w["key"]), ["couch"]);
+
+    client.ws.send(JSON.stringify({ type: "workspaces.path.set", key: "couch", path: "/srv/couch" }));
+    frame = await nextFrame(client);
+    assert.equal((frame["workspaces"] as Array<Record<string, unknown>>)[0]?.["path"], "/srv/couch");
+  });
+
+  test("workspaces.add without a controller answers an error instead of hanging", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "workspaces.add", key: "sofa", path: "/srv/sofa" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "workspaces");
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
   });
 });
 

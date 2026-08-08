@@ -351,6 +351,33 @@ export interface MyClawAppConfigSet {
   content: string;
 }
 
+/** Declares a workspace key -> absolute path pair. The key is what agents and cron reference. */
+export interface MyClawAppWorkspacesAdd {
+  type: "workspaces.add";
+  key: string;
+  path: string;
+}
+
+/** Removes a named workspace. Agent pins pointing at it stay and are flagged red. */
+export interface MyClawAppWorkspacesRemove {
+  type: "workspaces.remove";
+  key: string;
+}
+
+/** Renames a workspace key, same path. Agents pinned to the old key are rewritten with it. */
+export interface MyClawAppWorkspacesRename {
+  type: "workspaces.rename";
+  from: string;
+  to: string;
+}
+
+/** Repoints a workspace key at a different absolute path. */
+export interface MyClawAppWorkspacesSetPath {
+  type: "workspaces.path.set";
+  key: string;
+  path: string;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -399,6 +426,10 @@ export type MyClawAppClientFrame =
   | MyClawAppMcpEnable
   | MyClawAppConfigGet
   | MyClawAppConfigSet
+  | MyClawAppWorkspacesAdd
+  | MyClawAppWorkspacesRemove
+  | MyClawAppWorkspacesRename
+  | MyClawAppWorkspacesSetPath
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -554,7 +585,8 @@ export type MyClawAppErrorScope =
   | "mcp"
   | "tools"
   | "instructions"
-  | "config";
+  | "config"
+  | "workspaces";
 
 export interface MyClawAppError {
   type: "error";

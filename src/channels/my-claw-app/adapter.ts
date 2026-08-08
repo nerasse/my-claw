@@ -65,6 +65,11 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppMcpEnable,
   MyClawAppConfigGet,
   MyClawAppConfigSet,
+  MyClawAppWorkspacesAdd,
+  MyClawAppWorkspacesListResult,
+  MyClawAppWorkspacesRemove,
+  MyClawAppWorkspacesRename,
+  MyClawAppWorkspacesSetPath,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -225,6 +230,20 @@ export interface MyClawAppConfigController {
   }>;
 }
 
+/** Workspace CRUD, injected so the adapter never touches config.json or the filesystem itself.
+ *  Every mutation answers with the fresh listing, never an optimistic echo. */
+export interface MyClawAppWorkspacesController {
+  list(): MyClawAppWorkspacesListResult["workspaces"];
+  /** Declares a key -> path pair; the directory is created so the tiers can open under it. */
+  add(key: string, path: string): Promise<MyClawAppWorkspacesListResult["workspaces"]>;
+  /** Removes a named workspace; agent pins pointing at it stay and are flagged red. */
+  remove(key: string): Promise<MyClawAppWorkspacesListResult["workspaces"]>;
+  /** Renames a key; agents pinned to the old key are rewritten with it. */
+  rename(from: string, to: string): Promise<MyClawAppWorkspacesListResult["workspaces"]>;
+  /** Repoints a key at a new absolute path. */
+  setPath(key: string, path: string): Promise<MyClawAppWorkspacesListResult["workspaces"]>;
+}
+
 /** The prompt files the app may read and edit. See docs/instructions-page.md. */
 export interface MyClawAppInstructionsController {
   list(): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
@@ -262,6 +281,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
   private configEditor?: MyClawAppConfigController;
+  private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -442,6 +462,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onConfigController(controller: MyClawAppConfigController): void {
     this.configEditor = controller;
+  }
+
+  onWorkspacesController(controller: MyClawAppWorkspacesController): void {
+    this.workspacesCtrl = controller;
   }
 
   /** Executes text slash commands; when absent, they fall through to the agent like any message. */
@@ -730,6 +754,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "workspaces.list":
         void this.handleWorkspacesList(ws);
+        break;
+      case "workspaces.add":
+        void this.handleWorkspacesAdd(ws, frame);
+        break;
+      case "workspaces.remove":
+        void this.handleWorkspacesRemove(ws, frame);
+        break;
+      case "workspaces.rename":
+        void this.handleWorkspacesRename(ws, frame);
+        break;
+      case "workspaces.path.set":
+        void this.handleWorkspacesSetPath(ws, frame);
         break;
       case "mcp.list":
         void this.handleMcpList(ws);
@@ -1313,14 +1349,90 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private async handleWorkspacesList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
-    if (!this.skills) {
-      await this.refuse(ws, "skills", "workspace list unavailable");
+    if (!this.workspacesCtrl) {
+      await this.refuse(ws, "workspaces", "workspace list unavailable");
       return;
     }
     try {
-      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: this.skills.workspaces() });
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: this.workspacesCtrl.list() });
     } catch (err) {
-      await this.refuse(ws, "skills", "workspaces.list failed", { error: String(err) });
+      await this.refuse(ws, "workspaces", "workspaces.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleWorkspacesAdd(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppWorkspacesAdd,
+  ): Promise<void> {
+    if (!this.workspacesCtrl) {
+      await this.refuse(ws, "workspaces", "workspace list unavailable");
+      return;
+    }
+    if (!frame.key || !frame.path) {
+      await this.refuse(ws, "workspaces", "key and path are required", { key: frame.key, path: frame.path });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: await this.workspacesCtrl.add(frame.key, frame.path) });
+    } catch (err) {
+      await this.refuse(ws, "workspaces", "workspaces.add failed", { key: frame.key, error: String(err) });
+    }
+  }
+
+  private async handleWorkspacesRemove(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppWorkspacesRemove,
+  ): Promise<void> {
+    if (!this.workspacesCtrl) {
+      await this.refuse(ws, "workspaces", "workspace list unavailable");
+      return;
+    }
+    if (!frame.key) {
+      await this.refuse(ws, "workspaces", "invalid workspace", { key: frame.key });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: await this.workspacesCtrl.remove(frame.key) });
+    } catch (err) {
+      await this.refuse(ws, "workspaces", "workspaces.remove failed", { key: frame.key, error: String(err) });
+    }
+  }
+
+  private async handleWorkspacesRename(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppWorkspacesRename,
+  ): Promise<void> {
+    if (!this.workspacesCtrl) {
+      await this.refuse(ws, "workspaces", "workspace list unavailable");
+      return;
+    }
+    if (!frame.from || !frame.to) {
+      await this.refuse(ws, "workspaces", "from and to are required", { from: frame.from, to: frame.to });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: await this.workspacesCtrl.rename(frame.from, frame.to) });
+    } catch (err) {
+      await this.refuse(ws, "workspaces", "workspaces.rename failed", { from: frame.from, error: String(err) });
+    }
+  }
+
+  private async handleWorkspacesSetPath(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppWorkspacesSetPath,
+  ): Promise<void> {
+    if (!this.workspacesCtrl) {
+      await this.refuse(ws, "workspaces", "workspace list unavailable");
+      return;
+    }
+    if (!frame.key || !frame.path) {
+      await this.refuse(ws, "workspaces", "key and path are required", { key: frame.key, path: frame.path });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "workspaces.list.result", workspaces: await this.workspacesCtrl.setPath(frame.key, frame.path) });
+    } catch (err) {
+      await this.refuse(ws, "workspaces", "workspaces.path.set failed", { key: frame.key, error: String(err) });
     }
   }
 

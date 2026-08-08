@@ -1079,12 +1079,18 @@ export function resolveWorkspaceDir(raw?: string): string {
   return raw ?? join(MY_CLAW_DIR, "workspace");
 }
 
-/** Resolve a workspace key against the named list, or the default workspace when absent. */
+/**
+ * Resolve a workspace key against the named list, or the default workspace when absent.
+ * A key that no longer exists resolves to the default workspace too: a removed workspace must
+ * not take the runs that referenced it down. The staleness stays visible -- the app flags it
+ * red, and boot still reports it -- but the resolution itself never throws.
+ */
 export function resolveWorkspaceKey(config: MyClawConfig, key?: string): string {
   if (!key) return resolveWorkspaceDir(config.workspace);
   const dir = config.workspaces?.[key];
-  if (!dir) throw new Error(`Unknown workspace key "${key}" (see config.workspaces)`);
-  return dir;
+  if (typeof dir === "string") return dir;
+  // Unknown or removed key: the safest directory is the one every unkeyed run already uses.
+  return resolveWorkspaceDir(config.workspace);
 }
 
 /**

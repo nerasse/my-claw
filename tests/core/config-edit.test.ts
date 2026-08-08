@@ -13,8 +13,13 @@ import {
   addMcpServer,
   removeMcpServer,
   setMcpEnabled,
+  addWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  setWorkspacePath,
 } from "../../src/core/config-edit.ts";
-import { CONFIG_PATH, parseConfig, resolveAgentLlm, type MyClawConfig } from "../../src/core/config.ts";
+import { CONFIG_PATH, parseConfig, resolveAgentLlm, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
+import { join } from "node:path";
 
 const FILE = {
   whitelist: ["u1"],
@@ -311,5 +316,71 @@ describe("MCP server writes", () => {
   test("removeMcpServer refuses a name that is not declared", async () => {
     await writeConfigFile();
     expect((await removeMcpServer("ghost")).ok).toBe(false);
+  });
+});
+
+describe("workspace CRUD", () => {
+  test("addWorkspace declares a key -> path pair", async () => {
+    await writeConfigFile();
+    const result = await addWorkspace("sofa", join(MY_CLAW_DIR, "sofa"));
+    expect(result.ok).toBe(true);
+    expect((await readConfigFile()).workspaces.sofa).toBe(join(MY_CLAW_DIR, "sofa"));
+  });
+
+  test("addWorkspace refuses a reserved key, a slash and a relative path", async () => {
+    await writeConfigFile();
+    expect((await addWorkspace("default", join(MY_CLAW_DIR, "x"))).ok).toBe(false);
+    expect((await addWorkspace("a/b", join(MY_CLAW_DIR, "x"))).ok).toBe(false);
+    expect((await addWorkspace("sofa", "relative")).ok).toBe(false);
+  });
+
+  test("addWorkspace refuses a duplicate key", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") } });
+    expect((await addWorkspace("sofa", join(MY_CLAW_DIR, "other"))).ok).toBe(false);
+  });
+
+  test("removeWorkspace deletes the key and drops an emptied section", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") } });
+    const result = await removeWorkspace("sofa");
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.workspaces).toBeUndefined();
+  });
+
+  test("removeWorkspace refuses a key that is not declared", async () => {
+    await writeConfigFile();
+    expect((await removeWorkspace("ghost")).ok).toBe(false);
+  });
+
+  test("renameWorkspace moves the key and rewrites agent pins pointing at it", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") }, agents: { ...FILE.agents, cron: { workspace: "sofa" } } });
+    const result = await renameWorkspace("sofa", "couch");
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.workspaces.sofa).toBeUndefined();
+    expect(file.workspaces.couch).toBe(join(MY_CLAW_DIR, "sofa"));
+    expect(file.agents.cron.workspace).toBe("couch");
+    expect(file.agents.orchestrator.maxIterations).toBe(90);
+  });
+
+  test("renameWorkspace refuses a target that exists or a source that does not", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa"), couch: join(MY_CLAW_DIR, "couch") } });
+    expect((await renameWorkspace("sofa", "couch")).ok).toBe(false);
+    expect((await renameWorkspace("ghost", "couch2")).ok).toBe(false);
+  });
+
+  test("setWorkspacePath repoints the key and refuses unknown keys", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") } });
+    const result = await setWorkspacePath("sofa", join(MY_CLAW_DIR, "newsofa"));
+    expect(result.ok).toBe(true);
+    expect((await readConfigFile()).workspaces.sofa).toBe(join(MY_CLAW_DIR, "newsofa"));
+    expect((await setWorkspacePath("ghost", join(MY_CLAW_DIR, "x"))).ok).toBe(false);
+  });
+
+  test("the written file survives a parseConfig round-trip", async () => {
+    await writeConfigFile();
+    await addWorkspace("sofa", join(MY_CLAW_DIR, "sofa"));
+    const reloaded = parseConfig(await readFile(CONFIG_PATH, "utf-8"));
+    expect(reloaded.workspaces?.sofa).toBe(join(MY_CLAW_DIR, "sofa"));
   });
 });

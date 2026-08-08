@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { CONFIG_PATH, type EffortLevel } from "./config.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
@@ -268,8 +268,9 @@ export async function setAgentScope(
 
 /**
  * Pins an agent to a workspace key, or removes the pin (`null` or `"default"`). A key that is not
- * in `config.workspaces` is refused: `resolveWorkspaceKey` throws on it at run time, so saving it
- * would only queue a failure for that agent's first run.
+ * in `config.workspaces` is refused: resolution falls back to the default workspace for a removed
+ * key, so saving a pin that does not exist would silently point the agent at the wrong directory
+ * without any error to explain it.
  */
 export async function setAgentWorkspace(agent: string, workspace: string | null): Promise<ConfigEditResult> {
   const read = await readConfigFile();
@@ -418,5 +419,118 @@ export async function setMcpEnabled(name: string, enabled: boolean): Promise<Con
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule mcp ${name}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { mcpEnabled: name, enabled });
+  return { ok: true, previous: {} };
+}
+
+const WORKSPACE_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+function workspaceErrorOf(key: string, path: string | undefined): string | null {
+  if (key === "default" || !WORKSPACE_KEY_RE.test(key)) {
+    return `Invalid workspace key: "${key}" (the key "default" is reserved; letters, digits, "-", "_")`;
+  }
+  if (path !== undefined && !path.startsWith("/")) {
+    return `Invalid workspace path: "${path}" (must be absolute)`;
+  }
+  return null;
+}
+
+/**
+ * Declares a new workspace in `config.workspaces`. The key is what agents and cron reference;
+ * the path is the only thing the key stands for. The directory is created so the skills and
+ * agents watchers can open their tiers under it, exactly as boot does for the named workspaces.
+ */
+export async function addWorkspace(key: string, path: string): Promise<ConfigEditResult> {
+  const invalid = workspaceErrorOf(key, path);
+  if (invalid) return { ok: false, error: invalid };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const workspaces = objectAt(read.data, "workspaces");
+  if (workspaces[key] !== undefined) {
+    return { ok: false, error: `Workspace already exists: ${key}` };
+  }
+  workspaces[key] = path;
+  await mkdir(path, { recursive: true });
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout workspace ${key}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { workspaceAdded: key, path });
+  return { ok: true, previous: {} };
+}
+
+/** Removes a named workspace. Agent pins and file fields pointing at it stay: they are exactly
+ *  what the app's red highlight exists to surface, so they are flagged rather than silently
+ *  rewritten. */
+export async function removeWorkspace(key: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const workspaces = read.data["workspaces"];
+  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
+    return { ok: false, error: `Workspace not declared: ${key}` };
+  }
+  delete (workspaces as Record<string, unknown>)[key];
+  if (Object.keys(workspaces as Record<string, unknown>).length === 0) delete read.data["workspaces"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait workspace ${key}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { workspaceRemoved: key });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Renames a workspace key, same path. Every `agents.<key>.workspace` pin that referenced the old
+ * name is rewritten to the new one in the same write: a rename that silently broke the agents it
+ * scopes would be a trap nobody asked for. Agent *files* with a `workspace:` field are not
+ * touched -- they live outside config.json and surface through the red flag instead.
+ */
+export async function renameWorkspace(from: string, to: string): Promise<ConfigEditResult> {
+  const invalid = workspaceErrorOf(to, undefined);
+  if (invalid) return { ok: false, error: invalid };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const workspaces = read.data["workspaces"];
+  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[from] === undefined) {
+    return { ok: false, error: `Workspace not declared: ${from}` };
+  }
+  if ((workspaces as Record<string, unknown>)[to] !== undefined) {
+    return { ok: false, error: `Workspace already exists: ${to}` };
+  }
+  (workspaces as Record<string, unknown>)[to] = (workspaces as Record<string, unknown>)[from];
+  delete (workspaces as Record<string, unknown>)[from];
+
+  const agents = read.data["agents"];
+  if (agents !== null && typeof agents === "object" && !Array.isArray(agents)) {
+    for (const entry of Object.values(agents as Record<string, unknown>)) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const cast = entry as Record<string, unknown>;
+      if (cast["workspace"] === from) cast["workspace"] = to;
+    }
+  }
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage workspace ${from}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { workspaceRenamed: { from, to } });
+  return { ok: true, previous: {} };
+}
+
+/** Repoints a workspace key at a different directory. Same validation as the boot path check. */
+export async function setWorkspacePath(key: string, path: string): Promise<ConfigEditResult> {
+  const invalid = workspaceErrorOf(key, path);
+  if (invalid) return { ok: false, error: invalid };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const workspaces = read.data["workspaces"];
+  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
+    return { ok: false, error: `Workspace not declared: ${key}` };
+  }
+  (workspaces as Record<string, unknown>)[key] = path;
+  await mkdir(path, { recursive: true });
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant changement de chemin ${key}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { workspacePath: { key, path } });
   return { ok: true, previous: {} };
 }

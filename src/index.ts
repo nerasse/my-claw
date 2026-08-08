@@ -39,7 +39,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppMcpEntry, MyClawAppToolEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
@@ -149,7 +149,12 @@ import {
   addMcpServer,
   removeMcpServer,
   setMcpEnabled,
+  addWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  setWorkspacePath,
 } from "./core/config-edit.ts";
+import type { ConfigEditResult } from "./core/config-edit.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -1269,6 +1274,30 @@ async function main() {
         }
         return { ok: true, sha: contentSha(content), conflict: false, changed, rebootRequired };
       },
+    });
+
+    // Workspace CRUD: config.workspaces is hot-reloaded in place and the skills/agents watchers
+    // re-target their tiers on change, so a mutation applies on the next run with no restart.
+    // Every answer is the fresh listing, read from the live config like the skills page's.
+    const workspacesEntries = (): MyClawAppWorkspaceEntry[] => [
+      { key: "default", path: workspacePath, default: true },
+      ...Object.entries(config.workspaces ?? {}).map(([key, path]) => ({ key, path, default: false })),
+    ];
+    const writeWorkspaces = async (note: string, result: ConfigEditResult): Promise<MyClawAppWorkspaceEntry[]> => {
+      if (!result.ok) throw new Error(result.error);
+      // The watcher's workspaces applier reloads the skills tiers; reload now so the answer
+      // describes the running config, like the other config edits.
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after workspaces edit failed", { note, error: String(err) });
+      });
+      return workspacesEntries();
+    };
+    myClawApp.onWorkspacesController({
+      list: () => workspacesEntries(),
+      add: async (key, path) => writeWorkspaces(`ajout workspace ${key}`, await addWorkspace(key, path)),
+      remove: async (key) => writeWorkspaces(`retrait workspace ${key}`, await removeWorkspace(key)),
+      rename: async (from, to) => writeWorkspaces(`renommage workspace ${from}`, await renameWorkspace(from, to)),
+      setPath: async (key, path) => writeWorkspaces(`chemin workspace ${key}`, await setWorkspacePath(key, path)),
     });
 
     myClawApp.onCommandHandler(createMyClawAppCommandHandler({

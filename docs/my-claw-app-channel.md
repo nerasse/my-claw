@@ -125,6 +125,10 @@ the first answer wins.
 { "type": "mcp.enable", "name": "gitlab", "enabled": false }
 { "type": "config.get" }
 { "type": "config.set", "sha": "9f2b1c4d5e6a", "content": "{ ... }" }
+{ "type": "workspaces.add", "key": "sofa", "path": "/srv/sofa" }
+{ "type": "workspaces.remove", "key": "sofa" }
+{ "type": "workspaces.rename", "from": "sofa", "to": "couch" }
+{ "type": "workspaces.path.set", "key": "sofa", "path": "/srv/newsofa" }
 { "type": "ping" }
 ```
 
@@ -216,6 +220,16 @@ the first answer wins.
   parser as boot before writing, so a structurally broken file never reaches disk; the watcher
   hot-reloads what survives, and the `config.saved` answer reports which sections changed and
   which ones need a reboot (channel tokens, the bind port, the workspace path).
+- `workspaces.add` / `workspaces.remove` / `workspaces.rename` / `workspaces.path.set` are the
+  full CRUD of `config.workspaces`. Keys follow the boot validator (no "default", no "/",
+  absolute paths); `add` and `path.set` create the directory so the skills and agent tiers can
+  open under it. `rename` moves the key and rewrites every `agents.<key>.workspace` pin that
+  referenced the old name in the same write; a pin left pointing at a removed workspace is
+  exactly what the red `unknownWorkspace` flag surfaces, and resolution now falls back to the
+  default workspace instead of throwing, so a removed workspace never takes the runs that
+  referenced it down. All four answer with the fresh `workspaces.list.result`, and since
+  `workspaces` is hot-reloaded with the skills/agent watchers re-targeting their tiers, the
+  new directory's layers follow live.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.
@@ -252,7 +266,7 @@ the first answer wins.
 { "type": "agents.file.saved", "name": "reviewer", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false }
 { "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
 { "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
-{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config" }
+{ "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces" }
 ```
 
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the

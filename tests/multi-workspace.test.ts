@@ -67,8 +67,8 @@ test("absolute workspace paths parse and resolve", () => {
   assert.equal(resolveWorkspaceDir(undefined), join(MY_CLAW_DIR, "workspace"));
 });
 
-test("an unknown workspace key throws loudly instead of resolving to the default", () => {
-  assert.throws(() => resolveWorkspaceKey(configWith({}), "nope"), /Unknown workspace key/);
+test("an unknown workspace key falls back to the default instead of throwing", () => {
+  assert.equal(resolveWorkspaceKey(configWith({}), "nope"), resolveWorkspaceDir(undefined));
 });
 
 test("editing workspaces is a hot reload, not a reboot", () => {
