@@ -21,7 +21,7 @@ export interface AgentBackend {
   /** Speech-to-text output per recording, for channels that render it beside its own bubble. */
   transcriptsOf(messageId: string): Array<{ path: string; text: string }>;
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void;
-  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string>;
+  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string): Promise<string>;
   handleMessageStreaming(
     message: UnifiedMessage,
     session: SessionData,
@@ -29,5 +29,6 @@ export interface AgentBackend {
     onToolUse?: ToolUseCallback,
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
+    modelId?: string,
   ): Promise<string>;
 }

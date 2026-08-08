@@ -98,3 +98,165 @@ test("dispatcher routes by the agent's configured model, not only the session's"
 
   assert.deepEqual(calls, ["sdk", "home", "sdk", "home"]);
 });
+
+function outageError(status: number): Error & { status?: number } {
+  const err = new Error(`LLM request failed: HTTP ${status} — out of credits`) as Error & { status?: number };
+  err.status = status;
+  return err;
+}
+
+interface RunCall {
+  backend: string;
+  modelId?: string;
+}
+
+// The fallback contract: a run on a non-default provider that dies an outage-class death is
+// replayed ONCE on the default provider, with the session's own choice left untouched so the
+// next message returns to it as soon as the provider recovers.
+test("an outage on a non-default provider reroutes the run once and never touches the session", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "home", modelId });
+      return `home:${modelId ?? "none"}`;
+    },
+  } as unknown as AgentBridge;
+  let first = true;
+  const sdk = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "sdk", modelId });
+      if (first) {
+        first = false;
+        throw outageError(429);
+      }
+      return `sdk:${modelId ?? _s.modelOverride ?? "none"}`;
+    },
+  } as unknown as ClaudeSdkBackend;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+  const sess = session("s1", "claude-sonnet-5");
+
+  const text = await dispatcher.handleMessage(msg("m1"), sess);
+  assert.ok(text.startsWith("[fallback] claude-sonnet-5 via anthropic is unavailable"), text);
+  assert.ok(text.includes("This run used mimo instead"), text);
+  assert.ok(text.includes("returns to claude-sonnet-5"), text);
+  assert.deepEqual(calls, [
+    { backend: "sdk", modelId: undefined },
+    { backend: "home", modelId: "mimo" },
+  ]);
+  assert.equal(sess.modelOverride, "claude-sonnet-5");
+
+  // The provider recovered: the next message resolves the user's own choice again, no fallback.
+  const recovered = await dispatcher.handleMessage(msg("m2"), sess);
+  assert.equal(recovered, "sdk:claude-sonnet-5");
+  assert.deepEqual(calls, [
+    { backend: "sdk", modelId: undefined },
+    { backend: "home", modelId: "mimo" },
+    { backend: "sdk", modelId: undefined },
+  ]);
+});
+
+test("an outage on the default provider itself surfaces the error: no reroute target exists", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "home", modelId });
+      throw outageError(500);
+    },
+  } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => "never" } as unknown as ClaudeSdkBackend;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  await assert.rejects(() => dispatcher.handleMessage(msg("m1"), session("s1")), /HTTP 500/);
+  assert.deepEqual(calls, [{ backend: "home", modelId: undefined }]);
+});
+
+test("a request-specific 4xx is a config mistake, not an outage: no reroute", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const sdk = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "sdk", modelId });
+      throw outageError(400);
+    },
+  } as unknown as ClaudeSdkBackend;
+  const home = { handleMessage: async () => "never" } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  await assert.rejects(() => dispatcher.handleMessage(msg("m1"), session("s1", "claude-sonnet-5")), /HTTP 400/);
+  assert.deepEqual(calls, [{ backend: "sdk", modelId: undefined }]);
+});
+
+test("an open circuit breaker blocks every provider, so there is nothing to reroute to", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const sdk = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "sdk", modelId });
+      throw new Error("LLM circuit breaker open (5 consecutive failures). Retry in 30s.");
+    },
+  } as unknown as ClaudeSdkBackend;
+  const home = { handleMessage: async () => "never" } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  await assert.rejects(() => dispatcher.handleMessage(msg("m1"), session("s1", "claude-sonnet-5")), /circuit breaker open/);
+  assert.deepEqual(calls, [{ backend: "sdk", modelId: undefined }]);
+});
+
+test("streaming never reroutes after tokens were delivered: partial content cannot be replayed", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  let streamed = false;
+  const sdk = {
+    handleMessageStreaming: async (_m: UnifiedMessage, _s: SessionData, onToken: (t: string) => Promise<void>, _o?: unknown, _sig?: AbortSignal, _sw?: unknown, modelId?: string) => {
+      calls.push({ backend: "sdk", modelId });
+      await onToken("partial");
+      throw outageError(429);
+    },
+  } as unknown as ClaudeSdkBackend;
+  const home = { handleMessage: async () => "never" } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  await assert.rejects(
+    () => dispatcher.handleMessageStreaming(msg("m1"), session("s1", "claude-sonnet-5"), async () => { streamed = true; }),
+    /HTTP 429/,
+  );
+  assert.equal(streamed, true);
+  assert.deepEqual(calls, [{ backend: "sdk", modelId: undefined }]);
+});
+
+test("streaming reroute streams the note first, then the fallback run's content", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const tokens: string[] = [];
+  let first = true;
+  const sdk = {
+    handleMessageStreaming: async (_m: UnifiedMessage, _s: SessionData, onToken: (t: string) => Promise<void>, _o?: unknown, _sig?: AbortSignal, _sw?: unknown, modelId?: string) => {
+      calls.push({ backend: "sdk", modelId });
+      if (first) {
+        first = false;
+        throw new Error("fetch failed: provider is down");
+      }
+      await onToken("recovered answer");
+      return "recovered answer";
+    },
+  } as unknown as ClaudeSdkBackend;
+  const home = {
+    handleMessageStreaming: async (_m: UnifiedMessage, _s: SessionData, onToken: (t: string) => Promise<void>, _o?: unknown, _sig?: AbortSignal, _sw?: unknown, modelId?: string) => {
+      calls.push({ backend: "home", modelId });
+      await onToken("fallback answer");
+      return "fallback answer";
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  const text = await dispatcher.handleMessageStreaming(msg("m1"), session("s1", "claude-sonnet-5"), async (t) => void tokens.push(t));
+  assert.ok(text.startsWith("[fallback]"), text);
+  assert.ok(tokens[0]!.startsWith("[fallback]"), tokens.join(""));
+  assert.ok(tokens.join("").includes("fallback answer"), tokens.join(""));
+  assert.deepEqual(calls, [
+    { backend: "sdk", modelId: undefined },
+    { backend: "home", modelId: "mimo" },
+  ]);
+});

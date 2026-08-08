@@ -249,8 +249,8 @@ export class ClaudeSdkBackend implements AgentBackend {
     return this.preprocessor.preprocessMessage(message);
   }
 
-  async handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
-    return this.handle(message, session, undefined, undefined, signal);
+  async handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string): Promise<string> {
+    return this.handle(message, session, undefined, undefined, signal, undefined, modelId);
   }
 
   async handleMessageStreaming(
@@ -260,8 +260,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     onToolUse?: ToolUseCallback,
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
+    modelId?: string,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId);
   }
 
   /**
@@ -329,6 +330,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     onToolUse?: ToolUseCallback,
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
+    modelId?: string,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -343,7 +345,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,
       agent.llm,
-      session.modelOverride,
+      modelId ?? session.modelOverride,
       message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       session.effortOverride,
     );

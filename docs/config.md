@@ -76,6 +76,26 @@ never the bytes, and the blocks are rebuilt from disk while the file exists; a d
 degrades to the text mention. Only the 4 most recent images ride along, because each one costs
 its tokens on every single turn.
 
+### Provider-outage fallback
+
+When a run's model belongs to a provider that is **not** the default provider and the run fails
+with an outage-class error — network/connection failure, 5xx, or quota/credit exhausted
+(429/402/403) — the run is replayed **once** on the default provider's model, and the reply is
+prefixed with `[fallback] …` explaining what happened (also streamed live). The fallback is
+strictly per run:
+
+- The original selection (`/model` choice, agent default, cron job model) is **never modified**,
+  so the next message resolves it again and returns to it as soon as the provider recovers.
+- There is **exactly one** reroute per run: the target is the default provider, which the guard
+  never reroutes from; if the default provider fails too, the real error surfaces as usual.
+- Streaming reroutes only happen before the first token was delivered (partial content cannot
+  be replayed).
+- Request-specific 4xx (400/401/404, a malformed request or a bad key) are config mistakes and
+  do not trigger the fallback; neither does an open circuit breaker, which blocks every provider
+  anyway.
+- This is runtime behavior on top of the existing retries (3 attempts with backoff) and the
+  global circuit breaker, and needs no configuration.
+
 ### Claude SDK provider (subscription)
 
 A provider with `"type": "claude-sdk"` runs its models through the Claude Agent SDK on

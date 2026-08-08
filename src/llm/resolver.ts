@@ -52,6 +52,7 @@ function resolveFromMerged(
     return {
       baseUrl: provider.baseUrl || "https://api.fireworks.ai/inference/v1",
       model: effectiveModelId,
+      provider: "default",
       apiKey: resolveApiKey(provider, merged.apiKey),
       vision: merged.vision,
       limit: merged.limit,
@@ -72,6 +73,7 @@ function resolveFromMerged(
       // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
       baseUrl: "claude-sdk",
       model: effectiveModelId,
+      provider: providerName,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       fallbackModel: provider.fallbackModel,
@@ -86,6 +88,7 @@ function resolveFromMerged(
       // fetched by the transport (no apiKey here). See docs/codex-backend.md.
       baseUrl: provider.baseUrl ?? "https://chatgpt.com/backend-api",
       model: effectiveModelId,
+      provider: providerName,
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
@@ -96,6 +99,7 @@ function resolveFromMerged(
   return {
     baseUrl: provider.baseUrl ?? "",
     model: effectiveModelId,
+    provider: providerName,
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,

@@ -290,6 +290,10 @@ export interface ResolvedLlmConfig {
   backend?: "openai" | "claude-sdk" | "codex";
   baseUrl: string;
   model: string;
+  // The provider entry that owns this model ("default" when the config predates named
+  // providers). The dispatcher compares it across resolutions to decide whether an outage on
+  // this run can be rerouted to the default provider at all.
+  provider?: string;
   apiKey?: string;
   headers?: Record<string, string>;
   vision?: boolean;
