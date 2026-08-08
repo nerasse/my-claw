@@ -75,6 +75,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppStatusPayload,
   MyClawAppJobDelete,
   MyClawAppJobSave,
+  MyClawAppJobsRunEntry,
+  MyClawAppJobsRuns,
   MyClawAppJobEntry,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
@@ -276,6 +278,8 @@ export interface MyClawAppJobsController {
   save(fields: MyClawAppJobSave): Promise<MyClawAppJobEntry[]>;
   /** Removes a job. Refused when no job carries that id. */
   remove(id: string): Promise<MyClawAppJobEntry[]>;
+  /** The run sessions of one job, newest first. Refused when the job does not exist. */
+  runs(jobId: string): Promise<MyClawAppJobsRunEntry[]>;
 }
 
 /**
@@ -920,6 +924,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "jobs.list":
         void this.handleJobsList(ws);
         break;
+      case "jobs.runs":
+        void this.handleJobsRuns(ws, frame);
+        break;
       case "jobs.save":
         void this.handleJobSave(ws, frame);
         break;
@@ -1556,6 +1563,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "jobs.list.result", jobs: await this.jobs.list() });
     } catch (err) {
       await this.refuse(ws, "jobs", "jobs.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleJobsRuns(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppJobsRuns,
+  ): Promise<void> {
+    if (!this.jobs) {
+      await this.refuse(ws, "jobs", "job store unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "jobs.runs.result", jobId: frame.jobId, runs: await this.jobs.runs(frame.jobId) });
+    } catch (err) {
+      await this.refuse(ws, "jobs", "jobs.runs failed", { jobId: frame.jobId, error: String(err) });
     }
   }
 

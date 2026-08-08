@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -41,7 +41,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
@@ -1481,6 +1481,26 @@ async function main() {
         if (!removeJob(jobs, id)) throw new Error(`job not found: ${id}`);
         await saveJobs(jobs);
         return jobsListing();
+      },
+      runs: async (jobId) => {
+        const jobs = await loadJobs();
+        const job = jobs.find((j) => j.id === jobId);
+        if (!job) throw new Error(`job not found: ${jobId}`);
+        const ids = await sessionManager.listSessions(`cron/${jobId}/`, 100);
+        const runs: MyClawAppJobsRunEntry[] = [];
+        for (const sessionId of ids) {
+          const runTs = Number(sessionId.slice(sessionId.lastIndexOf("/") + 1));
+          const threadId = cronSessionToThread(sessionId);
+          if (!threadId || !Number.isFinite(runTs)) continue;
+          const session = await sessionManager.peek(sessionId);
+          runs.push({
+            threadId,
+            runAt: runTs,
+            messageCount: session?.messages.length ?? 0,
+            title: session?.title?.trim() || `${job.name} · ${new Date(runTs).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
+          });
+        }
+        return runs;
       },
     });
 

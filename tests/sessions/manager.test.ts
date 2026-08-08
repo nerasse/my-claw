@@ -21,6 +21,20 @@ function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
 
 // --- resolveSessionId ---
 
+test("resolveSessionId: a cron run thread resolves to the run's own session", () => {
+  const id = SessionManager.resolveSessionId("my-claw-app", "dm", "owner1", "owner1", {
+    threadId: "cron-abcdef123456-1700000000000",
+  });
+  assert.equal(id, "cron/abcdef123456/1700000000000");
+});
+
+test("resolveSessionId: a normal app thread stays under the owner", () => {
+  const id = SessionManager.resolveSessionId("my-claw-app", "dm", "owner1", "owner1", {
+    threadId: "projet",
+  });
+  assert.equal(id, "my-claw-app/thread/owner1/projet");
+});
+
 test("resolveSessionId: telegram DM -> telegram/dm/{userId}", () => {
   const id = SessionManager.resolveSessionId("telegram", "dm", "c100", "u200");
   assert.equal(id, "telegram/dm/u200");

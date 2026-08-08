@@ -49,6 +49,7 @@ describe("cron scheduler", () => {
       getOrCreateWithMeta: async () => makeSession(),
       getOrCreate: async () => makeSession(),
       deleteSession: async () => {},
+      listSessions: async () => [],
     } as unknown as SessionManager;
 
     config = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, agents: {}, cron: { enabled: true } } as MyClawConfig;
@@ -285,7 +286,7 @@ describe("cron scheduler", () => {
     expect(sessions[0]!.platform).toBe("cron");
   });
 
-  test("the ephemeral session is deleted even when the run fails", async () => {
+  test("a failed run keeps its session: the app can reopen it to see what went wrong", async () => {
     router.routeCron = async () => {
       throw new Error("boom");
     };
@@ -293,6 +294,8 @@ describe("cron scheduler", () => {
     sessionManager.deleteSession = async (sessionId: string) => {
       deleted.push(sessionId);
     };
+    const id = "0123456789ab";
+    sessionManager.listSessions = async () => [`cron/${id}/1700000000000`, `cron/${id}/1700000000001`];
 
     const job = createJob({
       prompt: "test",
@@ -305,11 +308,36 @@ describe("cron scheduler", () => {
 
     const result = await scheduler.tick();
     expect(result).toBe(0);
-    // One session file per failed attempt would be worse than the single one it replaced.
-    expect(deleted.length).toBe(1);
-    expect(deleted[0]!.startsWith(`cron/${job.id}/`)).toBe(true);
+    // The run's own session survives (the retention below keeps the newest runs), and the
+    // prune only drops what exceeds the per-job cap.
+    expect(deleted.length).toBe(0);
     const [after] = await loadJobs();
     expect(after!.lastStatus).toBe("error");
+  });
+
+  test("run sessions are pruned per job beyond the retention cap", async () => {
+    const deleted: string[] = [];
+    sessionManager.deleteSession = async (sessionId: string) => {
+      deleted.push(sessionId);
+    };
+    const id = "0123456789ab";
+    sessionManager.listSessions = async () =>
+      Array.from({ length: 30 }, (_, i) => `cron/${id}/${1700000000000 - i}`);
+
+    const job = createJob({
+      prompt: "test",
+      schedule: "every 30m",
+      origin: { platform: "telegram", chatId: "123" },
+      deliver: "origin",
+    });
+    job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+    await saveJobs([job]);
+
+    await scheduler.tick();
+    // 30 listed, cap 25: the 5 oldest go, the newest 25 stay.
+    expect(deleted.length).toBe(5);
+    expect(deleted[0]!).toBe(`cron/${id}/${1700000000000 - 25}`);
+    expect(deleted[deleted.length - 1]!).toBe(`cron/${id}/${1700000000000 - 29}`);
   });
 
   describe("deliverResult", () => {

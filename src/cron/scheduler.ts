@@ -108,6 +108,9 @@ export class CronScheduler {
             void log("error", "cron job failed", { jobId: job.id, jobName: job.name, error: errMsg });
           }
         }
+        // A run's session stays on disk (the app opens it as a chat and can answer on it),
+        // so the per-job retention is what stops it from growing without bound.
+        await this.pruneSessions(job.id);
       }
 
       await persistJobRunUpdates(allJobs);
@@ -152,6 +155,14 @@ export class CronScheduler {
         synthMessage.chatType,
         workspace,
       );
+      // The session outlives the run (the app lists a job's runs and can reopen one to chat
+      // on it), so it deserves a name: the job's own, with the run time, not the raw prompt.
+      session.title = `${job.name} · ${new Date(jobStartedAt).toLocaleString("fr-FR", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}`;
       session.modelOverride = job.model || undefined;
       // Job-level scope, slotted above the cron agent's config entry exactly like the model
       // override above: the job's own choices win, an absent field inherits agents.cron.
@@ -174,11 +185,6 @@ export class CronScheduler {
         result = await this.router.routeCron(synthMessage, sessionId);
       } finally {
         clearTimeout(timer);
-        // In the finally, not on the happy path: a timed-out or failed run would otherwise
-        // leave one session file behind per attempt. The durable record is the job output.
-        await this.sessionManager.deleteSession(sessionId).catch((err) => {
-          void log("warn", "cron session cleanup failed", { jobId: job.id, error: String(err) });
-        });
       }
       if (timedOut) {
         throw new Error(`Cron job timed out after ${Math.round(timeoutMs / 1000)}s (cron.timeoutMs)`);
@@ -217,6 +223,13 @@ export class CronScheduler {
     } catch (err) {
       hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err });
       throw err;
+    }
+  }
+
+  private async pruneSessions(jobId: string, keep = 25): Promise<void> {
+    const ids = await this.sessionManager.listSessions(`cron/${jobId}/`, 100);
+    for (const id of ids.slice(keep)) {
+      await this.sessionManager.deleteSession(id).catch(() => {});
     }
   }
 

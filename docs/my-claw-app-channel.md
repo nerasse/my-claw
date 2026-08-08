@@ -261,6 +261,13 @@ the first answer wins.
   `notifications.state` reports the device's foreground state (`foreground`, optional
   `threadId` of the active thread) so the server can skip run-completion notifications for the
   thread that is already on screen. Full design: `docs/notifications.md`.
+- `jobs.runs { jobId }` lists the run sessions of one job, newest first, as
+  `jobs.runs.result { jobId, runs: [{ threadId, runAt, messageCount, title }] }`. Every run
+  leaves a real session on disk (the scheduler keeps them, capped at 25 per job), so each
+  `threadId` (`cron-<jobId>-<runTs>`, the slash-less form of the session id `cron/<jobId>/<runTs>`)
+  is openable like any conversation: `session.history` reads it, `chat.send` routes to it and
+  the stream answers on it. `chat.stop`, rename and delete work the same way. An unknown
+  `jobId` is refused on the jobs scope.
 
 ### Server -> Device
 
@@ -295,6 +302,7 @@ the first answer wins.
 { "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
 { "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
 { "type": "notifications.info", "vapidPublicKey": "..." }
+{ "type": "jobs.runs.result", "jobId": "abc123def456", "runs": [{ "threadId": "cron-abc123def456-1723200000000", "runAt": 1723200000000, "messageCount": 4, "title": "Morning report · 08/08 19:30" }] }
 { "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces|jobs|notifications" }
 ```
 

@@ -432,6 +432,7 @@ export type MyClawAppClientFrame =
   | MyClawAppWorkspacesSetPath
   | MyClawAppStatusGet
   | MyClawAppJobsList
+  | MyClawAppJobsRuns
   | MyClawAppJobSave
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
@@ -1109,6 +1110,29 @@ export interface MyClawAppJobsList {
   type: "jobs.list";
 }
 
+/**
+ * The run sessions of one job. Every run leaves a real session behind (the scheduler keeps
+ * them now), so the app can list them, reopen one as a chat and even answer on it.
+ */
+export interface MyClawAppJobsRuns {
+  type: "jobs.runs";
+  jobId: string;
+}
+
+export interface MyClawAppJobsRunsResult {
+  type: "jobs.runs.result";
+  jobId: string;
+  runs: MyClawAppJobsRunEntry[];
+}
+
+/** One run of a job. `threadId` is the run session seen as a thread (cron-<jobId>-<runTs>). */
+export interface MyClawAppJobsRunEntry {
+  threadId: string;
+  runAt: number;
+  messageCount: number;
+  title: string;
+}
+
 /** Creates (no id) or updates a job. The schedule is parsed server-side and refused when it
  *  is not a cron expr, an "every Xm/h/d" interval, or an ISO timestamp. Jobs made from the
  *  app always deliver "local": a phone has no chat of origin, so no other target is honest. */
@@ -1205,5 +1229,6 @@ export type MyClawAppServerFrame =
   | MyClawAppConfigResult
   | MyClawAppConfigSaved
   | MyClawAppJobsListResult
+  | MyClawAppJobsRunsResult
   | MyClawAppNotificationsInfo
   | MyClawAppError;

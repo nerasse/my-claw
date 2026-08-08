@@ -7,6 +7,7 @@ import {
   archiveSession,
   purgeSessionArchives,
   listSessionIdsByPrefix,
+  cronThreadToSession,
   type SessionData,
 } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
@@ -83,6 +84,10 @@ export class SessionManager {
     if (platform === "my-claw-app") {
       const threadId = meta?.threadId?.trim();
       if (threadId) {
+        // A cron run's thread refers to the run's own session (kept after the run so it can
+        // be reopened and chatted on), not to a my-claw-app conversation.
+        const cronSession = cronThreadToSession(threadId);
+        if (cronSession) return cronSession;
         return `my-claw-app/thread/${chatId}/${threadId}`;
       }
       return `my-claw-app/dm/${userId}`;

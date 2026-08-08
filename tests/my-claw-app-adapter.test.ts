@@ -2140,6 +2140,17 @@ describe("scheduled jobs (jobs.*)", () => {
     adapter.onMessage(async () => {});
     adapter.onJobsController({
       list: async () => wireJobs(),
+      runs: async (jobId) => {
+        if (!jobs.some((j) => j.id === jobId)) throw new Error(`job not found: ${jobId}`);
+        return [
+          {
+            threadId: `cron-${jobId}-1700000000000`,
+            runAt: 1700000000000,
+            messageCount: 3,
+            title: `${jobs.find((j) => j.id === jobId)!.name} · run`,
+          },
+        ];
+      },
       save: async (fields) => {
         const stored = {
           ...(fields.model ? { model: fields.model } : {}),
@@ -2181,6 +2192,23 @@ describe("scheduled jobs (jobs.*)", () => {
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "jobs.list.result");
     assert.deepEqual(frame["jobs"], []);
+  });
+
+  test("jobs.runs lists the run sessions of one job, and refuses an unknown job", async () => {
+    client.ws.send(JSON.stringify({ type: "jobs.save", name: "Digest", prompt: "sum up", schedule: "every 24h", enabled: true, skills: { mode: "inherit" }, mcp: { mode: "inherit" }, tools: { mode: "inherit" } }));
+    await nextFrame(client);
+    client.ws.send(JSON.stringify({ type: "jobs.runs", jobId: jobs[0]!.id }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "jobs.runs.result");
+    assert.equal(frame["jobId"], jobs[0]!.id);
+    const runs = frame["runs"] as Array<Record<string, unknown>>;
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!["threadId"], `cron-${jobs[0]!.id}-1700000000000`);
+
+    client.ws.send(JSON.stringify({ type: "jobs.runs", jobId: "unknown000000" }));
+    const refused = await nextFrame(client);
+    assert.equal(refused["type"], "error");
+    assert.equal(refused["scope"], "jobs");
   });
 
   test("jobs.save creates a job: local delivery, scope stored, unknown model flagged but saved", async () => {

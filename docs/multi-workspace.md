@@ -109,18 +109,20 @@ Skills come from three tiers (built-in, custom, workspace). With multiple worksp
 `__workspaceDir` already injected into tool args), not against the process environment, and
 the spawned sub-agent runs with the parent's workspace.
 
-## Cron runs are ephemeral and per-run
+## Cron runs are kept per run, and per job
 
-Each cron run creates a fresh session `cron/<jobId>/<runId>` seeded with the job's model and
-workspace key, and deletes it after the run (success or failure). A job's run never inherits
-the history of the previous one.
+Each cron run creates a fresh session `cron/<jobId>/<runTs>` seeded with the job's model,
+workspace key and a title (`<job name> · <run time>`). The session **survives** the run: the
+app lists a job's runs (`jobs.runs`) and can reopen one as a chat, read it and answer on it.
+The per-job retention keeps the 25 most recent runs and prunes the rest; the global session
+retention still applies on top.
 
 - `CronJob.workspace?: string` references a **key** from `config.workspaces`, never a path.
   Moving a project = one line in the config, no job edit.
 - An unknown key pauses the job with a `pausedReason`; it never runs silently in the default
   workspace.
-- Per-run durability lives in the job record (`lastStatus`, `lastError`, `lastRunAt`) and the
-  output store; nothing depends on session continuity. See `docs/cron.md`.
+- Per-run durability lives in the job record (`lastStatus`, `lastError`, `lastRunAt`), the
+  output store, and now the run session itself. See `docs/cron.md`.
 
 ## What stays global
 

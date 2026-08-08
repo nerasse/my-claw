@@ -190,6 +190,22 @@ function sanitizeSessionId(raw: string): string {
   return raw.replace(/\.\./g, "_").replace(/\0/g, "");
 }
 
+/**
+ * A cron run's session id is `cron/<jobId>/<runTs>`; thread ids come from the device and must
+ * match a strict character set (no slash), so the app refers to a run session as
+ * `cron-<jobId>-<runTs>`. The job id is 12 hex chars and the run ts digits, so the round-trip
+ * is unambiguous. See docs/my-claw-app-channel.md (jobs.runs).
+ */
+export function cronSessionToThread(sessionId: string): string | null {
+  const match = /^cron\/([0-9a-f]{12})\/(\d+)$/.exec(sessionId);
+  return match ? `cron-${match[1]}-${match[2]}` : null;
+}
+
+export function cronThreadToSession(threadId: string): string | null {
+  const match = /^cron-([0-9a-f]{12})-(\d+)$/.exec(threadId);
+  return match ? `cron/${match[1]}/${match[2]}` : null;
+}
+
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
