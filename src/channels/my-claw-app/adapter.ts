@@ -73,6 +73,9 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppWorkspacesSetPath,
   MyClawAppStatusGet,
   MyClawAppStatusPayload,
+  MyClawAppJobDelete,
+  MyClawAppJobSave,
+  MyClawAppJobEntry,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -260,6 +263,20 @@ export interface MyClawAppInstructionsController {
 }
 
 /**
+ * Scheduled jobs CRUD, injected so the adapter never reaches into the cron store or the live
+ * catalogs itself. Every mutation answers with the fresh listing, never an optimistic echo.
+ * Model and scope names are never validated at save: the job is the truth, and the listing
+ * carries the unknown flags that paint a stale name red instead of refusing it.
+ */
+export interface MyClawAppJobsController {
+  list(): Promise<MyClawAppJobEntry[]>;
+  /** Creates (no id) or updates a job. Refused when the schedule does not parse. */
+  save(fields: MyClawAppJobSave): Promise<MyClawAppJobEntry[]>;
+  /** Removes a job. Refused when no job carries that id. */
+  remove(id: string): Promise<MyClawAppJobEntry[]>;
+}
+
+/**
  * A command handler can answer plain text, or -- for /status -- the text plus the structured
  * payload the app draws as a fullscreen page.
  */
@@ -292,6 +309,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
+  private jobs?: MyClawAppJobsController;
   private configEditor?: MyClawAppConfigController;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
@@ -470,6 +488,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onInstructionsController(controller: MyClawAppInstructionsController): void {
     this.instructions = controller;
+  }
+
+  onJobsController(controller: MyClawAppJobsController): void {
+    this.jobs = controller;
   }
 
   onConfigController(controller: MyClawAppConfigController): void {
@@ -870,6 +892,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "status.get":
         void this.handleStatusGet(ws, frame);
+        break;
+      case "jobs.list":
+        void this.handleJobsList(ws);
+        break;
+      case "jobs.save":
+        void this.handleJobSave(ws, frame);
+        break;
+      case "jobs.delete":
+        void this.handleJobDelete(ws, frame);
         break;
 
       case "files.delete":
@@ -1483,6 +1514,56 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "tools.list.result", ...this.tools.list() });
     } catch (err) {
       await this.refuse(ws, "tools", "tools.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleJobsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.jobs) {
+      await this.refuse(ws, "jobs", "job store unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "jobs.list.result", jobs: await this.jobs.list() });
+    } catch (err) {
+      await this.refuse(ws, "jobs", "jobs.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleJobSave(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppJobSave,
+  ): Promise<void> {
+    if (!this.jobs) {
+      await this.refuse(ws, "jobs", "job store unavailable");
+      return;
+    }
+    if (!frame.prompt.trim() || !frame.schedule.trim()) {
+      await this.refuse(ws, "jobs", "prompt and schedule are required", {
+        name: frame.name,
+        hasPrompt: Boolean(frame.prompt.trim()),
+        hasSchedule: Boolean(frame.schedule.trim()),
+      });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "jobs.list.result", jobs: await this.jobs.save(frame) });
+    } catch (err) {
+      await this.refuse(ws, "jobs", "jobs.save failed", { name: frame.name, id: frame.id, error: String(err) });
+    }
+  }
+
+  private async handleJobDelete(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppJobDelete,
+  ): Promise<void> {
+    if (!this.jobs) {
+      await this.refuse(ws, "jobs", "job store unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "jobs.list.result", jobs: await this.jobs.remove(frame.id) });
+    } catch (err) {
+      await this.refuse(ws, "jobs", "jobs.delete failed", { id: frame.id, error: String(err) });
     }
   }
 

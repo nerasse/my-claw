@@ -129,6 +129,16 @@ export interface SessionData {
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**
+   * Per-job scope of a cron run, set by the scheduler from the job's own fields and slotted
+   * above `agents.cron` when the agent's scope is resolved. Never persisted: a cron session is
+   * deleted after each run, so the override lives exactly as long as the run it belongs to.
+   */
+  scopeOverride?: {
+    skills?: string[];
+    mcp?: string[];
+    tools?: string[];
+  };
+  /**
    * Key of the workspace this conversation was born in (config.workspaces). Absent = the
    * default workspace. Immutable by design: the prompt files, the skill set and the SDK resume
    * all depend on it, so a mid-thread switch would lie to the agent about its own context.

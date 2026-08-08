@@ -62,6 +62,17 @@ These Hermes features enable conditional execution and job chaining. Deferred to
 
 Standard cron expressions (`0 9 * * 1`) are parsed by `cron-parser`. Custom syntax for intervals (`every 30m`) and one-shots (`2h`, ISO timestamps) is parsed manually. This covers all scheduling needs without exposing raw cron syntax to users who do not know it.
 
+### Per-job scope overrides
+
+A job can carry its own `skills`/`mcp`/`tools` lists, slotted above `agents.cron` at run time
+exactly like its `model` override: the job's own choices win, an absent field inherits the cron
+agent. The scope is stored in the config shape (absent = inherit, `["*"]` = all, `[]` = nothing,
+else names) and reaches the run through the session, so no config section is written per job. The
+`cron` tool sets it with `skills`/`mcp`/`tools` arguments (`inherit`, `all`/`*`, `none`, or
+comma-separated names) and `cron list` reports it per job; a name that matches no live catalog is
+flagged `removed: ...` instead of being refused — the job is the truth. `tools` is intersected
+with the cron baseline, so a name outside it is dropped at run time.
+
 ## Storage
 
 - `~/.my-claw/cron/jobs.json` — atomic JSON writes

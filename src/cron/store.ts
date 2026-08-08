@@ -176,6 +176,9 @@ export interface CreateJobParams {
   model?: string;
   /** Key of the workspace this job runs in (config.workspaces); absent = the default. */
   workspace?: string;
+  skills?: string[];
+  mcp?: string[];
+  tools?: string[];
 }
 
 export function createJob(params: CreateJobParams): CronJob {
@@ -196,6 +199,9 @@ export function createJob(params: CreateJobParams): CronJob {
     deliver,
     model: params.model,
     workspace: params.workspace,
+    ...(params.skills ? { skills: params.skills } : {}),
+    ...(params.mcp ? { mcp: params.mcp } : {}),
+    ...(params.tools ? { tools: params.tools } : {}),
     nextRunAt: computeNextRun(schedule),
     lastRunAt: null,
     lastStatus: null,
@@ -212,6 +218,9 @@ export interface UpdateJobParams {
   deliver?: string;
   schedule?: string;
   workspace?: string;
+  skills?: string[];
+  mcp?: string[];
+  tools?: string[];
 }
 
 export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobParams): CronJob | null {
@@ -224,11 +233,19 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.enabled !== undefined) {
     job.enabled = updates.enabled;
     job.state = updates.enabled ? "scheduled" : "paused";
+    // Re-arming a job that completed leaves nextRunAt at null (markJobRun clears it), which
+    // getDueJobs would read as "never due" forever. Same re-arm the resume path does.
+    if (updates.enabled && job.nextRunAt === null) {
+      job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);
+    }
   }
   if (updates.deliver !== undefined) {
     job.deliver = parseDeliver(updates.deliver, job.origin);
   }
   if (updates.workspace !== undefined) job.workspace = updates.workspace || undefined;
+  if (updates.skills !== undefined) job.skills = updates.skills;
+  if (updates.mcp !== undefined) job.mcp = updates.mcp;
+  if (updates.tools !== undefined) job.tools = updates.tools;
   if (updates.schedule !== undefined) {
     job.schedule = parseSchedule(updates.schedule);
     job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);

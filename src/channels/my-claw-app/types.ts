@@ -431,6 +431,9 @@ export type MyClawAppClientFrame =
   | MyClawAppWorkspacesRename
   | MyClawAppWorkspacesSetPath
   | MyClawAppStatusGet
+  | MyClawAppJobsList
+  | MyClawAppJobSave
+  | MyClawAppJobDelete
   | MyClawAppPing;
 
 export interface MyClawAppToolCallEntry {
@@ -588,7 +591,8 @@ export type MyClawAppErrorScope =
   | "instructions"
   | "config"
   | "workspaces"
-  | "status";
+  | "status"
+  | "jobs";
 
 export interface MyClawAppError {
   type: "error";
@@ -1046,6 +1050,89 @@ export interface MyClawAppStatusResult {
   status: MyClawAppStatusPayload;
 }
 
+/** A job's scope override in the app's editing vocabulary, mirroring agents.scope.set. */
+export interface MyClawAppJobScope {
+  /** "inherit" removes the field (the cron agent's list applies), "all" is the "*" wildcard,
+   *  "list" the names picked — `[]` means "nothing", kept as a decision. Names are never
+   *  validated against the live catalogs: the job is the truth, a stale name is red, not refused. */
+  mode: "inherit" | "all" | "list";
+  names?: string[];
+}
+
+/** The wire shape of a scheduled task (src/cron/types.ts), with the run-time unknowns resolved. */
+export interface MyClawAppJobEntry {
+  id: string;
+  name: string;
+  prompt: string;
+  schedule: {
+    kind: "cron" | "interval" | "once";
+    expr?: string;
+    minutes?: number;
+    runAt?: string;
+    display: string;
+  };
+  enabled: boolean;
+  state: "scheduled" | "paused" | "completed";
+  pausedReason?: string;
+  /** 1 for "once" jobs, null for recurring ones. Not editable: fixed by the schedule kind. */
+  repeat: number | null;
+  completedRuns: number;
+  /** Display form of the delivery target: "local", "origin", or "telegram:chatId". */
+  deliver: string;
+  model?: string;
+  workspace?: string;
+  skillsMode: "inherit" | "all" | "list";
+  skills?: string[];
+  mcpMode: "inherit" | "all" | "list";
+  mcp?: string[];
+  toolsMode: "inherit" | "all" | "list";
+  tools?: string[];
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "ok" | "error" | null;
+  lastError: string | null;
+  createdAt: string;
+  /** True when the model is not in the live catalog: shown red, saved anyway. */
+  unknownModel: boolean;
+  /** True when the workspace key left config.workspaces: the job pauses at its next run. */
+  unknownWorkspace: boolean;
+  /** Skill/MCP/tool names that match nothing in the live catalogs. Shown red, saved anyway. */
+  unknownSkills: string[];
+  unknownMcp: string[];
+  unknownTools: string[];
+}
+
+export interface MyClawAppJobsList {
+  type: "jobs.list";
+}
+
+/** Creates (no id) or updates a job. The schedule is parsed server-side and refused when it
+ *  is not a cron expr, an "every Xm/h/d" interval, or an ISO timestamp. Jobs made from the
+ *  app always deliver "local": a phone has no chat of origin, so no other target is honest. */
+export interface MyClawAppJobSave {
+  type: "jobs.save";
+  id?: string;
+  name: string;
+  prompt: string;
+  schedule: string;
+  enabled: boolean;
+  model?: string;
+  workspace?: string;
+  skills: MyClawAppJobScope;
+  mcp: MyClawAppJobScope;
+  tools: MyClawAppJobScope;
+}
+
+export interface MyClawAppJobDelete {
+  type: "jobs.delete";
+  id: string;
+}
+
+export interface MyClawAppJobsListResult {
+  type: "jobs.list.result";
+  jobs: MyClawAppJobEntry[];
+}
+
 /** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
 export interface MyClawAppChatCleared {
   type: "chat.cleared";
@@ -1085,4 +1172,5 @@ export type MyClawAppServerFrame =
   | MyClawAppAgentFileSaved
   | MyClawAppConfigResult
   | MyClawAppConfigSaved
+  | MyClawAppJobsListResult
   | MyClawAppError;

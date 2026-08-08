@@ -6,11 +6,12 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppMcpEntry, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
+import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron/store.ts";
 
 const DEVICE_ID = "test-device";
 const TOKEN = "secret-token";
@@ -2070,6 +2071,227 @@ describe("config frames", () => {
       const frame = await nextFrame(c);
       assert.equal(frame["type"], "error");
       assert.equal(frame["scope"], "config");
+      c.ws.close();
+    } finally {
+      await bare.stop();
+    }
+  });
+});
+
+describe("scheduled jobs (jobs.*)", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let jobs: import("../src/cron/types.ts").CronJob[];
+
+  // Mirrors the controller wired in src/index.ts: real store semantics (schedule parsing, scope
+  // persistence) with the unknown-flag projection the app paints red.
+  const wireJobs = (): MyClawAppJobEntry[] => {
+    const modelIds = new Set(["gpt-5.1", "fast-1"]);
+    const workspaceKeys = new Set(["sofa"]);
+    const skillNames = new Set(["code-review"]);
+    const mcpNames = new Set(["mailcow"]);
+    const toolNames = new Set(["bash", "web_search"]);
+    return jobs.map((job): MyClawAppJobEntry => {
+      const skillsMode: "inherit" | "all" | "list" = job.skills === undefined ? "inherit" : job.skills.includes("*") ? "all" : "list";
+      const mcpMode: "inherit" | "all" | "list" = job.mcp === undefined ? "inherit" : job.mcp.includes("*") ? "all" : "list";
+      const toolsMode: "inherit" | "all" | "list" = job.tools === undefined ? "inherit" : job.tools.includes("*") ? "all" : "list";
+      return {
+        id: job.id,
+        name: job.name,
+        prompt: job.prompt,
+        schedule: job.schedule,
+        enabled: job.enabled,
+        state: job.state,
+        repeat: job.repeat,
+        completedRuns: job.completedRuns,
+        deliver: job.deliver === "local" || job.deliver === "origin" ? job.deliver : `${job.deliver.platform}:${job.deliver.chatId}`,
+        ...(job.model ? { model: job.model } : {}),
+        ...(job.workspace ? { workspace: job.workspace } : {}),
+        skillsMode,
+        ...(job.skills ? { skills: job.skills } : {}),
+        mcpMode,
+        ...(job.mcp ? { mcp: job.mcp } : {}),
+        toolsMode,
+        ...(job.tools ? { tools: job.tools } : {}),
+        nextRunAt: job.nextRunAt,
+        lastRunAt: job.lastRunAt,
+        lastStatus: job.lastStatus,
+        lastError: job.lastError,
+        createdAt: job.createdAt,
+        unknownModel: job.model !== undefined && !modelIds.has(job.model),
+        unknownWorkspace: job.workspace !== undefined && !workspaceKeys.has(job.workspace),
+        unknownSkills: (job.skills ?? []).filter((name) => name !== "*" && !skillNames.has(name)),
+        unknownMcp: (job.mcp ?? []).filter((name) => name !== "*" && !mcpNames.has(name)),
+        unknownTools: (job.tools ?? []).filter((name) => name !== "*" && !toolNames.has(name)),
+      };
+    });
+  };
+
+  const persist = async () => {
+    await saveJobs(jobs);
+    return wireJobs();
+  };
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    jobs = [];
+    adapter.onMessage(async () => {});
+    adapter.onJobsController({
+      list: async () => wireJobs(),
+      save: async (fields) => {
+        const stored = {
+          ...(fields.model ? { model: fields.model } : {}),
+          ...(fields.workspace ? { workspace: fields.workspace } : {}),
+          skills: fields.skills.mode === "inherit" ? undefined : fields.skills.mode === "all" ? ["*"] : (fields.skills.names ?? []),
+          mcp: fields.mcp.mode === "inherit" ? undefined : fields.mcp.mode === "all" ? ["*"] : (fields.mcp.names ?? []),
+          tools: fields.tools.mode === "inherit" ? undefined : fields.tools.mode === "all" ? ["*"] : (fields.tools.names ?? []),
+        };
+        if (fields.id) {
+          const target = jobs.find((j) => j.id === fields.id);
+          if (!target) throw new Error(`job not found: ${fields.id}`);
+          if (fields.skills.mode === "inherit") delete target.skills;
+          if (fields.mcp.mode === "inherit") delete target.mcp;
+          if (fields.tools.mode === "inherit") delete target.tools;
+          const updated = updateJob(jobs, fields.id, { name: fields.name, prompt: fields.prompt, schedule: fields.schedule, enabled: fields.enabled, ...stored });
+          if (!updated) throw new Error(`job not found: ${fields.id}`);
+        } else {
+          jobs.push(createJob({ name: fields.name, prompt: fields.prompt, schedule: fields.schedule, origin: null, deliver: "local", ...stored }));
+        }
+        return persist();
+      },
+      remove: async (id) => {
+        if (!removeJob(jobs, id)) throw new Error(`job not found: ${id}`);
+        return persist();
+      },
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client?.ws.close();
+    await adapter.stop();
+    jobs = [];
+  });
+
+  test("jobs.list answers the empty store without a controller is refused on the jobs scope", async () => {
+    client.ws.send(JSON.stringify({ type: "jobs.list" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "jobs.list.result");
+    assert.deepEqual(frame["jobs"], []);
+  });
+
+  test("jobs.save creates a job: local delivery, scope stored, unknown model flagged but saved", async () => {
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      name: "Morning report",
+      prompt: "Summarize the house sensors",
+      schedule: "every 24h",
+      enabled: true,
+      model: "ghost-model",
+      skills: { mode: "list", names: ["code-review", "vanished-skill"] },
+      mcp: { mode: "all" },
+      tools: { mode: "inherit" },
+    }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "jobs.list.result");
+    const listed = (frame["jobs"] as Array<Record<string, unknown>>);
+    assert.equal(listed.length, 1);
+    const job = listed[0]!;
+    assert.equal(job["deliver"], "local");
+    assert.equal((job["schedule"] as { kind: string })["kind"], "interval");
+    assert.equal(job["enabled"], true);
+    assert.equal(job["model"], "ghost-model");
+    assert.equal(job["unknownModel"], true, "a stale model is painted red, not refused");
+    assert.equal(job["unknownWorkspace"], false);
+    assert.deepEqual(job["unknownSkills"], ["vanished-skill"]);
+    assert.equal(job["skillsMode"], "list");
+    assert.equal(job["mcpMode"], "all");
+    assert.equal(job["toolsMode"], "inherit");
+    assert.equal(jobs.length, 1);
+  });
+
+  test("jobs.save updates by id and keeps the untouched scope fields", async () => {
+    const first = createJob({ name: "Old", prompt: "do the thing", schedule: "every 1h", origin: null, deliver: "local", model: "fast-1", skills: ["code-review"] });
+    jobs.push(first);
+    await saveJobs(jobs);
+
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      id: first.id,
+      name: "New name",
+      prompt: "do the other thing",
+      schedule: "0 9 * * 1",
+      enabled: false,
+      tools: { mode: "list", names: ["bash"] },
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+    }));
+    const frame = await nextFrame(client);
+    const listed = (frame["jobs"] as Array<Record<string, unknown>>);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]!["name"], "New name");
+    assert.equal(listed[0]!["enabled"], false);
+    assert.equal((listed[0]!["schedule"] as { kind: string })["kind"], "cron");
+    assert.deepEqual(listed[0]!["tools"], ["bash"]);
+    // skills was cleared to inherit, model untouched by the update.
+    assert.equal(listed[0]!["skillsMode"], "inherit");
+    assert.equal(listed[0]!["model"], "fast-1");
+    assert.equal(jobs[0]!.name, "New name");
+  });
+
+  test("a schedule that does not parse is refused on the jobs scope", async () => {
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      name: "Broken",
+      prompt: "run something",
+      schedule: "not a schedule",
+      enabled: true,
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+      tools: { mode: "inherit" },
+    }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "jobs");
+    assert.equal(jobs.length, 0, "nothing was saved");
+  });
+
+  test("jobs.save without prompt or schedule is refused before the store is touched", async () => {
+    client.ws.send(JSON.stringify({ type: "jobs.save", name: "Empty", prompt: "", schedule: "", enabled: true, skills: { mode: "inherit" }, mcp: { mode: "inherit" }, tools: { mode: "inherit" } }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "jobs");
+  });
+
+  test("jobs.delete removes a job and answers the fresh listing; an unknown id is refused", async () => {
+    const first = createJob({ name: "One", prompt: "a", schedule: "every 30m", origin: null, deliver: "local" });
+    jobs.push(first);
+    await saveJobs(jobs);
+
+    client.ws.send(JSON.stringify({ type: "jobs.delete", id: first.id }));
+    let frame = await nextFrame(client);
+    assert.equal(frame["type"], "jobs.list.result");
+    assert.deepEqual(frame["jobs"], []);
+    assert.equal(jobs.length, 0);
+
+    client.ws.send(JSON.stringify({ type: "jobs.delete", id: "ghost" }));
+    frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "jobs");
+  });
+
+  test("a jobs frame without a controller answers an error instead of hanging", async () => {
+    const bare = new MyClawAppAdapter(createConfig(), store as never);
+    await bare.start();
+    try {
+      const c = await connectClient(bare.port);
+      c.ws.send(JSON.stringify({ type: "jobs.list" }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "jobs");
       c.ws.close();
     } finally {
       await bare.stop();

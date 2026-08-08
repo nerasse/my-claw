@@ -153,6 +153,13 @@ export class CronScheduler {
         workspace,
       );
       session.modelOverride = job.model || undefined;
+      // Job-level scope, slotted above the cron agent's config entry exactly like the model
+      // override above: the job's own choices win, an absent field inherits agents.cron.
+      session.scopeOverride = {
+        ...(job.skills ? { skills: job.skills } : {}),
+        ...(job.mcp ? { mcp: job.mcp } : {}),
+        ...(job.tools ? { tools: job.tools } : {}),
+      };
 
       const timeoutMs = this.config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS;
       let timedOut = false;

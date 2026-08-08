@@ -7,6 +7,8 @@ import {
   AGENTS,
   agentConfigOf,
   resolveAgentLlm,
+  resolveAgentMcp,
+  resolveAgentSkills,
   isMatrixChannelEnabled,
   isTelegramChannelEnabled,
   isMyClawAppChannelEnabled,
@@ -39,7 +41,8 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
@@ -98,7 +101,7 @@ import { createWebSearchTool } from "./tools/web-search.ts";
 import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
-import { loadJobs } from "./cron/store.ts";
+import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
 import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
@@ -441,7 +444,21 @@ async function main() {
   const agent = new BackendDispatcher(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, undefined, agentRegistry);
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
-  toolRegistry.register(createCronTool(cronScheduler));
+  toolRegistry.register(createCronTool(cronScheduler, {
+    // Live catalogs, read per call: a workspace or a skill added while the server runs must
+    // show up on the next `cron list` without a restart.
+    models: () => modelPicker.options().map((m) => m.id),
+    defaultModel: () => config.llm.defaultModel ?? config.llm.model ?? "",
+    workspaces: () => Object.keys(config.workspaces ?? {}),
+    skills: () => skillRegistry.listAll().map((s) => s.name),
+    mcp: () => mcpManager.status().map((s) => s.name),
+    cronTools: () =>
+      toolRegistry
+        .getForAgent("cron", config.tools?.disabled, resolveAgentMcp(config, "cron"), undefined)
+        .map((t) => t.name),
+    cronAgentSkills: () => resolveAgentSkills(config, "cron"),
+    cronAgentMcp: () => resolveAgentMcp(config, "cron"),
+  }));
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
   let telegramRef: TelegramAdapter | undefined;
@@ -1298,6 +1315,113 @@ async function main() {
       remove: async (key) => writeWorkspaces(`retrait workspace ${key}`, await removeWorkspace(key)),
       rename: async (from, to) => writeWorkspaces(`renommage workspace ${from}`, await renameWorkspace(from, to)),
       setPath: async (key, path) => writeWorkspaces(`chemin workspace ${key}`, await setWorkspacePath(key, path)),
+    });
+
+    // The scope editors share the agents' vocabulary ("inherit"/"all"/"list"), converted to the
+    // config shape the resolver reads. Model and scope names are never validated on save: the
+    // job is the truth, and the listing flags what no longer exists so the app paints it red.
+    const scopeToStored = (scope: MyClawAppJobScope): string[] | undefined => {
+      if (scope.mode === "inherit") return undefined;
+      if (scope.mode === "all") return ["*"];
+      return scope.names ?? [];
+    };
+    const scopeToWire = (list: string[] | undefined): { mode: "inherit" | "all" | "list"; names?: string[] } => {
+      if (list === undefined) return { mode: "inherit" };
+      if (list.includes("*")) return { mode: "all" };
+      return { mode: "list", names: list };
+    };
+    const deliverDisplay = (deliver: CronDeliver): string => {
+      if (deliver === "local" || deliver === "origin") return deliver;
+      return deliver.threadId ? `${deliver.platform}:${deliver.chatId}:${deliver.threadId}` : `${deliver.platform}:${deliver.chatId}`;
+    };
+    // Unknown-flag catalogs, read live so a rename that lands in the app is reflected too.
+    const modelIds = (): Set<string> => new Set(modelPicker.options().map((m) => m.id));
+    const workspaceKeys = (): Set<string> => new Set(Object.keys(config.workspaces ?? {}));
+    const skillNames = (): Set<string> => new Set(skillRegistry.listAll().map((s) => s.name));
+    const mcpNames = (): Set<string> => new Set(mcpManager.status().map((s) => s.name));
+    const toolNames = (): Set<string> => new Set(toolsCatalog().tools.map((t) => t.name));
+
+    const jobsListing = (): Promise<MyClawAppJobEntry[]> =>
+      loadJobs().then((jobs) =>
+        jobs.map((job) => {
+          const models = modelIds();
+          const workspaces = workspaceKeys();
+          const skills = skillNames();
+          const mcp = mcpNames();
+          const tools = toolNames();
+          return {
+            id: job.id,
+            name: job.name,
+            prompt: job.prompt,
+            schedule: job.schedule,
+            enabled: job.enabled,
+            state: job.state,
+            ...(job.pausedReason ? { pausedReason: job.pausedReason } : {}),
+            repeat: job.repeat,
+            completedRuns: job.completedRuns,
+            deliver: deliverDisplay(job.deliver),
+            ...(job.model ? { model: job.model } : {}),
+            ...(job.workspace ? { workspace: job.workspace } : {}),
+            skillsMode: scopeToWire(job.skills).mode,
+            ...(job.skills ? { skills: job.skills } : {}),
+            mcpMode: scopeToWire(job.mcp).mode,
+            ...(job.mcp ? { mcp: job.mcp } : {}),
+            toolsMode: scopeToWire(job.tools).mode,
+            ...(job.tools ? { tools: job.tools } : {}),
+            nextRunAt: job.nextRunAt,
+            lastRunAt: job.lastRunAt,
+            lastStatus: job.lastStatus,
+            lastError: job.lastError,
+            createdAt: job.createdAt,
+            unknownModel: job.model !== undefined && !models.has(job.model),
+            unknownWorkspace: job.workspace !== undefined && !workspaces.has(job.workspace),
+            unknownSkills: (job.skills ?? []).filter((name) => name !== "*" && !skills.has(name)),
+            unknownMcp: (job.mcp ?? []).filter((name) => name !== "*" && !mcp.has(name)),
+            unknownTools: (job.tools ?? []).filter((name) => name !== "*" && !tools.has(name)),
+          };
+        }),
+      );
+
+    myClawApp.onJobsController({
+      list: () => jobsListing(),
+      save: async (fields) => {
+        const stored = {
+          ...(fields.model ? { model: fields.model } : {}),
+          ...(fields.workspace ? { workspace: fields.workspace } : {}),
+          skills: scopeToStored(fields.skills),
+          mcp: scopeToStored(fields.mcp),
+          tools: scopeToStored(fields.tools),
+        };
+        const jobs = await loadJobs();
+        if (fields.id) {
+          const target = jobs.find((j) => j.id === fields.id);
+          if (!target) throw new Error(`job not found: ${fields.id}`);
+          // "inherit" means the field leaves the job, but updateJob reads undefined as "don't
+          // touch": clearing has to happen before the update so the store's semantics stay.
+          if (fields.skills.mode === "inherit") delete target.skills;
+          if (fields.mcp.mode === "inherit") delete target.mcp;
+          if (fields.tools.mode === "inherit") delete target.tools;
+          const updated = updateJob(jobs, fields.id, {
+            name: fields.name,
+            prompt: fields.prompt,
+            schedule: fields.schedule,
+            enabled: fields.enabled,
+            ...stored,
+          });
+          if (!updated) throw new Error(`job not found: ${fields.id}`);
+        } else {
+          // A job made from the app has no chat of origin, so "local" is the only honest target.
+          jobs.push(createJob({ name: fields.name, prompt: fields.prompt, schedule: fields.schedule, origin: null, deliver: "local", ...stored }));
+        }
+        await saveJobs(jobs);
+        return jobsListing();
+      },
+      remove: async (id) => {
+        const jobs = await loadJobs();
+        if (!removeJob(jobs, id)) throw new Error(`job not found: ${id}`);
+        await saveJobs(jobs);
+        return jobsListing();
+      },
     });
 
     myClawApp.onCommandHandler(createMyClawAppCommandHandler({

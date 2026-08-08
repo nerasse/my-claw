@@ -71,6 +71,29 @@ test("the reserved roles resolve without a file and are never looked up in the r
   assert.equal(resolveAgent(config(), registry, "main").prompt, undefined);
 });
 
+test("a cron job's run overrides slot above the config entry, exactly like its model", () => {
+  // The job declares its own scope; agents.cron declares another. The job wins, and an
+  // untouched field still inherits the config entry below.
+  const override = { skills: ["job-skill"], mcp: ["job-server"], tools: ["job-tool"] };
+  const resolved = resolveAgent(config({ cron: { skills: ["cron-skill"], mcp: ["cron-server"] } }), undefined, "cron", undefined, override);
+  assert.deepEqual(resolved.skills, ["job-skill"]);
+  assert.deepEqual(resolved.mcp, ["job-server"]);
+  assert.deepEqual(resolved.allow, ["job-tool"]);
+});
+
+test("an absent job field inherits the cron agent's config entry", () => {
+  const resolved = resolveAgent(config({ cron: { skills: ["cron-skill"] } }), undefined, "cron", undefined, { mcp: ["job-server"] });
+  assert.deepEqual(resolved.skills, ["cron-skill"]);
+  assert.deepEqual(resolved.mcp, ["job-server"]);
+});
+
+test("a \"*\" job override means all, and an \"all\" tool override narrows nothing", () => {
+  const resolved = resolveAgent(config(), undefined, "cron", undefined, { skills: ["*"], mcp: ["*"], tools: ["*"] });
+  assert.equal(resolved.skills, "all");
+  assert.equal(resolved.mcp, "all");
+  assert.equal(resolved.allow, undefined, "no allow list means no narrowing at all");
+});
+
 test("listAll marks the tier so the page can show where an agent comes from", () => {
   const registry = new AgentRegistry(new Map([
     ["shipped", agent("shipped", { source: "built-in" })],

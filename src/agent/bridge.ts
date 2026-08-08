@@ -244,7 +244,7 @@ export class AgentBridge implements AgentBackend {
       : this.depth === 0
         ? "main"
         : this.agentKind ?? "general";
-    const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace);
+    const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
     const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
     const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
       this.config.llm,

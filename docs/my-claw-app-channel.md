@@ -230,6 +230,29 @@ the first answer wins.
   referenced it down. All four answer with the fresh `workspaces.list.result`, and since
   `workspaces` is hot-reloaded with the skills/agent watchers re-targeting their tiers, the
   new directory's layers follow live.
+- `jobs.list` / `jobs.save` / `jobs.delete` are the CRUD of the scheduled tasks
+  (`~/.my-claw/cron/jobs.json`, the same store the `cron` tool edits). `jobs.list` answers
+  with the fresh `jobs.list.result`; every mutation answers with the same fresh listing, never
+  an optimistic echo, and a mutation that fails is refused with scope `jobs`. `jobs.save`
+  without an `id` creates a job, with one it updates it; the `schedule` string is parsed
+  server-side with the same rules as the `cron` tool (a cron expression, "every Xm/h/d", an
+  ISO timestamp), and a schedule that does not parse is refused — the scheduler could not run
+  it. `jobs.delete` removes a job and refuses an unknown `id`. A job made from the app always
+  delivers `local` (its output is saved under `~/.my-claw/cron/output/<id>/`, nothing is sent):
+  a phone has no chat of origin, so no other target is honest; the listing's `deliver` shows
+  what existing jobs carry anyway.
+  Each entry carries the job's editable fields (`name`, `prompt`, `schedule`, `enabled`,
+  `model`, `workspace`), its run bookkeeping (`state`, `repeat`, `completedRuns`,
+  `nextRunAt`, `lastRunAt`, `lastStatus`, `lastError`, `createdAt`, `pausedReason`) and the
+  per-job scope overrides in the app's editing vocabulary: `skillsMode`/`mcpMode`/`toolsMode`
+  is `"inherit" | "all" | "list"` with the `skills`/`mcp`/`tools` names when a list applies.
+  The overrides are slotted above `agents.cron` at run time exactly like the job's `model`
+  override (the scheduler hands them to the session; `resolveAgent` applies them first), so a
+  job with no scope field inherits the cron agent as before. Like the agent rows, each job
+  carries `unknownModel`, `unknownWorkspace` and `unknownSkills`/`unknownMcp`/`unknownTools`
+  computed against the live catalogs; the app paints them red but never refuses the save — the
+  job is the truth. An unknown `workspace` is the one case with teeth: it pauses the job at its
+  next run, so the page calls it out.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
   agent. Commands outside the catalog still route as normal messages.

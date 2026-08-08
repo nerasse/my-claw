@@ -59,30 +59,57 @@ function fallbackBase(type: AgentToolType): AgentToolType {
   return (AGENT_BASES as readonly string[]).includes(type) ? type : "general";
 }
 
+/**
+ * Run-local scope overrides (a cron job's own skills/mcp/tools fields). They slot above the
+ * config entry: a job is more specific than the agent it runs as, exactly like its model
+ * override. Absent fields inherit the chain below unchanged.
+ */
+export interface ResolvedAgentScopeOverrides {
+  skills?: string[];
+  mcp?: string[];
+  tools?: string[];
+}
+
 export function resolveAgent(
   config: MyClawConfig,
   registry: AgentRegistry | undefined,
   type: AgentToolType,
   layer?: string,
+  overrides?: ResolvedAgentScopeOverrides,
 ): ResolvedAgent {
   const file = isReservedRole(type) ? undefined : registry?.get(type, layer);
 
-  // Skills: config entry, then the file, then the orchestrator's, then everything.
-  const skills = readAgentScope(config, type, "skills")
+  // Run-local scope overrides carry the config shape ("*" = all), so they need the same
+  // normalisation the config lists get before the wildcard can mean anything.
+  const overrideScope = (field: "skills" | "mcp" | "tools"): AgentScope | undefined => {
+    const list = overrides?.[field];
+    return list && list.includes("*") ? "all" : list;
+  };
+
+  // Skills: run overrides, then the config entry, then the file, then the orchestrator's, then everything.
+  const skills = overrideScope("skills")
+    ?? readAgentScope(config, type, "skills")
     ?? file?.meta.skills
     ?? inheritedScope(config, "skills")
     ?? "all";
 
   // MCP keeps the research carve-out: an agent on the read-only baseline that never had servers
-  // must not inherit every one of them on upgrade. Only an explicit grant, from config or file.
-  const ownMcp = readAgentScope(config, type, "mcp") ?? file?.meta.mcp;
+  // must not inherit every one of them on upgrade. Only an explicit grant, from the run
+  // overrides, the config or the file.
+  const ownMcp = overrideScope("mcp") ?? readAgentScope(config, type, "mcp") ?? file?.meta.mcp;
   const baseline = file?.meta.base ?? fallbackBase(type);
   const mcp = ownMcp ?? (baseline === "research" ? [] : inheritedScope(config, "mcp") ?? "all");
+
+  // The run's tool list intersects the baseline exactly like a file's: a name outside it is
+  // dropped at run time, so the editor flags it red instead of letting it silently vanish.
+  // A "all" override is the default no-narrowing state, so it is expressed as no allow list.
+  const toolsOverride = overrideScope("tools");
+  const allow = toolsOverride !== undefined ? (toolsOverride === "all" ? undefined : toolsOverride) : file?.meta.tools;
 
   return {
     type,
     base: baseline,
-    ...(file?.meta.tools ? { allow: file.meta.tools } : {}),
+    ...(allow ? { allow } : {}),
     ...(file?.prompt ? { prompt: file.prompt } : {}),
     instructions: file?.meta.instructions ?? [...PROMPT_LAYERS],
     skills,

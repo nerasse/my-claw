@@ -37,6 +37,12 @@ export interface CronJob {
    *  workspace. A key that leaves the config pauses the job: it must never run silently
    *  in the wrong workspace. See docs/multi-workspace.md. */
   workspace?: string;
+  /** Per-job scope overrides, in the resolver's own vocabulary (the config shape: absent =
+   *  inherited, `["*"]` = all, `[]` = nothing, else names). Slotted above `agents.cron`,
+   *  the same way the job's model overrides the cron agent's. */
+  skills?: string[];
+  mcp?: string[];
+  tools?: string[];
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "ok" | "error" | null;

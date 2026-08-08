@@ -5,12 +5,61 @@ import type { UnifiedMessage } from "../channels/types.ts";
 import { createJob, loadJobs, saveJobs, updateJob, removeJob, parseDeliver, computeNextRun } from "../cron/store.ts";
 import type { CronOrigin } from "../cron/types.ts";
 import type { CronScheduler } from "../cron/scheduler.ts";
+import type { AgentScope } from "../core/config.ts";
 import { hooks } from "../hooks/index.ts";
 
-export function createCronTool(scheduler: CronScheduler): Tool {
+/**
+ * The live catalogs a job can reference, injected so the tool never reaches into the registries
+ * itself. The agent reads them through `list`: the output carries every name a job may pick, so
+ * the model/workspace/skills/mcp/tools arguments never have to be guessed.
+ */
+export interface CronToolContext {
+  models(): string[];
+  defaultModel(): string;
+  workspaces(): string[];
+  skills(): string[];
+  mcp(): string[];
+  /** The tool names a cron run can use: the cron baseline narrowed like the app shows it. */
+  cronTools(): string[];
+  /** The cron agent's own scope: what a job with no override inherits. */
+  cronAgentSkills(): AgentScope;
+  cronAgentMcp(): AgentScope;
+}
+
+/** Parses a scope argument into the config shape. Absent means "don't touch"; "inherit" (or
+ *  "default"/"unset"/blank) means "clear the field"; "all"/"*" is the wildcard; "none" is an
+ *  explicit empty list; anything else is a comma-separated list of names. */
+function parseScopeInput(input: string | undefined): { present: boolean; scope: string[] | undefined } {
+  if (input === undefined) return { present: false, scope: undefined };
+  const trimmed = input.trim().toLowerCase();
+  if (trimmed === "" || trimmed === "inherit" || trimmed === "default" || trimmed === "unset") {
+    return { present: true, scope: undefined };
+  }
+  if (trimmed === "all" || trimmed === "*") return { present: true, scope: ["*"] };
+  if (trimmed === "none") return { present: true, scope: [] };
+  return {
+    present: true,
+    scope: input
+      .split(",")
+      .map((n) => n.trim())
+      .filter(Boolean),
+  };
+}
+
+function scopeDisplay(scope: string[] | undefined, inheritedLabel = "inherit"): string {
+  if (scope === undefined) return inheritedLabel;
+  if (scope.includes("*")) return "all";
+  return scope.length === 0 ? "none" : scope.join(", ");
+}
+
+function scopeAll(scope: AgentScope): boolean {
+  return scope === "all";
+}
+
+export function createCronTool(scheduler: CronScheduler, context: CronToolContext): Tool {
   return {
     name: "cron",
-    description: "Manage scheduled tasks. Actions: create, list, update, pause, resume, remove, trigger. A scheduled task runs automatically at the specified interval and its output is delivered to a chat.",
+    description: "Manage scheduled tasks. Actions: create, list, update, pause, resume, remove, trigger. A scheduled task runs automatically at the specified interval and its output is delivered to a chat. 'list' also reports the models, workspaces, skills, MCP servers and tools a job can use.",
     parameters: {
       type: "object",
       properties: {
@@ -23,8 +72,11 @@ export function createCronTool(scheduler: CronScheduler): Tool {
         schedule: { type: "string", description: "Schedule: cron expr (e.g. '0 9 * * 1'), 'every Xm/h/d', ISO timestamp, or bare duration like '2h' (create/update)" },
         job_id: { type: "string", description: "Job ID (update/pause/resume/remove/trigger)" },
         deliver: { type: "string", description: "Delivery target: 'origin' (same chat as creation), 'local' (no delivery), or 'platform:chatId'. Default: origin (create/update)" },
-        model: { type: "string", description: "Model override for this job (create/update)" },
+        model: { type: "string", description: "Model override for this job; a model from the 'models' list of cron list (create/update)" },
         workspace: { type: "string", description: "Workspace key from config.workspaces the job runs in; absent = the default workspace. The key is validated against the config on the next run, and an unknown key pauses the job (create/update)" },
+        skills: { type: "string", description: "Skills scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated names from the 'skills' list of cron list" },
+        mcp: { type: "string", description: "MCP scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated server names from the 'mcp' list of cron list" },
+        tools: { type: "string", description: "Tools scope (create/update): 'inherit' (clear, the cron agent's set applies), 'all' or '*', 'none', or comma-separated names from the 'tools' list of cron list. Names outside the cron baseline are dropped at run time" },
         reason: { type: "string", description: "Pause reason (pause)" },
         enabled: { type: "boolean", description: "Include disabled jobs in list (list)" },
       },
@@ -62,6 +114,9 @@ export function createCronTool(scheduler: CronScheduler): Tool {
             deliver: deliverInput,
             model: strOpt(args, "model"),
             workspace: strOpt(args, "workspace"),
+            skills: parseScopeInput(strOpt(args, "skills")).scope,
+            mcp: parseScopeInput(strOpt(args, "mcp")).scope,
+            tools: parseScopeInput(strOpt(args, "tools")).scope,
           });
           jobs.push(job);
           await saveJobs(jobs);
@@ -73,14 +128,41 @@ export function createCronTool(scheduler: CronScheduler): Tool {
         case "list": {
           const includeDisabled = bool(args, "enabled", true);
           const visible = includeDisabled ? jobs : jobs.filter((j) => j.enabled);
+          const modelIds = context.models();
+          const workspaceKeys = context.workspaces();
+          const skillNames = context.skills();
+          const mcpNames = context.mcp();
+          const toolNames = context.cronTools();
+
+          const lines: string[] = [];
           if (visible.length === 0) {
-            return { success: true, output: "No scheduled tasks." };
+            lines.push("No scheduled tasks.");
           }
-          const lines = visible.map((j) => {
+          for (const j of visible) {
             const status = j.enabled ? j.state : "paused";
             const next = j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-";
-            return `${j.id} | ${j.name} | ${j.schedule.display} | ${status} | next: ${next}`;
-          });
+            lines.push(`${j.id} | ${j.name} | ${j.schedule.display} | ${status} | next: ${next}`);
+            lines.push(`  model: ${j.model ?? "default model"} | workspace: ${j.workspace ?? "default workspace"}`);
+            lines.push(`  skills: ${scopeDisplay(j.skills)} | mcp: ${scopeDisplay(j.mcp)} | tools: ${scopeDisplay(j.tools)}`);
+            const removed: string[] = [];
+            if (j.model && !modelIds.includes(j.model)) removed.push(`${j.model} (model)`);
+            if (j.workspace && !workspaceKeys.includes(j.workspace)) removed.push(`${j.workspace} (workspace)`);
+            for (const name of j.skills ?? []) if (name !== "*" && !skillNames.includes(name)) removed.push(`${name} (skills)`);
+            for (const name of j.mcp ?? []) if (name !== "*" && !mcpNames.includes(name)) removed.push(`${name} (mcp)`);
+            for (const name of j.tools ?? []) if (name !== "*" && !toolNames.includes(name)) removed.push(`${name} (tools)`);
+            if (removed.length > 0) lines.push(`  removed: ${removed.join(", ")}`);
+          }
+
+          lines.push("");
+          lines.push(`Context — models: ${modelIds.join(", ") || "none"} (default: ${context.defaultModel()})`);
+          lines.push(`Context — workspaces: ${workspaceKeys.join(", ") || "default only"}`);
+          lines.push(`Context — skills: ${skillNames.join(", ") || "none"}`);
+          lines.push(`Context — mcp: ${mcpNames.join(", ") || "none"}`);
+          lines.push(`Context — tools: ${toolNames.join(", ") || "none"}`);
+          const cronSkills = context.cronAgentSkills();
+          const cronMcp = context.cronAgentMcp();
+          const scopeOfAgent = (scope: AgentScope): string => (scopeAll(scope) ? "all" : (scope as string[]).join(", ") || "none");
+          lines.push(`Cron agent scope: skills: ${scopeOfAgent(cronSkills)} | mcp: ${scopeOfAgent(cronMcp)} — a job with no override inherits it`);
           return { success: true, output: lines.join("\n") };
         }
 
@@ -100,6 +182,24 @@ export function createCronTool(scheduler: CronScheduler): Tool {
             }
           }
 
+          const skills = parseScopeInput(strOpt(args, "skills"));
+          const mcp = parseScopeInput(strOpt(args, "mcp"));
+          const tools = parseScopeInput(strOpt(args, "tools"));
+          // "inherit" means the field leaves the job, but updateJob reads undefined as "don't
+          // touch": clearing has to happen before the update so the store's semantics stay.
+          if (skills.present && skills.scope === undefined) {
+            const target = jobs.find((j) => j.id === jobId);
+            if (target) delete target.skills;
+          }
+          if (mcp.present && mcp.scope === undefined) {
+            const target = jobs.find((j) => j.id === jobId);
+            if (target) delete target.mcp;
+          }
+          if (tools.present && tools.scope === undefined) {
+            const target = jobs.find((j) => j.id === jobId);
+            if (target) delete target.tools;
+          }
+
           const updated = updateJob(jobs, jobId, {
             name: strOpt(args, "name"),
             prompt,
@@ -107,6 +207,9 @@ export function createCronTool(scheduler: CronScheduler): Tool {
             schedule,
             deliver,
             workspace: strOpt(args, "workspace"),
+            ...(skills.present && skills.scope !== undefined ? { skills: skills.scope } : {}),
+            ...(mcp.present && mcp.scope !== undefined ? { mcp: mcp.scope } : {}),
+            ...(tools.present && tools.scope !== undefined ? { tools: tools.scope } : {}),
           });
           if (!updated) return { success: false, output: `Job not found: ${jobId}` };
           await saveJobs(jobs);

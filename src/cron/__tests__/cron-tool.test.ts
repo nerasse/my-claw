@@ -18,7 +18,16 @@ describe("cron tool", () => {
       stop: () => {},
     } as unknown as CronScheduler;
 
-    tool = createCronTool(scheduler);
+    tool = createCronTool(scheduler, {
+      models: () => ["fast-1"],
+      defaultModel: () => "fast-1",
+      workspaces: () => [],
+      skills: () => [],
+      mcp: () => [],
+      cronTools: () => [],
+      cronAgentSkills: () => "all",
+      cronAgentMcp: () => "all",
+    });
     // Ensure clean state
     await saveJobs([]);
   });
@@ -101,7 +110,7 @@ describe("cron tool", () => {
     test("empty list", async () => {
       const result = await tool.execute({ action: "list" });
       expect(result.success).toBe(true);
-      expect(result.output).toBe("No scheduled tasks.");
+      expect(result.output).toContain("No scheduled tasks.");
     });
 
     test("filters disabled", async () => {
@@ -111,7 +120,7 @@ describe("cron tool", () => {
       await saveJobs([job]);
       const result = await tool.execute({ action: "list", enabled: false });
       expect(result.success).toBe(true);
-      expect(result.output).toBe("No scheduled tasks.");
+      expect(result.output).toContain("No scheduled tasks.");
     });
   });
 
