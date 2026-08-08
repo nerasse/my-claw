@@ -6,7 +6,7 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
-import { handleStatusCommand } from "../../src/channels/status-command.ts";
+import { handleStatusCommand, statusReport } from "../../src/channels/status-command.ts";
 
 function pricing(): ModelPricing {
   mkdirSync(MY_CLAW_DIR, { recursive: true });
@@ -211,4 +211,23 @@ test("after a reset the previous call is not reported as filling the window", ()
   });
   expect(out).toContain("measured      no call recorded yet");
   expect(out).not.toMatch(/measured\s+10k/);
+});
+
+test("statusReport hands the payload over as `status`, the field the app channel reads", () => {
+  // The app channel's command output types `status` as optional, so a rename here is assignable
+  // and only shows up in production as "status unavailable". Pin the field name.
+  const sessionId = "matrix/room/!report:test";
+  const report = statusReport({ config, sessionId, session: session(sessionId), liveRuns: [] });
+
+  expect(report.status.model.current).toBe("claude-opus-5");
+  expect(report.text).toContain("claude-opus-5");
+  expect("payload" in report).toBe(false);
+});
+
+test("the report text is the chat command's, character for character", () => {
+  const sessionId = "matrix/room/!parity:test";
+  const data = session(sessionId);
+  const report = statusReport({ config, sessionId, session: data, liveRuns: [] });
+
+  expect(report.text).toBe(handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
 });

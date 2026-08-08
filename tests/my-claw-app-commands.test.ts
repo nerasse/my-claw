@@ -3,7 +3,10 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { instructionsText } from "../src/channels/my-claw-app/commands.ts";
+import { createMyClawAppCommandHandler, instructionsText } from "../src/channels/my-claw-app/commands.ts";
+import { SessionManager } from "../src/sessions/manager.ts";
+import type { ModelPicker } from "../src/channels/model-picker.ts";
+import type { MyClawConfig } from "../src/core/config.ts";
 
 describe("/instructions on the app channel", () => {
   async function dumpFile(body: string): Promise<string> {
@@ -53,5 +56,30 @@ describe("/instructions on the app channel", () => {
     const file = await dumpFile(body);
     const text = await instructionsText({ text: "summary", attachments: [{ type: "file", path: file }] });
     expect(text.endsWith(body)).toBe(true);
+  });
+});
+
+describe("/status on the app channel", () => {
+  const config = {
+    llm: { defaultModel: "claude-opus-5", models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }] },
+  } as unknown as MyClawConfig;
+
+  test("the handler answers the structured payload the page draws, not just text", async () => {
+    // The adapter reads `output.status` and refuses with "status unavailable" when it is absent.
+    // The adapter tests stub the handler, so only the real one wired here catches that drift.
+    const handler = createMyClawAppCommandHandler({
+      config,
+      sessionManager: new SessionManager(),
+      // The status branch never reaches the picker; the menu lives behind its own frames.
+      modelPicker: {} as ModelPicker,
+    });
+
+    const output = await handler("neras", "thread-status", "status", "");
+
+    expect(output).toBeDefined();
+    expect(typeof output).toBe("object");
+    const report = output as { text: string; status?: { model: { current: string } } };
+    expect(report.status?.model.current).toBe("claude-opus-5");
+    expect(report.text).toContain("claude-opus-5");
   });
 });

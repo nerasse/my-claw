@@ -378,10 +378,15 @@ export function handleStatusCommand(p: StatusParams): string {
   return formatStatusText(collectStatusData(p));
 }
 
-/** The same report twice: the chat text and the structured payload the app page draws. */
-export function statusReport(p: StatusParams): { text: string; payload: MyClawAppStatusPayload } {
+/**
+ * The same report twice: the chat text and the structured payload the app page draws.
+ * The field is named `status` and required on purpose -- this object IS the app channel's
+ * command output, whose `status` is optional, so a rename here would otherwise be swallowed
+ * by the optional field and only surface at runtime as "status unavailable".
+ */
+export function statusReport(p: StatusParams): { text: string; status: MyClawAppStatusPayload } {
   const data = collectStatusData(p);
-  return { text: formatStatusText(data), payload: statusPayload(data) };
+  return { text: formatStatusText(data), status: statusPayload(data) };
 }
 
 function formatModelRow(row: PricedRow): string {
