@@ -7,6 +7,9 @@ import {
   publishNotification,
   isForegroundOn,
   resetPushState,
+  stripMarkdown,
+  cleanNotificationText,
+  buildPushPayload,
 } from "../../src/notifications/push.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
@@ -81,6 +84,13 @@ test("publishNotification encrypts the payload: the connector drops anything it 
   mocked.restore();
 });
 
+test("the payload carries the channel type the app pre-creates as IMPORTANCE_HIGH", async () => {
+  const payload = JSON.parse(buildPushPayload({ title: "t", body: "b", url: "myclaw://thread/x" }));
+  assert.equal(payload.type, "runs");
+  assert.equal(payload.title, "t");
+  assert.equal(payload.url, "myclaw://thread/x");
+});
+
 test("an endpoint without encryption keys is skipped rather than sent in the clear", async () => {
   await resetPushState();
   let calls = 0;
@@ -135,4 +145,36 @@ test("publishNotification with no endpoints is a no-op, and a rejected endpoint 
 
   await endpointStore.unregister("dev-1");
   assert.equal(await publishNotification({ title: "t", body: "b" }), 0);
+});
+
+test("stripMarkdown turns a markdown answer into plain text and keeps the bullet lines", () => {
+  const markdown = [
+    "# Summary",
+    "",
+    "The **digest** is ready: see `value` and the [link](https://example.com).",
+    "",
+    "- item one",
+    "- item two",
+    "",
+    "> a quote",
+    "```ts",
+    "const x = 1;",
+    "```",
+  ].join("\n");
+  const plain = stripMarkdown(markdown);
+  assert.ok(plain.includes("The digest is ready: see value and the link."));
+  assert.ok(plain.includes("- item one"));
+  assert.ok(plain.includes("- item two"));
+  assert.ok(!plain.includes("# Summary"));
+  assert.ok(!plain.includes("**digest**"));
+  assert.ok(!plain.includes("https://example.com"));
+  assert.ok(!plain.includes("const x = 1;"));
+  assert.ok(!plain.includes("> a quote"));
+});
+
+test("cleanNotificationText also drops the em dash from error texts", () => {
+  assert.equal(
+    cleanNotificationText("HTTP 429 — out of credits — retry later"),
+    "HTTP 429: out of credits: retry later",
+  );
 });

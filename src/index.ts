@@ -102,7 +102,7 @@ import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
-import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn } from "./notifications/push.ts";
+import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
 import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
@@ -453,13 +453,9 @@ async function main() {
     if (seconds < 60) return `${seconds}s`;
     return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   };
-  const firstChars = (text: string, max = 160): string => {
-    const clean = text.trim().replace(/\s+/g, " ");
-    return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
-  };
   const threadTitle = async (sessionId: string, fallback: string): Promise<string> => {
     const session = await sessionManager.peek(sessionId);
-    return session?.title?.trim() || firstChars(fallback, 60);
+    return session?.title?.trim() || cleanNotificationText(fallback).slice(0, 60);
   };
 
   hooks.on("message:route:complete", ({ message, sessionId, response, durationMs }) => {
@@ -468,7 +464,7 @@ async function main() {
       publishNotification(
         {
           title,
-          body: `Run finished in ${formatDuration(durationMs)} — ${firstChars(response)}`,
+          body: `Run finished in ${formatDuration(durationMs)}: ${cleanNotificationText(response).slice(0, 160)}`,
           url: `myclaw://thread/${threadId}`,
         },
         // The one case the user chose to stay silent: a device that is already looking at
@@ -483,7 +479,7 @@ async function main() {
       publishNotification(
         {
           title,
-          body: `Run failed after ${formatDuration(durationMs)} — ${String(error).slice(0, 200)}`,
+          body: `Run failed after ${formatDuration(durationMs)}: ${cleanNotificationText(String(error)).slice(0, 200)}`,
           url: `myclaw://thread/${threadId}`,
         },
         { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
@@ -503,7 +499,7 @@ async function main() {
   hooks.on("cron:job:error", ({ jobId, jobName, error }) => {
     void publishNotification({
       title: jobName,
-      body: `Job failed — ${String(error).slice(0, 200)}`,
+      body: `Job failed: ${cleanNotificationText(String(error)).slice(0, 200)}`,
       url: `myclaw://job/${jobId}`,
     });
   });

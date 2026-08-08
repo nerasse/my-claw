@@ -2,7 +2,7 @@
 
 L'app my-claw-app reçoit une notification système quand un run de session ou un job cron se
 termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comme serveur push
-— **aucun Firebase, aucun Google**, cohérent avec le reste de l'infra.
+**aucun Firebase, aucun Google**, cohérent avec le reste de l'infra.
 
 ## Architecture
 
@@ -22,7 +22,7 @@ termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comm
 ```
 
 1. **Serveur push** : un ntfy (docker ou binaire) tournant sur le VPS. C'est lui qui détient
-   la connexion avec les téléphones. Il n'y a rien à configurer de particulier — les topics
+   la connexion avec les téléphones. Il n'y a rien à configurer de particulier : les topics
    UnifiedPush (`/up/…`) sont supportés nativement.
 2. **Distributeur** : l'application **ntfy** (ou NextPush) installée sur le téléphone et
    sélectionnée dans les paramètres de l'app. C'est elle qui maintient la connexion au serveur
@@ -35,7 +35,7 @@ termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comm
    `notifications.register`.
 4. **Publication** : quand un run se termine, le serveur envoie le payload **chiffré Web Push
    (RFC 8291)** à l'endpoint `url` reçu, avec une signature VAPID. Le connecteur Android du
-   téléphone déchiffre avec les clés `p256dh`/`auth` qu'il a générées à l'enregistrement — et
+   téléphone déchiffre avec les clés `p256dh`/`auth` qu'il a générées à l'enregistrement et
    **jette tout ce qu'il ne peut pas déchiffrer** : un plaintext n'est jamais affiché. C'est
    pourquoi `web-push` (la bibliothèque npm) construit la requête (body chiffré + en-têtes
    VAPID), le transport restant un simple POST. Un endpoint qui répond 404/410 est considéré
@@ -49,24 +49,31 @@ termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comm
 ```json
 {
   "id": 1723300000000,
+  "type": "runs",
   "title": "<nom de session ou de job>",
-  "body": "Run finished in 42s — <extrait de la réponse>",
+  "body": "Run finished in 42s: <extrait de la réponse>",
   "url": "myclaw://thread/<threadId>" | "myclaw://job/<jobId>"
 }
 ```
+
+`type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ce
+canal en `IMPORTANCE_HIGH` au boot, ce qui rend la notification affichable en bannière en haut
+de l'écran ; la lib expo-unified-push ne le crée qu'en `IMPORTANCE_DEFAULT` (son sans
+bannière), mais les réglages d'un canal sont figés à sa première création, donc la
+pré-création gagne. `type` doit rester stable pour que le canal ne change pas.
 
 ## Événements notifiés
 
 | Événement serveur | Titre | Body | Deep link |
 | --- | --- | --- | --- |
-| `message:route:complete` | titre de session (ou premiers mots du message) | `Run finished in <durée> — <extrait>` | `myclaw://thread/<id>` |
-| `message:route:error` | idem | `Run failed after <durée> — <erreur>` | `myclaw://thread/<id>` |
+| `message:route:complete` | titre de session (ou premiers mots du message) | `Run finished in <durée>: <extrait>` | `myclaw://thread/<id>` |
+| `message:route:error` | idem | `Run failed after <durée>: <erreur>` | `myclaw://thread/<id>` |
 | `cron:job:end` (succès) | nom du job | `Job finished` | `myclaw://job/<id>` |
-| `cron:job:error` | nom du job | `Job failed — <erreur>` | `myclaw://job/<id>` |
+| `cron:job:error` | nom du job | `Job failed: <erreur>` | `myclaw://job/<id>` |
 
 Règles :
 
-- **Job silencieux** (`[SILENT]`) : pas de notification, comme pas de livraison — la sortie est
+- **Job silencieux** (`[SILENT]`) : pas de notification, comme pas de livraison : la sortie est
   supprimée par choix.
 - **Session ouverte au premier plan** : l'app envoie en continu son état
   (`notifications.state { foreground, threadId }` sur chaque changement AppState/thread
@@ -89,8 +96,8 @@ Règles :
 
 | Sens | Frame | Contenu |
 | --- | --- | --- |
-| serveur → app | `notifications.info` | `{ vapidPublicKey }` — envoyé à la connexion |
-| app → serveur | `notifications.register` | `{ endpoint, pubKey?, auth? }` — endpoint vide = désinscription |
+| serveur → app | `notifications.info` | `{ vapidPublicKey }`, envoyé à la connexion |
+| app → serveur | `notifications.register` | `{ endpoint, pubKey?, auth? }` ; endpoint vide = désinscription |
 | app → serveur | `notifications.state` | `{ foreground, threadId? }` |
 
 ## Tap → ouverture
@@ -112,7 +119,7 @@ corriger dans le module natif si ça dérange.
   notifications locales restent possibles app vivante. Un futur build web utiliserait la
   Notification API/Web Push (VAPID), que ntfy supporte côté serveur.
 - **Force-stop** : si l'utilisateur force l'arrêt de l'app dans les paramètres Android, plus
-  rien ne peut être délivré (limite Android officielle, même avec FCM) — l'app doit être
+  rien ne peut être délivré (limite Android officielle, même avec FCM) : l'app doit être
   rouverte une fois.
 - **App tuée par swipe** : couvert (le distributeur reçoit et l'app affiche via le service
   natif), tant que le distributeur (app ntfy) est autorisé en arrière-plan.
@@ -130,11 +137,11 @@ corriger dans le module natif si ça dérange.
    distributeur ntfy et s'enregistre (`registerDevice`). L'endpoint part au serveur via
    `notifications.register`. Vérifiable dans les logs serveur (`push publish …`) et en
    envoyant un message depuis une session.
-4. VAPID : généré automatiquement au premier boot serveur — rien à faire.
+4. VAPID : généré automatiquement au premier boot serveur, rien à faire.
 
 ## Implémentation
 
 - Serveur : `src/notifications/push.ts` (clés, stores, publication Web Push chiffrée via `web-push`), frames dans
   `src/channels/my-claw-app/{types,adapter}.ts`, câblage des hooks dans `src/index.ts`.
-- App : `expo-unified-push` (enregistrement + rendu natif) — voir `docs/notifications.md`
+- App : `expo-unified-push` (enregistrement + rendu natif), voir `docs/notifications.md`
   dans le dépôt my-claw-app pour le côté client.

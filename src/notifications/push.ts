@@ -145,6 +145,19 @@ export interface PushNotification {
  * `skipDevice` filters per device before publishing — the run-completion notification skips a
  * device that is foreground on the very thread that just finished.
  */
+/** The plaintext notification: the renderer reads every field except the numeric id. The
+ *  `type` names the Android channel the app pre-creates as IMPORTANCE_HIGH (heads-up banner),
+ *  so it must stay stable across payloads. */
+export function buildPushPayload(notification: PushNotification): string {
+  return JSON.stringify({
+    id: notificationCounter++,
+    type: "runs",
+    title: notification.title,
+    body: notification.body,
+    ...(notification.url ? { url: notification.url } : {}),
+  });
+}
+
 export async function publishNotification(
   notification: PushNotification,
   options?: { skipDevice?: (deviceId: string) => Promise<boolean> },
@@ -153,12 +166,7 @@ export async function publishNotification(
   if (targets.length === 0) return 0;
 
   const vapid = await loadOrCreateVapid();
-  const payload = JSON.stringify({
-    id: notificationCounter++,
-    title: notification.title,
-    body: notification.body,
-    ...(notification.url ? { url: notification.url } : {}),
-  });
+  const payload = buildPushPayload(notification);
 
   let delivered = 0;
   await Promise.all(targets.map(async ({ deviceId, endpoint }) => {
@@ -212,6 +220,30 @@ export async function publishNotification(
 export async function isForegroundOn(deviceId: string, threadId: string): Promise<boolean> {
   const state = await foregroundStore.get(deviceId);
   return Boolean(state?.foreground && state.threadId === threadId);
+}
+
+/**
+ * A notification body is plain text: the run's response is markdown, and the system tray
+ * renders none of it. Strip the markers, keep the bullet lines (a short list still reads as a
+ * list), and let the caller truncate.
+ */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")          // fenced code blocks
+    .replace(/`([^`]*)`/g, "$1")               // inline code
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")  // images -> alt text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")   // links -> their label
+    .replace(/^#{1,6}\s+/gm, "")               // headings
+    .replace(/^>\s?/gm, "")                    // blockquotes
+    .replace(/\*\*([^*]+)\*\*/g, "$1")         // bold
+    .replace(/\*([^*]+)\*/g, "$1")             // italic
+    .replace(/~~([^~]+)~~/g, "$1")             // strikethrough
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+/** The em dash shows up in server error texts; a notification has no room for it. */
+export function cleanNotificationText(text: string): string {
+  return stripMarkdown(text).replace(/\s*—\s*/g, ": ").replace(/[ \t]+$/gm, "").trim();
 }
 
 /** Test seam: drops the stored endpoints and foreground state (setup-globals.ts). */

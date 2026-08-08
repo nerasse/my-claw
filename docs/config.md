@@ -79,8 +79,8 @@ its tokens on every single turn.
 ### Provider-outage fallback
 
 When a run's model belongs to a provider that is **not** the default provider and the run fails
-with an outage-class error — network/connection failure, 5xx, or quota/credit exhausted
-(429/402/403) — the run is replayed **once** on the default provider's model, and the reply is
+with an outage-class error (network/connection failure, 5xx, or quota/credit exhausted,
+429/402/403), the run is replayed **once** on the default provider's model, and the reply is
 prefixed with `[fallback] …` explaining what happened (also streamed live). The fallback is
 strictly per run:
 
