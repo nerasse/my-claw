@@ -1,6 +1,6 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, type EffortLevel } from "./config.ts";
+import { CONFIG_PATH, tagNameOf, type EffortLevel } from "./config.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
 /**
@@ -118,7 +118,9 @@ export async function setAgentContextCap(agent: string, cap: number | undefined)
  * Creates or replaces a tag: a named alias for a provider/model/effort/context combo that
  * configs reference as `tag:<name>` (docs/tags.md). The reserved name `Default` is virtual and
  * must not be written. An emptied tags section is removed so the file does not carry a
- * deliberate, meaningless setting.
+ * deliberate, meaningless setting. A write that would close a tag reference loop (a tag pinning
+ * itself, or a chain that circles back to it) is refused: the resolver has no leaf to expand,
+ * so every run through the tag would fail.
  */
 export async function setTag(
   name: string,
@@ -128,6 +130,10 @@ export async function setTag(
   const read = await readConfigFile();
   if (!read.ok) return read;
 
+  if (tagReferenceWouldCycle(read.data, name, value.model)) {
+    return { ok: false, error: `Le modèle « ${value.model} » refermerait une boucle de tags (le résolveur ne peut pas l'étendre).` };
+  }
+
   const tags = objectAt(read.data, "tags");
   tags[name] = { model: value.model, ...(value.effort ? { effort: value.effort } : {}), ...(value.contextCap ? { contextCap: value.contextCap } : {}) };
 
@@ -135,6 +141,23 @@ export async function setTag(
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { tag: name, model: value.model });
   return { ok: true, previous: { model: value.model } };
+}
+
+/** Whether `name -> model` would close a tag reference loop in the config on disk. */
+function tagReferenceWouldCycle(data: Record<string, unknown>, name: string, model: string): boolean {
+  const seen = new Set<string>([name]);
+  const tags = (data.tags as Record<string, { model?: string }> | undefined) ?? {};
+  const llm = data.llm as Record<string, unknown> | undefined;
+  let current = model;
+  while (true) {
+    const ref = tagNameOf(current);
+    if (ref === undefined) return false;
+    if (seen.has(ref)) return true;
+    seen.add(ref);
+    const next = ref === "Default" ? ((llm?.defaultModel ?? llm?.model) as string | undefined) : tags[ref]?.model;
+    if (!next) return false;
+    current = next;
+  }
 }
 
 export async function deleteTag(name: string): Promise<ConfigEditResult> {

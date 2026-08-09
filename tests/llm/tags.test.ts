@@ -132,3 +132,46 @@ test("the reserved Default name cannot be written or deleted", async () => {
   assert.equal((await setTag("Default", { model: "y" })).ok, false);
   assert.equal((await deleteTag("Default")).ok, false);
 });
+
+test("a tag pinning itself is refused loudly: the chain has no leaf", () => {
+  const config = llmConfig({ Self: { model: "tag:Self" } });
+  assert.throws(() => resolveLlmConfig(config, "tag:Self"), /Tag cycle: Self -> Self/);
+});
+
+test("a cycle of two tags is refused loudly and names the chain", () => {
+  const config = llmConfig({
+    AB: { model: "tag:BA" },
+    BA: { model: "tag:AB" },
+  });
+  assert.throws(() => resolveLlmConfig(config, "tag:AB"), /Tag cycle: AB -> BA -> AB/);
+});
+
+test("a valid chain still resolves with the outer tag's effort", () => {
+  const config = llmConfig({
+    opus: { model: "tag:opus-pinned" },
+    "opus-pinned": { model: "claude-opus-4-8", effort: "max" },
+  });
+  const resolved = resolveLlmConfig(config, "tag:opus");
+  assert.equal(resolved.apiModel, "claude-opus-4-8");
+  assert.equal(resolved.effort, "max");
+});
+
+test("setTag refuses a self-referencing tag", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {}, tags: { opus: { model: "claude-opus-4-8" } } }, null, 2) + "\n", "utf-8");
+  const result = await setTag("opus", { model: "tag:opus" });
+  assert.equal(result.ok, false);
+  assert.match(String(result.ok === false ? result.error : ""), /boucle/);
+  const onDisk = JSON.parse(await Bun.file(CONFIG_PATH).text());
+  assert.deepEqual(onDisk.tags, { opus: { model: "claude-opus-4-8" } });
+});
+
+test("setTag refuses a write that would close a two-tag cycle", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {}, tags: { BA: { model: "tag:AB" } } }, null, 2) + "\n", "utf-8");
+  assert.equal((await setTag("AB", { model: "tag:BA" })).ok, false);
+});
+
+test("setTag still accepts a valid tag reference chain", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {}, tags: { "opus-pinned": { model: "claude-opus-4-8" } } }, null, 2) + "\n", "utf-8");
+  const result = await setTag("opus", { model: "tag:opus-pinned" });
+  assert.equal(result.ok, true);
+});

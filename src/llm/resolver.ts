@@ -29,18 +29,24 @@ function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefin
  * reserved name `Default` is virtual and tracks the current default model. A tag may point at
  * another tag: the chain is followed to a real model, keeping the outer tag's own effort (the
  * most explicit pin wins). An unknown tag name passes through unchanged so it resolves like any
- * other stale id instead of throwing.
+ * other stale id instead of throwing. A chain that loops (`tag:A` -> `tag:B` -> `tag:A`, or a
+ * tag pinning itself) has no leaf and is refused loudly, the same way an unknown provider is:
+ * the config is broken, and every run through it would silently carry a tag id as its model.
  */
 function expandTag(
   merged: LlmConfig,
   modelId: string,
+  seen: ReadonlySet<string> = new Set(),
 ): { tag?: TagConfig; modelId: string } {
   const name = tagNameOf(modelId);
   if (name === undefined) return { modelId };
+  if (seen.has(name)) {
+    throw new Error(`Tag cycle: ${[...seen, name].join(" -> ")} (fix the tags in config.json)`);
+  }
   const tag = name === "Default" ? { model: merged.defaultModel ?? merged.model ?? "" } : merged.tags?.[name];
   if (!tag) return { modelId };
   if (tagNameOf(tag.model) === undefined) return { tag, modelId: tag.model };
-  const leaf = expandTag(merged, tag.model);
+  const leaf = expandTag(merged, tag.model, new Set(seen).add(name));
   return {
     tag: { model: leaf.modelId, effort: tag.effort ?? leaf.tag?.effort, contextCap: tag.contextCap ?? leaf.tag?.contextCap },
     modelId: leaf.modelId,
