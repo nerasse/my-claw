@@ -127,7 +127,7 @@ import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
-import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments } from "./utils/media.ts";
+import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
@@ -626,7 +626,7 @@ async function main() {
               await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
               hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: response.attachments.length });
             } else if (textHasMediaRefs) {
-              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              const mediaAttachments = refs.map((ref) => ({ type: mediaTypeForPath(ref.path), path: ref.path }));
               await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
               hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
             }
@@ -766,7 +766,7 @@ async function main() {
                 threadId: msg.threadId,
               });
             } else if (textHasMediaRefs) {
-              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              const mediaAttachments = refs.map((ref) => ({ type: mediaTypeForPath(ref.path), path: ref.path }));
               await matrix.send(msg.chatId, {
                 text: "",
                 attachments: mediaAttachments,
@@ -1786,7 +1786,7 @@ async function main() {
               await myClawApp.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id, threadId: msg.threadId });
               hooks.emit("message:delivered", { platform: "my-claw-app", chatId: msg.chatId, text: "", attachments: response.attachments.length });
             } else if (textHasMediaRefs) {
-              const mediaAttachments = refs.map((ref) => ({ type: "audio" as const, path: ref.path }));
+              const mediaAttachments = refs.map((ref) => ({ type: mediaTypeForPath(ref.path), path: ref.path }));
               await myClawApp.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id, threadId: msg.threadId });
               hooks.emit("message:delivered", { platform: "my-claw-app", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
             }

@@ -13,7 +13,7 @@ import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
-import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { commandsFor } from "../commands-catalog.ts";
 
 /** What this channel advertises and what it intercepts, from one list so they cannot diverge. */
@@ -424,7 +424,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const threadId = message.threadId ?? DEFAULT_THREAD;
     const attachments: MyClawAppAttachmentMeta[] = [];
     for (const ref of mediaRefs) {
-      const meta = await this.mediaForPath(owner, threadId, ref.path, { type: "audio", audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
+      const meta = await this.mediaForPath(owner, threadId, ref.path, { type: mediaTypeForPath(ref.path), audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
       if (meta) attachments.push(meta);
     }
     for (const att of attachmentsToSend) {
@@ -452,14 +452,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * Copies a file the agent generated into the session store, then registers it as media.
    * A missing or unreadable source drops just that attachment: the message still goes out.
    */
-  private async mediaForPath(owner: string, threadId: string, path: string, meta: { type: "image" | "audio" | "video" | "file"; mimeType?: string; filename?: string; sizeBytes?: number; width?: number; height?: number; durationMs?: number; audioAsVoice?: boolean }): Promise<MyClawAppAttachmentMeta | undefined> {
+  private async mediaForPath(owner: string, threadId: string, path: string, meta: { type?: "image" | "audio" | "video" | "file"; mimeType?: string; filename?: string; sizeBytes?: number; width?: number; height?: number; durationMs?: number; audioAsVoice?: boolean }): Promise<MyClawAppAttachmentMeta | undefined> {
     try {
       const file = await this.files.saveFromPath(owner, threadId, path, meta.filename);
       if (file.sizeBytes > this.files.warnSizeBytes) {
         await myClawAppLog("warn", "large attachment from agent", { owner, threadId, filename: file.filename, size: file.sizeBytes, threshold: this.files.warnSizeBytes });
       }
       return this.registerMedia(filePathFor(owner, threadId, file.storedName), {
-        type: meta.type,
+        // The bytes are in the store: its type is what the device must render, not a claim made
+        // before the copy (the extension table decides, whatever the caller guessed).
+        type: file.type !== "file" ? file.type : (meta.type ?? "file"),
         mimeType: file.mimeType,
         filename: file.filename,
         sizeBytes: file.sizeBytes,

@@ -56,6 +56,19 @@ export interface MediaRef {
   durationMs?: number;
 }
 
+/** The only format table for MEDIA: refs: everything not listed falls back to "file". */
+const MEDIA_TYPE_BY_EXT: Record<string, "image" | "video" | "audio"> = {
+  jpg: "image", jpeg: "image", png: "image", webp: "image", gif: "image", heic: "image", svg: "image",
+  mp4: "video", mov: "video", webm: "video", mkv: "video", avi: "video",
+  mp3: "audio", m4a: "audio", wav: "audio", ogg: "audio", oga: "audio", opus: "audio", aac: "audio", flac: "audio", amr: "audio", weba: "audio",
+};
+
+export function mediaTypeForPath(path: string): "image" | "audio" | "video" | "file" {
+  const dot = path.lastIndexOf(".");
+  if (dot <= 0) return "file";
+  return MEDIA_TYPE_BY_EXT[path.slice(dot + 1).toLowerCase()] ?? "file";
+}
+
 export function extractMediaRefs(text: string): MediaRef[] {
   const refs: MediaRef[] = [];
   let match;

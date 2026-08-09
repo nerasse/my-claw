@@ -332,6 +332,33 @@ describe("MyClawAppAdapter", () => {
     await unlink(file).catch(() => {});
   });
 
+  test("MEDIA refs to any file format keep the file's real type", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const cases: Array<[string, string, string]> = [
+      [`shot-${Date.now()}.jpg`, "image", "image/jpeg"],
+      [`shot-${Date.now()}.png`, "image", "image/png"],
+      [`clip-${Date.now()}.mp4`, "video", "video/mp4"],
+      [`notes-${Date.now()}.txt`, "file", "text/plain"],
+      [`doc-${Date.now()}.md`, "file", "text/markdown"],
+      [`data-${Date.now()}.pdf`, "file", "application/pdf"],
+      [`voice-${Date.now()}.m4a`, "audio", "audio/mp4"],
+    ];
+
+    for (const [name, expectedType, expectedMime] of cases) {
+      const file = join(tmpDir, name);
+      await writeFile(file, "bytes");
+      await adapter.send(DEVICE_ID, { text: `MEDIA:${file} here` });
+      const frame = (await nextFrame(client)) as { text: string; attachments: Array<{ id: string; type: string; filename: string; mimeType: string }> };
+      assert.equal(frame.text, "here");
+      assert.equal(frame.attachments.length, 1);
+      assert.equal(frame.attachments[0]!.type, expectedType, `type for ${name}`);
+      assert.equal(frame.attachments[0]!.mimeType, expectedMime, `mime for ${name}`);
+      assert.equal(frame.attachments[0]!.filename, name);
+      await unlink(file).catch(() => {});
+    }
+  });
+
   test("an attachment whose source file vanished is dropped, not fatal", async () => {
     await adapter.send(DEVICE_ID, {
       text: "stale",
