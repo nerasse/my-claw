@@ -44,6 +44,7 @@ import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
@@ -78,6 +79,7 @@ import {
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
+import { isAbort } from "./core/aborted.ts";
 import { withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
@@ -1681,6 +1683,7 @@ async function main() {
     }));
 
     myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));
+    myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId));
 
     myClawApp.onDiagnostics({
       snapshot: async (owner, threadId) => {
@@ -1730,30 +1733,39 @@ async function main() {
           }
         }
 
-        if (myClawApp.streamingEnabled()) {
-          // The streamer owns the output bubble for the whole run; a mid-run injected message
-          // finalizes it and opens a fresh bubble replying to that message.
-          let active = myClawApp.createStreamer(msg);
-          hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
-          try {
-            response = await routeWithReroute(router, msg, {
-              onToken: (token) => active.push(token),
-              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
-              onTurnSwitch: async (injMsg) => {
-                await active.finish();
-                active = myClawApp.createStreamer(injMsg);
-              },
-            });
-            await active.finish();
-            hooks.emit("stream:finish", { platform: "my-claw-app", chatId: msg.chatId });
-          } catch (err) {
-            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-            await active.abort(brief);
-            hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
-            throw err;
+        // The Stop button is pinned to the run, not to the stream bubbles: it must survive
+        // tool calls and model turns, and only end with the run itself.
+        myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, true);
+        try {
+          if (myClawApp.streamingEnabled()) {
+            // The streamer owns the output bubble for the whole run; a mid-run injected message
+            // finalizes it and opens a fresh bubble replying to that message.
+            let active = myClawApp.createStreamer(msg);
+            hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
+            try {
+              response = await routeWithReroute(router, msg, {
+                onToken: (token) => active.push(token),
+                onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+                onTurnSwitch: async (injMsg) => {
+                  await active.finish();
+                  active = myClawApp.createStreamer(injMsg);
+                },
+              });
+              await active.finish();
+              hooks.emit("stream:finish", { platform: "my-claw-app", chatId: msg.chatId });
+            } catch (err) {
+              const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+              await active.abort(brief);
+              hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
+              throw err;
+            }
+          } else {
+            response = await routeWithReroute(router, msg, {});
           }
-        } else {
-          response = await routeWithReroute(router, msg, {});
+          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, "done");
+        } catch (err) {
+          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, isAbort(err) ? "aborted" : "error");
+          throw err;
         }
 
         if (response) {

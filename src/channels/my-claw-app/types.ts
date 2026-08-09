@@ -534,6 +534,8 @@ export interface MyClawAppSessionSummary {
    * its two lists from one round-trip, and show the archived count without asking again.
    */
   archived?: boolean;
+  /** A run is answering on this thread right now: the app keeps the Stop button visible. */
+  activeRun?: boolean;
 }
 
 export interface MyClawAppChatMessage {
@@ -545,6 +547,21 @@ export interface MyClawAppChatMessage {
   replyToId?: string;
   ts?: string;
   /** Correlation id of the run that produced this reply, quotable in a bug report. */
+  run?: string;
+}
+
+/** A run started answering on a thread: the app keeps its Stop affordance until the matching end. */
+export interface MyClawAppRunStart {
+  type: "chat.run.start";
+  threadId: string;
+  run?: string;
+}
+
+/** A run finished on a thread. `aborted` is a Stop from any surface; `error` is a failed run. */
+export interface MyClawAppRunEnd {
+  type: "chat.run.end";
+  threadId: string;
+  reason: "done" | "aborted" | "error";
   run?: string;
 }
 
@@ -1297,6 +1314,8 @@ export interface MyClawAppChatCleared {
 
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
+  | MyClawAppRunStart
+  | MyClawAppRunEnd
   | MyClawAppStreamStart
   | MyClawAppStreamDelta
   | MyClawAppStreamDone

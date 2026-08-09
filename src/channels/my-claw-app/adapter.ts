@@ -343,6 +343,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   private stopRun?: (sessionId: string) => boolean;
+  private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -577,6 +578,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
   onStop(stop: (sessionId: string) => boolean): void {
     this.stopRun = stop;
+  }
+
+  /** Whether a session has a run in flight; injected because the adapter never reaches into core. */
+  onRunActive(check: (sessionId: string) => boolean): void {
+    this.runActive = check;
+  }
+
+  /**
+   * Run lifecycle for one owner's sockets: the app pins its Stop button to these frames, not
+   * to the stream bubbles, so the button survives tool calls and model turns.
+   */
+  notifyRun(owner: string, threadId: string, active: boolean, reason?: "done" | "aborted" | "error"): void {
+    if (active) {
+      this.broadcast(owner, {
+        type: "chat.run.start",
+        threadId,
+        ...(currentRunId() ? { run: currentRunId() } : {}),
+      });
+    } else {
+      this.broadcast(owner, {
+        type: "chat.run.end",
+        threadId,
+        reason: reason ?? "done",
+        ...(currentRunId() ? { run: currentRunId() } : {}),
+      });
+    }
   }
 
   /**
@@ -1987,7 +2014,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async handleSessionList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionList): Promise<void> {
     try {
       const sessions = await this.store.list(ws.data.owner);
-      this.sendFrame(ws, { type: "session.list.result", sessions });
+      const withRuns = this.runActive
+        ? sessions.map((session) => ({ ...session, activeRun: this.runActive!(this.store.resolveSessionId(ws.data.owner, session.threadId)) }))
+        : sessions;
+      this.sendFrame(ws, { type: "session.list.result", sessions: withRuns });
     } catch (err) {
       await this.refuse(ws, "session", "session list failed", { error: String(err) });
     }

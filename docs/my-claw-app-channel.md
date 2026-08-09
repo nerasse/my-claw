@@ -281,13 +281,15 @@ the first answer wins.
 
 ```json
 { "type": "chat.message", "id": "uuid", "text": "...", "threadId": "projet", "attachments": [...], "replyToId": "uuid" }
+{ "type": "chat.run.start", "threadId": "projet", "run": "a1b2c3d4" }
+{ "type": "chat.run.end", "threadId": "projet", "reason": "done|aborted|error", "run": "a1b2c3d4" }
 { "type": "chat.stream.start", "id": "uuid", "threadId": "projet", "replyToId": "uuid" }
 { "type": "chat.stream.delta", "id": "uuid", "threadId": "projet", "text": "..." }
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true }] }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
@@ -475,6 +477,16 @@ A tool card seals the text bubble it interrupts: the streamer sends
 `chat.stream.done` for the current id, then the cards, then a fresh
 `chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
 therefore stay in chronological order without the client reordering anything.
+
+### Run lifecycle
+
+One inbound message is one run, bracketed by `chat.run.start` and
+`chat.run.end` regardless of how many tools or model turns it takes: the
+client pins its Stop affordance to these frames, not to the stream bubbles,
+so it survives tool calls and only disappears when the run does. `reason`
+distinguishes a finished run from one stopped by the user (`aborted`) or one
+that failed (`error`). `activeRun` on `session.list.result` carries the same
+state to a device that connects or reconnects mid-run.
 
 `output` is the result handed to the model, capped at 4000 characters
 (`truncated: true` past that). Nested `AGENTS.md` injections are excluded.
