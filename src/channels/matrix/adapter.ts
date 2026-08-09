@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { writeJsonFileAtomically } from "../../utils/atomic-write.ts";
 import { join } from "node:path";
 import type { MatrixEvent, Room } from "matrix-js-sdk";
 import { EventType, MsgType, RoomEvent } from "matrix-js-sdk";
@@ -1096,30 +1097,47 @@ export class MatrixAdapter implements ChannelAdapter {
     await this.persistPendingActions().catch(() => undefined);
   }
 
-  private async persistPendingActions(): Promise<void> {
-    const entries: PersistedPendingMatrixAction[] = [];
-    const now = Date.now();
-    for (const pending of this.pendingActions.values()) {
-      if (pending.expiresAt <= now) {
-        continue;
+  /** Serialises pending-action writes: fire-and-forget persists must not reorder a newer write. */
+  private pendingActionsPersistChain: Promise<void> = Promise.resolve();
+
+  private persistPendingActions(): Promise<void> {
+    const task = async () => {
+      const entries: PersistedPendingMatrixAction[] = [];
+      const now = Date.now();
+      for (const pending of this.pendingActions.values()) {
+        if (pending.expiresAt <= now) {
+          continue;
+        }
+        entries.push({
+          roomId: pending.roomId,
+          eventId: pending.eventId,
+          buttons: pending.buttons,
+          threadId: pending.threadId,
+          stateKey: pending.stateKey,
+          reactionEventIds: pending.reactionEventIds,
+          expiresAt: pending.expiresAt,
+        });
       }
-      entries.push({
-        roomId: pending.roomId,
-        eventId: pending.eventId,
-        buttons: pending.buttons,
-        threadId: pending.threadId,
-        stateKey: pending.stateKey,
-        reactionEventIds: pending.reactionEventIds,
-        expiresAt: pending.expiresAt,
-      });
-    }
-    await mkdir(this.runtime.getStoragePaths().rootDir, { recursive: true });
-    await writeFile(this.runtime.getStoragePaths().pendingActionsPath, JSON.stringify(entries, null, 2));
+      // Atomic write: a restart may read this file while an earlier fire-and-forget persist is
+      // still in flight, and a plain writeFile could hand the reader a truncated JSON mid-write.
+      await writeJsonFileAtomically(this.runtime.getStoragePaths().pendingActionsPath, entries, true);
+    };
+    const run = this.pendingActionsPersistChain.then(task, task);
+    this.pendingActionsPersistChain = run.catch(() => undefined);
+    return run;
   }
 
   private async restorePendingActions(): Promise<void> {
     const raw = await readFile(this.runtime.getStoragePaths().pendingActionsPath, "utf-8").catch(() => "[]");
-    const parsed = JSON.parse(raw) as PersistedPendingMatrixAction[];
+    // A torn file (crash mid-write of a pre-atomic version) must not kill the boot path:
+    // the menu is lost, but the channel still comes up.
+    let parsed: PersistedPendingMatrixAction[];
+    try {
+      parsed = JSON.parse(raw) as PersistedPendingMatrixAction[];
+    } catch {
+      await matrixLog("warn", "pending actions file unreadable, none restored", { path: this.runtime.getStoragePaths().pendingActionsPath });
+      parsed = [];
+    }
     const now = Date.now();
     this.pendingActions.clear();
     for (const entry of parsed) {

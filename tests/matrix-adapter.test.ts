@@ -1,8 +1,8 @@
 import { test, afterAll } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MatrixAdapter } from "../src/channels/matrix/adapter.ts";
 import type { MatrixChannelConfig } from "../src/core/config.ts";
@@ -1748,6 +1748,31 @@ test("MatrixAdapter integrates router agent bridge and streamer for a Matrix flo
     );
   } finally {
     agent.handleMessageStreaming = originalHandleMessageStreaming;
+  }
+});
+
+test("MatrixAdapter boots with a torn pending-actions file and restores nothing", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "my-claw-matrix-adapter-"));
+  try {
+    const mock = createRuntimeMock({ storageRootDir: tempDir });
+    // A truncated file (crash mid-write, pre-atomic versions) must not kill the boot path.
+    const pendingPath = mock.runtime.getStoragePaths().pendingActionsPath;
+    await mkdir(dirname(pendingPath), { recursive: true });
+    await writeFile(pendingPath, '{"roomId":');
+
+    const adapter = new MatrixAdapter(createConfig(), new Set(["@u1:example.org"]), mock.runtime as never);
+    adapter.onCommand(async () => ({ text: "ok", buttons: [{ label: "Yes", action: "ok:1" }] }));
+    await adapter.start();
+
+    // The channel came up; a reply to any menu resolves nothing because none was restored.
+    await mock.runtime.emitTimeline({
+      room: createRoom(),
+      event: createEvent({ id: "$torn", content: { msgtype: "m.text", body: "1" } }),
+    });
+    assert.equal(mock.calls.filter((c) => c.method === "sendMessage").length, 0);
+    await adapter.stop();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
 

@@ -1,7 +1,8 @@
 import { handleStatusCommand } from "../status-command.ts";
 import { join } from "node:path";
 import type { ModelPricing } from "../../llm/pricing.ts";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeJsonFileAtomically } from "../../utils/atomic-write.ts";
 import type { EffortLevel, MyClawConfig } from "../../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
@@ -279,15 +280,23 @@ export function createMatrixApprovalHandler(storagePath?: string): MatrixApprova
   const persist = async () => {
     if (!storagePath) return;
     const snapshot = matrixApprovalStore.snapshot();
-    const dir = storagePath.slice(0, storagePath.lastIndexOf("/"));
-    await mkdir(dir, { recursive: true });
-    await writeFile(storagePath, JSON.stringify(snapshot, null, 2));
+    // Atomic write: a restart may read this file while a fire-and-forget persist is still in
+    // flight, and a plain writeFile could hand the reader a truncated JSON mid-write.
+    await writeJsonFileAtomically(storagePath, snapshot, true);
   };
 
   const restore = async () => {
     if (!storagePath) return;
     const raw = await readFile(storagePath, "utf-8").catch(() => "[]");
-    matrixApprovalStore.restore(JSON.parse(raw) as PersistedPendingMatrixApproval[]);
+    // A torn file (crash mid-write of a pre-atomic version) must not kill the boot path:
+    // the approvals are lost, but the channel still comes up.
+    let parsed: PersistedPendingMatrixApproval[];
+    try {
+      parsed = JSON.parse(raw) as PersistedPendingMatrixApproval[];
+    } catch {
+      parsed = [];
+    }
+    matrixApprovalStore.restore(parsed);
   };
 
   return {
