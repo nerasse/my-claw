@@ -1,4 +1,5 @@
 import { currentRunId } from "../../utils/run-context.ts";
+import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallResult } from "../../agent/tool-status.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
 
@@ -21,6 +22,9 @@ export interface MyClawAppStreamerOptions {
  */
 export class MyClawAppStreamer {
   private segmentText = "";
+  /** Visible text already sent for the current segment; the next delta is the diff, since the
+   *  device accumulates what it receives. Held-back ref fragments never count as sent. */
+  private emittedText = "";
   private segment = 0;
   private toolCount = 0;
   private started = false;
@@ -79,16 +83,24 @@ export class MyClawAppStreamer {
       // opening words of every reply, and the bubble read as if it started mid-sentence --
       // invisible on the server, which stores the full turn and replays it complete.
       await this.startSegment();
-      await this.opts.send({
-        type: "chat.stream.delta",
-        id: this.currentId(),
-        threadId: this.opts.threadId,
-        text: this.segmentText,
-      });
+      await this.emitDelta();
       return;
     }
 
-    await this.opts.send({ type: "chat.stream.delta", id: this.currentId(), threadId: this.opts.threadId, text: token });
+    await this.emitDelta();
+  }
+
+  /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */
+  private async emitDelta(): Promise<void> {
+    const visible = stripMediaRefsStreaming(this.segmentText);
+    if (visible.length <= this.emittedText.length) return;
+    await this.opts.send({
+      type: "chat.stream.delta",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      text: visible.slice(this.emittedText.length),
+    });
+    this.emittedText = visible;
   }
 
   private async toolInternal(toolCalls: ToolCallResult[]): Promise<void> {
@@ -99,6 +111,7 @@ export class MyClawAppStreamer {
       this.segment += 1;
     }
     this.segmentText = "";
+    this.emittedText = "";
     for (const tool of toolCalls) {
       this.toolCount += 1;
       const output = tool.output ?? "";
@@ -123,10 +136,11 @@ export class MyClawAppStreamer {
     if (this.finished) return;
     this.finished = true;
     const pending = finalText ?? this.segmentText;
+    const text = stripMediaRefsStreaming(pending);
 
-    if (!this.started && pending.trim().length > 0) {
+    if (!this.started && text.trim().length > 0) {
       await this.startSegment();
-      await this.opts.send({ type: "chat.stream.delta", id: this.currentId(), threadId: this.opts.threadId, text: pending });
+      await this.opts.send({ type: "chat.stream.delta", id: this.currentId(), threadId: this.opts.threadId, text });
     }
     await this.opts.send({ type: "chat.stream.done", id: this.currentId(), threadId: this.opts.threadId });
   }

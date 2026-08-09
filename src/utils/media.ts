@@ -81,3 +81,21 @@ export function extractMediaRefs(text: string): MediaRef[] {
 export function stripMediaRefs(text: string): string {
   return text.replace(MEDIA_PATTERN, "").trim();
 }
+
+/**
+ * A ref whose tail has not fully arrived is indistinguishable from text that only starts like
+ * one. Withheld until the next token decides, so a ref split across stream tokens never
+ * flashes on screen and never gets sent half-finished.
+ */
+const PARTIAL_REF_TAIL = /(?<![A-Za-z0-9_])(?:MED|MEDI|MEDIA|MEDIA:|MEDIA:\/)$/;
+
+/**
+ * Like stripMediaRefs, for text still being streamed: completed refs are removed, and a
+ * trailing fragment that could still grow into one is held back instead of emitted. The
+ * fragment is released whole as soon as the following token proves it was not a ref.
+ */
+export function stripMediaRefsStreaming(raw: string): string {
+  const stripped = raw.replace(MEDIA_PATTERN, "");
+  const tail = PARTIAL_REF_TAIL.exec(stripped)?.[0] ?? "";
+  return stripped.slice(0, stripped.length - tail.length);
+}

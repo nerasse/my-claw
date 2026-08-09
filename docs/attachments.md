@@ -25,8 +25,11 @@ Cleanup deletes /tmp/tts-xxx after send
 ## Streaming behavior
 
 - Text is sent live token-by-token
-- `MEDIA:` refs are stripped from the final streamed text
-- Files are sent as programmatic attachments after `streamer.finish()`
+- `MEDIA:` refs are stripped from the streamed text as it goes (a ref split across
+  tokens is held back whole, so it never flashes on screen)
+- Files are sent as programmatic attachments after `streamer.finish()`; the app merges
+  that media-only delivery into the bubble that just streamed the answer, so the image,
+  video, voice note or file card sits under the words that go with it
 - No `MEDIA:` visible to the user
 
 ## Non-streaming behavior
