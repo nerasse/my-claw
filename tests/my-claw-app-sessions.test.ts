@@ -268,6 +268,70 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(turn.text, "le format [Attachments]\nc'est quoi");
     assert.equal(turn.attachments, undefined);
   });
+
+  test("an assistant MEDIA: ref replays as its stored attachment, not the temp path", async () => {
+    const files = new SessionFileStore();
+    const saved = await files.save(DEVICE, THREAD, "test-image.jpg", new Uint8Array([1]));
+    const gone = await files.save(DEVICE, THREAD, "notes.md", new Uint8Array([2]));
+    await files.remove(DEVICE, THREAD, gone.id);
+
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "Voilà, un chat random d'Unsplash 🐱\n\nMEDIA:/tmp/test-image.jpg",
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "assistant") throw new Error("expected an assistant entry");
+    // The bubble reads like the live message: the caption, not the path the agent wrote.
+    assert.equal(turn.text, "Voilà, un chat random d'Unsplash 🐱");
+    assert.equal(turn.attachments?.length, 1);
+    assert.equal(turn.attachments![0]!.id, saved.id);
+    assert.equal(turn.attachments![0]!.type, "image");
+    assert.equal(turn.attachments![0]!.mimeType, "image/jpeg");
+    assert.equal(turn.attachments![0]!.filename, "test-image.jpg");
+    assert.equal(turn.attachments![0]!.deleted, undefined);
+  });
+
+  test("an assistant MEDIA: ref whose copy is gone replays flagged, never as dead text", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "MEDIA:/tmp/gone.png",
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(turn.text, "");
+    assert.equal(turn.attachments?.length, 1);
+    assert.equal(turn.attachments![0]!.type, "image");
+    assert.equal(turn.attachments![0]!.filename, "gone.png");
+    assert.equal(turn.attachments![0]!.deleted, true);
+  });
+
+  test("several MEDIA: refs in one turn each pair with their own stored copy", async () => {
+    const files = new SessionFileStore();
+    const first = await files.save(DEVICE, THREAD, "a.jpg", new Uint8Array([1]));
+    const second = await files.save(DEVICE, THREAD, "b.jpg", new Uint8Array([2]));
+
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "voici\n\nMEDIA:/tmp/a.jpg\n\nMEDIA:/tmp/b.jpg",
+        timestamp: "2026-01-01T00:00:01.000Z",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(turn.attachments?.length, 2);
+    const ids = turn.attachments!.map((a) => a.id);
+    assert.deepEqual(ids.sort(), [first.id, second.id].sort());
+  });
 });
 
 describe("SessionFileStore naming", () => {

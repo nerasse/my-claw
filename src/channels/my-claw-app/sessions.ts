@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { loadSession } from "../../sessions/store.ts";
 import { splitAttachmentBlock } from "../../agent/preprocess.ts";
+import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppSessionSummary } from "./types.ts";
@@ -99,6 +100,35 @@ function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["at
   return out;
 }
 
+/**
+ * An assistant turn names its media by the path the agent wrote (`MEDIA:/tmp/out.jpg`), but the
+ * bytes live in the session store under a fresh id. The store copy keeps the agent's basename, so
+ * a ref resolves by filename -- newest copy wins when the agent regenerated the same file. A ref
+ * whose copy is gone replays as a deleted attachment rather than dead text.
+ */
+function mediaRefAttachments(refs: Array<{ path: string }>, files: SessionFile[]): MyClawAppHistoryAttachment[] {
+  const used = new Set<string>();
+  const out: MyClawAppHistoryAttachment[] = [];
+  for (const ref of refs) {
+    const name = basename(ref.path);
+    // listInThread sorts newest first: a regenerated file replaces the previous copy.
+    const file = files.find((f) => f.filename === name && !used.has(f.id));
+    if (file) {
+      used.add(file.id);
+      out.push({
+        id: file.id,
+        type: file.type,
+        mimeType: file.mimeType,
+        filename: file.filename,
+        sizeBytes: file.sizeBytes,
+      });
+    } else {
+      out.push({ id: `media-${out.length}`, type: mediaTypeForPath(ref.path), filename: name, deleted: true });
+    }
+  }
+  return out;
+}
+
 export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   constructor(
     private sessionManager: SessionManager,
@@ -146,7 +176,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       if (message.role === "tool") outputs.set(message.toolCallId, message.content);
     }
 
-    const stored = window.some((m) => m.role === "user") ? await this.files.list(owner, threadId) : [];
+    const stored = window.some((m) => m.role === "user" || m.content.includes("MEDIA:")) ? await this.files.list(owner, threadId) : [];
 
     const entries: MyClawAppHistoryEntry[] = [];
     for (const message of window) {
@@ -172,9 +202,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         continue;
       }
       if (message.role !== "assistant") continue;
-      const text = message.content.trim();
-      if (text) {
-        entries.push({ id: `h-${message.timestamp}-${entries.length}`, role: "assistant", text, ts: message.timestamp });
+      // The agent names its files with MEDIA: refs, but a replayed turn must show real
+      // attachments: resolve each ref against the thread's store, like the user side does.
+      const refs = extractMediaRefs(message.content);
+      const text = stripMediaRefs(message.content).trim();
+      const media = refs.length > 0 ? mediaRefAttachments(refs, stored) : [];
+      if (text || media.length > 0) {
+        entries.push({
+          id: `h-${message.timestamp}-${entries.length}`,
+          role: "assistant",
+          text,
+          ts: message.timestamp,
+          ...(media.length > 0 ? { attachments: media } : {}),
+        });
       }
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.
       for (const call of message.toolCalls ?? []) {
