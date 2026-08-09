@@ -141,12 +141,8 @@ export interface MyClawAppChannelConfig {
    */
   approvals?: boolean;
   files?: {
-    /** Largest upload accepted, in bytes. Defaults to 10 MB. */
-    maxSizeBytes?: number;
-    /** Total bytes the channel may keep across all devices. Defaults to 2 GB. */
-    maxTotalBytes?: number;
-    /** Extensions accepted on upload, lowercased without the dot. */
-    allowedExtensions?: string[];
+    /** Attachments above this size, in bytes, are logged with a warning and stored anyway. Defaults to 50 MB. */
+    warnSizeBytes?: number;
   };
 }
 

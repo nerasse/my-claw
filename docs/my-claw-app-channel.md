@@ -403,8 +403,12 @@ Files are stored per conversation as `<id>__<filename>` under
 (archive/delete). The uploader's name is part of the entry so a listing stays a single
 readdir with nothing to keep in sync; entries written before that convention
 (`<id>.<ext>`) still list, under their id as name. `GET /media/<id>` serves them back
-for display/download. Uploads are capped (`channels["my-claw-app"].files.maxSizeBytes`,
-default 10 MB, plus a global `maxTotalBytes` of 2 GB). The agent receives the
+for display/download. The channel keeps no size cap: uploads stream straight to
+disk, and attachments the agent sends (`MEDIA:` refs and programmatic attachments)
+are copied into the same store, so they count toward the conversation's file size,
+are served like uploads, and die with the session. Attachments past
+`channels["my-claw-app"].files.warnSizeBytes` (default 50 MB) are logged with a
+warning and stored anyway. The agent receives the
 attachment as a path it can read with its tools, and images are routed to a
 vision-capable model when the active model cannot take them. The files outlive
 the run that used them: they are only removed by `files.delete` or with the
@@ -494,8 +498,8 @@ The file is fetched over HTTP (same auth query params as the WS handshake):
 GET /media/<id>?device=<deviceId>&token=<token>
 ```
 
-The app builds the URL from its own credentials; the media registry is capped at
-1000 entries and dropped on adapter stop.
+The app builds the URL from its own credentials; the media registry is a small
+look-aside cache over the session store and dropped on adapter stop.
 
 ## Security
 

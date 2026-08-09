@@ -1,15 +1,20 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { MY_CLAW_DIR, type MyClawAppChannelConfig } from "../../core/config.ts";
 
 /**
- * Uploaded attachments live next to their session, one directory per thread:
+ * Attachments live next to their session, one directory per thread:
  *   $MY_CLAW_DIR/files/my-claw-app/<owner>/<threadId>/<id>__<filename>
  * The layout mirrors the session id 1:1, so archiving or deleting a conversation removes its
  * files with it, and the disk usage of a session is the size of its directory. The uploader's
  * name is carried by the entry itself: a listing needs one readdir and no sidecar to stay in
  * sync with. Entries written before that (plain `<id>.<ext>`) still list, under their id.
+ * Uploads from the app and files the agent sends (MEDIA: refs and programmatic attachments)
+ * land here the same way: the channel keeps no quota, only a warning above warnSizeBytes.
  */
 
 export interface SessionFile {
@@ -35,8 +40,7 @@ export function parseStoredName(entry: string): { id: string; filename: string }
   return { id: entry.slice(0, dot), filename: entry };
 }
 
-const DEFAULT_MAX_SIZE = 10 * 1024 * 1024;
-const DEFAULT_MAX_TOTAL = 2 * 1024 * 1024 * 1024;
+const DEFAULT_WARN_SIZE = 50 * 1024 * 1024;
 
 const TYPE_BY_MIME: Record<string, SessionFile["type"]> = {
   "image/": "image",
@@ -80,38 +84,9 @@ export function mimeTypeFor(filename: string): string {
 export class SessionFileStore {
   constructor(private config?: MyClawAppChannelConfig) {}
 
-  /** Largest single upload accepted, for the HTTP pre-check. */
-  get maxSizeBytes(): number {
-    return this.config?.files?.maxSizeBytes ?? DEFAULT_MAX_SIZE;
-  }
-
-  private get maxTotalBytes(): number {
-    return this.config?.files?.maxTotalBytes ?? DEFAULT_MAX_TOTAL;
-  }
-
-  private allowedExtensions(): Set<string> | null {
-    const list = this.config?.files?.allowedExtensions;
-    return list && list.length > 0 ? new Set(list.map((ext) => ext.toLowerCase().replace(/^\./, ""))) : null;
-  }
-
-  private async totalBytes(): Promise<number> {
-    let total = 0;
-    for (const deviceDir of await this.listRoots()) {
-      for (const threadDir of await this.listThreadDirs(deviceDir)) {
-        for (const file of await this.listInThread(threadDir)) {
-          total += file.sizeBytes;
-        }
-      }
-    }
-    return total;
-  }
-
-  private async listRoots(): Promise<string[]> {
-    try {
-      return await readdir(join(MY_CLAW_DIR, "files", "my-claw-app"));
-    } catch {
-      return [];
-    }
+  /** Attachments above this size are logged with a warning and stored anyway. */
+  get warnSizeBytes(): number {
+    return this.config?.files?.warnSizeBytes ?? DEFAULT_WARN_SIZE;
   }
 
   private async listThreadDirs(owner: string): Promise<string[]> {
@@ -169,31 +144,69 @@ export class SessionFileStore {
   }
 
   async save(owner: string, threadId: string, filename: string, bytes: Uint8Array): Promise<SessionFile> {
-    const ext = extname(filename).slice(1).toLowerCase();
-    const allowed = this.allowedExtensions();
-    if (allowed && (!ext || !allowed.has(ext))) {
-      throw new Error(`File type .${ext || "?"} not allowed.`);
-    }
-    if (bytes.byteLength > this.maxSizeBytes) {
-      throw new Error(`File too large: ${bytes.byteLength} bytes (max ${this.maxSizeBytes}).`);
-    }
-    if (bytes.byteLength + (await this.totalBytes()) > this.maxTotalBytes) {
-      throw new Error("Attachment storage full.");
-    }
+    return this.writeEntry(owner, threadId, filename, bytes.byteLength, (target) => writeFile(target, bytes));
+  }
 
+  /**
+   * Copies an existing file -- an attachment the agent generated -- into the store without
+   * buffering it through JS. Every send creates a fresh copy, so a regenerated file replaces
+   * the previous one in the conversation rather than being deduplicated away.
+   */
+  async saveFromPath(owner: string, threadId: string, sourcePath: string, filename?: string): Promise<SessionFile> {
+    const info = await stat(sourcePath);
+    const name = filename ?? basename(sourcePath);
+    return this.writeEntry(owner, threadId, name, info.size, (target) => copyFile(sourcePath, target));
+  }
+
+  /** Streams an upload body straight to disk; a multi-GB file never sits in memory. */
+  async saveStream(owner: string, threadId: string, filename: string, body: ReadableStream | null): Promise<SessionFile> {
+    const ext = extname(filename).slice(1).toLowerCase();
     const safeName = basename(filename).replace(/[^\w.\-() ]+/g, "_").slice(0, 120) || `attachment.${ext || "bin"}`;
     const id = randomUUID();
     const dir = filesDirFor(owner, threadId);
     await mkdir(dir, { recursive: true });
     const storedName = `${id}__${safeName}`;
-    await writeFile(filePathFor(owner, threadId, storedName), bytes);
+    const target = filePathFor(owner, threadId, storedName);
+    try {
+      if (!body) throw new Error("empty upload body");
+      await pipeline(Readable.fromWeb(body), createWriteStream(target));
+      const info = await stat(target);
+      return {
+        id,
+        filename: safeName,
+        storedName,
+        type: typeFor(safeName),
+        mimeType: mimeTypeFor(safeName),
+        sizeBytes: info.size,
+        ts: new Date().toISOString(),
+      };
+    } catch (err) {
+      await rm(target, { force: true }).catch(() => {});
+      throw err;
+    }
+  }
+
+  private async writeEntry(
+    owner: string,
+    threadId: string,
+    filename: string,
+    sizeBytes: number,
+    write: (target: string) => Promise<void>,
+  ): Promise<SessionFile> {
+    const ext = extname(filename).slice(1).toLowerCase();
+    const safeName = basename(filename).replace(/[^\w.\-() ]+/g, "_").slice(0, 120) || `attachment.${ext || "bin"}`;
+    const id = randomUUID();
+    const dir = filesDirFor(owner, threadId);
+    await mkdir(dir, { recursive: true });
+    const storedName = `${id}__${safeName}`;
+    await write(filePathFor(owner, threadId, storedName));
     return {
       id,
       filename: safeName,
       storedName,
       type: typeFor(safeName),
       mimeType: mimeTypeFor(safeName),
-      sizeBytes: bytes.byteLength,
+      sizeBytes,
       ts: new Date().toISOString(),
     };
   }

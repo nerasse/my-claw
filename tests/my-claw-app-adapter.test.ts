@@ -2,7 +2,7 @@ import { test, afterEach, beforeEach, describe } from "bun:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { filesRootForOwner } from "../src/channels/my-claw-app/files.ts";
-import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { mkdir, writeFile, unlink, readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
@@ -254,18 +254,21 @@ describe("MyClawAppAdapter", () => {
     assert.deepEqual(frame.attachments, []);
   });
 
-  test("send with a local attachment registers a servable media id", async () => {
+  test("send with a local attachment copies it into the session store and serves it", async () => {
     const tmpDir = join(MY_CLAW_DIR, "tmp");
     await mkdir(tmpDir, { recursive: true });
-    const file = join(tmpDir, `app-test-${Date.now()}.png`);
+    const name = `app-test-${Date.now()}.png`;
+    const file = join(tmpDir, name);
     await writeFile(file, "png-bytes");
 
     await adapter.send(DEVICE_ID, {
       text: "with media",
       attachments: [{ type: "image", path: file, mimeType: "image/png" }],
     });
-    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string }> };
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; filename: string; sizeBytes: number }> };
     assert.equal(frame.attachments.length, 1);
+    assert.equal(frame.attachments[0]!.filename, name);
+    assert.equal(frame.attachments[0]!.sizeBytes, 9);
     const mediaId = frame.attachments[0]!.id;
 
     const authorized = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}`);
@@ -273,12 +276,85 @@ describe("MyClawAppAdapter", () => {
     assert.equal(await authorized.text(), "png-bytes");
     assert.equal(authorized.headers.get("content-type"), "image/png");
 
+    // The copy landed in the conversation's store directory, `<id>__<name>`.
+    const threadDir = join(filesRootForOwner(DEVICE_ID), "default");
+    const entries = await readdir(threadDir);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!, `${mediaId}__${name}`);
+    assert.equal(await readFile(join(threadDir, entries[0]!), "utf-8"), "png-bytes");
+
+    // Served from the copy: removing the source changes nothing.
+    await unlink(file).catch(() => {});
+    const persisted = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(persisted.status, 200);
+    assert.equal(await persisted.text(), "png-bytes");
+
     const unauthorized = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}`);
     assert.equal(unauthorized.status, 401);
 
     const missing = await fetch(`http://127.0.0.1:${adapter.port}/media/nope?device=${DEVICE_ID}&token=${TOKEN}`);
     assert.equal(missing.status, 404);
+  });
 
+  test("MEDIA refs are copied into the session store and listed as session files", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const name = `agent-voice-${Date.now()}.m4a`;
+    const file = join(tmpDir, name);
+    await writeFile(file, "voice-bytes");
+
+    await adapter.send(DEVICE_ID, { text: `MEDIA:${file} answering` });
+    const frame = (await nextFrame(client)) as { text: string; attachments: Array<{ id: string; type: string; filename: string }> };
+    assert.equal(frame.text, "answering");
+    assert.equal(frame.attachments.length, 1);
+    assert.equal(frame.attachments[0]!.type, "audio");
+    assert.equal(frame.attachments[0]!.filename, name);
+
+    const got = await fetch(`http://127.0.0.1:${adapter.port}/media/${frame.attachments[0]!.id}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(got.status, 200);
+    assert.equal(await got.text(), "voice-bytes");
+
+    // The session explorer counts the agent's copy as a conversation file.
+    client.ws.send(JSON.stringify({ type: "files.list", threadId: "default" }));
+    const list = (await nextFrame(client)) as { type: string; files: Array<{ filename: string }> };
+    assert.equal(list.files.length, 1);
+    assert.equal(list.files[0]!.filename, frame.attachments[0]!.filename);
+
+    // A regenerated file is a fresh copy, never a deduplicated old one.
+    await writeFile(file, "voice-bytes-v2");
+    await adapter.send(DEVICE_ID, { text: `MEDIA:${file} again` });
+    const again = (await nextFrame(client)) as { attachments: Array<{ id: string }> };
+    assert.equal(again.attachments.length, 1);
+    assert.notEqual(again.attachments[0]!.id, frame.attachments[0]!.id);
+    const fresh = await fetch(`http://127.0.0.1:${adapter.port}/media/${again.attachments[0]!.id}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(await fresh.text(), "voice-bytes-v2");
+
+    await unlink(file).catch(() => {});
+  });
+
+  test("an attachment whose source file vanished is dropped, not fatal", async () => {
+    await adapter.send(DEVICE_ID, {
+      text: "stale",
+      attachments: [{ type: "file", path: join(MY_CLAW_DIR, "missing.bin") }],
+    });
+    const frame = (await nextFrame(client)) as { text: string; attachments: unknown[] };
+    assert.equal(frame.text, "stale");
+    assert.equal(frame.attachments.length, 0);
+  });
+
+  test("voice attachments keep audioAsVoice through the store copy", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const file = join(tmpDir, `voice-${Date.now()}.m4a`);
+    await writeFile(file, "abc");
+
+    await adapter.send(DEVICE_ID, {
+      text: "listen",
+      attachments: [{ type: "audio", path: file, mimeType: "audio/mp4", audioAsVoice: true }],
+    });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ audioAsVoice?: boolean }> };
+    assert.equal(frame.attachments.length, 1);
+    assert.equal(frame.attachments[0]!.audioAsVoice, true);
     await unlink(file).catch(() => {});
   });
 
@@ -737,9 +813,9 @@ describe("MyClawAppAdapter", () => {
     assert.equal(list.files.length, 1);
   });
 
-  test("uploads are capped by the configured size limit", async () => {
+  test("a large upload is stored and served, with a warning only", async () => {
     const small = new MyClawAppAdapter(
-      createConfig({ files: { maxSizeBytes: 4 } }),
+      createConfig({ files: { warnSizeBytes: 4 } }),
       store as never,
     );
     small.onMessage(async () => {});
@@ -751,7 +827,13 @@ describe("MyClawAppAdapter", () => {
         headers: { "x-filename": "big.bin", "x-type": "file", "x-thread-id": "projet" },
         body: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
       });
-      assert.equal(upload.status, 413);
+      // Past the warning threshold: stored anyway, never refused.
+      assert.equal(upload.status, 200);
+      const meta = (await upload.json()) as { id: string; sizeBytes: number };
+      assert.equal(meta.sizeBytes, 8);
+      const got = await fetch(`http://127.0.0.1:${port}/media/${meta.id}?device=${DEVICE_ID}&token=${TOKEN}`);
+      assert.equal(got.status, 200);
+      assert.equal((await got.arrayBuffer()).byteLength, 8);
     } finally {
       await small.stop();
     }

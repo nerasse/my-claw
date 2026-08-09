@@ -96,6 +96,8 @@ const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // TCP alive); only reclaim sockets that look dead for 10 minutes.
 const STALE_SOCKET_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30_000;
+// A look-aside cache of recently served media; the bytes themselves live in the session store
+// (uploads) or were copied there on send, so evicting an entry here only drops the fast path.
 const MAX_MEDIA_ENTRIES = 1000;
 
 interface MyClawAppSessionData {
@@ -416,9 +418,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     if (!text && !mediaRefs.length && !attachmentsToSend.length) return;
 
+    // Attachments land in the same session store as uploads: they survive restarts, count
+    // toward the conversation's file size, and die with the session.
+    const threadId = message.threadId ?? DEFAULT_THREAD;
     const attachments: MyClawAppAttachmentMeta[] = [];
     for (const ref of mediaRefs) {
-      const meta = this.registerMedia(ref.path, { type: "audio", audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
+      const meta = await this.mediaForPath(owner, threadId, ref.path, { type: "audio", audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
       if (meta) attachments.push(meta);
     }
     for (const att of attachmentsToSend) {
@@ -426,7 +431,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         await myClawAppLog("debug", "attachment without local path skipped", { type: att.type });
         continue;
       }
-      const meta = this.registerMedia(att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
+      const meta = await this.mediaForPath(owner, threadId, att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
       if (meta) attachments.push(meta);
     }
 
@@ -434,12 +439,39 @@ export class MyClawAppAdapter implements ChannelAdapter {
       type: "chat.message",
       id: crypto.randomUUID(),
       text,
-      threadId: message.threadId ?? DEFAULT_THREAD,
+      threadId,
       attachments,
       replyToId: message.replyToId,
       ...(currentRunId() ? { run: currentRunId() } : {}),
     };
     this.broadcast(owner, frame);
+  }
+
+  /**
+   * Copies a file the agent generated into the session store, then registers it as media.
+   * A missing or unreadable source drops just that attachment: the message still goes out.
+   */
+  private async mediaForPath(owner: string, threadId: string, path: string, meta: { type: "image" | "audio" | "video" | "file"; mimeType?: string; filename?: string; sizeBytes?: number; width?: number; height?: number; durationMs?: number; audioAsVoice?: boolean }): Promise<MyClawAppAttachmentMeta | undefined> {
+    try {
+      const file = await this.files.saveFromPath(owner, threadId, path, meta.filename);
+      if (file.sizeBytes > this.files.warnSizeBytes) {
+        await myClawAppLog("warn", "large attachment from agent", { owner, threadId, filename: file.filename, size: file.sizeBytes, threshold: this.files.warnSizeBytes });
+      }
+      return this.registerMedia(filePathFor(owner, threadId, file.storedName), {
+        type: meta.type,
+        mimeType: file.mimeType,
+        filename: file.filename,
+        sizeBytes: file.sizeBytes,
+        width: meta.width,
+        height: meta.height,
+        durationMs: meta.durationMs,
+        audioAsVoice: meta.audioAsVoice,
+      }, file.id);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "cannot read";
+      await myClawAppLog("warn", "attachment skipped: not copied", { owner, threadId, path, reason });
+      return undefined;
+    }
   }
 
   async confirmTool(request: ToolApprovalRequest): Promise<ApprovalDecision> {
@@ -704,27 +736,29 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await myClawAppLog("warn", "upload rejected: bad threadId", { owner, threadId });
       return new Response("Bad threadId", { status: 400 });
     }
-    // Reject oversized payloads from the declared length BEFORE buffering the body: the
-    // client decides the bytes we hold in memory, so the cap must apply to the declaration.
+    // No size cap on this channel: uploads and agent attachments are streamed/copied to disk
+    // as-is. A payload past the warning threshold is logged and stored anyway.
     const declared = Number(req.headers.get("content-length") ?? 0);
-    if (declared > this.files.maxSizeBytes) {
-      await myClawAppLog("warn", "upload rejected: too large", { owner, threadId: safeThread, declared, max: this.files.maxSizeBytes });
-      return new Response("File too large", { status: 413 });
+    if (declared > this.files.warnSizeBytes) {
+      await myClawAppLog("warn", "large upload", { owner, threadId: safeThread, declared, threshold: this.files.warnSizeBytes });
     }
     try {
-      const bytes = new Uint8Array(await req.arrayBuffer());
-      const file = await this.files.save(owner, safeThread, filename, bytes);
+      const file = await this.files.saveStream(owner, safeThread, filename, req.body);
       await myClawAppLog("info", "file uploaded", { owner, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
       return Response.json({ id: file.id, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Upload failed";
       await myClawAppLog("warn", "upload failed", { owner, threadId: safeThread, filename, reason });
-      return new Response(reason, { status: 413 });
+      return new Response(reason, { status: 400 });
     }
   }
 
-  private registerMedia(path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">): MyClawAppAttachmentMeta | undefined {
-    const id = crypto.randomUUID();
+  /**
+   * Registers media for serving. `id` is the session-store file id when the bytes were copied
+   * into the store (agent attachments), so the look-aside cache and the persistent file agree:
+   * an evicted cache entry still resolves through the store, and files.delete matches.
+   */
+  private registerMedia(path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">, id: string = crypto.randomUUID()): MyClawAppAttachmentMeta | undefined {
     this.media.set(id, { path, ...meta });
     this.mediaOrder.push(id);
     if (this.mediaOrder.length > MAX_MEDIA_ENTRIES) {
