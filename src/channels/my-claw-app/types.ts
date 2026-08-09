@@ -271,6 +271,18 @@ export interface MyClawAppAgentsModelClear {
 }
 
 /**
+ * Pins the vision fallback model (`llm.visionFallback`): image runs are rerouted to it when
+ * the resolved model cannot take images. The picker only offers vision-capable models, and
+ * the server refuses anything else: a text-only fallback would silently do nothing at run
+ * time. `""` removes the pin, which returns image runs to the resolved model (they fail if
+ * it cannot take images).
+ */
+export interface MyClawAppAgentsFallbackSet {
+  type: "agents.fallback.set";
+  model: string;
+}
+
+/**
  * An agent's skills or MCP scope, in the resolver's own vocabulary: `"inherit"` removes the key
  * (the orchestrator's list applies, or everything), `"all"` is the `["*"]` wildcard, `"list"` the
  * names picked — `[]` means "nothing", kept as a decision. Names are never validated against the
@@ -450,6 +462,7 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentsConfigGet
   | MyClawAppAgentsModelSet
   | MyClawAppAgentsModelClear
+  | MyClawAppAgentsFallbackSet
   | MyClawAppAgentsScopeSet
   | MyClawAppAgentsWorkspaceSet
   | MyClawAppAgentsIterationsSet
@@ -687,6 +700,8 @@ export interface MyClawAppModelOption {
   context?: number;
   /** For a tag entry: the effort the tag pins, so a config flow can name what applies. */
   effort?: string;
+  /** Whether the model accepts image input; the fallback picker only offers vision-capable ones. */
+  vision?: boolean;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */
@@ -949,6 +964,11 @@ export interface MyClawAppAgentsConfigResult {
   defaultEffort: string;
   /** Levels on offer for the global effort, in canonical order. */
   effortLevels: string[];
+  /**
+   * The vision fallback model: a declared, vision-capable model image runs are rerouted to
+   * when the resolved model cannot take images (llm.visionFallback). "" when none is set.
+   */
+  fallback: string;
   providers: MyClawAppProviderInfo[];
   agents: MyClawAppAgentInfo[];
 }

@@ -1086,6 +1086,7 @@ describe("agents frames", () => {
     defaultProvider: "prov-a",
     defaultEffort: "high",
     effortLevels: ["low", "medium", "high"],
+    fallback: "fast-1",
     providers: [{ key: "prov-a", type: "openai", discover: true, models: 2, keyEnv: "PROV_A_KEY", keyPresent: true }],
     agents: [
       { key: "orchestrator", label: "Orchestrator", description: "The agent you talk to", model: "fast-1", pinned: false, inheritsFrom: "global" },
@@ -1105,6 +1106,7 @@ describe("agents frames", () => {
         agents: SNAPSHOT.agents,
       }),
       clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
+      setFallback: async (model) => ({ ...SNAPSHOT, fallback: model }),
       setScope: async (agent, field, mode, names) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, [field]: mode === "inherit" ? null : mode === "all" ? ["*"] : names } : a)) }),
       setWorkspace: async (agent, workspace) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, workspace } : a)) }),
       setMaxIterations: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, maxIterations: value } : a)) }),
@@ -1167,6 +1169,20 @@ describe("agents frames", () => {
     assert.equal((frame["agents"] as Array<{ pinned: boolean }>)[1]!["pinned"], false);
   });
 
+  test("agents.fallback.set forwards the model and answers with the stored state", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.fallback.set", model: "strong-2" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["fallback"], "strong-2");
+  });
+
+  test("agents.fallback.set with an empty model removes the pin", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.fallback.set", model: "" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.equal(frame["fallback"], "");
+  });
+
   test("agents.model.set carries the effort pin in the same pass", async () => {
     client.ws.send(JSON.stringify({ type: "agents.model.set", agent: "cron", model: "strong-2", effort: "medium" }));
     const frame = await nextFrame(client);
@@ -1217,6 +1233,7 @@ describe("agents frames", () => {
       get: () => SNAPSHOT,
       setModel: async () => SNAPSHOT,
       clearModel: async () => SNAPSHOT,
+      setFallback: async () => SNAPSHOT,
       setScope: async () => SNAPSHOT,
       setWorkspace: async () => SNAPSHOT,
       setMaxIterations: async () => SNAPSHOT,
@@ -1279,6 +1296,9 @@ describe("agents frames", () => {
         throw new Error("unknown model: ghost");
       },
       clearModel: async () => {
+        throw new Error("nope");
+      },
+      setFallback: async () => {
         throw new Error("nope");
       },
       setScope: async () => {

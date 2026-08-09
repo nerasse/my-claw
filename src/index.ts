@@ -147,6 +147,7 @@ import {
   setDefaultModel,
   clearAgentModel,
   setAgentModel,
+  setVisionFallback,
   setAgentScope,
   setAgentWorkspace,
   setAgentMaxIterations,
@@ -901,6 +902,11 @@ async function main() {
             const tagEffort = tagName !== undefined ? config.tags?.[tagName]?.effort : undefined;
             return tagEffort ? { effort: tagEffort } : {};
           })(),
+          // Whether the model accepts image input: the fallback picker needs it to offer only
+          // models the resolver would actually reroute to. Mirrors the resolver's own guard.
+          ...(config.llm.models?.find((model) => model.id === m.id)?.vision === undefined
+            ? {}
+            : { vision: config.llm.models.find((model) => model.id === m.id)!.vision! }),
         })),
         defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
       }),
@@ -1024,6 +1030,7 @@ async function main() {
         ...(config.llm.defaultProvider ? { defaultProvider: config.llm.defaultProvider } : {}),
         defaultEffort: config.llm.effort ?? "",
         effortLevels: EFFORT_LEVELS,
+        fallback: config.llm.visionFallback ?? "",
         providers: [
           // The virtual "Tags" provider rows at the top of the app's provider list: one entry
           // for the reserved `Default` tag plus one per configured tag (docs/tags.md). The app
@@ -1139,6 +1146,18 @@ async function main() {
         const result = await clearAgentModel(agent);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`clear modèle ${agent}`);
+      },
+      setFallback: async (modelId) => {
+        // "" removes the pin; a model must be declared and vision-capable or the resolver would
+        // silently keep the original model at run time, which is a config that does nothing.
+        if (modelId !== "") {
+          const declared = config.llm.models?.find((model) => model.id === modelId);
+          if (!declared) throw new Error(`unknown model: ${modelId}`);
+          if (declared.vision !== true) throw new Error(`${modelId} cannot take images`);
+        }
+        const result = await setVisionFallback(modelId);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`fallback image ${modelId || "aucun"}`);
       },
       setScope: async (agent, field, mode, names) => {
         if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);

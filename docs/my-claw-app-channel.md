@@ -111,6 +111,7 @@ the first answer wins.
 { "type": "agents.config.get" }
  { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
  { "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
+ { "type": "agents.fallback.set", "model": "gpt-5.1|claude-sonnet-5" }
  { "type": "agents.scope.set", "agent": "cron", "field": "skills|mcp", "mode": "inherit|all|list", "names": ["code-review"] }
 { "type": "agents.workspace.set", "agent": "cron", "workspace": "sofa" }
 { "type": "agents.iterations.set", "agent": "cron", "value": 12 }

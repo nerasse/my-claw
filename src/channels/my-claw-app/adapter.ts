@@ -24,6 +24,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppAgentFileResult,
   MyClawAppAgentsModelClear,
   MyClawAppAgentsModelSet,
+  MyClawAppAgentsFallbackSet,
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
   MyClawAppAttachmentMeta,
@@ -167,6 +168,8 @@ export interface MyClawAppAgentsController {
   setModel(agent: string, modelId: string, effort?: string): Promise<MyClawAppAgentsConfigResult>;
   /** Unpins an agent so it inherits again. Refuses "global". */
   clearModel(agent: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Pins the vision fallback model (`llm.visionFallback`); "" removes the pin. */
+  setFallback(model: string): Promise<MyClawAppAgentsConfigResult>;
   /** Writes the `agents.<agent>.skills|mcp` override. */
   setScope(agent: string, field: "skills" | "mcp", mode: "inherit" | "all" | "list", names: string[]): Promise<MyClawAppAgentsConfigResult>;
   /** Pins `agents.<agent>.workspace`; null removes the pin. */
@@ -891,6 +894,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "agents.model.clear":
         void this.handleAgentsModelClear(ws, frame);
         break;
+      case "agents.fallback.set":
+        void this.handleAgentsFallbackSet(ws, frame);
+        break;
       case "agents.scope.set":
         void this.handleAgentsScopeSet(ws, frame);
         break;
@@ -1219,6 +1225,25 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, await this.agents.clearModel(frame.agent));
     } catch (err) {
       await this.refuse(ws, "agents", "agents.model.clear failed", { agent: frame.agent, error: String(err) });
+    }
+  }
+
+  private async handleAgentsFallbackSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppAgentsFallbackSet,
+  ): Promise<void> {
+    if (!this.agents) {
+      await this.refuse(ws, "agents", "agent defaults unavailable");
+      return;
+    }
+    if (typeof frame.model !== "string") {
+      await this.refuse(ws, "agents", "invalid fallback model", { model: frame.model });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.agents.setFallback(frame.model));
+    } catch (err) {
+      await this.refuse(ws, "agents", "agents.fallback.set failed", { model: frame.model, error: String(err) });
     }
   }
 

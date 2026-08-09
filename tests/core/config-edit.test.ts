@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import {
   setAgentModel,
   setDefaultModel,
+  setVisionFallback,
   clearAgentModel,
   setAgentScope,
   setAgentWorkspace,
@@ -108,6 +109,21 @@ describe("setDefaultModel with an effort pin", () => {
     await setDefaultModel("mimo", "litellm", "high");
     await setDefaultModel("mimo", "litellm");
     expect((await readConfigFile()).llm.effort).toBe("high");
+  });
+});
+
+describe("setVisionFallback", () => {
+  test("writes llm.visionFallback and answers with the previous value", async () => {
+    await writeConfigFile();
+    const result = await setVisionFallback("opus");
+    expect(result.ok).toBe(true);
+    expect((await readConfigFile()).llm.visionFallback).toBe("opus");
+  });
+
+  test("an empty model removes the pin", async () => {
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, visionFallback: "opus" } });
+    await setVisionFallback("");
+    expect((await readConfigFile()).llm.visionFallback).toBeUndefined();
   });
 });
 

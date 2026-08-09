@@ -16,7 +16,7 @@ import { snapshot, journal, artifactId } from "./config-store.ts";
  */
 
 export type ConfigEditResult =
-  | { ok: true; previous: { model?: string; provider?: string; effort?: EffortLevel } }
+  | { ok: true; previous: { model?: string; provider?: string; effort?: EffortLevel; fallback?: string } }
   | { ok: false; error: string };
 
 const INDENT = 2;
@@ -250,6 +250,30 @@ export async function setDefaultModel(
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
+  return { ok: true, previous };
+}
+
+/**
+ * Pins the vision fallback model: image runs are rerouted to it when the resolved model cannot
+ * take images (llm.visionFallback). `""` removes the pin, which sends image runs back to the
+ * resolved model. Validation that the target is a declared, vision-capable model happens at the
+ * call site, mirroring the run-time guard in the resolver.
+ */
+export async function setVisionFallback(modelId: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const llm = objectAt(read.data, "llm");
+  const previous = {
+    fallback: typeof llm["visionFallback"] === "string" ? (llm["visionFallback"] as string) : undefined,
+  };
+
+  if (modelId === "") delete llm["visionFallback"];
+  else llm["visionFallback"] = modelId;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant fallback image ${modelId || "aucun"}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { visionFallback: modelId === "" ? null : modelId });
   return { ok: true, previous };
 }
 
