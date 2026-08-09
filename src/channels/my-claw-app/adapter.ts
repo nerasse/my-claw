@@ -90,6 +90,10 @@ import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
 import type { MyClawAppSessionStore } from "./sessions.ts";
 import { sanitizeThreadId } from "./sessions.ts";
+import { thumbPathFor } from "./files.ts";
+import { extractVideoThumbnail } from "../../media/video.ts";
+import { mkdir, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -670,7 +674,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
         return new Response("Unauthorized", { status: 401 });
       }
-      return this.serveMedia(id, this.ownerFor(deviceId));
+      return this.serveMedia(id, this.ownerFor(deviceId), url.searchParams.get("thumb") === "1");
     }
 
     if (url.pathname === "/skills") {
@@ -730,30 +734,72 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return new Response(content, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
   }
 
-  private async serveMedia(id: string, owner?: string): Promise<Response> {
+  private async serveMedia(id: string, owner: string | undefined, thumb: boolean): Promise<Response> {
+    let path: string | undefined;
+    let mimeType = "application/octet-stream";
+    let filename: string | undefined;
     const entry = this.media.get(id);
     if (entry) {
-      const headers: Record<string, string> = {
-        "Content-Type": entry.mimeType ?? "application/octet-stream",
-      };
-      if (entry.filename) {
-        headers["Content-Disposition"] = `attachment; filename="${entry.filename.replace(/["\\]/g, "")}"`;
-      }
-      return new Response(Bun.file(entry.path), { headers });
-    }
-    // Attachments uploaded from the owner's devices: served back from the session files.
-    if (owner) {
+      path = entry.path;
+      mimeType = entry.mimeType ?? mimeTypeForPath(path) ?? "application/octet-stream";
+      filename = entry.filename;
+    } else if (owner) {
       const found = await this.files.readById(owner, id);
       if (found) {
-        return new Response(Bun.file(found.path), {
-          headers: {
-            "Content-Type": found.file.mimeType,
-            "Content-Disposition": `attachment; filename="${found.file.filename.replace(/["\\]/g, "")}"`,
-          },
-        });
+        path = found.path;
+        mimeType = found.file.mimeType;
+        filename = found.file.filename;
       }
     }
-    return new Response("Not Found", { status: 404 });
+    if (!path) return new Response("Not Found", { status: 404 });
+
+    if (thumb) {
+      if (!mimeType.startsWith("video/")) return new Response("Not Found", { status: 404 });
+      const generated = await this.thumbnailFor(owner ?? "", id, path);
+      if (!generated) {
+        await myClawAppLog("warn", "video thumbnail unavailable", { owner, id });
+        return new Response("Not Found", { status: 404 });
+      }
+      path = generated;
+      mimeType = "image/jpeg";
+      filename = undefined;
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": mimeType,
+    };
+    if (filename) {
+      headers["Content-Disposition"] = `attachment; filename="${filename.replace(/["\\]/g, "")}"`;
+    }
+    return new Response(Bun.file(path), { headers });
+  }
+
+  /** One extraction per video: an in-flight promise dedupes concurrent first requests, and the
+   *  file on disk answers every later one. */
+  private thumbnails = new Map<string, Promise<string | undefined>>();
+
+  private thumbnailFor(owner: string, id: string, videoPath: string): Promise<string | undefined> {
+    const target = thumbPathFor(owner, id);
+    const inflight = this.thumbnails.get(target);
+    if (inflight) return inflight;
+    const pending = (async (): Promise<string | undefined> => {
+      try {
+        await stat(target);
+        return target;
+      } catch {
+        // not cached yet: generate
+      }
+      try {
+        await mkdir(dirname(target), { recursive: true });
+        await extractVideoThumbnail(videoPath, target);
+        return target;
+      } catch {
+        return undefined;
+      }
+    })();
+    this.thumbnails.set(target, pending);
+    void pending.then(() => this.thumbnails.delete(target));
+    return pending;
   }
 
   private async handleUpload(owner: string, req: Request): Promise<Response> {

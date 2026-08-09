@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { extractVideoFrames } from "../../src/media/video.ts";
+import { extractVideoFrames, extractVideoThumbnail } from "../../src/media/video.ts";
 import { stat, unlink } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -52,5 +52,57 @@ describe("extractVideoFrames", () => {
 
   test("throws for nonexistent video file", async () => {
     await expect(extractVideoFrames("/tmp/nonexistent-video-12345.mp4")).rejects.toThrow("Video frame extraction failed");
+  });
+});
+
+describe("extractVideoThumbnail", () => {
+  beforeAll(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "video-test-"));
+    videoPath = join(tmpDir, "test.mp4");
+    await execFileAsync("ffmpeg", [
+      "-f", "lavfi",
+      "-i", "testsrc=duration=6:size=320x240:rate=1",
+      "-t", "6",
+      "-pix_fmt", "yuv420p",
+      videoPath,
+    ]);
+  });
+
+  afterAll(async () => {
+    await unlink(videoPath).catch(() => {});
+  });
+
+  test("writes a small jpeg preview", async () => {
+    const out = join(tmpDir, "thumb.jpg");
+    await extractVideoThumbnail(videoPath, out);
+    const info = await stat(out);
+    expect(info.size).toBeGreaterThan(0);
+    await unlink(out);
+  });
+
+  test("falls back to the first frame for a clip shorter than the seek point", async () => {
+    const short = join(tmpDir, "short.mp4");
+    await execFileAsync("ffmpeg", [
+      "-f", "lavfi",
+      "-i", "testsrc=duration=0.2:size=320x240:rate=1",
+      "-t", "0.2",
+      "-pix_fmt", "yuv420p",
+      short,
+    ]);
+    const out = join(tmpDir, "short-thumb.jpg");
+    await extractVideoThumbnail(short, out);
+    const info = await stat(out);
+    expect(info.size).toBeGreaterThan(0);
+    await unlink(out);
+    await unlink(short);
+  });
+
+  test("throws for a video ffmpeg cannot read", async () => {
+    const garbage = join(tmpDir, "garbage.mp4");
+    await Bun.write(garbage, "not a video");
+    await expect(extractVideoThumbnail(garbage, join(tmpDir, "garbage-thumb.jpg"))).rejects.toThrow(
+      "Video thumbnail extraction failed",
+    );
+    await unlink(garbage);
   });
 });

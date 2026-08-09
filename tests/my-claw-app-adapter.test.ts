@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { filesRootForOwner } from "../src/channels/my-claw-app/files.ts";
 import { mkdir, writeFile, unlink, readdir, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
@@ -12,6 +14,8 @@ import { runRegistry } from "../src/core/run-registry.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron/store.ts";
+
+const execFileAsync = promisify(execFile);
 
 const DEVICE_ID = "test-device";
 const TOKEN = "secret-token";
@@ -294,6 +298,55 @@ describe("MyClawAppAdapter", () => {
 
     const missing = await fetch(`http://127.0.0.1:${adapter.port}/media/nope?device=${DEVICE_ID}&token=${TOKEN}`);
     assert.equal(missing.status, 404);
+  });
+
+  test("a video serves a generated preview frame under ?thumb=1", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const videoPath = join(tmpDir, `clip-${Date.now()}.mp4`);
+    await execFileAsync("ffmpeg", [
+      "-f", "lavfi",
+      "-i", "testsrc=duration=2:size=320x240:rate=1",
+      "-t", "2",
+      "-pix_fmt", "yuv420p",
+      videoPath,
+    ]);
+
+    await adapter.send(DEVICE_ID, { text: `MEDIA:${videoPath} regarde` });
+    const frame = (await nextFrame(client)) as { text: string; attachments: Array<{ id: string; type: string }> };
+    assert.equal(frame.text, "regarde");
+    assert.equal(frame.attachments[0]!.type, "video");
+    const mediaId = frame.attachments[0]!.id;
+
+    // The video itself still serves as video.
+    const video = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(video.status, 200);
+    assert.equal(video.headers.get("content-type"), "video/mp4");
+
+    // The preview frame is a jpeg, generated once and served again from the cache.
+    const first = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}&thumb=1`);
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("content-type"), "image/jpeg");
+    const firstBytes = await first.arrayBuffer();
+    assert.ok(firstBytes.byteLength > 0);
+    const second = await fetch(`http://127.0.0.1:${adapter.port}/media/${mediaId}?device=${DEVICE_ID}&token=${TOKEN}&thumb=1`);
+    assert.deepEqual(new Uint8Array(await second.arrayBuffer()), new Uint8Array(firstBytes));
+
+    // Only videos get previews; a missing media and a non-video media answer 404 too.
+    const missingThumb = await fetch(`http://127.0.0.1:${adapter.port}/media/nope?device=${DEVICE_ID}&token=${TOKEN}&thumb=1`);
+    assert.equal(missingThumb.status, 404);
+
+    const imagePath = join(tmpDir, `shot-${Date.now()}.png`);
+    await writeFile(imagePath, "png-bytes");
+    await adapter.send(DEVICE_ID, { text: `MEDIA:${imagePath} vu` });
+    const imageFrame = (await nextFrame(client)) as { attachments: Array<{ id: string }> };
+    const imageThumb = await fetch(
+      `http://127.0.0.1:${adapter.port}/media/${imageFrame.attachments[0]!.id}?device=${DEVICE_ID}&token=${TOKEN}&thumb=1`,
+    );
+    assert.equal(imageThumb.status, 404);
+    await unlink(imagePath).catch(() => {});
+
+    await unlink(videoPath).catch(() => {});
   });
 
   test("MEDIA refs are copied into the session store and listed as session files", async () => {

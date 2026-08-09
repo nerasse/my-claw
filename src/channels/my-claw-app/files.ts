@@ -62,6 +62,15 @@ export function filesRootForOwner(owner: string): string {
 }
 
 /**
+ * Generated video previews live apart from the listing: a thumb in the thread directory
+ * would parse as a file of its own (`<id>__name.thumb.jpg`) and show up twice in the
+ * explorer. Keyed by owner only, since videos resolve across threads.
+ */
+export function thumbPathFor(owner: string, id: string): string {
+  return join(MY_CLAW_DIR, "files", "my-claw-app", ".thumbs", owner, `${id}.jpg`);
+}
+
+/**
  * The only extension table of the channel. An entry missing here does not degrade to a generic
  * download: `typeFor` reads the type back out of the mime, so an unlisted audio extension is
  * stored as type "file", and the STT pass -- which only looks at type "audio" -- never sees it.
@@ -221,12 +230,19 @@ export class SessionFileStore {
     const file = await this.findById(owner, threadId, id);
     if (!file) return false;
     await rm(filePathFor(owner, threadId, file.storedName), { force: true });
+    await rm(thumbPathFor(owner, id), { force: true }).catch(() => {});
     return true;
   }
 
   /** Archive/delete of a session must take its files with it. */
   async removeSessionFiles(owner: string, threadId: string): Promise<void> {
     await rm(filesDirFor(owner, threadId), { recursive: true, force: true });
+    // Previews are keyed by owner only; once the last thread of that owner is gone they are
+    // unreachable, so the whole thumb set goes with the session.
+    const remaining = await readdir(join(MY_CLAW_DIR, "files", "my-claw-app", owner)).catch(() => []);
+    if (remaining.length === 0) {
+      await rm(join(MY_CLAW_DIR, "files", "my-claw-app", ".thumbs", owner), { recursive: true, force: true });
+    }
   }
 
   async readById(owner: string, id: string): Promise<{ path: string; file: SessionFile } | null> {

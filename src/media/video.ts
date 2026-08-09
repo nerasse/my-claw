@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdtemp, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -41,5 +41,33 @@ export async function extractVideoFrames(
     return frames;
   } catch (err) {
     throw new Error(`Video frame extraction failed: ${err}`);
+  }
+}
+
+const THUMB_SCALE = "scale=480:-2:flags=lanczos";
+
+/**
+ * Extracts a single preview frame into `outPath`. Seek starts 1 second in, away from the
+ * opening black frame; a clip too short to reach it yields nothing, and falls back to 0.
+ */
+export async function extractVideoThumbnail(videoPath: string, outPath: string): Promise<void> {
+  try {
+    await execFileAsync("ffmpeg", [
+      "-ss", "1", "-i", videoPath,
+      "-vframes", "1", "-q:v", "4", "-vf", THUMB_SCALE,
+      outPath,
+    ]);
+    await stat(outPath);
+  } catch {
+    try {
+      await execFileAsync("ffmpeg", [
+        "-i", videoPath,
+        "-vframes", "1", "-q:v", "4", "-vf", THUMB_SCALE,
+        outPath,
+      ]);
+      await stat(outPath);
+    } catch (err) {
+      throw new Error(`Video thumbnail extraction failed: ${err}`);
+    }
   }
 }
