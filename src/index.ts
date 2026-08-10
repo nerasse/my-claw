@@ -513,7 +513,10 @@ async function main() {
       url: `myclaw://job/${jobId}`,
     });
   });
-  hooks.on("cron:job:error", ({ jobId, jobName, error }) => {
+  // A silent job stays silent when it fails: it used to notify anyway, which made "silent"
+  // useless for the failing job that needed it most.
+  hooks.on("cron:job:error", ({ jobId, jobName, error, silent }) => {
+    if (silent) return;
     void publishNotification({
       title: jobName,
       body: `Job failed: ${cleanNotificationText(String(error)).slice(0, 200)}`,
@@ -1550,6 +1553,7 @@ async function main() {
             prompt: job.prompt,
             schedule: job.schedule,
             enabled: job.enabled,
+            silent: job.silent === true,
             state: job.state,
             ...(job.pausedReason ? { pausedReason: job.pausedReason } : {}),
             repeat: job.repeat,
@@ -1589,6 +1593,9 @@ async function main() {
         const jobEffort: EffortLevel | "" | undefined =
           fields.effort === undefined ? undefined : fields.effort === "" ? "" : (fields.effort as EffortLevel);
         const stored = {
+          // undefined means "don't touch", like `effort`: an older app build does not send the
+          // field, and an edit from it must not silently clear a job's silent flag.
+          ...(fields.silent === undefined ? {} : { silent: fields.silent === true }),
           ...(fields.model ? { model: fields.model } : {}),
           ...(jobEffort === undefined ? {} : { effort: jobEffort }),
           ...(fields.workspace ? { workspace: fields.workspace } : {}),

@@ -46,6 +46,13 @@ export interface CronJob {
   skills?: string[];
   mcp?: string[];
   tools?: string[];
+  /**
+   * Suppresses this job's push notifications, successes and failures alike. Absent = notify,
+   * so an existing job keeps the behaviour it had. Distinct from the agent's own SILENT_MARKER,
+   * which is a per-run decision ("nothing to report"): this one is the user's standing choice
+   * for a job whose every run would otherwise ring.
+   */
+  silent?: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "ok" | "error" | null;

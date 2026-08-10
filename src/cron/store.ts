@@ -181,6 +181,8 @@ export interface CreateJobParams {
   skills?: string[];
   mcp?: string[];
   tools?: string[];
+  /** Suppresses the job's push notifications; delivery and output are untouched. */
+  silent?: boolean;
 }
 
 export function createJob(params: CreateJobParams): CronJob {
@@ -205,6 +207,8 @@ export function createJob(params: CreateJobParams): CronJob {
     ...(params.skills ? { skills: params.skills } : {}),
     ...(params.mcp ? { mcp: params.mcp } : {}),
     ...(params.tools ? { tools: params.tools } : {}),
+    // Absent rather than false: notifying is the default, and an untouched job keeps a clean shape.
+    ...(params.silent ? { silent: true } : {}),
     nextRunAt: computeNextRun(schedule),
     lastRunAt: null,
     lastStatus: null,
@@ -226,6 +230,8 @@ export interface UpdateJobParams {
   skills?: string[];
   mcp?: string[];
   tools?: string[];
+  /** Suppresses the job's push notifications; delivery and output are untouched. */
+  silent?: boolean;
 }
 
 export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobParams): CronJob | null {
@@ -252,6 +258,7 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.skills !== undefined) job.skills = updates.skills;
   if (updates.mcp !== undefined) job.mcp = updates.mcp;
   if (updates.tools !== undefined) job.tools = updates.tools;
+  if (updates.silent !== undefined) job.silent = updates.silent || undefined;
   if (updates.schedule !== undefined) {
     job.schedule = parseSchedule(updates.schedule);
     job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);

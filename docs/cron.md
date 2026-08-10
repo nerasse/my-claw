@@ -26,6 +26,22 @@ Cron jobs get a filtered toolset. Excluded: `cron` (no recursive scheduling), `s
 
 The agent can suppress delivery by starting its response with `[SILENT]`. Output is still saved to `~/.my-claw/cron/output/` for audit. This avoids spam when a scheduled check finds nothing actionable.
 
+### `silent` is a per-job setting, and it is not the marker
+
+`job.silent` suppresses the job's **push notifications**, successes and failures alike. Delivery and
+output are untouched: the result still lands where `deliver` says. The `[SILENT]` marker is the
+opposite trade — a per-run decision by the agent that there is nothing to say at all, which skips
+delivery. Two different questions, so two different switches:
+
+| | notification | delivery |
+| --- | --- | --- |
+| `job.silent: true` | suppressed | kept |
+| `[SILENT]` marker | suppressed | skipped |
+
+Absent means notify, so an existing job keeps the behaviour it had. Failures honour it too: a
+silent job that fails stays silent, which is the whole point for a job that runs every ten minutes.
+Editable from the app (Jobs editor, Notify/Silent) and carried by the `jobs.save` frame.
+
 ### Sequential execution
 
 Hermes uses a ThreadPoolExecutor for parallel cron jobs. MyClaw runs them sequentially. Rationale: Bun is single-threaded; the overhead of parallelism is not worth the complexity for a single-tenant bot. If a job is slow, it blocks the tick — acceptable for personal use.

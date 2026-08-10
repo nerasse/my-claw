@@ -249,7 +249,7 @@ export interface HookEventMap {
     silent: boolean;
     durationMs: number;
   };
-  "cron:job:error": { jobId: string; jobName: string; error: unknown };
+  "cron:job:error": { jobId: string; jobName: string; error: unknown; silent: boolean };
   "cron:job:delivered": {
     jobId: string;
     platform: string;

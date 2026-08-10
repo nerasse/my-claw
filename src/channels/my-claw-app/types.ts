@@ -141,6 +141,27 @@ export interface MyClawAppDiagSnapshot {
   threadId?: string;
 }
 
+/**
+ * A crash, a fatal JS error, or the reason the OS killed the app's process last time, reported
+ * by the device on its next connection. `adb` is not reachable on every network the phone lives
+ * on, and Android's logcat is a ring buffer, so the device is the only place that can keep this
+ * until it has somewhere to send it.
+ */
+export interface MyClawAppDiagReport {
+  type: "diag.report";
+  reports: {
+    /** `js` and `render` come from the app; `exit` is Android's own post-mortem. */
+    kind: "js" | "render" | "exit";
+    at: number;
+    message: string;
+    /** Hermes ships bytecode: unreadable without the composed source map of that exact build. */
+    stack?: string;
+    appVersion?: string;
+    /** ApplicationExitInfo: CRASH, CRASH_NATIVE, ANR, LOW_MEMORY, USER_REQUESTED... */
+    reason?: string;
+  }[];
+}
+
 /** Tail of the server log files, filtered. `run` is the correlation id stamped on every line. */
 export interface MyClawAppLogsTail {
   type: "logs.tail";
@@ -442,6 +463,7 @@ export type MyClawAppClientFrame =
   | MyClawAppApprovalResponse
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
+  | MyClawAppDiagReport
   | MyClawAppLogsTail
   | MyClawAppSessionRename
   | MyClawAppVoiceModeGet
@@ -1189,6 +1211,8 @@ export interface MyClawAppJobEntry {
     display: string;
   };
   enabled: boolean;
+  /** Suppresses this job's push notifications, successes and failures alike. */
+  silent: boolean;
   state: "scheduled" | "paused" | "completed";
   pausedReason?: string;
   /** 1 for "once" jobs, null for recurring ones. Not editable: fixed by the schedule kind. */
@@ -1258,6 +1282,8 @@ export interface MyClawAppJobSave {
   prompt: string;
   schedule: string;
   enabled: boolean;
+  /** Suppresses this job's push notifications, successes and failures alike. */
+  silent: boolean;
   model?: string;
   /** The job's own effort pin; "" clears it so the cron agent's setting applies. */
   effort?: string;

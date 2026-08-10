@@ -2367,6 +2367,7 @@ describe("scheduled jobs (jobs.*)", () => {
         prompt: job.prompt,
         schedule: job.schedule,
         enabled: job.enabled,
+        silent: job.silent === true,
         state: job.state,
         repeat: job.repeat,
         completedRuns: job.completedRuns,

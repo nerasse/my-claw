@@ -220,13 +220,16 @@ export class CronScheduler {
         // user-facing flow; the cron path owns its own cleanup regardless of delivery outcome.
         await cleanupGeneratedTempFiles(attachments).catch(() => {});
       }
-      hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: false, durationMs: Date.now() - jobStartedAt });
+      // `job.silent` suppresses the notification only: the result is still delivered and still
+      // saved. That is the difference with SILENT_MARKER above, which means the run had nothing
+      // to say at all and therefore returns before delivery.
+      hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: job.silent === true, durationMs: Date.now() - jobStartedAt });
       if (delivered) {
         hooks.emit("cron:job:delivered", { jobId: job.id, platform: delivered.platform, chatId: delivered.chatId });
       }
       void log("info", "cron job completed", { jobId: job.id, jobName: job.name });
     } catch (err) {
-      hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err });
+      hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err, silent: job.silent === true });
       throw err;
     }
   }

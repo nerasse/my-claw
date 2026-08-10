@@ -85,6 +85,45 @@ describe("cron scheduler", () => {
       expect(sentMessages[0]!.text).toContain("Test response");
     });
 
+    test("a silent job still delivers, and says so on the end event", async () => {
+      const events: { silent: boolean }[] = [];
+      hooks.on("cron:job:end", ({ silent }) => {
+        events.push({ silent });
+      });
+
+      const job = createJob({
+        prompt: "test",
+        schedule: "every 30m",
+        origin: { platform: "telegram", chatId: "123" },
+        deliver: "origin",
+        silent: true,
+      });
+      job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+      await saveJobs([job]);
+
+      await scheduler.tick();
+      // The distinction the whole field exists for: notification off, delivery untouched.
+      expect(events).toEqual([{ silent: true }]);
+      expect(sentMessages).toHaveLength(1);
+    });
+
+    test("a silent job that fails stays silent", async () => {
+      router.routeCron = async () => {
+        throw new Error("boom");
+      };
+      const events: { silent: boolean }[] = [];
+      hooks.on("cron:job:error", ({ silent }) => {
+        events.push({ silent });
+      });
+
+      const job = createJob({ prompt: "test", schedule: "every 30m", origin: null, deliver: "local", silent: true });
+      job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+      await saveJobs([job]);
+
+      await scheduler.tick();
+      expect(events).toEqual([{ silent: true }]);
+    });
+
     test("[SILENT] response skips delivery", async () => {
       router.routeCron = async () => ({ text: "[SILENT] nothing to report" });
 

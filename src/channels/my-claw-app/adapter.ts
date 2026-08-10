@@ -37,6 +37,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppErrorScope,
   MyClawAppFileDelete,
   MyClawAppFilesList,
+  MyClawAppDiagReport,
   MyClawAppDiagSnapshot,
   MyClawAppInstructionsFile,
   MyClawAppInstructionsGet,
@@ -99,6 +100,8 @@ const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
 // TCP alive); only reclaim sockets that look dead for 10 minutes.
 const STALE_SOCKET_MS = 10 * 60 * 1000;
+/** Per frame. The device queues reports while offline, and one crash loop must not flood the log. */
+const MAX_DIAG_REPORTS = 20;
 const SWEEP_INTERVAL_MS = 30_000;
 // A look-aside cache of recently served media; the bytes themselves live in the session store
 // (uploads) or were copied there on send, so evicting an entry here only drops the fast path.
@@ -372,6 +375,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
         open: (ws) => this.handleOpen(ws),
         message: (ws, message) => this.handleMessage(ws, message),
         close: (ws) => this.handleClose(ws),
+        // The device keeps the socket alive with OkHttp's 20s ping, which is a control frame and
+        // never reaches `message`. Without these the sweeper read an idle `lastSeen` and reaped
+        // healthy sockets at STALE_SOCKET_MS, once every 10 minutes, forever.
+        //
+        // Both handlers, and `ping` is the one that matters: it is the device's own 20s interval,
+        // which we set. `pong` only fires in reply to a ping Bun sent on its own schedule, which
+        // is undocumented and not configurable -- liveness must not depend on it.
+        ping: (ws) => {
+          ws.data.lastSeen = Date.now();
+        },
+        pong: (ws) => {
+          ws.data.lastSeen = Date.now();
+        },
       },
     });
     this.sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
@@ -915,6 +931,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "diag.snapshot":
         void this.handleDiagSnapshot(ws, ws.data.owner, frame);
+        break;
+      case "diag.report":
+        void this.handleDiagReport(ws, frame);
         break;
       case "logs.tail":
         void this.handleLogsTail(ws, frame);
@@ -2213,6 +2232,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       void myClawAppLog("debug", "send failed", { error: String(err) });
     }
+  }
+
+  /**
+   * Post-mortems, so they describe a process that is already gone: logged at error level and
+   * acknowledged, and only then does the device drop them from its own store. An unacknowledged
+   * report is kept and resent, because losing the trace of the crash that killed the app is the
+   * one failure mode this whole path exists to prevent.
+   */
+  private async handleDiagReport(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppDiagReport,
+  ): Promise<void> {
+    const reports = Array.isArray(frame.reports) ? frame.reports.slice(0, MAX_DIAG_REPORTS) : [];
+    for (const report of reports) {
+      await myClawAppLog("error", "device diagnostic", {
+        deviceId: ws.data.deviceId,
+        kind: report.kind,
+        at: new Date(typeof report.at === "number" ? report.at : Date.now()).toISOString(),
+        message: String(report.message ?? "").slice(0, 2000),
+        ...(report.reason ? { reason: report.reason } : {}),
+        ...(report.appVersion ? { appVersion: report.appVersion } : {}),
+        ...(typeof report.stack === "string" ? { stack: report.stack.slice(0, 8000) } : {}),
+      });
+    }
+    ws.send(JSON.stringify({ type: "diag.report.result", accepted: reports.length }));
   }
 
   private sweep(): void {
