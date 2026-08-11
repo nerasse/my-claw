@@ -285,3 +285,46 @@ describe("no surface keeps its own chain", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("availability stays hot", () => {
+  test("the claude env token counts the moment it appears, with no sample in between", async () => {
+    // A token rotated in `.env` alone reaches process.env through the watcher, which then returns
+    // early because no config section changed: nothing announces it. Sampling would miss it for
+    // six hours, and the picker would call a model unauthenticated while runs used it fine.
+    const { claudeTokenInEnv } = await import("../src/llm/claude-auth.ts");
+    const original = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    try {
+      expect(claudeTokenInEnv()).toBe(false);
+      const sampled = { claude: false };
+      const live = (): AvailabilityWorld => ({ ...world(), claudeAuth: sampled.claude || claudeTokenInEnv() });
+      expect(availabilityOf(config().llm, "claude-sonnet-5", live())).toEqual({
+        state: "no-auth",
+        provider: "anthropic",
+      });
+      process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-rotated";
+      // No re-sample, no reload, no restart.
+      expect(availabilityOf(config().llm, "claude-sonnet-5", live())).toEqual({ state: "ready" });
+    } finally {
+      if (original === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+      else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = original;
+    }
+  });
+
+  test("a key added to a provider makes its models runnable with no restart", () => {
+    // The config object is mutated in place by the watcher, and availability is derived on every
+    // read: nothing caches the verdict.
+    const c = config();
+    const keyless: AvailabilityWorld = { ...world(), hasEnv: (name) => name !== "LITELLM_API_KEY" };
+    expect(availabilityOf(c.llm, "qwen", keyless)?.state).toBe("no-key");
+    expect(runnableModels(c.llm, keyless).some((m) => m.id === "qwen")).toBe(false);
+    expect(runnableModels(c.llm, world()).some((m) => m.id === "qwen")).toBe(true);
+  });
+
+  test("a model added to the live config resolves without a restart", () => {
+    const c = config();
+    // What a hot reload does: replace the section in place.
+    c.llm.models = [...(c.llm.models ?? []), { id: "brand-new", label: "Brand new", provider: "litellm" }];
+    expect(resolveRunModel(c, { agent: "main", sessionModel: "brand-new" }, world()).model).toBe("brand-new");
+  });
+});

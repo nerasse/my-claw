@@ -32,6 +32,17 @@ export async function loadClaudeToken(): Promise<string | null> {
   return (await readStoredToken()) ?? process.env[TOKEN_ENV] ?? null;
 }
 
+/**
+ * The ambient token, read synchronously. Availability is decided on a read path that cannot await
+ * a file, so it works from a periodic sample -- and a token rotated in `.env` alone never reaches
+ * that sample: the watcher refreshes `process.env` but returns before announcing anything, having
+ * found no config section changed. Runs would then work while the picker called the model
+ * unauthenticated. This is the half of the answer that needs no sampling at all.
+ */
+export function claudeTokenInEnv(): boolean {
+  return Boolean(process.env[TOKEN_ENV]);
+}
+
 export async function setClaudeToken(token: string): Promise<void> {
   const trimmed = token.trim();
   if (!trimmed) throw new Error("empty token");

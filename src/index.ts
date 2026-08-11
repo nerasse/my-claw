@@ -133,7 +133,7 @@ import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
-import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
+import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
 import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
@@ -327,30 +327,45 @@ async function main() {
       config.tags,
     );
   };
+  // Whether a model can run at all: what each provider last listed, plus the two subscription
+  // auth states (docs/model-resolution.md). Installed *before* the first projection below, which
+  // reads it: a picker built while the world was still the permissive default would keep offering
+  // unavailable models until something else happened to re-project it -- and with discovery off,
+  // nothing would.
+  const subscriptionAuth = { claude: false, codex: false };
+  const sampleSubscriptionAuth = async (): Promise<void> => {
+    const claude = (await claudeTokenStatus().catch(() => ({ present: false }))).present;
+    const codex = await codexIsLoggedIn().catch(() => false);
+    if (claude === subscriptionAuth.claude && codex === subscriptionAuth.codex) return;
+    subscriptionAuth.claude = claude;
+    subscriptionAuth.codex = codex;
+    // The sample decides which models the picker may offer, and it lands asynchronously -- after
+    // the projection that a refresh triggers. Re-project, or a token that expired between two
+    // refreshes leaves its models on the menu for six hours.
+    applyModelCatalog();
+  };
+  setAvailabilityWorld(() => ({
+    answered: (provider) => modelCatalog.answered(provider),
+    listedBy: (provider) => modelCatalog.listedBy(provider),
+    hasEnv: (name) => Boolean(process.env[name]),
+    // The env half is read live, so a token rotated in `.env` alone -- which the watcher applies
+    // to process.env without announcing a section change -- is honoured immediately. The stored
+    // half comes from the sample, and every writer of that file goes through onAuthChanged.
+    claudeAuth: subscriptionAuth.claude || claudeTokenInEnv(),
+    codexAuth: subscriptionAuth.codex,
+  }));
+  await sampleSubscriptionAuth();
+  hooks.on("models:discovered", () => void sampleSubscriptionAuth());
+  // A config.json edit can add a provider or a key env name, both of which change what is
+  // runnable. (A bare `.env` rotation does not reach here -- the watcher returns early when no
+  // section changed -- which is why the claude env token is read live in the world above.)
+  hooks.on("config:reloaded", () => void sampleSubscriptionAuth());
+
   modelCatalog.onUpdate(applyModelCatalog);
   applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)
   if (modelCatalog.enabled()) void modelCatalog.refresh();
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
-
-  // Whether a model can run at all: what each provider last listed, plus the two subscription
-  // auth states (docs/model-resolution.md). The auth checks read files, so they are sampled
-  // rather than awaited on the read path -- and re-sampled wherever they can change: a login, a
-  // logout, a pasted token, and every catalog refresh.
-  const subscriptionAuth = { claude: false, codex: false };
-  const sampleSubscriptionAuth = async (): Promise<void> => {
-    subscriptionAuth.claude = (await claudeTokenStatus().catch(() => ({ present: false }))).present;
-    subscriptionAuth.codex = await codexIsLoggedIn().catch(() => false);
-  };
-  await sampleSubscriptionAuth();
-  hooks.on("models:discovered", () => void sampleSubscriptionAuth());
-  setAvailabilityWorld(() => ({
-    answered: (provider) => modelCatalog.answered(provider),
-    listedBy: (provider) => modelCatalog.listedBy(provider),
-    hasEnv: (name) => Boolean(process.env[name]),
-    claudeAuth: subscriptionAuth.claude,
-    codexAuth: subscriptionAuth.codex,
-  }));
 
   // The window enrichment above is a no-op until the price table is on disk, so a first-ever
   // fetch has to replay it; otherwise every model keeps the fallback window until a restart.

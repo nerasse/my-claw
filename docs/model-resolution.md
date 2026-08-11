@@ -130,6 +130,22 @@ type Availability =
 no greyed rows, no "removed" badges. The reason is then invisible by construction, which is why
 the run notice below is not optional: it becomes the only explanation of a model that vanished.
 
+Everything here is hot. The verdict is computed on every read from the live config -- which the
+watcher mutates in place -- so a provider gained, a key added or a model declared applies to the
+next message with no restart. Three seams needed care, and each has a test:
+
+- the world is installed **before** the first picker projection, or a menu built while the default
+  permissive world was still in place keeps offering unavailable models until something happens to
+  re-project it (and with `discover` off, nothing does);
+- the auth sample lands asynchronously, after the projection a refresh triggers, so a change in it
+  re-projects the picker itself -- otherwise a token that expired between two refreshes stays on
+  the menu for six hours;
+- a token rotated in `.env` **alone** never reaches the sample: `readConfigFromDisk` force-refreshes
+  `process.env`, then the watcher returns early because no config section changed, emitting nothing.
+  The claude env token is therefore read live (`claudeTokenInEnv`), so runs and availability agree
+  the instant it appears. The stored-file half stays sampled; every writer of that file goes through
+  `onAuthChanged`.
+
 Availability is derived, never stored in config, and it is derived from **the catalog's last known
 good set plus the auth state** -- not from a probe at picker time. The distinction that makes this
 safe, and that the code does not draw today:
