@@ -30,15 +30,22 @@ the user builds of the prompt; hiding them would leave a source of instructions 
 
 ## Inheritance is the point, not a detail
 
-`loadPromptFile` (`src/agent/prompt/loader.ts:69`) resolves **file by file**: the session's
-workspace first, then the default workspace. A named workspace only needs the files it
-overrides. On this machine `sofa` has none of the four, so it runs entirely on the default
-workspace's instructions.
+Resolution goes through one ladder shared with the runtime (`resolvePromptFile`,
+`src/agent/prompt/loader.ts`): the workspace's own file, then the configured source, then the
+shipped template. The configured source is `config.workspacePrompts`
+(docs/workspace-prompt-inheritance.md), editable **from this page** through the `...` button on
+each row: the layer screen shows the whole ladder with the winning step marked, offers
+`default` / a named workspace / the shipped template / `nothing` as the source, and a per-file
+`off` that drops the layer even when the workspace owns the file. A named workspace only needs
+the files it overrides. On this machine `sofa` has none of the four, so by default it runs
+entirely on the default workspace's instructions.
 
 The page therefore never shows "missing". It shows, per workspace and per file, either:
 
 - **own** -- the file exists in this workspace and is what the agent reads;
-- **inherited** -- the file is absent here, and the agent reads the default workspace's copy.
+- **inherited** -- the file is absent here, and the agent reads the configured source's copy;
+- **fallback** -- no workspace owns the file anywhere, and the shipped template applies;
+- **off** -- the workspace's policy drops this layer entirely, even if the file exists.
 
 An inherited entry displays the content that actually applies, read-only, with the workspace it
 comes from.
@@ -121,7 +128,9 @@ See `docs/my-claw-app-channel.md` for the frames. Errors use the `instructions` 
   restores a previous content.
 - No editing of a nested `AGENTS.md`. They are discovered by scanning arbitrary directories,
   which is a fine thing to read and a poor thing to write to from a phone.
-- No per-agent instructions. There is no such thing in the config: `AgentConfig`
-  (`src/core/config.ts:367`) has no prompt field and `buildSystemPrompt` does not even receive the
-  agent type. What is per-agent is the **workspace**, so the agent page links to the instructions
-  its workspace resolves to.
+- No per-agent instructions **here**. Per-agent layer selection exists, but it lives in the
+  agent's own file: a `agents/<name>.md` frontmatter can declare `instructions: CORE, USER`
+  (docs/file-agents.md), which intersects with the workspace policy -- a layer reaches the
+  prompt only if the workspace has it on *and* the agent asks for it. This page manages the
+  workspace side; the agent file editor shows a red line when a checked layer is off at the
+  workspace level, so the two mechanisms never stay a mystery.

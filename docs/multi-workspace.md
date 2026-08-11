@@ -26,7 +26,10 @@ Rules:
 - `workspaces` is a map of `name -> absolute path`. Relative paths are rejected at boot.
 - The key `default` is reserved and rejected: the default workspace is `config.workspace`.
 - Each entry is `mkdir -p`'d at boot. No template seeding: secondary workspaces only get the
-  files the user authors there, and everything missing falls back to the default workspace.
+  files the user authors there, and everything missing falls back to the default workspace by
+  default. That fallback is configurable per file through `config.workspacePrompts`
+  (docs/workspace-prompt-inheritance.md): a workspace can read a missing file from another
+  named workspace, from the shipped template, or from nothing at all.
 - `workspaces` is hot-reloadable (`HOT_OBJECT_SECTIONS`). Adding a key re-scans the skill
   layers without a restart. `config.workspace` stays reboot-bound as before.
 
@@ -81,14 +84,23 @@ check therefore runs against the sub-agent's own resolved workspace, not the par
 
 ## Per-file prompt resolution with fallback
 
-Prompt files are resolved per file: the file is read from the session's workspace when it
-exists, otherwise from the default workspace. A secondary workspace therefore only needs the
-files it actually overrides (typically `AGENTS.md`), and still gets the owner's persona and
-core directives.
+Prompt files are resolved per file, through one ladder shared by the runtime and the
+instructions page (`resolvePromptFile`, `src/agent/prompt/loader.ts`): the workspace's own
+file, then the configured source, then the last known good, then the shipped template. A
+secondary workspace therefore only needs the files it actually overrides (typically
+`AGENTS.md`), and still gets the owner's persona and core directives.
 
-`loadPromptFile`, `loadAllPromptFiles` and `loadCorePrompt` take an explicit
-`workspaceDir`/`defaultWorkspaceDir`. The mtime cache is already keyed on absolute paths, so
-multiple workspaces coexist in the cache without extra work.
+The configured source comes from `config.workspacePrompts`, keyed by workspace and by prompt
+file name. Absent policy means "default", which is what every workspace did before the section
+existed. The source is one hop only: only the source workspace's *own* file is read, never its
+own inheritance, so cycles are impossible by construction. `"builtin"` reads the shipped
+template as the source, `"none"` ends the ladder with an empty layer, and a per-file `off`
+drops the layer even when the workspace owns the file (CORE.md's hardcoded fallback included).
+See docs/workspace-prompt-inheritance.md.
+
+The loader options are the resolved workspace dirs plus the run's workspace key and the two
+config sections; the mtime cache is keyed on absolute paths, so multiple workspaces coexist in
+the cache without extra work.
 
 ## Skills are workspace-aware
 

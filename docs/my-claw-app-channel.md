@@ -108,6 +108,7 @@ the first answer wins.
 { "type": "instructions.list" }
 { "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md" }
 { "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a" }
+{ "type": "instructions.layer.set", "workspace": "sofa", "file": "SOUL.md", "inherit": "lab|default|builtin|none", "off": true }
 { "type": "agents.config.get" }
  { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
  { "type": "agents.model.clear", "agent": "orchestrator|general|research|cron" }
@@ -303,8 +304,8 @@ the first answer wins.
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
 { "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso", "enabled": false, "command": "mcp-mail", "args": ["--port", "2525"], "url": "http://mcp.local" }] }
-{ "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a" }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144 }
-{ "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
+{ "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback|off", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a", "inherit": "default|lab|builtin|none", "off": false }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144, "agentLayers": [{ "agent": "reviewer", "layers": ["CORE", "USER"] }] }
+{ "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|off|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
 { "type": "instructions.saved", "workspace": "sofa", "file": "AGENTS.md", "ok": false, "sha": "", "conflict": true, "error": "changed on the server since it was opened" }
 { "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
 { "type": "agents.file.result", "name": "reviewer", "source": "custom", "path": "/home/neras/.my-claw/agents/reviewer.md", "editable": true, "sha": "9f2b1c4d5e6a", "description": "Reviews a diff", "base": "research", "tools": ["read", "grep"], "skillsMode": "list", "skills": ["code-review"], "mcpMode": "absent", "prompt": "You review code.", "toolOptions": ["read", "grep", "find", "ls"], "unknownTools": [] }
@@ -339,9 +340,17 @@ the first answer wins.
   `headers` never leave the server. The frame exists so the app can name the servers an agent's
   `mcp` scope refers to instead of asking the owner to type names it cannot check.
 - `instructions.list.result` never reports a file as missing: a workspace that does not carry
-  one inherits the default workspace's copy, and that is what the agent reads, so the entry
-  carries `origin` and `from` instead of a hole. `files` and `maxBytes` come from the server so
-  the app never hardcodes limits the server enforces.
+  one reads the configured source's copy, and that is what the agent reads, so the entry
+  carries `origin` and `from` instead of a hole. `inherit` and `off` are the workspace's
+  effective per-file policy, always normalised; their *absence* is how the app detects a server
+  that predates the layer controls, and hides them instead of showing a dead button.
+  `agentLayers` carries the file-defined agents and the layers each declares, so the layer
+  screen can say which agents already cut a layer in their own file. `files` and `maxBytes`
+  come from the server so the app never hardcodes limits the server enforces.
+- `instructions.layer.set` sets the per-file policy of one workspace: each absent field keeps
+  the current one, `"default"` and `false` are the no-op resets, and it answers with a fresh
+  `instructions.list.result` rather than an echo. The server drops fields that say nothing, so
+  a policy that is back to the default disappears from `config.workspacePrompts` entirely.
 - `instructions.saved` answers every `instructions.set`, refusals included. A refusal does not
   go through the error scope because the editor must tell a conflict (`conflict: true`, meaning
   reload before saving again) apart from a plain failure. The previous content is snapshotted

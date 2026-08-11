@@ -1,6 +1,8 @@
 # Per-file prompt inheritance
 
-Status: spec, not implemented.
+Status: implemented (phases 0-3: one shared resolution ladder, the `workspacePrompts` config
+section, `builtin` as a runtime layer, `off`, and the app's layer screen over the
+`instructions.layer.set` frame). Phase 4 (docs) is this page's own tail.
 
 Today a workspace that does not own a prompt file reads the default workspace's copy. That rule is
 hardcoded, identical for the four files, and identical for every workspace. This spec makes it a
@@ -208,13 +210,13 @@ resolution ladder cannot run on a ten-minute-old list when the agent writes `AGE
 
 ## Phasing
 
-| Phase | Content | User-visible |
-|---|---|---|
-| 0 | One resolver, object argument, canonical file list, `/instructions` fix, tests for existing holes | no |
-| 1 | `workspacePrompts`, validation, hot reload, boot report, configurable source (one hop) | no |
-| 2 | `builtin` as a real runtime layer, `off` | no |
-| 3 | Frames, store, `InstructionLayerScreen`, row badges, `AgentFileScreen` note | yes |
-| 4 | Docs: this file, `multi-workspace.md`, `instructions-page.md`, `my-claw-app-channel.md` | — |
+| Phase | Content | User-visible | Status |
+|---|---|---|---|
+| 0 | One resolver, object argument, canonical file list, `/instructions` fix, tests for existing holes | no | done |
+| 1 | `workspacePrompts`, validation, hot reload, boot report, configurable source (one hop) | no | done |
+| 2 | `builtin` as a real runtime layer, `off` | no | done |
+| 3 | Frames, store, `InstructionLayerScreen`, row badges, `AgentFileScreen` note | yes | done |
+| 4 | Docs: this file, `multi-workspace.md`, `instructions-page.md`, `my-claw-app-channel.md` | — | done |
 
 Each phase ships alone and leaves the system coherent.
 
