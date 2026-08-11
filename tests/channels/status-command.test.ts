@@ -7,6 +7,7 @@ import type { SessionData } from "../../src/sessions/store.ts";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { handleStatusCommand, statusReport } from "../../src/channels/status-command.ts";
+import { chatModel } from "../../src/llm/chat-model.ts";
 
 function pricing(): ModelPricing {
   mkdirSync(MY_CLAW_DIR, { recursive: true });
@@ -230,4 +231,33 @@ test("the report text is the chat command's, character for character", () => {
   const report = statusReport({ config, sessionId, session: data, liveRuns: [] });
 
   expect(report.text).toBe(handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
+});
+
+// Criterion 8 of docs/model-resolution.md: the surfaces do not each keep their own idea of the
+// current model. /status is the one that was already right; this pins it to the shared function so
+// the two cannot drift apart again.
+test("/status names the model the run would use, pin included, exactly like chatModel", () => {
+  const pinned = {
+    llm: {
+      defaultModel: "claude-opus-5",
+      models: [
+        { id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } },
+        { id: "kimi-k26-turbo", label: "Kimi", limit: { context: 200_000 } },
+      ],
+    },
+    agents: { orchestrator: { llm: { defaultModel: "kimi-k26-turbo" } } },
+  } as unknown as MyClawConfig;
+
+  const sessionId = "matrix/room/!pin:test";
+  const out = handleStatusCommand({ config: pinned, sessionId, session: session(sessionId), liveRuns: [] });
+  const expected = chatModel(pinned, undefined);
+  expect(expected).toBe("kimi-k26-turbo");
+  expect(out).toContain(expected);
+  // The global default is not what runs, so the line must not name it.
+  expect(out).not.toContain("claude-opus-5");
+
+  // And a chat with its own pick reports that instead, on the same code path.
+  const withPick = session(sessionId, { modelOverride: "claude-opus-5" });
+  const picked = handleStatusCommand({ config: pinned, sessionId, session: withPick, liveRuns: [] });
+  expect(picked).toContain(chatModel(pinned, "claude-opus-5"));
 });

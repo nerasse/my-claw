@@ -252,3 +252,36 @@ describe("tags", () => {
     expect(run.apiModel).toBe("claude-opus-5");
   });
 });
+
+describe("no surface keeps its own chain", () => {
+  test("the shortcut that caused the incident exists nowhere in src", async () => {
+    // `session.modelOverride ?? config.llm.defaultModel` skips the agent pin. It was written out
+    // seven times -- three writes, four reads -- and every one of them lied on a chat that
+    // inherited a pin. Criterion 1 of docs/model-resolution.md, as a test rather than a habit.
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const offenders: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "__tests__") continue;
+          await walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".ts")) continue;
+        // The one legitimate home of the fallback, where it is the documented last resort.
+        if (full.endsWith("llm/chat-model.ts")) continue;
+        const text = await readFile(full, "utf-8");
+        for (const line of text.split("\n")) {
+          if (/modelOverride\s*\?\?\s*(config|p\.config|this\.config|deps\.config)?\.?llm\.defaultModel/.test(line)) {
+            offenders.push(`${full}: ${line.trim()}`);
+          }
+          if (/modelOverride\s*\?\?\s*defaultModel/.test(line)) offenders.push(`${full}: ${line.trim()}`);
+        }
+      }
+    };
+    await walk("src");
+    expect(offenders).toEqual([]);
+  });
+});

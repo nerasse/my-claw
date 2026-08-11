@@ -212,9 +212,14 @@ that looks like the assistant talking is a warning that gets read as content.
 
 ## Verification
 
-The refactor is done when:
+All eight hold; where a test pins behaviour that was already correct rather than catching a
+regression, it says so in its own comment.
 
-1. `grep -rn 'modelOverride ?? .*defaultModel' src/` returns nothing.
+1. `grep -rn 'modelOverride ?? .*defaultModel' src/` returns nothing -- and does not come back:
+   the grep is itself a test (`tests/llm-run-model.test.ts`, "the shortcut that caused the
+   incident exists nowhere in src"), because a convention nobody can run is a convention that
+   erodes. `src/llm/chat-model.ts` is the single exception, where the fallback is the documented
+   last resort.
 2. One test asserts the incident: global default `A`, agent pin `B`, user picks `A` in the chat ->
    the run uses `A`, and the picker says `A`. It must fail on today's code.
 3. One test per backend (`claude-sdk`, `codex`, openai) asserting that the engine follows the
