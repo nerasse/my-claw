@@ -2,7 +2,7 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "./config.ts";
 import { injectionEnabled, resolveAgentWorkspace } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
@@ -23,6 +23,9 @@ interface RouteOptions {
   /** Called when the run switches to address a mid-run injected message, so the output layer
    *  can finalize the current bubble and open a fresh reply to that message. */
   onTurnSwitch?: TurnSwitchCallback;
+  /** Where the run reports what the model is thinking. Only the app channel provides one, so the
+   *  chat channels are unaffected -- docs/reasoning-visibility.md. */
+  reasoning?: ReasoningSink;
   /** Force a normal new run, never inject (used when re-routing a rerouted injection). */
   noInject?: boolean;
 }
@@ -193,7 +196,16 @@ export class MessageRouter {
       });
 
       const text = options.onToken
-        ? await this.agent.handleMessageStreaming(message, session, options.onToken, options.onToolUse, signal, options.onTurnSwitch)
+        ? await this.agent.handleMessageStreaming(
+            message,
+            session,
+            options.onToken,
+            options.onToolUse,
+            signal,
+            options.onTurnSwitch,
+            undefined,
+            options.reasoning,
+          )
         : await this.agent.handleMessage(message, session, signal);
       const attachments = this.agent.getResponseAttachments(message.id);
       await this.sessionManager.persist(sessionId);

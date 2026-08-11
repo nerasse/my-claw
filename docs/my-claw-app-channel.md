@@ -296,6 +296,8 @@ the first answer wins.
 { "type": "chat.run.end", "threadId": "projet", "reason": "done|aborted|error", "run": "a1b2c3d4" }
 { "type": "chat.stream.start", "id": "uuid", "threadId": "projet", "replyToId": "uuid" }
 { "type": "chat.stream.delta", "id": "uuid", "threadId": "projet", "text": "..." }
+{ "type": "chat.reasoning.delta", "id": "uuid", "threadId": "projet", "text": "..." }
+{ "type": "chat.reasoning.tokens", "id": "uuid", "threadId": "projet", "tokens": 1240 }
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
@@ -499,6 +501,19 @@ A tool card seals the text bubble it interrupts: the streamer sends
 `chat.stream.done` for the current id, then the cards, then a fresh
 `chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
 therefore stay in chronological order without the client reordering anything.
+
+### Reasoning
+
+`chat.reasoning.delta` carries what the model thought, for the bubble named by
+`id`; `chat.reasoning.tokens` carries a running estimate instead, for engines
+that redact the text (the Claude Code bridge). Either one **opens the bubble on
+its own**, before any answer text, because the thinking phase is the silence the
+owner is waiting through. Reasoning belongs to the segment it arrived in, so a
+tool card resets it just as it resets the text.
+
+This is the only channel that receives them: Matrix and Telegram never provide a
+reasoning sink to the run. Full rules, per-engine capability and the reason the
+reasoning is never replayed to a model: `docs/reasoning-visibility.md`.
 
 ### Run lifecycle
 

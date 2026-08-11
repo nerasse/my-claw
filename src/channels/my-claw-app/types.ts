@@ -623,6 +623,8 @@ export type MyClawAppHistoryEntry =
       attachments?: MyClawAppHistoryAttachment[];
       /** What was heard, per recording id, so each replayed bubble carries its own words. */
       transcripts?: Record<string, string>;
+      /** What the model thought before this reply, replayed collapsed -- docs/reasoning-visibility.md. */
+      reasoning?: string;
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
@@ -688,6 +690,28 @@ export interface MyClawAppStreamDelta {
   id: string;
   threadId: string;
   text: string;
+}
+
+/**
+ * Incremental reasoning for the bubble `id` -- docs/reasoning-visibility.md. Sent only by engines
+ * that expose the text (OpenAI-compatible, Codex summaries), and only to this channel.
+ */
+export interface MyClawAppReasoningDelta {
+  type: "chat.reasoning.delta";
+  id: string;
+  threadId: string;
+  text: string;
+}
+
+/**
+ * Running token estimate while a redacted engine thinks (the Claude Code bridge never sends the
+ * text). No reasoning text will follow on this bubble, so the app shows a count, not a disclosure.
+ */
+export interface MyClawAppReasoningTokens {
+  type: "chat.reasoning.tokens";
+  id: string;
+  threadId: string;
+  tokens: number;
 }
 
 export interface MyClawAppStreamDone {
@@ -1459,6 +1483,8 @@ export type MyClawAppServerFrame =
   | MyClawAppRunEnd
   | MyClawAppStreamStart
   | MyClawAppStreamDelta
+  | MyClawAppReasoningDelta
+  | MyClawAppReasoningTokens
   | MyClawAppStreamDone
   | MyClawAppStreamAbort
   | MyClawAppToolCall

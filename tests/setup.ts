@@ -24,4 +24,11 @@ delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
 // from an empty session store regardless of run order.
 afterEach(() => {
   rmSync(join(root, "sessions"), { recursive: true, force: true });
+  // Same hazard, one directory over: a test that stores a Claude token (a `/claude set-token`
+  // command test) leaves it in the shared MY_CLAW_DIR, and `loadClaudeToken()` then returns it
+  // for the rest of the run. That silently turns anthropic model discovery into a fetch in every
+  // later file -- which is how `catalog.test.ts` started failing under some `--randomize` seeds
+  // and passing under others. Cleared centrally: a per-file afterEach only protects the files
+  // that remember to write one.
+  rmSync(join(root, "claude"), { recursive: true, force: true });
 });

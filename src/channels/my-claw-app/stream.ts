@@ -1,4 +1,5 @@
 import { currentRunId } from "../../utils/run-context.ts";
+import { REASONING_LIMIT } from "../../sessions/store.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallResult } from "../../agent/tool-status.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
@@ -25,6 +26,9 @@ export class MyClawAppStreamer {
   /** Visible text already sent for the current segment; the next delta is the diff, since the
    *  device accumulates what it receives. Held-back ref fragments never count as sent. */
   private emittedText = "";
+  /** Reasoning of the current segment only: a tool seals the bubble, and what the model thinks
+   *  afterwards belongs to the next one. */
+  private segmentReasoning = "";
   private segment = 0;
   private toolCount = 0;
   private started = false;
@@ -36,6 +40,22 @@ export class MyClawAppStreamer {
   async push(token: string): Promise<void> {
     if (!token) return;
     return this.enqueue(() => this.pushInternal(token));
+  }
+
+  /**
+   * Reasoning text for the current bubble. It opens the bubble on its own: the thinking phase is
+   * exactly the silence the owner stares at, so it must be visible before the first word of the
+   * answer -- docs/reasoning-visibility.md.
+   */
+  async pushReasoning(delta: string): Promise<void> {
+    if (!delta) return;
+    return this.enqueue(() => this.reasoningInternal(delta));
+  }
+
+  /** Token estimate from a redacted engine; opens the bubble for the same reason. */
+  async pushReasoningTokens(tokens: number): Promise<void> {
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
+    return this.enqueue(() => this.reasoningTokensInternal(tokens));
   }
 
   async finish(finalText?: string): Promise<void> {
@@ -90,6 +110,34 @@ export class MyClawAppStreamer {
     await this.emitDelta();
   }
 
+  private async reasoningInternal(delta: string): Promise<void> {
+    if (this.finished) return;
+    const room = REASONING_LIMIT - this.segmentReasoning.length;
+    if (room <= 0) return;
+    const text = delta.length > room ? `${delta.slice(0, room)}\n[reasoning truncated]` : delta;
+    this.segmentReasoning += text;
+    // Never gated by minCharsBeforeDelta: withholding the thinking to reach a character
+    // threshold would defeat the point of showing it.
+    if (!this.started) await this.startSegment();
+    await this.opts.send({
+      type: "chat.reasoning.delta",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      text,
+    });
+  }
+
+  private async reasoningTokensInternal(tokens: number): Promise<void> {
+    if (this.finished) return;
+    if (!this.started) await this.startSegment();
+    await this.opts.send({
+      type: "chat.reasoning.tokens",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      tokens,
+    });
+  }
+
   /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */
   private async emitDelta(): Promise<void> {
     const visible = stripMediaRefsStreaming(this.segmentText);
@@ -112,6 +160,7 @@ export class MyClawAppStreamer {
     }
     this.segmentText = "";
     this.emittedText = "";
+    this.segmentReasoning = "";
     for (const tool of toolCalls) {
       this.toolCount += 1;
       const output = tool.output ?? "";

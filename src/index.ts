@@ -1972,6 +1972,12 @@ async function main() {
               response = await routeWithReroute(router, msg, {
                 onToken: (token) => active.push(token),
                 onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+                // Only this channel builds a sink: Matrix and Telegram pass none, which is what
+                // keeps them free of reasoning -- docs/reasoning-visibility.md.
+                reasoning: {
+                  onText: (delta) => active.pushReasoning(delta),
+                  onTokens: (tokens) => active.pushReasoningTokens(tokens),
+                },
                 onTurnSwitch: async (injMsg) => {
                   await active.finish();
                   active = myClawApp.createStreamer(injMsg);

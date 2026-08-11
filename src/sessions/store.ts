@@ -15,8 +15,33 @@ export type SessionAttachment = { type: "image"; path: string; mimeType?: string
 
 export type SessionMessage =
   | { role: "user"; content: string; timestamp: string; attachments?: SessionAttachment[] }
-  | { role: "assistant"; content: string; timestamp: string; toolCalls?: Array<{ id: string; name: string; arguments: string; durationMs?: number }> }
+  | {
+      role: "assistant";
+      content: string;
+      timestamp: string;
+      toolCalls?: Array<{ id: string; name: string; arguments: string; durationMs?: number }>;
+      /**
+       * What the model thought before answering, for display only -- docs/reasoning-visibility.md.
+       * It must never reach a model: both replay paths (`toChatMessages`,
+       * `renderPriorConversation`) build their messages field by field, and a test on each asserts
+       * this one is absent from the result.
+       */
+      reasoning?: string;
+    }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
+
+/**
+ * Cap on the stored reasoning of one turn. Sessions are single JSON files rewritten in full on
+ * every turn, so an unbounded chain-of-thought would rewrite megabytes per message. A capped tail
+ * is a reading aid; the full text was never a durable artifact.
+ */
+export const REASONING_LIMIT = 8000;
+
+/** Truncates reasoning to the cap, marking it so the reader knows the text is cut. */
+export function capReasoning(text: string): string {
+  if (text.length <= REASONING_LIMIT) return text;
+  return `${text.slice(0, REASONING_LIMIT)}\n[reasoning truncated]`;
+}
 
 /**
  * Slicing history to a fixed tail (keep the last N) can cut inside a tool block, leaving the

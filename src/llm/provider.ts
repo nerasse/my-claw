@@ -1,4 +1,5 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
+import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -109,6 +110,8 @@ export interface LlmResponse {
   content: string;
   toolCalls?: ToolCall[];
   usage?: LlmUsage;
+  /** What the model thought, when the endpoint reports it. Display only -- docs/reasoning-visibility.md. */
+  reasoning?: string;
   // A proxy that bills us can report the authoritative figure for the call it just served.
   // Preferred over any price table when present and positive.
   proxyCostUsd?: number;
@@ -173,6 +176,25 @@ interface ChatCompletionStreamChunk {
     };
   }>;
   usage?: RawUsage;
+}
+
+/**
+ * The names an OpenAI-compatible endpoint may use for reasoning, most specific first. Only the
+ * first non-empty one is read: some proxies send two of them carrying the same text, and
+ * concatenating both would double every thought. `opencode-go` is on record returning `reasoning`
+ * rather than `reasoning_content` for some models, so the fallback is not theoretical.
+ * See docs/reasoning-visibility.md.
+ */
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"] as const;
+
+/** The reasoning carried by one delta or message object, or "" when it carries none. */
+export function readReasoning(source: Record<string, unknown> | undefined): string {
+  if (!source) return "";
+  for (const field of REASONING_FIELDS) {
+    const value = source[field];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
 }
 
 const EPHEMERAL_CACHE = { type: "ephemeral" as const };
@@ -387,10 +409,12 @@ export async function chatCompletion(
       if (!choice?.message) throw new Error("No response from LLM");
 
       recordCircuitSuccess();
+      const reasoning = readReasoning(choice.message as Record<string, unknown>);
       return {
         content: choice.message.content ?? "",
         toolCalls: parseToolCalls(choice.message.tool_calls),
         usage: normalizeUsage(data.usage),
+        ...(reasoning ? { reasoning } : {}),
         ...readProxyHeaders(response),
       };
     } catch (err) {
@@ -431,6 +455,7 @@ export async function chatCompletionStream(
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
   signal?: AbortSignal,
+  reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
   checkCircuitBreaker();
 
@@ -475,6 +500,7 @@ export async function chatCompletionStream(
       const decoder = new TextDecoder();
       let buffer = "";
       let content = "";
+      let reasoning = "";
       let streamUsage: LlmUsage | undefined;
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -485,6 +511,12 @@ export async function chatCompletionStream(
 
         const delta = payload.choices?.[0]?.delta;
         if (!delta) return;
+
+        const reasoningDelta = readReasoning(delta as Record<string, unknown>);
+        if (reasoningDelta) {
+          reasoning += reasoningDelta;
+          if (reasoningSink?.onText) await reasoningSink.onText(reasoningDelta);
+        }
 
         if (typeof delta.content === "string" && delta.content.length > 0) {
           content += delta.content;
@@ -557,6 +589,7 @@ export async function chatCompletionStream(
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
         usage: streamUsage,
+        ...(reasoning ? { reasoning } : {}),
         ...readProxyHeaders(response),
       };
     } catch (err) {

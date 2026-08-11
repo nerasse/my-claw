@@ -8,6 +8,19 @@ export type ToolUseCallback = (tools: ToolCallResult[], verbose: boolean) => Pro
 
 export type TurnSwitchCallback = (message: UnifiedMessage) => Promise<void>;
 
+/**
+ * Where a run reports what the model is thinking -- docs/reasoning-visibility.md. Two shapes
+ * because the engines differ in kind, not in degree: an OpenAI-compatible transport streams the
+ * text, while the Claude Code bridge redacts it and only counts tokens. A channel that provides
+ * neither callback gets nothing, which is how Matrix and Telegram stay untouched.
+ */
+export interface ReasoningSink {
+  /** Reasoning text, incremental. */
+  onText?: (delta: string) => Promise<void>;
+  /** Running token estimate while a redacted engine thinks. No text will follow. */
+  onTokens?: (estimated: number) => Promise<void>;
+}
+
 // The contract between the message router/channels and an agent execution engine.
 // Two implementations are planned: the home OpenAI-compatible loop (AgentBridge)
 // and the Claude Agent SDK backend (docs/claude-sdk-backend.md). Everything
@@ -30,5 +43,8 @@ export interface AgentBackend {
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
+    // Appended last on purpose: inserting a parameter ahead of an existing one has already bitten
+    // this codebase (the `queryFn` test seam on ClaudeSdkBackend).
+    reasoning?: ReasoningSink,
   ): Promise<string>;
 }

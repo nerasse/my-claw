@@ -1,7 +1,7 @@
 import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
 import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
@@ -181,6 +181,8 @@ export class BackendDispatcher implements AgentBackend {
     onToolUse?: ToolUseCallback,
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
+    modelId?: string,
+    reasoning?: ReasoningSink,
   ): Promise<string> {
     // A reroute replays the run from scratch, which would duplicate whatever tokens were
     // already delivered; the fallback only ever fires before the first token.
@@ -192,7 +194,8 @@ export class BackendDispatcher implements AgentBackend {
     return this.runWithFallback(
       message,
       session,
-      (backend, modelId) => backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, modelId),
+      (backend, resolvedModelId) =>
+        backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, reasoning),
       {
         anyTokensDelivered: () => tokensDelivered,
         // The streaming channel shows the note live; the returned text (persisted as the

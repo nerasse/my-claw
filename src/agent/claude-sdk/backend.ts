@@ -16,7 +16,7 @@ import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
 import { trimSessionMessages, sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
-import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
 import { resolveLlmConfigForAgentMessage } from "../../llm/resolver.ts";
@@ -79,6 +79,9 @@ interface SdkStreamMessage {
   compact_error?: string;
   event?: { type?: string; delta?: { type?: string; text?: string } };
   error?: string;
+  // The bridge redacts the thinking text and reports only a running estimate
+  // (SDKThinkingTokensMessage) -- docs/reasoning-visibility.md.
+  estimated_tokens?: number;
   message?: {
     id?: string;
     content?: Array<{
@@ -276,8 +279,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
+    reasoning?: ReasoningSink,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning);
   }
 
   /**
@@ -349,6 +353,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
+    reasoningSink?: ReasoningSink,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -589,6 +594,14 @@ export class ClaudeSdkBackend implements AgentBackend {
         for await (const msg of q) {
           if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
             session.sdkSessionId = msg.session_id;
+            continue;
+          }
+
+          // The only reasoning signal this engine has: the text itself never leaves the bridge.
+          if (msg.type === "system" && msg.subtype === "thinking_tokens") {
+            if (reasoningSink?.onTokens && typeof msg.estimated_tokens === "number") {
+              await reasoningSink.onTokens(msg.estimated_tokens);
+            }
             continue;
           }
 

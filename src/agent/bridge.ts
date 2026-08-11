@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
+import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, capReasoning } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
@@ -44,7 +44,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
@@ -57,10 +57,11 @@ function completeStream(
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
   signal?: AbortSignal,
+  reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
   return config.backend === "codex"
-    ? codexResponseStream(config, messages, onToken, tools, signal)
-    : chatCompletionStream(config, messages, onToken, tools, signal);
+    ? codexResponseStream(config, messages, onToken, tools, signal, reasoningSink)
+    : chatCompletionStream(config, messages, onToken, tools, signal, reasoningSink);
 }
 
 function complete(
@@ -225,8 +226,9 @@ export class AgentBridge implements AgentBackend {
     signal?: AbortSignal,
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
+    reasoning?: ReasoningSink,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -241,6 +243,7 @@ export class AgentBridge implements AgentBackend {
     signal?: AbortSignal,
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
     modelId?: string,
+    reasoningSink?: ReasoningSink,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -427,6 +430,7 @@ export class AgentBridge implements AgentBackend {
               onToken,
               openaiTools.length > 0 ? openaiTools : undefined,
               signal,
+              reasoningSink,
             )
           : await complete(
               llmConfig,
@@ -469,7 +473,12 @@ export class AgentBridge implements AgentBackend {
 
         if (!response.toolCalls?.length) {
           const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
-          session.messages.push({ role: "assistant", content: transformedResponse, timestamp: new Date().toISOString() });
+          session.messages.push({
+            role: "assistant",
+            content: transformedResponse,
+            timestamp: new Date().toISOString(),
+            ...(response.reasoning ? { reasoning: capReasoning(response.reasoning) } : {}),
+          });
 
           // Mid-run steering: a message that arrived during this final call keeps the run going
           // (drainOrClose atomically closes the mailbox when nothing is pending, so late arrivals
@@ -548,6 +557,7 @@ export class AgentBridge implements AgentBackend {
             arguments: tc.function.arguments,
           })),
           timestamp: new Date().toISOString(),
+          ...(response.reasoning ? { reasoning: capReasoning(response.reasoning) } : {}),
         };
         session.messages.push(persistedAssistant);
 

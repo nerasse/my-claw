@@ -214,6 +214,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           text,
           ts: message.timestamp,
           ...(media.length > 0 ? { attachments: media } : {}),
+          ...(message.reasoning ? { reasoning: message.reasoning } : {}),
         });
       }
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.

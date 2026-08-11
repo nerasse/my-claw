@@ -1,4 +1,5 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
+import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
@@ -168,8 +169,10 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncIterable<strin
 async function processStream(
   body: ReadableStream<Uint8Array>,
   onToken: ((token: string) => Promise<void> | void) | undefined,
+  reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
   let content = "";
+  let reasoning = "";
   let usage: LlmUsage | undefined;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
@@ -209,6 +212,17 @@ async function processStream(
         if (typeof delta === "string" && delta.length > 0) {
           content += delta;
           if (onToken) await onToken(delta);
+        }
+        break;
+      }
+      // The request already asks for `summary: "auto"`, so the summary was arriving and being
+      // dropped. `reasoning_text` is the raw variant, sent by the models that expose it.
+      case "response.reasoning_summary_text.delta":
+      case "response.reasoning_text.delta": {
+        const delta = event["delta"];
+        if (typeof delta === "string" && delta.length > 0) {
+          reasoning += delta;
+          if (reasoningSink?.onText) await reasoningSink.onText(delta);
         }
         break;
       }
@@ -256,7 +270,12 @@ async function processStream(
     .filter((s) => s.callId && s.name)
     .map((s) => ({ id: s.callId, name: s.name, arguments: safeJson(s.args || "{}") }));
 
-  return { content, toolCalls: toolCalls.length > 0 ? toolCalls : undefined, usage };
+  return {
+    content,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    usage,
+    ...(reasoning ? { reasoning } : {}),
+  };
 }
 
 // ============================================================================
@@ -273,6 +292,7 @@ async function runCodex(
   tools: unknown[] | undefined,
   onToken: ((token: string) => Promise<void> | void) | undefined,
   signal?: AbortSignal,
+  reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
   const { instructions, input } = buildInput(messages);
   const responsesTools = convertTools(tools);
@@ -339,7 +359,7 @@ async function runCodex(
             await onToken(t);
           }
         : undefined;
-      return await processStream(response.body, wrappedOnToken);
+      return await processStream(response.body, wrappedOnToken, reasoningSink);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
@@ -376,6 +396,7 @@ export function codexResponseStream(
   onToken: (token: string) => Promise<void> | void,
   tools?: unknown[],
   signal?: AbortSignal,
+  reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  return runCodex(config, messages, tools, onToken, signal);
+  return runCodex(config, messages, tools, onToken, signal, reasoningSink);
 }

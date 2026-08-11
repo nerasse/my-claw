@@ -332,6 +332,34 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const ids = turn.attachments!.map((a) => a.id);
     assert.deepEqual(ids.sort(), [first.id, second.id].sort());
   });
+
+  // docs/reasoning-visibility.md: the reasoning is persisted so a reopened conversation can still
+  // show what the model thought, collapsed.
+  test("a replayed turn carries the reasoning the model produced", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "9.11 ou 9.8 ?", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        role: "assistant",
+        content: "9.11",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        reasoning: "comparing the decimal parts",
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[1]!;
+    if (turn.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(turn.reasoning, "comparing the decimal parts");
+  });
+
+  test("a turn that produced no reasoning replays without the field", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "assistant", content: "plain answer", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal("reasoning" in turn, false);
+  });
 });
 
 describe("SessionFileStore naming", () => {
