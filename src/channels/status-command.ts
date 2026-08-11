@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm } from "../core/config.ts";
+import { chatModel } from "../llm/chat-model.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import {
   getSessionModelUsage,
@@ -123,8 +124,8 @@ interface StatusData {
 
 function collectStatusData(p: StatusParams): StatusData {
   const configured = resolveAgentLlm(p.config, "main");
-  const currentModel =
-    p.session?.modelOverride ?? configured?.defaultModel ?? p.config.llm.defaultModel ?? p.config.llm.model ?? "unknown";
+  // The same chain the run uses, rather than a copy of it that happens to agree today.
+  const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
   const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
   const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
   const model = p.config.llm.models?.find((m) => m.id === currentModel);

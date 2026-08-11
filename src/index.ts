@@ -132,9 +132,12 @@ import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { chatCompletion } from "./llm/provider.ts";
-import { codexLoginDeviceCode, loadCodexCredential, codexLogout } from "./llm/codex-auth.ts";
+import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
+import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
+import { chatModel } from "./llm/chat-model.ts";
+import { setAvailabilityWorld, availabilityWorld } from "./llm/world.ts";
 import { buildDiagnostics, readLogEntries, formatLogEntries, collectSecrets } from "./core/diagnostics.ts";
 import {
   warmupEmbedding,
@@ -301,13 +304,39 @@ async function main() {
     const grouped = applyProviderGroups(merged, config.llm.providers ?? {});
     config.llm.models = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
     config.llm.tags = config.tags;
-    modelPicker.syncFromConfig(config.llm, config.tags);
+    // The picker offers what can run; `config.llm.models` keeps everything, because the resolver
+    // needs the unavailable entries to say *why* a pinned model cannot run. Filtering the config
+    // instead would turn "removed by the provider" into "unknown id", which is a different fault
+    // with a different fix.
+    modelPicker.syncFromConfig(
+      { ...config.llm, models: runnableModels(config.llm, availabilityWorld()) },
+      config.tags,
+    );
   };
   modelCatalog.onUpdate(applyModelCatalog);
   applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)
   if (modelCatalog.enabled()) void modelCatalog.refresh();
   const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
+
+  // Whether a model can run at all: what each provider last listed, plus the two subscription
+  // auth states (docs/model-resolution.md). The auth checks read files, so they are sampled
+  // rather than awaited on the read path -- and re-sampled wherever they can change: a login, a
+  // logout, a pasted token, and every catalog refresh.
+  const subscriptionAuth = { claude: false, codex: false };
+  const sampleSubscriptionAuth = async (): Promise<void> => {
+    subscriptionAuth.claude = (await claudeTokenStatus().catch(() => ({ present: false }))).present;
+    subscriptionAuth.codex = await codexIsLoggedIn().catch(() => false);
+  };
+  await sampleSubscriptionAuth();
+  hooks.on("models:discovered", () => void sampleSubscriptionAuth());
+  setAvailabilityWorld(() => ({
+    answered: (provider) => modelCatalog.answered(provider),
+    listedBy: (provider) => modelCatalog.listedBy(provider),
+    hasEnv: (name) => Boolean(process.env[name]),
+    claudeAuth: subscriptionAuth.claude,
+    codexAuth: subscriptionAuth.codex,
+  }));
 
   // The window enrichment above is a no-op until the price table is on disk, so a first-ever
   // fetch has to replay it; otherwise every model keeps the fallback window until a restart.
@@ -355,6 +384,9 @@ async function main() {
   };
   const onAuthChanged = async (kind: "codex" | "claude"): Promise<void> => {
     await ensureAuthProvider(kind);
+    // Before the refresh: a login that adds models must not have them judged unrunnable by a
+    // stale auth sample, and a logout must stop offering them immediately.
+    await sampleSubscriptionAuth();
     await modelCatalog.refresh();
   };
 
@@ -887,8 +919,10 @@ async function main() {
     const resolveModelState = async (owner: string, threadId: string) => {
       const session = await sessionManager.peek(modelSessionId(owner, threadId));
       const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
-      const model = session?.modelOverride ?? defaultModel;
-      const effort = effectiveEffort(config.llm, model, session?.effortOverride);
+      // What this chat actually runs, agent pin included. Reading `override ?? defaultModel` here
+      // is what made the app display sonnet while every run went to the orchestrator's own pin.
+      const model = chatModel(config, session?.modelOverride);
+      const effort = effectiveEffort(config.llm, model, session?.effortOverride, resolveAgentLlm(config, "main")?.effort);
       const levels = modelPicker.effortLevelsFor(model);
       // The app builds its own ceiling list from these three numbers, the same way the picker
       // menus do on the other channels (docs/context-window.md).
@@ -946,8 +980,8 @@ async function main() {
         const session =
           (await sessionManager.peek(sessionId)) ??
           (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-        const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-        session.modelOverride = modelId === (config.llm.defaultModel ?? config.llm.model) ? undefined : modelId;
+        const previousModel = (await resolveModelState(owner, threadId)).model;
+        session.modelOverride = overrideForPick(config, { agent: "main" }, modelId, availabilityWorld());
         session.lastActiveAt = new Date().toISOString();
         await sessionManager.persist(sessionId);
         hooks.emit("session:model:changed", { sessionId, previousModel, newModel: modelId });
@@ -958,7 +992,7 @@ async function main() {
         const session =
           (await sessionManager.peek(sessionId)) ??
           (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-        const activeModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const activeModel = (await resolveModelState(owner, threadId)).model;
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (!levels.includes(level as never)) throw new Error(`invalid effort level: ${level}`);
         session.effortOverride = level as never;
@@ -971,7 +1005,7 @@ async function main() {
         const session =
           (await sessionManager.peek(sessionId)) ??
           (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-        const activeModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const activeModel = (await resolveModelState(owner, threadId)).model;
         // "full" is the model's own window, so it is stored as the marker rather than a number
         // that would go stale the day the model's window changes. A ceiling is clamped to the
         // window: a conversation may lower it, never lift it above what the model can hold.
@@ -1081,7 +1115,17 @@ async function main() {
             discover: provider.discover === true,
             models: providerCountOf(key),
             ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
-            keyPresent: provider.apiKeyEnv ? Boolean(process.env[provider.apiKeyEnv]) : false,
+            // A subscription provider has no env key at all, and reporting "no key" for it said
+            // the opposite of the truth on a box that was perfectly authenticated. Its credential
+            // is the stored token, so that is what the flag has to answer for.
+            keyPresent:
+              provider.type === "claude-sdk"
+                ? subscriptionAuth.claude
+                : provider.type === "codex"
+                  ? subscriptionAuth.codex
+                  : provider.apiKeyEnv
+                    ? Boolean(process.env[provider.apiKeyEnv])
+                    : false,
           })),
         ],
         // The two reserved roles, then every file-defined agent. The page is a browse surface, so

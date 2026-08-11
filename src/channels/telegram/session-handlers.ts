@@ -6,6 +6,9 @@ import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel, effectiveEffort } from "../../llm/resolver.ts";
+import { chatModel } from "../../llm/chat-model.ts";
+import { overrideForPick } from "../../llm/run-model.ts";
+import { availabilityWorld } from "../../llm/world.ts";
 import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
@@ -187,7 +190,7 @@ export function createTelegramCommandHandler({
         }
 
         const existingSession = await sessionManager.peek(sessionId);
-        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const currentModel = chatModel(config, existingSession?.modelOverride);
 
         if (args) {
           const match = modelPicker.find(args);
@@ -198,8 +201,8 @@ export function createTelegramCommandHandler({
           const session =
             existingSession ??
             (await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType));
-          const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-          session.modelOverride = match.id === (config.llm.defaultModel ?? config.llm.model) ? undefined : match.id;
+          const previousModel = chatModel(config, session.modelOverride);
+          session.modelOverride = overrideForPick(config, { agent: "main" }, match.id, availabilityWorld());
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
           hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
@@ -220,7 +223,7 @@ export function createTelegramCommandHandler({
       case "effort": {
         const existingSession = await sessionManager.peek(sessionId);
         // Levels are per model: listing the global set would offer values the current model rejects.
-        const activeModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const activeModel = chatModel(config, existingSession?.modelOverride);
         const effort = effectiveEffort(config.llm, activeModel, existingSession?.effortOverride);
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (effort.source === "unsupported" || levels.length === 0) {
@@ -244,7 +247,7 @@ export function createTelegramCommandHandler({
 
       case "models": {
         const existingSession = await sessionManager.peek(sessionId);
-        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const currentModel = chatModel(config, existingSession?.modelOverride);
         const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         const models = config.llm.models ?? [];
         if (models.length === 0) {
@@ -514,7 +517,7 @@ export function createTelegramCallbackHandler({
     // Navigation re-render without touching the model (no selection yet).
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
       const existing = await sessionManager.peek(sessionId);
-      const currentModel = existing?.modelOverride ?? defaultModel;
+      const currentModel = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
       const suffix = modelPicker.effortHeaderSuffix(effort);
       if (action.kind === "openGroup") {
@@ -553,7 +556,7 @@ export function createTelegramCallbackHandler({
       session.effortOverride = action.level;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const model = session.modelOverride ?? defaultModel;
+      const model = chatModel(config, session.modelOverride);
       return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`, `Effort: ${action.level}`);
     }
 
@@ -563,7 +566,7 @@ export function createTelegramCallbackHandler({
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
       return {
-        text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, session.modelOverride ?? defaultModel, session.contextOverride)}`,
+        text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, chatModel(config, session.modelOverride), session.contextOverride)}`,
         answerText: "Contexte mis a jour",
       };
     }
@@ -571,14 +574,14 @@ export function createTelegramCallbackHandler({
     if (action.kind === "keepContext") {
       const existing = await sessionManager.peek(sessionId);
       return {
-        text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride)}`,
+        text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, chatModel(config, existing?.modelOverride), existing?.contextOverride)}`,
         answerText: "Contexte inchange",
       };
     }
 
     if (action.kind === "keepEffort") {
       const existing = await sessionManager.peek(sessionId);
-      const model = existing?.modelOverride ?? defaultModel;
+      const model = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
       return chainContext(model, existing?.contextOverride, `Modèle : ${modelPicker.labelFor(model)} — effort inchangé : ${formatEffort(effort)}`, "Effort conservé");
     }

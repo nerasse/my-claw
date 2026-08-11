@@ -17,6 +17,7 @@ import { handleStatusCommand, statusReport } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
 import { getHelpText } from "../commands-catalog.ts";
 import { effectiveEffort, isSdkBackedModel } from "../../llm/resolver.ts";
+import { chatModel } from "../../llm/chat-model.ts";
 import { parseEffortArg, formatEffort } from "../model-picker.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { runRegistry } from "../../core/run-registry.ts";
@@ -84,7 +85,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
     void log("info", "command received", { platform: "my-claw-app", command, args, sessionId });
 
     const existing = await deps.sessionManager.peek(sessionId);
-    const currentModel = existing?.modelOverride ?? defaultModel;
+    const currentModel = chatModel(deps.config, existing?.modelOverride);
 
     switch (command) {
       case "help":

@@ -257,6 +257,28 @@ export function resolveRunModel(
 }
 
 /**
+ * What to store in `session.modelOverride` for a pick. The override is cleared only when the pick
+ * is *what would run without it* -- which is the agent's pin when there is one, not the global
+ * default.
+ *
+ * Comparing against the global default is the bug this replaces: on a chat whose agent pinned B,
+ * picking the global default A cleared the override and handed the run straight back to B. The app
+ * then displayed A, because it computed the current model the same wrong way.
+ *
+ * The comparison is on raw ids, so picking a tag that happens to alias the inherited model still
+ * pins the tag: a tag carries its own effort, and dropping it would drop that too.
+ */
+export function overrideForPick(
+  config: MyClawConfig,
+  request: Omit<RunModelRequest, "sessionModel">,
+  pick: string,
+  world: AvailabilityWorld,
+): string | undefined {
+  const inherited = tryResolveRunModel(config, request, world);
+  return inherited?.model === pick ? undefined : pick;
+}
+
+/**
  * The same answer, for callers that must not fail on it: a compaction summarizer or a status line
  * has no business throwing because a pin went stale. `undefined` means "no answer", and the caller
  * keeps whatever behaviour it had before asking.

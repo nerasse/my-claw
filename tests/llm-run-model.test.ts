@@ -4,10 +4,13 @@ import {
   NoRunnableModelError,
   UnknownModelError,
   availabilityOf,
+  overrideForPick,
   resolveRunModel,
   runnableModels,
   type AvailabilityWorld,
 } from "../src/llm/run-model.ts";
+import { chatModel } from "../src/llm/chat-model.ts";
+import { setAvailabilityWorld, resetAvailabilityWorld } from "../src/llm/world.ts";
 
 /** Everything reachable, nothing stale: the baseline the other worlds deviate from. */
 function world(over: Partial<AvailabilityWorld> = {}): AvailabilityWorld {
@@ -95,6 +98,41 @@ describe("the chain", () => {
     const run = resolveRunModel(c, { agent: "main", sessionModel: "claude-sonnet-5" }, world());
     expect(run.model).toBe("claude-sonnet-5");
     expect(run.source).toBe("session");
+  });
+});
+
+describe("writing a pick", () => {
+  test("picking the global default on a chat that inherits a pin pins it, and the display agrees", () => {
+    // The incident, at the line that caused it. Global default A, orchestrator pinned to B, the
+    // user picks A. The old rule (`pick === llm.defaultModel ? undefined : pick`) cleared the
+    // override, so the run went to B while every screen said A -- for two days.
+    const c = config({ agents: { orchestrator: { llm: { defaultModel: "claude-opus-5" } } } });
+    const pin = overrideForPick(c, { agent: "main" }, "claude-sonnet-5", world());
+    expect(pin).toBe("claude-sonnet-5");
+    expect(resolveRunModel(c, { agent: "main", sessionModel: pin }, world()).model).toBe("claude-sonnet-5");
+    // The display reads the installed world, not an argument: what every menu and status line does.
+    setAvailabilityWorld(() => world());
+    try {
+      expect(chatModel(c, pin)).toBe("claude-sonnet-5");
+      // And without the pick, the same surface says the pin -- which is the truth it used to hide.
+      expect(chatModel(c, undefined)).toBe("claude-opus-5");
+    } finally {
+      resetAvailabilityWorld();
+    }
+  });
+
+  test("picking what would run anyway clears the override instead of freezing it", () => {
+    // Not cosmetic: a frozen override would keep this chat on B after the pin moves on.
+    const c = config({ agents: { orchestrator: { llm: { defaultModel: "claude-opus-5" } } } });
+    expect(overrideForPick(c, { agent: "main" }, "claude-opus-5", world())).toBeUndefined();
+    // With no pin, that is the global default.
+    expect(overrideForPick(config(), { agent: "main" }, "claude-sonnet-5", world())).toBeUndefined();
+  });
+
+  test("picking a tag that aliases the inherited model still pins the tag", () => {
+    // A tag carries its own effort: dropping it as a no-op would drop that too.
+    const c = config({ tags: { Slow: { model: "claude-sonnet-5", effort: "low" } } });
+    expect(overrideForPick(c, { agent: "main" }, "tag:Slow", world())).toBe("tag:Slow");
   });
 });
 

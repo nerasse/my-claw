@@ -8,6 +8,9 @@ import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { compactSession } from "../../sessions/compaction.ts";
 import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
+import { chatModel } from "../../llm/chat-model.ts";
+import { overrideForPick } from "../../llm/run-model.ts";
+import { availabilityWorld } from "../../llm/world.ts";
 import type { ApprovalDecision, ConfirmationButton, OutgoingMessage, ToolApprovalRequest } from "../types.ts";
 import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg, type PickerTarget } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
@@ -442,7 +445,7 @@ export function createMatrixCommandHandler({
         }
 
         const existingSession = await sessionManager.peek(sessionId);
-        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const currentModel = chatModel(config, existingSession?.modelOverride);
 
         if (args) {
           const match = resolveMatrixModelSelection(args, config, modelPicker);
@@ -456,8 +459,8 @@ export function createMatrixCommandHandler({
           const session =
             existingSession ??
             (await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType));
-          const previousModel = session.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
-          session.modelOverride = match.id === (config.llm.defaultModel ?? config.llm.model) ? undefined : match.id;
+          const previousModel = chatModel(config, session.modelOverride);
+          session.modelOverride = overrideForPick(config, { agent: "main" }, match.id, availabilityWorld());
           session.lastActiveAt = new Date().toISOString();
           await sessionManager.persist(sessionId);
           hooks.emit("session:model:changed", { sessionId, previousModel, newModel: match.id });
@@ -475,7 +478,7 @@ export function createMatrixCommandHandler({
 
       case "models": {
         const existingSession = await sessionManager.peek(sessionId);
-        const currentModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const currentModel = chatModel(config, existingSession?.modelOverride);
         return buildMatrixModelsList({
           config,
           modelPicker,
@@ -488,7 +491,7 @@ export function createMatrixCommandHandler({
       case "effort": {
         const existingSession = await sessionManager.peek(sessionId);
         // Levels are per model: listing the global set would offer values the current model rejects.
-        const activeModel = existingSession?.modelOverride ?? config.llm.defaultModel ?? config.llm.model ?? "";
+        const activeModel = chatModel(config, existingSession?.modelOverride);
         const effort = effectiveEffort(config.llm, activeModel, existingSession?.effortOverride);
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (effort.source === "unsupported" || levels.length === 0) {
@@ -816,7 +819,7 @@ export function createMatrixActionHandler({
     // reactions and collapses the previous menu to the supersededText breadcrumb.
     if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
       const existing = await sessionManager.peek(sessionId);
-      const currentModel = existing?.modelOverride ?? defaultModel;
+      const currentModel = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
       // Effort submenu, reachable without re-selecting a model.
       if (action.kind === "openEffort") {
@@ -870,7 +873,7 @@ export function createMatrixActionHandler({
       session.effortOverride = action.level;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      const model = session.modelOverride ?? defaultModel;
+      const model = chatModel(config, session.modelOverride);
       return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`);
     }
 
@@ -879,17 +882,17 @@ export function createMatrixActionHandler({
       session.contextOverride = action.choice;
       session.lastActiveAt = new Date().toISOString();
       await sessionManager.persist(sessionId);
-      return { text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, session.modelOverride ?? defaultModel, session.contextOverride)}` };
+      return { text: `Fenetre de contexte de cette conversation :\n${formatContextInfo(config, chatModel(config, session.modelOverride), session.contextOverride)}` };
     }
 
     if (action.kind === "keepContext") {
       const existing = await sessionManager.peek(sessionId);
-      return { text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, existing?.modelOverride ?? defaultModel, existing?.contextOverride)}` };
+      return { text: `Fenetre de contexte inchangee :\n${formatContextInfo(config, chatModel(config, existing?.modelOverride), existing?.contextOverride)}` };
     }
 
     if (action.kind === "keepEffort") {
       const existing = await sessionManager.peek(sessionId);
-      const model = existing?.modelOverride ?? defaultModel;
+      const model = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, model, existing?.effortOverride);
       return chainContext(model, existing?.contextOverride, `Modèle : ${modelPicker.labelFor(model)} — effort inchangé : ${formatEffort(effort)}`);
     }
