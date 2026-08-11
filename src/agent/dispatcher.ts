@@ -7,6 +7,7 @@ import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel, type RunModel } from "../llm/run-model.ts";
+import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { log } from "../utils/logger.ts";
@@ -121,6 +122,8 @@ export class BackendDispatcher implements AgentBackend {
       delete session.modelOverride;
       resolved = resolveRunModel(this.config, { ...request, sessionModel: undefined }, availabilityWorld());
     }
+    // Once per run: the several resolutions of one run share the announcement.
+    announceModelFallback(resolved, message, agent);
     const defaultResolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, undefined, hasImages);
     return { resolved, defaultResolved };
   }

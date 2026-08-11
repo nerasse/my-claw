@@ -500,6 +500,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       attachments,
       replyToId: message.replyToId,
       ...(currentRunId() ? { run: currentRunId() } : {}),
+      ...(message.notice ? { notice: true } : {}),
     };
     this.broadcast(owner, frame);
   }

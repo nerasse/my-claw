@@ -137,6 +137,7 @@ import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatu
 import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
 import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
+import { fallbackNoticeText } from "./llm/fallback-notice.ts";
 import { setAvailabilityWorld, availabilityWorld } from "./llm/world.ts";
 import { buildDiagnostics, readLogEntries, formatLogEntries, collectSecrets } from "./core/diagnostics.ts";
 import {
@@ -230,6 +231,19 @@ async function main() {
   hooks.on("channel:started", ({ platform }) => void liveChannels.add(platform));
   hooks.on("channel:stopped", ({ platform }) => void liveChannels.delete(platform));
   hooks.on("channel:error", ({ platform }) => void liveChannels.delete(platform));
+
+  // Out-of-band statements that belong to a chat but not to the agent's answer -- today, a run
+  // that had to fall back off a configured model. Registered per channel where the adapter is
+  // built, so one subscriber serves all three and a disabled channel simply has no sender.
+  const noticeSenders = new Map<string, (chatId: string, text: string, threadId?: string) => Promise<void>>();
+  hooks.on("model:fallback", (event) => {
+    const send = noticeSenders.get(event.platform);
+    if (!send) return;
+    // Never let a notice failure touch the run it is about.
+    void send(event.chatId, fallbackNoticeText(event), event.threadId).catch((err) =>
+      void log("warn", "model fallback notice not delivered", { platform: event.platform, error: String(err) }),
+    );
+  });
 
   const confirmHealthyConfig = async (): Promise<void> => {
     const healthy = isHealthy({
@@ -607,6 +621,7 @@ async function main() {
     const whitelist = new Set(config.whitelist);
     const telegram = new TelegramAdapter(config.channels.telegram!, whitelist);
     telegramRef = telegram;
+    noticeSenders.set("telegram", (chatId, text, threadId) => telegram.send(chatId, { text, notice: true, threadId }));
     const commandHandler = createTelegramCommandHandler({
       config,
       sessionManager,
@@ -729,6 +744,7 @@ async function main() {
     const whitelist = new Set(config.whitelist.map(normalizeMatrixUserId));
     const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
     matrixRef = matrix;
+    noticeSenders.set("matrix", (chatId, text, threadId) => matrix.send(chatId, { text, notice: true, threadId }));
     const matrixStoragePaths = matrix.runtimeStoragePaths();
     const commandHandler = createMatrixCommandHandler({
       config,
@@ -882,6 +898,7 @@ async function main() {
     const myClawAppSessions = new MyClawAppSessionStoreImpl(sessionManager, new SessionFileStore(myClawAppConfig));
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawAppRef = myClawApp;
+    noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));
 
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
     // both redacted here rather than in the adapter, which has no view of the global config.

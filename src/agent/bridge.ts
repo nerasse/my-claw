@@ -19,6 +19,7 @@ import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmRespons
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel } from "../llm/run-model.ts";
+import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
@@ -253,7 +254,9 @@ export class AgentBridge implements AgentBackend {
     const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
-    const llmConfig = this.llmOverride ?? resolveRunModel(
+    // Resolved into its own binding so the run's chain keeps its type: an override from the
+    // caller carries no chain to announce.
+    const runModel = this.llmOverride ? undefined : resolveRunModel(
       this.config,
       {
         agent: agentToolType,
@@ -266,6 +269,10 @@ export class AgentBridge implements AgentBackend {
       },
       availabilityWorld(),
     );
+    const llmConfig = this.llmOverride ?? runModel!;
+    // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
+    // orchestrator's run to a single notice even though it resolves here as well.
+    if (runModel) announceModelFallback(runModel, message, agentToolType);
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     let toolExecutions = 0;

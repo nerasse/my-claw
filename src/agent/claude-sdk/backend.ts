@@ -21,6 +21,7 @@ import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
 import { resolveLlmConfigForAgentMessage } from "../../llm/resolver.ts";
 import { resolveRunModel, tryResolveRunModel } from "../../llm/run-model.ts";
+import { announceModelFallback } from "../../llm/fallback-notice.ts";
 import { availabilityWorld } from "../../llm/world.ts";
 import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
@@ -349,7 +350,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
-    const llmConfig = this.llmOverride ?? resolveRunModel(
+    // Resolved into its own binding so the run's chain keeps its type: an override from the
+    // caller carries no chain to announce.
+    const runModel = this.llmOverride ? undefined : resolveRunModel(
       this.config,
       {
         agent: agentToolType,
@@ -362,6 +365,10 @@ export class ClaudeSdkBackend implements AgentBackend {
       },
       availabilityWorld(),
     );
+    const llmConfig = this.llmOverride ?? runModel!;
+    // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
+    // orchestrator's run to a single notice even though it resolves here as well.
+    if (runModel) announceModelFallback(runModel, message, agentToolType);
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
     const agentType = this.depth === 0 ? "orchestrator" : this.agentKind ?? "general";

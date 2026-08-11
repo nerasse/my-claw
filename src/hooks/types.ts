@@ -207,6 +207,25 @@ export interface HookEventMap {
 
   // === MODEL CATALOG ===
   "models:discovered": { count: number; anyFailed: boolean };
+  /**
+   * A run had to skip a configured model that cannot run and fell back down the chain. Emitted
+   * once per run, never per request: a run is dozens of requests, and a warning on each is a
+   * warning that gets ignored. See docs/model-resolution.md.
+   */
+  "model:fallback": {
+    platform: string;
+    chatId: string;
+    threadId?: string;
+    /** The agent whose chain degraded: the orchestrator, cron, or a sub-agent's name. */
+    agent: string;
+    /** The model that could not run, and where it is pinned. */
+    model: string;
+    origin: string;
+    /** Why, in words the owner can act on. */
+    reason: string;
+    /** What ran instead. */
+    ran: string;
+  };
 
   // === MCP LIFECYCLE ===
   "mcp:synced": { servers: string[]; toolCount: number };

@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { resolveLlmConfig } from "../../src/llm/resolver.ts";
 import { PERMISSIVE_WORLD, resetAvailabilityWorld, setAvailabilityWorld } from "../../src/llm/world.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
@@ -302,4 +303,49 @@ test("an unavailable global default fails the run instead of substituting a mode
   } finally {
     resetAvailabilityWorld();
   }
+});
+
+// "Warn once per run, not per request": a run is dozens of requests, and the resolution happens
+// several times inside one (the dispatcher to pick the engine, the backend to run, a reroute).
+test("a fallback is announced once per run, whatever resolves inside it", async () => {
+  const events: Array<Record<string, unknown>> = [];
+  hooks.on("model:fallback", (e) => void events.push(e as unknown as Record<string, unknown>));
+
+  const pinned = mixedConfig();
+  pinned.agents.orchestrator = { llm: { defaultModel: "claude-sonnet-5", defaultProvider: "anthropic" } };
+  // The backend resolves again on its own, exactly like the real engines do.
+  const home = {
+    handleMessage: async (message: UnifiedMessage, session: SessionData) => {
+      const dup = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, {
+        home: { handleMessage: async () => "inner" } as unknown as AgentBridge,
+        sdk: { handleMessage: async () => "inner" } as unknown as ClaudeSdkBackend,
+      });
+      await dup.handleMessage(message, session);
+      return "home";
+    },
+  } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => "sdk" } as unknown as ClaudeSdkBackend;
+  const dispatcher = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, claudeAuth: false }));
+  try {
+    await dispatcher.handleMessage(msg("m-once"), session("s-once"));
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.["model"], "claude-sonnet-5");
+    assert.equal(events[0]?.["ran"], "mimo");
+    assert.equal(events[0]?.["origin"], "config.agents.orchestrator.llm.defaultModel");
+    assert.match(String(events[0]?.["reason"]), /subscription is not connected/);
+  } finally {
+    resetAvailabilityWorld();
+  }
+});
+
+test("a run whose chain is intact announces nothing", async () => {
+  const events: unknown[] = [];
+  hooks.on("model:fallback", (e) => void events.push(e));
+  const home = { handleMessage: async () => "home" } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => "sdk" } as unknown as ClaudeSdkBackend;
+  const dispatcher = new BackendDispatcher(mixedConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+  await dispatcher.handleMessage(msg("m-quiet"), session("s-quiet"));
+  assert.equal(events.length, 0);
 });

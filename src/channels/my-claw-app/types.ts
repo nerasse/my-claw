@@ -651,6 +651,12 @@ export interface MyClawAppChatMessage {
   ts?: string;
   /** Correlation id of the run that produced this reply, quotable in a bug report. */
   run?: string;
+  /**
+   * A statement of the system rather than a reply from the agent: a model fallback, a warning
+   * about a failed voice take. Rendered apart, because a warning that looks like the assistant
+   * talking is a warning that gets read as content.
+   */
+  notice?: boolean;
 }
 
 /** A run started answering on a thread: the app keeps its Stop affordance until the matching end. */
