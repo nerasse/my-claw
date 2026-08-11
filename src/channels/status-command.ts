@@ -14,7 +14,7 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
-import { resolveContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
+import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
@@ -128,15 +128,7 @@ function collectStatusData(p: StatusParams): StatusData {
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
   const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
   const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
-  const model = p.config.llm.models?.find((m) => m.id === currentModel);
-  const window = resolveContextWindow({
-    model: currentModel,
-    config: p.config,
-    declared: model?.limit?.context,
-    declaredSource: model?.contextFrom,
-    sessionOverride: p.session?.contextOverride,
-    agent: contextAgent,
-  });
+  const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
   // Every clause here is a reason the number can look wrong, so each one that applies is named.
   const contextNotes = [window.rawSource === "default" ? "default, not declared for this model" : window.rawSource];
   if (window.approximate) contextNotes.push("matched id");

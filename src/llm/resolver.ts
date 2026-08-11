@@ -54,6 +54,21 @@ function expandTag(
 }
 
 /**
+ * The model a reference ends on, for callers that need the model's own metadata (its window, the
+ * provenance of that window) rather than the run identity. Menus and `/status` used to read
+ * `llm.models` by the literal id, which no `tag:` reference ever matches: every tag then reported
+ * the fallback window instead of the one its model declares. A broken chain answers with the id
+ * itself, so a display degrades instead of throwing.
+ */
+export function leafModelId(config: LlmConfig, modelId: string): string {
+  try {
+    return expandTag(config, modelId).modelId;
+  } catch {
+    return modelId;
+  }
+}
+
+/**
  * Effective effort for a run: session override > the tag's own pin > the scope's pin (a cron
  * job first, then the agent) > the global default. The tag is indivisible: referencing it
  * accepts the effort it carries, and only the session sits above it. Only emitted when it

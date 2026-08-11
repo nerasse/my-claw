@@ -41,7 +41,12 @@ A tag is referenced as `tag:<name>` wherever a model id is expected:
 The tag's `contextCap` is a per-run ceiling applied in `resolveContextWindow`
 (`src/llm/context-window.ts`): session override > tag cap > agent cap > global cap. It is
 deliberate per-tag policy, so it outranks the agent's standing ceiling for runs that go through
-the tag.
+the tag. `standingContextCap` is the one implementation of that precedence: the menus read it
+too, or they would offer a list built from the agent's cap while the run applied the tag's.
+
+Because the tag owns both pins, a config flow that stages a tag (agent default, global default, a
+job) offers **neither** the effort step nor the window step: an effort or a cap set on the scope
+would never be consulted for runs going through the tag. See docs/context-window.md.
 
 ## Where tags live
 

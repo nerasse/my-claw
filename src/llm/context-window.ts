@@ -1,5 +1,6 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
-import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType } from "../core/config.ts";
+import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
+import { leafModelId } from "./resolver.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
@@ -12,9 +13,57 @@ import type { ChatMessage } from "./provider.ts";
 function resolveTagContextCap(config: MyClawConfig, modelId: string): number | undefined {
   const name = tagNameOf(modelId);
   if (name === undefined) return undefined;
-  const tag = name === "Default" ? undefined : config.tags?.[name];
+  const tag = name === "Default" ? undefined : tagsOf(config)?.[name];
   const cap = tag?.contextCap;
   return cap !== undefined && Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : undefined;
+}
+
+/**
+ * `tags` lives on the root config and the llm view is a boot-time mirror of it (index.ts). Reading
+ * only one of the two is how a partial config -- a reload that rebuilt the llm view, a caller that
+ * assembled its own -- silently lost every tag ceiling.
+ */
+function tagsOf(config: MyClawConfig): LlmConfig["tags"] {
+  return config.tags ?? config.llm?.tags;
+}
+
+/**
+ * The ceiling in force for this model under this agent. A tag's own cap is deliberate per-model
+ * policy, so it outranks the standing agent/global one. Exported because the menus have to offer
+ * exactly the ceiling the run will apply: two implementations of this precedence is how a tag came
+ * to be offered a list built from the agent's cap while the run used the tag's.
+ */
+export function standingContextCap(
+  config: MyClawConfig,
+  modelId: string,
+  agent?: AgentToolType | "orchestrator",
+): number | undefined {
+  return resolveTagContextCap(config, modelId) ?? resolveContextCap(config, agent);
+}
+
+/**
+ * The window for a model id as every display should read it: the id keeps its identity (a tag's
+ * own cap applies to it) while the declared window comes from the model the id ends on.
+ */
+export function resolveModelContextWindow(
+  config: MyClawConfig,
+  modelId: string,
+  sessionOverride?: ContextOverride,
+  agent: AgentToolType | "orchestrator" = "main",
+): ResolvedContextWindow {
+  const tags = tagsOf(config);
+  const leaf = leafModelId(tags && !config.llm?.tags ? { ...config.llm, tags } : config.llm, modelId);
+  const entry = config.llm?.models?.find((m) => m.id === leaf);
+  return resolveContextWindow({
+    model: modelId,
+    config,
+    // The same fallback the resolver hands the run: a model with no window of its own inherits
+    // the global one, so a menu cannot offer a number the run would not use.
+    declared: entry?.limit?.context ?? config.llm?.limit?.context,
+    declaredSource: entry?.contextFrom,
+    sessionOverride,
+    agent,
+  });
 }
 
 /**
@@ -92,8 +141,7 @@ export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContex
     return out;
   }
 
-  const tagCap = resolveTagContextCap(opts.config, opts.model);
-  const cap = tagCap ?? resolveContextCap(opts.config, opts.agent);
+  const cap = standingContextCap(opts.config, opts.model, opts.agent);
   const exempt = matchesAnyGlob(opts.model, opts.config.context?.capExempt);
   if (cap === undefined || override === "full" || exempt || raw <= cap) {
     // Only claim an override when it changed something, so /status does not advertise a session

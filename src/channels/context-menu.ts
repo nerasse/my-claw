@@ -1,6 +1,5 @@
 import type { MyClawConfig, AgentToolType } from "../core/config.ts";
-import { resolveContextCap } from "../core/config.ts";
-import { resolveContextWindow, type ContextOverride } from "../llm/context-window.ts";
+import { resolveModelContextWindow, standingContextCap, type ContextOverride } from "../llm/context-window.ts";
 
 /**
  * The context step of the `/model` flow: which ceilings are worth offering for this model, and
@@ -60,19 +59,9 @@ export function contextChoiceFor(
   override: ContextOverride | undefined,
   agent: AgentToolType | "orchestrator" = "main",
 ): ContextChoice {
-  const model = config.llm.models?.find((m) => m.id === modelId);
-  const resolve = (sessionOverride: ContextOverride | undefined) =>
-    resolveContextWindow({
-      model: modelId,
-      config,
-      declared: model?.limit?.context,
-      declaredSource: model?.contextFrom,
-      sessionOverride,
-      agent,
-    });
-  const window = resolve(override);
+  const window = resolveModelContextWindow(config, modelId, override, agent);
   const raw = window.raw;
-  const cap = resolveContextCap(config, agent);
+  const cap = standingContextCap(config, modelId, agent);
 
   // The standing policy is offered alongside the graduations so the list always contains the
   // option that undoes a session choice. Ceilings at or above the window are dropped (they would

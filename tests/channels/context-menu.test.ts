@@ -8,6 +8,15 @@ function cfg(models: Array<{ id: string; label: string; limit?: { context?: numb
   return { llm: { models }, context, agents } as MyClawConfig;
 }
 
+function withTags(
+  models: Array<{ id: string; label: string; limit?: { context?: number } }>,
+  tags: MyClawConfig["tags"],
+  context?: MyClawConfig["context"],
+  agents?: unknown,
+): MyClawConfig {
+  return { llm: { models }, tags, context, agents } as MyClawConfig;
+}
+
 const big = [{ id: "big", label: "Big", limit: { context: 1_048_576 } }];
 const mid = [{ id: "mid", label: "Mid", limit: { context: 300_000 } }];
 const tiny = [{ id: "tiny", label: "Tiny", limit: { context: 40_000 } }];
@@ -67,6 +76,37 @@ test("an agent's own ceiling is the one offered and marked", () => {
   // The global cap is not the agent's, so it is not labelled as one for it.
   // Descending, so the list reads like a volume scale whatever the cap happens to be.
   expect(labels(c)).toEqual(["Full: 1,048,576", "512,000", "256,000", "128,000 (cap)", "64,000"]);
+});
+
+test("a tag offers the window of the model it points at, not the fallback", () => {
+  // The menus used to look `llm.models` up by the literal id, which no tag reference ever
+  // matches: every tag then reported DEFAULT_CONTEXT_TOKENS as if the model had no window.
+  const config = withTags(big, { Cheap: { model: "big" } });
+  const c = contextChoiceFor(config, "tag:Cheap", undefined);
+  expect(c.raw).toBe(1_048_576);
+  expect(labels(c)).toEqual(["Full: 1,048,576", "512,000 (cap)", "256,000", "128,000", "64,000"]);
+});
+
+test("the ceiling offered for a tag is the tag's own, not the agent's standing one", () => {
+  const config = withTags(big, { Cheap: { model: "big", contextCap: 512_000 } }, { cap: 128_000 });
+  const c = contextChoiceFor(config, "tag:Cheap", undefined);
+  expect(c.effective).toBe(512_000);
+  expect(c.tiers.find((t) => t.selected)?.label).toBe("512,000 (cap)");
+});
+
+test("a tag chain reads the leaf model's window", () => {
+  const config = withTags(big, { Outer: { model: "tag:Inner" }, Inner: { model: "big" } });
+  expect(contextChoiceFor(config, "tag:Outer", undefined).raw).toBe(1_048_576);
+});
+
+test("a tag pointing at a model with no window of its own falls back to the global limit", () => {
+  const config = { llm: { models: [{ id: "bare", label: "Bare" }], limit: { context: 430_080 } }, tags: { Cheap: { model: "bare" } } } as unknown as MyClawConfig;
+  expect(contextChoiceFor(config, "tag:Cheap", undefined).raw).toBe(430_080);
+});
+
+test("the compact info line names the tag's real window", () => {
+  const config = withTags(big, { Cheap: { model: "big", contextCap: 512_000 } });
+  expect(formatContextInfo(config, "tag:Cheap", undefined)).toBe("Context: 512k / full 1.0M");
 });
 
 test("an unknown model still resolves, falling back to the default window", () => {

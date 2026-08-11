@@ -149,6 +149,28 @@ Also reachable from the root menu as `Context >`, to change it without re-select
 The step is skipped entirely when the model has a single possible window: a lone option is not
 a choice, and a model below every offered ceiling has nothing to arbitrate.
 
+A **config flow** (agent, global default, job) staging a `tag:` reference skips the step too, for
+the same reason it skips the effort one: the tag pins its own ceiling and that pin outranks the
+scope's, so anything chosen here would be dead config. A chat keeps both steps, because a
+session's own choice still sits above the tag.
+
+### One resolution, every surface
+
+Menus and `/status` must offer exactly the window the run will use, so they all go through
+`resolveModelContextWindow` (`src/llm/context-window.ts`) rather than assembling the options
+themselves. It resolves two things the callers used to get wrong on their own:
+
+- the **declared window** is read from the model the id *ends on*, so a `tag:` reference reports
+  the window of the model behind it. Reading `llm.models` by the literal id is what made every
+  tag report `DEFAULT_CONTEXT_TOKENS`: no tag reference is ever a key of that list. The run was
+  right all along, only the display lied — a 1M model behind a tag was offered a 262k ceiling;
+- a model with no window of its own inherits `llm.limit.context`, the same fallback the resolver
+  hands the run.
+
+The id keeps its identity through the call (`model: "tag:Cheap"`, not the expanded id): the
+ceiling that applies is the tag's, and `standingContextCap` is the single implementation of that
+precedence, used by both the resolution and the menus.
+
 Lower tiers exist because lifting the policy is not the only useful direction. A shorter prompt
 is cheaper and faster, and one conversation may be worth spending less on.
 
