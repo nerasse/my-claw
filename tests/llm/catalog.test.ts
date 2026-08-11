@@ -137,6 +137,70 @@ test("refresh is resilient: a failing provider keeps its previous models", async
   }
 });
 
+test("answered(): only a provider that listed in full is evidence about its own catalog", async () => {
+  // The distinction the model picker rests on: "answered and did not list X" means X is gone,
+  // "did not answer" means nothing. Reading the second as the first empties the menu on a hiccup.
+  const config = makeConfig();
+  let failFetch = true;
+  const mock = mockFetch(async () => {
+    if (failFetch) throw new Error("network down");
+    return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+
+  try {
+    clearCatalogCache();
+    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    // Before any refresh: nothing has testified, so nothing is missing.
+    assert.equal(catalog.answered("litellm"), false);
+    assert.equal(catalog.listedBy("litellm").size, 0);
+
+    await catalog.refresh();
+    assert.equal(catalog.answered("litellm"), false);
+    assert.equal(catalog.answered("anthropic"), true);
+    assert.deepEqual([...catalog.listedBy("anthropic")], ["sonnet"]);
+
+    failFetch = false;
+    await catalog.refresh();
+    assert.equal(catalog.answered("litellm"), true);
+    assert.deepEqual([...catalog.listedBy("litellm")], ["qwen-72b"]);
+
+    // A provider that stops answering stops testifying: its last listing is not reusable as proof.
+    failFetch = true;
+    await catalog.refresh();
+    assert.equal(catalog.answered("litellm"), false);
+    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["qwen-72b", "sonnet"]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("answered(): half an answer from the anthropic provider is not an answer", async () => {
+  const config = makeConfig();
+  // The versioned endpoint is only called when a token exists; without one it returns nothing at
+  // all and there is no partial failure to observe.
+  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+  const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
+  try {
+    clearCatalogCache();
+    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    await catalog.refresh();
+    // The aliases arrived, the versioned list did not: the models kept are partly the previous
+    // set, so this listing cannot prove a versioned model disappeared.
+    assert.ok(catalog.discovered().some((m) => m.id === "sonnet"));
+    assert.equal(catalog.answered("anthropic"), false);
+    // The provider that did answer is unaffected by its neighbour's half-failure.
+    assert.equal(catalog.answered("litellm"), true);
+  } finally {
+    mock.restore();
+    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
+  }
+});
+
 test("enabled() false when no provider opts into discovery", () => {
   const config: LlmConfig = {
     providers: { litellm: { baseUrl: "x" } },

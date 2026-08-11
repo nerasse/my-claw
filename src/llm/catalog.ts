@@ -208,6 +208,12 @@ function aliasModels(
 export class ModelCatalog {
   private discoveredModels: LlmModelConfig[] = [];
   private listeners: Array<() => void> = [];
+  /**
+   * What each provider listed on its last *complete* answer, kept before the cross-provider
+   * dedupe: a provider is only evidence about its own catalog. Absent means "never answered
+   * completely", which is not evidence that anything disappeared -- see `answered`.
+   */
+  private listedByProvider = new Map<string, ReadonlySet<string>>();
 
   constructor(
     private getConfig: () => LlmConfig,
@@ -218,6 +224,23 @@ export class ModelCatalog {
 
   discovered(): LlmModelConfig[] {
     return this.discoveredModels;
+  }
+
+  /**
+   * Whether this provider answered its last discovery in full. The distinction is load-bearing:
+   * "answered and did not list X" means X is gone, while "did not answer" means nothing at all.
+   * Reading the second as the first would empty the model picker on every network hiccup.
+   *
+   * False after a restart until the first refresh completes: the cached models are still served,
+   * and nothing is declared missing on the strength of a discovery that has not run.
+   */
+  answered(provider: string): boolean {
+    return this.listedByProvider.has(provider);
+  }
+
+  /** The ids that provider listed, empty when it never answered in full. */
+  listedBy(provider: string): ReadonlySet<string> {
+    return this.listedByProvider.get(provider) ?? new Set();
   }
 
   onUpdate(cb: () => void): void {
@@ -279,6 +302,8 @@ export class ModelCatalog {
 
     for (const [name, provider] of Object.entries(providers)) {
       if (!provider.discover) continue;
+      const before = next.length;
+      let complete = true;
       try {
         if (provider.type === "claude-sdk") {
           if (!this.sdkDiscoverer) continue;
@@ -290,6 +315,9 @@ export class ModelCatalog {
             versioned = await this.claudeVersionedModels(name, provider);
           } catch (err) {
             anyFailed = true;
+            // Half an answer is not an answer: the versioned set falls back to what was already
+            // known, so this listing cannot be used as evidence that a model disappeared.
+            complete = false;
             void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
             const aliasIds = new Set(aliases.map((m) => m.value));
             versioned = this.discoveredModels.filter((m) => m.provider === name && !aliasIds.has(m.id));
@@ -318,11 +346,19 @@ export class ModelCatalog {
         }
       } catch (err) {
         anyFailed = true;
+        complete = false;
         void log("warn", "model discovery failed for provider", { provider: name, error: String(err) });
         // Keep this provider's previously discovered models on failure.
         for (const m of this.discoveredModels) {
           if (m.provider === name) next.push(m);
         }
+      }
+      // Recorded before the cross-provider dedupe below, which would otherwise hide an id under
+      // whichever provider listed it first and make it look absent from the other.
+      if (complete) {
+        this.listedByProvider.set(name, new Set(next.slice(before).map((m) => m.id)));
+      } else {
+        this.listedByProvider.delete(name);
       }
     }
 
