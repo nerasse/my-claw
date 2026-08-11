@@ -238,6 +238,14 @@ the first answer wins.
   referenced it down. All four answer with the fresh `workspaces.list.result`, and since
   `workspaces` is hot-reloaded with the skills/agent watchers re-targeting their tiers, the
   new directory's layers follow live.
+- `providers.upsert` / `providers.remove` / `providers.rename` are the CRUD of
+  `config.llm.providers`, and `providers.env.set` / `providers.env.rename` /
+  `providers.env.remove` / `providers.env.list` manage the `~/.my-claw/.env` side of the same
+  entries -- the full surface of docs/providers-admin.md. Provider mutations answer with the
+  fresh `agents.config.result`, env mutations with `providers.env.result` (names only, never
+  values). `env.set` is the one frame that carries a secret value; it is never logged or
+  echoed, and every provider write reloads the config and refreshes the model catalog so a new
+  key discovers its models immediately.
 - `jobs.list` / `jobs.save` / `jobs.delete` are the CRUD of the scheduled tasks
   (`~/.my-claw/cron/jobs.json`, the same store the `cron` tool edits). `jobs.list` answers
   with the fresh `jobs.list.result`; every mutation answers with the same fresh listing, never

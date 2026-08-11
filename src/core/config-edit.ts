@@ -697,3 +697,202 @@ export async function setWorkspacePromptPolicy(
   await journal("edit", artifactId(CONFIG_PATH), { workspace, file, inherit, off });
   return { ok: true, previous: {} };
 }
+
+/** The provider key is the model namespace (`llm.providers.<key>`), so it must be typable. */
+export const PROVIDER_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+/**
+ * The fields the app may write. Optional strings are deleted when they arrive empty: the file
+ * must not carry settings that say nothing. `headers` and `apiKeyEnv` values are not here --
+ * headers stay owner-only, and the env key has its own page (providers.env.*).
+ */
+export interface ProviderPatch {
+  type?: "openai" | "claude-sdk" | "codex";
+  baseUrl?: string;
+  apiKeyEnv?: string;
+  group?: string;
+  discover?: boolean;
+  promptCache?: boolean;
+  pricingProvider?: string;
+  fallbackModel?: string;
+}
+
+const PROVIDER_TYPES = ["openai", "claude-sdk", "codex"] as const;
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A type's shape, checked against the *resulting* entry so a patch that flips the type is
+ * validated the same way as one that builds it. SDK types hold no endpoint and no key of their
+ * own: the Claude SDK and Codex backends own their token stores and their targets.
+ */
+function providerShapeError(spec: Record<string, unknown>): string | null {
+  const type = spec["type"] ?? "openai";
+  if (spec["baseUrl"] && type !== "openai") {
+    return `${type} providers do not take a baseUrl (the backend owns its targets)`;
+  }
+  if (spec["apiKeyEnv"] && type !== "openai") {
+    return `${type} providers do not take an apiKeyEnv (subscription auth)`;
+  }
+  if (type === "openai" && !spec["baseUrl"]) {
+    return "openai providers need a baseUrl";
+  }
+  return null;
+}
+
+function providersAt(data: Record<string, unknown>): Record<string, unknown> {
+  return objectAt(objectAt(data, "llm"), "providers");
+}
+
+/**
+ * Creates or edits one provider in one validation pass, exactly what the wire frame `providers.upsert`
+ * means: a key that is already declared is merged field by field, a new one is created. The key
+ * "tags" is reserved: it is the synthetic row the server injects into the providers listing, it
+ * has no config entry of its own. Empty optional strings delete the field: the file must not
+ * carry settings that say nothing.
+ */
+export async function upsertProvider(key: string, patch: ProviderPatch): Promise<ConfigEditResult> {
+  if (!PROVIDER_KEY_RE.test(key)) {
+    return { ok: false, error: `Invalid provider key: "${key}" (letters, digits, "-", "_")` };
+  }
+  if (key === "tags") return { ok: false, error: `The provider key "${key}" is reserved` };
+  if (patch.type !== undefined && !(PROVIDER_TYPES as readonly string[]).includes(patch.type)) {
+    return { ok: false, error: `Invalid provider type: ${patch.type}` };
+  }
+  if (patch.apiKeyEnv !== undefined && patch.apiKeyEnv !== "" && !ENV_NAME_RE.test(patch.apiKeyEnv)) {
+    return { ok: false, error: `Invalid environment variable name: ${patch.apiKeyEnv}` };
+  }
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const providers = providersAt(read.data);
+  const existing = providers[key];
+  const created = existing === undefined;
+  const spec: Record<string, unknown> =
+    existing === null || typeof existing !== "object" || Array.isArray(existing)
+      ? { type: patch.type ?? "openai" }
+      : { ...(existing as Record<string, unknown>) };
+  if (patch.type !== undefined) spec["type"] = patch.type;
+  for (const field of ["baseUrl", "apiKeyEnv", "group", "pricingProvider", "fallbackModel"] as const) {
+    if (patch[field] === undefined) continue;
+    if (patch[field] === "") delete spec[field];
+    else spec[field] = patch[field];
+  }
+  if (patch.discover !== undefined) spec["discover"] = patch.discover;
+  if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
+  const shapeError = providerShapeError(spec);
+  if (shapeError) return { ok: false, error: shapeError };
+  providers[key] = spec;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} provider ${key}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { providerUpserted: key, created });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Repoints every provider that reads `from` at `to`, in one write: an env rename whose variable
+ * is shared by two providers must not leave one of them dangling after the .env line moves.
+ */
+export async function repointEnvKey(from: string, to: string): Promise<ConfigEditResult> {
+  if (!ENV_NAME_RE.test(to)) {
+    return { ok: false, error: `Invalid environment variable name: ${to}` };
+  }
+  if (from === to) return { ok: true, previous: {} };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const providers = providersAt(read.data);
+  let touched = 0;
+  for (const [key, entry] of Object.entries(providers)) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const cast = entry as Record<string, unknown>;
+    if (cast["apiKeyEnv"] === from) {
+      cast["apiKeyEnv"] = to;
+      touched += 1;
+    }
+  }
+  if (touched === 0) return { ok: true, previous: {} };
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant repointage ${from} -> ${to}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { envRepointed: { from, to, touched } });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Removes a declared provider. Anything that still points at it is refused with the list:
+ * a silent removal would leave a default that resolves nowhere and curated models that never
+ * run. Discovered models are not in the file and die with the catalog cache; curated ones
+ * (llm.models) are the owner's declaration and are never touched behind their back.
+ */
+export async function removeProvider(key: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+  const providers = providersAt(read.data);
+  if (providers[key] === undefined) {
+    return { ok: false, error: `Provider not declared: ${key}` };
+  }
+
+  const llm = objectAt(read.data, "llm");
+  const blocking: string[] = [];
+  if (llm["defaultProvider"] === key) blocking.push(`llm.defaultProvider`);
+  const models = llm["models"];
+  if (Array.isArray(models)) {
+    for (const model of models) {
+      if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === key) {
+        const id = (model as Record<string, unknown>)["id"];
+        blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
+      }
+    }
+  }
+  if (blocking.length > 0) {
+    return { ok: false, error: `Cannot remove ${key}: still referenced by ${blocking.join(", ")}` };
+  }
+
+  delete providers[key];
+  if (Object.keys(providers).length === 0) delete (objectAt(read.data, "llm"))["providers"];
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait provider ${key}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Renames a provider key, same entry. Every reference in the same file follows in one write --
+ * curated models and the default provider -- so the rename never leaves a dangling default,
+ * exactly like `renameWorkspace` rewrites the agent pins it would otherwise break.
+ */
+export async function renameProvider(from: string, to: string): Promise<ConfigEditResult> {
+  if (!PROVIDER_KEY_RE.test(to)) {
+    return { ok: false, error: `Invalid provider key: "${to}" (letters, digits, "-", "_")` };
+  }
+  if (to === "tags") return { ok: false, error: `The provider key "${to}" is reserved` };
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const providers = providersAt(read.data);
+  if (providers[from] === undefined) {
+    return { ok: false, error: `Provider not declared: ${from}` };
+  }
+  if (providers[to] !== undefined) {
+    return { ok: false, error: `Provider already exists: ${to}` };
+  }
+  providers[to] = providers[from];
+  delete providers[from];
+
+  const llm = objectAt(read.data, "llm");
+  if (llm["defaultProvider"] === from) llm["defaultProvider"] = to;
+  const models = llm["models"];
+  if (Array.isArray(models)) {
+    for (const model of models) {
+      if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === from) {
+        (model as Record<string, unknown>)["provider"] = to;
+      }
+    }
+  }
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage provider ${from}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { providerRenamed: { from, to } });
+  return { ok: true, previous: {} };
+}

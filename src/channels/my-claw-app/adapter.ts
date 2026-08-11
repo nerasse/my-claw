@@ -87,6 +87,14 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppTagsDelete,
   MyClawAppTagsResult,
   MyClawAppTagsUpsert,
+  MyClawAppProviderEnvList,
+  MyClawAppProviderEnvRemove,
+  MyClawAppProviderEnvRename,
+  MyClawAppProviderEnvSet,
+  MyClawAppProviderEnvResult,
+  MyClawAppProviderRemove,
+  MyClawAppProviderRename,
+  MyClawAppProviderUpsert,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -205,6 +213,25 @@ export interface MyClawAppTagsController {
   list(): MyClawAppTagsResult;
   upsert(fields: { name: string; model: string; effort?: string; contextCap?: number }): Promise<MyClawAppTagsResult>;
   delete(name: string): Promise<MyClawAppTagsResult>;
+}
+
+/** Provider CRUD and its env key, injected so the adapter never reads config.json or .env
+ *  itself. Every provider mutation answers with the fresh agents snapshot, like tags. */
+export interface MyClawAppProvidersController {
+  /** Creates or edits one entry under llm.providers. */
+  upsert(patch: MyClawAppProviderUpsert): Promise<MyClawAppAgentsConfigResult>;
+  /** Removes one entry; refused while anything still references it. */
+  remove(key: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Renames the entry key, rewriting references in the same file. */
+  rename(from: string, to: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes one `NAME=value` line in .env. The one operation that carries a secret value. */
+  envSet(name: string, value: string): Promise<void>;
+  /** Renames a line in .env and repoints the providers that read the old name. */
+  envRename(from: string, to: string): Promise<void>;
+  /** Drops a line from .env. */
+  envRemove(name: string): Promise<void>;
+  /** The names in .env and which provider reads each. Never the values. */
+  envList(): Promise<MyClawAppProviderEnvResult>;
 }
 
 /** Skill catalog, injected for the same reason as the model controller: the adapter must not
@@ -348,6 +375,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private models?: MyClawAppModelController;
   private agents?: MyClawAppAgentsController;
   private tags?: MyClawAppTagsController;
+  private providers?: MyClawAppProvidersController;
   private skills?: MyClawAppSkillsController;
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
@@ -566,6 +594,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onTagsController(controller: MyClawAppTagsController): void {
     this.tags = controller;
+  }
+
+  onProvidersController(controller: MyClawAppProvidersController): void {
+    this.providers = controller;
   }
 
   onSkillsController(controller: MyClawAppSkillsController): void {
@@ -1027,6 +1059,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "tags.delete":
         void this.handleTagsDelete(ws, frame);
         break;
+      case "providers.upsert":
+        void this.handleProviderUpsert(ws, frame);
+        break;
+      case "providers.remove":
+        void this.handleProviderRemove(ws, frame);
+        break;
+      case "providers.rename":
+        void this.handleProviderRename(ws, frame);
+        break;
+      case "providers.env.set":
+        void this.handleProviderEnvSet(ws, frame);
+        break;
+      case "providers.env.rename":
+        void this.handleProviderEnvRename(ws, frame);
+        break;
+      case "providers.env.list":
+        void this.handleProviderEnvList(ws);
+        break;
+      case "providers.env.remove":
+        void this.handleProviderEnvRemove(ws, frame);
+        break;
       case "agents.model.set":
         void this.handleAgentsModelSet(ws, frame);
         break;
@@ -1326,6 +1379,136 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, await this.tags.delete(frame.name));
     } catch (err) {
       await this.refuse(ws, "tags", "tags.delete failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleProviderUpsert(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderUpsert,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.key) {
+      await this.refuse(ws, "providers", "invalid provider key");
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.providers.upsert(frame));
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.upsert failed", { key: frame.key, error: String(err) });
+    }
+  }
+
+  private async handleProviderRemove(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderRemove,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.key) {
+      await this.refuse(ws, "providers", "invalid provider key");
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.providers.remove(frame.key));
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.remove failed", { key: frame.key, error: String(err) });
+    }
+  }
+
+  private async handleProviderRename(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderRename,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.from || !frame.to) {
+      await this.refuse(ws, "providers", "invalid provider rename", { from: frame.from, to: frame.to });
+      return;
+    }
+    try {
+      this.sendFrame(ws, await this.providers.rename(frame.from, frame.to));
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.rename failed", { from: frame.from, to: frame.to, error: String(err) });
+    }
+  }
+
+  /** The value is a secret: it never appears in a refusal's data or a log line. */
+  private async handleProviderEnvSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderEnvSet,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.name || !frame.value) {
+      await this.refuse(ws, "providers", "invalid env name or value", { name: frame.name });
+      return;
+    }
+    try {
+      await this.providers.envSet(frame.name, frame.value);
+      await this.sendFrame(ws, await this.providers.envList());
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.env.set failed", { name: frame.name, error: String(err) });
+    }
+  }
+
+  private async handleProviderEnvRename(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderEnvRename,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.from || !frame.to) {
+      await this.refuse(ws, "providers", "invalid env rename", { from: frame.from, to: frame.to });
+      return;
+    }
+    try {
+      await this.providers.envRename(frame.from, frame.to);
+      await this.sendFrame(ws, await this.providers.envList());
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.env.rename failed", { from: frame.from, to: frame.to, error: String(err) });
+    }
+  }
+
+  private async handleProviderEnvList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    try {
+      await this.sendFrame(ws, await this.providers.envList());
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.env.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleProviderEnvRemove(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppProviderEnvRemove,
+  ): Promise<void> {
+    if (!this.providers) {
+      await this.refuse(ws, "providers", "provider config unavailable");
+      return;
+    }
+    if (!frame.name) {
+      await this.refuse(ws, "providers", "invalid env name");
+      return;
+    }
+    try {
+      await this.providers.envRemove(frame.name);
+      await this.sendFrame(ws, await this.providers.envList());
+    } catch (err) {
+      await this.refuse(ws, "providers", "providers.env.remove failed", { name: frame.name, error: String(err) });
     }
   }
 

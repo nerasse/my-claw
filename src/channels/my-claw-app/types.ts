@@ -463,6 +463,65 @@ export interface MyClawAppWorkspacesSetPath {
   path: string;
 }
 
+/**
+ * Creates or edits a provider under `llm.providers`. `key` names the entry, so upsert is both
+ * the create form and the edit form. Empty strings delete the field, an absent one leaves it
+ * alone. `providerType` is the engine ("openai", "claude-sdk", "codex"); the frame's own `type`
+ * discriminates the message, so the two cannot share a name. The env key is never carried here:
+ * it has its own pages (providers.env.*).
+ */
+export interface MyClawAppProviderUpsert {
+  type: "providers.upsert";
+  key: string;
+  providerType?: "openai" | "claude-sdk" | "codex";
+  baseUrl?: string;
+  apiKeyEnv?: string;
+  group?: string;
+  discover?: boolean;
+  promptCache?: boolean;
+  pricingProvider?: string;
+  fallbackModel?: string;
+}
+
+/** Removes a provider. Refused while anything still references it. */
+export interface MyClawAppProviderRemove {
+  type: "providers.remove";
+  key: string;
+}
+
+/** Renames the provider key, rewriting every reference in the same file in one write. */
+export interface MyClawAppProviderRename {
+  type: "providers.rename";
+  from: string;
+  to: string;
+}
+
+/** Writes one `NAME=value` line in ~/.my-claw/.env. The one frame that carries a secret value. */
+export interface MyClawAppProviderEnvSet {
+  type: "providers.env.set";
+  name: string;
+  value: string;
+}
+
+/** Renames a variable in .env, value preserved, and repoints every provider that read the old
+ *  name. The old name disappears from the process: the loader never deletes. */
+export interface MyClawAppProviderEnvRename {
+  type: "providers.env.rename";
+  from: string;
+  to: string;
+}
+
+/** Drops a variable from .env. Used when a provider is deleted and its key dies with it. */
+export interface MyClawAppProviderEnvRemove {
+  type: "providers.env.remove";
+  name: string;
+}
+
+/** Lists the variable names known to the server and who reads each. Names, never values. */
+export interface MyClawAppProviderEnvList {
+  type: "providers.env.list";
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
@@ -518,6 +577,13 @@ export type MyClawAppClientFrame =
   | MyClawAppWorkspacesRemove
   | MyClawAppWorkspacesRename
   | MyClawAppWorkspacesSetPath
+  | MyClawAppProviderUpsert
+  | MyClawAppProviderRemove
+  | MyClawAppProviderRename
+  | MyClawAppProviderEnvSet
+  | MyClawAppProviderEnvRename
+  | MyClawAppProviderEnvRemove
+  | MyClawAppProviderEnvList
   | MyClawAppStatusGet
   | MyClawAppJobsList
   | MyClawAppJobsRuns
@@ -705,7 +771,8 @@ export type MyClawAppErrorScope =
   | "status"
   | "jobs"
   | "notifications"
-  | "tags";
+  | "tags"
+  | "providers";
 
 export interface MyClawAppError {
   type: "error";
@@ -1005,11 +1072,16 @@ export interface MyClawAppAgentInfo {
   layer?: string;
 }
 
-/** A configured provider, for display only: never a secret, only whether its env key is set. */
+/** A configured provider, for display only: never a secret, only whether its env key is set.
+ *  The editable fields ride along so the edit page can seed its form from the snapshot. */
 export interface MyClawAppProviderInfo {
   key: string;
   type: string;
   group?: string;
+  baseUrl?: string;
+  promptCache?: boolean;
+  pricingProvider?: string;
+  fallbackModel?: string;
   discover: boolean;
   /** Models currently known to belong to this provider. */
   models: number;
@@ -1404,4 +1476,21 @@ export type MyClawAppServerFrame =
   | MyClawAppJobsRunsResult
   | MyClawAppNotificationsInfo
   | MyClawAppTagsResult
+  | MyClawAppProviderEnvResult
   | MyClawAppError;
+
+/**
+ * The environment variable names the server knows, and the provider each one feeds. Names
+ * only: the values live in ~/.my-claw/.env and never cross the wire. The creation form reads
+ * it to propose a free name or reuse one that is already set.
+ */
+export interface MyClawAppProviderEnvResult {
+  type: "providers.env.result";
+  /** Every `NAME=value` line in .env, in file order. */
+  names: string[];
+  /** Names present in the process env: the .env ones plus the shell/systemd ones. A name here
+   *  is reusable without asking for a value, even when it has no .env line yet. */
+  present: string[];
+  /** provider key -> the env name it reads (apiKeyEnv). */
+  usedBy: Record<string, string>;
+}

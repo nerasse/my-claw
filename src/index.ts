@@ -45,7 +45,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
@@ -168,8 +168,13 @@ import {
   setWorkspacePromptPolicy,
   setTag,
   deleteTag,
+  upsertProvider,
+  removeProvider,
+  renameProvider,
+  repointEnvKey,
 } from "./core/config-edit.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
+import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -1069,6 +1074,10 @@ async function main() {
             key,
             type: provider.type ?? "openai",
             ...(provider.group ? { group: provider.group } : {}),
+            ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+            ...(provider.promptCache !== undefined ? { promptCache: provider.promptCache } : {}),
+            ...(provider.pricingProvider ? { pricingProvider: provider.pricingProvider } : {}),
+            ...(provider.fallbackModel ? { fallbackModel: provider.fallbackModel } : {}),
             discover: provider.discover === true,
             models: providerCountOf(key),
             ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
@@ -1294,6 +1303,70 @@ async function main() {
         if (!result.ok) throw new Error(result.error);
         return writeTagsConfig(`suppression tag ${name}`);
       },
+    });
+
+    // Provider CRUD. Env keys are names in config, values in .env: the two files stay in step
+    // through the two editors, and the catalog is refreshed so a provider that just gained a
+    // key (or just appeared) discovers its models now instead of at the next 6h cycle.
+    const writeProvidersConfig = async (note: string): Promise<MyClawAppAgentsConfigResult> => {
+      await reloadConfigNow?.().catch((err) => {
+        void log("warn", "config reload after providers edit failed", { note, error: String(err) });
+      });
+      void modelCatalog.refresh();
+      return agentsConfigSnapshot();
+    };
+    const envSnapshot = async (): Promise<MyClawAppProviderEnvResult> => {
+      const names = await envKeys();
+      return {
+        type: "providers.env.result",
+        names,
+        present: [...new Set([...names, ...Object.keys(process.env)])],
+        usedBy: Object.fromEntries(
+          Object.entries(config.llm.providers ?? {})
+            .filter(([, provider]) => provider.apiKeyEnv !== undefined)
+            .map(([key, provider]) => [key, provider.apiKeyEnv!]),
+        ),
+      };
+    };
+    myClawApp.onProvidersController({
+      upsert: async (patch) => {
+        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, pricingProvider, fallbackModel } = patch;
+        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, pricingProvider, fallbackModel });
+        if (!result.ok) throw new Error(result.error);
+        return writeProvidersConfig(`provider ${patch.key}`);
+      },
+      remove: async (key) => {
+        const result = await removeProvider(key);
+        if (!result.ok) throw new Error(result.error);
+        return writeProvidersConfig(`retrait provider ${key}`);
+      },
+      rename: async (from, to) => {
+        const result = await renameProvider(from, to);
+        if (!result.ok) throw new Error(result.error);
+        return writeProvidersConfig(`renommage provider ${from}`);
+      },
+      envSet: async (name, value) => {
+        const result = await setEnvValue(name, value);
+        if (!result.ok) throw new Error(result.error);
+        void modelCatalog.refresh();
+      },
+      envRename: async (from, to) => {
+        const result = await renameEnvKey(from, to);
+        if (!result.ok) throw new Error(result.error);
+        const repointed = await repointEnvKey(from, to);
+        if (!repointed.ok) {
+          // The .env line moved but the config did not: restore the old name so the two files
+          // are back in step, then say why the rename was refused.
+          await renameEnvKey(to, from);
+          throw new Error(repointed.error);
+        }
+        void modelCatalog.refresh();
+      },
+      envRemove: async (name) => {
+        const result = await removeEnvKey(name);
+        if (!result.ok) throw new Error(result.error);
+      },
+      envList: () => envSnapshot(),
     });
 
     myClawApp.onSkillsController({
