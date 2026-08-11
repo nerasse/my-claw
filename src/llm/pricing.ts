@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { MY_CLAW_DIR } from "../core/config.ts";
+import { MY_CLAW_DIR, type EffortLevel } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 
@@ -22,7 +22,7 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 // Bumped whenever the compacted shape changes. A mismatch is treated as no cache at all, because
 // silently serving an older shape means missing fields for a full refresh period.
-export const CACHE_VERSION = 2;
+export const CACHE_VERSION = 3;
 
 interface TableEntry {
   // Absent for the ~400 models models.dev describes without publishing a price.
@@ -30,6 +30,16 @@ interface TableEntry {
   // Context window in tokens, absent for the 2% that declare none.
   context?: number;
   id: string;
+  // The capability half of the entry, used to describe models whose own provider lists nothing but
+  // ids -- see docs/model-metadata.md. All optional: this database is uneven by nature.
+  name?: string;
+  // Reasoning ladder as published, already filtered to our vocabulary and ordered bottom-up.
+  effort?: EffortLevel[];
+  // A model that only declares an on/off reasoning switch. Read as two rungs, `none` and `high`,
+  // measured to be honoured on the wire even though the switch is not an effort ladder.
+  effortToggle?: boolean;
+  vision?: boolean;
+  output?: number;
 }
 
 /** USD per million tokens. */
@@ -66,6 +76,18 @@ export interface ContextLookup {
   tokens: number;
   // The window came from a model id we matched, or from a median, rather than the one recorded.
   approximate: boolean;
+  source: string;
+}
+
+/**
+ * What the database says a model can do, for providers that answer with ids and nothing else.
+ * Every field is optional and only ever fills a gap: see docs/model-metadata.md R7.
+ */
+export interface ModelMetadata {
+  label?: string;
+  effortLevels?: EffortLevel[];
+  vision?: boolean;
+  outputLimit?: number;
   source: string;
 }
 
@@ -167,6 +189,32 @@ function hostOf(url: string): string {
   }
 }
 
+/** `OpenCode-Go`, `opencode_go` and `opencodego` are one name written three ways. */
+function normalizeProviderKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Whether an entry says anything about capability, as opposed to only price or window. */
+function describesModel(entry: TableEntry): boolean {
+  return (
+    entry.name !== undefined ||
+    entry.effort !== undefined ||
+    entry.effortToggle === true ||
+    entry.vision !== undefined ||
+    entry.output !== undefined
+  );
+}
+
+function entryMetadata(entry: TableEntry, source: string): ModelMetadata {
+  const meta: ModelMetadata = { source };
+  if (entry.name !== undefined) meta.label = entry.name;
+  if (entry.effort !== undefined) meta.effortLevels = entry.effort;
+  else if (entry.effortToggle === true) meta.effortLevels = TOGGLE_LADDER;
+  if (entry.vision !== undefined) meta.vision = entry.vision;
+  if (entry.output !== undefined) meta.outputLimit = entry.output;
+  return meta;
+}
+
 function isFree(cost: ModelCost): boolean {
   return cost.input <= 0 && cost.output <= 0;
 }
@@ -174,6 +222,8 @@ function isFree(cost: ModelCost): boolean {
 export class ModelPricing {
   private cache: PricingCache | null = null;
   private hostToProvider = new Map<string, string>();
+  /** Normalized models.dev provider id -> id, so a local key spelt differently still matches. */
+  private keyToProvider = new Map<string, string>();
   private refreshing: Promise<void> | null = null;
 
   constructor(
@@ -255,12 +305,16 @@ export class ModelPricing {
     }
 
     // 2/4. The endpoint we called, or the upstream a proxy told us it forwarded to.
-    for (const [url, label] of [
+    for (const [url, fallbackLabel] of [
       [usage.baseUrl, "host"],
       [usage.upstreamApiBase ?? "", "upstream"],
     ] as const) {
-      const provider = url ? this.hostToProvider.get(hostOf(url)) : undefined;
-      if (!provider) continue;
+      const resolved = url ? this.resolveProvider(url) : undefined;
+      if (!resolved) continue;
+      const provider = resolved.provider;
+      // The rung that answered, unless the host is what resolved it: then the url we used is the
+      // more informative half of the trace.
+      const label = resolved.how === "host" ? fallbackLabel : resolved.how;
       const hit = this.lookupCost(provider, usage.model);
       if (!hit) continue;
       if (!isFree(hit.cost)) return this.priced(usage, hit.cost, true, hit.approximate, `${label} ${provider}`);
@@ -270,13 +324,6 @@ export class ModelPricing {
       if (vendorHit && !isFree(vendorHit.cost)) {
         return this.priced(usage, vendorHit.cost, false, vendorHit.approximate, `plan ${provider} via ${vendor}`);
       }
-    }
-
-    // The owner can name the provider whose prices apply to an endpoint we cannot resolve.
-    const declared = this.declaredPricingProvider(usage.baseUrl);
-    if (declared) {
-      const hit = this.lookupCost(declared, usage.model);
-      if (hit && !isFree(hit.cost)) return this.priced(usage, hit.cost, true, hit.approximate, `declared ${declared}`);
     }
 
     // 5. Last resort. A median describes what a model costs on the open market, not what this
@@ -319,11 +366,12 @@ export class ModelPricing {
     const pick = (e: TableEntry): number | undefined => e.context;
 
     const engine = baseUrl ? (ENGINE_PROVIDER[baseUrl] ?? ENGINE_PROVIDER[hostOf(baseUrl)]) : undefined;
+    const fromBase = baseUrl ? this.resolveProvider(baseUrl) : undefined;
+    const fromUpstream = upstreamApiBase ? this.resolveProvider(upstreamApiBase) : undefined;
     const rungs: Array<[string | undefined, string]> = [
       [engine, engine ? `engine ${engine}` : ""],
-      [baseUrl ? this.hostToProvider.get(hostOf(baseUrl)) : undefined, "host"],
-      [upstreamApiBase ? this.hostToProvider.get(hostOf(upstreamApiBase)) : undefined, "upstream"],
-      [baseUrl ? this.declaredPricingProvider(baseUrl) : undefined, "declared"],
+      [fromBase?.provider, fromBase && fromBase.how !== "host" ? fromBase.how : "host"],
+      [fromUpstream?.provider, fromUpstream && fromUpstream.how !== "host" ? fromUpstream.how : "upstream"],
     ];
     for (const [provider, label] of rungs) {
       if (!provider) continue;
@@ -346,6 +394,48 @@ export class ModelPricing {
       return { tokens, approximate: true, source: `median of ${offers.length}` };
     }
     return undefined;
+  }
+
+  /**
+   * What the database says this model can do, for a provider that lists ids and nothing else.
+   * Same ladder as the price, because it is the same question about the same provider, and the
+   * same fallthrough: an entry carrying only a price must not shadow a looser key that describes
+   * the model. No median rung -- a capability is not an average, and a wrong ladder is offered to
+   * the user as a choice rather than shown as an approximation.
+   */
+  metadataOf(model: string, baseUrl?: string): ModelMetadata | undefined {
+    if (!this.cache || !baseUrl) return undefined;
+    const engine = ENGINE_PROVIDER[baseUrl] ?? ENGINE_PROVIDER[hostOf(baseUrl)];
+    const resolved = this.resolveProvider(baseUrl);
+    const rungs: Array<[string, string]> = [];
+    if (engine) rungs.push([engine, `engine ${engine}`]);
+    if (resolved) rungs.push([resolved.provider, `${resolved.how} ${resolved.provider}`]);
+    for (const [provider, source] of rungs) {
+      const hit = this.lookup(provider, model, (entry) => (describesModel(entry) ? entry : undefined));
+      if (hit) return entryMetadata(hit.value, source);
+    }
+    return undefined;
+  }
+
+  /**
+   * Which models.dev provider describes an endpoint, and on what evidence.
+   *
+   * Name before host: `opencode-go` and `opencode` both live on `opencode.ai` and publish different
+   * prices for the same id, so the host says nothing about which of the two is being called while
+   * the local provider key does. See docs/model-metadata.md R6.
+   */
+  private resolveProvider(url: string): { provider: string; how: "declared" | "key" | "host" } | undefined {
+    const declared = this.declaredPricingProvider(url);
+    if (declared) return { provider: declared, how: "declared" };
+    const host = hostOf(url);
+    if (!host) return undefined;
+    for (const [key, provider] of Object.entries(this.declaredProviders())) {
+      if (!provider.baseUrl || hostOf(provider.baseUrl) !== host) continue;
+      const match = this.keyToProvider.get(normalizeProviderKey(key));
+      if (match) return { provider: match, how: "key" };
+    }
+    const byHost = this.hostToProvider.get(host);
+    return byHost ? { provider: byHost, how: "host" } : undefined;
   }
 
   private lookup<T>(provider: string, model: string, pick: (entry: TableEntry) => T | undefined): { value: T; approximate: boolean } | undefined {
@@ -420,9 +510,16 @@ export class ModelPricing {
 
   private index(): void {
     this.hostToProvider.clear();
+    this.keyToProvider.clear();
     for (const [provider, api] of Object.entries(this.cache?.hosts ?? {})) {
       const host = hostOf(api);
       if (host && !this.hostToProvider.has(host)) this.hostToProvider.set(host, provider);
+    }
+    // Indexed off the tables rather than the hosts: a provider can describe models without
+    // publishing an api url. Measured on the live file: 183 providers, no two normalize alike.
+    for (const provider of Object.keys(this.cache?.models ?? {})) {
+      const key = normalizeProviderKey(provider);
+      if (key && !this.keyToProvider.has(key)) this.keyToProvider.set(key, provider);
     }
   }
 
@@ -441,10 +538,49 @@ export class ModelPricing {
 
 interface RawProvider {
   api?: string;
-  models?: Record<
-    string,
-    { cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }; limit?: { context?: number } }
-  >;
+  models?: Record<string, RawModel>;
+}
+
+interface RawModel {
+  cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
+  limit?: { context?: number; output?: number };
+  name?: string;
+  reasoning?: boolean;
+  reasoning_options?: Array<{ type?: string; values?: unknown }>;
+  modalities?: { input?: string[] };
+}
+
+/**
+ * Every rung the vocabulary owns, so a value published upstream is either recognised or dropped.
+ * Measured on the live file: three entries carry junk (one `"default"`, two `null`), and 305 carry
+ * `minimal` — which is why this validates instead of trusting the array.
+ */
+const EFFORT_VOCABULARY: EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/** What a toggle-only model offers: off, and on. See docs/model-metadata.md R1. */
+const TOGGLE_LADDER: EffortLevel[] = ["none", "high"];
+
+/**
+ * The reasoning ladder a model publishes, ordered bottom-up whatever order it was written in, or
+ * undefined when nothing usable was declared. An `effort` entry wins over a `toggle`: it is the
+ * more precise statement about the same capability. `budget_tokens` is not a ladder and is ignored.
+ */
+export function effortLadderOf(model: { reasoning_options?: Array<{ type?: string; values?: unknown }> }): {
+  levels?: EffortLevel[];
+  toggle: boolean;
+} {
+  let toggle = false;
+  const found = new Set<EffortLevel>();
+  for (const option of model.reasoning_options ?? []) {
+    if (option.type === "toggle") toggle = true;
+    if (option.type !== "effort" || !Array.isArray(option.values)) continue;
+    for (const value of option.values) {
+      const level = EFFORT_VOCABULARY.find((known) => known === value);
+      if (level) found.add(level);
+    }
+  }
+  if (found.size > 0) return { levels: EFFORT_VOCABULARY.filter((level) => found.has(level)), toggle };
+  return { toggle };
 }
 
 /**
@@ -468,12 +604,22 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
         if (c.cache_write !== undefined) cost.cacheWrite = c.cache_write;
       }
       const context = typeof model.limit?.context === "number" && model.limit.context > 0 ? model.limit.context : undefined;
+      const ladder = effortLadderOf(model);
+      const output = typeof model.limit?.output === "number" && model.limit.output > 0 ? model.limit.output : undefined;
+      const vision = Array.isArray(model.modalities?.input) ? model.modalities.input.includes("image") : undefined;
+      const name = typeof model.name === "string" && model.name.length > 0 ? model.name : undefined;
+      const describes = ladder.levels !== undefined || ladder.toggle || output !== undefined || vision !== undefined || name !== undefined;
       // A model with a window but no published price is worth keeping now that the table answers
       // both questions; one with neither carries nothing.
-      if (!cost && context === undefined) continue;
+      if (!cost && context === undefined && !describes) continue;
       const value: TableEntry = { id };
       if (cost) value.cost = cost;
       if (context !== undefined) value.context = context;
+      if (name !== undefined) value.name = name;
+      if (ladder.levels !== undefined) value.effort = ladder.levels;
+      else if (ladder.toggle) value.effortToggle = true;
+      if (vision !== undefined) value.vision = vision;
+      if (output !== undefined) value.output = output;
       for (const key of modelKeyCandidates(id)) {
         if (!(key in table)) table[key] = value;
       }

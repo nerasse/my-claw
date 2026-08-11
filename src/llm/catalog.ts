@@ -8,6 +8,7 @@ import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { fetchAnthropicModels } from "./anthropic-models.ts";
+import type { ModelMetadata } from "./pricing.ts";
 
 export interface DiscoveredSdkModel {
   value: string;
@@ -80,6 +81,48 @@ interface WindowTable {
   contextWindowOf(model: string, baseUrl?: string, upstreamApiBase?: string): { tokens: number } | undefined;
 }
 
+/**
+ * Capabilities for the models whose provider answered with a list of ids and nothing else, read
+ * from the same models.dev download as the prices. See docs/model-metadata.md.
+ *
+ * Gap-filling only (R7): a field already set is either a statement by the owner or by a provider
+ * answering for its own models (claude-sdk, codex, Anthropic's versioned endpoint), and a community
+ * database outranks neither. A label equal to the id is not a name, it is the placeholder discovery
+ * leaves when it had nothing to record, so that counts as a gap.
+ *
+ * No effort ladder means no effort step, which is the honest answer for a model published as
+ * reasoning without saying how it is steered.
+ */
+export function applyModelMetadata(
+  models: LlmModelConfig[],
+  providers: Record<string, LlmProviderConfig>,
+  table: MetadataTable | undefined,
+): LlmModelConfig[] {
+  if (!table) return models;
+  return models.map((m) => {
+    const needsLabel = m.label === m.id;
+    const needsEffort = m.supportsEffort === undefined;
+    const needsVision = m.vision === undefined;
+    const needsOutput = m.limit?.output === undefined;
+    if (!needsLabel && !needsEffort && !needsVision && !needsOutput) return m;
+    const meta = table.metadataOf(m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    if (!meta) return m;
+    const next: LlmModelConfig = { ...m };
+    if (needsLabel && meta.label !== undefined) next.label = meta.label;
+    if (needsEffort && meta.effortLevels !== undefined) {
+      next.supportsEffort = true;
+      next.supportedEffortLevels = meta.effortLevels;
+    }
+    if (needsVision && meta.vision !== undefined) next.vision = meta.vision;
+    if (needsOutput && meta.outputLimit !== undefined) next.limit = { ...next.limit, output: meta.outputLimit };
+    return next;
+  });
+}
+
+interface MetadataTable {
+  metadataOf(model: string, baseUrl?: string): ModelMetadata | undefined;
+}
+
 async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/models`;
   const controller = new AbortController();
@@ -104,7 +147,9 @@ interface CodexDiscoveredModel {
   supportedEffortLevels?: EffortLevel[];
 }
 
-const EFFORT_SET = new Set<EffortLevel>(["low", "medium", "high", "xhigh", "max", "ultra"]);
+// The whole vocabulary, not the fallback list: a provider describing its own models is evidence,
+// so a level it publishes is kept. This is what stopped Codex's `minimal` from being dropped.
+const EFFORT_SET = new Set<EffortLevel>(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 // The backend lists helper models (e.g. auto-review) that are not general chat targets.
 const CODEX_MODEL_DENYLIST = new Set(["codex-auto-review"]);
 

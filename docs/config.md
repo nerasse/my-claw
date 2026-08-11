@@ -367,8 +367,16 @@ and on Codex models (sent as `reasoning.effort`); sent as `reasoning_effort` to 
 OpenAI-compatible providers **only** when the model sets `supportsEffort: true` (avoids 400s
 on providers that reject the param).
 
-- Levels: `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (SDK default is `high`). This is the
-  superset across providers; `ultra` is Codex-only, and the Claude SDK clamps it to `max`.
+- Vocabulary: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (SDK default is
+  `high`), ordered bottom to top. That is what a level may be, not what a model offers.
+- The list offered when **nothing describes a model** is narrower on purpose: `low`, `medium`,
+  `high`, `xhigh`, `max`, `ultra`. `none` and `minimal` are only offered where a model publishes
+  them, because that fallback reaches every provider and a rung claimed on no evidence is how an
+  endpoint answers 400. See `docs/model-metadata.md`.
+- `ultra` is Codex-only. The Claude SDK ladder is `low..max`, so the rungs outside it clamp to the
+  nearest one it owns and log: `ultra` to `max`, `minimal` and `none` to `low`.
+- `none` prunes reasoning; it does **not** clear the pin. Removing a pin is still the empty string
+  on the wire, and an absent key in the file.
 - The effort submenu shows only the levels the selected model actually supports, taken from the
   provider's own capabilities (`supportedEffortLevels`). A model the provider reports as having no
   effort at all (`supportsEffort: false`, e.g. Haiku 4.5) offers none and is not chained into the

@@ -224,7 +224,12 @@ export interface LlmProviderConfig {
 // Reasoning/thinking effort. Native on the Claude Agent SDK (query `effort`); sent as
 // `reasoning_effort` to OpenAI-compatible providers only when the model opts in via
 // `supportsEffort` (avoids 400s on providers that reject the param).
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+//
+// The vocabulary, ordered bottom to top: it is what a level may be, not what a model offers. A
+// model's own ladder comes from whoever describes it (docs/model-metadata.md), and `none` prunes
+// reasoning rather than clearing the pin -- see EFFORT_LEVELS for the list offered when nothing
+// describes a model, which stays deliberately narrower than this.
+export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface LlmModelConfig {
   id: string;

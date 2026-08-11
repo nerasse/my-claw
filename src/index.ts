@@ -63,7 +63,7 @@ import {
 import { PROMPT_FILES } from "./agent/prompt/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
-import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
@@ -316,7 +316,10 @@ async function main() {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
     // Provider-first: models with no explicit group nest under their provider's group label.
     const grouped = applyProviderGroups(merged, config.llm.providers ?? {});
-    config.llm.models = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
+    const windowed = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
+    // A provider that lists ids and nothing else gets its capabilities from the same download the
+    // windows come from, so the effort menu describes the model rather than our fallback list.
+    config.llm.models = applyModelMetadata(windowed, config.llm.providers ?? {}, pricing);
     config.llm.tags = config.tags;
     // The picker offers what can run; `config.llm.models` keeps everything, because the resolver
     // needs the unavailable entries to say *why* a pinned model cannot run. Filtering the config

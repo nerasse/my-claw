@@ -49,7 +49,12 @@ live list from the source of truth so `/model` always reflects what the account 
   versioned ids come from `/v1/models`. Losing that endpoint degrades to aliases plus the last
   known versions rather than dropping the provider.
 - `ultra` exists on Codex only (`gpt-5.6-sol`, `gpt-5.6-terra`). The Claude SDK caps at `max`, so
-  an `ultra` session effort is clamped to `max` with a warning when the run lands on Claude.
+  an `ultra` session effort is clamped to `max` with a warning when the run lands on Claude; the
+  rungs below its ladder (`minimal`, `none`) clamp to `low` the same way.
+- An OpenAI-compatible provider answers `/v1/models` with ids and nothing else, so its capabilities
+  are filled in from the models.dev catalogue we already download for prices — reasoning ladder,
+  display name, vision, output limit. Gap-filling only: a provider that describes its own models
+  always wins. See `docs/model-metadata.md`.
 - Menu callbacks carry a fixed-width digest of the model id (`mdl:<ref>`), not a list position, so
   a menu left open across a discovery refresh still designates the model it displayed. A ref that
   no longer resolves reports the menu as out of date instead of selecting a neighbour. The digest

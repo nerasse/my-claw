@@ -243,6 +243,14 @@ export function listAvailableModels(config: LlmConfig): LlmModelConfig[] {
   return config.models ?? [];
 }
 
+/**
+ * The levels offered when nothing describes a model: the global/tag/agent pin vocabulary, and the
+ * fallback ladder in the picker.
+ *
+ * Deliberately narrower than `EffortLevel`. `none` and `minimal` exist, but only where a model
+ * publishes them (docs/model-metadata.md R1): this list reaches every model no source describes,
+ * across every provider, and offering a rung on no evidence is how an endpoint answers 400.
+ */
 export const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /**

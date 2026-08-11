@@ -159,16 +159,28 @@ interface SdkUsage {
 }
 
 /**
- * "ultra" is a Codex-only reasoning level and the Claude SDK caps at "max". A session effort
- * chosen while on a Codex model follows you to a Claude one, so clamp rather than fail the run,
+ * The SDK ladder is `low..max` and ours is wider at both ends: `ultra` is Codex-only, `minimal` and
+ * `none` come from models that publish them (docs/model-metadata.md). A level pinned on one model
+ * follows you to a Claude one, so clamp to the nearest rung the SDK owns rather than fail the run,
  * and log it — the setting must never be dropped silently.
+ *
+ * `none` clamps up to `low` for want of a floor: dropping the parameter instead would land on the
+ * SDK's own default of `high`, the opposite of what "do not reason" asked for.
  */
+const SDK_EFFORT_CLAMP: Partial<Record<EffortLevel, SdkOptions["effort"]>> = {
+  ultra: "max",
+  minimal: "low",
+  none: "low",
+};
+
 export function toSdkEffort(effort: EffortLevel | undefined): SdkOptions["effort"] {
-  if (effort === "ultra") {
-    void log("warn", "effort ultra is not supported by claude-sdk, clamping to max");
-    return "max";
+  if (effort === undefined) return undefined;
+  const clamped = SDK_EFFORT_CLAMP[effort];
+  if (clamped) {
+    void log("warn", "effort level is not supported by claude-sdk, clamping", { effort, clamped });
+    return clamped;
   }
-  return effort;
+  return effort as SdkOptions["effort"];
 }
 
 // Shared env for every SDK subprocess: hermetic flags + isolated config dir, with the
