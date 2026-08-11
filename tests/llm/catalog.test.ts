@@ -27,7 +27,7 @@ test("mergeModels: config wins on id collision, appends extras in order", () => 
   assert.equal(merged.find((m) => m.id === "shared")?.label, "Shared (curated)");
 });
 
-test("applyProviderGroups: ungrouped models inherit their provider's group", () => {
+test("applyProviderGroups: ungrouped models inherit their provider's group, or its key", () => {
   const providers = {
     litellm: { baseUrl: "x", group: "LiteLLM" },
     anthropic: { type: "claude-sdk" as const, group: "Claude" },
@@ -37,11 +37,16 @@ test("applyProviderGroups: ungrouped models inherit their provider's group", () 
     { id: "mimo", label: "MiMo", provider: "litellm" },
     { id: "sonnet", label: "Sonnet", provider: "anthropic", group: "Claude/Sonnet" },
     { id: "llama", label: "Llama", provider: "groq" },
+    { id: "orphan", label: "Orphan", provider: "gone" },
+    { id: "loose", label: "Loose" },
   ];
   const out = applyProviderGroups(models, providers);
   assert.equal(out.find((m) => m.id === "mimo")?.group, "LiteLLM"); // inherited
   assert.equal(out.find((m) => m.id === "sonnet")?.group, "Claude/Sonnet"); // explicit kept
-  assert.equal(out.find((m) => m.id === "llama")?.group, undefined); // provider has no group
+  // No group declared: the provider key is the group, so its models never spill at the root.
+  assert.equal(out.find((m) => m.id === "llama")?.group, "groq");
+  assert.equal(out.find((m) => m.id === "orphan")?.group, "gone"); // provider gone from config
+  assert.equal(out.find((m) => m.id === "loose")?.group, undefined); // no provider: global default
 });
 
 function makeConfig(): LlmConfig {

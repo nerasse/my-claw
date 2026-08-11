@@ -36,6 +36,11 @@ export function mergeModels(base: LlmModelConfig[], discovered: LlmModelConfig[]
 /**
  * Provider-first menu: a model without an explicit `group` inherits its provider's `group`, so
  * the picker root shows one entry per provider instead of a flat list of every model.
+ *
+ * A provider that declares no `group` groups under its own key rather than spilling its models
+ * at the root: a discovering provider is not a handful of models (OpenRouter alone returns 400+),
+ * and the root is the one screen every picker opens on. `group` stays the exception, for the
+ * providers whose key is not what the owner wants to read ("anthropic" -> "Claude (abo)").
  */
 export function applyProviderGroups(
   models: LlmModelConfig[],
@@ -43,8 +48,7 @@ export function applyProviderGroups(
 ): LlmModelConfig[] {
   return models.map((m) => {
     if (m.group || !m.provider) return m;
-    const group = providers[m.provider]?.group;
-    return group ? { ...m, group } : m;
+    return { ...m, group: providers[m.provider]?.group ?? m.provider };
   });
 }
 
