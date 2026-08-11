@@ -1024,9 +1024,16 @@ export interface MyClawAppInstructionsSaved {
  */
 /** The whole model state of a thread, shared by the frame and the controller that produces it. */
 export interface MyClawAppModelState {
-  /** The model that will run on this thread: override or the configured default. */
+  /** The model that will run on this thread: this chat's pick, the agent's pin, or the default. */
   model: string;
   defaultModel: string;
+  /**
+   * Which of those three it is. "agent" means the chat inherits a pin that lives in
+   * `config.agents`, and the row has to say so: a screen that shows the model without its source
+   * cannot explain why picking the global default changed nothing (docs/model-resolution.md).
+   * Absent on a server that predates the field.
+   */
+  source?: "session" | "agent" | "agent-file" | "global";
   effort: MyClawAppEffortState;
   context: MyClawAppContextState;
 }

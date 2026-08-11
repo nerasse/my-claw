@@ -938,7 +938,12 @@ async function main() {
       const defaultModel = config.llm.defaultModel ?? config.llm.model ?? "";
       // What this chat actually runs, agent pin included. Reading `override ?? defaultModel` here
       // is what made the app display sonnet while every run went to the orchestrator's own pin.
-      const model = chatModel(config, session?.modelOverride);
+      const run = tryResolveRunModel(
+        config,
+        { agent: "main", ...(session?.modelOverride ? { sessionModel: session.modelOverride } : {}) },
+        availabilityWorld(),
+      );
+      const model = run?.model ?? chatModel(config, session?.modelOverride);
       const effort = effectiveEffort(config.llm, model, session?.effortOverride, resolveAgentLlm(config, "main")?.effort);
       const levels = modelPicker.effortLevelsFor(model);
       // The app builds its own ceiling list from these three numbers, the same way the picker
@@ -948,6 +953,7 @@ async function main() {
       return {
         model,
         defaultModel,
+        ...(run ? { source: run.source } : {}),
         effort: {
           level: effort.source === "unsupported" ? "" : effort.level ?? "",
           levels,

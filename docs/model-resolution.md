@@ -99,9 +99,14 @@ Any screen that names the model of a chat renders `resolveRunModel(...)`, and sa
 when it is not `session`:
 
 - `claude-sonnet-5` -- the chat's own pick.
-- `claude-sonnet-5 · from the orchestrator config` -- source `agent`: the chat inherits a pin
-  that lives in `config.agents`, and tapping through must lead to where that pin is edited.
+- `claude-sonnet-5 · from the agent config` -- source `agent` or `agent-file`: the chat inherits a
+  pin that lives on the server, not a choice made here. The app says "the agent config" rather than
+  naming the entry, because `source` is all the frame carries; naming `orchestrator` would be a
+  guess on a sub-agent thread.
 - `claude-sonnet-5 · global default` -- source `global`.
+
+`model.result` carries `source` for this (`MyClawAppModelState`), absent on an older server, in
+which case the row says the model alone -- what it always did.
 
 No surface may compute `session.modelOverride ?? config.llm.defaultModel`. That expression is the
 bug; it appears seven times today.
@@ -142,9 +147,10 @@ on the read path.
 
 Two consequences to accept knowingly:
 
-- On the current box the picker goes from **434 models to ~29**: `openrouter`'s 405 disappear for
-  want of `OPENROUTER_API_KEY` in `/etc/my-claw/.env`. Adding the key brings them back with no
-  code change -- which is the whole point of deriving this rather than curating it.
+- On the current box the picker loses **2 models of 436**: the two `mimo` entries that
+  `config.llm.models` still declares on `litellm`, which the gateway answered without listing.
+  Everything else -- 9 litellm, 405 openrouter, 13 anthropic, 7 chatgpt -- is keyed, authenticated
+  and listed. Measured, not predicted.
 - If the Claude subscription token expires, all 13 `anthropic` models go `no-auth` -- **including
   `claude-sonnet-5`, which is the global default**. There is nothing below the global default to
   fall back to, so that case is a loud run failure naming the provider and the auth, never another
@@ -156,10 +162,15 @@ Each state is a real case on the current box, not a hypothetical:
   and answers `403 litellm.PermissionDeniedError: Model is blocked`. `mergeModels`
   (`src/llm/catalog.ts:30`) keeps config entries ahead of discovery, so a declared model survives
   its own removal forever and stays offered in the picker.
-- **no-key** -- `openrouter` discovers 405 models over a public endpoint, and the deployed unit's
-  `/etc/my-claw/.env` carries no `OPENROUTER_API_KEY` (nor the `FIREWORKS_API_KEY` /
-  `OPENAI_API_KEY` that `resolveApiKey` falls back to). 405 of the 434 offered models cannot run
-  there, and nothing says so until a message fails.
+- **no-key** -- a provider that names an `apiKeyEnv` and does not have it: `openrouter` discovers
+  405 models over a public endpoint, so the menu offers them whether or not the key exists, and the
+  first message is where you learn it does not.
+
+  A correction to an earlier draft of this document, which claimed those 405 were dead on the
+  deployed box: they are not. `EnvironmentFile=/etc/my-claw/.env` does omit `OPENROUTER_API_KEY`,
+  but `loadEnv` (`src/core/config.ts:901`) reads `$MY_CLAW_DIR/.env` on its own at boot, and that
+  file has it. The systemd unit is not the whole environment, and reading only it produced a
+  measurement that was wrong by 405 models.
 - **no-auth** -- the app's provider snapshot sets `keyPresent: provider.apiKeyEnv ? ... : false`
   (`src/index.ts:1084`), so the two subscription providers are permanently reported as having no
   key while `claudeTokenStatus()` and `codexIsLoggedIn()` know the truth.
