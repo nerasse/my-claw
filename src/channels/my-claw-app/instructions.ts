@@ -4,7 +4,7 @@ import { writeFileAtomically } from "../../utils/atomic-write.ts";
 import { contentSha, snapshot, journal, artifactId } from "../../core/config-store.ts";
 import { resolvePromptFile } from "../../agent/prompt/loader.ts";
 import { PROMPT_FILES, type PromptFile } from "../../agent/prompt/files.ts";
-import type { WorkspacePromptPolicy } from "../../core/config.ts";
+import { resolvePromptPolicy, type WorkspacePromptPolicy } from "../../core/config.ts";
 
 /**
  * The markdown files the app may edit: the four layers buildSystemPrompt actually reads, from the
@@ -37,6 +37,10 @@ export interface InstructionEntry {
   bytes: number;
   /** sha of the content shown, which a write must echo back to prove it is not stale. */
   sha: string;
+  /** The workspace's effective policy for this file, always normalised. Absent on a server
+   *  that predates the feature: the app then hides the layer controls. */
+  inherit: string;
+  off: boolean;
 }
 
 export interface NestedInstruction {
@@ -106,18 +110,22 @@ function keyForDir(roots: InstructionRoots, dir: string): string {
  * shares the loader's resolution ladder (agent/prompt/loader.ts), so the page shows what the agent
  * reads: a named workspace only overrides what it needs, and the page must show the inherited copy
  * rather than an empty editor.
+ *
+ * For an `off` file the ladder yields nothing, but the editor still has to edit the file it owns:
+ * the own copy is returned so a later save works, with the origin saying the layer is dropped.
  */
 export async function readInstruction(
   roots: InstructionRoots,
   workspace: string,
   file: string,
-): Promise<{ content: string; origin: InstructionOrigin; from: string; sha: string } | null> {
+): Promise<{ content: string; origin: InstructionOrigin; from: string; sha: string; inherit: string; off: boolean } | null> {
   const path = instructionPath(roots, workspace, file);
   if (!path) return null;
 
   const entry = workspaceRoots(roots).find((w) => w.key === workspace);
   if (!entry) return null;
 
+  const policy = resolvePromptPolicy(roots.workspacePrompts, workspace, file);
   const res = await resolvePromptFile(file, {
     workspaceDir: resolve(entry.dir),
     defaultWorkspaceDir: resolve(roots.defaultDir),
@@ -125,11 +133,24 @@ export async function readInstruction(
     workspaces: roots.workspaces,
     workspacePrompts: roots.workspacePrompts,
   });
+  if (res.origin === "off") {
+    const own = await readIfPresent(path);
+    return {
+      content: own ?? "",
+      origin: "off",
+      from: workspace,
+      sha: contentSha(own ?? ""),
+      inherit: policy.inherit,
+      off: true,
+    };
+  }
   return {
     content: res.content,
     origin: res.origin,
     from: keyForDir(roots, res.from),
     sha: contentSha(res.content),
+    inherit: policy.inherit,
+    off: policy.off,
   };
 }
 
@@ -147,6 +168,8 @@ export async function listInstructions(roots: InstructionRoots): Promise<Instruc
         from: read.from,
         bytes: Buffer.byteLength(read.content),
         sha: read.sha,
+        inherit: read.inherit,
+        off: read.off,
       });
     }
   }

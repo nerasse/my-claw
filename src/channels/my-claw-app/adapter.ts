@@ -43,6 +43,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppInstructionsGet,
   MyClawAppInstructionsListResult,
   MyClawAppInstructionsSet,
+  MyClawAppInstructionsLayerSet,
   MyClawAppLogsTail,
   MyClawAppMcpEntry,
   MyClawAppServerFrame,
@@ -280,6 +281,13 @@ export interface MyClawAppInstructionsController {
     content: string,
     sha: string | undefined,
   ): Promise<{ ok: boolean; sha: string; conflict: boolean; error?: string }>;
+  /** Sets the per-file prompt policy; answers with the fresh listing, never an optimistic echo. */
+  setPolicy(
+    workspace: string,
+    file: string,
+    inherit: string | undefined,
+    off: boolean | undefined,
+  ): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
 }
 
 /**
@@ -991,6 +999,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "instructions.set":
         void this.handleInstructionsSet(ws, frame);
+        break;
+      case "instructions.layer.set":
+        void this.handleInstructionsLayerSet(ws, frame);
         break;
       case "model.get":
         void this.handleModel(ws, frame.threadId, undefined);
@@ -1925,6 +1936,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
       }
     } catch (err) {
       await this.refuse(ws, "instructions", "instructions.set failed", { error: String(err) });
+    }
+  }
+
+  private async handleInstructionsLayerSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppInstructionsLayerSet,
+  ): Promise<void> {
+    if (!this.instructions) {
+      await this.refuse(ws, "instructions", "instructions unavailable");
+      return;
+    }
+    if (typeof frame.file !== "string" || !frame.file) {
+      await this.refuse(ws, "instructions", "instructions.layer.set without file");
+      return;
+    }
+    try {
+      // A policy mutation answers with the fresh listing, like every other mutation: the layer
+      // screen redraws from what the server stored, never from what it hoped to store.
+      const list = await this.instructions.setPolicy(frame.workspace, frame.file, frame.inherit, frame.off);
+      this.sendFrame(ws, { type: "instructions.list.result", ...list });
+    } catch (err) {
+      await this.refuse(ws, "instructions", "instructions.layer.set failed", {
+        workspace: frame.workspace,
+        file: frame.file,
+        error: String(err),
+      });
     }
   }
 

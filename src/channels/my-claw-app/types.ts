@@ -233,6 +233,20 @@ export interface MyClawAppInstructionsSet {
   sha?: string;
 }
 
+/** Sets the per-file prompt policy of one workspace; answers instructions.list.result.
+ *  Each absent field keeps the current policy, so the app never needs to read before writing. */
+export interface MyClawAppInstructionsLayerSet {
+  type: "instructions.layer.set";
+  workspace: string;
+  /** One of CORE.md, SOUL.md, AGENTS.md, USER.md. */
+  file: string;
+  /** Where the layer is read when this workspace owns no file: "default", "builtin", "none",
+   *  or a config.workspaces key. "default" is the no-op reset. */
+  inherit?: string;
+  /** Drops the layer even when this workspace owns the file. false is the no-op reset. */
+  off?: boolean;
+}
+
 export interface MyClawAppModelList {
   type: "model.list";
 }
@@ -475,6 +489,7 @@ export type MyClawAppClientFrame =
   | MyClawAppInstructionsList
   | MyClawAppInstructionsGet
   | MyClawAppInstructionsSet
+  | MyClawAppInstructionsLayerSet
   | MyClawAppModelList
   | MyClawAppModelGet
   | MyClawAppModelSet
@@ -872,6 +887,10 @@ export interface MyClawAppInstructionEntry {
   bytes: number;
   /** sha of the content that applies; a write must echo it back to prove it is not stale. */
   sha: string;
+  /** The workspace's effective policy, always normalised. Absent on a server that predates the
+   *  feature: the app then hides the layer controls instead of showing a dead one. */
+  inherit: string;
+  off: boolean;
 }
 
 /** A nested AGENTS.md found under a workspace. Read-only: injected in tool results, not in the prompt. */
@@ -888,6 +907,9 @@ export interface MyClawAppInstructionsListResult {
   /** The editable names, so the app never hardcodes the list the server enforces. */
   files: string[];
   maxBytes: number;
+  /** File-defined agents and the prompt layers each declares, so the layer screen can say which
+   *  agents already cut a layer in their own file. Absent: the section is not rendered. */
+  agentLayers?: Array<{ agent: string; layers: string[] }>;
 }
 
 export interface MyClawAppInstructionsFile {

@@ -1803,8 +1803,8 @@ describe("instructions frames", () => {
     adapter.onInstructionsController({
       list: async () => ({
         entries: [
-          { workspace: "default", file: "AGENTS.md", origin: "own", from: "default", bytes: 12, sha: "abc123abc123" },
-          { workspace: "sofa", file: "AGENTS.md", origin: "inherited", from: "default", bytes: 12, sha: "abc123abc123" },
+          { workspace: "default", file: "AGENTS.md", origin: "own", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false },
+          { workspace: "sofa", file: "AGENTS.md", origin: "inherited", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false },
         ],
         nested: [{ workspace: "default", path: "svc/AGENTS.md", bytes: 40 }],
         files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
@@ -1822,6 +1822,14 @@ describe("instructions frames", () => {
         if (sha === "stale") return { ok: false, sha: "", conflict: true, error: "changed on the server since it was opened" };
         return { ok: true, sha: "newsha", conflict: false };
       },
+      setPolicy: async (workspace, file, inherit, off) => ({
+        entries: [
+          { workspace, file, origin: "own", from: workspace, bytes: 12, sha: "abc123abc123", inherit: inherit ?? "default", off: off ?? false },
+        ],
+        nested: [],
+        files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
+        maxBytes: 262144,
+      }),
     });
     await adapter.start();
     client = await connectClient(adapter.port);
@@ -1898,6 +1906,21 @@ describe("instructions frames", () => {
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "instructions");
     assert.equal(written.length, 0);
+  });
+  test("instructions.layer.set forwards the policy and answers with the fresh listing", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.layer.set", workspace: "sofa", file: "SOUL.md", inherit: "lab", off: true }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.list.result");
+    const entry = (frame["entries"] as Array<Record<string, unknown>>)[0]!;
+    assert.equal(entry["workspace"], "sofa");
+    assert.equal(entry["inherit"], "lab");
+    assert.equal(entry["off"], true);
+  });
+  test("instructions.layer.set without a file is refused", async () => {
+    client.ws.send(JSON.stringify({ type: "instructions.layer.set", workspace: "sofa" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "instructions");
   });
 
   test("without a controller every instructions frame is refused, not dropped", async () => {

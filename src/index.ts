@@ -121,7 +121,7 @@ import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.
 import { AgentRegistry } from "./agents/registry.ts";
 import { loadAllAgents } from "./agents/loader.ts";
 import type { FileAgent } from "./agents/types.ts";
-import type { PromptLayerName } from "./agent/prompt/files.ts";
+import { PROMPT_LAYERS, type PromptLayerName } from "./agent/prompt/files.ts";
 import { syncBuiltInAgents } from "./agents/sync.ts";
 import { startAgentsWatcher } from "./agents/watcher.ts";
 import { reloadAgents, editableAgentTierDirs, type AgentDirs } from "./agents/reload.ts";
@@ -165,6 +165,7 @@ import {
   removeWorkspace,
   renameWorkspace,
   setWorkspacePath,
+  setWorkspacePromptPolicy,
   setTag,
   deleteTag,
 } from "./core/config-edit.ts";
@@ -1438,6 +1439,12 @@ async function main() {
         nested: await scanNestedInstructions(instructionRoots()),
         files: [...PROMPT_FILES],
         maxBytes: MAX_INSTRUCTION_BYTES,
+        // File-defined agents and the layers each declares, so the app can say which agents cut a
+        // layer in their own file. Default-scoped resolution: the list is global, not per-workspace.
+        agentLayers: agentRegistry
+          .names()
+          .map((name) => ({ agent: name, layers: [...(agentRegistry.get(name, "default")?.meta.instructions ?? PROMPT_LAYERS)] }))
+          .sort((a, b) => a.agent.localeCompare(b.agent)),
       }),
       read: async (workspace, file, nested) => {
         if (nested) {
@@ -1461,6 +1468,21 @@ async function main() {
         const res = await writeInstruction(instructionRoots(), workspace, file, content, sha);
         if (res.ok) return { ok: true, sha: res.sha, conflict: false };
         return { ok: false, sha: "", conflict: res.conflict === true, error: res.error };
+      },
+      setPolicy: async (workspace, file, inherit, off) => {
+        const result = await setWorkspacePromptPolicy(workspace, file, inherit, off);
+        if (!result.ok) throw new Error(result.error);
+        // workspacePrompts is hot: the watcher applies the section in place, so the next run --
+        // and the next list -- reads the new policy with no restart.
+        await reloadConfigNow?.().catch((err) => {
+          void log("warn", "config reload after prompt policy edit failed", { workspace, file, error: String(err) });
+        });
+        return {
+          entries: await listInstructions(instructionRoots()),
+          nested: await scanNestedInstructions(instructionRoots()),
+          files: [...PROMPT_FILES],
+          maxBytes: MAX_INSTRUCTION_BYTES,
+        };
       },
     });
 

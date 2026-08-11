@@ -1,6 +1,7 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { CONFIG_PATH, tagNameOf, type EffortLevel } from "./config.ts";
+import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
 /**
@@ -651,5 +652,48 @@ export async function setWorkspacePath(key: string, path: string): Promise<Confi
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant changement de chemin ${key}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { workspacePath: { key, path } });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Sets the per-file prompt policy of one workspace (config.workspacePrompts). Absent fields are
+ * left untouched; an explicit "default" inherit and a false off are the no-op values, so the
+ * field is dropped rather than stored, and an entry left empty is removed entirely -- a policy
+ * that says nothing should not stay in the file. See docs/workspace-prompt-inheritance.md.
+ */
+export async function setWorkspacePromptPolicy(
+  workspace: string,
+  file: string,
+  inherit: string | undefined,
+  off: boolean | undefined,
+): Promise<ConfigEditResult> {
+  if (!(PROMPT_FILES as readonly string[]).includes(file)) {
+    return { ok: false, error: `unknown prompt file: ${file}` };
+  }
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const workspaces = read.data["workspaces"];
+  if (workspace !== "default" && !(workspaces && typeof workspaces === "object" && workspace in (workspaces as Record<string, unknown>))) {
+    return { ok: false, error: `unknown workspace: ${workspace}` };
+  }
+
+  const section = objectAt(read.data, "workspacePrompts");
+  const entry: Record<string, unknown> = {};
+  if (inherit !== undefined && inherit !== "default") entry.inherit = inherit;
+  if (off !== undefined && off !== false) entry.off = off;
+  const workspacePolicy = objectAt(section, workspace);
+  if (Object.keys(entry).length > 0) {
+    workspacePolicy[file] = entry;
+  } else {
+    delete workspacePolicy[file];
+  }
+  // A policy that says nothing is not a policy: drop the empty containers.
+  if (Object.keys(workspacePolicy).length === 0) delete section[workspace];
+  if (Object.keys(section).length === 0) delete read.data["workspacePrompts"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant politique prompt ${workspace}/${file}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { workspace, file, inherit, off });
   return { ok: true, previous: {} };
 }
