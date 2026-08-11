@@ -36,6 +36,13 @@ export interface ResolvedAgent {
   skills: AgentScope;
   mcp: AgentScope;
   llm?: AgentLlmConfig;
+  /**
+   * The `model:` the agent file declared, kept apart from `llm` (which has already folded it under
+   * the config entry). The run resolution needs the two separately to say which of them a model
+   * came from -- "pinned in the agent file" and "pinned in config.agents" are fixed in different
+   * places, so a notice that confuses them sends the owner to the wrong file.
+   */
+  fileModel?: string;
   workspace?: string;
   maxIterations: number;
   contextCap: number | undefined;
@@ -116,6 +123,7 @@ export function resolveAgent(
     skills,
     mcp,
     llm: resolveAgentLlm(config, type, file?.meta.model),
+    ...(file?.meta.model ? { fileModel: file.meta.model } : {}),
     workspace: resolveAgentWorkspace(config, type, file?.meta.workspace),
     maxIterations: resolveMaxIterations(config, type, file?.meta.maxIterations),
     contextCap: agentConfigOf(config, type)?.context?.cap === undefined && file?.meta.contextCap !== undefined

@@ -20,6 +20,8 @@ import type { AgentBackend, TokenCallback, ToolUseCallback, TurnSwitchCallback }
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
 import { resolveLlmConfigForAgentMessage } from "../../llm/resolver.ts";
+import { resolveRunModel, tryResolveRunModel } from "../../llm/run-model.ts";
+import { availabilityWorld } from "../../llm/world.ts";
 import { loadClaudeToken } from "../../llm/claude-auth.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -288,7 +290,10 @@ export class ClaudeSdkBackend implements AgentBackend {
     try {
       const compactOptions: SdkOptions = {
         resume: session.sdkSessionId,
-        model: session.modelOverride,
+        // The model this chat actually runs, not the raw override: a chat inheriting a pin has no
+        // override at all, and passing undefined summarised it with whatever the SDK defaults to.
+        // A tag is expanded here too -- the SDK has never heard of `tag:`.
+        model: compactModel(this.config, session),
         maxTurns: 1,
         abortController,
         tools: [],
@@ -342,13 +347,20 @@ export class ClaudeSdkBackend implements AgentBackend {
         : this.agentKind ?? "general";
     const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
     const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
-    const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
-      this.config.llm,
-      agent.llm,
-      modelId ?? session.modelOverride,
-      message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
-      session.effortOverride,
-      session.scopeEffort,
+    // The same resolution the dispatcher used to pick this engine: calling a different chain
+    // here is how a run ended up on an engine chosen for another model.
+    const llmConfig = this.llmOverride ?? resolveRunModel(
+      this.config,
+      {
+        agent: agentToolType,
+        ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
+        ...(modelId ? { forcedModel: modelId } : {}),
+        ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
+        ...(session.effortOverride ? { sessionEffort: session.effortOverride } : {}),
+        ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
+        hasImages: message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+      },
+      availabilityWorld(),
     );
     const startedAt = Date.now();
     const streaming = Boolean(onToken);
@@ -921,4 +933,20 @@ export class ClaudeSdkBackend implements AgentBackend {
       });
     }
   }
+}
+
+/**
+ * The model /compact runs under. The SDK owns this session's history, so the summary has to be
+ * produced by the model the conversation actually runs -- resolved through the same chain as a
+ * message, tag expanded, and left undefined only when nothing resolves (the SDK then uses its own
+ * default, which is what this path did for every chat that inherited a pin).
+ */
+function compactModel(config: MyClawConfig, session: SessionData): string | undefined {
+  const run = tryResolveRunModel(
+    config,
+    { agent: "main", ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
+    availabilityWorld(),
+  );
+  if (!run || run.backend !== "claude-sdk") return session.modelOverride;
+  return run.apiModel ?? run.model;
 }

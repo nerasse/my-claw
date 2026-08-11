@@ -6,6 +6,7 @@ import { ClaudeSdkBackend } from "../../src/agent/claude-sdk/backend.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { resolveLlmConfig } from "../../src/llm/resolver.ts";
+import { PERMISSIVE_WORLD, resetAvailabilityWorld, setAvailabilityWorld } from "../../src/llm/world.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
@@ -259,4 +260,46 @@ test("streaming reroute streams the note first, then the fallback run's content"
     { backend: "sdk", modelId: undefined },
     { backend: "home", modelId: "mimo" },
   ]);
+});
+
+// A pin that cannot run must not take the engine with it: the model falls back to the global
+// default, and the engine has to follow the model that actually runs, not the one that was
+// pinned. Before the single resolution, the dispatcher and the backend answered this
+// differently -- and the dispatcher's answer chose the process.
+test("a stale claude-sdk pin falls back to the default model, and the engine follows it", async () => {
+  const calls: string[] = [];
+  const home = { handleMessage: async () => { calls.push("home"); return "home"; } } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => { calls.push("sdk"); return "sdk"; } } as unknown as ClaudeSdkBackend;
+
+  const pinned = mixedConfig();
+  pinned.agents.orchestrator = { llm: { defaultModel: "claude-sonnet-5", defaultProvider: "anthropic" } };
+  const dispatcher = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  // The Claude subscription is not connected: the pin cannot run, the global default (mimo, an
+  // openai-compatible model) can.
+  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, claudeAuth: false }));
+  try {
+    assert.equal(await dispatcher.handleMessage(msg("m1"), session("s1")), "home");
+    assert.deepEqual(calls, ["home"]);
+  } finally {
+    resetAvailabilityWorld();
+  }
+});
+
+test("an unavailable global default fails the run instead of substituting a model", async () => {
+  const home = { handleMessage: async () => "home" } as unknown as AgentBridge;
+  const sdk = { handleMessage: async () => "sdk" } as unknown as ClaudeSdkBackend;
+  const config = mixedConfig();
+  config.llm.defaultModel = "claude-sonnet-5";
+  config.llm.defaultProvider = "anthropic";
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home, sdk });
+
+  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, claudeAuth: false }));
+  try {
+    // Nothing sits below the global default: picking mimo here would be inventing a model the
+    // owner never named for this run.
+    await assert.rejects(() => dispatcher.handleMessage(msg("m1"), session("s1")), /cannot run/);
+  } finally {
+    resetAvailabilityWorld();
+  }
 });

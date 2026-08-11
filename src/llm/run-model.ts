@@ -114,10 +114,17 @@ export function availabilityOf(
   world: AvailabilityWorld,
 ): Availability | undefined {
   const model = config.models?.find((m) => m.id === modelId);
-  if (!model) return undefined;
+  // Nothing to judge by, and nothing to misroute to: a config with no model list has a single
+  // implicit provider (or a catalog that has not spoken yet). Refusing here would reject an id
+  // the owner knows exists; the ambiguity this guards against needs a populated list to exist.
+  if (!model) {
+    if (!config.models?.length) return { state: "ready" };
+    return undefined;
+  }
   const providerName = model.provider ?? config.defaultProvider ?? "default";
   const provider = config.providers?.[providerName];
-  if (!provider) return undefined;
+  // An id declared without a provider, in a config that names none: same single-provider case.
+  if (!provider) return config.providers === undefined ? { state: "ready" } : undefined;
 
   if (provider.type === "claude-sdk") {
     return world.claudeAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
@@ -247,6 +254,23 @@ export function resolveRunModel(
   }
   // No step at all: no session pick, no pin, no global default.
   throw new UnknownModelError("");
+}
+
+/**
+ * The same answer, for callers that must not fail on it: a compaction summarizer or a status line
+ * has no business throwing because a pin went stale. `undefined` means "no answer", and the caller
+ * keeps whatever behaviour it had before asking.
+ */
+export function tryResolveRunModel(
+  config: MyClawConfig,
+  request: RunModelRequest,
+  world: AvailabilityWorld,
+): RunModel | undefined {
+  try {
+    return resolveRunModel(config, request, world);
+  } catch {
+    return undefined;
+  }
 }
 
 function build(

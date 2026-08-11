@@ -18,6 +18,8 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
+import { resolveRunModel } from "../llm/run-model.ts";
+import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
@@ -249,13 +251,20 @@ export class AgentBridge implements AgentBackend {
         : this.agentKind ?? "general";
     const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
     const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
-    const llmConfig = this.llmOverride ?? resolveLlmConfigForAgentMessage(
-      this.config.llm,
-      agent.llm,
-      modelId ?? session.modelOverride,
-      message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
-      session.effortOverride,
-      session.scopeEffort,
+    // The same resolution the dispatcher used to pick this engine: calling a different chain
+    // here is how a run ended up on an engine chosen for another model.
+    const llmConfig = this.llmOverride ?? resolveRunModel(
+      this.config,
+      {
+        agent: agentToolType,
+        ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
+        ...(modelId ? { forcedModel: modelId } : {}),
+        ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
+        ...(session.effortOverride ? { sessionEffort: session.effortOverride } : {}),
+        ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
+        hasImages: message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+      },
+      availabilityWorld(),
     );
     const startedAt = Date.now();
     const streaming = Boolean(onToken);

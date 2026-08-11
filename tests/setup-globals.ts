@@ -13,6 +13,7 @@ import { resetBinaryCache } from "../src/voice/tts.ts";
 import { resetSkillLastGood } from "../src/skills/loader.ts";
 import { resetAgentLastGood } from "../src/agents/loader.ts";
 import { resetPushState } from "../src/notifications/push.ts";
+import { resetAvailabilityWorld } from "../src/llm/world.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -48,4 +49,7 @@ beforeEach(() => {
   resetSkillLastGood();
   // Same hazard on the agent side, and a retained agent carries a tool set as well as a prompt.
   resetAgentLastGood();
+  // A world installed by one file would decide which models are runnable in every later file,
+  // and "this model cannot run" is the one verdict that changes what a run resolves to.
+  resetAvailabilityWorld();
 });

@@ -6,6 +6,8 @@ import { AgentBridge } from "./bridge.ts";
 import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
+import { resolveRunModel, type RunModel } from "../llm/run-model.ts";
+import { availabilityWorld } from "../llm/world.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -75,14 +77,14 @@ export class BackendDispatcher implements AgentBackend {
     message: UnifiedMessage,
     session: SessionData,
     forcedModelId?: string,
-  ): { resolved: ResolvedLlmConfig; defaultResolved: ResolvedLlmConfig } {
+  ): { resolved: RunModel; defaultResolved: ResolvedLlmConfig } {
     const hasImages = message.attachments.some((a) => a.type === "image" && Boolean(a.path));
-    const agentLlm = resolveAgentLlm(this.config, message.platform === "cron" ? "cron" : "main");
+    const agent = message.platform === "cron" ? "cron" : "main";
+    const agentLlm = resolveAgentLlm(this.config, agent);
     // Stale per-session override after a config edit: a removed *model* falls through the
     // resolver silently (default provider + unknown id sent to the API), a removed
     // *provider* throws on every message. Both self-heal to the default model. A forced
     // reroute id comes from the resolver, so it is always real.
-    const modelId = forcedModelId ?? session.modelOverride;
     const models = this.config.llm.models;
     // A tag reference stays live even though it is absent from `llm.models`: it resolves
     // through config.tags, which the llm view carries (see docs/tags.md). Only a tag that no
@@ -96,9 +98,19 @@ export class BackendDispatcher implements AgentBackend {
       });
       delete session.modelOverride;
     }
-    let resolved: ResolvedLlmConfig;
+    // One resolution for the run, and it is this one: the engine below is picked from it, so a
+    // second chain computed anywhere else would choose the process for a model it did not pick.
+    const request = {
+      agent,
+      ...(forcedModelId ? { forcedModel: forcedModelId } : {}),
+      ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
+      ...(session.effortOverride ? { sessionEffort: session.effortOverride } : {}),
+      ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
+      hasImages,
+    };
+    let resolved: RunModel;
     try {
-      resolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, modelId, hasImages);
+      resolved = resolveRunModel(this.config, request, availabilityWorld());
     } catch (err) {
       if (!session.modelOverride || forcedModelId) throw err;
       void log("warn", "session modelOverride no longer resolves; falling back to default", {
@@ -107,7 +119,7 @@ export class BackendDispatcher implements AgentBackend {
         error: String(err),
       });
       delete session.modelOverride;
-      resolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, undefined, hasImages);
+      resolved = resolveRunModel(this.config, { ...request, sessionModel: undefined }, availabilityWorld());
     }
     const defaultResolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, undefined, hasImages);
     return { resolved, defaultResolved };
