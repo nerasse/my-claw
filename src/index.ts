@@ -45,7 +45,7 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
@@ -1506,10 +1506,17 @@ async function main() {
       ...(config.workspacePrompts ? { workspacePrompts: config.workspacePrompts } : {}),
     });
 
+    // The nested scan answers with the workspaces it had to cut, and the field is left out when
+    // it cut none: an empty array on every listing would read as a state the page has to explain.
+    const nestedListing = async (): Promise<{ nested: MyClawAppNestedInstruction[]; nestedTruncated?: string[] }> => {
+      const scan = await scanNestedInstructions(instructionRoots());
+      return { nested: scan.nested, ...(scan.truncated.length > 0 ? { nestedTruncated: scan.truncated } : {}) };
+    };
+
     myClawApp.onInstructionsController({
       list: async () => ({
         entries: await listInstructions(instructionRoots()),
-        nested: await scanNestedInstructions(instructionRoots()),
+        ...(await nestedListing()),
         files: [...PROMPT_FILES],
         maxBytes: MAX_INSTRUCTION_BYTES,
         // File-defined agents and the layers each declares, so the app can say which agents cut a
@@ -1552,7 +1559,7 @@ async function main() {
         });
         return {
           entries: await listInstructions(instructionRoots()),
-          nested: await scanNestedInstructions(instructionRoots()),
+          ...(await nestedListing()),
           files: [...PROMPT_FILES],
           maxBytes: MAX_INSTRUCTION_BYTES,
         };

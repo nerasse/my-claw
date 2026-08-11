@@ -225,10 +225,43 @@ describe("nested AGENTS.md", () => {
     await writeFile(join(base, "default", "svc", "api", "AGENTS.md"), "api\n", "utf-8");
 
     const found = await scanNestedInstructions(roots);
-    const paths = found.map((n) => n.path).sort();
+    const paths = found.nested.map((n) => n.path).sort();
     expect(paths).toEqual([join("svc", "AGENTS.md"), join("svc", "api", "AGENTS.md")]);
     // The workspace root's own AGENTS.md is layer 2 and already listed as an entry.
     expect(paths).not.toContain("AGENTS.md");
+    expect(found.truncated).toEqual([]);
+  });
+
+  test("the cap is per workspace: a crowded one no longer empties the next", async () => {
+    // 51 under default, one over the cap, and two under sofa. With a single shared budget the
+    // first workspace spent it all and sofa came back empty with nothing saying why.
+    for (let i = 0; i < 51; i++) {
+      await mkdir(join(base, "default", `p${String(i).padStart(2, "0")}`), { recursive: true });
+      await writeFile(join(base, "default", `p${String(i).padStart(2, "0")}`, "AGENTS.md"), `p${i}\n`, "utf-8");
+    }
+    for (const dir of ["one", "two"]) {
+      await mkdir(join(base, "sofa", dir), { recursive: true });
+      await writeFile(join(base, "sofa", dir, "AGENTS.md"), `${dir}\n`, "utf-8");
+    }
+
+    const found = await scanNestedInstructions(roots);
+    const perWorkspace = (key: string): number => found.nested.filter((n) => n.workspace === key).length;
+    expect(perWorkspace("default")).toBe(50);
+    expect(perWorkspace("sofa")).toBe(2);
+    // Only the workspace that was actually cut is named.
+    expect(found.truncated).toEqual(["default"]);
+  });
+
+  test("each workspace's list is sorted by path, not left in filesystem order", async () => {
+    const names = ["zulu", "yankee", "xray", "whisky", "victor", "uniform", "tango", "sierra"];
+    for (const name of names) {
+      await mkdir(join(base, "default", name), { recursive: true });
+      await writeFile(join(base, "default", name, "AGENTS.md"), `${name}\n`, "utf-8");
+    }
+
+    const paths = (await scanNestedInstructions(roots)).nested.map((n) => n.path);
+    expect(paths).toEqual([...paths].sort());
+    expect(paths[0]).toBe(join("sierra", "AGENTS.md"));
   });
 
   test("node_modules and dotted directories are never walked", async () => {
@@ -236,14 +269,14 @@ describe("nested AGENTS.md", () => {
       await mkdir(join(base, "default", dir, "pkg"), { recursive: true });
       await writeFile(join(base, "default", dir, "pkg", "AGENTS.md"), "noise\n", "utf-8");
     }
-    expect(await scanNestedInstructions(roots)).toEqual([]);
+    expect((await scanNestedInstructions(roots)).nested).toEqual([]);
   });
 
   test("the scan stops below a bounded depth", async () => {
     const deep = join(base, "default", "a", "b", "c", "d", "e");
     await mkdir(deep, { recursive: true });
     await writeFile(join(deep, "AGENTS.md"), "too deep\n", "utf-8");
-    expect(await scanNestedInstructions(roots)).toEqual([]);
+    expect((await scanNestedInstructions(roots)).nested).toEqual([]);
   });
 
   test("reading one goes through the workspace root, never a client path", async () => {

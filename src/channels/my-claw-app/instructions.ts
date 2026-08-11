@@ -54,6 +54,13 @@ export interface NestedInstruction {
   bytes: number;
 }
 
+export interface NestedScan {
+  /** Every workspace's nested files, sorted by path inside each workspace. */
+  nested: NestedInstruction[];
+  /** The workspaces whose scan hit the cap: their list is incomplete and the page must say so. */
+  truncated: string[];
+}
+
 export type WriteResult =
   | { ok: true; sha: string; bytes: number }
   | { ok: false; error: string; conflict?: boolean };
@@ -62,6 +69,7 @@ export type WriteResult =
 export const MAX_INSTRUCTION_BYTES = 256 * 1024;
 
 const NESTED_MAX_DEPTH = 3;
+/** Per workspace, not for the whole scan: see scanNestedInstructions. */
 const NESTED_MAX_ENTRIES = 50;
 const NESTED_SKIP = new Set(["node_modules", "dist", "build", "vendor", "target"]);
 
@@ -183,15 +191,22 @@ export async function listInstructions(roots: InstructionRoots): Promise<Instruc
   return entries;
 }
 
-async function scanDir(root: string, dir: string, depth: number, out: NestedInstruction[], workspace: string): Promise<void> {
-  if (depth > NESTED_MAX_DEPTH || out.length >= NESTED_MAX_ENTRIES) return;
+async function scanDir(
+  root: string,
+  dir: string,
+  depth: number,
+  out: NestedInstruction[],
+  workspace: string,
+  limit: number,
+): Promise<void> {
+  if (depth > NESTED_MAX_DEPTH || out.length >= limit) return;
   const items = await readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const item of items) {
-    if (out.length >= NESTED_MAX_ENTRIES) return;
+    if (out.length >= limit) return;
     const full = join(dir, item.name);
     if (item.isDirectory()) {
       if (item.name.startsWith(".") || NESTED_SKIP.has(item.name)) continue;
-      await scanDir(root, full, depth + 1, out, workspace);
+      await scanDir(root, full, depth + 1, out, workspace, limit);
       continue;
     }
     if (item.name !== "AGENTS.md" || full === join(root, "AGENTS.md")) continue;
@@ -205,13 +220,25 @@ async function scanDir(root: string, dir: string, depth: number, out: NestedInst
  * up from the paths tools touch -- so there is no list to reuse and the page has to scan. The
  * bounds matter: a workspace is an arbitrary directory, and one pointing at a Node repo would
  * otherwise walk node_modules.
+ *
+ * The cap is per workspace, and the ones it cut are named: a single shared budget was spent in
+ * scan order, so one crowded workspace silently emptied the next one's list with nothing on the
+ * page to say why. Each list is sorted by path -- readdir order is the filesystem's, not one a
+ * reader can follow.
  */
-export async function scanNestedInstructions(roots: InstructionRoots): Promise<NestedInstruction[]> {
-  const out: NestedInstruction[] = [];
+export async function scanNestedInstructions(roots: InstructionRoots): Promise<NestedScan> {
+  const nested: NestedInstruction[] = [];
+  const truncated: string[] = [];
   for (const { key, dir } of workspaceRoots(roots)) {
-    await scanDir(resolve(dir), resolve(dir), 0, out, key);
+    const found: NestedInstruction[] = [];
+    // One over the cap, so hitting it is distinguishable from landing exactly on it.
+    await scanDir(resolve(dir), resolve(dir), 0, found, key, NESTED_MAX_ENTRIES + 1);
+    if (found.length > NESTED_MAX_ENTRIES) truncated.push(key);
+    found.length = Math.min(found.length, NESTED_MAX_ENTRIES);
+    found.sort((a, b) => a.path.localeCompare(b.path));
+    nested.push(...found);
   }
-  return out;
+  return { nested, truncated };
 }
 
 /**

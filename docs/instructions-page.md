@@ -3,6 +3,12 @@
 The app edits the markdown files that build the system prompt. This document states what is
 reachable, what is not, and why each guard exists.
 
+The app surfaces it per workspace: Settings > Workspaces > one workspace holds that directory's
+four files and its nested `AGENTS.md`, next to the key and path themselves. There is no page that
+stacks every workspace's files, and no `Instructions` entry on the settings index -- the files are
+a property of a workspace, and the two used to be separate pages that never named each other.
+The agent page links straight to the workspace the agent is pinned to.
+
 ## What the prompt is actually made of
 
 `buildSystemPrompt` (`src/agent/prompt/builder.ts`) reads exactly four files, in this order:
@@ -107,10 +113,17 @@ bounded, because a workspace is an arbitrary directory the owner chose:
 
 - depth 3 below the workspace root;
 - skips `.git`, `node_modules` and every dotted directory;
-- stops at 50 entries;
-- the workspace root's own `AGENTS.md` is excluded, since it is layer 2 and already listed.
+- stops at 50 entries **per workspace**;
+- the workspace root's own `AGENTS.md` is excluded, since it is layer 2 and already listed;
+- each workspace's list is sorted by path, so the order is one a reader can follow rather than
+  the filesystem's.
 
 Without the exclusions, a workspace pointing at a Node repo would walk `node_modules`.
+
+The cap was a single budget for the whole scan, spent in workspace order: one crowded workspace
+emptied the next one's list, and nothing said so. It is per workspace now, and the ones it cut are
+named in `nestedTruncated` so the page can say the list is incomplete instead of implying the
+directory holds nothing more.
 
 ## Size limit
 

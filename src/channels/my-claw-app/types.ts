@@ -975,6 +975,9 @@ export interface MyClawAppInstructionsListResult {
   type: "instructions.list.result";
   entries: MyClawAppInstructionEntry[];
   nested: MyClawAppNestedInstruction[];
+  /** Workspaces whose nested list was cut by the per-workspace cap, so the page can say the list
+   *  is incomplete instead of implying the workspace has nothing more. Omitted when none were. */
+  nestedTruncated?: string[];
   /** The editable names, so the app never hardcodes the list the server enforces. */
   files: string[];
   maxBytes: number;

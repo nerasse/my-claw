@@ -164,7 +164,9 @@ the first answer wins.
   workspace. `instructions.get` takes either a `file` or a `nested` path from the last list.
   `instructions.set` carries the `sha` the editor loaded, and an absent `sha` means "create this
   override" -- the server refuses a stale sha and an already existing file alike, because
-  `AGENTS.md` is a file the agent writes too. See `docs/instructions-page.md`.
+  `AGENTS.md` is a file the agent writes too. `nestedTruncated` names the workspaces whose nested
+  scan hit the per-workspace cap, so the page says the list is incomplete rather than implying the
+  directory holds nothing more; it is omitted when none were cut. See `docs/instructions-page.md`.
 - `agents.config.get` answers with the whole agent-defaults snapshot: the global default
   model and effort, the configured providers (never a secret, only whether the env key is
   set) and one entry per agent with the model that actually runs for it (own pin or
@@ -312,7 +314,7 @@ the first answer wins.
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
 { "type": "mcp.list.result", "servers": [{ "name": "mailcow", "transport": "stdio|sse|http", "state": "connected|disabled|failed", "toolCount": 2, "lastError": "spawn ENOENT", "lastAttemptAt": "iso", "enabled": false, "command": "mcp-mail", "args": ["--port", "2525"], "url": "http://mcp.local" }] }
-{ "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback|off", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a", "inherit": "default|lab|builtin|none", "off": false }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144, "agentLayers": [{ "agent": "reviewer", "layers": ["CORE", "USER"] }] }
+{ "type": "instructions.list.result", "entries": [{ "workspace": "sofa", "file": "AGENTS.md", "origin": "own|inherited|fallback|off", "from": "default", "bytes": 1240, "sha": "9f2b1c4d5e6a", "inherit": "default|lab|builtin|none", "off": false }], "nested": [{ "workspace": "default", "path": "svc/AGENTS.md", "bytes": 400 }], "nestedTruncated": ["dev"], "files": ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"], "maxBytes": 262144, "agentLayers": [{ "agent": "reviewer", "layers": ["CORE", "USER"] }] }
 { "type": "instructions.file", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "origin": "own|inherited|fallback|off|nested", "from": "default", "sha": "9f2b1c4d5e6a", "editable": true }
 { "type": "instructions.saved", "workspace": "sofa", "file": "AGENTS.md", "ok": false, "sha": "", "conflict": true, "error": "changed on the server since it was opened" }
 { "type": "agents.config.result", "defaultModel": "gpt-5.1", "defaultProvider": "openai", "defaultEffort": "high", "effortLevels": ["low", "medium", "high", "xhigh", "max", "ultra"], "providers": [{ "key": "anthropic", "type": "claude-sdk", "group": "Claude", "discover": true, "models": 14, "keyEnv": "ANTHROPIC_API_KEY", "keyPresent": true }], "agents": [{ "key": "orchestrator", "label": "Orchestrator", "description": "The agent you talk to", "model": "gpt-5.1", "provider": "openai", "pinned": false, "inheritsFrom": "global" }, { "key": "cron", "label": "Scheduled tasks", "description": "Jobs on a schedule", "model": "gpt-5.1", "pinned": false, "inheritsFrom": "orchestrator" }] }
