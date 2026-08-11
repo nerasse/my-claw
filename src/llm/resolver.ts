@@ -85,8 +85,20 @@ function computeEffort(
 ): EffortLevel | undefined {
   const chosen = effortOverride ?? tagEffort ?? scopeEffort ?? merged.effort;
   if (!chosen) return undefined;
-  if (nativeEffort) return chosen;
-  return model?.supportsEffort ? chosen : undefined;
+  return effortApplies(model, nativeEffort) ? chosen : undefined;
+}
+
+/**
+ * Whether this model should be sent an effort at all.
+ *
+ * Explicit `false` is the provider stating the model has none, which outranks the backend being
+ * effort-native (Haiku on the SDK); `undefined` only blocks the non-native backends, where the
+ * parameter is never sent without an opt-in. One implementation because the two used to disagree:
+ * the menus reported "unsupported" for Haiku while every run still sent it a level.
+ */
+function effortApplies(model: LlmModelConfig | undefined, native: boolean): boolean {
+  if (model?.supportsEffort === false) return false;
+  return native || model?.supportsEffort === true;
 }
 
 function resolveFromMerged(
@@ -327,11 +339,7 @@ export function effectiveEffort(
   const model = findModel(config, expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").modelId);
   const tag = expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").tag;
   const native = backend === "claude-sdk" || backend === "codex";
-  // Explicit `false` is the provider stating this model has no effort at all, which outranks the
-  // backend being effort-native (Haiku on the SDK). `undefined` only blocks non-native backends,
-  // where the parameter is never sent without an opt-in.
-  if (model?.supportsEffort === false) return { source: "unsupported" };
-  if (!native && !model?.supportsEffort) return { source: "unsupported" };
+  if (!effortApplies(model, native)) return { source: "unsupported" };
 
   if (sessionOverride) return { level: sessionOverride, source: "session" };
   if (tag?.effort) return { level: tag.effort, source: "tag" };

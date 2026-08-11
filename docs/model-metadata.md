@@ -22,8 +22,9 @@ provider, group. Nothing else exists to record.
 
 Downstream, that emptiness reads as a refusal:
 
-1. `resolver.ts` — `if (!native && !model?.supportsEffort) return { source: "unsupported" }`. Only
-   `claude-sdk` and `codex` are effort-native; everything else needs an explicit opt-in.
+1. `resolver.ts` — `effortApplies()` refuses a model that opted into nothing. Only `claude-sdk` and
+   `codex` are effort-native; everything else needs an explicit opt-in, and an explicit
+   `supportsEffort: false` refuses even the native ones.
 2. `model-picker.ts` — `effortApplies === false` makes `effortLevelsFor()` return `[]`.
 3. `index.ts` omits `effortLevels` from the frame, and the app skips the effort step.
 

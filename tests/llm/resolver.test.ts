@@ -313,6 +313,24 @@ test("effectiveEffort: an explicit supportsEffort false outranks an effort-nativ
   assert.deepEqual(effectiveEffort(cfg, "haiku"), { source: "unsupported" });
 });
 
+test("effort: a supportsEffort false model sends none, whatever the backend claims natively", () => {
+  // The wire and the display have to agree: the menus reported "unsupported" for Haiku while the
+  // run kept sending it a level, because the native shortcut returned before reading the model.
+  const cfg: LlmConfig = {
+    ...effortConfig,
+    models: [{ id: "haiku", label: "Haiku", provider: "anthropic", supportsEffort: false }],
+  };
+  assert.equal(resolveLlmConfig(cfg, "haiku").effort, undefined);
+  // Not even an explicit ask: the provider states the model has no effort at all.
+  assert.equal(resolveLlmConfig(cfg, "haiku", "max").effort, undefined);
+  assert.deepEqual(effectiveEffort(cfg, "haiku"), { source: "unsupported" });
+});
+
+test("effort: a native model that says nothing still carries it", () => {
+  // Only an explicit `false` blocks a native backend: `undefined` is the normal case there.
+  assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5").effort, "high");
+});
+
 test("effectiveEffort: an unresolvable model or provider claims nothing", () => {
   assert.deepEqual(effectiveEffort(effortConfig, "gone-from-config"), { source: "unsupported" });
   // Provider resolution throws here; a display must not invent a level out of the failure.

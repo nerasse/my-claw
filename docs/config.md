@@ -367,6 +367,12 @@ and on Codex models (sent as `reasoning.effort`); sent as `reasoning_effort` to 
 OpenAI-compatible providers **only** when the model sets `supportsEffort: true` (avoids 400s
 on providers that reject the param).
 
+`supportsEffort: false` is the provider stating the model has no effort at all, and it blocks the
+parameter on **every** backend, native ones included (Haiku 4.5 on the SDK). `undefined` blocks
+only the non-native ones, where the parameter needs an opt-in. Wire and display read that one
+answer (`effortApplies` in `src/llm/resolver.ts`): they used to disagree, and the menus reported
+`unsupported` for Haiku while every run kept sending it a level.
+
 - Vocabulary: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (SDK default is
   `high`), ordered bottom to top. That is what a level may be, not what a model offers.
 - The list offered when **nothing describes a model** is narrower on purpose: `low`, `medium`,
