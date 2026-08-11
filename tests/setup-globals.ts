@@ -15,6 +15,7 @@ import { resetAgentLastGood } from "../src/agents/loader.ts";
 import { resetPushState } from "../src/notifications/push.ts";
 import { resetAvailabilityWorld } from "../src/llm/world.ts";
 import { resetFallbackNotices } from "../src/llm/fallback-notice.ts";
+import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -56,4 +57,7 @@ beforeEach(() => {
   // Keyed by message id, and ids repeat across files ("m1", "msg-1"): a leftover would swallow
   // the one notice a later test is asserting.
   resetFallbackNotices();
+  // Keyed by model and rungs, both of which repeat across files: a leftover would swallow the one
+  // clamp warning a later test asserts on.
+  resetEffortClampNotices();
 });

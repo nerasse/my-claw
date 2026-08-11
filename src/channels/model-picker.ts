@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ConfirmationButton } from "./types.ts";
 import type { AgentConfigKey, EffortLevel, LlmConfig, TagConfig } from "../core/config.ts";
 import { tagNameOf } from "../core/config.ts";
-import { effectiveEffort, effortOptionsFor, type EffectiveEffort } from "../llm/resolver.ts";
+import { effectiveEffort, effortOptionsFor, leafModelId, type EffectiveEffort } from "../llm/resolver.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
 export interface ModelOption {
@@ -194,6 +194,9 @@ export class ModelPicker {
         group: "Tags",
         provider: "tags",
         effortApplies: effectiveEffort(llm, `tag:${name}`).source !== "unsupported",
+        // The ladder belongs to the model the tag points at. Without it the entry fell back to the
+        // global list, so a flow staging a tag offered rungs its own model never published.
+        supportedEffortLevels: llm.models?.find((m) => m.id === leafModelId(llm, `tag:${name}`))?.supportedEffortLevels,
       })),
     ];
     this.models = [

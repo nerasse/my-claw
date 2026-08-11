@@ -1,7 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { ModelPicker, formatModelGroupSummary } from "../src/channels/model-picker.ts";
-import type { EffectiveEffort } from "../src/llm/resolver.ts";
+import { EFFORT_LEVELS, type EffectiveEffort } from "../src/llm/resolver.ts";
 import type { EffortLevel } from "../src/core/config.ts";
 
 const models = [
@@ -572,6 +572,30 @@ test("syncFromConfig prepends the virtual Default tag and one entry per tag unde
   assert.equal(options[0]?.provider, "tags");
   assert.equal(picker.providerFor("tag:opus"), "tags");
   assert.equal(picker.labelFor("tag:opus"), "opus");
+});
+
+test("a tag entry offers the ladder of the model it points at, not the global list", () => {
+  // Reading the global list here is what let a flow staging a tag offer `max` on a model whose
+  // provider only publishes two rungs -- and refuse `none` on the ones that publish it.
+  const picker = new ModelPicker([]);
+  picker.syncFromConfig(
+    {
+      defaultProvider: "go",
+      defaultModel: "flash",
+      providers: { go: { baseUrl: "https://x/v1" } },
+      models: [
+        { id: "flash", label: "Flash", provider: "go", supportsEffort: true, supportedEffortLevels: ["none", "high"] },
+        { id: "wide", label: "Wide", provider: "go", supportsEffort: true },
+      ],
+      tags: { Cheap: { model: "flash" }, Chain: { model: "tag:Cheap" }, Wide: { model: "wide" } },
+    },
+    { Cheap: { model: "flash" }, Chain: { model: "tag:Cheap" }, Wide: { model: "wide" } },
+  );
+  assert.deepEqual(picker.effortLevelsFor("tag:Cheap"), ["none", "high"]);
+  // A chain answers with the leaf's ladder, since that is the model the run reaches.
+  assert.deepEqual(picker.effortLevelsFor("tag:Chain"), ["none", "high"]);
+  // A leaf that publishes nothing keeps the fallback: unknown is not the same as narrow.
+  assert.deepEqual(picker.effortLevelsFor("tag:Wide"), EFFORT_LEVELS);
 });
 
 test("syncFromConfig with no tags still rows the virtual Default tag", () => {

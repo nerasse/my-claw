@@ -1,5 +1,6 @@
 import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig, TagConfig } from "../core/config.ts";
 import { tagNameOf } from "../core/config.ts";
+import { clampEffortToLadder } from "./effort-ladder.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -85,7 +86,8 @@ function computeEffort(
 ): EffortLevel | undefined {
   const chosen = effortOverride ?? tagEffort ?? scopeEffort ?? merged.effort;
   if (!chosen) return undefined;
-  return effortApplies(model, nativeEffort) ? chosen : undefined;
+  if (!effortApplies(model, nativeEffort)) return undefined;
+  return clampEffortToLadder(chosen, model?.supportedEffortLevels, model?.id ?? "");
 }
 
 /**
@@ -341,10 +343,13 @@ export function effectiveEffort(
   const native = backend === "claude-sdk" || backend === "codex";
   if (!effortApplies(model, native)) return { source: "unsupported" };
 
-  if (sessionOverride) return { level: sessionOverride, source: "session" };
-  if (tag?.effort) return { level: tag.effort, source: "tag" };
-  if (scopeEffort) return { level: scopeEffort, source: "scope" };
-  if (config.effort) return { level: config.effort, source: "config" };
+  // The level the run would send, clamp included: reporting the pin verbatim is how a menu came to
+  // name a rung the request never carried.
+  const shown = (level: EffortLevel): EffortLevel => clampEffortToLadder(level, model?.supportedEffortLevels, model?.id ?? "");
+  if (sessionOverride) return { level: shown(sessionOverride), source: "session" };
+  if (tag?.effort) return { level: shown(tag.effort), source: "tag" };
+  if (scopeEffort) return { level: shown(scopeEffort), source: "scope" };
+  if (config.effort) return { level: shown(config.effort), source: "config" };
   if (backend === "claude-sdk") return { level: SDK_DEFAULT_EFFORT, source: "sdk-default" };
   return { source: "provider-default" };
 }

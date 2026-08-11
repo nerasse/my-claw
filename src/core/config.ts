@@ -231,6 +231,13 @@ export interface LlmProviderConfig {
 // describes a model, which stays deliberately narrower than this.
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
+/**
+ * The vocabulary as a ladder, bottom to top. One ordered copy: the clamps, the discovery filter
+ * and the Claude ladder all need to know which rung is next, and three private copies of an order
+ * is how two of them end up disagreeing about where `minimal` sits.
+ */
+export const EFFORT_ORDER: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
 export interface LlmModelConfig {
   id: string;
   label: string;

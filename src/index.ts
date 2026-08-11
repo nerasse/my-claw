@@ -1234,6 +1234,19 @@ async function main() {
       };
     };
     const reloadAgentsNow = (): Promise<number> => reloadAgents(agentsDirs(), agentRegistry);
+    /**
+     * A pin may only name a rung the model actually offers. The vocabulary alone was the check,
+     * which was wrong in both directions: `max` was accepted on a model whose ladder stops at
+     * `high` (the run clamps it, so the file said one thing and the request another), while `none`
+     * was refused on the very models that publish it, the fallback list starting at `low`.
+     */
+    const assertEffortOffered = (modelId: string, level: string): void => {
+      const levels = modelPicker.effortLevelsFor(modelId);
+      if (levels.length === 0) throw new Error(`effort has no effect on ${modelId}`);
+      if (!levels.includes(level as EffortLevel)) {
+        throw new Error(`invalid effort level for ${modelId}: ${level} (offered: ${levels.join(", ")})`);
+      }
+    };
     myClawApp.onAgentsController({
       get: () => agentsConfigSnapshot(),
       setModel: async (agent, modelId, effort) => {
@@ -1244,9 +1257,7 @@ async function main() {
         // The effort travels with the model: "" clears the pin, a level writes it, and neither
         // says anything when the frame omits it.
         const effortArg = effort === undefined ? undefined : effort === "" ? ("clear" as const) : (effort as EffortLevel);
-        if (effort !== undefined && effort !== "" && !EFFORT_LEVELS.includes(effort as EffortLevel)) {
-          throw new Error(`invalid effort level: ${effort}`);
-        }
+        if (effort !== undefined && effort !== "") assertEffortOffered(modelId, effort);
         if (agent === "global") {
           const result = await setDefaultModel(modelId, provider, effortArg);
           if (!result.ok) throw new Error(result.error);
@@ -1378,7 +1389,7 @@ async function main() {
       list: () => tagsSnapshot(),
       upsert: async (fields) => {
         if (!modelPicker.options().some((m) => m.id === fields.model)) throw new Error(`unknown model: ${fields.model}`);
-        if (fields.effort && !EFFORT_LEVELS.includes(fields.effort as EffortLevel)) throw new Error(`invalid effort level: ${fields.effort}`);
+        if (fields.effort) assertEffortOffered(fields.model, fields.effort);
         const result = await setTag(fields.name, fields);
         if (!result.ok) throw new Error(result.error);
         return writeTagsConfig(`tag ${fields.name}`);
@@ -1790,8 +1801,11 @@ async function main() {
     myClawApp.onJobsController({
       list: () => jobsListing(),
       save: async (fields) => {
-        if (fields.effort !== undefined && fields.effort !== "" && !EFFORT_LEVELS.includes(fields.effort as EffortLevel)) {
-          throw new Error(`invalid effort level: ${fields.effort}`);
+        // Only checkable against a model the job names itself: a job with no pin runs whatever the
+        // cron agent resolves to that day, and the run's own clamp is what covers that case.
+        if (fields.effort !== undefined && fields.effort !== "") {
+          if (fields.model) assertEffortOffered(fields.model, fields.effort);
+          else if (!EFFORT_LEVELS.includes(fields.effort as EffortLevel)) throw new Error(`invalid effort level: ${fields.effort}`);
         }
         // "" is a deliberate clear on update, so it must reach updateJob rather than vanish
         // as falsy; undefined means "don't touch".

@@ -387,7 +387,17 @@ answer (`effortApplies` in `src/llm/resolver.ts`): they used to disagree, and th
   provider's own capabilities (`supportedEffortLevels`). A model the provider reports as having no
   effort at all (`supportsEffort: false`, e.g. Haiku 4.5) offers none and is not chained into the
   effort step. Only a model with **unknown** support (neither field set, typically a curated entry)
-  falls back to the full global list.
+  falls back to the full global list. A tag entry answers with the ladder of the model it points
+  at, chains included.
+- A **write** may only pin a rung the model offers: the tag, agent and job editors check against
+  that same per-model ladder, not the vocabulary. Checking the vocabulary alone was wrong in both
+  directions — `max` was accepted on a model whose ladder stops at `high`, while `none` was refused
+  on the very models that publish it.
+- At run time a pin that is off the ladder anyway (the model under a tag changed, the provider
+  republished a narrower ladder) is **clamped to the nearest rung** and logged once, never dropped:
+  `clampEffortToLadder` in `src/llm/effort-ladder.ts`. Ties go down, because spending less than
+  asked is a smaller surprise than spending more. An unknown ladder clamps nothing. The run and
+  every display resolve through that one helper, so a menu names the level the request carries.
 - Precedence: session `/effort` > per-model `effort` > global `llm.effort`.
 - The `/model`, `/models` and `/effort` headers show the **effective** effort with its origin:
   `high (session)`, `medium (model default)`, `low (config)`, `high (SDK default)`, or

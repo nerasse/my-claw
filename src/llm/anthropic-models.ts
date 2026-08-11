@@ -1,13 +1,12 @@
-import type { EffortLevel } from "../core/config.ts";
+import { EFFORT_ORDER, type EffortLevel } from "../core/config.ts";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
 const DISCOVER_TIMEOUT_MS = 15_000;
 
-// Menu order, and the reference for normalizing whatever order the API reports. A level missing
-// here is invisible even when the API reports it as supported, so the bottom rungs lead: appending
-// them would render them past `ultra`.
-const EFFORT_ORDER: EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+// Menu order comes from the shared ladder (core/config.ts): it is also the reference for
+// normalizing whatever order the API reports, and a level missing from it would be invisible here
+// even when the API reports it as supported.
 
 export interface DiscoveredAnthropicModel {
   id: string;

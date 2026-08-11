@@ -119,6 +119,23 @@ Clamping `none` to `low` is a compromise with no good alternative: dropping the 
 land on the SDK's own default of `high`, which is the opposite of what was asked. It is logged, as
 `ultra` is.
 
+### R5b — A published ladder is enforced, at the write and at the run
+
+A ladder is only useful if nothing can pin off it. Two guards, and they answer the same question:
+
+- **at the write**: the tag, agent and job editors accept only a rung the model offers
+  (`effortLevelsFor`, which for a tag entry answers with its leaf model's ladder). The vocabulary
+  was the only check before, so `max` was accepted on a two-rung model while `none` was refused on
+  the models that publish it — the fallback list starts at `low`;
+- **at the run**: a pin that is off the ladder anyway — the model under a tag changed, the provider
+  republished a narrower ladder — is clamped to the nearest rung and logged once per pair
+  (`clampEffortToLadder`). Ties go down: spending less than asked is the smaller surprise. An
+  absent ladder clamps nothing, per R1.
+
+`effectiveEffort` resolves through the same clamp, so a menu never names a rung the request did not
+carry. That divergence is exactly the class of bug R5 and the `supportsEffort` gate already fixed
+twice.
+
 ### R6 — A provider is matched by name first, host second
 
 The price ladder maps a provider to a models.dev entry by base-URL host, keeping the first entry

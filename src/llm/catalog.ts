@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig } from "../core/config.ts";
-import { MY_CLAW_DIR } from "../core/config.ts";
+import { MY_CLAW_DIR, EFFORT_ORDER } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -149,7 +149,7 @@ interface CodexDiscoveredModel {
 
 // The whole vocabulary, not the fallback list: a provider describing its own models is evidence,
 // so a level it publishes is kept. This is what stopped Codex's `minimal` from being dropped.
-const EFFORT_SET = new Set<EffortLevel>(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const EFFORT_SET = new Set<EffortLevel>(EFFORT_ORDER);
 // The backend lists helper models (e.g. auto-review) that are not general chat targets.
 const CODEX_MODEL_DENYLIST = new Set(["codex-auto-review"]);
 
