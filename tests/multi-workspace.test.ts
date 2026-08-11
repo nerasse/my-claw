@@ -1,6 +1,6 @@
 import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPromptFile, loadCorePrompt, resetPromptFileCache } from "../src/agent/prompt/loader.ts";
@@ -90,7 +90,10 @@ test("a missing file in a secondary workspace falls back to the default", async 
 
   assert.equal(await loadPromptFile("SOUL.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "default soul");
   assert.equal(await loadPromptFile("AGENTS.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "project agents");
-  assert.equal(await loadPromptFile("USER.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "");
+  // Missing in both workspaces: the ladder lands on the shipped template, which is what the
+  // instructions page has always shown for that state.
+  const template = await readFile(join(import.meta.dir, "..", "docs", "prompt", "USER.md"), "utf-8");
+  assert.equal(await loadPromptFile("USER.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), template);
 });
 
 test("a file present in the secondary workspace shadows the default", async () => {

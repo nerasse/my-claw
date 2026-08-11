@@ -91,8 +91,9 @@ export interface PromptResolveOptions {
 
 export interface PromptFileResolution {
   content: string;
-  /** `own` is a file in this workspace, `inherited` another workspace's, `fallback` the template. */
-  origin: "own" | "inherited" | "fallback";
+  /** `own` is a file in this workspace, `inherited` another workspace's, `fallback` the template,
+   *  `off` the layer dropped by policy (nothing was read, not even the template). */
+  origin: "own" | "inherited" | "fallback" | "off";
   /** Workspace directory the content came from, "" for a template. */
   from: string;
 }
@@ -100,16 +101,22 @@ export interface PromptFileResolution {
 /**
  * The resolution ladder, the one implementation shared by the loader and the instructions page:
  * the workspace's own file, then the configured source (docs/workspace-prompt-inheritance.md),
- * then the last known good. `shippedTemplate` is the page-only tail until `builtin` becomes the
- * runtime's default last resort (phase 2 of docs/workspace-prompt-inheritance.md) -- today a layer
- * no workspace owns is empty for the agent but shown as the template on the page, which is exactly
- * the divergence that ladder is there to close.
+ * then the last known good, then the shipped template for both sides alike. One implementation,
+ * so the page can never again show what the runtime does not read -- the divergence this ladder
+ * was built to close.
  */
 export async function resolvePromptFile(
   name: string,
   opts: PromptResolveOptions,
-  shippedTemplate: boolean,
 ): Promise<PromptFileResolution> {
+  const policy = resolvePromptPolicy(opts.workspacePrompts, opts.workspaceKey, name);
+  if (policy.off) {
+    // off drops the layer even when this workspace owns the file: nothing is read, nothing is
+    // inherited, the template does not apply. The origin exists so loadCorePrompt knows not to
+    // fall back to CORE_PROMPT either: skipping CORE.md must actually remove the layer.
+    return { content: "", origin: "off", from: "" };
+  }
+
   const primaryDir = promptRoot(opts.workspaceDir);
   const primary = join(primaryDir, name);
   const fromPrimary = await readPromptPath(primary, name);
@@ -118,9 +125,6 @@ export async function resolvePromptFile(
   // The configured source replaces the hardcoded default-workspace step. One hop: only the
   // source's own file is read, never the source's own inheritance, so cycles are impossible by
   // construction. "none" ends the ladder; "builtin" reads the shipped template as the source.
-  // `off` is phase 2 and deliberately not honored yet.
-  const policy = resolvePromptPolicy(opts.workspacePrompts, opts.workspaceKey, name);
-  let sourceTail = policy.inherit === "none" || policy.inherit === "builtin";
   if (policy.inherit !== "none") {
     if (policy.inherit === "builtin") {
       const template = await readShippedTemplate(name);
@@ -137,9 +141,10 @@ export async function resolvePromptFile(
   const lastGood = cache.get(primary);
   if (lastGood !== undefined) return { content: lastGood.content, origin: "own", from: primaryDir };
 
-  if (sourceTail) return { content: "", origin: "fallback", from: "" };
-  if (!shippedTemplate) return { content: "", origin: "fallback", from: "" };
-
+  // Terminal step: the shipped template, for the runtime and the page alike. A layer no workspace
+  // owns is read as the template, exactly as the page shows it. "none" is the one policy that
+  // still ends the ladder here.
+  if (policy.inherit === "none") return { content: "", origin: "fallback", from: "" };
   return { content: await readShippedTemplate(name), origin: "fallback", from: "" };
 }
 
@@ -150,7 +155,7 @@ export async function resolvePromptFile(
  * existed). The mtime cache is keyed on absolute paths, so every workspace coexists in it.
  */
 export async function loadPromptFile(name: string, opts: PromptResolveOptions = {}): Promise<string> {
-  return (await resolvePromptFile(name, opts, false)).content;
+  return (await resolvePromptFile(name, opts)).content;
 }
 
 /** Drops the mtime cache. Only needed by tests: the cache is keyed on the workspace path,
@@ -171,10 +176,12 @@ export async function loadAllPromptFiles(opts: PromptResolveOptions = {}): Promi
  * Layer 0 core directives. Read live from the workspace CORE.md (mtime cache, hot like the
  * other prompt files) and normalised since it is owner-editable. Falls back to the hardcoded
  * CORE_PROMPT when the file is missing or blank, so the structural prompt can never be silently
- * emptied. OWNER_STEERING stays in code by design.
+ * emptied -- except by an explicit `off`, which must actually remove the layer. OWNER_STEERING
+ * stays in code by design.
  */
 export async function loadCorePrompt(opts: PromptResolveOptions = {}): Promise<string> {
-  const content = (await loadPromptFile("CORE.md", opts)).trim();
-  if (!content) return CORE_PROMPT;
+  const res = await resolvePromptFile("CORE.md", opts);
+  const content = res.content.trim();
+  if (!content) return res.origin === "off" ? "" : CORE_PROMPT;
   return normalizeUntrusted(content, "CORE.md");
 }

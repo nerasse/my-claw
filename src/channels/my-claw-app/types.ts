@@ -864,8 +864,9 @@ export interface MyClawAppToolsListResult {
 export interface MyClawAppInstructionEntry {
   workspace: string;
   file: string;
-  /** `own` is a file in this workspace, `inherited` the default one's, `fallback` the template. */
-  origin: "own" | "inherited" | "fallback";
+  /** `own` is a file in this workspace, `inherited` another workspace's, `fallback` the
+   *  template, `off` the layer dropped by the workspace's policy. */
+  origin: "own" | "inherited" | "fallback" | "off";
   /** Workspace the content comes from, empty for `fallback`. */
   from: string;
   bytes: number;
@@ -894,7 +895,7 @@ export interface MyClawAppInstructionsFile {
   workspace: string;
   file: string;
   content: string;
-  origin: "own" | "inherited" | "fallback" | "nested";
+  origin: "own" | "inherited" | "fallback" | "nested" | "off";
   from: string;
   sha: string;
   /** A nested AGENTS.md cannot be written back. */

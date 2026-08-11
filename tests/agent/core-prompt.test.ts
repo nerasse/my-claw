@@ -30,6 +30,9 @@ function ctx(): PromptContext {
 
 test("missing CORE.md falls back to the hardcoded constant", async () => {
   await workspaceWith(undefined);
+  // Since builtin became a runtime layer, "missing everywhere" resolves to the shipped template,
+  // which is today byte-identical to CORE_PROMPT (modulo the file's trailing newline). The
+  // assertion pins the result either way: if docs/prompt/CORE.md ever drifts, this fails loudly.
   assert.equal(await loadCorePrompt(), CORE_PROMPT);
 });
 

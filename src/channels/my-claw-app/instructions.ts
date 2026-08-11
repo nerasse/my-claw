@@ -14,8 +14,9 @@ import type { WorkspacePromptPolicy } from "../../core/config.ts";
  * See docs/instructions-page.md.
  */
 
-/** Where the content shown for a file comes from. */
-export type InstructionOrigin = "own" | "inherited" | "fallback";
+/** Where the content shown for a file comes from. `off` means the policy drops the layer
+ *  entirely: nothing is shown, nothing is read. */
+export type InstructionOrigin = "own" | "inherited" | "fallback" | "off";
 
 export interface InstructionRoots {
   /** The default workspace: it backs every fallback and is the only one seeded at boot. */
@@ -117,17 +118,13 @@ export async function readInstruction(
   const entry = workspaceRoots(roots).find((w) => w.key === workspace);
   if (!entry) return null;
 
-  const res = await resolvePromptFile(
-    file,
-    {
-      workspaceDir: resolve(entry.dir),
-      defaultWorkspaceDir: resolve(roots.defaultDir),
-      workspaceKey: workspace,
-      workspaces: roots.workspaces,
-      workspacePrompts: roots.workspacePrompts,
-    },
-    true,
-  );
+  const res = await resolvePromptFile(file, {
+    workspaceDir: resolve(entry.dir),
+    defaultWorkspaceDir: resolve(roots.defaultDir),
+    workspaceKey: workspace,
+    workspaces: roots.workspaces,
+    workspacePrompts: roots.workspacePrompts,
+  });
   return {
     content: res.content,
     origin: res.origin,

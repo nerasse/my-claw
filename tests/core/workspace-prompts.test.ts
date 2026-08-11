@@ -9,7 +9,7 @@ import {
   findShadowingWorkspaceKeys,
   HOT_OBJECT_SECTIONS,
 } from "../../src/core/config.ts";
-import { loadPromptFile, resetPromptFileCache } from "../../src/agent/prompt/loader.ts";
+import { loadPromptFile, loadCorePrompt, resolvePromptFile, resetPromptFileCache } from "../../src/agent/prompt/loader.ts";
 
 const dirs: string[] = [];
 
@@ -103,6 +103,7 @@ describe("the resolver honors the configured source", () => {
     const lab = await tmpDir();
     const def = await tmpDir();
     await writeFile(join(def, "SOUL.md"), "default soul");
+    const template = await readFile(join(import.meta.dir, "..", "..", "docs", "prompt", "SOUL.md"), "utf-8");
     const opts = {
       workspaceDir: sofa,
       defaultWorkspaceDir: def,
@@ -110,7 +111,9 @@ describe("the resolver honors the configured source", () => {
       workspaces: { sofa, lab },
       workspacePrompts: { sofa: { "SOUL.md": { inherit: "lab" } } },
     };
-    expect(await loadPromptFile("SOUL.md", opts)).toBe("");
+    // lab owns nothing: the ladder stops after one hop and lands on the shipped template, never
+    // on lab's own inheritance (which would be default soul).
+    expect(await loadPromptFile("SOUL.md", opts)).toBe(template);
   });
 
   test("inherit: none ends the ladder with nothing", async () => {
@@ -140,10 +143,11 @@ describe("the resolver honors the configured source", () => {
     expect(await loadPromptFile("SOUL.md", opts)).toBe(template);
   });
 
-  test("a source pointing at a removed workspace lands on nothing", async () => {
+  test("a source pointing at a removed workspace lands on the shipped template", async () => {
     const sofa = await tmpDir();
     const def = await tmpDir();
     await writeFile(join(def, "SOUL.md"), "default soul");
+    const template = await readFile(join(import.meta.dir, "..", "..", "docs", "prompt", "SOUL.md"), "utf-8");
     const opts = {
       workspaceDir: sofa,
       defaultWorkspaceDir: def,
@@ -151,13 +155,14 @@ describe("the resolver honors the configured source", () => {
       workspaces: { sofa },
       workspacePrompts: { sofa: { "SOUL.md": { inherit: "ghost" } } },
     };
-    expect(await loadPromptFile("SOUL.md", opts)).toBe("");
+    expect(await loadPromptFile("SOUL.md", opts)).toBe(template);
   });
 
   test("a workspace cannot be its own source", async () => {
     const sofa = await tmpDir();
     const def = await tmpDir();
     await writeFile(join(def, "SOUL.md"), "default soul");
+    const template = await readFile(join(import.meta.dir, "..", "..", "docs", "prompt", "SOUL.md"), "utf-8");
     const opts = {
       workspaceDir: sofa,
       defaultWorkspaceDir: def,
@@ -165,7 +170,7 @@ describe("the resolver honors the configured source", () => {
       workspaces: { sofa },
       workspacePrompts: { sofa: { "SOUL.md": { inherit: "sofa" } } },
     };
-    expect(await loadPromptFile("SOUL.md", opts)).toBe("");
+    expect(await loadPromptFile("SOUL.md", opts)).toBe(template);
   });
 
   test("an own file still wins over any policy", async () => {
@@ -180,6 +185,64 @@ describe("the resolver honors the configured source", () => {
       workspacePrompts: { sofa: { "SOUL.md": { inherit: "none" } } },
     };
     expect(await loadPromptFile("SOUL.md", opts)).toBe("own soul");
+  });
+});
+
+describe("off drops the layer", () => {
+  test("off wins over an own file: nothing is read, not even the template", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(sofa, "SOUL.md"), "own soul");
+    await writeFile(join(def, "SOUL.md"), "default soul");
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspacePrompts: { sofa: { "SOUL.md": { off: true } } },
+    };
+    expect(await loadPromptFile("SOUL.md", opts)).toBe("");
+  });
+
+  test("off is per file: the other layers keep their resolution", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(def, "SOUL.md"), "default soul");
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspacePrompts: { sofa: { "SOUL.md": { off: true } } },
+    };
+    expect(await loadPromptFile("SOUL.md", opts)).toBe("");
+    expect(await loadPromptFile("USER.md", opts)).toBe(
+      await readFile(join(import.meta.dir, "..", "..", "docs", "prompt", "USER.md"), "utf-8"),
+    );
+  });
+
+  test("off on CORE.md suppresses the CORE_PROMPT fallback too", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspacePrompts: { sofa: { "CORE.md": { off: true } } },
+    };
+    expect(await loadCorePrompt(opts)).toBe("");
+  });
+
+  test("off resolves with origin off, so the page can say why", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(sofa, "SOUL.md"), "own soul");
+    const res = await resolvePromptFile("SOUL.md", {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspacePrompts: { sofa: { "SOUL.md": { off: true } } },
+    });
+    expect(res.origin).toBe("off");
+    expect(res.content).toBe("");
   });
 });
 

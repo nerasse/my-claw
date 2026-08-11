@@ -267,10 +267,6 @@ describe("nested AGENTS.md", () => {
 
 describe("the page and the runtime resolve through the same ladder", () => {
   test("own and inherited content agree with loadPromptFile", async () => {
-    // The fallback tail differs by design until `builtin` becomes a runtime layer (phase 2 of
-    // docs/workspace-prompt-inheritance.md): the page shows the shipped template, the runtime
-    // reads nothing. Everything above the tail must agree, or the page lies about what the
-    // agent reads -- the exact divergence this shared ladder exists to close.
     for (const f of ["SOUL.md", "AGENTS.md", "USER.md"]) {
       const page = await readInstruction(roots, "sofa", f);
       expect(page?.origin).toBe("inherited");
@@ -279,6 +275,23 @@ describe("the page and the runtime resolve through the same ladder", () => {
         workspaceDir: join(base, "sofa"),
         defaultWorkspaceDir: roots.defaultDir,
       });
+      expect(page?.content.trim()).toBe(runtime.trim());
+    }
+  });
+
+  test("the fallback state agrees too: both read the shipped template", async () => {
+    await rm(join(base, "default", "SOUL.md"));
+    await rm(join(base, "default", "AGENTS.md"));
+    await rm(join(base, "default", "USER.md"));
+    for (const f of ["SOUL.md", "AGENTS.md", "USER.md"]) {
+      const page = await readInstruction(roots, "sofa", f);
+      expect(page?.origin).toBe("fallback");
+      const runtime = await loadPromptFile(f, {
+        workspaceDir: join(base, "sofa"),
+        defaultWorkspaceDir: roots.defaultDir,
+      });
+      // The ladder's terminal template step is runtime behavior since the divergence was closed:
+      // the page shows exactly what the agent reads, or nothing at all.
       expect(page?.content.trim()).toBe(runtime.trim());
     }
   });
