@@ -1,14 +1,7 @@
 import { readFile, readdir, access } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  AGENT_BASES,
-  PROMPT_LAYERS,
-  RESERVED_AGENT_NAMES,
-  type AgentBase,
-  type AgentMeta,
-  type FileAgent,
-  type PromptLayerName,
-} from "./types.ts";
+import { AGENT_BASES, RESERVED_AGENT_NAMES, type AgentBase, type AgentMeta, type FileAgent } from "./types.ts";
+import { PROMPT_LAYERS, type PromptLayerName } from "../agent/prompt/files.ts";
 import type { AgentScope } from "../core/config.ts";
 import { snapshot } from "../core/config-store.ts";
 import { log } from "../utils/logger.ts";

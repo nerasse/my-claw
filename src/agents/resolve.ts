@@ -12,7 +12,8 @@ import {
   type MyClawConfig,
 } from "../core/config.ts";
 import type { AgentRegistry } from "./registry.ts";
-import { AGENT_BASES, PROMPT_LAYERS, type PromptLayerName } from "./types.ts";
+import { AGENT_BASES } from "./types.ts";
+import { PROMPT_LAYERS, type PromptLayerName } from "../agent/prompt/files.ts";
 
 /**
  * One agent's effective behaviour: the config entry over the agent file over the built-in default.

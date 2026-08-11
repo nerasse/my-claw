@@ -1,9 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  INSTRUCTION_FILES,
   MAX_INSTRUCTION_BYTES,
   instructionPath,
   listInstructions,
@@ -14,6 +13,8 @@ import {
   workspaceRoots,
   type InstructionRoots,
 } from "../src/channels/my-claw-app/instructions.ts";
+import { PROMPT_FILES } from "../src/agent/prompt/files.ts";
+import { resetPromptFileCache, loadPromptFile } from "../src/agent/prompt/loader.ts";
 import { contentSha, history, readSnapshot } from "../src/core/config-store.ts";
 
 let base: string;
@@ -24,9 +25,12 @@ beforeEach(async () => {
   await mkdir(join(base, "default"), { recursive: true });
   await mkdir(join(base, "sofa"), { recursive: true });
   roots = { defaultDir: join(base, "default"), workspaces: { sofa: join(base, "sofa") } };
-  for (const f of INSTRUCTION_FILES) {
+  for (const f of PROMPT_FILES) {
     await writeFile(join(base, "default", f), `default ${f}\n`, "utf-8");
   }
+  // readInstruction now shares the loader's mtime cache: two writes inside one millisecond would
+  // otherwise be invisible to it. Fresh cache per test, like the loader's own tests.
+  resetPromptFileCache();
 });
 
 afterEach(async () => {
@@ -35,7 +39,7 @@ afterEach(async () => {
 
 describe("path resolution", () => {
   test("the four prompt files resolve, nothing else does", async () => {
-    for (const f of INSTRUCTION_FILES) {
+    for (const f of PROMPT_FILES) {
       expect(instructionPath(roots, "default", f)).toBe(join(base, "default", f));
     }
     // MEMORY.md is generated from the DB and SYSTEM/TOOLS are read by no line of src/.
@@ -97,7 +101,7 @@ describe("inheritance", () => {
 
   test("the list covers every file of every workspace, with no hole", async () => {
     const entries = await listInstructions(roots);
-    expect(entries.length).toBe(INSTRUCTION_FILES.length * 2);
+    expect(entries.length).toBe(PROMPT_FILES.length * 2);
     expect(entries.filter((e) => e.workspace === "sofa").every((e) => e.origin === "inherited")).toBe(true);
     expect(entries.every((e) => e.sha.length > 0)).toBe(true);
   });
@@ -178,6 +182,11 @@ describe("writing", () => {
   test("the returned sha matches what a reader gets next", async () => {
     const before = await readInstruction(roots, "default", "CORE.md");
     const res = await writeInstruction(roots, "default", "CORE.md", "new core\n", before!.sha);
+    // readInstruction shares the loader's mtime cache: the write and the read could land in the
+    // same millisecond, and mtimeMs equality would serve the pre-write content. Pin a later stamp,
+    // like the loader's own tests do, so the assertion is about the write, not the clock.
+    const later = new Date(Date.now() + 2000);
+    await utimes(join(base, "default", "CORE.md"), later, later);
     const after = await readInstruction(roots, "default", "CORE.md");
     expect(res.ok === true && res.sha).toBe(after!.sha);
   });
@@ -253,5 +262,36 @@ describe("nested AGENTS.md", () => {
     await writeFile(join(outside, "AGENTS.md"), "secret\n", "utf-8");
     await symlink(outside, join(base, "default", "link"), "dir");
     expect(await readNestedInstruction(roots, "default", join("..", "outside", "AGENTS.md"))).toBeNull();
+  });
+});
+
+describe("the page and the runtime resolve through the same ladder", () => {
+  test("own and inherited content agree with loadPromptFile", async () => {
+    // The fallback tail differs by design until `builtin` becomes a runtime layer (phase 2 of
+    // docs/workspace-prompt-inheritance.md): the page shows the shipped template, the runtime
+    // reads nothing. Everything above the tail must agree, or the page lies about what the
+    // agent reads -- the exact divergence this shared ladder exists to close.
+    for (const f of ["SOUL.md", "AGENTS.md", "USER.md"]) {
+      const page = await readInstruction(roots, "sofa", f);
+      expect(page?.origin).toBe("inherited");
+      expect(page?.from).toBe("default");
+      const runtime = await loadPromptFile(f, {
+        workspaceDir: join(base, "sofa"),
+        defaultWorkspaceDir: roots.defaultDir,
+      });
+      expect(page?.content.trim()).toBe(runtime.trim());
+    }
+  });
+
+  test("an own file agrees between the page and the runtime", async () => {
+    await writeFile(join(base, "sofa", "SOUL.md"), "sofa soul\n", "utf-8");
+    const page = await readInstruction(roots, "sofa", "SOUL.md");
+    expect(page?.origin).toBe("own");
+    expect(page?.from).toBe("sofa");
+    const runtime = await loadPromptFile("SOUL.md", {
+      workspaceDir: join(base, "sofa"),
+      defaultWorkspaceDir: roots.defaultDir,
+    });
+    expect(page?.content.trim()).toBe(runtime.trim());
   });
 });

@@ -1,4 +1,5 @@
 import type { AgentScope } from "../core/config.ts";
+import type { PromptLayerName } from "../agent/prompt/files.ts";
 
 /**
  * The tool baseline an agent narrows from. Not a free choice of tools: a file may subtract from one
@@ -8,11 +9,6 @@ import type { AgentScope } from "../core/config.ts";
 export type AgentBase = "general" | "research";
 
 export const AGENT_BASES: readonly AgentBase[] = ["general", "research"];
-
-/** Workspace prompt files an agent's prompt sits on top of. */
-export type PromptLayerName = "CORE" | "SOUL" | "AGENTS" | "USER";
-
-export const PROMPT_LAYERS: readonly PromptLayerName[] = ["CORE", "SOUL", "AGENTS", "USER"];
 
 /**
  * Roles rather than spawnable agents, so a file cannot claim their name. `nested` is here for a

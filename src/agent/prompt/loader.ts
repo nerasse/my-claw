@@ -1,13 +1,11 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CORE_PROMPT } from "./core-prompts.ts";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
+import { WORKSPACE_PROMPT_FILES, type WorkspacePromptFile } from "./files.ts";
 import { snapshot, isTracked } from "../../core/config-store.ts";
 import { log } from "../../utils/logger.ts";
-
-const PROMPT_FILES = ["SOUL.md", "AGENTS.md", "USER.md"] as const;
-
-export type PromptFile = (typeof PROMPT_FILES)[number];
 
 function promptRoot(workspaceDir?: string): string {
   return workspaceDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
@@ -60,30 +58,78 @@ async function readPromptPath(path: string, name: string): Promise<string | null
   }
 }
 
-/**
- * Read one prompt file for a run. With a secondary workspace, the file is looked up there first
- * and falls back to the default workspace when missing: a project directory only needs the files
- * it actually overrides (typically AGENTS.md), and still gets the owner's persona and core
- * directives. The mtime cache is keyed on absolute paths, so every workspace coexists in it.
- */
-export async function loadPromptFile(
-  name: string,
-  workspaceDir?: string,
-  defaultWorkspaceDir?: string,
-): Promise<string> {
-  const primary = join(promptRoot(workspaceDir), name);
-  const fallback =
-    defaultWorkspaceDir !== undefined && defaultWorkspaceDir !== promptRoot(workspaceDir)
-      ? join(defaultWorkspaceDir, name)
-      : null;
-
-  const fromPrimary = await readPromptPath(primary, name);
-  if (fromPrimary !== null) return fromPrimary;
-  if (fallback !== null) {
-    const fromFallback = await readPromptPath(fallback, name);
-    if (fromFallback !== null) return fromFallback;
+async function readIfPresent(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf-8");
+  } catch {
+    return null;
   }
-  return cache.get(primary)?.content ?? "";
+}
+
+/** The docs/prompt/<name> template, and the hardcoded CORE_PROMPT when even that is missing:
+ *  CORE is the one layer the builder refuses to leave empty. */
+async function readShippedTemplate(name: string): Promise<string> {
+  const repoRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
+  const template = await readIfPresent(join(repoRoot, "docs", "prompt", name));
+  if (template !== null) return template;
+  return name === "CORE.md" ? CORE_PROMPT : "";
+}
+
+export interface PromptResolveOptions {
+  /** The run's workspace. Absent falls back to MY_CLAW_WORKSPACE, then cwd. */
+  workspaceDir?: string;
+  /** The default workspace, the one layer every workspace inherits from. Absent: no inherited step. */
+  defaultWorkspaceDir?: string;
+}
+
+export interface PromptFileResolution {
+  content: string;
+  /** `own` is a file in this workspace, `inherited` the default one's, `fallback` the template. */
+  origin: "own" | "inherited" | "fallback";
+  /** Workspace directory the content came from, "" for a template. */
+  from: string;
+}
+
+/**
+ * The resolution ladder, the one implementation shared by the loader and the instructions page:
+ * the workspace's own file, then the default workspace's, then the last known good. `shippedTemplate`
+ * is the page-only tail until `builtin` becomes a runtime layer (docs/workspace-prompt-inheritance.md,
+ * phase 2) -- today a layer no workspace owns is empty for the agent but shown as the template on
+ * the page, which is exactly the divergence that ladder is there to close.
+ */
+export async function resolvePromptFile(
+  name: string,
+  opts: PromptResolveOptions,
+  shippedTemplate: boolean,
+): Promise<PromptFileResolution> {
+  const primaryDir = promptRoot(opts.workspaceDir);
+  const primary = join(primaryDir, name);
+  const fromPrimary = await readPromptPath(primary, name);
+  if (fromPrimary !== null) return { content: fromPrimary, origin: "own", from: primaryDir };
+
+  const defaultDir = opts.defaultWorkspaceDir;
+  if (defaultDir !== undefined && defaultDir !== primaryDir) {
+    const inheritedPath = join(defaultDir, name);
+    const fromInherited = await readPromptPath(inheritedPath, name);
+    if (fromInherited !== null) return { content: fromInherited, origin: "inherited", from: defaultDir };
+  }
+
+  const lastGood = cache.get(primary);
+  if (lastGood !== undefined) return { content: lastGood.content, origin: "own", from: primaryDir };
+  if (!shippedTemplate) return { content: "", origin: "fallback", from: "" };
+
+  return { content: await readShippedTemplate(name), origin: "fallback", from: "" };
+}
+
+/**
+ * The content that applies for one prompt file in one workspace. With a secondary workspace, the
+ * file is looked up there first and falls back to the default workspace when missing: a project
+ * directory only needs the files it actually overrides (typically AGENTS.md), and still gets the
+ * owner's persona and core directives. The mtime cache is keyed on absolute paths, so every
+ * workspace coexists in it.
+ */
+export async function loadPromptFile(name: string, opts: PromptResolveOptions = {}): Promise<string> {
+  return (await resolvePromptFile(name, opts, false)).content;
 }
 
 /** Drops the mtime cache. Only needed by tests: the cache is keyed on the workspace path,
@@ -96,11 +142,13 @@ export function resetPromptFileCache(): void {
 export async function loadAllPromptFiles(
   workspaceDir?: string,
   defaultWorkspaceDir?: string,
-): Promise<Record<PromptFile, string>> {
+): Promise<Record<WorkspacePromptFile, string>> {
   const entries = await Promise.all(
-    PROMPT_FILES.map(async (name) => [name, await loadPromptFile(name, workspaceDir, defaultWorkspaceDir)] as const),
+    WORKSPACE_PROMPT_FILES.map(
+      async (name) => [name, await loadPromptFile(name, { workspaceDir, defaultWorkspaceDir })] as const,
+    ),
   );
-  return Object.fromEntries(entries) as Record<PromptFile, string>;
+  return Object.fromEntries(entries) as Record<WorkspacePromptFile, string>;
 }
 
 /**
@@ -113,7 +161,7 @@ export async function loadCorePrompt(
   workspaceDir?: string,
   defaultWorkspaceDir?: string,
 ): Promise<string> {
-  const content = (await loadPromptFile("CORE.md", workspaceDir, defaultWorkspaceDir)).trim();
+  const content = (await loadPromptFile("CORE.md", { workspaceDir, defaultWorkspaceDir })).trim();
   if (!content) return CORE_PROMPT;
   return normalizeUntrusted(content, "CORE.md");
 }

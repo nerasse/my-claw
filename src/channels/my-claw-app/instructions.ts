@@ -1,19 +1,17 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative, resolve, sep } from "node:path";
 import { writeFileAtomically } from "../../utils/atomic-write.ts";
 import { contentSha, snapshot, journal, artifactId } from "../../core/config-store.ts";
-import { CORE_PROMPT } from "../../agent/prompt/core-prompts.ts";
+import { resolvePromptFile } from "../../agent/prompt/loader.ts";
+import { PROMPT_FILES, type PromptFile } from "../../agent/prompt/files.ts";
 
 /**
- * The markdown files the app may edit: the four layers buildSystemPrompt actually reads. The list
- * is exact-match, never a pattern, so no path fragment can travel from a device. MEMORY.md is
- * absent on purpose (generated from memory.db and rewritten after every memory write), and so are
- * SYSTEM.md and TOOLS.md, which no line of src/ reads. See docs/instructions-page.md.
+ * The markdown files the app may edit: the four layers buildSystemPrompt actually reads, from the
+ * canonical list in agent/prompt/files.ts. The match is exact, never a pattern, so no path fragment
+ * can travel from a device. MEMORY.md is absent on purpose (generated from memory.db and rewritten
+ * after every memory write), and so are SYSTEM.md and TOOLS.md, which no line of src/ reads.
+ * See docs/instructions-page.md.
  */
-export const INSTRUCTION_FILES = ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"] as const;
-
-export type InstructionFile = (typeof INSTRUCTION_FILES)[number];
 
 /** Where the content shown for a file comes from. */
 export type InstructionOrigin = "own" | "inherited" | "fallback";
@@ -27,7 +25,7 @@ export interface InstructionRoots {
 
 export interface InstructionEntry {
   workspace: string;
-  file: InstructionFile;
+  file: PromptFile;
   origin: InstructionOrigin;
   /** The workspace the content actually comes from, or "" for a fallback. */
   from: string;
@@ -54,8 +52,8 @@ const NESTED_MAX_DEPTH = 3;
 const NESTED_MAX_ENTRIES = 50;
 const NESTED_SKIP = new Set(["node_modules", "dist", "build", "vendor", "target"]);
 
-function isInstructionFile(name: string): name is InstructionFile {
-  return (INSTRUCTION_FILES as readonly string[]).includes(name);
+function isPromptFile(name: string): name is PromptFile {
+  return (PROMPT_FILES as readonly string[]).includes(name);
 }
 
 /** Every workspace the page addresses, "default" included, in a stable order. */
@@ -74,7 +72,7 @@ export function workspaceRoots(roots: InstructionRoots): Array<{ key: string; di
  * would otherwise edit the wrong workspace's prompt while the app showed the right name.
  */
 export function instructionPath(roots: InstructionRoots, workspace: string, file: string): string | null {
-  if (!isInstructionFile(file)) return null;
+  if (!isPromptFile(file)) return null;
   const entry = workspaceRoots(roots).find((w) => w.key === workspace);
   if (!entry) return null;
   const root = resolve(entry.dir);
@@ -93,20 +91,16 @@ async function readIfPresent(path: string): Promise<string | null> {
   }
 }
 
-/** The shipped template, used only when neither the workspace nor the default one has the file. */
-async function fallbackContent(file: InstructionFile): Promise<string> {
-  const repoRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
-  const template = await readIfPresent(join(repoRoot, "docs", "prompt", file));
-  if (template !== null) return template;
-  // CORE.md is the one layer the builder refuses to leave empty: with no file anywhere it uses
-  // this constant, so showing it is showing what the agent reads.
-  return file === "CORE.md" ? CORE_PROMPT : "";
+/** The resolver answers with directories; the page addresses workspaces by key. */
+function keyForDir(roots: InstructionRoots, dir: string): string {
+  return workspaceRoots(roots).find((w) => resolve(w.dir) === dir)?.key ?? "";
 }
 
 /**
- * The content that actually applies for one file in one workspace, with where it comes from.
- * Mirrors loadPromptFile's file-by-file fallback: a named workspace only overrides what it needs,
- * and the page must show the inherited copy rather than an empty editor.
+ * The content that actually applies for one file in one workspace, with where it comes from. This
+ * shares the loader's resolution ladder (agent/prompt/loader.ts), so the page shows what the agent
+ * reads: a named workspace only overrides what it needs, and the page must show the inherited copy
+ * rather than an empty editor.
  */
 export async function readInstruction(
   roots: InstructionRoots,
@@ -116,26 +110,27 @@ export async function readInstruction(
   const path = instructionPath(roots, workspace, file);
   if (!path) return null;
 
-  const own = await readIfPresent(path);
-  if (own !== null) return { content: own, origin: "own", from: workspace, sha: contentSha(own) };
+  const entry = workspaceRoots(roots).find((w) => w.key === workspace);
+  if (!entry) return null;
 
-  if (workspace !== "default") {
-    const inheritedPath = instructionPath(roots, "default", file);
-    const inherited = inheritedPath ? await readIfPresent(inheritedPath) : null;
-    if (inherited !== null) {
-      return { content: inherited, origin: "inherited", from: "default", sha: contentSha(inherited) };
-    }
-  }
-
-  const content = await fallbackContent(file as InstructionFile);
-  return { content, origin: "fallback", from: "", sha: contentSha(content) };
+  const res = await resolvePromptFile(
+    file,
+    { workspaceDir: resolve(entry.dir), defaultWorkspaceDir: resolve(roots.defaultDir) },
+    true,
+  );
+  return {
+    content: res.content,
+    origin: res.origin,
+    from: keyForDir(roots, res.from),
+    sha: contentSha(res.content),
+  };
 }
 
 /** One entry per file per workspace: the page shows the whole resolution, never a hole. */
 export async function listInstructions(roots: InstructionRoots): Promise<InstructionEntry[]> {
   const entries: InstructionEntry[] = [];
   for (const { key } of workspaceRoots(roots)) {
-    for (const file of INSTRUCTION_FILES) {
+    for (const file of PROMPT_FILES) {
       const read = await readInstruction(roots, key, file);
       if (!read) continue;
       entries.push({

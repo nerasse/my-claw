@@ -33,6 +33,7 @@ import {
   createBrowserPageState,
 } from "../../tools/browser/index.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
+import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES } from "../prompt/files.ts";
 import type { AgentRegistry } from "../../agents/registry.ts";
 import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
 
@@ -120,7 +121,8 @@ async function buildBrowserSystemPrompt(
   if (wanted.includes("CORE")) layers.push(await loadCorePrompt(workspaceDir, defaultWorkspaceDir));
 
   const files = await loadAllPromptFiles(workspaceDir, defaultWorkspaceDir);
-  for (const [file, layer] of [["SOUL.md", "SOUL"], ["AGENTS.md", "AGENTS"], ["USER.md", "USER"]] as const) {
+  for (const file of WORKSPACE_PROMPT_FILES) {
+    const layer = PROMPT_LAYER_OF_FILE[file];
     if (!wanted.includes(layer)) continue;
     const content = files[file];
     if (content) {

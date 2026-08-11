@@ -88,9 +88,9 @@ test("a missing file in a secondary workspace falls back to the default", async 
   await writeFile(join(def, "SOUL.md"), "default soul");
   await writeFile(join(secondary, "AGENTS.md"), "project agents");
 
-  assert.equal(await loadPromptFile("SOUL.md", secondary, def), "default soul");
-  assert.equal(await loadPromptFile("AGENTS.md", secondary, def), "project agents");
-  assert.equal(await loadPromptFile("USER.md", secondary, def), "");
+  assert.equal(await loadPromptFile("SOUL.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "default soul");
+  assert.equal(await loadPromptFile("AGENTS.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "project agents");
+  assert.equal(await loadPromptFile("USER.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "");
 });
 
 test("a file present in the secondary workspace shadows the default", async () => {
@@ -99,7 +99,7 @@ test("a file present in the secondary workspace shadows the default", async () =
   await writeFile(join(def, "SOUL.md"), "default soul");
   await writeFile(join(secondary, "SOUL.md"), "project soul");
 
-  assert.equal(await loadPromptFile("SOUL.md", secondary, def), "project soul");
+  assert.equal(await loadPromptFile("SOUL.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "project soul");
 });
 
 test("prompts from two workspaces coexist in the cache", async () => {
@@ -107,12 +107,12 @@ test("prompts from two workspaces coexist in the cache", async () => {
   const def = await tmpDir();
   await writeFile(join(secondary, "AGENTS.md"), "A");
   await writeFile(join(def, "AGENTS.md"), "B");
-  assert.equal(await loadPromptFile("AGENTS.md", secondary, def), "A");
-  assert.equal(await loadPromptFile("AGENTS.md", def, def), "B");
+  assert.equal(await loadPromptFile("AGENTS.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "A");
+  assert.equal(await loadPromptFile("AGENTS.md", { workspaceDir: def, defaultWorkspaceDir: def }), "B");
   // The cache is keyed per absolute path: deleting the secondary's file falls back to the
   // default instead of serving the secondary's cached copy.
   await rm(join(secondary, "AGENTS.md"));
-  assert.equal(await loadPromptFile("AGENTS.md", secondary, def), "B");
+  assert.equal(await loadPromptFile("AGENTS.md", { workspaceDir: secondary, defaultWorkspaceDir: def }), "B");
 });
 
 test("the built prompt uses the run's workspace and falls back per file", async () => {

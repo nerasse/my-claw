@@ -1,9 +1,9 @@
 import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
 import { loadAllPromptFiles, loadCorePrompt } from "./loader.ts";
+import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES, type PromptLayerName } from "./files.ts";
 import { getPlatformHint } from "./platform-hints.ts";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
-import type { PromptLayerName } from "../../agents/types.ts";
 
 export interface PromptContext {
   platform: string;
@@ -37,16 +37,12 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
 
   // Layer 1-4: Workspace files (scanned for injection)
   const files = await loadAllPromptFiles(ctx.workspaceDir, ctx.defaultWorkspaceDir);
-  const fileOrder: Array<[keyof typeof files, PromptLayerName]> = [
-    ["SOUL.md", "SOUL"],
-    ["AGENTS.md", "AGENTS"],
-    ["USER.md", "USER"],
-  ];
-  for (const [name, layer] of fileOrder) {
+  for (const file of WORKSPACE_PROMPT_FILES) {
+    const layer = PROMPT_LAYER_OF_FILE[file];
     if (!wants(layer)) continue;
-    const content = files[name];
+    const content = files[file];
     if (content) {
-      layers.push(normalizeUntrusted(content, name));
+      layers.push(normalizeUntrusted(content, file));
     }
   }
 

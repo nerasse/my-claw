@@ -50,7 +50,6 @@ import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
 import {
-  INSTRUCTION_FILES,
   MAX_INSTRUCTION_BYTES,
   listInstructions,
   readInstruction,
@@ -59,6 +58,7 @@ import {
   writeInstruction,
   type InstructionRoots,
 } from "./channels/my-claw-app/instructions.ts";
+import { PROMPT_FILES } from "./agent/prompt/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "./llm/catalog.ts";
@@ -118,7 +118,8 @@ import { startSkillsWatcher } from "./skills/watcher.ts";
 import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.ts";
 import { AgentRegistry } from "./agents/registry.ts";
 import { loadAllAgents } from "./agents/loader.ts";
-import type { FileAgent, PromptLayerName } from "./agents/types.ts";
+import type { FileAgent } from "./agents/types.ts";
+import type { PromptLayerName } from "./agent/prompt/files.ts";
 import { syncBuiltInAgents } from "./agents/sync.ts";
 import { startAgentsWatcher } from "./agents/watcher.ts";
 import { reloadAgents, editableAgentTierDirs, type AgentDirs } from "./agents/reload.ts";
@@ -1418,7 +1419,7 @@ async function main() {
       list: async () => ({
         entries: await listInstructions(instructionRoots()),
         nested: await scanNestedInstructions(instructionRoots()),
-        files: [...INSTRUCTION_FILES],
+        files: [...PROMPT_FILES],
         maxBytes: MAX_INSTRUCTION_BYTES,
       }),
       read: async (workspace, file, nested) => {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   resolveAgentLlm,
+  resolveWorkspaceKey,
   scopeAllows,
   type AgentScope,
   type AgentToolType,
@@ -253,6 +254,10 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
     // of it, which is exactly the question `/instructions <agent>` is asked to answer.
     ...(definition.prompt ? { agentPrompt: definition.prompt } : {}),
     instructions: definition.instructions,
+    // And without these the dump would always read the default workspace, even for an agent pinned
+    // to a named one: the whole point of the command is to show what that agent actually gets.
+    workspaceDir: resolveWorkspaceKey(p.config, definition.workspace),
+    defaultWorkspaceDir: p.config.workspace,
   });
   // Shown as sent, not as built: a plugin may rewrite the prompt, and the SDK backend appends its
   // steering note after this hook.

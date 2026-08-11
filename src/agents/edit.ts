@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { contentSha, snapshot } from "../core/config-store.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { agentNameOf, parseAgentFile } from "./loader.ts";
-import type { AgentBase, PromptLayerName } from "./types.ts";
+import type { AgentBase } from "./types.ts";
+import type { PromptLayerName } from "../agent/prompt/files.ts";
 
 /**
  * Read/write of agent definition files (`agents/<name>.md`) from the app.

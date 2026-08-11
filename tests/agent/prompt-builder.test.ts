@@ -175,3 +175,38 @@ test("no suggested skills means no reminder section", async () => {
   const result = await buildSystemPrompt(makeCtx({ skills: [makeSkill("deploy")] }));
   assert.ok(!result.includes("# Skills possibly relevant to this request"));
 });
+
+test("an instructions list selects which workspace layers reach the prompt", async () => {
+  const saved = process.env["MY_CLAW_WORKSPACE"];
+  const dir = await mkdtemp(join(tmpdir(), "prompt-layers-"));
+  try {
+    await writeFile(join(dir, "SOUL.md"), "PERSONA TEXT");
+    await writeFile(join(dir, "AGENTS.md"), "RULES TEXT");
+    await writeFile(join(dir, "USER.md"), "USER TEXT");
+    process.env["MY_CLAW_WORKSPACE"] = dir;
+    const result = await buildSystemPrompt(makeCtx({ instructions: ["CORE", "USER"] }));
+    assert.match(result, /USER TEXT/);
+    assert.ok(!result.includes("PERSONA TEXT"), "SOUL dropped by the instructions list");
+    assert.ok(!result.includes("RULES TEXT"), "AGENTS dropped by the instructions list");
+  } finally {
+    if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
+    else process.env["MY_CLAW_WORKSPACE"] = saved;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an empty instructions list drops every workspace layer, CORE included", async () => {
+  const saved = process.env["MY_CLAW_WORKSPACE"];
+  const dir = await mkdtemp(join(tmpdir(), "prompt-none-"));
+  try {
+    await writeFile(join(dir, "SOUL.md"), "PERSONA TEXT");
+    process.env["MY_CLAW_WORKSPACE"] = dir;
+    const result = await buildSystemPrompt(makeCtx({ instructions: [] }));
+    assert.ok(!result.includes("PERSONA TEXT"));
+    assert.ok(!result.includes("Core Directives"), "the empty list also drops the CORE layer");
+  } finally {
+    if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
+    else process.env["MY_CLAW_WORKSPACE"] = saved;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

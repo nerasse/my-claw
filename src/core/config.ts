@@ -2,6 +2,7 @@ import { readFile, mkdir, copyFile, access } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { PROMPT_FILES } from "../agent/prompt/files.ts";
 
 export interface TelegramChannelConfig {
   enabled?: boolean;
@@ -943,9 +944,11 @@ export function isMyClawAppChannelEnabled(config: MyClawConfig): boolean {
   return config.channels["my-claw-app"]?.enabled !== false && Boolean(config.channels["my-claw-app"]);
 }
 
-const PROMPT_TEMPLATES = ["SYSTEM.md", "CORE.md", "SOUL.md", "AGENTS.md", "USER.md", "MEMORY.md"] as const;
+/** Files seeded into a fresh default workspace: the four prompt files, plus the two that exist for
+ *  the owner's benefit and are read by no line of src/ (SYSTEM.md, MEMORY.md). */
+const PROMPT_TEMPLATES = [...PROMPT_FILES, "SYSTEM.md", "MEMORY.md"] as const;
 
-async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
+export async function seedWorkspaceTemplates(workspacePath: string): Promise<void> {
   const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
   const templateDir = join(repoRoot, "docs", "prompt");
   for (const name of PROMPT_TEMPLATES) {
