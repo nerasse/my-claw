@@ -96,7 +96,8 @@ never throws, `config.ts:1116`).
 
 Per file, in order. The first step with content wins.
 
-1. `<workspaceDir>/<NAME>.md` — the workspace's own file. Skipped entirely when `off`.
+1. `<workspaceDir>/<NAME>.md` — the workspace's own file. `off` does not skip this step, it ends
+   the ladder: nothing is read, nothing is inherited, no template.
 2. The configured source: `default` → the default workspace's own file · `builtin` → `docs/prompt/<NAME>.md`
    · `none` → stop here with `""` · a key → **that workspace's own file only**.
 3. `docs/prompt/<NAME>.md` — last resort, unless step 2 already was the template.
@@ -107,6 +108,22 @@ Plus the existing mtime cache as a last-good-value guard (`loader.ts:86`).
 **One hop, deliberately.** If A inherits from B, step 2 reads the file B owns, never B's own
 inheritance. Cycles are impossible by construction instead of detected, and the rule fits in one
 sentence in the UI. Chains were not asked for.
+
+**A cut never falls through to the template.** The distinction the ladder has to carry is not
+"empty or not" but *why* it is empty, and the resolution carries it as `empty`
+(`loader.ts:92-107`). Three ways to end with no layer on purpose, and none of them may be refilled:
+
+- `off` on the file, whoever owns it.
+- `inherit: "none"` — no parent to ask, so nothing, **including on CORE.md**. This one was a bug:
+  `none` resolved to an empty string that `loadCorePrompt` read as "nothing found" and refilled
+  with 1.4 KB of hardcoded directives, which is the opposite of what the setting says.
+- A source that is itself cut **and owns no file**. `off` on B is about what B reads, not about the
+  bytes on B's disk: B still hands over a file it owns (step 2 is unchanged), but when it has
+  nothing to hand over, its cut is the answer.
+
+An empty result that means *nothing was found* is still refilled — a missing or blank CORE.md
+restores `CORE_PROMPT`, which is what keeps the structural prompt from being emptied by accident.
+A source that does not exist is a config error, not a cut: it keeps the template and the red row.
 
 `off: true` and `inherit: "none"` are both legal together and redundant; the UI says so rather than
 locking a control the owner needs the moment they switch back on.

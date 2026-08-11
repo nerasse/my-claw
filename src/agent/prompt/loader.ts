@@ -96,6 +96,14 @@ export interface PromptFileResolution {
   origin: "own" | "inherited" | "fallback" | "off";
   /** Workspace directory the content came from, "" for a template. */
   from: string;
+  /**
+   * The ladder ended with no layer *on purpose*, as opposed to ending with nothing to show for it.
+   * The distinction is the whole point: an empty result that means "cut" must never be refilled
+   * with the shipped template or with CORE_PROMPT, and an empty result that means "found nothing"
+   * must. Three ways to get here -- `off` on the file, `inherit: "none"`, and a source that is
+   * itself cut and has no file to hand over -- and they are all deliberate.
+   */
+  empty: boolean;
 }
 
 /**
@@ -112,15 +120,15 @@ export async function resolvePromptFile(
   const policy = resolvePromptPolicy(opts.workspacePrompts, opts.workspaceKey, name);
   if (policy.off) {
     // off drops the layer even when this workspace owns the file: nothing is read, nothing is
-    // inherited, the template does not apply. The origin exists so loadCorePrompt knows not to
-    // fall back to CORE_PROMPT either: skipping CORE.md must actually remove the layer.
-    return { content: "", origin: "off", from: "" };
+    // inherited, the template does not apply. `empty` is what carries that last part: skipping
+    // CORE.md must actually remove the layer, not hand back the hardcoded CORE_PROMPT.
+    return { content: "", origin: "off", from: "", empty: true };
   }
 
   const primaryDir = promptRoot(opts.workspaceDir);
   const primary = join(primaryDir, name);
   const fromPrimary = await readPromptPath(primary, name);
-  if (fromPrimary !== null) return { content: fromPrimary, origin: "own", from: primaryDir };
+  if (fromPrimary !== null) return { content: fromPrimary, origin: "own", from: primaryDir, empty: false };
 
   // The configured source replaces the hardcoded default-workspace step. One hop: only the
   // source's own file is read, never the source's own inheritance, so cycles are impossible by
@@ -128,24 +136,31 @@ export async function resolvePromptFile(
   if (policy.inherit !== "none") {
     if (policy.inherit === "builtin") {
       const template = await readShippedTemplate(name);
-      if (template !== "") return { content: template, origin: "fallback", from: "" };
+      if (template !== "") return { content: template, origin: "fallback", from: "", empty: false };
     } else {
       const sourceDir = policy.inherit === "default" ? opts.defaultWorkspaceDir : opts.workspaces?.[policy.inherit];
       if (sourceDir !== undefined && sourceDir !== primaryDir) {
+        // A cut source still hands over the file it owns: `off` is what that workspace reads, not
+        // a property of the bytes on its disk. It is only when it has nothing to hand over that
+        // its own cut applies -- the ladder stops there rather than substituting the template,
+        // because "this layer is cut" and "this layer was not found" must not end the same way.
         const fromSource = await readPromptPath(join(sourceDir, name), name);
-        if (fromSource !== null) return { content: fromSource, origin: "inherited", from: sourceDir };
+        if (fromSource !== null) return { content: fromSource, origin: "inherited", from: sourceDir, empty: false };
+        if (resolvePromptPolicy(opts.workspacePrompts, policy.inherit, name).off) {
+          return { content: "", origin: "fallback", from: "", empty: true };
+        }
       }
     }
   }
 
   const lastGood = cache.get(primary);
-  if (lastGood !== undefined) return { content: lastGood.content, origin: "own", from: primaryDir };
+  if (lastGood !== undefined) return { content: lastGood.content, origin: "own", from: primaryDir, empty: false };
 
   // Terminal step: the shipped template, for the runtime and the page alike. A layer no workspace
   // owns is read as the template, exactly as the page shows it. "none" is the one policy that
-  // still ends the ladder here.
-  if (policy.inherit === "none") return { content: "", origin: "fallback", from: "" };
-  return { content: await readShippedTemplate(name), origin: "fallback", from: "" };
+  // still ends the ladder here, and it ends it empty on purpose.
+  if (policy.inherit === "none") return { content: "", origin: "fallback", from: "", empty: true };
+  return { content: await readShippedTemplate(name), origin: "fallback", from: "", empty: false };
 }
 
 /**
@@ -182,6 +197,8 @@ export async function loadAllPromptFiles(opts: PromptResolveOptions = {}): Promi
 export async function loadCorePrompt(opts: PromptResolveOptions = {}): Promise<string> {
   const res = await resolvePromptFile("CORE.md", opts);
   const content = res.content.trim();
-  if (!content) return res.origin === "off" ? "" : CORE_PROMPT;
+  // A cut layer stays cut. Only an empty result that means "nothing was found" is refilled, which
+  // is what keeps a missing or blank CORE.md from silently emptying the structural prompt.
+  if (!content) return res.empty ? "" : CORE_PROMPT;
   return normalizeUntrusted(content, "CORE.md");
 }

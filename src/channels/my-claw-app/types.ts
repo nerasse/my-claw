@@ -891,6 +891,10 @@ export interface MyClawAppInstructionEntry {
    *  feature: the app then hides the layer controls instead of showing a dead one. */
   inherit: string;
   off: boolean;
+  /** The layer resolves to nothing on purpose: `off`, `inherit: "none"`, or a source that is cut
+   *  and owns no file. The row must not promise a template that is never read, and only the
+   *  server knows the third case -- the entry alone does not carry it. */
+  empty: boolean;
 }
 
 /** A nested AGENTS.md found under a workspace. Read-only: injected in tool results, not in the prompt. */

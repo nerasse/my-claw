@@ -231,6 +231,89 @@ describe("off drops the layer", () => {
     expect(await loadCorePrompt(opts)).toBe("");
   });
 
+  test("a cut source still hands over the file it owns", async () => {
+    const sofa = await tmpDir();
+    const lab = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(lab, "SOUL.md"), "lab soul");
+    await writeFile(join(def, "SOUL.md"), "default soul");
+    // lab does not read this layer for itself. The bytes on its disk are still content, and sofa
+    // asked for them by name.
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspaces: { sofa, lab },
+      workspacePrompts: {
+        sofa: { "SOUL.md": { inherit: "lab" } },
+        lab: { "SOUL.md": { off: true } },
+      },
+    };
+    expect(await loadPromptFile("SOUL.md", opts)).toBe("lab soul");
+  });
+
+  test("a cut source with no file hands over nothing, not the template", async () => {
+    const sofa = await tmpDir();
+    const lab = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(def, "SOUL.md"), "default soul");
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspaces: { sofa, lab },
+      workspacePrompts: {
+        sofa: { "SOUL.md": { inherit: "lab" } },
+        lab: { "SOUL.md": { off: true } },
+      },
+    };
+    const res = await resolvePromptFile("SOUL.md", opts);
+    expect(res.content).toBe("");
+    expect(res.empty).toBe(true);
+  });
+
+  test("a source that simply owns no file still falls through to the template", async () => {
+    const sofa = await tmpDir();
+    const lab = await tmpDir();
+    const def = await tmpDir();
+    const template = await readFile(join(import.meta.dir, "..", "..", "docs", "prompt", "SOUL.md"), "utf-8");
+    // The difference with the test above is one flag: cut means nothing, empty-handed means the
+    // template. They must not end the same way.
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspaces: { sofa, lab },
+      workspacePrompts: { sofa: { "SOUL.md": { inherit: "lab" } } },
+    };
+    const res = await resolvePromptFile("SOUL.md", opts);
+    expect(res.content).toBe(template);
+    expect(res.empty).toBe(false);
+  });
+
+  test("inherit none removes the CORE layer instead of restoring CORE_PROMPT", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    await writeFile(join(def, "CORE.md"), "default core");
+    // The spec calls `off` and `inherit: "none"` redundant. They were not: none resolved to an
+    // empty string that loadCorePrompt read as "nothing found" and refilled with the hardcoded
+    // directives, so cutting CORE.md this way put 1.4 KB back into the prompt.
+    const opts = {
+      workspaceDir: sofa,
+      defaultWorkspaceDir: def,
+      workspaceKey: "sofa",
+      workspacePrompts: { sofa: { "CORE.md": { inherit: "none" as const } } },
+    };
+    expect(await loadCorePrompt(opts)).toBe("");
+  });
+
+  test("a missing CORE.md still restores CORE_PROMPT: only a deliberate cut empties it", async () => {
+    const sofa = await tmpDir();
+    const def = await tmpDir();
+    const core = await loadCorePrompt({ workspaceDir: sofa, defaultWorkspaceDir: def, workspaceKey: "sofa" });
+    expect(core.length).toBeGreaterThan(0);
+  });
+
   test("off resolves with origin off, so the page can say why", async () => {
     const sofa = await tmpDir();
     const def = await tmpDir();

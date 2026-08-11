@@ -41,6 +41,10 @@ export interface InstructionEntry {
    *  that predates the feature: the app then hides the layer controls. */
   inherit: string;
   off: boolean;
+  /** The layer resolves to nothing on purpose, so the row must not promise a shipped template
+   *  that will never be read. Set by `off`, by `inherit: "none"`, and by a source that is itself
+   *  cut with no file to hand over -- the page cannot derive the last one from this entry alone. */
+  empty: boolean;
 }
 
 export interface NestedInstruction {
@@ -118,7 +122,7 @@ export async function readInstruction(
   roots: InstructionRoots,
   workspace: string,
   file: string,
-): Promise<{ content: string; origin: InstructionOrigin; from: string; sha: string; inherit: string; off: boolean } | null> {
+): Promise<{ content: string; origin: InstructionOrigin; from: string; sha: string; inherit: string; off: boolean; empty: boolean } | null> {
   const path = instructionPath(roots, workspace, file);
   if (!path) return null;
 
@@ -142,6 +146,7 @@ export async function readInstruction(
       sha: contentSha(own ?? ""),
       inherit: policy.inherit,
       off: true,
+      empty: true,
     };
   }
   return {
@@ -151,6 +156,7 @@ export async function readInstruction(
     sha: contentSha(res.content),
     inherit: policy.inherit,
     off: policy.off,
+    empty: res.empty,
   };
 }
 
@@ -170,6 +176,7 @@ export async function listInstructions(roots: InstructionRoots): Promise<Instruc
         sha: read.sha,
         inherit: read.inherit,
         off: read.off,
+        empty: read.empty,
       });
     }
   }
