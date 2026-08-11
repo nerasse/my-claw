@@ -117,10 +117,10 @@ describe("the backend follows the resolved model", () => {
   test("a config with no model list judges nothing: one provider, nothing to misroute to", () => {
     // The implicit-provider format has no `models` and no `providers`. Refusing an id there would
     // reject one the owner knows exists, and there is no second provider to send it to anyway.
-    const implicit = { llm: { baseUrl: "https://one.example/v1", model: "test-model" } } as MyClawConfig;
+    const implicit = config({ llm: { baseUrl: "https://one.example/v1", model: "test-model" } });
     expect(resolveRunModel(implicit, { agent: "main", sessionModel: "anything" }, world()).model).toBe("anything");
     // Same once providers exist but no model is declared: the catalog has not spoken yet.
-    const empty = { llm: { ...config().llm, models: [] } } as MyClawConfig;
+    const empty = config({ llm: { ...config().llm, models: [] } });
     expect(resolveRunModel(empty, { agent: "main", sessionModel: "anything" }, world()).model).toBe("anything");
   });
 });
