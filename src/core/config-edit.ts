@@ -541,6 +541,12 @@ function workspaceErrorOf(key: string, path: string | undefined): string | null 
   if (key === "default" || !WORKSPACE_KEY_RE.test(key)) {
     return `Invalid workspace key: "${key}" (the key "default" is reserved; letters, digits, "-", "_")`;
   }
+  if (key === "builtin" || key === "none") {
+    // A prompt source keyword is not a legal workspace: `inherit: "none"` in a policy would read
+    // this workspace's files instead of nothing. A config that already declares such a key keeps
+    // working (a declared key wins over the keyword), it just cannot be created here any more.
+    return `Invalid workspace key: "${key}" (reserved: it names a prompt source, not a workspace)`;
+  }
   if (path !== undefined && !path.startsWith("/")) {
     return `Invalid workspace path: "${path}" (must be absolute)`;
   }

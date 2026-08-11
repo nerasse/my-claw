@@ -375,6 +375,17 @@ describe("workspace CRUD", () => {
     expect((await addWorkspace("sofa", "relative")).ok).toBe(false);
   });
 
+  test("addWorkspace refuses a key that shadows a prompt source keyword", async () => {
+    await writeConfigFile();
+    expect((await addWorkspace("none", join(MY_CLAW_DIR, "x"))).ok).toBe(false);
+    expect((await addWorkspace("builtin", join(MY_CLAW_DIR, "x"))).ok).toBe(false);
+  });
+
+  test("renameWorkspace refuses to rename onto a prompt source keyword", async () => {
+    await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") } });
+    expect((await renameWorkspace("sofa", "builtin")).ok).toBe(false);
+  });
+
   test("addWorkspace refuses a duplicate key", async () => {
     await writeConfigFile({ ...FILE, workspaces: { sofa: join(MY_CLAW_DIR, "sofa") } });
     expect((await addWorkspace("sofa", join(MY_CLAW_DIR, "other"))).ok).toBe(false);

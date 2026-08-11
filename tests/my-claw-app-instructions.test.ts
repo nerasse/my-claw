@@ -294,4 +294,25 @@ describe("the page and the runtime resolve through the same ladder", () => {
     });
     expect(page?.content.trim()).toBe(runtime.trim());
   });
+
+  test("a configured source agrees between the page and the runtime", async () => {
+    await mkdir(join(base, "lab"), { recursive: true });
+    await writeFile(join(base, "lab", "SOUL.md"), "lab soul\n", "utf-8");
+    roots = {
+      defaultDir: roots.defaultDir,
+      workspaces: { sofa: join(base, "sofa"), lab: join(base, "lab") },
+      workspacePrompts: { sofa: { "SOUL.md": { inherit: "lab" } } },
+    };
+    const page = await readInstruction(roots, "sofa", "SOUL.md");
+    expect(page?.origin).toBe("inherited");
+    expect(page?.from).toBe("lab");
+    const runtime = await loadPromptFile("SOUL.md", {
+      workspaceDir: join(base, "sofa"),
+      defaultWorkspaceDir: roots.defaultDir,
+      workspaceKey: "sofa",
+      workspaces: roots.workspaces,
+      workspacePrompts: roots.workspacePrompts,
+    });
+    expect(page?.content.trim()).toBe(runtime.trim());
+  });
 });

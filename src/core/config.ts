@@ -2,7 +2,7 @@ import { readFile, mkdir, copyFile, access } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { PROMPT_FILES } from "../agent/prompt/files.ts";
+import { PROMPT_FILES, type PromptFile } from "../agent/prompt/files.ts";
 
 export interface TelegramChannelConfig {
   enabled?: boolean;
@@ -493,6 +493,13 @@ export interface MyClawConfig {
    * is reserved for `workspace`. Hot-reloadable; see docs/multi-workspace.md.
    */
   workspaces?: Record<string, string>;
+  /**
+   * Per-workspace prompt policies: where each workspace reads a prompt file it does not own, keyed
+   * by workspace key ("default" included). Absent = every workspace inherits from the default one,
+   * which is what every workspace did before this section existed. Hot-reloadable; the loader
+   * reads it live through the run's config. See docs/workspace-prompt-inheritance.md.
+   */
+  workspacePrompts?: Record<string, WorkspacePromptPolicy>;
   /**
    * Named model aliases: each tag pins a provider/model/effort/context combo under a name and
    * configs reference it as `tag:<name>`. Hot-reloadable; see docs/tags.md.
@@ -1022,7 +1029,7 @@ export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
  * so the structural guard below can share the exact same lists instead of drifting from them.
  */
 export const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces", "tags",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces", "workspacePrompts", "tags",
 ] as const;
 /** Array sections whose identity must be preserved (consumers hold the same array reference). */
 export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;
@@ -1074,6 +1081,7 @@ export function parseConfig(raw: string): MyClawConfig {
   }
   assertStructure(config);
   validateWorkspaces(config);
+  validateWorkspacePrompts(config);
 
   if (isLegacyLlmConfig(config.llm)) {
     config.llm = migrateLegacyLlmConfig(config.llm as Record<string, unknown>);
@@ -1149,6 +1157,82 @@ function validateWorkspaces(config: MyClawConfig): void {
       throw new Error(`Invalid config: "workspaces.${key}" must be an absolute path, got "${String(dir)}"`);
     }
   }
+}
+
+/** Structural checks for workspacePrompts; a wrong type or an unknown file name would otherwise
+ *  be silently read as "no policy". Orphan workspace keys are a boot report, not a parse error:
+ *  a workspace can be removed after its policy was written, and that must not stop the boot. */
+function validateWorkspacePrompts(config: MyClawConfig): void {
+  const section = config.workspacePrompts;
+  if (section === undefined) return;
+  if (typeof section !== "object" || Array.isArray(section)) {
+    throw new Error('Invalid config: "workspacePrompts" must be an object keyed by workspace');
+  }
+  for (const [workspaceKey, files] of Object.entries(section)) {
+    if (typeof files !== "object" || files === null || Array.isArray(files)) {
+      throw new Error(`Invalid config: "workspacePrompts.${workspaceKey}" must be an object`);
+    }
+    for (const [file, filePolicy] of Object.entries(files)) {
+      if (!(PROMPT_FILES as readonly string[]).includes(file)) {
+        throw new Error(`Invalid config: "workspacePrompts.${workspaceKey}.${file}" is not a prompt file`);
+      }
+      if (typeof filePolicy !== "object" || filePolicy === null || Array.isArray(filePolicy)) {
+        throw new Error(`Invalid config: "workspacePrompts.${workspaceKey}.${file}" must be an object`);
+      }
+      if (filePolicy.inherit !== undefined && (typeof filePolicy.inherit !== "string" || filePolicy.inherit.trim() === "")) {
+        throw new Error(`Invalid config: "workspacePrompts.${workspaceKey}.${file}.inherit" must be a non-empty string`);
+      }
+      if (filePolicy.off !== undefined && typeof filePolicy.off !== "boolean") {
+        throw new Error(`Invalid config: "workspacePrompts.${workspaceKey}.${file}.off" must be a boolean`);
+      }
+    }
+  }
+}
+
+/** Where a workspace reads a prompt file it does not own. `builtin` is the shipped template,
+ *  `none` ends the ladder; any other value is a config.workspaces key. */
+export type PromptSource = string;
+
+export interface PromptFilePolicy {
+  /** The source for this file. Absent means "default", the pre-existing behavior. */
+  inherit?: PromptSource;
+  /** Drops the layer even when this workspace owns the file. */
+  off?: boolean;
+}
+
+/** Per-file prompt policy of one workspace, keyed directly by prompt file name. */
+export type WorkspacePromptPolicy = Partial<Record<PromptFile, PromptFilePolicy>>;
+
+/**
+ * The effective policy for one (workspace, file), normalised: absent means inherit from the
+ * default workspace with the layer on. Values are validated at parse time, so the only cleanup
+ * here is the default.
+ */
+export function resolvePromptPolicy(
+  workspacePrompts: Record<string, WorkspacePromptPolicy> | undefined,
+  workspaceKey: string | undefined,
+  file: string,
+): Required<PromptFilePolicy> {
+  const policy = workspacePrompts?.[workspaceKey ?? ""]?.[file as PromptFile];
+  return { inherit: policy?.inherit ?? "default", off: policy?.off ?? false };
+}
+
+/**
+ * Prompt policies addressing a workspace that does not exist. Reported at boot like an unknown
+ * agent workspace: an orphan policy is read by no run, and the failure would otherwise only
+ * surface as a missing layer on the first run that expected it.
+ */
+export function findUnknownPromptWorkspaces(config: MyClawConfig): Array<{ key: string }> {
+  return Object.keys(config.workspacePrompts ?? {})
+    .filter((key) => key !== "default" && !config.workspaces?.[key])
+    .map((key) => ({ key }));
+}
+
+/** Workspace keys that shadow a prompt source keyword: `inherit: "none"` in a policy would read
+ *  that workspace's files instead of nothing. Not fatal -- a declared key wins -- but the owner
+ *  should know a policy keyword can never select that workspace. */
+export function findShadowingWorkspaceKeys(config: MyClawConfig): string[] {
+  return Object.keys(config.workspaces ?? {}).filter((key) => key === "builtin" || key === "none");
 }
 
 /**

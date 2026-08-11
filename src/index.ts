@@ -14,6 +14,8 @@ import {
   isMyClawAppChannelEnabled,
   findUnknownScopeEntries,
   findUnknownAgentWorkspaces,
+  findUnknownPromptWorkspaces,
+  findShadowingWorkspaceKeys,
   findUnknownAgents,
   CONFIG_PATH,
   MY_CLAW_DIR,
@@ -440,6 +442,20 @@ async function main() {
   const unknownAgentWorkspaces = findUnknownAgentWorkspaces(config);
   if (unknownAgentWorkspaces.length > 0) {
     log("warn", "agent workspace keys match nothing in config.workspaces", { entries: unknownAgentWorkspaces });
+  }
+
+  // Same reasoning for prompt policies: a policy keyed by a workspace that does not exist is read
+  // by no run, and the missing layer would only surface on that workspace's first run.
+  const unknownPromptWorkspaces = findUnknownPromptWorkspaces(config);
+  if (unknownPromptWorkspaces.length > 0) {
+    log("warn", "prompt policies address workspaces that do not exist", { entries: unknownPromptWorkspaces });
+  }
+
+  // A workspace key that shadows a prompt source keyword. Not fatal -- a declared key wins over
+  // the keyword -- but a policy can never select that workspace by name, which is a surprise.
+  const shadowingWorkspaceKeys = findShadowingWorkspaceKeys(config);
+  if (shadowingWorkspaceKeys.length > 0) {
+    log("warn", "workspace keys shadow a prompt source keyword", { keys: shadowingWorkspaceKeys });
   }
 
   // An `agents.<name>` section addressing neither a reserved role nor a file in `agents/`. Config
@@ -1413,6 +1429,7 @@ async function main() {
     const instructionRoots = (): InstructionRoots => ({
       defaultDir: workspacePath,
       ...(config.workspaces ? { workspaces: config.workspaces } : {}),
+      ...(config.workspacePrompts ? { workspacePrompts: config.workspacePrompts } : {}),
     });
 
     myClawApp.onInstructionsController({

@@ -319,6 +319,9 @@ export class AgentBridge implements AgentBackend {
         skills: allSkills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
+        workspaceKey: session.workspace,
+        workspaces: this.config.workspaces,
+        workspacePrompts: this.config.workspacePrompts,
         ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
         instructions: agent.instructions,
         suggestedSkills: await selectRelevantSkills(
@@ -926,6 +929,7 @@ export class AgentBridge implements AgentBackend {
         __agentType: params.agentType,
         __message: params.message,
         __workspaceDir: this.workspaceFor(params.session).workspaceDir,
+        __workspaceKey: params.session.workspace,
         __signal: params.signal,
         // Identity of the calling session, so a tool that creates or drives a sub-agent can record
         // who owns the work. Derived from the session, never from the message: the message alone

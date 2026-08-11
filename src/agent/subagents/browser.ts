@@ -32,7 +32,7 @@ import {
   createBrowserCloseTabTool,
   createBrowserPageState,
 } from "../../tools/browser/index.ts";
-import { loadAllPromptFiles, loadCorePrompt } from "../prompt/loader.ts";
+import { loadAllPromptFiles, loadCorePrompt, type PromptResolveOptions } from "../prompt/loader.ts";
 import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES } from "../prompt/files.ts";
 import type { AgentRegistry } from "../../agents/registry.ts";
 import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
@@ -113,14 +113,16 @@ async function buildBrowserSystemPrompt(
   workspaceDir?: string,
   defaultWorkspaceDir?: string,
   agentRegistry?: AgentRegistry,
+  policy?: Pick<PromptResolveOptions, "workspaceKey" | "workspaces" | "workspacePrompts">,
 ): Promise<string> {
   const definition = agentRegistry?.get("browser");
   const wanted = definition?.meta.instructions ?? ["CORE", "SOUL", "USER"];
   const layers: string[] = [];
+  const opts: PromptResolveOptions = { workspaceDir, defaultWorkspaceDir, ...policy };
 
-  if (wanted.includes("CORE")) layers.push(await loadCorePrompt(workspaceDir, defaultWorkspaceDir));
+  if (wanted.includes("CORE")) layers.push(await loadCorePrompt(opts));
 
-  const files = await loadAllPromptFiles(workspaceDir, defaultWorkspaceDir);
+  const files = await loadAllPromptFiles(opts);
   for (const file of WORKSPACE_PROMPT_FILES) {
     const layer = PROMPT_LAYER_OF_FILE[file];
     if (!wanted.includes(layer)) continue;
@@ -180,6 +182,9 @@ export class BrowserSubagent {
     // Workspace of the run that spawned this sub-agent: its prompt files and tool roots follow
     // the parent, not the process-wide default.
     private workspaceDir?: string,
+    // The workspace key behind that directory, so the browser's prompt honors the parent run's
+    // per-file prompt policy like any other run would.
+    private workspaceKey?: string,
     /** Supplies `agents/browser.md`; absent falls back to the constant above. */
     private agentRegistry?: AgentRegistry,
   ) {
@@ -235,7 +240,17 @@ export class BrowserSubagent {
   }
 
   async run(task: string, startUrl?: string, signal?: AbortSignal): Promise<BrowserSubagentResult> {
-    const systemPrompt = `${await buildBrowserSystemPrompt(this.extraPromptLayers, this.workspaceDir, this.config.workspace, this.agentRegistry)}\n\n${await this.formatOpenTabs()}`;
+    const systemPrompt = `${await buildBrowserSystemPrompt(
+      this.extraPromptLayers,
+      this.workspaceDir,
+      this.config.workspace,
+      this.agentRegistry,
+      {
+        workspaceKey: this.workspaceKey,
+        workspaces: this.config.workspaces,
+        workspacePrompts: this.config.workspacePrompts,
+      },
+    )}\n\n${await this.formatOpenTabs()}`;
     const messages: ChatMessage[] = [
       { role: "system", content: systemPrompt },
       { role: "user", content: `Task: ${task}${startUrl ? `\nStart URL: ${startUrl}` : ""}` },

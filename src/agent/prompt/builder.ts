@@ -1,7 +1,8 @@
 import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
-import { loadAllPromptFiles, loadCorePrompt } from "./loader.ts";
+import { loadAllPromptFiles, loadCorePrompt, type PromptResolveOptions } from "./loader.ts";
 import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES, type PromptLayerName } from "./files.ts";
+import type { WorkspacePromptPolicy } from "../../core/config.ts";
 import { getPlatformHint } from "./platform-hints.ts";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
 
@@ -11,9 +12,15 @@ export interface PromptContext {
   sessionId: string;
   tools: Tool[];
   skills: SkillInfo[];
-  /** Secondary workspace of the run; prompt files missing there fall back to the default. */
+  /** Secondary workspace of the run; prompt files missing there fall back per the policy below. */
   workspaceDir?: string;
   defaultWorkspaceDir?: string;
+  /** The run's workspace key (config.workspaces), the key the prompt policy is indexed by. */
+  workspaceKey?: string;
+  /** config.workspaces: resolves an inherited source key to its directory. */
+  workspaces?: Record<string, string>;
+  /** config.workspacePrompts: per-workspace per-file prompt policies. */
+  workspacePrompts?: Record<string, WorkspacePromptPolicy>;
   // Skills the retrieval layer flagged as likely relevant to this message; rendered as a soft
   // reminder at the very end so it never mutates the cacheable prefix (see docs/skill-suggestions.md).
   suggestedSkills?: SkillInfo[];
@@ -30,13 +37,21 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   const layers: string[] = [];
   const wants = (layer: PromptLayerName): boolean => ctx.instructions === undefined || ctx.instructions.includes(layer);
 
+  const promptOpts: PromptResolveOptions = {
+    workspaceDir: ctx.workspaceDir,
+    defaultWorkspaceDir: ctx.defaultWorkspaceDir,
+    workspaceKey: ctx.workspaceKey,
+    workspaces: ctx.workspaces,
+    workspacePrompts: ctx.workspacePrompts,
+  };
+
   // Layer 0: Core directives. Owner-editable via workspace CORE.md, hardcoded fallback.
   if (wants("CORE")) {
-    layers.push(await loadCorePrompt(ctx.workspaceDir, ctx.defaultWorkspaceDir));
+    layers.push(await loadCorePrompt(promptOpts));
   }
 
   // Layer 1-4: Workspace files (scanned for injection)
-  const files = await loadAllPromptFiles(ctx.workspaceDir, ctx.defaultWorkspaceDir);
+  const files = await loadAllPromptFiles(promptOpts);
   for (const file of WORKSPACE_PROMPT_FILES) {
     const layer = PROMPT_LAYER_OF_FILE[file];
     if (!wants(layer)) continue;

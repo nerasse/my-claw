@@ -403,6 +403,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         skills: allSkills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
+        workspaceKey: session.workspace,
+        workspaces: this.config.workspaces,
+        workspacePrompts: this.config.workspacePrompts,
         ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
         instructions: agent.instructions,
         suggestedSkills: await selectRelevantSkills(

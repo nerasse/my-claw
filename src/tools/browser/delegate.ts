@@ -39,7 +39,8 @@ export function createDelegateBrowserTool(config: MyClawConfig, agentRegistry?: 
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : undefined;
       const workspaceDir = typeof args["__workspaceDir"] === "string" ? args["__workspaceDir"] : undefined;
-      const subagent = new BrowserSubagent(config, sidecarUrl, callerSessionId, workspaceDir, agentRegistry);
+      const workspaceKey = typeof args["__workspaceKey"] === "string" ? args["__workspaceKey"] : undefined;
+      const subagent = new BrowserSubagent(config, sidecarUrl, callerSessionId, workspaceDir, workspaceKey, agentRegistry);
       try {
         const task = enqueueBrowserTask(() => subagent.run(instructions, url, signal));
         // If /stop fires while this task is still queued behind another, return promptly instead

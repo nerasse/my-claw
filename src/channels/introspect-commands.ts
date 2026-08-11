@@ -258,6 +258,9 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
     // to a named one: the whole point of the command is to show what that agent actually gets.
     workspaceDir: resolveWorkspaceKey(p.config, definition.workspace),
     defaultWorkspaceDir: p.config.workspace,
+    workspaceKey: definition.workspace,
+    workspaces: p.config.workspaces,
+    workspacePrompts: p.config.workspacePrompts,
   });
   // Shown as sent, not as built: a plugin may rewrite the prompt, and the SDK backend appends its
   // steering note after this hook.

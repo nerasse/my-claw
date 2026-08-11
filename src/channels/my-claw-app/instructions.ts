@@ -4,6 +4,7 @@ import { writeFileAtomically } from "../../utils/atomic-write.ts";
 import { contentSha, snapshot, journal, artifactId } from "../../core/config-store.ts";
 import { resolvePromptFile } from "../../agent/prompt/loader.ts";
 import { PROMPT_FILES, type PromptFile } from "../../agent/prompt/files.ts";
+import type { WorkspacePromptPolicy } from "../../core/config.ts";
 
 /**
  * The markdown files the app may edit: the four layers buildSystemPrompt actually reads, from the
@@ -21,6 +22,9 @@ export interface InstructionRoots {
   defaultDir: string;
   /** config.workspaces, key -> absolute directory. */
   workspaces?: Record<string, string>;
+  /** config.workspacePrompts: per-workspace per-file policies, so the page resolves exactly
+   *  what the runtime does. */
+  workspacePrompts?: Record<string, WorkspacePromptPolicy>;
 }
 
 export interface InstructionEntry {
@@ -115,7 +119,13 @@ export async function readInstruction(
 
   const res = await resolvePromptFile(
     file,
-    { workspaceDir: resolve(entry.dir), defaultWorkspaceDir: resolve(roots.defaultDir) },
+    {
+      workspaceDir: resolve(entry.dir),
+      defaultWorkspaceDir: resolve(roots.defaultDir),
+      workspaceKey: workspace,
+      workspaces: roots.workspaces,
+      workspacePrompts: roots.workspacePrompts,
+    },
     true,
   );
   return {

@@ -210,3 +210,28 @@ test("an empty instructions list drops every workspace layer, CORE included", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a configured inherit source flows into the built prompt", async () => {
+  const saved = process.env["MY_CLAW_WORKSPACE"];
+  const sofa = await mkdtemp(join(tmpdir(), "prompt-policy-"));
+  const lab = await mkdtemp(join(tmpdir(), "prompt-policy-lab-"));
+  try {
+    await writeFile(join(lab, "SOUL.md"), "LAB PERSONA");
+    await writeFile(join(sofa, "USER.md"), "USER TEXT");
+    process.env["MY_CLAW_WORKSPACE"] = sofa;
+    const result = await buildSystemPrompt(
+      makeCtx({
+        workspaceKey: "sofa",
+        workspaces: { sofa, lab },
+        workspacePrompts: { sofa: { "SOUL.md": { inherit: "lab" } } },
+      }),
+    );
+    assert.match(result, /LAB PERSONA/);
+    assert.match(result, /USER TEXT/);
+  } finally {
+    if (saved === undefined) delete process.env["MY_CLAW_WORKSPACE"];
+    else process.env["MY_CLAW_WORKSPACE"] = saved;
+    await rm(sofa, { recursive: true, force: true });
+    await rm(lab, { recursive: true, force: true });
+  }
+});
