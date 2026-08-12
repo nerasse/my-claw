@@ -73,6 +73,12 @@ Each owner can hold several independent conversations. Every chat frame carries 
 `my-claw-app/thread/<owner>/<threadId>` (per-thread sessions, like Telegram forum
 threads), so each conversation has its own context and runs in parallel.
 
+Two thread ids do not name a conversation but a session of another kind, and are recognised
+before that rule: a cron run (`cron-<jobId>-<runTs>`) and a sub-agent (`sub-<16 hex>`, a digest
+because a sub-agent's name is model-written and may hold characters the charset forbids). One that
+resolves to nothing falls through to a conversation id and reads as an empty session, so a stale
+handle can never land on somebody else's thread. See `docs/subagent-navigation.md`.
+
 Outgoing frames (replies, stream deltas, tool cards, approval requests) go to every
 connected device of the owner. Sockets are resolved per frame, so a window that connects
 mid-answer still receives the rest of the stream. An approval is asked on all of them and
@@ -287,6 +293,13 @@ the first answer wins.
   is openable like any conversation: `session.history` reads it, `chat.send` routes to it and
   the stream answers on it. `chat.stop`, rename and delete work the same way. An unknown
   `jobId` is refused on the jobs scope.
+- `subagents.list { threadId }` lists the sub-agents reachable from that conversation, as
+  `subagents.list.result { threadId, agents: [...] }`. `threadId` is the parent conversation;
+  the answer is scoped by the runner, so a `private` sub-agent belonging to another conversation
+  is absent rather than hidden. Each entry carries its own `threadId` (`sub-<16 hex>`, a digest
+  of the session id) which is what the app opens; `id` is the real session id and is what the
+  roster shows, because `displayName` is picked by the model and is not unique. Refused on the
+  `subagents` scope when the threadId is invalid or the runner is not wired.
 
 ### Server -> Device
 

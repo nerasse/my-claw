@@ -33,7 +33,7 @@ const LLM = {
 };
 
 const INSTANCES: SubAgentInfo[] = [
-  { id: "subagent/digger-c3d4", displayName: "digger", type: "research", messageCount: 2, status: "idle" },
+  { id: "subagent/digger-c3d4", displayName: "digger", type: "research", messageCount: 2, status: "idle", visibility: "global", createdAt: "2026-01-01T00:00:00.000Z" },
 ];
 
 function config(): MyClawConfig {

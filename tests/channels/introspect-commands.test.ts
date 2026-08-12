@@ -57,7 +57,7 @@ const SERVERS: McpServerStatus[] = [
 ];
 
 const INSTANCES: SubAgentInfo[] = [
-  { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general", messageCount: 14, status: "idle" },
+  { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general", messageCount: 14, status: "idle", visibility: "global", createdAt: "2026-01-01T00:00:00.000Z" },
 ];
 
 function params(agents: MyClawConfig["agents"], args = "", overrides: Partial<IntrospectParams> = {}): IntrospectParams {

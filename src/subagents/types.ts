@@ -12,4 +12,8 @@ export interface SubAgentInfo {
   type: SubAgentType;
   messageCount: number;
   status: "idle" | "running";
+  /** The rest is what a roster needs and `list` already had loaded -- docs/subagent-navigation.md. */
+  visibility: "global" | "private";
+  model?: string;
+  createdAt: string;
 }

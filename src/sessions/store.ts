@@ -1,4 +1,6 @@
 import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, rmdir, stat } from "node:fs/promises";
+import { readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, dirname, relative, sep } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
@@ -237,6 +239,41 @@ export function cronThreadToSession(threadId: string): string | null {
   return match ? `cron/${match[1]}/${match[2]}` : null;
 }
 
+/**
+ * A sub-agent's session addressed as an app thread. Unlike cron there is no readable encoding
+ * available: a thread id is `[A-Za-z0-9._-]{1,64}` (see the channel's THREAD_ID_PATTERN) while a
+ * sub-agent id carries a model-chosen name that may hold any letter, so the handle is a digest of
+ * the session id. See docs/subagent-navigation.md.
+ */
+export function subagentSessionToThread(sessionId: string): string | null {
+  if (!sessionId.startsWith("subagent/")) return null;
+  const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 16);
+  return `sub-${digest}`;
+}
+
+/**
+ * Reverse of the digest, by scanning the one directory the answer can be in. Synchronous because
+ * both resolveSessionId contracts are, and deliberately uncached: the alternative is a map that
+ * has to be invalidated on spawn, kill, reset and prune, and that can therefore disagree with the
+ * directory. Only a `sub-` thread pays for the scan, and the caller reads the session file
+ * immediately afterwards anyway.
+ */
+export function subagentThreadToSession(threadId: string): string | null {
+  if (!/^sub-[0-9a-f]{16}$/.test(threadId)) return null;
+  let names: string[];
+  try {
+    names = readdirSync(join(SESSIONS_DIR, "subagent"));
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const sessionId = `subagent/${name.slice(0, -5)}`;
+    if (subagentSessionToThread(sessionId) === threadId) return sessionId;
+  }
+  return null;
+}
+
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
@@ -335,8 +372,12 @@ const SESSION_STALE_DAYS = 30;
  * The app's drawer reads this very directory, so dropping a file after a quiet month made a
  * conversation vanish from a list the owner was still looking at. Chat platforms keep the
  * sweep: their sessions are transient per-chat state nobody browses.
+ *
+ * Sub-agents joined the list when the app started showing them: a named one is advertised as
+ * re-invocable, and deleting it after a quiet month would break that promise silently. Reclaiming
+ * the space is `kill_agent`, or the app's own delete. See docs/subagent-navigation.md.
  */
-const PRUNE_EXEMPT_PREFIXES = [`my-claw-app${sep}`];
+const PRUNE_EXEMPT_PREFIXES = [`my-claw-app${sep}`, `subagent${sep}`];
 
 function isPruneExempt(filePath: string): boolean {
   const rel = relative(SESSIONS_DIR, filePath);

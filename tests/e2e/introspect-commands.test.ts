@@ -77,7 +77,7 @@ async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ teleg
     toolRegistry: toolRegistry(),
     mcpStatus: () => mcp?.status() ?? [],
     listSubAgents: async () => [
-      { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general" as const, messageCount: 3, status: "idle" as const },
+      { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general" as const, messageCount: 3, status: "idle" as const, visibility: "global" as const, createdAt: "2026-01-01T00:00:00.000Z" },
     ],
   };
   return {

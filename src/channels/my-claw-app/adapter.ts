@@ -79,6 +79,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppJobSave,
   MyClawAppJobsRunEntry,
   MyClawAppJobsRuns,
+  MyClawAppSubAgentsList,
+  MyClawAppSubAgentEntry,
   MyClawAppJobEntry,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
@@ -385,6 +387,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private configEditor?: MyClawAppConfigController;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
+  private subagents?: (callerSessionId: string) => Promise<MyClawAppSubAgentEntry[]>;
   private stopRun?: (sessionId: string) => boolean;
   private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -636,6 +639,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** Executes text slash commands; when absent, they fall through to the agent like any message. */
   onCommandHandler(handler: MyClawAppCommandHandler): void {
     this.commandHandler = handler;
+  }
+
+  /**
+   * The sub-agents reachable from a session. Injected like everything else the adapter must not
+   * reach for: the scoping rule lives in the runner, so the answer is already filtered.
+   */
+  onSubAgents(list: (callerSessionId: string) => Promise<MyClawAppSubAgentEntry[]>): void {
+    this.subagents = list;
   }
 
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
@@ -1143,6 +1154,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "jobs.runs":
         void this.handleJobsRuns(ws, frame);
+        break;
+      case "subagents.list":
+        void this.handleSubAgentsList(ws, frame);
         break;
       case "jobs.save":
         void this.handleJobSave(ws, frame);
@@ -1979,6 +1993,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "jobs.runs.result", jobId: frame.jobId, runs: await this.jobs.runs(frame.jobId) });
     } catch (err) {
       await this.refuse(ws, "jobs", "jobs.runs failed", { jobId: frame.jobId, error: String(err) });
+    }
+  }
+
+  private async handleSubAgentsList(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSubAgentsList,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "subagents", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!this.subagents) {
+      await this.refuse(ws, "subagents", "sub-agents unavailable");
+      return;
+    }
+    try {
+      const agents = await this.subagents(this.store.resolveSessionId(ws.data.owner, threadId));
+      this.sendFrame(ws, { type: "subagents.list.result", threadId, agents });
+    } catch (err) {
+      await this.refuse(ws, "subagents", "subagents.list failed", { threadId, error: String(err) });
     }
   }
 

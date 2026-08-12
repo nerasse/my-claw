@@ -15,8 +15,8 @@ import type { SubAgentInfo } from "../../src/subagents/types.ts";
 import { resolveContextWindow } from "../../src/llm/context-window.ts";
 
 const INSTANCES: SubAgentInfo[] = [
-  { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general", messageCount: 3, status: "idle" },
-  { id: "subagent/digger-c3d4", displayName: "digger", type: "research", messageCount: 9, status: "running" },
+  { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general", messageCount: 3, status: "idle", visibility: "global", createdAt: "2026-01-01T00:00:00.000Z" },
+  { id: "subagent/digger-c3d4", displayName: "digger", type: "research", messageCount: 9, status: "running", visibility: "global", createdAt: "2026-01-01T00:00:00.000Z" },
 ];
 
 const listSubAgents = async (): Promise<SubAgentInfo[]> => INSTANCES;

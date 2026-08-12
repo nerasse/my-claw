@@ -2654,6 +2654,85 @@ describe("scheduled jobs (jobs.*)", () => {
   });
 });
 
+describe("subagents frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let asked: string[];
+
+  const entry = (id: string, over: Record<string, unknown> = {}) => ({
+    threadId: `sub-${id.slice(-16).padStart(16, "0")}`,
+    id,
+    displayName: id.slice("subagent/".length).replace(/-[0-9a-f]{4}$/, ""),
+    type: "research",
+    messageCount: 4,
+    status: "idle" as const,
+    visibility: "global" as const,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...over,
+  });
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    asked = [];
+    adapter.onMessage(async () => {});
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client?.ws.close();
+    await adapter.stop();
+  });
+
+  test("subagents.list answers the roster for the asking conversation's session", async () => {
+    adapter.onSubAgents(async (callerSessionId) => {
+      asked.push(callerSessionId);
+      return [entry("subagent/research-a1b2"), entry("subagent/writer-c3d4", { status: "running" })];
+    });
+    client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "subagents.list.result");
+    assert.equal(frame["threadId"], "main");
+    const agents = frame["agents"] as Array<Record<string, unknown>>;
+    assert.equal(agents.length, 2);
+    assert.equal(agents[0]!["id"], "subagent/research-a1b2");
+    assert.equal(agents[1]!["status"], "running");
+    // The scoping rule lives in the runner, so what matters here is that the caller's session
+    // is the one handed to it -- not the raw thread id.
+    assert.deepEqual(asked, ["my-claw-app/thread/test-device/main"]);
+  });
+
+  test("subagents.list refuses an invalid threadId on its own scope", async () => {
+    adapter.onSubAgents(async () => []);
+    client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "../etc/passwd" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+  });
+
+  test("subagents.list without a provider is refused rather than answered empty", async () => {
+    client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    // An empty roster and an unavailable one are different states: the header counter must not
+    // claim zero sub-agents because the wiring is missing.
+    assert.match(String(frame["message"]), /unavailable/);
+  });
+
+  test("a failing roster is reported, not swallowed", async () => {
+    adapter.onSubAgents(async () => {
+      throw new Error("disk on fire");
+    });
+    client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+  });
+});
+
 describe("notifications", () => {
   let adapter: MyClawAppAdapter;
   let client: WsClient;

@@ -222,6 +222,9 @@ export class SubAgentRunner {
           type: session.meta.type,
           messageCount: session.messages.length,
           status: registry.isRunning(id) ? "running" : "idle",
+          visibility: session.meta.visibility,
+          ...(session.modelOverride ? { model: session.modelOverride } : {}),
+          createdAt: session.meta.createdAt,
         });
       }
     } catch {

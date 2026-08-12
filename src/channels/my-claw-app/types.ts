@@ -587,6 +587,7 @@ export type MyClawAppClientFrame =
   | MyClawAppStatusGet
   | MyClawAppJobsList
   | MyClawAppJobsRuns
+  | MyClawAppSubAgentsList
   | MyClawAppJobSave
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
@@ -800,6 +801,7 @@ export type MyClawAppErrorScope =
   | "workspaces"
   | "status"
   | "jobs"
+  | "subagents"
   | "notifications"
   | "tags"
   | "providers";
@@ -1384,6 +1386,51 @@ export interface MyClawAppJobEntry {
   unknownTools: string[];
 }
 
+/**
+ * The sub-agents reachable from one conversation. Scoped on purpose: the answer is whatever
+ * `SubAgentRunner.list` returns for this thread's session, so a private sub-agent of another
+ * conversation is absent rather than hidden. See docs/subagent-navigation.md.
+ */
+export interface MyClawAppSubAgentsList {
+  type: "subagents.list";
+  /** The parent conversation, not a sub-agent. */
+  threadId: string;
+}
+
+export interface MyClawAppSubAgentsListResult {
+  type: "subagents.list.result";
+  threadId: string;
+  agents: MyClawAppSubAgentEntry[];
+}
+
+/**
+ * One live sub-agent. `threadId` is its session seen as a thread (`sub-<digest>`), which is what
+ * the app opens; `id` is the real session id and is what the roster shows, because `displayName`
+ * is chosen by the model and is not unique.
+ */
+export interface MyClawAppSubAgentEntry {
+  threadId: string;
+  id: string;
+  displayName: string;
+  type: string;
+  messageCount: number;
+  status: "idle" | "running";
+  visibility: "global" | "private";
+  model?: string;
+  createdAt: string;
+}
+
+/**
+ * A nudge, not state: the roster of `threadId` changed, and this carries only what the header
+ * counter needs so it stays live without polling. The app refetches when it wants the list.
+ */
+export interface MyClawAppSubAgentsChanged {
+  type: "subagents.changed";
+  threadId: string;
+  count: number;
+  running: number;
+}
+
 export interface MyClawAppJobsList {
   type: "jobs.list";
 }
@@ -1516,6 +1563,8 @@ export type MyClawAppServerFrame =
   | MyClawAppConfigSaved
   | MyClawAppJobsListResult
   | MyClawAppJobsRunsResult
+  | MyClawAppSubAgentsListResult
+  | MyClawAppSubAgentsChanged
   | MyClawAppNotificationsInfo
   | MyClawAppTagsResult
   | MyClawAppProviderEnvResult

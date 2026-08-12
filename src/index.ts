@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1910,6 +1910,15 @@ async function main() {
 
     myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId));
+
+    myClawApp.onSubAgents(async (callerSessionId) => {
+      const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);
+      // A sub-agent whose id yields no handle cannot be opened, so it is not offered.
+      return agents.flatMap((a) => {
+        const threadId = subagentSessionToThread(a.id);
+        return threadId ? [{ ...a, threadId }] : [];
+      });
+    });
 
     myClawApp.onDiagnostics({
       snapshot: async (owner, threadId) => {

@@ -8,6 +8,7 @@ import {
   purgeSessionArchives,
   listSessionIdsByPrefix,
   cronThreadToSession,
+  subagentThreadToSession,
   type SessionData,
 } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
@@ -88,6 +89,11 @@ export class SessionManager {
         // be reopened and chatted on), not to a my-claw-app conversation.
         const cronSession = cronThreadToSession(threadId);
         if (cronSession) return cronSession;
+        // Same idea for a sub-agent the app opens as a chat. Unresolvable falls through to a
+        // conversation id, which then loads as an empty session: a stale handle must read as
+        // "nothing there", never as somebody else's thread.
+        const subagentSession = subagentThreadToSession(threadId);
+        if (subagentSession) return subagentSession;
         return `my-claw-app/thread/${chatId}/${threadId}`;
       }
       return `my-claw-app/dm/${userId}`;
