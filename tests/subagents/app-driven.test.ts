@@ -9,6 +9,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { AgentBridge } from "../../src/agent/bridge.ts";
 import { saveSession, deleteSession, loadSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -288,3 +289,158 @@ test("the declared parent conversation is what authorizes a private sub-agent", 
     await deleteSession(shared);
   }
 });
+
+
+/**
+ * Mid-run steering, the thing this whole path exists for: a message sent while the sub-agent is
+ * already running goes into that run instead of the per-agent queue.
+ */
+test("a message sent while the sub-agent runs is injected, streamed, and switches the bubble", async () => {
+  const id = "subagent/steerable-9a1b";
+  await saveSession(id, subSession(id));
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const agent = trapBackend();
+  const router = new MessageRouter(new SessionManager(), agent, config);
+  const tokens: string[] = [];
+  const switched: string[] = [];
+
+  router.onSubAgentSend(async (sessionId, message, options) =>
+    runner.send(sessionId, message.text, undefined, message, reg, "my-claw-app/thread/owner/main", options.signal, {
+      onToken: options.onToken ?? (async () => {}),
+      onToolUse: options.onToolUse,
+      onTurnSwitch: options.onTurnSwitch ?? (async (m) => {
+        switched.push(m.id);
+      }),
+    }),
+  );
+
+  // The first LLM call of the run is held open: the injection must land while it is in flight.
+  let releaseFirst: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let call = 0;
+  const fetchMock = mockFetch(async (_input, init) => {
+    const asked = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean; messages?: Array<{ role: string; content: string }> };
+    if (call++ === 0) {
+      await gate;
+      const parts = [{ choices: [{ delta: { content: "first answer " } }] }];
+      const body = parts.map((p) => `data: ${JSON.stringify(p)}\n`).join("") + "data: [DONE]\n";
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
+    }
+    // The second call must carry both the original task and the injected message.
+    const userTexts = (asked.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
+    assert.ok(userTexts.some((t) => t.includes("original")));
+    assert.ok(userTexts.some((t) => t.includes("steer now")));
+    const parts = [{ choices: [{ delta: { content: "steered answer" } }] }];
+    const body = parts.map((p) => `data: ${JSON.stringify(p)}\n`).join("") + "data: [DONE]\n";
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
+  });
+
+  try {
+    const thread = subagentSessionToThread(id)!;
+    // The real path always carries the sink: the channel builds it per message.
+    const sink = {
+      onToken: async (t: string) => {
+        tokens.push(t);
+      },
+      onTurnSwitch: async (m: { id: string }) => {
+        switched.push(m.id);
+      },
+    };
+    const first = router.route({ ...appMessage(thread, "original"), id: "first-message" }, sink);
+    // Wait until the first call is actually in flight before injecting.
+    await new Promise((r) => setTimeout(r, 20));
+    const secondPromise = router.route({ ...appMessage(thread, "steer now"), id: "steer-message" }, sink);
+    // Let the run finish its held call: it will then find the injection waiting and continue,
+    // which is what resolves both routes. Awaiting the injection before releasing the run would
+    // deadlock the test, not the feature.
+    releaseFirst!();
+    const second = await secondPromise;
+    // Injected, not queued: the route resolves without producing its own run.
+    assert.equal(second, undefined);
+    await first;
+
+    assert.ok(tokens.join("").includes("first answer"), `tokens: ${JSON.stringify(tokens)}`);
+    assert.ok(tokens.join("").includes("steered answer"), `tokens: ${JSON.stringify(tokens)}`);
+    // The bubble switched to the injected message exactly once.
+    assert.deepEqual(switched, ["steer-message"]);
+
+    // Both turns are on disk: reopening the sub-agent shows the whole exchange.
+    const session = await loadSession(id);
+    const users = session!.messages.filter((m) => m.role === "user").map((m) => m.content);
+    assert.ok(users.some((t) => t.includes("original")));
+    assert.ok(users.some((t) => t.includes("steer now")));
+  } finally {
+    fetchMock.restore();
+    await deleteSession(id);
+  }
+});
+
+test("a message sent while the parent drives the sub-agent is absorbed by that run", async () => {
+  const id = "subagent/parentbusy-c3d4";
+  await saveSession(id, subSession(id));
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let call = 0;
+  const fetchMock = mockFetch(async (_input, init) => {
+    const asked = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
+    if (call++ === 0) {
+      await gate;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "parent answer" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }) as never;
+    }
+    const userTexts = (asked.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
+    assert.ok(userTexts.some((t) => t.includes("steer now")));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "after the nudge" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }) as never;
+  });
+
+  try {
+    // The parent's spawn: non-streaming, no sink. Its run opens the mailbox by itself now.
+    const spawned = runner.spawn({
+      displayName: "parentbusy",
+      type: "research",
+      mode: "session",
+      task: "original task",
+      parentMessage: appMessage("main"),
+      existingIds: await reg.listExistingIds(),
+      generateId: () => id,
+      parentSessionId: "my-claw-app/thread/owner/main",
+      visibility: "global",
+      enqueue: (i, t) => reg.enqueue(i, t),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(runRegistry.canInject(id), true, "a parent-driven run must open the mailbox too");
+
+    // What the router does with an app message arriving now.
+    const injected = runRegistry.enqueueInjection(id, appMessage(subagentSessionToThread(id)!, "steer now"));
+    assert.ok(injected);
+    release!();
+    await injected;
+    const { result } = await spawned;
+
+    assert.equal(result, "after the nudge");
+    const session = await loadSession(id);
+    assert.ok(session!.messages.some((m) => m.role === "user" && m.content.includes("steer now")));
+    // The mailbox is gone with the run: a late arrival falls back to a queued send.
+    assert.equal(runRegistry.canInject(id), false);
+  } finally {
+    fetchMock.restore();
+    await deleteSession(id);
+  }
+});
+
+// The runner used in these tests is the real one, so the backend it builds must never be reached
+// by the trap: keep this helper's file tail tidy.
+void AgentBridge;

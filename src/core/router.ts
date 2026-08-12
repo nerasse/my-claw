@@ -56,7 +56,7 @@ const RATE_LIMIT_MAX = 30;
 export type SubAgentSend = (
   sessionId: string,
   message: UnifiedMessage,
-  options: { onToken?: TokenCallback; onToolUse?: ToolUseCallback; reasoning?: ReasoningSink; signal?: AbortSignal },
+  options: { onToken?: TokenCallback; onToolUse?: ToolUseCallback; onTurnSwitch?: TurnSwitchCallback; reasoning?: ReasoningSink; signal?: AbortSignal },
 ) => Promise<string>;
 
 export class MessageRouter {
@@ -167,11 +167,25 @@ export class MessageRouter {
         void log("error", "sub-agent session reached the router with no sub-agent sender", { sessionId });
         return { text: "Error: sub-agents cannot be driven from here." };
       }
+      // Mid-run steering, same contract as the root path: if the sub-agent has an open mailbox
+      // (a run of its own, app-driven or parent-driven), the message goes into that run instead of
+      // waiting in the per-agent queue. RerouteSignal propagates to routeWithReroute, which reruns
+      // this branch with noInject -- falling through to a queued, freshly streamed send.
+      if (!options.noInject && runRegistry.canInject(sessionId)) {
+        const injected = runRegistry.enqueueInjection(sessionId, message);
+        if (injected) {
+          void log("info", "message injected into active sub-agent run", { ...messageLogData(message), sessionId });
+          hooks.emit("message:injected", { message, sessionId });
+          await injected;
+          return undefined;
+        }
+      }
       const { signal, end } = runRegistry.startRoot(sessionId);
       try {
         const text = await this.subagentSend(sessionId, message, {
           onToken: options.onToken,
           onToolUse: options.onToolUse,
+          onTurnSwitch: options.onTurnSwitch,
           reasoning: options.reasoning,
           signal,
         });

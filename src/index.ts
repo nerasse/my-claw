@@ -1937,7 +1937,12 @@ async function main() {
         callerSessionId,
         options.signal,
         options.onToken
-          ? { onToken: options.onToken, onToolUse: options.onToolUse, reasoning: options.reasoning }
+          ? {
+              onToken: options.onToken,
+              onToolUse: options.onToolUse,
+              onTurnSwitch: options.onTurnSwitch,
+              reasoning: options.reasoning,
+            }
           : undefined,
       );
     });

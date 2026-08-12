@@ -8,7 +8,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import { ClaudeSdkBackend } from "../agent/claude-sdk/backend.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
@@ -16,6 +16,7 @@ import { loadSession, saveSession, deleteSession, archiveSession, trimSessionMes
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
+import { runRegistry } from "../core/run-registry.ts";
 import { indexSessionArchive } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
@@ -28,6 +29,9 @@ import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 export interface SubAgentStream {
   onToken: TokenCallback;
   onToolUse?: ToolUseCallback;
+  /** Called when the run absorbs a mid-run injection, so the output layer can seal the current
+   *  bubble and open a fresh reply to the injected message -- same contract as the root path. */
+  onTurnSwitch?: TurnSwitchCallback;
   reasoning?: ReasoningSink;
 }
 
@@ -363,6 +367,12 @@ export class SubAgentRunner {
       raw: null,
     };
 
+    // The mailbox is what makes this run steerable mid-flight: the app injects a chat.send into it
+    // and the engine picks it up at the next iteration boundary. Open for parent-driven runs too
+    // (they are the ones nobody else could steer before); openMailbox is idempotent, so an
+    // app-driven run already opened by the router keeps its own.
+    runRegistry.openMailbox(session.id);
+    let failure: unknown = null;
     try {
       const result = stream?.onToken
         ? await bridge.handleMessageStreaming(
@@ -371,21 +381,28 @@ export class SubAgentRunner {
             stream.onToken,
             stream.onToolUse,
             signal,
-            // No onTurnSwitch: mid-run injection is gated on depth 0 and a sub-agent runs at 1,
-            // so there is no second turn for a bubble to switch to.
-            undefined,
+            // An absorbed injection seals the current bubble and opens a fresh reply to it, the
+            // same turn-switch contract the root path uses.
+            stream.onTurnSwitch,
             undefined,
             stream.reasoning,
           )
         : await bridge.handleMessage(subMessage, session, signal);
       return result;
     } catch (err) {
+      failure = err;
       if (isAbort(err, signal)) {
         hooks.emit("subagent:aborted", { id: session.id });
         throw err;
       }
       hooks.emit("subagent:error", { id: session.id, error: err });
       throw err;
+    } finally {
+      // Settle whatever the run did not absorb: an injection the engine never drained is rerouted
+      // to a fresh run (RerouteSignal), which the router turns into a queued send. The mailbox is
+      // closed either way, so a late arrival falls back to send() rather than a dead mailbox.
+      runRegistry.settleMailbox(session.id, failure === null ? "resolve" : "reject", failure === null ? undefined : failure);
+      runRegistry.closeMailbox(session.id);
     }
   }
 

@@ -92,6 +92,32 @@ class RunRegistry {
     return this.controllers.has(sessionId);
   }
 
+  // --- Injection mailbox -------------------------------------------------------------
+
+  /**
+   * Opens a mailbox without a controller. A sub-agent's run is driven from inside a parent's, and
+   * its abort must stay the shared root signal -- a controller of its own would cut it out of the
+   * parent's /stop cascade. The mailbox alone is what makes the run steerable, so this is all a
+   * sub-agent attaches; idempotent, because the app-driven path may already have opened one via
+   * startRoot().
+   */
+  openMailbox(sessionId: string): void {
+    if (!this.mailboxes.has(sessionId)) {
+      this.mailboxes.set(sessionId, { pending: [], claimed: [], accepting: true });
+    }
+  }
+
+  /** Removes the mailbox; called when the run that owned it has settled it. */
+  closeMailbox(sessionId: string): void {
+    this.mailboxes.delete(sessionId);
+  }
+
+  /** True while a run can still absorb an injected message (mailbox open, not committed to ending). */
+  canInject(sessionId: string): boolean {
+    const mailbox = this.mailboxes.get(sessionId);
+    return mailbox !== undefined && mailbox.accepting;
+  }
+
   /** True while any top-level run is in flight, across every session. */
   hasAny(): boolean {
     return this.controllers.size > 0;

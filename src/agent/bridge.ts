@@ -389,8 +389,10 @@ export class AgentBridge implements AgentBackend {
       while (budget.consume()) {
         if (signal?.aborted) throw new AbortedError();
         // Mid-run steering: pick up any message that arrived during the previous tool round and
-        // append it as a user turn before the next LLM call (only the root run owns the mailbox).
-        if (this.depth === 0) {
+        // append it as a user turn before the next LLM call. Sub-agents have their own mailbox
+        // now (opened by the runner), which is what lets the app steer one mid-run; the channels
+        // cannot reach a subagent/* session, so there is nothing else that could arrive.
+        {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
             await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
@@ -482,8 +484,9 @@ export class AgentBridge implements AgentBackend {
 
           // Mid-run steering: a message that arrived during this final call keeps the run going
           // (drainOrClose atomically closes the mailbox when nothing is pending, so late arrivals
-          // after this point fall back to a fresh run instead of being lost).
-          if (this.depth === 0) {
+          // after this point fall back to a fresh run instead of being lost). The mailbox is the
+          // session's own, root or sub-agent alike.
+          {
             const injected = runRegistry.drainOrClose(session.id);
             if (injected.length > 0) {
               chatMessages.push({ role: "assistant", content: transformedResponse });

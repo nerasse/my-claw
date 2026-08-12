@@ -45,17 +45,27 @@ capabilities, and the UI must not offer an action that cannot exist:
 | re-invoke | yes (`send`) | no |
 | row action | open the chat | scroll to its `spawn` card |
 
-### Constraint 2 — nobody can write into a running sub-agent
+### Constraint 2 — a sub-agent is steerable mid-run (since the app drives it)
 
-The injection mailbox is gated on `depth === 0` (`agent/bridge.ts:393`,
-`agent/claude-sdk/backend.ts:514`) and sub-agents always run at `depth = 1`
-(`runner.ts:289`). A message sent to a busy sub-agent is FIFO-queued by
-`SubAgentRegistry.enqueue` (`subagents/registry.ts:38-56`), not injected.
+Originally the injection mailbox was gated on `depth === 0`, so a message sent to a busy sub-agent
+waited in the per-agent FIFO until the current run ended. With the app opening sub-agents as chats,
+that read as a dead chat, so the gate is gone:
 
-So the composer inside a sub-agent, while that sub-agent is running, must say **queued**, not
-pretend to be live. The message is delivered when the current run ends. Lifting the depth gate is
-out of scope and not obviously desirable: the gate is what keeps a sub-agent's context from being
-rewritten under its parent's feet.
+- `SubAgentRunner.executeRunWithSession` opens a mailbox for every sub-agent run
+  (`runRegistry.openMailbox`), parent-driven runs included. It is a mailbox without a controller:
+  the abort stays the shared root signal, or a parent's `/stop` would no longer reach its children.
+- The engine drains its session's mailbox at the same boundaries the root path uses
+  (`bridge.ts` drain/drainOrClose, `claude-sdk/backend.ts` generator), whatever the depth. Only the
+  app can write there — chat channels resolve to their own sessions and can never name a
+  `subagent/*` one — so there is nothing else that could arrive.
+- The router injects (`enqueueInjection`) when the sub-agent's mailbox is open, and falls back to
+  the queued send otherwise. An injection the run could not absorb is settled with `RerouteSignal`
+  and rerouted to a fresh, streamed run, exactly like the root path.
+
+The honest limitation that remains: while a *parent-driven* run is non-streaming, an injected
+message is absorbed into that run but its answer is not streamed to the app — it lands in the
+sub-agent's history when the run ends. An *app-driven* run streams everything, turn switches
+included, so chatting with a sub-agent the app started is fully live.
 
 ### Constraint 3 — "return to the parent" cannot be automatic
 
@@ -369,9 +379,11 @@ control.
   screen in this app looks alike, and without a standing marker a user will type into a sub-agent
   believing they are talking to the main agent.
 - Composer placeholder carries the sub-agent id for the same reason.
-- While `status === "running"`: the send button stays enabled and the message is accepted, but the
-  composer hint reads `queued · delivered when the current run ends` (Constraint 2). Lying about
-  this would be worse than the limitation.
+- Sending while the sub-agent is running injects the message into that run (Constraint 2): no
+  queue, no waiting for the run to end. When the run is parent-driven and therefore non-streaming,
+  the answer is not streamed live — it is written to the sub-agent's history and visible on the
+  next `session.history` refresh. The composer stays a normal composer: there is no longer a
+  "queued" state to describe.
 - `⋮` holds `copy id`, `open workspace`, `reset`, `kill`.
 
 Both destructive actions go through an `ActionSheet` confirmation with `danger: true`, and their

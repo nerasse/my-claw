@@ -511,7 +511,6 @@ export class ClaudeSdkBackend implements AgentBackend {
         yield { type: "user", message: { role: "user", content: initialContent }, parent_tool_use_id: null };
         while (!finished) {
           await new Promise((r) => setTimeout(r, 150));
-          if (self.depth !== 0) continue;
           const drained = [...lateInjections.splice(0), ...runRegistry.drainInjections(session.id)];
           for (const injected of drained) {
             if (onTurnSwitch) await onTurnSwitch(injected);
@@ -651,7 +650,7 @@ export class ClaudeSdkBackend implements AgentBackend {
             // A message that arrived during the final response keeps the run going,
             // mirroring the home loop's drainOrClose semantics (the generator will
             // yield it and the SDK starts a fresh turn in the same run).
-            if (this.depth === 0 && msg.subtype === "success") {
+            if (msg.subtype === "success") {
               const pending = runRegistry.drainOrClose(session.id);
               if (pending.length > 0) {
                 lateInjections.push(...pending);

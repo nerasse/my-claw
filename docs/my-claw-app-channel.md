@@ -304,8 +304,10 @@ the first answer wins.
   tool cards and reasoning behave as in any conversation, and `chat.stop` reaches it. Such a send
   carries `parentThreadId`, the conversation the roster was read from, which is matched against the
   sub-agent's recorded parent to apply the visibility rule; absent, only a `global` sub-agent
-  answers. The run is serialized against any other run of the same sub-agent, so a message sent
-  while it is busy is delivered when the current run ends.
+  answers. A message sent while the sub-agent is already running is injected into that run at the
+  next iteration boundary rather than queued; its answer streams back on the same thread, with the
+  usual turn switch, unless the running turn was started by its parent (parent-driven runs are
+  non-streaming, so the answer then lands in the sub-agent's history).
 - `subagents.kill { threadId, parentThreadId }` deletes a sub-agent, transcript included;
   `subagents.reset { threadId, parentThreadId }` archives its transcript and starts it over with its
   identity and workspace kept. `parentThreadId` is the caller the visibility rule is applied to, as

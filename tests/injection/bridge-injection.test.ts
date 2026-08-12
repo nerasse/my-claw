@@ -108,20 +108,33 @@ test("a message arriving during the final answer keeps the run going (onTurnSwit
   }
 });
 
-test("only the root run drains the mailbox (a sub-agent depth does not)", async () => {
+test("a sub-agent run drains its mailbox when one is open (the runner owns opening it)", async () => {
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, 1);
-  const sess = session("telegram/dm/u1");
-  const { signal, end } = runRegistry.startRoot(sess.id);
-  void runRegistry.enqueueInjection(sess.id, msg("inj", "should stay pending"));
+  const sess = session("subagent/digger-a1b2");
+  // What SubAgentRunner.executeRunWithSession does now: a mailbox with no controller of its own,
+  // because the run's abort must stay the shared root signal.
+  runRegistry.openMailbox(sess.id);
+  const injectedId = "inj";
+  void runRegistry.enqueueInjection(sess.id, msg(injectedId, "steer mid-flight"));
 
-  const mock = mockFetch(async () => llm({ content: "done" }));
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  const mock = mockFetch(async (_u, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return llm({ content: "done" });
+  });
   try {
-    await bridge.handleMessage(msg("orig", "q"), sess, signal);
-    // depth-1 run did not consume the mailbox -> the injection is still pending
-    assert.deepEqual(runRegistry.drainInjections(sess.id).map((m) => m.id), ["inj"]);
+    await bridge.handleMessage(msg("orig", "q"), sess, undefined);
+    // The depth-1 run consumed the injection: the engine asked the model with both the original
+    // task and the injected message, and recorded the injection in the session.
+    const userTexts = bodies[0]!.messages.filter((m) => m.role === "user").map((m) => String(m.content));
+    assert.ok(userTexts.some((t) => t.includes("q")));
+    assert.ok(userTexts.some((t) => t.includes("steer mid-flight")));
+    assert.ok(sess.messages.some((m) => m.role === "user" && m.content.includes("steer mid-flight")));
+    // drainOrClose closed the mailbox at the end of the run, and nothing is left pending.
+    assert.equal(runRegistry.canInject(sess.id), false);
   } finally {
-    mock.restore(); runRegistry.settleMailbox(sess.id, "resolve"); end(); runRegistry.clear();
+    mock.restore(); runRegistry.settleMailbox(sess.id, "resolve"); runRegistry.clear();
   }
 });
 
