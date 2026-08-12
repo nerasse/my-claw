@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, loadSession } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1910,6 +1910,40 @@ async function main() {
 
     myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId));
+
+    // A message the app sends inside a sub-agent goes through the runner, never through a normal
+    // run: see the refusal in MessageRouter.
+    //
+    // Authorization cannot use isReachableFrom directly here. That rule answers "may this
+    // conversation drive that agent", and a chat.send carries only the sub-agent's own handle, not
+    // the conversation the roster was read from. So the rule applied is ownership: a private
+    // sub-agent is drivable from the app only when the session that created it belongs to this
+    // same owner. A private agent spawned from Telegram stays out of the app, which is the
+    // containment that mattered; two of the owner's own conversations can reach each other's
+    // private agents, which is the deliberate relaxation. See docs/subagent-navigation.md.
+    router.onSubAgentSend(async (sessionId, message, options) => {
+      const session = await loadSession(sessionId);
+      const meta = session?.meta;
+      if (!meta) return `Error: sub-agent ${sessionId} not found.`;
+      const ownedHere =
+        meta.parentSessionId.startsWith(`${message.platform}/thread/${message.chatId}/`) ||
+        meta.parentSessionId === `${message.platform}/dm/${message.userId}`;
+      if (meta.visibility === "private" && !ownedHere) {
+        return `Error: sub-agent ${sessionId} not found.`;
+      }
+      return subAgentRunner.send(
+        sessionId,
+        message.text,
+        message.attachments.length > 0 ? message.attachments : undefined,
+        message,
+        subAgentRegistry,
+        meta.parentSessionId,
+        options.signal,
+        options.onToken
+          ? { onToken: options.onToken, onToolUse: options.onToolUse, reasoning: options.reasoning }
+          : undefined,
+      );
+    });
 
     myClawApp.onSubAgents(async (callerSessionId) => {
       const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);

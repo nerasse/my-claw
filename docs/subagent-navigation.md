@@ -140,7 +140,25 @@ normal router path it would run the sub-agent's session as a top-level conversat
   `meta.type` (`runner.ts:292-328`).
 
 Therefore: **a `chat.send` on a sub-agent thread is dispatched to `SubAgentRunner.send`**, which
-already owns the queue, the scoping, the workspace and the model override.
+already owns the queue, the scoping, the workspace and the model override. `MessageRouter` refuses
+a `subagent/` session outright when no sender is wired, rather than falling through: falling
+through is the dangerous half of the branch.
+
+### Who may drive a sub-agent from the app
+
+`isReachableFrom` answers "may this conversation drive that agent", but a `chat.send` carries only
+the sub-agent's own handle — not the conversation whose roster it came from. So the rule applied on
+this path is **ownership**: a `private` sub-agent is drivable from the app only when the session
+that created it belongs to the same owner (`<platform>/thread/<owner>/…` or `<platform>/dm/<user>`).
+
+- A private sub-agent spawned from Telegram stays out of the app. That is the containment that
+  mattered.
+- Two of the owner's own app conversations can reach each other's private sub-agents. That is a
+  deliberate relaxation, and the reason it is acceptable is that the alternative — carrying a
+  `parentThreadId` on every `chat.send` — puts a claim on the wire that the server would have to
+  trust anyway.
+
+`global` sub-agents are unaffected: they were always drivable from any conversation.
 
 `SubAgentRunner.send` calls the non-streaming `handleMessage` (`runner.ts:343`), so as it stands
 the user would stare at a frozen screen until the whole answer lands. A chat that does not stream

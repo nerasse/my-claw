@@ -48,15 +48,31 @@ function messageLogData(message: UnifiedMessage): Record<string, unknown> {
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = 30;
 
+/**
+ * Drives one message into an existing sub-agent. Injected rather than imported: the runner owns
+ * the per-agent queue, the agent-type scoping and the workspace, and `core/` must not reach into
+ * `subagents/` to get at them. See docs/subagent-navigation.md.
+ */
+export type SubAgentSend = (
+  sessionId: string,
+  message: UnifiedMessage,
+  options: { onToken?: TokenCallback; onToolUse?: ToolUseCallback; reasoning?: ReasoningSink; signal?: AbortSignal },
+) => Promise<string>;
+
 export class MessageRouter {
   private sessionLocks = new Map<string, Promise<unknown>>();
   private rateBuckets = new Map<string, number[]>();
+  private subagentSend?: SubAgentSend;
 
   constructor(
     private sessionManager: SessionManager,
     private agent: AgentBackend,
     private config?: MyClawConfig,
   ) {}
+
+  onSubAgentSend(send: SubAgentSend): void {
+    this.subagentSend = send;
+  }
 
   private checkRateLimit(userId: string): boolean {
     const now = Date.now();
@@ -139,6 +155,31 @@ export class MessageRouter {
       },
     );
     setRunSession(sessionId);
+
+    // A sub-agent's session must never be run from here. This path would give it depth 0, and with
+    // it the spawn/send/kill tools that SUBAGENT_EXCLUDED_TOOLS removes on purpose, the default
+    // prompt and model instead of the ones its agent type resolves to, and no place in the
+    // per-agent queue -- so it would race a parent-driven run on the same session file. The runner
+    // owns all of that, hence the delegation. Refused outright when nothing is wired, because
+    // falling through is the dangerous half of this branch.
+    if (sessionId.startsWith("subagent/")) {
+      if (!this.subagentSend) {
+        void log("error", "sub-agent session reached the router with no sub-agent sender", { sessionId });
+        return { text: "Error: sub-agents cannot be driven from here." };
+      }
+      const { signal, end } = runRegistry.startRoot(sessionId);
+      try {
+        const text = await this.subagentSend(sessionId, message, {
+          onToken: options.onToken,
+          onToolUse: options.onToolUse,
+          reasoning: options.reasoning,
+          signal,
+        });
+        return { text };
+      } finally {
+        end();
+      }
+    }
 
     // Mid-run steering: if a run for this session is already in progress, inject this message into
     // it (addressed at the next iteration boundary) instead of queueing a whole new run behind it.

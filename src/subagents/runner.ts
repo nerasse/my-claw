@@ -8,7 +8,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import { ClaudeSdkBackend } from "../agent/claude-sdk/backend.ts";
-import type { AgentBackend } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
@@ -20,6 +20,16 @@ import { indexSessionArchive } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
+
+/**
+ * Where a sub-agent's run reports itself while a human watches it. Absent for a parent-driven run:
+ * `spawn` and the model's `send` stay non-streaming, so nothing about them changes.
+ */
+export interface SubAgentStream {
+  onToken: TokenCallback;
+  onToolUse?: ToolUseCallback;
+  reasoning?: ReasoningSink;
+}
 
 const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
@@ -152,6 +162,11 @@ export class SubAgentRunner {
     registry: { enqueue: <T>(id: string, task: () => Promise<T>) => Promise<T>; isRunning: (id: string) => boolean },
     callerSessionId: string,
     signal?: AbortSignal,
+    // Appended last, like the reasoning sink on AgentBackend: a caller asserting on argument
+    // position must not rebind when this grows. Present only when a human is watching (the app
+    // opened the sub-agent as a chat); a parent-driven send passes none and stays non-streaming,
+    // which is what keeps `spawn`'s contract unchanged.
+    stream?: SubAgentStream,
   ): Promise<string> {
     return registry.enqueue(id, async () => {
       const session = await loadSession(id);
@@ -172,7 +187,7 @@ export class SubAgentRunner {
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
-      const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal);
+      const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream);
       await saveSession(id, session);
       indexSessionArchive(session);
       return result;
@@ -293,6 +308,7 @@ export class SubAgentRunner {
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
     model?: string,
+    stream?: SubAgentStream,
   ): Promise<string> {
     const depth = 1;
     // Explicit spawn model wins; a session sub-agent then sticks to it across send()
@@ -348,7 +364,20 @@ export class SubAgentRunner {
     };
 
     try {
-      const result = await bridge.handleMessage(subMessage, session, signal);
+      const result = stream?.onToken
+        ? await bridge.handleMessageStreaming(
+            subMessage,
+            session,
+            stream.onToken,
+            stream.onToolUse,
+            signal,
+            // No onTurnSwitch: mid-run injection is gated on depth 0 and a sub-agent runs at 1,
+            // so there is no second turn for a bubble to switch to.
+            undefined,
+            undefined,
+            stream.reasoning,
+          )
+        : await bridge.handleMessage(subMessage, session, signal);
       return result;
     } catch (err) {
       if (isAbort(err, signal)) {
