@@ -18,6 +18,7 @@ import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import { indexSessionArchive } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
+import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 
 const MAX_CONCURRENT_RUNS = 3;
@@ -75,7 +76,11 @@ export class SubAgentRunner {
     // run is still going races it on the session file (and the SDK session resume).
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
   }): Promise<{ id: string; result: string }> {
-    const { displayName, type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
+    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
+    // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
+    // a callback, so this is the one place every caller passes through, and it keeps the stored
+    // displayName equal to the name inside the id.
+    const displayName = sanitizeDisplayName(opts.displayName);
 
     const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
     if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}` };

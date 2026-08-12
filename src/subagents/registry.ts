@@ -9,13 +9,37 @@ function randomHex(n: number): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, n);
 }
 
+/**
+ * `displayName` is written by the model and ends up inside a session id, which is a file path:
+ * a `/` puts the sub-agent outside `sessions/subagent/`, where `listExistingIds` no longer sees
+ * it and the uniqueness check silently stops working. An allowlist rather than a denylist of
+ * dangerous characters, because the same field is rendered in the app: invisible and bidi code
+ * points would let two agents look identical in a list.
+ */
+const UNSAFE_DISPLAY_NAME = /[^\p{L}\p{N}\p{M}_-]+/gu;
+const MAX_DISPLAY_NAME = 64;
+
+export function sanitizeDisplayName(raw: string): string {
+  const collapsed = raw
+    .replace(UNSAFE_DISPLAY_NAME, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+  // By code point: slicing UTF-16 units can cut a surrogate pair in half and leave a lone
+  // surrogate in a filename.
+  const points = Array.from(collapsed);
+  const capped = (points.length > MAX_DISPLAY_NAME ? points.slice(0, MAX_DISPLAY_NAME).join("") : collapsed)
+    .replace(/-+$/g, "");
+  return capped.length > 0 ? capped : "agent";
+}
+
 export class SubAgentRegistry {
   private queues = new Map<string, Promise<void>>();
 
   generateId(displayName: string, existing: Set<string>): string {
+    const safe = sanitizeDisplayName(displayName);
     let id: string;
     do {
-      id = `subagent/${displayName}-${randomHex(4)}`;
+      id = `subagent/${safe}-${randomHex(4)}`;
     } while (existing.has(id));
     return id;
   }
