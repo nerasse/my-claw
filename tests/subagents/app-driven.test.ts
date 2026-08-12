@@ -9,7 +9,6 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { AgentBridge } from "../../src/agent/bridge.ts";
 import { saveSession, deleteSession, loadSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -304,6 +303,7 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
   const router = new MessageRouter(new SessionManager(), agent, config);
   const tokens: string[] = [];
   const switched: string[] = [];
+  const bodies: Array<Array<{ role: string; content: string }>> = [];
 
   router.onSubAgentSend(async (sessionId, message, options) =>
     runner.send(sessionId, message.text, undefined, message, reg, "my-claw-app/thread/owner/main", options.signal, {
@@ -315,7 +315,12 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
     }),
   );
 
-  // The first LLM call of the run is held open: the injection must land while it is in flight.
+  // Synchronise on the event instead of sleeping: the injection must land while the first LLM
+  // call is in flight, and a fixed delay cannot know when that is on a loaded runner.
+  let markFirstCall: (() => void) | undefined;
+  const firstCallStarted = new Promise<void>((resolve) => {
+    markFirstCall = resolve;
+  });
   let releaseFirst: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
     releaseFirst = resolve;
@@ -323,16 +328,15 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
   let call = 0;
   const fetchMock = mockFetch(async (_input, init) => {
     const asked = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean; messages?: Array<{ role: string; content: string }> };
+    const userTexts = (asked.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
     if (call++ === 0) {
+      markFirstCall!();
       await gate;
       const parts = [{ choices: [{ delta: { content: "first answer " } }] }];
       const body = parts.map((p) => `data: ${JSON.stringify(p)}\n`).join("") + "data: [DONE]\n";
       return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
     }
-    // The second call must carry both the original task and the injected message.
-    const userTexts = (asked.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
-    assert.ok(userTexts.some((t) => t.includes("original")));
-    assert.ok(userTexts.some((t) => t.includes("steer now")));
+    bodies.push(asked.messages ?? []);
     const parts = [{ choices: [{ delta: { content: "steered answer" } }] }];
     const body = parts.map((p) => `data: ${JSON.stringify(p)}\n`).join("") + "data: [DONE]\n";
     return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
@@ -350,8 +354,7 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
       },
     };
     const first = router.route({ ...appMessage(thread, "original"), id: "first-message" }, sink);
-    // Wait until the first call is actually in flight before injecting.
-    await new Promise((r) => setTimeout(r, 20));
+    await firstCallStarted;
     const secondPromise = router.route({ ...appMessage(thread, "steer now"), id: "steer-message" }, sink);
     // Let the run finish its held call: it will then find the injection waiting and continue,
     // which is what resolves both routes. Awaiting the injection before releasing the run would
@@ -366,6 +369,12 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
     assert.ok(tokens.join("").includes("steered answer"), `tokens: ${JSON.stringify(tokens)}`);
     // The bubble switched to the injected message exactly once.
     assert.deepEqual(switched, ["steer-message"]);
+
+    // The second call carried both the original task and the injected message: assertions live
+    // here, not inside the mock, where a throw would make the provider retry into the same one.
+    const secondUsers = bodies[0]!.filter((m) => m.role === "user").map((m) => m.content);
+    assert.ok(secondUsers.some((t) => t.includes("original")));
+    assert.ok(secondUsers.some((t) => t.includes("steer now")));
 
     // Both turns are on disk: reopening the sub-agent shows the whole exchange.
     const session = await loadSession(id);
@@ -384,6 +393,10 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
 
+  let markFirstCall: (() => void) | undefined;
+  const firstCallStarted = new Promise<void>((resolve) => {
+    markFirstCall = resolve;
+  });
   let release: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -392,6 +405,7 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
   const fetchMock = mockFetch(async (_input, init) => {
     const asked = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
     if (call++ === 0) {
+      markFirstCall!();
       await gate;
       return new Response(JSON.stringify({ choices: [{ message: { content: "parent answer" } }] }), {
         status: 200,
@@ -420,7 +434,9 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
       visibility: "global",
       enqueue: (i, t) => reg.enqueue(i, t),
     });
-    await new Promise((r) => setTimeout(r, 20));
+    // Wait for the run to actually start its first call: the mailbox is opened before it, so this
+    // is the event that makes canInject deterministic instead of a fixed sleep.
+    await firstCallStarted;
     assert.equal(runRegistry.canInject(id), true, "a parent-driven run must open the mailbox too");
 
     // What the router does with an app message arriving now.
@@ -440,7 +456,3 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
     await deleteSession(id);
   }
 });
-
-// The runner used in these tests is the real one, so the backend it builds must never be reached
-// by the trap: keep this helper's file tail tidy.
-void AgentBridge;
