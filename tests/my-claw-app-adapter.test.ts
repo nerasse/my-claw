@@ -181,6 +181,13 @@ class FakeSessionStore {
     entry.title = title.trim() || "(new conversation)";
   }
 
+  workspaceByThread = new Map<string, string>();
+
+  async setWorkspace(deviceId: string, threadId: string, workspace: string): Promise<void> {
+    if (workspace !== "default" && workspace !== "sofa") throw new Error(`unknown workspace: ${workspace}`);
+    this.workspaceByThread.set(threadId, workspace);
+  }
+
 }
 
 describe("MyClawAppAdapter", () => {
@@ -666,6 +673,39 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.type, "error");
     assert.equal(frame.scope, "session");
     assert.equal(frame.message, "rename failed");
+  });
+
+  test("setting a conversation workspace answers with the stored key", async () => {
+    client.ws.send(JSON.stringify({ type: "session.workspace.set", threadId: "projet", workspace: "sofa" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; workspace: string };
+    assert.equal(frame.type, "session.workspace.set.result");
+    assert.equal(frame.threadId, "projet");
+    assert.equal(frame.workspace, "sofa");
+    assert.equal(store.workspaceByThread.get("projet"), "sofa");
+  });
+
+  test("setting the workspace of a fresh conversation is allowed (eager creation)", async () => {
+    client.ws.send(JSON.stringify({ type: "session.workspace.set", threadId: "neuf", workspace: "default" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; workspace: string };
+    assert.equal(frame.type, "session.workspace.set.result");
+    assert.equal(frame.workspace, "default");
+    assert.equal(store.workspaceByThread.get("neuf"), "default");
+  });
+
+  test("setting an unknown workspace key is refused on the session scope", async () => {
+    client.ws.send(JSON.stringify({ type: "session.workspace.set", threadId: "projet", workspace: "mars" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "session");
+    assert.equal(frame.message, "workspace.set failed");
+  });
+
+  test("setting a workspace without a key is refused", async () => {
+    client.ws.send(JSON.stringify({ type: "session.workspace.set", threadId: "projet" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "session");
+    assert.equal(frame.message, "workspace is required");
   });
 
   test("the speech-to-text engine can be read and switched from the device", async () => {

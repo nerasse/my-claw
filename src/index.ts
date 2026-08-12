@@ -107,6 +107,7 @@ import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
+import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
@@ -542,6 +543,7 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
+  toolRegistry.register(createWorkspacesTool(sessionManager, config));
   const backfilledConversations = await backfillConversationArchive();
   if (backfilledConversations > 0) {
     void log("info", "conversation archive backfilled", { messages: backfilledConversations });
@@ -921,6 +923,8 @@ async function main() {
       async (sessionId) => {
         await subAgentRunner.deleteChildrenOf(sessionId, subAgentRegistry);
       },
+      // Live config, so a workspace added or removed by hot-reload is accepted/refused at once.
+      (key) => key === "default" || key in (config.workspaces ?? {}),
     );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawAppRef = myClawApp;

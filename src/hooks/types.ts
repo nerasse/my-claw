@@ -165,6 +165,7 @@ export interface HookEventMap {
   // === SESSION LIFECYCLE ===
   "session:created": { sessionId: string; platform: string; chatType: string; workspace?: string };
   "session:loaded": { sessionId: string; messageCount: number };
+  "session:workspace": { sessionId: string; workspace?: string };
   "session:persisted": { sessionId: string; messageCount: number };
   "session:reset": { sessionId: string; platform: string; archived: boolean };
   "session:cleared": { sessionId: string; previousMessageCount: number };

@@ -187,6 +187,19 @@ export interface MyClawAppSessionRename {
   title: string;
 }
 
+/**
+ * Sets the workspace a conversation runs in. The session is created on the spot if it does not
+ * exist yet, so the app can pick a workspace for a new thread before its first message; an
+ * existing one switches from the next run onward. The choice wins over the orchestrator's
+ * configured pin, exactly like the pin applied at creation did.
+ */
+export interface MyClawAppSessionWorkspaceSet {
+  type: "session.workspace.set";
+  threadId: string;
+  /** Workspace key: "default" or a config.workspaces key. */
+  workspace: string;
+}
+
 export interface MyClawAppVoiceModeGet {
   type: "voice.mode.get";
 }
@@ -547,6 +560,7 @@ export type MyClawAppClientFrame =
   | MyClawAppDiagReport
   | MyClawAppLogsTail
   | MyClawAppSessionRename
+  | MyClawAppSessionWorkspaceSet
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
   | MyClawAppSkillsList
@@ -652,6 +666,8 @@ export interface MyClawAppSessionSummary {
   archived?: boolean;
   /** A run is answering on this thread right now: the app keeps the Stop button visible. */
   activeRun?: boolean;
+  /** Workspace key the conversation runs in: "default" or a config.workspaces key. */
+  workspace?: string;
 }
 
 export interface MyClawAppChatMessage {
@@ -751,6 +767,13 @@ export interface MyClawAppApprovalRequest {
 export interface MyClawAppSessionListResult {
   type: "session.list.result";
   sessions: MyClawAppSessionSummary[];
+}
+
+export interface MyClawAppSessionWorkspaceSetResult {
+  type: "session.workspace.set.result";
+  threadId: string;
+  /** The key the server stored, echoed back so the app renders reality, not the request. */
+  workspace: string;
 }
 
 export interface MyClawAppCommandsResult {
@@ -1554,6 +1577,7 @@ export type MyClawAppServerFrame =
   | MyClawAppToolCall
   | MyClawAppApprovalRequest
   | MyClawAppSessionListResult
+  | MyClawAppSessionWorkspaceSetResult
   | MyClawAppCommandsResult
   | MyClawAppFilesListResult
   | MyClawAppDiagSnapshotResult

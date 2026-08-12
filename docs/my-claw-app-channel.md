@@ -98,6 +98,7 @@ the first answer wins.
 { "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
+{ "type": "session.workspace.set", "threadId": "projet", "workspace": "default|sofa" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
 { "type": "device.capabilities", "accessibility": true }
 { "type": "voice.mode.get" }
@@ -160,6 +161,12 @@ the first answer wins.
   turn -- a summary of how a thread started rather than of what it became. The name is stored
   on the session and survives an archive, since the owner named the thread and not the turns
   inside it. Renaming a thread that was never opened is refused rather than creating one.
+- `session.workspace.set` sets the conversation's workspace (`default` or a `config.workspaces`
+  key). Unlike rename, the session is created on the spot if it does not exist yet: the app's
+  new-conversation picker chooses a workspace before the first message exists. On an existing
+  conversation the switch applies from the next run onward. Answers with
+  `session.workspace.set.result`, and the workspace key also rides on every entry of
+  `session.list.result`.
 - `model.list` answers with the model catalog and the configured default. Each model carries
   its provider key, so the app groups the catalog the same way the server counts it.
   `model.get` / `model.set` / `model.effort.set` answer with `model.result` carrying the state
@@ -335,7 +342,8 @@ runs fresh like any other message.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true, "workspace": "default" }] }
+{ "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }

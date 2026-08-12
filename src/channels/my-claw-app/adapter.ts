@@ -53,6 +53,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppSessionHistory,
   MyClawAppSessionList,
   MyClawAppSessionRename,
+  MyClawAppSessionWorkspaceSet,
   MyClawAppToolEntry,
   MyClawAppAgentsScopeSet,
   MyClawAppAgentsWorkspaceSet,
@@ -1018,6 +1019,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.rename":
         void this.handleSessionRename(ws, frame);
         break;
+      case "session.workspace.set":
+        void this.handleSessionWorkspaceSet(ws, frame);
+        break;
       case "voice.mode.get":
         void this.handleVoiceMode(ws, undefined);
         break;
@@ -1311,6 +1315,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.handleSessionList(ws, { type: "session.list" });
     } catch (err) {
       await this.refuse(ws, "session", "rename failed", { threadId, error: String(err) });
+    }
+  }
+
+  private async handleSessionWorkspaceSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionWorkspaceSet,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!frame.workspace) {
+      await this.refuse(ws, "session", "workspace is required", { threadId });
+      return;
+    }
+    try {
+      await this.store.setWorkspace(ws.data.owner, threadId, frame.workspace);
+      this.sendFrame(ws, { type: "session.workspace.set.result", threadId, workspace: frame.workspace });
+    } catch (err) {
+      await this.refuse(ws, "session", "workspace.set failed", { threadId, workspace: frame.workspace, error: String(err) });
     }
   }
 

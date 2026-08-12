@@ -18,6 +18,11 @@ export interface MyClawAppSessionStore {
   unarchive(owner: string, threadId: string): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
   rename(owner: string, threadId: string, title: string): Promise<void>;
+  /**
+   * Sets the conversation's workspace ("default" or a config.workspaces key), creating the
+   * session if it does not exist yet. Throws on an unknown key.
+   */
+  setWorkspace(owner: string, threadId: string, workspace: string): Promise<void>;
 }
 
 /** Long enough for a real name, short enough to stay one line in the drawer. */
@@ -139,6 +144,8 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
      * not reach into the sub-agent runner.
      */
     private onRemove?: (sessionId: string) => Promise<void>,
+    /** Injected from the entry point: the adapter must not read the global config itself. */
+    private isWorkspaceKey: (key: string) => boolean = () => true,
   ) {}
 
   resolveSessionId(owner: string, threadId: string): string {
@@ -166,6 +173,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),
+        workspace: session.workspace ?? "default",
       });
     }
     return summaries;
@@ -284,6 +292,18 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const clean = title.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
     if (clean) session.title = clean;
     else delete session.title;
+    await this.sessionManager.persist(sessionId);
+  }
+
+  async setWorkspace(owner: string, threadId: string, workspace: string): Promise<void> {
+    if (!this.isWorkspaceKey(workspace)) throw new Error(`unknown workspace: ${workspace}`);
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const key = workspace === "default" ? undefined : workspace;
+    // A new conversation is created here with the chosen workspace: the + button picks a
+    // workspace before the first message exists. An existing one is switched on the spot.
+    const session = await this.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm", key);
+    if (key) session.workspace = key;
+    else delete session.workspace;
     await this.sessionManager.persist(sessionId);
   }
 }

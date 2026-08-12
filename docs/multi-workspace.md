@@ -35,14 +35,18 @@ Rules:
 
 ## Sessions are bound to a workspace
 
-A session is created with a workspace and never changes it. There is no `workspaceOverride`
-knob: the workspace is a property of the conversation, like its platform, not a setting.
-This keeps the SDK session resume, the prompt cache prefix and the announced skill set
-coherent for the whole lifetime of the session.
+A session is created with a workspace, and keeps it by default. A conversation's workspace
+can be changed afterwards — from the app (the per-conversation menu) or by the orchestrator
+through the `workspaces` tool — and the switch applies from the next run onward: the history
+already produced stays whatever workspace produced it, and only the turns that follow run in
+the new one.
 
 - `SessionData.workspace?: string` holds the workspace key (the default workspace when
-  absent). Stored with the session, never mutated after creation.
+  absent). Stored with the session; a switch rewrites the field and persists immediately.
 - Old sessions without the field resolve to the default workspace. No migration.
+- The app picks a workspace for a new conversation before its first message; the server
+  creates the session eagerly on `session.workspace.set`, so the choice survives until the
+  first `chat.send`.
 - Changing a cron job's workspace does not migrate its session: cron runs are ephemeral
   anyway (see below).
 
@@ -50,12 +54,13 @@ coherent for the whole lifetime of the session.
 
 Resolved once, when the session is created, in this order:
 
-1. An explicit request — a cron job's `workspace` key.
+1. An explicit request — the app's workspace picker for a new conversation, a cron job's
+   `workspace` key.
 2. The agent's configured workspace — `agents.<type>.workspace`.
 3. The default workspace.
 
-A config change therefore moves **new** sessions only, which is what keeps the "a session
-never changes workspace" invariant true.
+A config change therefore moves **new** sessions only; a per-conversation switch is the
+explicit, stored exception described above.
 
 ## Per-agent workspaces
 

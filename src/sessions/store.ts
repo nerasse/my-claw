@@ -172,10 +172,9 @@ export interface SessionData {
     tools?: string[];
   };
   /**
-   * Key of the workspace this conversation was born in (config.workspaces). Absent = the
-   * default workspace. Immutable by design: the prompt files, the skill set and the SDK resume
-   * all depend on it, so a mid-thread switch would lie to the agent about its own context.
-   * See docs/multi-workspace.md.
+   * Key of the workspace this conversation runs in (config.workspaces). Absent = the default
+   * workspace. Set at creation and changeable afterwards: a switch applies from the next run
+   * onward, while the history keeps whatever workspace produced it. See docs/multi-workspace.md.
    */
   workspace?: string;
   // Context ceiling chosen for this conversation alone: "full" for the model's whole window, or an

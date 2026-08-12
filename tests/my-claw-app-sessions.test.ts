@@ -427,3 +427,51 @@ describe("MyClawAppSessionStoreImpl.remove cascade", () => {
     assert.equal(await loadSession(sessionId), null);
   });
 });
+
+describe("MyClawAppSessionStoreImpl.setWorkspace", () => {
+  let manager: SessionManager;
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    manager = new SessionManager();
+    store = new MyClawAppSessionStoreImpl(
+      manager,
+      new SessionFileStore(),
+      undefined,
+      (key) => key === "default" || key === "sofa",
+    );
+    sessionId = `my-claw-app/thread/${DEVICE}/${THREAD}`;
+    await deleteSession(sessionId);
+  });
+
+  test("creates the conversation eagerly with the chosen workspace", async () => {
+    await store.setWorkspace(DEVICE, THREAD, "sofa");
+    const session = await manager.peek(sessionId);
+    assert.ok(session);
+    assert.equal(session.workspace, "sofa");
+    assert.equal((await loadSession(sessionId))?.workspace, "sofa");
+  });
+
+  test("switches an existing conversation and persists the change", async () => {
+    await store.setWorkspace(DEVICE, THREAD, "sofa");
+    await store.setWorkspace(DEVICE, THREAD, "default");
+    const session = await manager.peek(sessionId);
+    assert.equal(session?.workspace, undefined);
+    assert.equal((await loadSession(sessionId))?.workspace, undefined);
+  });
+
+  test("refuses an unknown workspace key without creating anything", async () => {
+    await assert.rejects(() => store.setWorkspace(DEVICE, THREAD, "mars"), /unknown workspace/);
+    assert.equal(await manager.peek(sessionId), null);
+  });
+
+  test("lists the stored workspace on every summary", async () => {
+    await store.setWorkspace(DEVICE, THREAD, "sofa");
+    const summaries = await store.list(DEVICE);
+    assert.equal(summaries[0]!.workspace, "sofa");
+    await store.setWorkspace(DEVICE, THREAD, "default");
+    const after = await store.list(DEVICE);
+    assert.equal(after[0]!.workspace, "default");
+  });
+});

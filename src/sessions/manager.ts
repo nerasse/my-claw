@@ -143,6 +143,22 @@ export class SessionManager {
     return loaded;
   }
 
+  /**
+   * Switches a session to another workspace key, or back to the default one (undefined). The
+   * change is persisted immediately: workspace resolution reads the session per run, so it
+   * applies from the next run onward.
+   */
+  async setWorkspace(sessionId: string, workspace: string | undefined): Promise<SessionData> {
+    const session = this.sessions.get(sessionId) ?? await loadSession(sessionId);
+    if (!session) throw new Error("conversation not found");
+    if (workspace) session.workspace = workspace;
+    else delete session.workspace;
+    this.sessions.set(sessionId, session);
+    await saveSession(sessionId, session);
+    hooks.emit("session:workspace", { sessionId, workspace });
+    return session;
+  }
+
   async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
     const gate = await hooks.check("gate:session:reset", { sessionId });
     if (!gate.allowed) return;
