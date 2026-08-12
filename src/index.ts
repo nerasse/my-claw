@@ -543,7 +543,7 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
-  toolRegistry.register(createWorkspacesTool(sessionManager, config));
+  toolRegistry.register(createWorkspacesTool({ sessionManager, config, reload: reloadConfigNow }));
   const backfilledConversations = await backfillConversationArchive();
   if (backfilledConversations > 0) {
     void log("info", "conversation archive backfilled", { messages: backfilledConversations });

@@ -68,6 +68,35 @@ test("built-in web-browsing skill tells the agent screenshots are auto-attached"
   assert.ok(/reuse/i.test(content), "Must tell the agent to reuse open tabs");
 });
 
+test("built-in workspaces skill interviews the owner and covers the tool actions", async () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const skillFile = join(repoRoot, "src", "skills", "workspaces", "SKILL.md");
+  await access(skillFile);
+
+  const content = await readFile(skillFile, "utf-8");
+  assert.ok(content.includes("name: workspaces"), "Missing name frontmatter");
+  assert.ok(content.includes("description:"), "Missing description frontmatter");
+  // The owner must be interviewed before anything is created or changed.
+  assert.ok(/interview|ask the owner|Q&A/i.test(content), "Must instruct the agent to interview the owner");
+  for (const action of ["list", "switch", "create", "rename", "path", "remove"]) {
+    assert.ok(content.includes(action), `Missing tool action: ${action}`);
+  }
+});
+
+test("built-in agents skill interviews the owner and covers the frontmatter", async () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const skillFile = join(repoRoot, "src", "skills", "agents", "SKILL.md");
+  await access(skillFile);
+
+  const content = await readFile(skillFile, "utf-8");
+  assert.ok(content.includes("name: agents"), "Missing name frontmatter");
+  assert.ok(content.includes("description:"), "Missing description frontmatter");
+  assert.ok(/interview|ask the owner|Q&A/i.test(content), "Must instruct the agent to interview the owner");
+  for (const field of ["base", "tools", "skills", "workspace", "maxIterations", "instructions"]) {
+    assert.ok(content.includes(field), `Missing frontmatter guidance: ${field}`);
+  }
+});
+
 test("parse frontmatter with name and description", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "test-skill", "---\nname: test-skill\ndescription: A test skill\n---\n\nInstructions here.");
