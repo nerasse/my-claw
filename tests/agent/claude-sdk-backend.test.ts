@@ -289,6 +289,45 @@ test("mid-run injection is yielded to the generator and mirrored", async () => {
   assert.equal(userTurns.length, 2);
 });
 
+test("a sub-agent run on the SDK drains its own mailbox too", async () => {
+  runRegistry.clear();
+  const captured: CapturedCall[] = [];
+
+  const queryFn: SdkQueryFn = ({ prompt, options }) => {
+    const call: CapturedCall = { options, prompts: [] };
+    captured.push(call);
+    return (async function* () {
+      const first = await prompt.next();
+      if (!first.done) call.prompts.push({ content: contentToText(first.value.message.content) });
+      const second = await prompt.next();
+      if (!second.done) call.prompts.push({ content: contentToText(second.value.message.content) });
+      yield { type: "assistant", message: { id: "m1", content: [{ type: "text", text: "handled both" }], usage: { input_tokens: 1, output_tokens: 1 } } } as never;
+      yield { type: "result", subtype: "success", result: "handled both" } as never;
+    })() as AsyncIterable<never>;
+  };
+
+  // Depth 1, and the mailbox the runner opens for every sub-agent run: no startRoot, because the
+  // abort must stay the parent's shared signal, not a controller of its own.
+  const backend = new ClaudeSdkBackend(baseConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, 1, undefined, undefined, undefined, undefined, queryFn);
+  const sess = session("subagent/digger-a1b2");
+  runRegistry.openMailbox(sess.id);
+
+  const runPromise = backend.handleMessage(msg("m1", "start work"), sess);
+  await new Promise((r) => setTimeout(r, 50));
+  const injectionSettled = runRegistry.enqueueInjection(sess.id, msg("m2", "also do this"));
+  assert.ok(injectionSettled !== null);
+
+  const out = await runPromise;
+  runRegistry.settleMailbox(sess.id, "resolve");
+  await injectionSettled;
+
+  assert.equal(out, "handled both");
+  assert.equal(captured[0]!.prompts.length, 2);
+  assert.ok(captured[0]!.prompts[1]!.content.includes("also do this"));
+  const userTurns = sess.messages.filter((m) => m.role === "user");
+  assert.equal(userTurns.length, 2);
+});
+
 test("toSdkEffort clamps the Codex-only ultra level instead of passing it to the SDK", () => {
   // The SDK rejects unknown levels, and a session effort chosen on a Codex model follows the
   // user to a Claude one, so the run must degrade to the highest level Claude does support.
