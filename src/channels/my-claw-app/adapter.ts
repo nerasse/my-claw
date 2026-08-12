@@ -80,6 +80,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppJobsRunEntry,
   MyClawAppJobsRuns,
   MyClawAppSubAgentsList,
+  MyClawAppSubAgentsKill,
+  MyClawAppSubAgentsReset,
   MyClawAppSubAgentEntry,
   MyClawAppJobEntry,
   MyClawAppNotificationsRegister,
@@ -336,6 +338,19 @@ export interface MyClawAppJobsController {
 }
 
 /**
+ * The live sub-agents of a conversation (docs/subagent-navigation.md). Every method takes the
+ * caller session, because reachability is decided against it: an unreachable sub-agent answers
+ * exactly like a missing one, so neither the adapter nor the app can tell them apart.
+ */
+export interface MyClawAppSubAgentsController {
+  list(callerSessionId: string): Promise<MyClawAppSubAgentEntry[]>;
+  /** Deletes the session. The transcript does not survive. Returns the runner's own report. */
+  kill(threadId: string, callerSessionId: string): Promise<string>;
+  /** Archives the transcript and starts the sub-agent over, identity and workspace kept. */
+  reset(threadId: string, callerSessionId: string): Promise<string>;
+}
+
+/**
  * Push endpoints and foreground state for the device notifications (docs/notifications.md).
  * Injected so the adapter never writes the push store itself.
  */
@@ -387,7 +402,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private configEditor?: MyClawAppConfigController;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
-  private subagents?: (callerSessionId: string) => Promise<MyClawAppSubAgentEntry[]>;
+  private subagents?: MyClawAppSubAgentsController;
   private stopRun?: (sessionId: string) => boolean;
   private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -642,11 +657,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
-   * The sub-agents reachable from a session. Injected like everything else the adapter must not
-   * reach for: the scoping rule lives in the runner, so the answer is already filtered.
+   * The sub-agents reachable from a session, and the two destructive actions on one. Injected like
+   * everything else the adapter must not reach for: the visibility rule lives in the runner, so
+   * every answer here is already filtered by it.
    */
-  onSubAgents(list: (callerSessionId: string) => Promise<MyClawAppSubAgentEntry[]>): void {
-    this.subagents = list;
+  onSubAgentsController(controller: MyClawAppSubAgentsController): void {
+    this.subagents = controller;
   }
 
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
@@ -1157,6 +1173,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "subagents.list":
         void this.handleSubAgentsList(ws, frame);
+        break;
+      case "subagents.kill":
+      case "subagents.reset":
+        void this.handleSubAgentAction(ws, frame);
         break;
       case "jobs.save":
         void this.handleJobSave(ws, frame);
@@ -2010,10 +2030,46 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const agents = await this.subagents(this.store.resolveSessionId(ws.data.owner, threadId));
+      const agents = await this.subagents.list(this.store.resolveSessionId(ws.data.owner, threadId));
       this.sendFrame(ws, { type: "subagents.list.result", threadId, agents });
     } catch (err) {
       await this.refuse(ws, "subagents", "subagents.list failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * One handler for both destructive actions: they differ only in which runner method runs, and
+   * both answer with the parent's roster so the app never has to guess what survived.
+   */
+  private async handleSubAgentAction(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSubAgentsKill | MyClawAppSubAgentsReset,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    const parentThreadId = sanitizeThreadId(frame.parentThreadId);
+    if (!threadId || !parentThreadId) {
+      await this.refuse(ws, "subagents", "invalid threadId", { threadId: frame.threadId, parentThreadId: frame.parentThreadId });
+      return;
+    }
+    if (!this.subagents) {
+      await this.refuse(ws, "subagents", "sub-agents unavailable");
+      return;
+    }
+    const caller = this.store.resolveSessionId(ws.data.owner, parentThreadId);
+    try {
+      const outcome = frame.type === "subagents.kill"
+        ? await this.subagents.kill(threadId, caller)
+        : await this.subagents.reset(threadId, caller);
+      // The runner reports a refusal as text rather than throwing, and an unreachable sub-agent is
+      // indistinguishable from a missing one on purpose (docs/subagent-visibility.md).
+      if (outcome.startsWith("Error:")) {
+        await this.refuse(ws, "subagents", outcome, { threadId });
+        return;
+      }
+      const agents = await this.subagents.list(caller);
+      this.sendFrame(ws, { type: "subagents.list.result", threadId: parentThreadId, agents });
+    } catch (err) {
+      await this.refuse(ws, "subagents", `${frame.type} failed`, { threadId, error: String(err) });
     }
   }
 

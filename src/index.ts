@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -1942,13 +1942,27 @@ async function main() {
       );
     });
 
-    myClawApp.onSubAgents(async (callerSessionId) => {
-      const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);
-      // A sub-agent whose id yields no handle cannot be opened, so it is not offered.
-      return agents.flatMap((a) => {
-        const threadId = subagentSessionToThread(a.id);
-        return threadId ? [{ ...a, threadId }] : [];
-      });
+    myClawApp.onSubAgentsController({
+      list: async (callerSessionId) => {
+        const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);
+        // A sub-agent whose id yields no handle cannot be opened, so it is not offered.
+        return agents.flatMap((a) => {
+          const threadId = subagentSessionToThread(a.id);
+          return threadId ? [{ ...a, threadId }] : [];
+        });
+      },
+      // The handle is resolved here, and a stale one reports "not found" through the runner's own
+      // guard rather than being turned into a different session id.
+      kill: async (threadId, callerSessionId) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return `Error: sub-agent ${threadId} not found.`;
+        return subAgentRunner.kill(sessionId, callerSessionId);
+      },
+      reset: async (threadId, callerSessionId) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return `Error: sub-agent ${threadId} not found.`;
+        return subAgentRunner.reset(sessionId, callerSessionId);
+      },
     });
 
     myClawApp.onDiagnostics({

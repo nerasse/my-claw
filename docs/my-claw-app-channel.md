@@ -306,6 +306,15 @@ the first answer wins.
   sub-agent's recorded parent to apply the visibility rule; absent, only a `global` sub-agent
   answers. The run is serialized against any other run of the same sub-agent, so a message sent
   while it is busy is delivered when the current run ends.
+- `subagents.kill { threadId, parentThreadId }` deletes a sub-agent, transcript included;
+  `subagents.reset { threadId, parentThreadId }` archives its transcript and starts it over with its
+  identity and workspace kept. `parentThreadId` is the caller the visibility rule is applied to, as
+  for a sub-agent `chat.send`. Both answer with `subagents.list.result` for the parent thread; a
+  refusal is an `error` on the `subagents` scope and sends no roster.
+
+Handing a sub-agent's answer back to its parent needs no frame of its own: it is a `chat.send` on
+the parent thread whose text quotes the sub-agent, which the router injects into a running parent or
+runs fresh like any other message.
 
 ### Server -> Device
 

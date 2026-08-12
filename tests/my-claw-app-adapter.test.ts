@@ -2686,11 +2686,29 @@ describe("subagents frames", () => {
     await adapter.stop();
   });
 
-  test("subagents.list answers the roster for the asking conversation's session", async () => {
-    adapter.onSubAgents(async (callerSessionId) => {
-      asked.push(callerSessionId);
+  const controller = (over: Partial<Parameters<typeof adapter.onSubAgentsController>[0]> = {}) => ({
+    list: async (callerSessionId: string) => {
+      asked.push(`list:${callerSessionId}`);
       return [entry("subagent/research-a1b2"), entry("subagent/writer-c3d4", { status: "running" })];
-    });
+    },
+    kill: async (threadId: string, caller: string) => {
+      asked.push(`kill:${threadId}:${caller}`);
+      return `Sub-agent ${threadId} deleted.`;
+    },
+    reset: async (threadId: string, caller: string) => {
+      asked.push(`reset:${threadId}:${caller}`);
+      return `Sub-agent ${threadId} session reset. Workspace preserved.`;
+    },
+    ...over,
+  });
+
+  test("subagents.list answers the roster for the asking conversation's session", async () => {
+    adapter.onSubAgentsController(controller({
+      list: async (callerSessionId: string) => {
+        asked.push(`list:${callerSessionId}`);
+        return [entry("subagent/research-a1b2"), entry("subagent/writer-c3d4", { status: "running" })];
+      },
+    }));
     client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "main" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "subagents.list.result");
@@ -2701,11 +2719,11 @@ describe("subagents frames", () => {
     assert.equal(agents[1]!["status"], "running");
     // The scoping rule lives in the runner, so what matters here is that the caller's session
     // is the one handed to it -- not the raw thread id.
-    assert.deepEqual(asked, ["my-claw-app/thread/test-device/main"]);
+    assert.deepEqual(asked, ["list:my-claw-app/thread/test-device/main"]);
   });
 
   test("subagents.list refuses an invalid threadId on its own scope", async () => {
-    adapter.onSubAgents(async () => []);
+    adapter.onSubAgentsController(controller({ list: async () => [] }));
     client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "../etc/passwd" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "error");
@@ -2723,13 +2741,60 @@ describe("subagents frames", () => {
   });
 
   test("a failing roster is reported, not swallowed", async () => {
-    adapter.onSubAgents(async () => {
-      throw new Error("disk on fire");
-    });
+    adapter.onSubAgentsController(controller({
+      list: async () => {
+        throw new Error("disk on fire");
+      },
+    }));
     client.ws.send(JSON.stringify({ type: "subagents.list", threadId: "main" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "subagents");
+  });
+
+  test("kill and reset carry the asking conversation as the caller and answer with the roster", async () => {
+    adapter.onSubAgentsController(controller());
+    for (const type of ["subagents.kill", "subagents.reset"] as const) {
+      asked.length = 0;
+      client.ws.send(JSON.stringify({ type, threadId: "sub-0123456789abcdef", parentThreadId: "main" }));
+      const frame = await nextFrame(client);
+      // Answered with the resulting roster, not an acknowledgement: the device renders what the
+      // server did rather than what it hoped for.
+      assert.equal(frame["type"], "subagents.list.result");
+      assert.equal(frame["threadId"], "main");
+      assert.equal((frame["agents"] as unknown[]).length, 2);
+      const action = type.slice("subagents.".length);
+      assert.deepEqual(asked, [
+        `${action}:sub-0123456789abcdef:my-claw-app/thread/test-device/main`,
+        "list:my-claw-app/thread/test-device/main",
+      ]);
+    }
+  });
+
+  test("a refused kill is an error, and nothing is re-listed", async () => {
+    adapter.onSubAgentsController(controller({
+      kill: async (threadId: string) => {
+        asked.push(`kill:${threadId}`);
+        return "Error: sub-agent sub-0123456789abcdef not found.";
+      },
+    }));
+    client.ws.send(JSON.stringify({ type: "subagents.kill", threadId: "sub-0123456789abcdef", parentThreadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    assert.match(String(frame["message"]), /not found/);
+    // The attempt happened and stopped there: no roster is sent after a refusal, so the app cannot
+    // read one as confirmation.
+    assert.deepEqual(asked, ["kill:sub-0123456789abcdef"]);
+  });
+
+  test("kill and reset need both thread ids", async () => {
+    adapter.onSubAgentsController(controller());
+    client.ws.send(JSON.stringify({ type: "subagents.kill", threadId: "sub-0123456789abcdef", parentThreadId: "../etc" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    assert.deepEqual(asked, []);
   });
 });
 

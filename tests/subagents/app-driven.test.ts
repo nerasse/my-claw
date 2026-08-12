@@ -9,7 +9,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { saveSession, deleteSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, loadSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { AgentBackend } from "../../src/agent/backend.ts";
@@ -196,6 +196,38 @@ test("a parent-driven send stays non-streaming", async () => {
   } finally {
     fetchMock.restore();
     await deleteSession(id);
+  }
+});
+
+test("kill and reset from the app obey the same rule, and differ in what survives", async () => {
+  const mine = "subagent/killable-c1d2";
+  const theirs = "subagent/theirs-e3f4";
+  await saveSession(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
+  await saveSession(theirs, subSession(theirs, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const owner = "my-claw-app/thread/owner/main";
+
+  try {
+    // Not reachable from this conversation: refused, and the file is still there.
+    assert.match(await runner.kill(theirs, owner), /not found/);
+    assert.ok(await loadSession(theirs), "a refused kill must not delete anything");
+
+    // reset keeps the sub-agent and its identity, and empties the transcript.
+    const before = await loadSession(mine);
+    before!.messages.push({ role: "user", content: "remember this", timestamp: new Date().toISOString() });
+    await saveSession(mine, before!);
+    assert.match(await runner.reset(mine, owner), /reset/);
+    const after = await loadSession(mine);
+    assert.equal(after?.messages.length, 0);
+    assert.equal(after?.meta?.displayName, "digger");
+    assert.equal(after?.meta?.visibility, "private");
+
+    // kill leaves nothing behind.
+    assert.match(await runner.kill(mine, owner), /deleted/);
+    assert.equal(await loadSession(mine), null);
+  } finally {
+    await deleteSession(mine).catch(() => {});
+    await deleteSession(theirs).catch(() => {});
   }
 });
 

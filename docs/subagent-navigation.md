@@ -189,7 +189,19 @@ Additive frames, validated by the app's `FRAME_TYPES` set, so no coupled release
 | Frame | Payload | Meaning |
 | --- | --- | --- |
 | `subagents.list` | `{ threadId }` | roster for the conversation `threadId` is open on |
-| `subagents.report` | `{ threadId, parentThreadId, messageId }` | hand a sub-agent message to its parent |
+| `subagents.kill` | `{ threadId, parentThreadId }` | delete the sub-agent, transcript included |
+| `subagents.reset` | `{ threadId, parentThreadId }` | archive its transcript, keep its identity |
+
+There is no `subagents.report` frame, and this spec was wrong to ask for one. Handing an answer to
+the parent is a message in the parent conversation, so it is a plain `chat.send` on the parent
+thread whose text quotes the sub-agent. The router already injects that into a running parent and
+starts a fresh run otherwise (`router.ts:147-155`), which is exactly the behaviour this section
+described building by hand. The app formats the quote, because that is where the text already is.
+
+`subagents.kill` and `subagents.reset` answer with `subagents.list.result` for the parent thread
+rather than an acknowledgement, matching how every other mutation in this channel replies
+(`adapter.ts`, `handleSessionRename`). A refusal is an `error` on the `subagents` scope and sends no
+roster, so a roster can never be read as confirmation.
 
 `threadId` on `subagents.list` is the **parent** conversation. Scoping is not optional: the roster
 is `SubAgentRunner.list(registry, callerSessionId)`, which applies `isReachableFrom`
@@ -200,7 +212,6 @@ is `SubAgentRunner.list(registry, callerSessionId)`, which applies `isReachableF
 | Frame | Payload |
 | --- | --- |
 | `subagents.list.result` | `{ threadId, agents: SubAgentEntry[] }` |
-| `subagents.changed` | `{ threadId, count, running }` |
 
 ```ts
 interface SubAgentEntry {
@@ -216,9 +227,12 @@ interface SubAgentEntry {
 }
 ```
 
-`subagents.changed` is a nudge, not state: emitted to the owner's socket from the existing hooks
-`subagent:spawn|complete|killed|reset` (`hooks/types.ts:248-259`), it carries only what the header
-badge needs so the counter is live without polling. The app refetches the roster on open.
+There is no push frame for roster changes either. The app refetches on opening a conversation, on
+`chat.run.end`, and after a mutation (which answers with the roster anyway). A run that spawns three
+sub-agents therefore updates the counter when it ends rather than mid-flight — an acceptable lag for
+a secondary affordance, and the alternative is a push path with hook wiring and per-socket scoping
+for no other gain. Should live counts ever matter, the hooks
+`subagent:spawn|complete|killed|reset` (`hooks/types.ts:248-259`) are already there to carry them.
 
 Add `subagents` to `MyClawAppErrorScope` (`channels/my-claw-app/types.ts:786-805`).
 

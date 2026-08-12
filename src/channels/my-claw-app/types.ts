@@ -596,6 +596,8 @@ export type MyClawAppClientFrame =
   | MyClawAppJobsList
   | MyClawAppJobsRuns
   | MyClawAppSubAgentsList
+  | MyClawAppSubAgentsKill
+  | MyClawAppSubAgentsReset
   | MyClawAppJobSave
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
@@ -1429,14 +1431,21 @@ export interface MyClawAppSubAgentEntry {
 }
 
 /**
- * A nudge, not state: the roster of `threadId` changed, and this carries only what the header
- * counter needs so it stays live without polling. The app refetches when it wants the list.
+ * Destructive, and not symmetric: `reset` archives the transcript and keeps identity plus
+ * workspace, `kill` deletes the session outright. Both carry the conversation they are asked from,
+ * which is the caller the visibility rule is applied to, and both answer with the resulting roster
+ * -- the device renders what the server actually did rather than what it hoped for.
  */
-export interface MyClawAppSubAgentsChanged {
-  type: "subagents.changed";
+export interface MyClawAppSubAgentsKill {
+  type: "subagents.kill";
   threadId: string;
-  count: number;
-  running: number;
+  parentThreadId: string;
+}
+
+export interface MyClawAppSubAgentsReset {
+  type: "subagents.reset";
+  threadId: string;
+  parentThreadId: string;
 }
 
 export interface MyClawAppJobsList {
@@ -1572,7 +1581,6 @@ export type MyClawAppServerFrame =
   | MyClawAppJobsListResult
   | MyClawAppJobsRunsResult
   | MyClawAppSubAgentsListResult
-  | MyClawAppSubAgentsChanged
   | MyClawAppNotificationsInfo
   | MyClawAppTagsResult
   | MyClawAppProviderEnvResult
