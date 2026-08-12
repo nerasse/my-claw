@@ -89,6 +89,10 @@ fi
 OWNER="claw"
 PACKAGE="my-claw"
 VERSION="${1:-latest}"
+FORCE=0
+if [ "${2:-}" = "--force" ]; then
+  FORCE=1
+fi
 
 if [ "$VERSION" = "latest" ]; then
   echo "Checking latest version..."
@@ -102,6 +106,20 @@ if [ "$VERSION" = "latest" ]; then
     exit 1
   fi
   echo "Latest version: ${VERSION}"
+fi
+
+# Idempotence: reinstalling the running version is a pure loss. It swaps the live tree into
+# ${APP_DIR}.prev, wiping the rollback that exists to catch the next failed update, and stops
+# services to land on byte-identical code. Skip it and say so; --force overrides, for repairing
+# an install whose files got corrupted in place.
+if [ "$FORCE" -eq 0 ] && [ -f "${APP_DIR}/package.json" ]; then
+  INSTALLED_VERSION=$(jq -r .version "${APP_DIR}/package.json" 2>/dev/null || true)
+  if [ "$INSTALLED_VERSION" = "$VERSION" ]; then
+    echo "Already on my-claw ${VERSION} — nothing to install."
+    echo "Skipping, so ${APP_DIR}.prev keeps the previous version as the rollback."
+    echo "Re-run with --force to install ${VERSION} anyway."
+    exit 0
+  fi
 fi
 
 TAR_FILE="my-claw-${VERSION}-linux-x64.tar.gz"
