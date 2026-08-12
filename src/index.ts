@@ -50,6 +50,7 @@ import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl, sanitizeThreadId } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
+import { GeoapifyReverseGeocoder } from "./channels/my-claw-app/location.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
 import {
   MAX_INSTRUCTION_BYTES,
@@ -927,6 +928,7 @@ async function main() {
       (key) => key === "default" || key in (config.workspaces ?? {}),
     );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
+    myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
     myClawAppRef = myClawApp;
     noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));
 

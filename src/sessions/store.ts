@@ -6,6 +6,7 @@ import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import type { ChatLocation } from "../channels/types.ts";
 
 /**
  * An image kept on the stored user turn so later turns can rebuild the same content blocks.
@@ -16,7 +17,7 @@ import { hooks } from "../hooks/index.ts";
 export type SessionAttachment = { type: "image"; path: string; mimeType?: string };
 
 export type SessionMessage =
-  | { role: "user"; content: string; timestamp: string; attachments?: SessionAttachment[] }
+  | { role: "user"; content: string; timestamp: string; attachments?: SessionAttachment[]; location?: ChatLocation }
   | {
       role: "assistant";
       content: string;

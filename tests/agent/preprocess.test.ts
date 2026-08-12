@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { MessagePreprocessor } from "../../src/agent/preprocess.ts";
+import { MessagePreprocessor, stripLocationBlock } from "../../src/agent/preprocess.ts";
 import type { UnifiedMessage, Attachment } from "../../src/channels/types.ts";
 
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
@@ -154,6 +154,32 @@ describe("MessagePreprocessor", () => {
       const result = pp.buildUserContent(msg);
       expect(result).toContain("[Attachments]");
       expect(result).toContain("file: /tmp/data.csv");
+    });
+
+    test("location is explicit, approximate and kept before the attachment block", () => {
+      const msg = createMessage({
+        text: "I am here",
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          accuracyMeters: 42,
+          capturedAt: "2026-08-13T12:30:00.000Z",
+          address: {
+            formatted: "Rue de Rivoli, Paris",
+            level: "street",
+            provider: "geoapify",
+            confidence: 0.91,
+          },
+        },
+        attachments: [{ type: "file", path: "/tmp/note.txt" }],
+      });
+      const result = pp.buildUserContent(msg);
+      expect(result).toContain("[Shared location]");
+      expect(result).toContain("accuracy: +/- 42 m");
+      expect(result).toContain("address (approximate, street, geoapify): Rue de Rivoli, Paris");
+      expect(result.indexOf("[Shared location]")).toBeLessThan(result.indexOf("[Attachments]"));
+      expect(stripLocationBlock(result)).not.toContain("[Shared location]");
+      expect(stripLocationBlock(result)).toContain("[Attachments]");
     });
 
     // Regression: the owner pasted a message ending in five U+200B from LinkedIn and the whole

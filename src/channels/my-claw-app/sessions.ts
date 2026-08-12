@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { loadSession } from "../../sessions/store.ts";
-import { splitAttachmentBlock } from "../../agent/preprocess.ts";
+import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
@@ -163,9 +163,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       if (!session) continue;
       const firstUser = session.messages.find((m) => m.role === "user");
       // Without the block, a "here, look" + photo would be titled by a server path.
-      const firstText = firstUser ? splitAttachmentBlock(firstUser.content).text : "";
+      const firstText = firstUser ? stripLocationBlock(splitAttachmentBlock(firstUser.content).text) : "";
       const derived = firstText.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
-      const title = session.title?.trim() || derived || "(new conversation)";
+      const title = session.title?.trim() || derived || (firstUser?.location ? "(location)" : "(new conversation)");
       summaries.push({
         threadId: sessionId.slice(sessionId.lastIndexOf("/") + 1),
         title,
@@ -208,10 +208,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "user",
-          text,
+          text: stripLocationBlock(text),
           ts: message.timestamp,
           ...(Object.keys(transcripts).length > 0 ? { transcripts } : {}),
           ...(resolved.length > 0 ? { attachments: resolved } : {}),
+          ...(message.location ? { location: message.location } : {}),
         });
         continue;
       }

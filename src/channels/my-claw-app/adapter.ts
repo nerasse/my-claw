@@ -8,6 +8,7 @@ import type {
   OutgoingMessage,
   ToolApprovalRequest,
   UnifiedMessage,
+  ChatLocation,
 } from "../types.ts";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { runRegistry } from "../../core/run-registry.ts";
@@ -100,6 +101,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppProviderRemove,
   MyClawAppProviderRename,
   MyClawAppProviderUpsert,
+  MyClawAppLocationCapabilities,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -109,6 +111,7 @@ import { thumbPathFor } from "./files.ts";
 import { extractVideoThumbnail } from "../../media/video.ts";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { normalizeLocationInput, type MyClawAppLocationResolver } from "./location.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -404,6 +407,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   private subagents?: MyClawAppSubAgentsController;
+  private locationResolver?: MyClawAppLocationResolver;
   private stopRun?: (sessionId: string) => boolean;
   private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
@@ -664,6 +668,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   onSubAgentsController(controller: MyClawAppSubAgentsController): void {
     this.subagents = controller;
+  }
+
+  onLocationResolver(resolver: MyClawAppLocationResolver): void {
+    this.locationResolver = resolver;
   }
 
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
@@ -949,6 +957,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     this.sockets.set(ws.data.deviceId, ws);
     void myClawAppLog("info", "device connected", { deviceId: ws.data.deviceId });
+    const locationCapabilities: MyClawAppLocationCapabilities = {
+      type: "location.capabilities",
+      ...(this.locationResolver?.capabilities() ?? { enabled: false, address: false, provider: "geoapify" as const }),
+    };
+    this.sendFrame(ws, locationCapabilities);
     // The device needs the VAPID public key before it can register with its distributor;
     // sent at connect so the app can register on startup without another round-trip.
     void this.notifications?.info().then((vapidPublicKey) => {
@@ -978,13 +991,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     if (!frame) {
-      this.emitChatSend(ws.data.owner, { type: "chat.send", id: crypto.randomUUID(), text: raw });
+      void this.emitChatSend(ws, { type: "chat.send", id: crypto.randomUUID(), text: raw });
       return;
     }
 
     switch (frame.type) {
       case "chat.send":
-        void this.emitChatSend(ws.data.owner, frame);
+        void this.emitChatSend(ws, frame);
         break;
       case "approval.response":
         this.resolveApproval(frame);
@@ -1211,9 +1224,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
-  private async emitChatSend(owner: string, frame: MyClawAppChatSend): Promise<void> {
+  private async emitChatSend(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppChatSend,
+  ): Promise<void> {
+    const owner = ws.data.owner;
     const text = frame.text.trim();
-    if (!text && !frame.attachments?.length) return;
+    const hasLocation = frame.location !== undefined;
+    if (!text && !frame.attachments?.length && !hasLocation) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
 
@@ -1221,7 +1239,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // sent to the model as a plain question would be answered from nothing. The user's own
     // bubble is drawn by the app from its send; only the result is new here. Only the catalog
     // is intercepted: an unknown /word is a question like any other and must reach the agent.
-    if (text && !frame.attachments?.length && this.commandHandler) {
+    if (text && !frame.attachments?.length && !hasLocation && this.commandHandler) {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
       if (command && APP_COMMANDS.some((c) => c.command === command)) {
         try {
@@ -1258,6 +1276,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     if (!this.messageHandler) return;
 
+    let location: ChatLocation | undefined;
+    if (hasLocation) {
+      try {
+        const input = normalizeLocationInput(frame.location);
+        location = this.locationResolver ? await this.locationResolver.resolve(input) : input;
+      } catch (err) {
+        await this.refuse(ws, "location", err instanceof Error ? err.message : "invalid location");
+        return;
+      }
+      this.broadcast(owner, {
+        type: "chat.location",
+        threadId,
+        replyToId: frame.id,
+        location,
+      });
+    }
+
     const attachments: Attachment[] = [];
     for (const ref of frame.attachments ?? []) {
       const stored = await this.files.findById(owner, threadId, ref.id);
@@ -1290,6 +1325,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       text,
       timestamp: frame.ts,
       attachments,
+      ...(location ? { location } : {}),
       isForwarded: false,
       threadId,
       sessionScope: "per-user",

@@ -17,6 +17,7 @@ process.env["MY_CLAW_DIR"] = root;
 // file exists, so a developer's real token would otherwise turn a mocked-fetch test into a live
 // call against the provider (and make the suite pass or fail depending on the shell it ran in).
 delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+delete process.env["GEOAPIFY_API_KEY"];
 
 // Wipe persisted sessions between every test. Files share one MY_CLAW_DIR and reuse ids
 // ("u1", "session-1", ...), so a session left on disk by one test could be read cold by

@@ -1,6 +1,6 @@
 import { stat, rm } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { UnifiedMessage, OutgoingMessage, Attachment } from "../channels/types.ts";
+import type { UnifiedMessage, OutgoingMessage, Attachment, ChatLocation } from "../channels/types.ts";
 import type { ChatMessageContent } from "../llm/provider.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import type { TranscriptionResult } from "../voice/types.ts";
@@ -29,6 +29,39 @@ interface PreprocessRunState {
 }
 
 export const ATTACHMENT_HEADING = "[Attachments]";
+export const LOCATION_HEADING = "[Shared location]";
+
+function compactLocationText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Stable, explicit location facts for both LLM backends. The address is always labelled approximate. */
+export function formatLocationForModel(location: ChatLocation): string {
+  const lines = [
+    LOCATION_HEADING,
+    `- coordinates: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`,
+    `- accuracy: +/- ${Math.round(location.accuracyMeters)} m`,
+    `- capturedAt: ${location.capturedAt}`,
+  ];
+  if (location.address) {
+    lines.push(`- address (approximate, ${location.address.level}, ${location.address.provider}): ${compactLocationText(location.address.formatted)}`);
+    if (location.address.confidence !== undefined) lines.push(`- address confidence: ${location.address.confidence.toFixed(2)}`);
+  } else {
+    lines.push("- address: unavailable; use the coordinates as the source of truth");
+  }
+  return lines.join("\n");
+}
+
+/** Removes the server-generated location block while preserving user text and attachment blocks. */
+export function stripLocationBlock(content: string): string {
+  const marker = `\n\n${LOCATION_HEADING}\n`;
+  const start = content.lastIndexOf(marker);
+  if (start < 0) return content;
+  const after = content.slice(start + marker.length);
+  const attachmentMarker = `\n\n${ATTACHMENT_HEADING}\n`;
+  const attachmentAt = after.indexOf(attachmentMarker);
+  return attachmentAt < 0 ? content.slice(0, start) : `${content.slice(0, start)}${after.slice(attachmentAt)}`;
+}
 
 /** One `- <type>: <source> (details)` line of the block built by buildUserContent. */
 export interface AttachmentBlockEntry {
@@ -298,6 +331,7 @@ export class MessagePreprocessor {
     }
 
     let content = message.text;
+    if (message.location) content += `\n\n${formatLocationForModel(message.location)}`;
     // Audio is listed even though its words are already in the text above. The transcript is what
     // the agent reads, but the file is what it can act on -- keep it and "save that voice note"
     // has a path to work with. It is also the only join key a replayed turn has: the my-claw-app

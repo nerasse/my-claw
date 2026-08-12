@@ -35,7 +35,7 @@ interface WsClient {
   closed: { code: number; reason: string } | null;
 }
 
-function connectClient(port: number, device = DEVICE_ID, token = TOKEN): Promise<WsClient> {
+function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveLocationCapabilities = false): Promise<WsClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
     const client: WsClient = { ws, frames: [], closed: null };
@@ -57,7 +57,9 @@ function connectClient(port: number, device = DEVICE_ID, token = TOKEN): Promise
     ws.onmessage = (event) => {
       const raw = event.data as string;
       try {
-        client.frames.push(JSON.parse(raw));
+        const frame = JSON.parse(raw) as { type?: unknown };
+        if (!receiveLocationCapabilities && frame.type === "location.capabilities") return;
+        client.frames.push(frame);
       } catch {
         client.frames.push(raw);
       }
@@ -239,6 +241,53 @@ describe("MyClawAppAdapter", () => {
     assert.equal(msg.chatType, "dm");
     assert.equal(msg.text, "hello agent");
     assert.equal(msg.sessionScope, "per-user");
+  });
+
+  test("advertises location capability without leaking provider configuration", async () => {
+    adapter.onLocationResolver({
+      capabilities: () => ({ enabled: true, address: true, provider: "geoapify" }),
+      resolve: async input => input,
+    });
+    const capable = await connectClient(adapter.port, DEVICE_ID, TOKEN, true);
+    const frame = await nextFrame(capable);
+    assert.deepEqual(frame, {
+      type: "location.capabilities",
+      enabled: true,
+      address: true,
+      provider: "geoapify",
+    });
+    assert.equal(JSON.stringify(frame).includes(TOKEN), false);
+    capable.ws.close();
+  });
+
+  test("routes a location-only message and confirms the enriched user bubble", async () => {
+    adapter.onLocationResolver({
+      capabilities: () => ({ enabled: true, address: true, provider: "geoapify" }),
+      resolve: async input => ({
+        ...input,
+        address: { formatted: "Rue de Rivoli, Paris", level: "street", provider: "geoapify" },
+      }),
+    });
+    client.ws.send(JSON.stringify({
+      type: "chat.send",
+      id: "location-1",
+      text: "",
+      location: {
+        latitude: 48.8566,
+        longitude: 2.3522,
+        accuracyMeters: 42,
+        capturedAt: "2026-08-13T12:30:00.000Z",
+        address: { formatted: "client lies", level: "building", provider: "geoapify" },
+      },
+    }));
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.location?.address?.formatted, "Rue de Rivoli, Paris");
+    assert.notEqual(received[0]!.location?.address?.formatted, "client lies");
+
+    const frame = await nextFrame(client);
+    assert.equal(frame.type, "chat.location");
+    assert.equal(frame.replyToId, "location-1");
+    assert.equal((frame.location as { address?: { level?: string } }).address?.level, "street");
   });
 
   test("treats a plain-text frame as chat.send (console mode)", async () => {

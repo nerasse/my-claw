@@ -118,7 +118,13 @@ Secrets can also go in `~/.my-claw/.env`:
 ```
 FIREWORKS_API_KEY=...
 GROQ_API_KEY=...
+GEOAPIFY_API_KEY=...
 ```
+
+`GEOAPIFY_API_KEY` enables chat location sharing. Keep the file private
+(`chmod 600 ~/.my-claw/.env`); the key must never be shipped to a client app. See
+[`docs/location-sharing.md`](docs/location-sharing.md) for the integration plan and provider
+behavior.
 
 ## Project Structure
 

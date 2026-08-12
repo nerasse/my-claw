@@ -8,6 +8,8 @@ export interface UnifiedMessage {
   /** Original channel timestamp when the adapter exposes one. */
   timestamp?: string;
   attachments: Attachment[];
+  /** One-shot device location shared with this message. */
+  location?: ChatLocation;
   isForwarded: boolean;
   replyToId?: string;
   replyToText?: string;
@@ -19,6 +21,33 @@ export interface UnifiedMessage {
   sessionScope?: "per-user" | "per-room" | "per-chat";
   raw: unknown;
 }
+
+export type LocationAddressLevel = "building" | "street" | "locality" | "city" | "country";
+
+export interface ChatLocationAddress {
+  formatted: string;
+  level: LocationAddressLevel;
+  provider: "geoapify";
+  street?: string;
+  houseNumber?: string;
+  city?: string;
+  postcode?: string;
+  country?: string;
+  confidence?: number;
+}
+
+export interface ChatLocation {
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+  capturedAt: string;
+  altitudeMeters?: number;
+  headingDegrees?: number;
+  speedMetersPerSecond?: number;
+  address?: ChatLocationAddress;
+}
+
+export type ChatLocationInput = Omit<ChatLocation, "address">;
 
 export type ApprovalDecision = "allow-once" | "allow-session" | "deny";
 

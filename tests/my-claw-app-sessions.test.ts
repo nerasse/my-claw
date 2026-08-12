@@ -136,6 +136,29 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(turn.attachments![0]!.durationMs, 3100);
   });
 
+  test("a replayed location keeps structured data and hides the model-only block", async () => {
+    const location = {
+      latitude: 48.8566,
+      longitude: 2.3522,
+      accuracyMeters: 24,
+      capturedAt: "2026-08-13T12:30:00.000Z",
+      address: { formatted: "Rue de Rivoli, Paris", level: "street" as const, provider: "geoapify" as const },
+    };
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "user",
+        content: "Je suis ici\n\n[Shared location]\n- coordinates: 48.856600, 2.352200\n- accuracy: +/- 24 m\n- capturedAt: 2026-08-13T12:30:00.000Z\n- address (approximate, street, geoapify): Rue de Rivoli, Paris",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        location,
+      },
+    ]));
+
+    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    if (turn.role !== "user") throw new Error("expected a user entry");
+    assert.equal(turn.text, "Je suis ici");
+    assert.deepEqual(turn.location, location);
+  });
+
   test("several recordings in one turn each keep their own words", async () => {
     const files = new SessionFileStore();
     const first = await files.save(DEVICE, THREAD, "one.m4a", new Uint8Array([1]));

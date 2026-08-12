@@ -21,6 +21,7 @@ import { indexSessionArchive } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
+import { formatLocationForModel } from "../agent/preprocess.ts";
 
 /**
  * Where a sub-agent's run reports itself while a human watches it. Absent for a parent-driven run:
@@ -181,8 +182,13 @@ export class SubAgentRunner {
         return `Error: sub-agent ${id} not found.`;
       }
 
-      const userContent = this.buildUserContent(message, attachments);
-      session.messages.push({ role: "user", content: userContent, timestamp: new Date().toISOString() });
+      const userContent = this.buildUserContent(message, attachments, parentMessage.location);
+      session.messages.push({
+        role: "user",
+        content: userContent,
+        timestamp: new Date().toISOString(),
+        ...(parentMessage.location ? { location: parentMessage.location } : {}),
+      });
 
       if (session.messages.length > MAX_MESSAGES) {
         session.messages = trimSessionMessages(session.messages, MAX_MESSAGES_KEEP);
@@ -457,12 +463,14 @@ export class SubAgentRunner {
     };
   }
 
-  private buildUserContent(text: string, attachments?: Attachment[]): string {
-    if (!attachments || attachments.length === 0) return text;
+  private buildUserContent(text: string, attachments?: Attachment[], location?: UnifiedMessage["location"]): string {
+    let content = text;
+    if (location) content += `\n\n${formatLocationForModel(location)}`;
+    if (!attachments || attachments.length === 0) return content;
     const lines = attachments.map((a) => {
       const source = a.path ?? a.url ?? "unknown";
       return `- ${a.type}: ${source}`;
     });
-    return `${text}\n\n[Attachments]\n${lines.join("\n")}`;
+    return `${content}\n\n[Attachments]\n${lines.join("\n")}`;
   }
 }

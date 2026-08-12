@@ -833,7 +833,12 @@ export class ClaudeSdkBackend implements AgentBackend {
   private async buildUserTurn(message: UnifiedMessage, session: SessionData): Promise<string> {
     const scanned = this.preprocessor.buildUserContent(message);
     const transformed = (await hooks.transform("transform:user:content", { content: scanned, sessionId: session.id })).content;
-    session.messages.push({ role: "user", content: transformed, timestamp: new Date().toISOString() });
+    session.messages.push({
+      role: "user",
+      content: transformed,
+      timestamp: new Date().toISOString(),
+      ...(message.location ? { location: message.location } : {}),
+    });
     return transformed;
   }
 

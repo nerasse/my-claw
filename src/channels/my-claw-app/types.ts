@@ -1,4 +1,5 @@
 /** Wire protocol for the my-claw-app channel. Spec: docs/my-claw-app-channel.md. */
+import type { ChatLocation, ChatLocationInput } from "../types.ts";
 
 export interface MyClawAppAttachmentMeta {
   id: string;
@@ -44,6 +45,8 @@ export interface MyClawAppChatSend {
   threadId?: string;
   ts?: string;
   attachments?: MyClawAppAttachmentRef[];
+  /** Device location; any client-supplied address is ignored by the server. */
+  location?: ChatLocationInput;
   /**
    * Only when `threadId` is a sub-agent handle: the conversation the roster was read from, which
    * is the caller the visibility rule is applied to. Not a claim the server takes on trust -- it
@@ -646,6 +649,7 @@ export type MyClawAppHistoryEntry =
       text: string;
       ts: string;
       attachments?: MyClawAppHistoryAttachment[];
+      location?: ChatLocation;
       /** What was heard, per recording id, so each replayed bubble carries its own words. */
       transcripts?: Record<string, string>;
       /** What the model thought before this reply, replayed collapsed -- docs/reasoning-visibility.md. */
@@ -686,6 +690,21 @@ export interface MyClawAppChatMessage {
    * talking is a warning that gets read as content.
    */
   notice?: boolean;
+}
+
+export interface MyClawAppLocationCapabilities {
+  type: "location.capabilities";
+  enabled: boolean;
+  address: boolean;
+  provider: "geoapify";
+}
+
+/** The server-confirmed location for the user bubble identified by `replyToId`. */
+export interface MyClawAppChatLocation {
+  type: "chat.location";
+  threadId: string;
+  replyToId: string;
+  location: ChatLocation;
 }
 
 /** A run started answering on a thread: the app keeps its Stop affordance until the matching end. */
@@ -819,6 +838,7 @@ export interface MyClawAppChatHistory {
 /** Which request was refused, so the app can show it where the user is looking. */
 export type MyClawAppErrorScope =
   | "chat"
+  | "location"
   | "files"
   | "session"
   | "diag"
@@ -1566,6 +1586,8 @@ export interface MyClawAppChatCleared {
 
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
+  | MyClawAppLocationCapabilities
+  | MyClawAppChatLocation
   | MyClawAppRunStart
   | MyClawAppRunEnd
   | MyClawAppStreamStart

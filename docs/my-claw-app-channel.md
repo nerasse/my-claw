@@ -88,6 +88,7 @@ the first answer wins.
 
 ```json
 { "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }, { "id": "uuid", "type": "audio", "audioAsVoice": true, "durationMs": 4200 }] }
+{ "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "location": { "latitude": 48.8566, "longitude": 2.3522, "accuracyMeters": 24, "capturedAt": "iso" } }
 { "type": "chat.stop", "threadId": "projet" }
 { "type": "session.list" }
 { "type": "commands.list" }
@@ -143,6 +144,24 @@ the first answer wins.
 { "type": "tags.delete", "name": "opus" }
 { "type": "ping" }
 ```
+
+On every WebSocket connection the server sends the capability gate before other optional greetings:
+
+```json
+{ "type": "location.capabilities", "enabled": true, "address": true, "provider": "geoapify" }
+```
+
+The client hides the location action until this frame says `enabled: true`. A `chat.send.location`
+value contains only device facts. The server ignores any client-supplied address, reverse geocodes
+with its server-only `GEOAPIFY_API_KEY`, and broadcasts the enriched user value as:
+
+```json
+{ "type": "chat.location", "threadId": "projet", "replyToId": "uuid", "location": { "latitude": 48.8566, "longitude": 2.3522, "accuracyMeters": 24, "capturedAt": "iso", "address": { "formatted": "...", "level": "street", "provider": "geoapify" } } }
+```
+
+Location data is persisted with the user turn and replayed in `chat.history`; it is not a media file.
+Provider failure never prevents raw coordinates from being delivered. Do not log coordinates or
+provider request URLs.
 
 - `session.archive` / `session.unarchive` move a conversation between the drawer and the
   archived list by setting or clearing `archivedAt` on the session. Nothing is moved,

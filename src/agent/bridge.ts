@@ -362,6 +362,7 @@ export class AgentBridge implements AgentBackend {
         content: transformedContent,
         timestamp: now,
         ...(images.length > 0 ? { attachments: images } : {}),
+        ...(message.location ? { location: message.location } : {}),
       });
       messageCountBeforeLoop = session.messages.length;
 
@@ -751,7 +752,12 @@ export class AgentBridge implements AgentBackend {
 
     const userContent = this.preprocessor.buildUserContent(injected);
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
-    session.messages.push({ role: "user", content: transformedContent, timestamp: new Date().toISOString() });
+    session.messages.push({
+      role: "user",
+      content: transformedContent,
+      timestamp: new Date().toISOString(),
+      ...(injected.location ? { location: injected.location } : {}),
+    });
 
     if (vision && injected.attachments.some((a) => a.type === "image" && a.path)) {
       chatMessages.push({ role: "user", content: await this.preprocessor.buildImageContent(injected) });
