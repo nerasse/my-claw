@@ -456,3 +456,135 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
     await deleteSession(id);
   }
 });
+
+
+test("a one-shot survives its run, scoped to the conversation that asked for it", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const parent = "my-claw-app/thread/owner/main";
+  const fetchMock = mockFetch(async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "one-shot done" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }) as never,
+  );
+
+  try {
+    const { id, result } = await runner.spawn({
+      displayName: "researcher",
+      type: "research",
+      mode: "run",
+      task: "quick look",
+      parentMessage: appMessage("main"),
+      existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e),
+      parentSessionId: parent,
+      visibility: "global",
+    });
+
+    assert.equal(result, "one-shot done");
+    assert.match(id, /^subagent\/run-/);
+
+    // On disk, with its turns, and carrying the name the model chose.
+    const session = await loadSession(id);
+    assert.ok(session, "a one-shot must survive its run now");
+    assert.equal(session!.meta?.displayName, "researcher");
+    assert.ok(session!.messages.some((m) => m.role === "assistant"));
+
+    // Listed for its parent, never for another conversation: it stays private.
+    const mine = await runner.list(reg, parent);
+    assert.ok(mine.some((a) => a.id === id));
+    const theirs = await runner.list(reg, "my-claw-app/thread/owner/other");
+    assert.ok(!theirs.some((a) => a.id === id));
+
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a stored one-shot can be driven again from its conversation", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const parent = "my-claw-app/thread/owner/main";
+  const fetchMock = mockFetch(async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "answer" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }) as never,
+  );
+
+  try {
+    const { id } = await runner.spawn({
+      displayName: "peek",
+      type: "research",
+      mode: "run",
+      task: "first",
+      parentMessage: appMessage("main"),
+      existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e),
+      parentSessionId: parent,
+      visibility: "global",
+    });
+
+    const out = await runner.send(id, "again, please", undefined, appMessage("main"), reg, parent);
+    assert.equal(out, "answer");
+    const session = await loadSession(id);
+    assert.ok(session!.messages.some((m) => m.role === "user" && m.content.includes("again, please")));
+
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("deleteChildrenOf removes the private children of a conversation, and nothing else", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const parent = "my-claw-app/thread/owner/main";
+  const other = "my-claw-app/thread/owner/other";
+
+  const privateChild = "subagent/one-shot-0001";
+  const privateSession = "subagent/helper-0002";
+  const shared = "subagent/shared-0003";
+  const foreign = "subagent/foreign-0004";
+  for (const [id, visibility, parentSessionId] of [
+    [privateChild, "private", parent],
+    [privateSession, "private", parent],
+    [shared, "global", parent],
+    [foreign, "private", other],
+  ] as const) {
+    await saveSession(id, subSession(id, { visibility, parentSessionId }));
+  }
+
+  try {
+    const removed = await runner.deleteChildrenOf(parent, reg);
+    assert.equal(removed, 2);
+    assert.equal(await loadSession(privateChild), null);
+    assert.equal(await loadSession(privateSession), null);
+    assert.ok(await loadSession(shared), "a shared agent outlives its creator's conversation");
+    assert.ok(await loadSession(foreign), "another conversation's private agent is untouched");
+  } finally {
+    for (const id of [privateChild, privateSession, shared, foreign]) await deleteSession(id).catch(() => {});
+  }
+});
+
+test("deleteChildrenOf spares a child whose run is still in flight", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const parent = "my-claw-app/thread/owner/main";
+  const busy = "subagent/busy-0005";
+  const idle = "subagent/idle-0006";
+  await saveSession(busy, subSession(busy, { visibility: "private", parentSessionId: parent }));
+  await saveSession(idle, subSession(idle, { visibility: "private", parentSessionId: parent }));
+
+  const busyRegistry = { isRunning: (id: string) => id === busy };
+  try {
+    const removed = await runner.deleteChildrenOf(parent, busyRegistry);
+    assert.equal(removed, 1);
+    assert.ok(await loadSession(busy), "a running agent would resurrect its file at the end of the run");
+    assert.equal(await loadSession(idle), null);
+  } finally {
+    for (const id of [busy, idle]) await deleteSession(id).catch(() => {});
+  }
+});

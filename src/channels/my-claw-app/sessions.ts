@@ -133,6 +133,12 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   constructor(
     private sessionManager: SessionManager,
     private files: SessionFileStore,
+    /**
+     * Runs after a conversation is removed, with its session id: the hook that lets the private
+     * sub-agents it owns die with it (docs/subagent-navigation.md). Injected so the channel does
+     * not reach into the sub-agent runner.
+     */
+    private onRemove?: (sessionId: string) => Promise<void>,
   ) {}
 
   resolveSessionId(owner: string, threadId: string): string {
@@ -261,7 +267,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   }
 
   async remove(owner: string, threadId: string): Promise<void> {
-    await this.sessionManager.deleteSession(this.resolveSessionId(owner, threadId));
+    const sessionId = this.resolveSessionId(owner, threadId);
+    await this.sessionManager.deleteSession(sessionId);
+    await this.onRemove?.(sessionId);
   }
 
   /**

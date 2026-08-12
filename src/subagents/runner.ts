@@ -103,7 +103,7 @@ export class SubAgentRunner {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model);
+      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model);
     }
 
     const id = generateId(displayName, existingIds);
@@ -252,7 +252,37 @@ export class SubAgentRunner {
     return out;
   }
 
+  /**
+   * Removes the private sub-agents a conversation owns. Called when the app deletes the
+   * conversation: a private agent is reachable from its parent alone, so a deleted parent leaves
+   * it an unreachable orphan. Global agents survive on purpose -- they are shared workers another
+   * conversation may still drive, and the roster of any conversation still lists them for a
+   * deliberate kill. A running agent is skipped: its run would resurrect the file via saveSession.
+   */
+  async deleteChildrenOf(parentSessionId: string, registry: { isRunning: (id: string) => boolean }): Promise<number> {
+    const dir = join(MY_CLAW_DIR, "sessions", "subagent");
+    let removed = 0;
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const id = `subagent/${entry.name.slice(0, -5)}`;
+        const session = await loadSession(id);
+        if (!session?.meta) continue;
+        if (session.meta.visibility !== "private") continue;
+        if (session.meta.parentSessionId !== parentSessionId) continue;
+        if (registry.isRunning(id)) continue;
+        await deleteSession(id);
+        removed += 1;
+      }
+    } catch {
+      // no subagents dir
+    }
+    return removed;
+  }
+
   private async runOneShot(
+    displayName: string,
     type: SubAgentType,
     task: string,
     workspaceDir: string | undefined,
@@ -263,11 +293,12 @@ export class SubAgentRunner {
     model?: string,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
-    // A one-shot agent is unnamed and deleted when the run ends. It gets metadata only so its
-    // tokens can be attributed, and that metadata is what makes an agent listable -- hence
-    // private, or giving it a parent would also expose it to every other chat.
+    // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
+    // like a chat, so deleting it would make the roster promise something it cannot deliver. It
+    // stays private -- an unnamed agent must not leak past the conversation that asked for it --
+    // and dies with its parent conversation (deleteChildrenOf).
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, {
-      displayName: id.slice("subagent/".length),
+      displayName: displayName || id.slice("subagent/".length),
       type,
       workspaceDir,
       parentSessionId,
@@ -284,7 +315,8 @@ export class SubAgentRunner {
     } finally {
       this.activeCount -= 1;
       indexSessionArchive(session);
-      await deleteSession(id).catch(() => {});
+      // The run wrote its turns into the session in memory; this is the moment they land on disk.
+      await saveSession(id, session);
     }
   }
 

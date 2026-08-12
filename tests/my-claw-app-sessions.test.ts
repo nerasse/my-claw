@@ -1,7 +1,7 @@
 import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { saveSession, deleteSession, type SessionData } from "../src/sessions/store.ts";
+import { saveSession, deleteSession, loadSession, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { writeFile } from "node:fs/promises";
@@ -384,5 +384,46 @@ describe("SessionFileStore naming", () => {
     assert.ok((await files.read(DEVICE, "naming", saved.id))!.path.endsWith("(v2).pdf"));
     assert.equal(await files.remove(DEVICE, "naming", saved.id), true);
     assert.equal(await files.findById(DEVICE, "naming", saved.id), null);
+  });
+});
+
+
+describe("MyClawAppSessionStoreImpl.remove cascade", () => {
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    sessionId = `my-claw-app/thread/${DEVICE}/${THREAD}`;
+    await deleteSession(sessionId);
+  });
+
+  test("removing a conversation hands its session id to the cascade hook", async () => {
+    const seen: string[] = [];
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), async (id) => {
+      seen.push(id);
+    });
+    await saveSession(sessionId, session(sessionId, []));
+    await store.remove(DEVICE, THREAD);
+
+    assert.deepEqual(seen, [sessionId]);
+    assert.equal(await loadSession(sessionId), null);
+  });
+
+  test("the hook runs after the conversation is gone, so a cascade sees a dead parent", async () => {
+    const order: string[] = [];
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), async () => {
+      order.push("cascade");
+    });
+    await saveSession(sessionId, session(sessionId, []));
+    await store.remove(DEVICE, THREAD);
+    order.push("after");
+    assert.deepEqual(order, ["cascade", "after"]);
+  });
+
+  test("without a hook, removing still works", async () => {
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    await saveSession(sessionId, session(sessionId, []));
+    await store.remove(DEVICE, THREAD);
+    assert.equal(await loadSession(sessionId), null);
   });
 });

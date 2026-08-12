@@ -30,7 +30,10 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
 
 ### `spawn(name, type, mode, task, workspaceDir?)`
 
-- `mode: "run"` — one-shot. Max 3 concurrent runs globally. Session discarded after run.
+- `mode: "run"` — one-shot. Max 3 concurrent runs globally. The session is **kept** after the run:
+  the app lists it as a temporary sub-agent and can open and drive it like any other. It is always
+  `private`, so only the conversation that asked for it sees it, and it dies with that conversation
+  (the app's delete cascades, see `docs/subagent-navigation.md`).
 - `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>.json`. Returns stable ID.
 - `workspaceDir` — optional absolute path. All filesystem tools (`read`, `write`, `bash`, `ls`, `find`, `grep`) resolve against this path instead of the global workspace.
 

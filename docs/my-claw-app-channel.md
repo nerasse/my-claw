@@ -296,10 +296,13 @@ the first answer wins.
 - `subagents.list { threadId }` lists the sub-agents reachable from that conversation, as
   `subagents.list.result { threadId, agents: [...] }`. `threadId` is the parent conversation;
   the answer is scoped by the runner, so a `private` sub-agent belonging to another conversation
-  is absent rather than hidden. Each entry carries its own `threadId` (`sub-<16 hex>`, a digest
-  of the session id) which is what the app opens; `id` is the real session id and is what the
-  roster shows, because `displayName` is picked by the model and is not unique. Refused on the
-  `subagents` scope when the threadId is invalid or the runner is not wired.
+  is absent rather than hidden. One-shot agents (`subagent/run-<uuid>`) are kept after their run
+  and listed the same way, for their parent conversation only. Each entry carries its own
+  `threadId` (`sub-<16 hex>`, a digest of the session id) which is what the app opens; `id` is the
+  real session id and is what the roster shows, because `displayName` is picked by the model and is
+  not unique. Refused on the `subagents` scope when the threadId is invalid or the runner is not
+  wired. Deleting a conversation removes its private sub-agents with it; shared ones survive and
+  stay listed everywhere.
 - `chat.send` with a sub-agent handle as its `threadId` drives that sub-agent: history, streaming,
   tool cards and reasoning behave as in any conversation, and `chat.stop` reaches it. Such a send
   carries `parentThreadId`, the conversation the roster was read from, which is matched against the

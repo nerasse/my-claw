@@ -913,7 +913,15 @@ async function main() {
     }
     if (!isMyClawAppChannelEnabled(config)) return;
     const myClawAppConfig = config.channels["my-claw-app"]!;
-    const myClawAppSessions = new MyClawAppSessionStoreImpl(sessionManager, new SessionFileStore(myClawAppConfig));
+    const myClawAppSessions = new MyClawAppSessionStoreImpl(
+      sessionManager,
+      new SessionFileStore(myClawAppConfig),
+      // Deleting a conversation takes its private sub-agents with it; the shared ones survive and
+      // stay listed in every roster.
+      async (sessionId) => {
+        await subAgentRunner.deleteChildrenOf(sessionId, subAgentRegistry);
+      },
+    );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawAppRef = myClawApp;
     noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));

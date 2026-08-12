@@ -28,22 +28,26 @@ Out of v1, deliberately:
 
 ## Three constraints that shape the design
 
-### Constraint 1 — a one-shot no longer exists
+### Constraint 1 — a one-shot is a temporary, kept until its parent dies
 
-`mode: "run"` sub-agents are deleted when the run ends (`subagents/runner.ts:260`). They cannot be
-reopened or chatted with. Only `mode: "session"` sub-agents live on disk and are re-invocable
-(`runner.ts:100-103`).
+`mode: "run"` sub-agents keep their session on disk after the run (`subagents/runner.ts`,
+`runOneShot` saves it). They are unnamed workers, so they stay `private`: reachable from the
+conversation that asked for them, invisible everywhere else, and **deleted with that conversation**
+(`deleteChildrenOf`, hooked to the app's conversation delete). The transcript is also indexed in
+the search archive as before.
 
-The two categories the user asked for are therefore not cosmetic — they carry different
-capabilities, and the UI must not offer an action that cannot exist:
+The two categories the user asked for remain real, with different lifecycles:
 
 | | named (`mode: "session"`) | temporary (`mode: "run"`) |
 | --- | --- | --- |
 | id | `subagent/<displayName>-<hex4>` | `subagent/run-<uuid>` |
-| on disk | yes, survives reboot | no, deleted at end of run |
-| open as chat | yes | **no** |
-| re-invoke | yes (`send`) | no |
-| row action | open the chat | scroll to its `spawn` card |
+| visibility | `global` by default, `private` on ask | always `private` |
+| lifespan | until killed, or deleted with the parent if `private` | deleted with its parent conversation |
+| open as chat | yes | **yes** |
+| re-invoke | yes (`send`) | yes, from its own conversation |
+| row action | open the chat | open the chat |
+
+One-shots that died before this change do not come back; only future runs are kept.
 
 ### Constraint 2 — a sub-agent is steerable mid-run (since the app drives it)
 
@@ -90,9 +94,9 @@ Two facts the UI must respect:
   what disambiguates (`registry.ts:15-21`). Rows show the full id, never the bare name, or two
   `research` agents become indistinguishable.
 - **`status` is only `idle | running`**, derived from the in-memory queue map
-  (`registry.ts:58-60`). There is no persisted `done` or `failed`. v1 does not invent one: a named
-  row shows `running` or `idle`, and outcome (`ok`, duration) is shown only for temporary rows,
-  where it comes from the `spawn` tool card that is already in the transcript.
+  (`registry.ts:58-60`). There is no persisted `done` or `failed`. Every row, named or temporary,
+  shows `running` or `idle`; the run's outcome (`ok`, duration) stays on its `spawn` card in the
+  transcript, where it always lived.
 
 ## Thread mapping — how a sub-agent becomes addressable
 
@@ -324,13 +328,11 @@ Picking a row **closes the roster** and opens the sub-agent. The roster is a cho
 you come back to: that is what keeps B1's promise literal — the back row inside a sub-agent always
 names the parent conversation, and the stack never goes three deep.
 
-**Temporary rows need no server data.** The parent transcript already holds the outcome of every
-one-shot: the `spawn` tool card carries `args.mode`, `args.type`, `ok`, `durationMs` and `output`
-(`core/chat.ts:28-31`, `core/protocol.ts:110-118`). v1 derives the `TEMPORARY` group client-side
-from the chat items, which is why no SQLite listing function is required. `AgentsScreen` receives
-them from the parent thread it was opened on. Tapping a temporary row closes the roster and scrolls
-to its `spawn` card. Consequence to accept: one-shots from *other* conversations are not listed —
-consistent with them being forced `private` (`runner.ts:247`).
+**Temporary rows come from the server, like the named ones.** A kept one-shot is on disk and
+scoped `private`, so the roster of its parent conversation lists it; `groupRoster` splits the
+answer into `named` and `temporary` on the `subagent/run-` prefix. Tapping a temporary row opens
+its chat, exactly like a named one — its header names the parent, its transcript is the run's.
+One-shots from *other* conversations are absent, as `private` requires.
 
 ### A3 — the spawn tool card as a door
 
@@ -354,8 +356,8 @@ control.
   matching entry (the agent may since have been killed).
 - Collapsed cards are untouched: the door appears in the expanded body only, so transcript density
   is unchanged.
-- For `args.mode === "run"` there is no door — the session is gone. The card is the whole record,
-  which is exactly what the temporary rows point back to.
+- For `args.mode === "run"` there is no door — a one-shot's id never appears in the card's args, so
+  it cannot be matched to a roster entry. Its row in the roster is the door.
 
 ### B1 — inside a sub-agent
 
@@ -440,10 +442,10 @@ screen where nothing further happens while the real work restarts elsewhere.
 ## Traps
 
 - **30-day pruning.** `pruneOldSessions` deletes sessions older than 30 days and exempts only
-  `my-claw-app/` (`store.ts:331-361`). A UI that calls a named sub-agent "re-invocable" while the
-  server silently deletes it is lying, so `subagent/` joins `PRUNE_EXEMPT_PREFIXES`
-  (`store.ts:339`). Accepted cost: the directory is no longer bounded by time, and `kill` from the
-  `⋮` becomes the only way to reclaim it — which is part of why kill is in v1.
+  `my-claw-app/` (`store.ts:331-361`). A UI that calls a sub-agent "re-invocable" while the server
+  silently deletes it is lying, so `subagent/` joins `PRUNE_EXEMPT_PREFIXES`
+  (`store.ts:339`). Reclaiming the space is `kill` from the `⋮`, or deleting the owning
+  conversation — which cascades to its private sub-agents (`deleteChildrenOf`).
 - **`displayName` is unsanitized model input** (`registry.ts:18`). Rendered raw it can carry
   newlines or RTL overrides. Rows must clamp to one line and strip control characters.
 - **A killed agent leaves a stale door.** The `spawn` card outlives the agent. The door is
@@ -477,16 +479,23 @@ Server:
   the same age still gets pruned (proving the exemption is scoped, not blanket).
 - The leak test that matters: a sub-agent's transcript must never be replayed into the parent's
   prompt except through `subagents.report`. Make it fail on purpose first, as with reasoning.
+- A one-shot survives its run on disk, stays listed for its parent and hidden from every other
+  conversation, and can be driven again.
+- `deleteChildrenOf`: private children of the removed conversation die, a `global` one and another
+  conversation's private one survive, and a running one is spared (its run would resurrect the
+  file).
+- Removing a conversation through the app's session store triggers the cascade with the right
+  session id, after the conversation itself is gone.
 
 App:
 
 - Grouping and ordering: fixtures with two types, mixed statuses, named and temporary; assert the
-  exact row order.
+  exact row order, with `subagent/run-` entries landing in `temporary`.
 - The header counter is absent at 0, shows the running marker, and matches the roster length.
 - The door renders only for `mode: "session"`, `ok`, and a roster hit; absent otherwise.
 - Back returns to the parent from both the roster route and the tool-card route, hardware back
   included; and the roster is not on the stack behind a sub-agent.
-- A temporary row scrolls to its `spawn` card and does not attempt to open a chat.
+- A temporary row opens the one-shot's chat like a named row, and its header names the parent.
 - `kill` and `reset` each require the confirmation sheet; `kill` returns to the parent.
 
 ## Decisions taken
