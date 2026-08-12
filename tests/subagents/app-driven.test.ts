@@ -199,27 +199,60 @@ test("a parent-driven send stays non-streaming", async () => {
   }
 });
 
-test("a private sub-agent of another platform is not drivable, a global one is", async () => {
-  // This mirrors the ownership rule wired in index.ts. Kept as a unit on isReachableFrom's
-  // observable behaviour: a caller that is not the creator gets the same "not found" as a
-  // non-existent agent (docs/subagent-visibility.md).
-  const priv = "subagent/tg-private-b1c2";
-  const glob = "subagent/tg-global-d3e4";
-  await saveSession(priv, subSession(priv, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
-  await saveSession(glob, subSession(glob, { visibility: "global", parentSessionId: "telegram/dm/someone" }));
+/**
+ * The caller the app declares on the frame is what the visibility rule is applied to. These four
+ * cases are the whole rule: the one existing one, reached through this path too.
+ */
+test("the declared parent conversation is what authorizes a private sub-agent", async () => {
+  const mine = "subagent/mine-b1c2";
+  const other = "subagent/other-d3e4";
+  const shared = "subagent/shared-f5a6";
+  await saveSession(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
+  await saveSession(other, subSession(other, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
+  await saveSession(shared, subSession(shared, { visibility: "global", parentSessionId: "telegram/dm/someone" }));
+
+  const agent = trapBackend();
+  const router = new MessageRouter(new SessionManager(), agent, config);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
+
+  // The wiring under test, mirroring index.ts: the frame's parentThreadId becomes the caller.
+  router.onSubAgentSend(async (sessionId, message, options) => {
+    const frame = message.raw as { parentThreadId?: unknown } | null;
+    const claimed = typeof frame?.parentThreadId === "string" ? frame.parentThreadId : null;
+    const caller = claimed ? `my-claw-app/thread/${message.chatId}/${claimed}` : "";
+    return runner.send(sessionId, message.text, undefined, message, reg, caller, options.signal);
+  });
+
+  const ask = async (agentId: string, parentThreadId?: string): Promise<string> => {
+    const msg = appMessage(subagentSessionToThread(agentId)!, "hi");
+    msg.raw = { type: "chat.send", ...(parentThreadId ? { parentThreadId } : {}) };
+    return (await router.route(msg))?.text ?? "";
+  };
+
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never,
+    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }) as never,
   );
   try {
-    const refused = await runner.send(priv, "hi", undefined, appMessage("main"), reg, "my-claw-app/thread/owner/main");
-    assert.match(refused, /not found/);
-    const allowed = await runner.send(glob, "hi", undefined, appMessage("main"), reg, "my-claw-app/thread/owner/main");
-    assert.equal(allowed, "ok");
+    // Its own conversation reaches it.
+    assert.equal(await ask(mine, "main"), "ok");
+    // Naming a different conversation does not, even though the owner is the same: a private
+    // sub-agent stays scoped to the conversation that made it.
+    assert.match(await ask(mine, "other-chat"), /not found/);
+    // No declared parent is an unknown caller, and an unknown caller never reaches a private one.
+    assert.match(await ask(mine), /not found/);
+    // A private sub-agent of another platform is out of reach whatever is declared.
+    assert.match(await ask(other, "main"), /not found/);
+    // Globals were always drivable from anywhere, including with no parent declared.
+    assert.equal(await ask(shared), "ok");
+    assert.deepEqual(agent.calls, []);
   } finally {
     fetchMock.restore();
-    await deleteSession(priv);
-    await deleteSession(glob);
+    await deleteSession(mine);
+    await deleteSession(other);
+    await deleteSession(shared);
   }
 });

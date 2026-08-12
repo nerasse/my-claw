@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, loadSession } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread } from "./sessions/store.ts";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -48,7 +48,7 @@ import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
-import { MyClawAppSessionStoreImpl } from "./channels/my-claw-app/sessions.ts";
+import { MyClawAppSessionStoreImpl, sanitizeThreadId } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
 import {
@@ -1914,30 +1914,27 @@ async function main() {
     // A message the app sends inside a sub-agent goes through the runner, never through a normal
     // run: see the refusal in MessageRouter.
     //
-    // Authorization cannot use isReachableFrom directly here. That rule answers "may this
-    // conversation drive that agent", and a chat.send carries only the sub-agent's own handle, not
-    // the conversation the roster was read from. So the rule applied is ownership: a private
-    // sub-agent is drivable from the app only when the session that created it belongs to this
-    // same owner. A private agent spawned from Telegram stays out of the app, which is the
-    // containment that mattered; two of the owner's own conversations can reach each other's
-    // private agents, which is the deliberate relaxation. See docs/subagent-navigation.md.
+    // The caller is the conversation the app opened the sub-agent from, carried on the frame and
+    // resolved here, so the runner applies the one visibility rule it already applies to the
+    // `send` tool -- no second rule for this path. An absent or malformed parent yields "", which
+    // isReachableFrom accepts for a global sub-agent and refuses for a private one: the fallback
+    // is the safe one, not the permissive one.
     router.onSubAgentSend(async (sessionId, message, options) => {
-      const session = await loadSession(sessionId);
-      const meta = session?.meta;
-      if (!meta) return `Error: sub-agent ${sessionId} not found.`;
-      const ownedHere =
-        meta.parentSessionId.startsWith(`${message.platform}/thread/${message.chatId}/`) ||
-        meta.parentSessionId === `${message.platform}/dm/${message.userId}`;
-      if (meta.visibility === "private" && !ownedHere) {
-        return `Error: sub-agent ${sessionId} not found.`;
-      }
+      const frame = message.raw as { parentThreadId?: unknown } | null;
+      const claimed = typeof frame?.parentThreadId === "string" ? sanitizeThreadId(frame.parentThreadId) : null;
+      const callerSessionId = claimed
+        ? SessionManager.resolveSessionId("my-claw-app", "dm", message.chatId, message.userId, {
+            threadId: claimed,
+            sessionScope: "per-user",
+          })
+        : "";
       return subAgentRunner.send(
         sessionId,
         message.text,
         message.attachments.length > 0 ? message.attachments : undefined,
         message,
         subAgentRegistry,
-        meta.parentSessionId,
+        callerSessionId,
         options.signal,
         options.onToken
           ? { onToken: options.onToken, onToolUse: options.onToolUse, reasoning: options.reasoning }

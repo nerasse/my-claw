@@ -146,19 +146,26 @@ through is the dangerous half of the branch.
 
 ### Who may drive a sub-agent from the app
 
-`isReachableFrom` answers "may this conversation drive that agent", but a `chat.send` carries only
-the sub-agent's own handle — not the conversation whose roster it came from. So the rule applied on
-this path is **ownership**: a `private` sub-agent is drivable from the app only when the session
-that created it belongs to the same owner (`<platform>/thread/<owner>/…` or `<platform>/dm/<user>`).
+`isReachableFrom` answers "may this conversation drive that agent", and it needs the calling
+conversation. A `chat.send` names only the sub-agent, so it carries **`parentThreadId`**: the
+conversation the roster was read from.
 
-- A private sub-agent spawned from Telegram stays out of the app. That is the containment that
-  mattered.
-- Two of the owner's own app conversations can reach each other's private sub-agents. That is a
-  deliberate relaxation, and the reason it is acceptable is that the alternative — carrying a
-  `parentThreadId` on every `chat.send` — puts a claim on the wire that the server would have to
-  trust anyway.
+This is not a claim taken on trust. It is resolved to a session id and handed to the runner as the
+caller, where the existing rule matches it against the sub-agent's recorded `parentSessionId`. The
+app's path therefore has **no rule of its own** — one rule, applied in one place, for the `send`
+tool and the app alike.
 
-`global` sub-agents are unaffected: they were always drivable from any conversation.
+The fallback is the safe one rather than the permissive one: absent or malformed, the caller is
+`""`, which `isReachableFrom` refuses for a `private` sub-agent and accepts for a `global` one
+(`runner.ts:33-37`). An old app, or a crafted frame, reaches exactly what any other conversation
+could already reach.
+
+| Sub-agent | `parentThreadId` | Result |
+| --- | --- | --- |
+| private, parent = this conversation | that conversation | driven |
+| private, parent = another conversation | any | not found |
+| private, any parent | absent | not found |
+| global | anything, or absent | driven |
 
 `SubAgentRunner.send` calls the non-streaming `handleMessage` (`runner.ts:343`), so as it stands
 the user would stare at a frozen screen until the whole answer lands. A chat that does not stream

@@ -44,6 +44,14 @@ export interface MyClawAppChatSend {
   threadId?: string;
   ts?: string;
   attachments?: MyClawAppAttachmentRef[];
+  /**
+   * Only when `threadId` is a sub-agent handle: the conversation the roster was read from, which
+   * is the caller the visibility rule is applied to. Not a claim the server takes on trust -- it
+   * is matched against the sub-agent's recorded parent. Absent or unresolvable means an unknown
+   * caller, which reaches `global` sub-agents and never a `private` one.
+   * See docs/subagent-navigation.md.
+   */
+  parentThreadId?: string;
 }
 
 export interface MyClawAppSessionList {

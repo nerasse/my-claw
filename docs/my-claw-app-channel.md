@@ -300,6 +300,12 @@ the first answer wins.
   of the session id) which is what the app opens; `id` is the real session id and is what the
   roster shows, because `displayName` is picked by the model and is not unique. Refused on the
   `subagents` scope when the threadId is invalid or the runner is not wired.
+- `chat.send` with a sub-agent handle as its `threadId` drives that sub-agent: history, streaming,
+  tool cards and reasoning behave as in any conversation, and `chat.stop` reaches it. Such a send
+  carries `parentThreadId`, the conversation the roster was read from, which is matched against the
+  sub-agent's recorded parent to apply the visibility rule; absent, only a `global` sub-agent
+  answers. The run is serialized against any other run of the same sub-agent, so a message sent
+  while it is busy is delivered when the current run ends.
 
 ### Server -> Device
 
