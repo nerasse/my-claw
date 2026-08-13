@@ -370,6 +370,18 @@ done
 systemctl enable my-claw-auto-update.timer >/dev/null 2>&1 || true
 systemctl start my-claw-auto-update.timer 2>/dev/null || true
 
+# Heal installs that predate the pinned VNC port: a hand-rolled user-session stack
+# (~/.config/systemd/user/{xvfb,x11vnc,novnc,chromium-cdp}.service) squats :99, :5900 and
+# :6080. The units now kill the squatter on start, but it comes back under its own
+# Restart=always — and its Chromium on the same :99 is what a human takeover would land on.
+for unit in xvfb x11vnc novnc chromium-cdp; do
+  [ -f "${TARGET_HOME}/.config/systemd/user/${unit}.service" ] || continue
+  if runuser -u "${TARGET_USER}" -- env "XDG_RUNTIME_DIR=/run/user/$(id -u "${TARGET_USER}")" \
+    systemctl --user disable --now "${unit}.service" >/dev/null 2>&1; then
+    echo "Disabled conflicting user unit: ${unit}.service"
+  fi
+done
+
 echo "Starting services..."
 start_services
 

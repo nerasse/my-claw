@@ -198,6 +198,12 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 - noVNC :6080 shows the live Chromium on Xvfb :99
 - When subagent asks for help, user opens browser at :6080
 - Subagent detects page change via next snapshot and continues
+- The chain is `websockify :6080 -> x11vnc :5900 -> Xvfb :99`, so both hops are pinned:
+  `my-claw-vnc` passes `-rfbport 5900` (x11vnc otherwise drifts to 5901+ when the port is
+  taken, leaving noVNC proxying nothing) and both units kill a stale x11vnc/websockify in
+  `ExecStartPre`. A second Chromium on the same `:99` is the failure to look for: the last
+  window mapped wins, so a human takeover can land on a browser the sidecar does not drive
+  (the sidecar's own instance is the one answering `CDP_URL`, i.e. `127.0.0.1:9222`).
 
 ## Tests
 

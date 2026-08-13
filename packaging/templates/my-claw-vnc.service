@@ -7,7 +7,11 @@ Requires=my-claw-xvfb.service
 Type=simple
 User={{USER}}
 Group={{USER}}
-ExecStart=/usr/bin/x11vnc -display :99 -nopw -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr
+# Without -rfbport, x11vnc silently falls back to 5901+ when 5900 is taken (a leftover
+# user-session x11vnc is enough), and my-claw-novnc then proxies a dead port. Kill the
+# squatter, then pin the port so the pair can never drift apart.
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -x x11vnc 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
+ExecStart=/usr/bin/x11vnc -display :99 -rfbport 5900 -nopw -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr
 Restart=always
 RestartSec=5
 

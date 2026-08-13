@@ -196,6 +196,18 @@ APP_DIR=${APP_DIR}
 EOF
 chmod 644 /etc/my-claw/.install-meta
 
+# A hand-rolled user-session browser stack (~/.config/systemd/user/{xvfb,x11vnc,novnc,
+# chromium-cdp}.service) squats :99, :5900 and :6080 and starves these units: novnc then
+# crash-loops on EADDRINUSE while the stale viewer shows a second Chromium the sidecar
+# does not drive. Best-effort: no user session, nothing to disable.
+for unit in xvfb x11vnc novnc chromium-cdp; do
+  [ -f "${TARGET_HOME}/.config/systemd/user/${unit}.service" ] || continue
+  if runuser -u "${TARGET_USER}" -- env "XDG_RUNTIME_DIR=/run/user/$(id -u "${TARGET_USER}")" \
+    systemctl --user disable --now "${unit}.service" >/dev/null 2>&1; then
+    echo "Disabled conflicting user unit: ${unit}.service"
+  fi
+done
+
 # Reload systemd
 systemctl daemon-reload
 

@@ -7,6 +7,9 @@ Requires=my-claw-vnc.service
 Type=simple
 User={{USER}}
 Group={{USER}}
+# A leftover websockify on 6080 makes this unit crash-loop on EADDRINUSE forever, while the
+# stale one keeps serving a VNC view of whatever it was pointed at.
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "websockify.*6080" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
 ExecStart=/usr/bin/websockify --web /usr/share/novnc 6080 localhost:5900
 Restart=always
 RestartSec=5
