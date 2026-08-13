@@ -5,14 +5,14 @@ import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppSessionSummary } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
-  history(owner: string, threadId: string, limit?: number): Promise<MyClawAppHistoryEntry[]>;
+  history(owner: string, threadId: string, limit?: number, before?: number): Promise<MyClawAppHistoryPage>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
@@ -179,11 +179,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return summaries;
   }
 
-  async history(owner: string, threadId: string, limit = HISTORY_LIMIT): Promise<MyClawAppHistoryEntry[]> {
+  async history(owner: string, threadId: string, limit = HISTORY_LIMIT, before = 0): Promise<MyClawAppHistoryPage> {
     const session = await loadSession(this.resolveSessionId(owner, threadId));
-    if (!session) return [];
+    if (!session) return { entries: [], hasMore: false, nextBefore: before };
 
-    const window = session.messages.slice(-limit);
+    // `before` counts back from the newest message, so page N is the slice that ends where the
+    // previous one began. Clamped rather than validated: a cursor past the start of a session
+    // is an app that scrolled further than there is history, which is an empty page, not an error.
+    const total = session.messages.length;
+    const end = Math.max(total - Math.max(before, 0), 0);
+    const start = Math.max(end - Math.max(limit, 0), 0);
+    const window = session.messages.slice(start, end);
+    const hasMore = start > 0;
+    const nextBefore = total - start;
     // Outputs live in the role:"tool" messages that follow the assistant turn, keyed by call id.
     const outputs = new Map<string, string>();
     for (const message of window) {
@@ -249,7 +257,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         });
       }
     }
-    return entries;
+    return { entries, hasMore, nextBefore };
   }
 
   /**

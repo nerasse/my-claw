@@ -2503,8 +2503,17 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const messages = await this.store.history(ws.data.owner, threadId, frame.limit);
-      const result: MyClawAppChatHistory = { type: "chat.history", threadId, messages };
+      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before);
+      const result: MyClawAppChatHistory = {
+        type: "chat.history",
+        threadId,
+        messages: page.entries,
+        hasMore: page.hasMore,
+        nextBefore: page.nextBefore,
+        // Echoed so the app can tell an older page, which it prepends, from the newest one,
+        // which replaces the thread. The two arrive on the same frame type.
+        ...(frame.before ? { before: frame.before } : {}),
+      };
       this.sendFrame(ws, result);
     } catch (err) {
       await this.refuse(ws, "session", "history failed", { threadId, error: String(err) });

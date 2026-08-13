@@ -44,7 +44,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "assistant", content: "le site repond", timestamp: "2026-01-01T00:00:04.000Z" },
     ]));
 
-    const entries = await store.history(DEVICE, THREAD);
+    const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "tool", "assistant"]);
 
     const card = entries[2]!;
@@ -55,6 +55,37 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(card.durationMs, 412);
     assert.equal(card.output, "HTTP 200 OK");
     assert.equal(card.truncated, false);
+  });
+
+  test("pages backwards through a long conversation without repeating or dropping a turn", async () => {
+    const messages: SessionData["messages"] = [];
+    for (let i = 0; i < 12; i++) {
+      messages.push({ role: "user", content: `q${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+    }
+    await saveSession(sessionId, session(sessionId, messages));
+
+    const newest = await store.history(DEVICE, THREAD, 5);
+    assert.deepEqual(newest.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q7", "q8", "q9", "q10", "q11"]);
+    assert.equal(newest.hasMore, true);
+
+    const older = await store.history(DEVICE, THREAD, 5, 5);
+    assert.deepEqual(older.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q2", "q3", "q4", "q5", "q6"]);
+    assert.equal(older.hasMore, true);
+
+    // The last page is short and says so: the app must stop asking rather than loop on empties.
+    const oldest = await store.history(DEVICE, THREAD, 5, 10);
+    assert.deepEqual(oldest.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q0", "q1"]);
+    assert.equal(oldest.hasMore, false);
+  });
+
+  test("a cursor past the start of the session is an empty page, not an error", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "seul message", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const page = await store.history(DEVICE, THREAD, 50, 999);
+    assert.deepEqual(page.entries, []);
+    assert.equal(page.hasMore, false);
   });
 
   test("keeps the card when the timing predates duration persistence and truncates long output", async () => {
@@ -68,7 +99,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "tool", toolCallId: "call-2", content: "z".repeat(5000), timestamp: "2026-01-01T00:00:03.000Z" },
     ]));
 
-    const entries = await store.history(DEVICE, THREAD);
+    const { entries } = await store.history(DEVICE, THREAD);
     assert.equal(entries.length, 1);
     const card = entries[0]!;
     if (card.role !== "tool") throw new Error("expected a tool entry");
@@ -91,7 +122,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const entries = await store.history(DEVICE, THREAD);
+    const { entries } = await store.history(DEVICE, THREAD);
     assert.equal(entries.length, 1);
     const turn = entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
@@ -123,7 +154,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const entries = await store.history(DEVICE, THREAD);
+    const { entries } = await store.history(DEVICE, THREAD);
     const turn = entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
@@ -153,7 +184,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
     assert.equal(turn.text, "Je suis ici");
     assert.deepEqual(turn.location, location);
@@ -175,7 +206,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
     // Pairing by position: one blob repeated under both bubbles would say the wrong thing twice.
@@ -192,7 +223,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "user", content: `regarde ca\n\n[Audio]: "et ecoute"`, timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
     assert.equal(turn.text, "regarde ca");
     // No attachment survives to pair it with, so there is nothing to hang the words on.
@@ -208,7 +239,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
     // Hiding this would replay a voice note that silently said nothing.
     assert.equal(turn.text, "[Audio]: [Transcription failed: timeout]");
@@ -248,14 +279,14 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     // Nothing is moved or dropped: name, turns and count all survive the filing.
     assert.equal(listed[0]!.title, "Infra maison");
     assert.equal(listed[0]!.messageCount, 2);
-    assert.equal((await store.history(DEVICE, THREAD)).length, 2);
+    assert.equal((await store.history(DEVICE, THREAD)).entries.length, 2);
 
     await store.unarchive(DEVICE, THREAD);
 
     listed = await store.list(DEVICE);
     assert.equal(listed[0]!.archived, undefined);
     assert.equal(listed[0]!.title, "Infra maison");
-    assert.equal((await store.history(DEVICE, THREAD)).length, 2);
+    assert.equal((await store.history(DEVICE, THREAD)).entries.length, 2);
   });
 
   test("archiving a conversation that was never opened is refused, not invented", async () => {
@@ -285,7 +316,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "user", content: "le format [Attachments]\nc'est quoi", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
-    const entries = await store.history(DEVICE, THREAD);
+    const { entries } = await store.history(DEVICE, THREAD);
     const turn = entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
     assert.equal(turn.text, "le format [Attachments]\nc'est quoi");
@@ -306,7 +337,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     // The bubble reads like the live message: the caption, not the path the agent wrote.
     assert.equal(turn.text, "Voilà, un chat random d'Unsplash 🐱");
@@ -327,7 +358,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     assert.equal(turn.text, "");
     assert.equal(turn.attachments?.length, 1);
@@ -349,7 +380,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     assert.equal(turn.attachments?.length, 2);
     const ids = turn.attachments!.map((a) => a.id);
@@ -369,7 +400,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[1]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[1]!;
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     assert.equal(turn.reasoning, "comparing the decimal parts");
   });
@@ -379,7 +410,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "assistant", content: "plain answer", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
-    const turn = (await store.history(DEVICE, THREAD))[0]!;
+    const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     assert.equal("reasoning" in turn, false);
   });

@@ -157,8 +157,23 @@ class FakeSessionStore {
     return this.summaries;
   }
 
-  async history(deviceId: string, threadId: string): Promise<Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>> {
-    return this.historyMap.get(threadId) ?? [];
+  historyCalls: Array<{ limit?: number; before?: number }> = [];
+
+  async history(
+    deviceId: string,
+    threadId: string,
+    limit?: number,
+    before?: number,
+  ): Promise<{
+    entries: Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>;
+    hasMore: boolean;
+    nextBefore: number;
+  }> {
+    this.historyCalls.push({ limit, before });
+    const all = this.historyMap.get(threadId) ?? [];
+    const end = Math.max(all.length - (before ?? 0), 0);
+    const start = Math.max(end - (limit ?? all.length), 0);
+    return { entries: all.slice(start, end), hasMore: start > 0, nextBefore: all.length - start };
   }
 
   async archive(deviceId: string, threadId: string): Promise<void> {
@@ -1111,6 +1126,27 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.threadId, "a");
     assert.equal(frame.messages.length, 2);
     assert.equal(frame.messages[1]!.text, "bonsoir");
+  });
+
+  test("session.history carries the cursor through and echoes it back with hasMore", async () => {
+    store.historyMap.set("a", [
+      { id: "h1", role: "user", text: "un", ts: "t1" },
+      { id: "h2", role: "user", text: "deux", ts: "t2" },
+      { id: "h3", role: "user", text: "trois", ts: "t3" },
+    ]);
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a", limit: 1, before: 1 }));
+    const frame = (await nextFrame(client)) as {
+      type: string;
+      messages: Array<{ text: string }>;
+      before?: number;
+      hasMore?: boolean;
+    };
+    assert.equal(frame.type, "chat.history");
+    assert.deepEqual(store.historyCalls.at(-1), { limit: 1, before: 1 });
+    // One back from the end, one message wide: the middle turn, with the first still behind it.
+    assert.deepEqual(frame.messages.map((m) => m.text), ["deux"]);
+    assert.equal(frame.before, 1);
+    assert.equal(frame.hasMore, true);
   });
 
   test("session.history with an unsafe threadId returns an error frame", async () => {

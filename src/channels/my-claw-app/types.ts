@@ -91,6 +91,13 @@ export interface MyClawAppSessionHistory {
   type: "session.history";
   threadId: string;
   limit?: number;
+  /**
+   * How many messages at the tail of the session to skip, counted from the end. Absent means the
+   * newest page. The cursor is an offset rather than a message id because a session is
+   * append-only: what came before a given point never changes, so the offset stays valid, and
+   * nothing has to be stable across the split into bubbles the app performs on top.
+   */
+  before?: number;
 }
 
 export interface MyClawAppSessionArchive {
@@ -669,6 +676,18 @@ export type MyClawAppHistoryEntry =
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
+/** One page of replayed history, and whether anything sits before it. */
+export interface MyClawAppHistoryPage {
+  entries: MyClawAppHistoryEntry[];
+  hasMore: boolean;
+  /**
+   * The cursor for the page before this one. The app cannot compute it: one stored message can
+   * become two bubbles (an assistant turn plus its tool card) and a `role:"tool"` message becomes
+   * none of its own, so the count of entries it received says nothing about how far back it now is.
+   */
+  nextBefore: number;
+}
+
 export interface MyClawAppSessionSummary {
   threadId: string;
   title: string;
@@ -845,6 +864,12 @@ export interface MyClawAppChatHistory {
   type: "chat.history";
   threadId: string;
   messages: MyClawAppHistoryEntry[];
+  /** Echo of the request cursor: absent or 0 is the newest page, which replaces the thread. */
+  before?: number;
+  /** Whether anything remains before this page, so the app stops asking at the top. */
+  hasMore?: boolean;
+  /** What to send as `before` to get the page just older than this one. */
+  nextBefore?: number;
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
