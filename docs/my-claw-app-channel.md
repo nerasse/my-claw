@@ -94,7 +94,7 @@ the first answer wins.
 { "type": "commands.list" }
 { "type": "files.list", "threadId": "projet" }
 { "type": "files.delete", "threadId": "projet", "id": "uuid" }
-{ "type": "session.history", "threadId": "projet", "limit": 50 }
+{ "type": "session.history", "threadId": "projet", "limit": 50, "before": 50 }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
@@ -367,7 +367,7 @@ runs fresh like any other message.
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
-{ "type": "chat.history", "threadId": "projet", "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
+{ "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true, "workspace": "default" }] }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
@@ -550,6 +550,17 @@ reply can be traced back to its run. Verbosity is `logging.level` in config (hot
 `MY_CLAW_LOG_LEVEL` which overrides it.
 
 `chat.history` is also the ack for `session.delete` (empty messages list).
+
+History is paged backwards. `session.history` takes `before`, a count of messages back
+from the newest one; absent or `0` is the newest page, which the app uses to replace the
+thread. The reply carries `hasMore` and `nextBefore`, and the app sends `nextBefore` back
+as `before` to walk further. The cursor is an offset rather than a message id because a
+session is append-only: what sits before a given point never changes. It comes from the
+server because the app cannot derive it -- one stored message can become two bubbles (an
+assistant turn plus its tool card) and a `role:"tool"` message becomes none of its own, so
+the entry count says nothing about how far back the app now is. A cursor past the start of
+the session is an empty page with `hasMore: false`, not an error. A server that answers
+neither field is one that predates this, and the app simply never asks for an older page.
 `session.list.result` carries both halves in one round-trip: archived threads are
 flagged `archived: true` rather than left out, so the app can fill its two lists and
 show the archived count without asking twice. Most recently active first, capped at 50.
