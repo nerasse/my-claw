@@ -23,8 +23,8 @@ A tag is referenced as `tag:<name>` wherever a model id is expected:
 `resolveFromMerged` (`src/llm/resolver.ts`) is the single funnel every run passes through. A
 `tag:` reference is expanded there before the model lookup:
 
-- the resolved config keeps the tag id as the run's identity (`model`), so status, the app and
-  the context cap all talk about the tag;
+- the resolved config keeps the tag id as the run's identity (`model`): menus, the picker and the
+  context cap all talk about the tag;
 - the API receives the tag's underlying model via `apiModel` (the three call sites:
   `src/llm/provider.ts`, `src/llm/codex.ts`, `src/agent/claude-sdk/backend.ts`);
 - effort precedence: session override > tag effort > the job's own pin > the agent's own pin >
@@ -35,6 +35,15 @@ A tag is referenced as `tag:<name>` wherever a model id is expected:
   effort/cap win;
 - the reserved name `Default` is a virtual tag that always tracks the current default model
   (`llm.defaultModel`), never stored in the file.
+
+### History records the run-time model
+
+Analytics and `/status` do **not** talk about the tag. Every `recordApiCall` row snapshots the
+model the API actually received (`apiModel ?? model`), because a tag can be repointed between two
+runs: cost, token and duration stats must group by what ran, not by what the config says today.
+A later tag edit therefore never rewrites the history — rows already recorded keep the model they
+were made with. `/status` shows the same resolution live: `current` names the model, with the tag
+in parentheses when the chain went through one (`claude-opus-5 (tag opus)`).
 
 ## Context cap
 

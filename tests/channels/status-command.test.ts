@@ -233,6 +233,27 @@ test("the report text is the chat command's, character for character", () => {
   expect(report.text).toBe(handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
 });
 
+test("a tag reference is resolved to the model it runs, with the tag named", () => {
+  const tagged = {
+    llm: {
+      defaultModel: "claude-opus-5",
+      models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }],
+      tags: { zsmart: { model: "claude-opus-5" } },
+    },
+  } as unknown as MyClawConfig;
+
+  const sessionId = "matrix/room/!tagged:test";
+  const withTag = session(sessionId, { modelOverride: "tag:zsmart" });
+  const out = handleStatusCommand({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  // The page shows the model the API receives; the tag stays named so the chain is explainable.
+  expect(out).toMatch(/current\s+claude-opus-5 \(tag zsmart\) \(session override\)/);
+  expect(out).not.toContain("tag:zsmart");
+
+  const report = statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  expect(report.status.model.current).toBe("claude-opus-5");
+  expect(report.status.model.tag).toBe("zsmart");
+});
+
 // Criterion 8 of docs/model-resolution.md: the surfaces do not each keep their own idea of the
 // current model. /status is the one that was already right; this pins it to the shared function so
 // the two cannot drift apart again.

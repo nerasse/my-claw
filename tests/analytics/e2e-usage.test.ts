@@ -4,6 +4,7 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
+import { getSessionModelUsage } from "../../src/analytics/usage-db.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
@@ -181,6 +182,49 @@ test("E2E: no crash when provider returns no usage", async () => {
     assert.equal(response, "hello");
     // tokenUsage should be undefined — not initialized since no usage was returned
     assert.equal(session.tokenUsage, undefined);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("E2E: a run through a tag records the model actually called, not the tag id", async () => {
+  const registry = new ToolRegistry();
+  const skillRegistry = new SkillRegistry();
+  const tagged: MyClawConfig = {
+    whitelist: ["u1"],
+    blacklist: [],
+    channels: {},
+    llm: {
+      provider: "x",
+      baseUrl: "https://example.com",
+      model: "test-model",
+      tags: { zsmart: { model: "deep-model" } },
+    },
+    agents: {},
+  };
+  const bridge = new AgentBridge(tagged, registry, skillRegistry);
+
+  const fetchMock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "hi back" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never,
+  );
+
+  try {
+    const session = createSession();
+    session.id = "telegram/dm/tag-run";
+    session.modelOverride = "tag:zsmart";
+    const response = await bridge.handleMessage(createMessage(), session);
+    assert.equal(response, "hi back");
+
+    // The row snapshots the run-time model, so a later tag edit never rewrites the history.
+    const rows = getSessionModelUsage(session.id, "own");
+    assert.ok(rows.some((r) => r.model === "deep-model"));
+    assert.ok(!rows.some((r) => r.model.includes("tag:")));
   } finally {
     fetchMock.restore();
   }

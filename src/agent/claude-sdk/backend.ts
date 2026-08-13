@@ -922,7 +922,9 @@ export class ClaudeSdkBackend implements AgentBackend {
       sessionId: session.id,
       parentSessionId: attributionParent(session),
       platform: message.platform,
-      model: llmConfig.model,
+      // The model the SDK actually ran, snapshotted at run time: a tag reference is resolved
+      // here so a later tag edit never rewrites the history a row belongs to.
+      model: llmConfig.apiModel ?? llmConfig.model,
       baseUrl: "claude-sdk",
       streaming,
       caller: this.depth === 0 ? "orchestrator" : "subagent",

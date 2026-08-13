@@ -1,6 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
-import { resolveAgentLlm } from "../core/config.ts";
+import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
+import { leafModelId } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import {
   getSessionModelUsage,
@@ -100,7 +101,10 @@ function totals(rows: PricedRow[]): { billed: number; reference: number; unprice
 interface StatusData {
   sessionId: string;
   session: SessionData | null;
-  currentModel: string;
+  /** The model the API actually receives, resolved from the current identity at read time. */
+  displayModel: string;
+  /** Set when the current model is a `tag:` reference, naming the tag. */
+  tag?: string;
   /** The configured default of the resolved agent, for the "config default" line. */
   configDefault?: string;
   live: string;
@@ -126,6 +130,8 @@ function collectStatusData(p: StatusParams): StatusData {
   const configured = resolveAgentLlm(p.config, "main");
   // The same chain the run uses, rather than a copy of it that happens to agree today.
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
+  const tagName = tagNameOf(currentModel);
+  const displayModel = leafModelId(p.config.llm, currentModel);
   const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
   const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
   const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
@@ -157,8 +163,11 @@ function collectStatusData(p: StatusParams): StatusData {
   return {
     sessionId: p.sessionId,
     session: p.session ?? null,
-    currentModel,
-    ...(p.session?.modelOverride ? { configDefault: configured?.defaultModel ?? p.config.llm.defaultModel } : {}),
+    displayModel,
+    ...(tagName ? { tag: tagName } : {}),
+    ...(p.session?.modelOverride
+      ? { configDefault: leafModelId(p.config.llm, configured?.defaultModel ?? p.config.llm.defaultModel ?? "") }
+      : {}),
     live,
     contextLimit: window.effective,
     contextNotes,
@@ -181,7 +190,7 @@ function collectStatusData(p: StatusParams): StatusData {
 
 function formatStatusText(d: StatusData): string {
   if (!d.session) {
-    return [`Model: ${d.currentModel}`, "Session: none active", `Active run: ${d.live}`].join("\n");
+    return [`Model: ${d.displayModel}${d.tag ? ` (tag ${d.tag})` : ""}`, "Session: none active", `Active run: ${d.live}`].join("\n");
   }
   const session = d.session;
   const lines: string[] = [];
@@ -199,10 +208,10 @@ function formatStatusText(d: StatusData): string {
 
   lines.push("");
   lines.push("**Model**");
-  lines.push(`  current       ${d.currentModel}${session.modelOverride ? " (session override)" : ""}`);
+  lines.push(`  current       ${d.displayModel}${d.tag ? ` (tag ${d.tag})` : ""}${session.modelOverride ? " (session override)" : ""}`);
   if (session.modelOverride) lines.push(`  config default ${d.configDefault ?? "-"}`);
   if (session.effortOverride) lines.push(`  effort        ${session.effortOverride}`);
-  if (isSelfHosted(d.currentModel)) lines.push("  billing       self-hosted, no marginal cost");
+  if (isSelfHosted(d.displayModel)) lines.push("  billing       self-hosted, no marginal cost");
   lines.push(`  context limit ${short(d.contextLimit)} (${d.contextNotes.join(", ")})`);
 
   const limit = d.contextLimit;
@@ -297,10 +306,11 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
         }
       : null,
     model: {
-      current: d.currentModel,
+      current: d.displayModel,
+      ...(d.tag ? { tag: d.tag } : {}),
       ...(session?.modelOverride ? { configDefault: d.configDefault } : {}),
       ...(session?.effortOverride ? { effort: session.effortOverride } : {}),
-      selfHosted: isSelfHosted(d.currentModel),
+      selfHosted: isSelfHosted(d.displayModel),
       contextLimit: limit,
       contextNotes: d.contextNotes,
     },

@@ -542,6 +542,15 @@ kind of thing this view exists to expose.
 the body in two places is not an option, so it moves to `src/channels/status-command.ts`, following
 `introspect-commands.ts`: channel-agnostic params in, string out, the caller injects the registries.
 
+## Model names in the report
+
+`/status` shows the model the API actually receives, not the config's identity. When the run goes
+through a tag (`tag:opus`), the `current` line resolves it to the underlying model and keeps the
+tag named (`claude-opus-5 (tag opus)`) so the chain stays explainable. The same rule applies to
+the analytics rows: `recordApiCall` snapshots `apiModel ?? model` at run time (see docs/tags.md),
+so cost and token stats group by the model that ran. A tag repointed between two runs splits the
+history at the boundary instead of silently re-filing old rows.
+
 ## Out of scope
 
 **Compaction and trim counters.** Nothing is persisted when either fires; only a hook event is
