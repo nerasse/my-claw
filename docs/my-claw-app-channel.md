@@ -159,6 +159,13 @@ with its server-only `GEOAPIFY_API_KEY`, and broadcasts the enriched user value 
 { "type": "chat.location", "threadId": "projet", "replyToId": "uuid", "location": { "latitude": 48.8566, "longitude": 2.3522, "accuracyMeters": 24, "capturedAt": "iso", "address": { "formatted": "...", "level": "street", "provider": "geoapify" } } }
 ```
 
+The composer previews the address without sending anything: `location.preview` asks the server to
+geocode a staged fix (nothing is persisted, the same resolver and cache as chat.send serve it) and
+`location.preview.result` answers with the enriched value. The owner may edit the display address:
+`chat.send.location.addressOverride.formatted` carries the decision — an empty string sends
+coordinates only, other text is shown as-is and flagged `edited: true` in the address. The override
+is display text only; coordinates and accuracy stay exactly as captured.
+
 Location data is persisted with the user turn and replayed in `chat.history`; it is not a media file.
 Provider failure never prevents raw coordinates from being delivered. Do not log coordinates or
 provider request URLs.

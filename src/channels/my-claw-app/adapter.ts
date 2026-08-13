@@ -102,6 +102,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppProviderRename,
   MyClawAppProviderUpsert,
   MyClawAppLocationCapabilities,
+  MyClawAppLocationPreview,
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
@@ -111,7 +112,7 @@ import { thumbPathFor } from "./files.ts";
 import { extractVideoThumbnail } from "../../media/video.ts";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import { normalizeLocationInput, type MyClawAppLocationResolver } from "./location.ts";
+import { applyAddressOverride, normalizeLocationInput, type MyClawAppLocationResolver } from "./location.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -999,6 +1000,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.send":
         void this.emitChatSend(ws, frame);
         break;
+      case "location.preview":
+        void this.handleLocationPreview(ws, frame);
+        break;
       case "approval.response":
         this.resolveApproval(frame);
         break;
@@ -1224,6 +1228,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
+  /**
+   * Answers a composer preview: geocode the staged fix without persisting anything. The same
+   * resolver (and cache) as chat.send, so the previewed address is the one the message gets.
+   */
+  private async handleLocationPreview(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppLocationPreview,
+  ): Promise<void> {
+    try {
+      const input = normalizeLocationInput(frame.location);
+      const location = this.locationResolver ? await this.locationResolver.resolve(input) : input;
+      this.sendFrame(ws, { type: "location.preview.result", id: frame.id, location });
+    } catch (err) {
+      await this.refuse(ws, "location", err instanceof Error ? err.message : "invalid location");
+    }
+  }
+
   private async emitChatSend(
     ws: ServerWebSocket<MyClawAppSessionData>,
     frame: MyClawAppChatSend,
@@ -1280,7 +1301,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (hasLocation) {
       try {
         const input = normalizeLocationInput(frame.location);
-        location = this.locationResolver ? await this.locationResolver.resolve(input) : input;
+        const resolved = this.locationResolver ? await this.locationResolver.resolve(input) : input;
+        const override = (frame.location as { addressOverride?: unknown } | undefined)?.addressOverride;
+        if (override !== undefined) {
+          if (!override || typeof override !== "object" || typeof (override as { formatted?: unknown }).formatted !== "string") {
+            throw new Error("addressOverride.formatted must be a string");
+          }
+          location = applyAddressOverride(resolved, (override as { formatted: string }).formatted);
+        } else {
+          location = resolved;
+        }
       } catch (err) {
         await this.refuse(ws, "location", err instanceof Error ? err.message : "invalid location");
         return;

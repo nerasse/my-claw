@@ -34,6 +34,8 @@ export interface ChatLocationAddress {
   postcode?: string;
   country?: string;
   confidence?: number;
+  /** Rewritten by the owner before sending: display text, never a provider claim. */
+  edited?: boolean;
 }
 
 export interface ChatLocation {
@@ -47,7 +49,14 @@ export interface ChatLocation {
   address?: ChatLocationAddress;
 }
 
-export type ChatLocationInput = Omit<ChatLocation, "address">;
+export type ChatLocationInput = Omit<ChatLocation, "address"> & {
+  /**
+   * Owner decision about the display address, carried only on chat.send: an empty string means
+   * "coordinates only", a non-empty string is shown as-is and flagged edited. Absent means the
+   * server derives the address from the provider.
+   */
+  addressOverride?: { formatted: string };
+};
 
 export type ApprovalDecision = "allow-once" | "allow-session" | "deny";
 

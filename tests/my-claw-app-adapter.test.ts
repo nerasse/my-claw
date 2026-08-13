@@ -290,6 +290,89 @@ describe("MyClawAppAdapter", () => {
     assert.equal((frame.location as { address?: { level?: string } }).address?.level, "street");
   });
 
+  test("location.preview geocodes without routing a message", async () => {
+    adapter.onLocationResolver({
+      capabilities: () => ({ enabled: true, address: true, provider: "geoapify" }),
+      resolve: async input => ({
+        ...input,
+        address: { formatted: "Rue de Rivoli, Paris", level: "street", provider: "geoapify" },
+      }),
+    });
+    client.ws.send(JSON.stringify({
+      type: "location.preview",
+      id: "preview-1",
+      location: {
+        latitude: 48.8566,
+        longitude: 2.3522,
+        accuracyMeters: 42,
+        capturedAt: "2026-08-13T12:30:00.000Z",
+      },
+    }));
+    const frame = await nextFrame(client);
+    assert.equal(frame.type, "location.preview.result");
+    assert.equal(frame.id, "preview-1");
+    assert.equal((frame.location as { address?: { formatted?: string } }).address?.formatted, "Rue de Rivoli, Paris");
+    assert.equal(received.length, 0);
+  });
+
+  test("an owner-edited address rides the message and is flagged edited", async () => {
+    adapter.onLocationResolver({
+      capabilities: () => ({ enabled: true, address: true, provider: "geoapify" }),
+      resolve: async input => ({
+        ...input,
+        address: { formatted: "Rue de Rivoli, Paris", level: "street", provider: "geoapify" },
+      }),
+    });
+    client.ws.send(JSON.stringify({
+      type: "chat.send",
+      id: "location-2",
+      text: "",
+      location: {
+        latitude: 48.8566,
+        longitude: 2.3522,
+        accuracyMeters: 42,
+        capturedAt: "2026-08-13T12:30:00.000Z",
+        addressOverride: { formatted: "Chez moi" },
+      },
+    }));
+    await waitUntil(() => received.length === 1);
+    assert.deepEqual(received[0]!.location?.address, {
+      formatted: "Chez moi",
+      level: "street",
+      provider: "geoapify",
+      edited: true,
+    });
+
+    const frame = await nextFrame(client);
+    assert.equal(frame.type, "chat.location");
+    assert.equal((frame.location as { address?: { edited?: boolean } }).address?.edited, true);
+  });
+
+  test("an empty address override sends coordinates only", async () => {
+    adapter.onLocationResolver({
+      capabilities: () => ({ enabled: true, address: true, provider: "geoapify" }),
+      resolve: async input => ({
+        ...input,
+        address: { formatted: "Rue de Rivoli, Paris", level: "street", provider: "geoapify" },
+      }),
+    });
+    client.ws.send(JSON.stringify({
+      type: "chat.send",
+      id: "location-3",
+      text: "",
+      location: {
+        latitude: 48.8566,
+        longitude: 2.3522,
+        accuracyMeters: 42,
+        capturedAt: "2026-08-13T12:30:00.000Z",
+        addressOverride: { formatted: "   " },
+      },
+    }));
+    await waitUntil(() => received.length === 1);
+    assert.equal(received[0]!.location?.address, undefined);
+    assert.equal(received[0]!.location?.latitude, 48.8566);
+  });
+
   test("treats a plain-text frame as chat.send (console mode)", async () => {
     client.ws.send("plain text from the console");
     await waitUntil(() => received.length === 1);

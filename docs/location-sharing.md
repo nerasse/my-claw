@@ -115,15 +115,20 @@ building result does not make a low-accuracy GPS fix precise.
    - No background location permission or service is used.
 7. The `+` sheet shows `Share current location` only after the server capability is enabled. The
    captured fix is staged like an attachment, can be removed, and is sent with the next message.
-8. The UI renders the approximate address, accuracy, timestamp and an OpenStreetMap link with
+8. Tapping the staged chip opens the location editor: the geocoded address (fetched through a
+   `location.preview` round-trip, nothing persisted), the GPS accuracy and capture time, an
+   OpenStreetMap link and a removal action. The address field is editable: an empty field sends
+   coordinates only, any other text is sent as an `addressOverride` flagged `edited`.
+9. The UI renders the approximate address, accuracy, timestamp and an OpenStreetMap link with
    attribution.
-9. Address precision follows GPS accuracy: building for a good fix, street for a wider fix and
-   city for a poor fix. The gesture-eight motion is not used as a GPS accuracy claim; it is only
-   meaningful for a separate compass calibration feature.
-10. Permission denial, timeout, unavailable provider, no address result and Geoapify quota errors
+10. Address precision follows GPS accuracy: building for a good fix, street for a wider fix and
+    city for a poor fix. The gesture-eight motion is not used as a GPS accuracy claim; it is only
+    meaningful for a separate compass calibration feature.
+11. Permission denial, timeout, unavailable provider, no address result and Geoapify quota errors
     leave raw coordinates sendable.
-11. Server and app tests cover the gate, protocol, enrichment, fallback, persistence, UI staging
-    and history replay. The real provider check remains an opt-in smoke test.
+12. Server and app tests cover the gate, protocol, preview, override, enrichment, fallback,
+    persistence, UI staging and history replay. The real provider check remains an opt-in smoke
+    test.
 
 ## Accuracy Behavior
 

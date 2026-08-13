@@ -61,7 +61,18 @@ export interface MyClawAppSessionList {
   type: "session.list";
 }
 
-export interface MyClawAppCommandsList {
+/** Geocodes a staged location without persisting anything: the composer's preview. */
+export interface MyClawAppLocationPreview {
+  type: "location.preview";
+  id: string;
+  location: ChatLocationInput;
+}
+
+export interface MyClawAppLocationPreviewResult {
+  type: "location.preview.result";
+  id: string;
+  location: ChatLocation;
+}export interface MyClawAppCommandsList {
   type: "commands.list";
 }
 
@@ -549,6 +560,7 @@ export interface MyClawAppProviderEnvList {
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
+  | MyClawAppLocationPreview
   | MyClawAppSessionList
   | MyClawAppCommandsList
   | MyClawAppFilesList
@@ -1587,6 +1599,7 @@ export interface MyClawAppChatCleared {
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppLocationCapabilities
+  | MyClawAppLocationPreviewResult
   | MyClawAppChatLocation
   | MyClawAppRunStart
   | MyClawAppRunEnd

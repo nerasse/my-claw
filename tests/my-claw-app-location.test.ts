@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { GeoapifyReverseGeocoder, normalizeLocationInput } from "../src/channels/my-claw-app/location.ts";
+import { applyAddressOverride, GeoapifyReverseGeocoder, normalizeLocationInput } from "../src/channels/my-claw-app/location.ts";
 import type { ChatLocationInput } from "../src/channels/types.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 
@@ -128,4 +128,29 @@ describe("GeoapifyReverseGeocoder", () => {
 test("normalizeLocationInput validates ranges and strips provider data", () => {
   expect(() => normalizeLocationInput({ ...input, latitude: 91 })).toThrow("latitude");
   expect(normalizeLocationInput({ ...input, address: { formatted: "ignored" } })).toEqual(input);
+});
+
+test("applyAddressOverride marks owner text as edited and drops the address for an empty value", () => {
+  const resolved = {
+    ...input,
+    accuracyMeters: 42,
+    address: {
+      formatted: "Rue de Rivoli, Paris",
+      level: "street" as const,
+      provider: "geoapify" as const,
+    },
+  };
+
+  const edited = applyAddressOverride(resolved, "  Chez moi, 3eme etage\n  ");
+  expect(edited.address).toEqual({
+    formatted: "Chez moi, 3eme etage",
+    level: "street",
+    provider: "geoapify",
+    edited: true,
+  });
+  expect(edited.latitude).toBe(input.latitude);
+
+  const bare = applyAddressOverride(resolved, "   ");
+  expect(bare.address).toBeUndefined();
+  expect(bare.latitude).toBe(input.latitude);
 });

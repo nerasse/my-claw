@@ -119,6 +119,29 @@ function addressFromResult(value: unknown, accuracyMeters: number): ChatLocation
   };
 }
 
+/**
+ * Applies the owner's address decision over the provider result. An empty string drops the
+ * address entirely (coordinates only); any other text becomes the display address, marked
+ * edited so nobody reads a hand-written line as a provider claim.
+ */
+export function applyAddressOverride(location: ChatLocation, formatted: string): ChatLocation {
+  const text = cleanText(formatted, 320);
+  if (!text) {
+    const without = { ...location } as { address?: ChatLocationAddress } & ChatLocation;
+    delete without.address;
+    return without;
+  }
+  return {
+    ...location,
+    address: {
+      formatted: text,
+      level: levelFor(undefined, location.accuracyMeters),
+      provider: "geoapify",
+      edited: true,
+    },
+  };
+}
+
 export class GeoapifyReverseGeocoder implements MyClawAppLocationResolver {
   private cache = new Map<string, ChatLocationAddress | null>();
 
