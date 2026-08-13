@@ -11,6 +11,7 @@ import type {
   ChatLocation,
 } from "../types.ts";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
+import { readAppVersion } from "../../core/diagnostics.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
@@ -958,6 +959,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     this.sockets.set(ws.data.deviceId, ws);
     void myClawAppLog("info", "device connected", { deviceId: ws.data.deviceId });
+    // The server names itself first: the settings page labels its "connected" state with it.
+    void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version }));
     const locationCapabilities: MyClawAppLocationCapabilities = {
       type: "location.capabilities",
       ...(this.locationResolver?.capabilities() ?? { enabled: false, address: false, provider: "geoapify" as const }),

@@ -392,6 +392,7 @@ runs fresh like any other message.
 { "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
 { "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
 { "type": "notifications.info", "vapidPublicKey": "..." }
+{ "type": "hello", "version": "0.1.204" }
 { "type": "tags.result", "tags": [{ "name": "Default", "model": "gpt-5.1" }, { "name": "opus", "model": "claude-opus-4-8", "effort": "xhigh", "contextCap": 50000 }] }
 { "type": "jobs.runs.result", "jobId": "abc123def456", "runs": [{ "threadId": "cron-abc123def456-1723200000000", "runAt": 1723200000000, "messageCount": 4, "title": "Morning report · 08/08 19:30" }] }
 { "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces|jobs|notifications" }

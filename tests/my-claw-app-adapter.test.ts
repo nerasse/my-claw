@@ -35,7 +35,7 @@ interface WsClient {
   closed: { code: number; reason: string } | null;
 }
 
-function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveLocationCapabilities = false): Promise<WsClient> {
+function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveLocationCapabilities = false, receiveHello = false): Promise<WsClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
     const client: WsClient = { ws, frames: [], closed: null };
@@ -59,6 +59,7 @@ function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveL
       try {
         const frame = JSON.parse(raw) as { type?: unknown };
         if (!receiveLocationCapabilities && frame.type === "location.capabilities") return;
+        if (!receiveHello && frame.type === "hello") return;
         client.frames.push(frame);
       } catch {
         client.frames.push(raw);
@@ -258,6 +259,14 @@ describe("MyClawAppAdapter", () => {
     });
     assert.equal(JSON.stringify(frame).includes(TOKEN), false);
     capable.ws.close();
+  });
+
+  test("names the server version on connect so the settings page can label it", async () => {
+    const greeted = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, true);
+    const frame = await nextFrame(greeted);
+    assert.equal(frame.type, "hello");
+    assert.match(String(frame.version), /^\d+\.\d+\.\d+$/);
+    greeted.ws.close();
   });
 
   test("routes a location-only message and confirms the enriched user bubble", async () => {

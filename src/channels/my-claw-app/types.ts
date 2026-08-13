@@ -1593,6 +1593,12 @@ export interface MyClawAppNotificationsInfo {
   vapidPublicKey: string;
 }
 
+/** The server's own version, sent once as the socket opens so the app can label its connection. */
+export interface MyClawAppHello {
+  type: "hello";
+  version: string;
+}
+
 /** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
 export interface MyClawAppChatCleared {
   type: "chat.cleared";
@@ -1644,6 +1650,7 @@ export type MyClawAppServerFrame =
   | MyClawAppJobsRunsResult
   | MyClawAppSubAgentsListResult
   | MyClawAppNotificationsInfo
+  | MyClawAppHello
   | MyClawAppTagsResult
   | MyClawAppProviderEnvResult
   | MyClawAppError;
