@@ -60,9 +60,15 @@ export function createDelegateBrowserTool(config: MyClawConfig, agentRegistry?: 
         const result = await task;
         if (result.needs_human) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
+          // Same host as the web viewer: whatever host the server is reached on, the VNC
+          // path stays in lockstep with it (port 5900 is pinned by my-claw-vnc).
+          let vncHost = "localhost";
+          try {
+            vncHost = new URL(novncUrl).hostname || vncHost;
+          } catch { /* novncUrl is malformed: fall back to localhost */ }
           return {
             success: false,
-            output: `Browser task paused — a human must take over.\n${result.summary}\nOpen the live browser at ${novncUrl}, resolve the blocker, then reply "continue".`,
+            output: `Browser task paused — a human must take over.\n${result.summary}\nLive browser: ${novncUrl} (web) or ${vncHost}:5900 (VNC app). Resolve the blocker, then reply "continue".`,
             attachments: result.attachments ?? [],
           };
         }

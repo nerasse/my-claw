@@ -104,7 +104,8 @@ help when it hits a barrier that genuinely needs a person: a real CAPTCHA, a bot
 In that case `delegate_browser_task` returns a paused message with the live-browser URL.
 
 - When you get that paused message, relay it: ask the user to open the live browser at the
-  given URL, solve the blocker, then reply "continue"
+  given URL — in a web viewer (noVNC), or with a VNC client on the phone/tablet at the same
+  host, port 5900 — solve the blocker, then reply "continue"
 - The subagent resumes from the current page
 - **Check what kind of blocker it is first.** A human barrier (CAPTCHA, 2FA, payment, a decision
   only the user can make) is a real handoff — relay it. Anything mechanical ("cannot interact

@@ -196,7 +196,8 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 ## Remote Monitoring
 
 - noVNC :6080 shows the live Chromium on Xvfb :99
-- When subagent asks for help, user opens browser at :6080
+- When subagent asks for help, user opens browser at :6080 — or with any VNC client at the
+  same host, port 5900 (handy on phones; the agent's paused message gives both).
 - Subagent detects page change via next snapshot and continues
 - The chain is `websockify :6080 -> x11vnc :5900 -> Xvfb :99`, so both hops are pinned:
   `my-claw-vnc` passes `-rfbport 5900` (x11vnc otherwise drifts to 5901+ when the port is
