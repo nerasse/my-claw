@@ -1,7 +1,7 @@
 import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, CompactOutcome, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
 import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
@@ -163,11 +163,11 @@ export class BackendDispatcher implements AgentBackend {
   /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact).
    *  The caller holds the session for the whole operation (handleCompactCommand); this second
    *  check only guards a caller that would reach the engine without taking that hold. */
-  async compactSdkSession(session: SessionData, stopSignal?: AbortSignal): Promise<string> {
+  async compactSdkSession(session: SessionData, stopSignal?: AbortSignal): Promise<CompactOutcome> {
     // Meta-commands bypass the router's session lock; two CLI processes resuming the same
     // SDK session would race on its file.
     if (runRegistry.isRunning(session.id)) {
-      return "A run is active on this session — try again once it finishes (or /stop first).";
+      return { text: "A run is active on this session — try again once it finishes (or /stop first)." };
     }
     return this.sdk.compact(session, stopSignal);
   }

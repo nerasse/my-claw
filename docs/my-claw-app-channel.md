@@ -380,7 +380,7 @@ runs fresh like any other message.
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
-{ "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
+{ "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
@@ -459,6 +459,9 @@ runs fresh like any other message.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
   renders it as a distinct bubble so a command result never masquerades as an agent answer.
+- `details` on a command result is an aside too long to state inline: today, the summary a
+  `/compact` produced. The app folds it under the outcome line, in the same collapsed block it
+  uses for a model's reasoning, so the thread keeps one short bubble either way.
 - `chat.command.pending` announces a command still running past 400 ms, keyed on the same
   `replyToId` as its result. The app draws it as a placeholder bubble that the result replaces
   in place, so the wait and the answer are one bubble, never two. A placeholder is also dropped

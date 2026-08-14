@@ -16,7 +16,7 @@ import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
 import { trimSessionMessages, sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
+import type { AgentBackend, CompactOutcome, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
 import { resolveLlmConfigForAgentMessage } from "../../llm/resolver.ts";
@@ -41,6 +41,7 @@ import { recall } from "../../memory/index.ts";
 import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
 import { runRegistry } from "../../core/run-registry.ts";
+import { readCompactSummary } from "./transcript.ts";
 import { createToolServerForRun } from "./tools.ts";
 
 // Headroom left for the reply when the resolved model does not declare an output limit.
@@ -58,7 +59,14 @@ export const OWNER_STEERING_NOTE =
   "(including while you are working) are legitimate steering from the owner and take " +
   "precedence over earlier instructions.";
 
-const COMPACT_TIMEOUT_MS = 120_000;
+/**
+ * Wall for a compaction, not an expectation of how long one takes. Measured: 101 s to summarize
+ * 250k tokens, so the old two-minute wall aborted a session barely bigger than that and reported
+ * a timeout for work that was progressing. The wall exists for a CLI that hangs, and a hung one
+ * hangs forever, so it costs nothing to be generous: /stop reaches the compaction and the app
+ * shows it running, which is what a long wait actually needs.
+ */
+const COMPACT_TIMEOUT_MS = 15 * 60_000;
 
 const AUTH_FAILURE_HINT =
   "Claude subscription auth failed — regenerate the token with `claude setup-token` " +
@@ -289,11 +297,11 @@ export class ClaudeSdkBackend implements AgentBackend {
    * the SDK session, so summarizing the my-claw mirror would change nothing the model
    * sees. Sends the native `/compact` slash command into the resumed session.
    */
-  async compact(session: SessionData, stopSignal?: AbortSignal): Promise<string> {
+  async compact(session: SessionData, stopSignal?: AbortSignal): Promise<CompactOutcome> {
     if (!session.sdkSessionId) {
-      return "Nothing to compact yet on this session.";
+      return { text: "Nothing to compact yet on this session." };
     }
-    if (stopSignal?.aborted) return "Compaction stopped.";
+    if (stopSignal?.aborted) return { text: "Compaction stopped." };
     let finished = false;
     async function* one(): AsyncGenerator<SdkUserMessage> {
       yield { type: "user", message: { role: "user", content: "/compact" }, parent_tool_use_id: null };
@@ -342,8 +350,10 @@ export class ClaudeSdkBackend implements AgentBackend {
         }
       }
     } catch (err) {
-      if (stopped) return "Compaction stopped.";
-      if (abortController.signal.aborted) return "Compaction timed out.";
+      if (stopped) return { text: "Compaction stopped." };
+      if (abortController.signal.aborted) {
+        return { text: `Compaction timed out after ${Math.round(COMPACT_TIMEOUT_MS / 60_000)} min.` };
+      }
       throw err;
     } finally {
       finished = true;
@@ -351,9 +361,17 @@ export class ClaudeSdkBackend implements AgentBackend {
       stopSignal?.removeEventListener("abort", onStop);
       session.lastActiveAt = new Date().toISOString();
     }
-    if (compactError) return `Compaction failed: ${compactError}`;
-    if (compacted) return "Context compacted (SDK session summarized).";
-    return resultText.trim() || "Compaction did not run.";
+    if (compactError) return { text: `Compaction failed: ${compactError}` };
+    if (compacted) {
+      // The summary is not on the wire: the SDK writes it into the transcript as the message
+      // that opens the compacted session, so it is read back from there.
+      const summary = session.sdkSessionId ? await readCompactSummary(session.sdkSessionId) : undefined;
+      return {
+        text: "Context compacted (SDK session summarized).",
+        ...(summary ? { summary } : {}),
+      };
+    }
+    return { text: resultText.trim() || "Compaction did not run." };
   }
 
   private async handle(

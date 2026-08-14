@@ -21,6 +21,16 @@ export interface ReasoningSink {
   onTokens?: (estimated: number) => Promise<void>;
 }
 
+/**
+ * What `/compact` answers with. The summary is present only when the engine can hand one back:
+ * the local summarizer wrote it, and the SDK one is read out of the transcript afterwards. The
+ * channels that can render it collapsed show it; the others show `text` alone.
+ */
+export interface CompactOutcome {
+  text: string;
+  summary?: string;
+}
+
 // The contract between the message router/channels and an agent execution engine.
 // Two implementations are planned: the home OpenAI-compatible loop (AgentBridge)
 // and the Claude Agent SDK backend (docs/claude-sdk-backend.md). Everything

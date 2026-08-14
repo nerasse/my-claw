@@ -45,7 +45,7 @@ export interface MyClawAppCommandDeps {
   customDir?: string;
   workspaceSkillsDir?: string;
   listCronJobs?: () => ReturnType<typeof loadJobs>;
-  sdkCompact?: (session: SessionData, stopSignal?: AbortSignal) => Promise<string>;
+  sdkCompact?: (session: SessionData, stopSignal?: AbortSignal) => Promise<import("../../agent/backend.ts").CompactOutcome>;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
@@ -170,13 +170,16 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "compact": {
         const session =
           existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-        return handleCompactCommand({
+        const outcome = await handleCompactCommand({
           config: deps.config,
           session,
           instructions: args.trim() || undefined,
           sdkCompact: deps.sdkCompact,
           persist: () => deps.sessionManager.persist(sessionId),
         });
+        // The summary travels apart from the outcome line: the app folds it away, the way it
+        // already folds a model's reasoning.
+        return outcome.summary ? { text: outcome.text, details: outcome.summary } : outcome.text;
       }
 
       case "reload": {

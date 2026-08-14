@@ -59,8 +59,8 @@ test("a compaction in flight refuses a second one, and the hold is released afte
   const config = makeConfig();
   const session = makeSession("s2");
   let release!: () => void;
-  const inflight = new Promise<string>((resolve) => {
-    release = () => resolve("Context compacted (SDK session summarized).");
+  const inflight = new Promise<{ text: string }>((resolve) => {
+    release = () => resolve({ text: "Context compacted (SDK session summarized)." });
   });
 
   const first = handleCompactCommand({
@@ -79,10 +79,10 @@ test("a compaction in flight refuses a second one, and the hold is released afte
     sdkCompact: () => inflight,
     persist: async () => {},
   });
-  assert.equal(second, "A compaction is already running on this session.");
+  assert.equal(second.text, "A compaction is already running on this session.");
 
   release();
-  assert.equal(await first, "Context compacted (SDK session summarized).");
+  assert.deepEqual(await first, { text: "Context compacted (SDK session summarized)." });
   assert.equal(runRegistry.isCompacting("s2"), false);
 });
 
@@ -126,10 +126,10 @@ test("/stop reaches a compaction, and the engine is handed the signal that carri
     session,
     sdkCompact: (_s, stopSignal) => {
       seen = stopSignal;
-      return new Promise<string>((resolve) => {
+      return new Promise<{ text: string }>((resolve) => {
         stopSignal?.addEventListener("abort", () => {
           aborted = true;
-          resolve("Compaction stopped.");
+          resolve({ text: "Compaction stopped." });
         });
       });
     },
@@ -138,7 +138,7 @@ test("/stop reaches a compaction, and the engine is handed the signal that carri
 
   while (!runRegistry.isCompacting("s5")) await Promise.resolve();
   assert.equal(runRegistry.stop("s5"), true, "/stop must report that it stopped something");
-  assert.equal(await outcome, "Compaction stopped.");
+  assert.equal((await outcome).text, "Compaction stopped.");
   assert.equal(aborted, true);
   assert.equal(seen?.aborted, true);
 });

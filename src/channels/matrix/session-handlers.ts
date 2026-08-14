@@ -81,7 +81,7 @@ interface MatrixSessionHandlerDeps {
   workspaceSkillsDir?: string;
   listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
   // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
-  sdkCompact?: (session: import("../../sessions/store.ts").SessionData, stopSignal?: AbortSignal) => Promise<string>;
+  sdkCompact?: (session: import("../../sessions/store.ts").SessionData, stopSignal?: AbortSignal) => Promise<import("../../agent/backend.ts").CompactOutcome>;
   // Push an unsolicited message to a room/thread later (Codex device-code login completion).
   postMessage?: (roomId: string, text: string, threadId?: string) => Promise<void>;
   // Ensure the provider exists + re-run model discovery after a Codex/Claude auth change.
@@ -527,13 +527,16 @@ export function createMatrixCommandHandler({
 
       case "compact": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-        return handleCompactCommand({
+        // Text channel: the summary would flood the room, so only the outcome line is sent.
+        // The app renders it collapsed instead (docs/compaction.md).
+        const outcome = await handleCompactCommand({
           config,
           session,
           instructions: args.trim() || undefined,
           sdkCompact,
           persist: () => sessionManager.persist(sessionId),
         });
+        return outcome.text;
       }
 
       case "reload":

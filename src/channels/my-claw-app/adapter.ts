@@ -383,6 +383,8 @@ export interface MyClawAppNotificationsController {
 export type MyClawAppCommandOutput = {
   text: string;
   status?: MyClawAppStatusPayload;
+  /** A long aside the app folds away (a compaction summary), never part of the outcome line. */
+  details?: string;
 };
 
 /** Text slash commands, executed server-side like on the other channels. */
@@ -1301,12 +1303,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
           if (output) {
             const text = typeof output === "string" ? output : output.text;
             const status = typeof output === "string" ? undefined : output.status;
+            const details = typeof output === "string" ? undefined : output.details;
             this.broadcast(owner, {
               type: "chat.command.result",
               threadId,
               replyToId: frame.id,
               text,
               ...(status ? { status } : {}),
+              ...(details ? { details } : {}),
             });
           }
           return;

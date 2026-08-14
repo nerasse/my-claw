@@ -82,6 +82,7 @@ src/
 │   │   ├── tools.ts       # Per-run in-process MCP server factory (closures = run context)
 │   │   ├── schema.ts      # JSON Schema -> Zod conversion for tool()
 │   │   ├── models.ts      # discoverSdkModels: supportedModels() over the SDK control channel
+│   │   ├── transcript.ts  # Reads a compaction summary back out of the SDK transcript -- docs/compaction.md
 │   │   └── history.ts     # Replays local history into a fresh SDK session (engine switch)
 │   ├── bridge.ts          # LLM agent orchestration (home OpenAI-compatible loop)
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)

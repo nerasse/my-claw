@@ -56,7 +56,7 @@ test("compact maps to the SDK /compact slash command", async () => {
   sess.sdkSessionId = "sdk-42";
   const out = await backend.compact(sess);
 
-  assert.ok(out.includes("compacted"));
+  assert.ok(out.text.includes("compacted"));
   assert.equal(captured[0]!.first, "/compact");
   assert.equal(captured[0]!.options["resume"], "sdk-42");
 });
@@ -65,7 +65,7 @@ test("compact without an SDK session is a friendly no-op", async () => {
   const queryFn: SdkQueryFn = () => { throw new Error("must not be called"); };
   const backend = new ClaudeSdkBackend(baseConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, 0, undefined, undefined, undefined, undefined, queryFn);
   const out = await backend.compact(session("s1"));
-  assert.ok(out.includes("Nothing to compact"));
+  assert.ok(out.text.includes("Nothing to compact"));
 });
 
 test("spawn tool exposes a live model enum and validates the model", async () => {

@@ -46,6 +46,25 @@ frame once the command has been silent for 400 ms, and the result replaces that 
 bubble in place (see `docs/my-claw-app-channel.md`). Telegram and Matrix show only the final
 answer.
 
+The wall on a compaction is 15 minutes, and it is a wall, not an expectation: 250k tokens
+measured at 101 seconds, so the previous two-minute wall aborted a session barely larger than
+that and called it a timeout. It exists for a CLI that hangs, and a hung one hangs forever.
+
+## The summary
+
+`/compact` answers with a `CompactOutcome`: the outcome line, plus the summary when the engine
+can hand one back. The local summarizer wrote it, so it returns it directly. The SDK does not
+put it on the wire (`compact_boundary` carries counters only), so it is read back from the
+transcript afterwards (`claude-sdk/transcript.ts`): the summary is the continuation message that
+opens the compacted session, between the `Summary:` line and the instructions the CLI appends
+under it. The transcript is located by session id across the project directories, because a
+compaction runs without a cwd and the file lives under the project of whoever created the
+session.
+
+The app renders it folded under the outcome line, the same collapsed aside it uses for a model's
+reasoning: reading it is a choice, not a wall of text in the thread. Telegram and Matrix get the
+outcome line alone, since a 16 kB summary posted into a room is not a feature.
+
 ## Auto-compaction
 
 The home loop compacts on its own when the context fills (`bridge.ts`, `context.autoCompact`,

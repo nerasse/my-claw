@@ -96,7 +96,7 @@ test("dispatcher self-heals a stale modelOverride instead of erroring forever", 
 test("compactSdkSession refuses to race an active run", async () => {
   runRegistry.clear();
   const config = mixedConfig();
-  const sdk = { compact: async () => "compacted" } as unknown as ClaudeSdkBackend;
+  const sdk = { compact: async () => ({ text: "compacted" }) } as unknown as ClaudeSdkBackend;
   const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, {
     home: {} as AgentBridge, sdk,
   });
@@ -106,13 +106,13 @@ test("compactSdkSession refuses to race an active run", async () => {
   const { end } = runRegistry.startRoot(sess.id);
   try {
     const out = await dispatcher.compactSdkSession(sess);
-    assert.ok(out.includes("run is active"));
+    assert.ok(out.text.includes("run is active"));
   } finally {
     end();
     runRegistry.clear();
   }
   const out2 = await dispatcher.compactSdkSession(sess);
-  assert.equal(out2, "compacted");
+  assert.equal(out2.text, "compacted");
 });
 
 test("a failed run rolls back both the mirror and the SDK session pointer", async () => {
@@ -152,5 +152,6 @@ test("compact maps an aborted (timed out) CLI to a friendly message", async () =
   assert.ok(controller, "compact must pass an abortController");
   controller!.abort();
   const out = await p;
-  assert.equal(out, "Compaction timed out.");
+  // The wall is named in the message: a timeout that hides its own budget is unactionable.
+  assert.match(out.text, /^Compaction timed out after \d+ min\.$/);
 });

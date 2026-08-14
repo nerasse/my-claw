@@ -1342,6 +1342,8 @@ export interface MyClawAppCommandResult {
   text: string;
   /** A `/status` result also travels structured, so the app can draw a page instead of a bubble. */
   status?: MyClawAppStatusPayload;
+  /** An aside too long for the bubble (a compaction summary), folded away like reasoning. */
+  details?: string;
 }
 
 /**
