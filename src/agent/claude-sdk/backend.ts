@@ -299,9 +299,9 @@ export class ClaudeSdkBackend implements AgentBackend {
    */
   async compact(session: SessionData, stopSignal?: AbortSignal): Promise<CompactOutcome> {
     if (!session.sdkSessionId) {
-      return { text: "Nothing to compact yet on this session." };
+      return { text: "Nothing to compact yet on this session.", ok: false };
     }
-    if (stopSignal?.aborted) return { text: "Compaction stopped." };
+    if (stopSignal?.aborted) return { text: "Compaction stopped.", ok: false };
     let finished = false;
     async function* one(): AsyncGenerator<SdkUserMessage> {
       yield { type: "user", message: { role: "user", content: "/compact" }, parent_tool_use_id: null };
@@ -350,9 +350,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         }
       }
     } catch (err) {
-      if (stopped) return { text: "Compaction stopped." };
+      if (stopped) return { text: "Compaction stopped.", ok: false };
       if (abortController.signal.aborted) {
-        return { text: `Compaction timed out after ${Math.round(COMPACT_TIMEOUT_MS / 60_000)} min.` };
+        return { text: `Compaction timed out after ${Math.round(COMPACT_TIMEOUT_MS / 60_000)} min.`, ok: false };
       }
       throw err;
     } finally {
@@ -361,17 +361,18 @@ export class ClaudeSdkBackend implements AgentBackend {
       stopSignal?.removeEventListener("abort", onStop);
       session.lastActiveAt = new Date().toISOString();
     }
-    if (compactError) return { text: `Compaction failed: ${compactError}` };
+    if (compactError) return { text: `Compaction failed: ${compactError}`, ok: false };
     if (compacted) {
       // The summary is not on the wire: the SDK writes it into the transcript as the message
       // that opens the compacted session, so it is read back from there.
       const summary = session.sdkSessionId ? await readCompactSummary(session.sdkSessionId) : undefined;
       return {
         text: "Context compacted (SDK session summarized).",
+        ok: true,
         ...(summary ? { summary } : {}),
       };
     }
-    return { text: resultText.trim() || "Compaction did not run." };
+    return { text: resultText.trim() || "Compaction did not run.", ok: false };
   }
 
   private async handle(

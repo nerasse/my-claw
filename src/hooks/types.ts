@@ -180,6 +180,22 @@ export interface HookEventMap {
     summaryLength: number;
   };
   "session:compact:error": { sessionId: string; reason: string };
+  /**
+   * A `/compact` the owner typed is over, whichever engine answered it. The three events above
+   * live inside the local summarizer and the SDK engine never reaches them, so this is the only
+   * one that fires on both paths, once per command, on success and on failure alike.
+   */
+  "session:compact:finished": {
+    sessionId: string;
+    /** The app thread the command came from, for the notification's deep link. */
+    threadId?: string;
+    engine: "sdk" | "local";
+    durationMs: number;
+    /** The history was rewritten. False is every other end, including "nothing to compact". */
+    ok: boolean;
+    /** The outcome line the user reads in the chat. */
+    text: string;
+  };
   "session:model:changed": {
     sessionId: string;
     previousModel: string;

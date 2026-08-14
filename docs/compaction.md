@@ -43,8 +43,16 @@ its CLI process, and the answer says `Compaction stopped.` rather than the timeo
 
 A compaction on a full session is minutes long. The app is told with a `chat.command.pending`
 frame once the command has been silent for 400 ms, and the result replaces that placeholder
-bubble in place (see `docs/my-claw-app-channel.md`). Telegram and Matrix show only the final
-answer.
+bubble in place (see `docs/my-claw-app-channel.md`). That placeholder counts the seconds up on
+the device, from its own timer: nothing is on the wire between the notice and the result, and a
+bubble frozen on the same words for two minutes reads as a dead app. Telegram and Matrix show
+only the final answer.
+
+The end of the command is also announced out of band. `handleCompactCommand` emits
+`session:compact:finished` for both engines, on success and on failure alike, and the push
+wiring turns it into a device notification (`docs/notifications.md`), skipped on a device that
+is already looking at the thread. The three `session:compact:start/end/error` events cannot
+serve here: they live inside the local summarizer and the SDK engine never reaches them.
 
 The wall on a compaction is 15 minutes, and it is a wall, not an expectation: 250k tokens
 measured at 101 seconds, so the previous two-minute wall aborted a session barely larger than

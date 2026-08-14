@@ -106,7 +106,8 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `session:cleared` -- /clear command executed
 - `session:archived` -- session file moved to archive
 - `session:evicted` -- LRU cache eviction
-- `session:compact:start/end/error` -- context compaction
+- `session:compact:start/end/error` -- context compaction (local summarizer only)
+- `session:compact:finished` -- a `/compact` is over, both engines, success or not
 - `session:messages:trimmed` -- overflow trim to 50
 - `session:model:changed` -- /model command
 

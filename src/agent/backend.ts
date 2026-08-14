@@ -29,6 +29,12 @@ export interface ReasoningSink {
 export interface CompactOutcome {
   text: string;
   summary?: string;
+  /**
+   * The history was actually rewritten. False covers every other end (nothing to compact, a
+   * refusal, a timeout, a /stop), which reads the same in the chat but must not be announced
+   * as a completed compaction.
+   */
+  ok?: boolean;
 }
 
 // The contract between the message router/channels and an agent execution engine.

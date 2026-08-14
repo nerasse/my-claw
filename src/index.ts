@@ -593,6 +593,24 @@ async function main() {
       ),
     );
   });
+  // A compaction is the one long operation with no stream behind it: minutes of silence, then a
+  // single result frame. The device that is looking at the thread sees that frame land, every
+  // other one is told (docs/notifications.md).
+  hooks.on("session:compact:finished", ({ sessionId, threadId, durationMs, ok, text }) => {
+    const thread = threadId ?? "default";
+    void threadTitle(sessionId, "Compaction").then((title) =>
+      publishNotification(
+        {
+          title,
+          body: ok
+            ? `Context compacted in ${formatDuration(durationMs)}`
+            : `Compaction did not run: ${cleanNotificationText(text).slice(0, 160)}`,
+          url: `myclaw://thread/${thread}`,
+        },
+        { skipDevice: (deviceId) => isForegroundOn(deviceId, thread) },
+      ),
+    );
+  });
   // Silent jobs suppress their output by design; a completion notification would be just as
   // noisy, so it is skipped with the delivery.
   hooks.on("cron:job:end", ({ jobId, jobName, success, silent }) => {

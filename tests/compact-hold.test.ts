@@ -7,6 +7,8 @@
 import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { runRegistry } from "../src/core/run-registry.ts";
+import { hooks } from "../src/hooks/index.ts";
+import type { HookEventMap } from "../src/hooks/index.ts";
 import { handleCompactCommand } from "../src/channels/compact-command.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { SessionData } from "../src/sessions/store.ts";
@@ -149,4 +151,69 @@ test("a compaction counts as work in flight for the app's activity probe", () =>
   assert.equal(runRegistry.hasAny(), true);
   held!.release();
   assert.equal(runRegistry.hasAny(), false);
+});
+
+/**
+ * The completion event the push wiring listens on. It has to fire for both engines and for
+ * every end of the command: the notification exists precisely for the case where nobody is
+ * looking at the thread, so an end that stays silent is an end nobody hears about.
+ */
+test("the end of a /compact is announced once, whatever the engine answered", async () => {
+  const seen: HookEventMap["session:compact:finished"][] = [];
+  const collect = (payload: HookEventMap["session:compact:finished"]): void => {
+    seen.push(payload);
+  };
+  hooks.on("session:compact:finished", collect);
+
+  await handleCompactCommand({
+    config: makeConfig(),
+    session: makeSession("s7"),
+    sdkCompact: async () => ({ text: "Context compacted (SDK session summarized).", summary: "kept", ok: true }),
+    persist: async () => {},
+    threadId: "thread-7",
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.engine, "sdk");
+  assert.equal(seen[0]?.ok, true);
+  assert.equal(seen[0]?.threadId, "thread-7");
+  assert.equal(seen[0]?.sessionId, "s7");
+  assert.equal(typeof seen[0]?.durationMs, "number");
+
+  // An engine that ran and rewrote nothing is not a compaction: the notification must say so
+  // rather than announce a context that was never freed.
+  await handleCompactCommand({
+    config: makeConfig(),
+    session: makeSession("s8"),
+    sdkCompact: async () => ({ text: "Nothing to compact yet on this session.", ok: false }),
+    persist: async () => {},
+  });
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1]?.ok, false);
+  assert.equal(seen[1]?.threadId, undefined);
+
+  await assert.rejects(
+    handleCompactCommand({
+      config: makeConfig(),
+      session: makeSession("s9"),
+      sdkCompact: () => Promise.reject(new Error("cli died")),
+      persist: async () => {},
+    }),
+    /cli died/,
+  );
+  assert.equal(seen.length, 3);
+  assert.equal(seen[2]?.ok, false);
+  assert.equal(seen[2]?.text, "cli died");
+
+  // A session already busy never starts an engine, so it must not announce a compaction that
+  // did not happen.
+  const held = runRegistry.beginCompaction("s10");
+  await handleCompactCommand({
+    config: makeConfig(),
+    session: makeSession("s10"),
+    sdkCompact: async () => ({ text: "unreachable", ok: true }),
+    persist: async () => {},
+  });
+  assert.equal(seen.length, 3);
+  held!.release();
+  hooks.off("session:compact:finished", collect);
 });

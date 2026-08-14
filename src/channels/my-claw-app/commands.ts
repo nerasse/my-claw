@@ -176,6 +176,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           instructions: args.trim() || undefined,
           sdkCompact: deps.sdkCompact,
           persist: () => deps.sessionManager.persist(sessionId),
+          threadId,
         });
         // The summary travels apart from the outcome line: the app folds it away, the way it
         // already folds a model's reasoning.

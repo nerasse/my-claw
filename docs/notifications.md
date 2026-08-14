@@ -68,6 +68,8 @@ pré-création gagne. `type` doit rester stable pour que le canal ne change pas.
 | --- | --- | --- | --- |
 | `message:route:complete` | titre de session (ou premiers mots du message) | `Run finished in <durée>: <extrait>` | `myclaw://thread/<id>` |
 | `message:route:error` | idem | `Run failed after <durée>: <erreur>` | `myclaw://thread/<id>` |
+| `session:compact:finished` (ok) | titre de session | `Context compacted in <durée>` | `myclaw://thread/<id>` |
+| `session:compact:finished` (échec) | idem | `Compaction did not run: <raison>` | `myclaw://thread/<id>` |
 | `cron:job:end` (succès) | nom du job | `Job finished` | `myclaw://job/<id>` |
 | `cron:job:error` | nom du job | `Job failed: <erreur>` | `myclaw://job/<id>` |
 
@@ -80,6 +82,9 @@ Règles :
   actif). Le serveur **saute** la notification de run de session pour un device qui est au
   premier plan sur le thread concerné (la réponse défile déjà à l'écran). Les notifications de
   jobs ne sont jamais sautées.
+- **Compaction** : même règle de premier plan. Une compaction est la seule opération longue
+  sans stream derrière elle (une à deux minutes de silence, puis une seule frame de résultat),
+  donc sa fin est annoncée à tous les devices qui ne la regardent pas.
 - Publication **best-effort** : un endpoint mort ou un push server injoignable ne fait jamais
   échouer le run (warn dans les logs seulement).
 
