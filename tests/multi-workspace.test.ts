@@ -174,11 +174,17 @@ test("the same skill name in two workspaces never collides globally", async () =
   assert.equal(registry.get("shared")!.content.trim(), "custom");
 
   // A run in B sees built-in + custom + B's skills, never A's nor the default workspace's.
+  // Counted, not `includes`: the layers used to be listed side by side, which no `includes`
+  // assertion can see.
   const names = (s: string | undefined) => registry.list("all", s).map((i) => i.name);
-  assert.ok(names("b").includes("shared"));
-  assert.ok(!names("b").includes("default-ws-skill"));
-  assert.ok(names(undefined).includes("default-ws-skill"));
-  assert.ok(!names(undefined).includes("from A"));
+  const occurrences = (s: string | undefined, name: string) => names(s).filter((n) => n === name).length;
+  assert.equal(occurrences("b", "shared"), 1);
+  assert.equal(registry.list("all", "b").find((i) => i.name === "shared")!.workspace, "b");
+  assert.equal(occurrences("b", "default-ws-skill"), 0);
+  assert.equal(occurrences(undefined, "default-ws-skill"), 1);
+  assert.equal(occurrences(undefined, "shared"), 1);
+  // The default workspace has no "shared" of its own, so custom is what a default run resolves.
+  assert.equal(registry.list("all", undefined).find((i) => i.name === "shared")!.source, "custom");
 
   // The browse catalog is the opposite: every workspace, so the app can show them all.
   const catalog = registry.listAll();
@@ -187,6 +193,30 @@ test("the same skill name in two workspaces never collides globally", async () =
     ["-", "a", "b"],
   );
   assert.ok(catalog.some((s) => s.name === "default-ws-skill" && s.workspace === "default"));
+
+  // The catalog says which copy wins, or showing three of them is misleading rather than honest.
+  const global = catalog.find((s) => s.name === "shared" && s.workspace === undefined)!;
+  assert.deepEqual(global.overriddenIn, ["a", "b"]);
+  assert.equal(global.overrides, undefined);
+  assert.equal(catalog.find((s) => s.name === "shared" && s.workspace === "a")!.overrides, "custom");
+  assert.equal(catalog.find((s) => s.name === "default-ws-skill")!.overrides, undefined);
+  assert.equal(catalog.find((s) => s.name === "default-ws-skill")!.overriddenIn, undefined);
+
+  // The resolved view never carries them: it has no masked entry left to explain.
+  assert.equal(registry.list("all", "a").find((s) => s.name === "shared")!.overriddenIn, undefined);
+});
+
+test("a workspace skill that masks a built-in says so", async () => {
+  const builtin = await tmpDir();
+  const a = await tmpDir();
+  await writeSkill(builtin, "forgejo", "shipped");
+  await writeSkill(a, "forgejo", "forked");
+
+  const registry = new SkillRegistry(
+    await loadAllSkills({ builtInDir: builtin, customDir: await tmpDir(), workspaces: [{ key: "a", dir: a }] }),
+  );
+
+  assert.equal(registry.listAll().find((s) => s.workspace === "a")!.overrides, "built-in");
 });
 
 test("read_skill and list_skills follow the run's workspace", async () => {

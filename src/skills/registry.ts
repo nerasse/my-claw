@@ -5,6 +5,17 @@ function keyFor(name: string, workspace?: string): string {
   return workspace ? `${workspace}/${name}` : name;
 }
 
+function toInfo(skill: Skill): SkillInfo {
+  return {
+    name: skill.meta.name,
+    description: skill.meta.description,
+    ...(skill.meta.version ? { version: skill.meta.version } : {}),
+    source: skill.source,
+    path: skill.path,
+    ...(skill.workspace ? { workspace: skill.workspace } : {}),
+  };
+}
+
 export class SkillRegistry {
   private skills = new Map<string, Skill>();
 
@@ -46,20 +57,25 @@ export class SkillRegistry {
    * secondary workspace never inherits another project's skills. The default keeps every existing
    * caller unrestricted, so a missing scope can never silently narrow a prompt.
    * See docs/agent-scoping.md.
+   *
+   * One entry per name, resolved like `get()`: the run's workspace layer shadows the global
+   * entry, which the loader already resolved as custom over built-in. Listing both would put the
+   * same name twice in the prompt with two different descriptions, for a `read_skill` that can
+   * only ever return the workspace one.
    */
   list(scope: AgentScope = "all", workspace?: string): SkillInfo[] {
     const effective = workspace ?? "default";
-    return Array.from(this.skills.values())
-      .filter((s) => scopeAllows(scope, s.meta.name))
-      .filter((s) => s.workspace === undefined || s.workspace === effective)
-      .map((s) => ({
-        name: s.meta.name,
-        description: s.meta.description,
-        ...(s.meta.version ? { version: s.meta.version } : {}),
-        source: s.source,
-        path: s.path,
-        ...(s.workspace ? { workspace: s.workspace } : {}),
-      }));
+    const byName = new Map<string, Skill>();
+    for (const skill of this.skills.values()) {
+      if (!scopeAllows(scope, skill.meta.name)) continue;
+      if (skill.workspace !== undefined && skill.workspace !== effective) continue;
+      // Insertion order already puts the workspace layer last, but a partial reload must not be
+      // able to flip the priority, so the shadowing is stated rather than inherited.
+      const seen = byName.get(skill.meta.name);
+      if (seen && seen.workspace !== undefined && skill.workspace === undefined) continue;
+      byName.set(skill.meta.name, skill);
+    }
+    return Array.from(byName.values()).map(toInfo);
   }
 
   exists(name: string, workspace?: string): boolean {
@@ -70,16 +86,30 @@ export class SkillRegistry {
    * The whole catalog, every workspace included. For browse surfaces (the app's skills page)
    * rather than agent runs: an agent must never be handed skills outside its own workspace,
    * which is what `list(scope, workspace)` is for.
+   *
+   * Unresolved on purpose, and therefore annotated: each entry carries which workspaces mask it
+   * (`overriddenIn`) or which global tier it masks (`overrides`). Showing the copies without
+   * saying which one wins is what makes a browse catalog misleading.
    */
   listAll(): SkillInfo[] {
-    return Array.from(this.skills.values()).map((s) => ({
-      name: s.meta.name,
-      description: s.meta.description,
-      ...(s.meta.version ? { version: s.meta.version } : {}),
-      source: s.source,
-      path: s.path,
-      ...(s.workspace ? { workspace: s.workspace } : {}),
-    }));
+    const owners = new Map<string, string[]>();
+    for (const skill of this.skills.values()) {
+      if (skill.workspace === undefined) continue;
+      const list = owners.get(skill.meta.name);
+      if (list) list.push(skill.workspace);
+      else owners.set(skill.meta.name, [skill.workspace]);
+    }
+    return Array.from(this.skills.values()).map((skill) => {
+      const info = toInfo(skill);
+      if (skill.workspace === undefined) {
+        const masked = owners.get(skill.meta.name);
+        if (masked && masked.length > 0) info.overriddenIn = [...masked].sort();
+        return info;
+      }
+      const global = this.skills.get(keyFor(skill.meta.name));
+      if (global) info.overrides = global.source === "built-in" ? "built-in" : "custom";
+      return info;
+    });
   }
 
   /** Every known skill name, unscoped. For the boot check that reports scope entries matching nothing. */

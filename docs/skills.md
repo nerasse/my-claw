@@ -64,6 +64,28 @@ When multiple skills share the same name, the following priority applies, **per 
 A skill in workspace A never shadows the same name in workspace B: resolution happens inside
 the workspace of the run, and a secondary workspace never sees the default workspace's skills.
 
+The priority applies to the *listing* as much as to the lookup: `registry.list()` returns one
+entry per name, so a name never appears twice in the system prompt. The only unresolved view is
+`registry.listAll()`, the app's browse catalog, which shows every layer on purpose and annotates
+each entry with `overriddenIn` (the workspaces masking a global skill) or `overrides` (the global
+tier a workspace skill masks).
+
+## Moving a Skill Between Tiers
+
+A skill is a *directory*, so moving one is a recursive copy of the folder, never a file write.
+The app does it from the skill page (`skills.copy` / `skills.move`, see
+`docs/my-claw-app-channel.md`); by hand it is a plain `cp -r` into the target `skills/` dir,
+picked up by the watcher.
+
+- **Promote** (workspace to custom) is the answer to "this skill is useful in two projects".
+  Duplicating it into each workspace makes two copies that drift apart in silence.
+- **Fork** (built-in to custom or to a workspace) is the way to diverge from a shipped skill:
+  the copy shadows the original, which stays intact and keeps being resynced.
+- The built-in tier is copy-*from* only. Writing into it is undone by the next boot's hash
+  resync, and deleting from it brings the skill back on that same resync.
+- After a move, check the SKILL.md for absolute paths pointing at the old workspace: the file
+  travels, the paths it names do not.
+
 This allows users and agents to override built-in skills without modifying the repository.
 
 ## Auto-Update of Built-in Skills

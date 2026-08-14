@@ -66,6 +66,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppAgentFileCreate,
   MyClawAppAgentFileDelete,
   MyClawAppToolsToggle,
+  MyClawAppSkillEntry,
+  MyClawAppSkillsTransfer,
   MyClawAppMcpAdd,
   MyClawAppMcpRemove,
   MyClawAppMcpEnable,
@@ -247,19 +249,23 @@ export interface MyClawAppProvidersController {
 /** Skill catalog, injected for the same reason as the model controller: the adapter must not
  *  reach into the skill registry or the filesystem itself. */
 export interface MyClawAppSkillsController {
-  list(): {
-    skills: Array<{
-      name: string;
-      description: string;
-      version?: string;
-      source: "built-in" | "custom" | "workspace";
-      path: string;
-    }>;
-  };
+  list(): { skills: MyClawAppSkillEntry[] };
   /** Raw SKILL.md text of one skill, or null when it does not exist. */
   read(source: string, name: string, workspace?: string): Promise<string | null>;
   /** The named workspaces plus the default one, for display only. */
   workspaces(): Array<{ key: string; path: string; default: boolean }>;
+  /** Moves or copies a skill directory between tiers, then answers with the fresh catalog. */
+  transfer(input: MyClawAppSkillTransfer): Promise<{ skills: MyClawAppSkillEntry[] }>;
+}
+
+/** What the adapter hands the host once a transfer frame passed its format checks. */
+export interface MyClawAppSkillTransfer {
+  mode: "copy" | "move";
+  source: "built-in" | "custom" | "workspace";
+  name: string;
+  workspace?: string;
+  target: { source: "custom" | "workspace"; workspace?: string };
+  overwrite?: boolean;
 }
 
 /** Declared MCP servers and their live state, injected so the adapter never touches the manager. */
@@ -1050,6 +1056,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "model.list":
         void this.handleModelList(ws);
+        break;
+      case "skills.copy":
+      case "skills.move":
+        void this.handleSkillsTransfer(ws, frame);
         break;
       case "skills.list":
         void this.handleSkillsList(ws);
@@ -1968,6 +1978,51 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "skills.list.result", ...this.skills.list() });
     } catch (err) {
       await this.refuse(ws, "skills", "skills.list failed", { error: String(err) });
+    }
+  }
+
+  /** The charset of a skill name and of a workspace key on this channel: no separator can reach
+   *  the filesystem, which is the first of the two fences (the controller re-resolves the path
+   *  against the tier root). Same rule as GET /skills. */
+  private static readonly SKILL_TOKEN = /^[A-Za-z0-9._-]+$/;
+
+  private async handleSkillsTransfer(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSkillsTransfer,
+  ): Promise<void> {
+    if (!this.skills) {
+      await this.refuse(ws, "skills", "skill catalog unavailable");
+      return;
+    }
+    const detail = { name: frame.name, source: frame.source, target: frame.target?.source };
+    if (frame.source !== "built-in" && frame.source !== "custom" && frame.source !== "workspace") {
+      await this.refuse(ws, "skills", "unknown skill tier", detail);
+      return;
+    }
+    if (frame.target?.source !== "custom" && frame.target?.source !== "workspace") {
+      await this.refuse(ws, "skills", "a skill can only be written to custom or a workspace", detail);
+      return;
+    }
+    const keys = [frame.name, frame.workspace, frame.target.workspace];
+    if (keys.some((key) => key !== undefined && !MyClawAppAdapter.SKILL_TOKEN.test(key))) {
+      await this.refuse(ws, "skills", "invalid skill name or workspace key", detail);
+      return;
+    }
+    try {
+      const result = await this.skills.transfer({
+        mode: frame.type === "skills.move" ? "move" : "copy",
+        source: frame.source,
+        name: frame.name,
+        ...(frame.workspace ? { workspace: frame.workspace } : {}),
+        target: {
+          source: frame.target.source,
+          ...(frame.target.workspace ? { workspace: frame.target.workspace } : {}),
+        },
+        ...(frame.overwrite ? { overwrite: true } : {}),
+      });
+      this.sendFrame(ws, { type: "skills.list.result", ...result });
+    } catch (err) {
+      await this.refuse(ws, "skills", `${frame.type} failed`, { ...detail, error: String(err) });
     }
   }
 

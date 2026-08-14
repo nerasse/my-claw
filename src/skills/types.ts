@@ -25,4 +25,10 @@ export interface SkillInfo {
   path: string;
   /** Key of the workspace this skill belongs to, when it is a secondary workspace's. */
   workspace?: string;
+  /** Browse catalogs only (`listAll`): the workspaces where this global entry is masked by a
+   *  workspace skill of the same name. Never set on the resolved view, which has no masked
+   *  entry left to explain. */
+  overriddenIn?: string[];
+  /** Browse catalogs only: the global tier this workspace skill masks. */
+  overrides?: "custom" | "built-in";
 }

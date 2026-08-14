@@ -45,13 +45,13 @@ import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl, sanitizeThreadId } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { GeoapifyReverseGeocoder } from "./channels/my-claw-app/location.ts";
-import { resolveSkillFile } from "./channels/my-claw-app/skills.ts";
+import { resolveSkillFile, transferSkill } from "./channels/my-claw-app/skills.ts";
 import {
   MAX_INSTRUCTION_BYTES,
   listInstructions,
@@ -620,7 +620,9 @@ async function main() {
     models: () => modelPicker.options().map((m) => m.id),
     defaultModel: () => config.llm.defaultModel ?? config.llm.model ?? "",
     workspaces: () => Object.keys(config.workspaces ?? {}),
-    skills: () => skillRegistry.listAll().map((s) => s.name),
+    // listAll keeps one entry per layer, so a name defined in several workspaces would be
+    // offered several times in the picker.
+    skills: () => Array.from(new Set(skillRegistry.listAll().map((s) => s.name))),
     mcp: () => mcpManager.status().map((s) => s.name),
     cronTools: () =>
       toolRegistry
@@ -1479,19 +1481,42 @@ async function main() {
       envList: () => envSnapshot(),
     });
 
+    // The browse catalog, every workspace included: this is a reading surface, not an agent
+    // run, and an agent's own view stays narrowed by list(scope, workspace). The shadowing
+    // fields travel with it so the page can say which copy of a name actually wins.
+    const skillCatalog = (): MyClawAppSkillEntry[] =>
+      skillRegistry.listAll().map((s) => ({
+        name: s.name,
+        description: s.description,
+        ...(s.version ? { version: s.version } : {}),
+        source: s.source,
+        path: s.path,
+        ...(s.workspace ? { workspace: s.workspace } : {}),
+        ...(s.overriddenIn ? { overriddenIn: s.overriddenIn } : {}),
+        ...(s.overrides ? { overrides: s.overrides } : {}),
+      }));
     myClawApp.onSkillsController({
-      // The browse catalog, every workspace included: this is a reading surface, not an agent
-      // run, and an agent's own view stays narrowed by list(scope, workspace).
-      list: () => ({
-        skills: skillRegistry.listAll().map((s) => ({
-          name: s.name,
-          description: s.description,
-          ...(s.version ? { version: s.version } : {}),
-          source: s.source,
-          path: s.path,
-          ...(s.workspace ? { workspace: s.workspace } : {}),
-        })),
-      }),
+      list: () => ({ skills: skillCatalog() }),
+      transfer: async (input) => {
+        const outcome = await transferSkill(input, {
+          builtInDir: builtinDir,
+          customDir,
+          workspaceSkillsDir,
+          workspaces: config.workspaces,
+        });
+        // The watcher would catch the new directory on its own, but the answer to this frame is
+        // the fresh catalog: rescan now so the page never shows the state from before the move.
+        const count = await reloadSkills(skillsDirs(), skillRegistry);
+        hooks.emit("skills:reloaded", { count });
+        void log("info", `skill ${input.mode}`, {
+          name: input.name,
+          from: input.source,
+          to: input.target.source,
+          path: outcome.path,
+          replaced: outcome.replaced,
+        });
+        return { skills: skillCatalog() };
+      },
       read: async (source, name, workspace) => {
         if (source !== "built-in" && source !== "custom" && source !== "workspace") return null;
         return resolveSkillFile(

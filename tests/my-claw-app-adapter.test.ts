@@ -2363,6 +2363,7 @@ describe("command frames", () => {
       }),
       read: async () => null,
       workspaces: () => [],
+      transfer: async () => ({ skills: [] }),
     });
 
     client.ws.send(JSON.stringify({ type: "skills.list" }));
@@ -2394,6 +2395,7 @@ describe("command frames", () => {
         { key: "default", path: "/w", default: true },
         { key: "sofa", path: "/s", default: false },
       ],
+      transfer: async () => ({ skills: [] }),
     });
 
     const ok = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=forgejo`);
@@ -2414,6 +2416,82 @@ describe("command frames", () => {
 
     const missing = await fetch(`http://127.0.0.1:${adapter.port}/skills?device=${DEVICE_ID}&token=${TOKEN}&source=custom&name=nope`);
     assert.equal(missing.status, 404);
+  });
+
+  test("skills.copy hands the transfer to the controller and answers with the fresh catalog", async () => {
+    const seen: unknown[] = [];
+    adapter.onSkillsController({
+      list: () => ({ skills: [] }),
+      read: async () => null,
+      workspaces: () => [],
+      transfer: async (input) => {
+        seen.push(input);
+        return { skills: [{ name: "deploy", description: "Deploy", source: "custom", path: "/s/deploy/SKILL.md" }] };
+      },
+    });
+
+    client.ws.send(
+      JSON.stringify({
+        type: "skills.copy",
+        source: "workspace",
+        name: "deploy",
+        workspace: "sofa",
+        target: { source: "custom" },
+        overwrite: true,
+      }),
+    );
+    const frame = (await nextFrame(client)) as { type: string; skills: Array<{ name: string }> };
+    assert.equal(frame.type, "skills.list.result");
+    assert.deepEqual(frame.skills.map((s) => s.name), ["deploy"]);
+    assert.deepEqual(seen, [
+      { mode: "copy", source: "workspace", name: "deploy", workspace: "sofa", target: { source: "custom" }, overwrite: true },
+    ]);
+  });
+
+  test("skills.move names the mode the controller receives", async () => {
+    const seen: Array<{ mode: string }> = [];
+    adapter.onSkillsController({
+      list: () => ({ skills: [] }),
+      read: async () => null,
+      workspaces: () => [],
+      transfer: async (input) => {
+        seen.push(input);
+        return { skills: [] };
+      },
+    });
+
+    client.ws.send(
+      JSON.stringify({ type: "skills.move", source: "custom", name: "deploy", target: { source: "workspace", workspace: "sofa" } }),
+    );
+    await nextFrame(client);
+    assert.equal(seen[0]?.mode, "move");
+  });
+
+  test("a transfer into built-in, or with a crafted name, never reaches the controller", async () => {
+    let called = 0;
+    adapter.onSkillsController({
+      list: () => ({ skills: [] }),
+      read: async () => null,
+      workspaces: () => [],
+      transfer: async () => {
+        called += 1;
+        return { skills: [] };
+      },
+    });
+
+    const refusals = [
+      { type: "skills.copy", source: "custom", name: "deploy", target: { source: "built-in" } },
+      { type: "skills.copy", source: "custom", name: "../../etc/passwd", target: { source: "workspace" } },
+      { type: "skills.copy", source: "custom", name: "deploy", target: { source: "workspace", workspace: "../x" } },
+      { type: "skills.copy", source: "ghost", name: "deploy", target: { source: "custom" } },
+    ];
+    for (const frame of refusals) {
+      client.ws.send(JSON.stringify(frame));
+      const answer = (await nextFrame(client)) as { type: string; scope: string };
+      assert.equal(answer.type, "error", `${JSON.stringify(frame)} must be refused`);
+      assert.equal(answer.scope, "skills");
+    }
+    assert.equal(called, 0, "the filesystem must never be reached for a refused transfer");
   });
 
   test("workspaces.list returns the default and the named workspaces", async () => {

@@ -117,8 +117,11 @@ export async function handleSkillsCommand(p: IntrospectParams): Promise<string> 
   const agent = await resolveTarget(p);
   if (typeof agent === "string") return agent;
 
-  const scope = resolveAgentDefinition(p.config, p.agentRegistry, agent.toolType).skills;
-  const inScope = p.skillRegistry.list(scope);
+  const definition = resolveAgentDefinition(p.config, p.agentRegistry, agent.toolType);
+  const scope = definition.skills;
+  // An agent pinned to a workspace reads that workspace's layer, so the listing has to be taken
+  // from there too: the default view would name skills this agent can never load.
+  const inScope = p.skillRegistry.list(scope, definition.workspace);
   const total = p.skillRegistry.names().length;
 
   const lines = [`Skills de ${agent.label} — ${inScope.length} sur ${total}`, ""];
@@ -236,7 +239,7 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
   if (typeof agent === "string") return agent;
 
   const definition = resolveAgentDefinition(p.config, p.agentRegistry, agent.toolType);
-  const skills = p.skillRegistry.list(definition.skills);
+  const skills = p.skillRegistry.list(definition.skills, definition.workspace);
   const tools = toolsOf(p, agent.toolType);
   const model = modelFor(p.config, agent.toolType);
   const backend = backendFor(p.config, agent.toolType);

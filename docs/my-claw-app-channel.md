@@ -110,6 +110,8 @@ the first answer wins.
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
 { "type": "model.context.set", "threadId": "projet", "choice": 128000 }
 { "type": "skills.list" }
+{ "type": "skills.copy", "source": "built-in|custom|workspace", "name": "forgejo", "workspace": "sofa", "target": { "source": "custom|workspace", "workspace": "lab" }, "overwrite": true }
+{ "type": "skills.move", "source": "custom|workspace", "name": "forgejo", "workspace": "sofa", "target": { "source": "custom|workspace", "workspace": "lab" }, "overwrite": true }
 { "type": "tools.list" }
 { "type": "workspaces.list" }
 { "type": "mcp.list" }
@@ -401,7 +403,22 @@ runs fresh like any other message.
 - `skills.list.result` feeds the app's skills page. `path` is display-only (where to edit the
   file on the server); reading goes through `GET /skills?device&token&source&name`, which
   serves the raw `SKILL.md` (`text/markdown`) with the same device auth as `/media`.
-  `workspace` is present only on skills of a named workspace.
+  `workspace` is present only on skills of a named workspace. The catalog is the *unresolved*
+  one (every tier, every workspace), so each entry says which copy wins: `overriddenIn` lists
+  the workspaces masking a global entry, `overrides` names the global tier a workspace skill
+  masks. See docs/skills.md.
+- `skills.copy` / `skills.move` transfer one skill **directory** (SKILL.md plus its references
+  and scripts) between tiers, and are answered with a fresh `skills.list.result`. Rules, all
+  enforced server-side:
+  - `target.source` is never `built-in`, and `built-in` cannot be a *move* source: that tier is
+    resynced from the release by hash at every boot, so a write there is undone and a delete
+    comes back.
+  - a name already taken in the target tier is refused unless `overwrite` is set, so a replace
+    is always something the owner asked for twice.
+  - names and workspace keys are held to `[A-Za-z0-9._-]+` on the wire, then re-resolved against
+    the tier root before anything touches the filesystem (same two fences as `GET /skills`).
+  - a move is a copy followed by the source delete, in that order: an interrupted transfer
+    leaves a visible duplicate rather than nothing.
 - `tools.list.result` feeds the app's tools page: the whole catalog as the orchestrator sees
   it (per-agent narrowing is a run-time concern, not a reading surface). `source` tells where
   each tool comes from -- built into the server, an owner-authored `tools.d/` plugin, or an

@@ -116,7 +116,12 @@ Skills come from three tiers (built-in, custom, workspace). With multiple worksp
 - Resolution per workspace: built-in < custom < the skills of *that* workspace. The same
   name in workspace A and workspace B no longer collides globally.
 - `registry.list(scope, workspace?)` returns built-in + custom + the skills of that
-  workspace; `retrieval` (suggestions) filters on the same workspace.
+  workspace, **resolved**: one entry per name, the workspace layer shadowing the global one
+  exactly like `get()`. Listing both would put the same name twice in the prompt with two
+  different descriptions, for a `read_skill` that can only return the workspace one.
+  `retrieval` (suggestions) is fed by that list, so it inherits the resolution.
+- `registry.listAll()` is the opposite and stays unresolved: it is the browse catalog of the
+  app's skills page, which has to show the shadowed copies to be editable.
 - The watcher monitors every workspace skills directory; reload remains a full re-scan of
   all layers.
 

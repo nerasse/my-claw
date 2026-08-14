@@ -234,6 +234,22 @@ export interface MyClawAppSkillsList {
   type: "skills.list";
 }
 
+/**
+ * Moves or copies one skill directory between tiers. `target.source` is never "built-in": that
+ * tier is resynced from the release by hash at every boot, so a write there is undone on the
+ * next upgrade. Answered with a fresh skills.list.result.
+ */
+export interface MyClawAppSkillsTransfer {
+  type: "skills.copy" | "skills.move";
+  source: "built-in" | "custom" | "workspace";
+  name: string;
+  /** Workspace key of the source, when its tier is "workspace". */
+  workspace?: string;
+  target: { source: "custom" | "workspace"; workspace?: string };
+  /** Replaces a skill of the same name already in the target tier. */
+  overwrite?: boolean;
+}
+
 export interface MyClawAppToolsList {
   type: "tools.list";
 }
@@ -586,6 +602,7 @@ export type MyClawAppClientFrame =
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
   | MyClawAppSkillsList
+  | MyClawAppSkillsTransfer
   | MyClawAppToolsList
   | MyClawAppWorkspacesList
   | MyClawAppMcpList
@@ -987,6 +1004,11 @@ export interface MyClawAppSkillEntry {
   version?: string;
   source: "built-in" | "custom" | "workspace";
   path: string;
+  workspace?: string;
+  /** Workspaces holding their own skill of that name, so this global entry is masked there. */
+  overriddenIn?: string[];
+  /** The global tier this workspace skill masks, absent when the name exists nowhere else. */
+  overrides?: "custom" | "built-in";
 }
 
 export interface MyClawAppSkillsListResult {

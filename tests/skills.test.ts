@@ -153,6 +153,55 @@ test("merge priority: workspace > custom > built-in", async () => {
   await rm(workspace, { recursive: true, force: true });
 });
 
+test("list returns one entry per name, resolved workspace > custom > built-in", async () => {
+  const builtIn = await setupDir();
+  const custom = await setupDir();
+  const defaultWs = await setupDir();
+  const named = await setupDir();
+
+  await writeSkill(builtIn, "shared", "---\nname: shared\ndescription: built-in\n---\n\nBuilt-in.");
+  await writeSkill(custom, "shared", "---\nname: shared\ndescription: custom\n---\n\nCustom.");
+  await writeSkill(defaultWs, "shared", "---\nname: shared\ndescription: default ws\n---\n\nDefault.");
+  await writeSkill(named, "shared", "---\nname: shared\ndescription: named ws\n---\n\nNamed.");
+
+  const registry = new SkillRegistry(
+    await loadAllSkills({
+      builtInDir: builtIn,
+      customDir: custom,
+      workspaceDir: defaultWs,
+      workspaces: [{ key: "proj", dir: named }],
+    }),
+  );
+
+  const shared = (workspace?: string) => registry.list("all", workspace).filter((s) => s.name === "shared");
+
+  assert.equal(shared("proj").length, 1, "a name must never be listed twice");
+  assert.equal(shared("proj")[0]!.description, "named ws");
+  assert.equal(shared()[0]!.description, "default ws");
+  assert.equal(shared().length, 1);
+
+  // The store keeps every layer: the browse catalog is the surface that shows them all.
+  assert.equal(registry.listAll().filter((s) => s.name === "shared").length, 3);
+
+  for (const dir of [builtIn, custom, defaultWs, named]) await rm(dir, { recursive: true, force: true });
+});
+
+test("list resolves custom over built-in with no workspace layer", async () => {
+  const builtIn = await setupDir();
+  const custom = await setupDir();
+
+  await writeSkill(builtIn, "shared", "---\nname: shared\ndescription: built-in\n---\n\nBuilt-in.");
+  await writeSkill(custom, "shared", "---\nname: shared\ndescription: custom\n---\n\nCustom.");
+
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: builtIn, customDir: custom }));
+  const shared = registry.list().filter((s) => s.name === "shared");
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0]!.source, "custom");
+
+  await rm(builtIn, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+});
+
 test("SkillRegistry get and list", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "alpha", "---\nname: alpha\ndescription: Alpha skill\n---\n\nAlpha.");
