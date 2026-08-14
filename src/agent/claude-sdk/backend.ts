@@ -289,10 +289,11 @@ export class ClaudeSdkBackend implements AgentBackend {
    * the SDK session, so summarizing the my-claw mirror would change nothing the model
    * sees. Sends the native `/compact` slash command into the resumed session.
    */
-  async compact(session: SessionData): Promise<string> {
+  async compact(session: SessionData, stopSignal?: AbortSignal): Promise<string> {
     if (!session.sdkSessionId) {
       return "Nothing to compact yet on this session.";
     }
+    if (stopSignal?.aborted) return "Compaction stopped.";
     let finished = false;
     async function* one(): AsyncGenerator<SdkUserMessage> {
       yield { type: "user", message: { role: "user", content: "/compact" }, parent_tool_use_id: null };
@@ -304,6 +305,14 @@ export class ClaudeSdkBackend implements AgentBackend {
     // A hung CLI must not hold the /compact command hostage: hard wall, then abort.
     const abortController = new AbortController();
     const wall = setTimeout(() => abortController.abort(), COMPACT_TIMEOUT_MS);
+    // A compaction is minutes long on a full session: /stop must reach it, and its abort has to
+    // be told apart from the timeout's so the answer names what happened.
+    let stopped = false;
+    const onStop = (): void => {
+      stopped = true;
+      abortController.abort();
+    };
+    stopSignal?.addEventListener("abort", onStop, { once: true });
     try {
       const compactOptions: SdkOptions = {
         resume: session.sdkSessionId,
@@ -333,11 +342,13 @@ export class ClaudeSdkBackend implements AgentBackend {
         }
       }
     } catch (err) {
+      if (stopped) return "Compaction stopped.";
       if (abortController.signal.aborted) return "Compaction timed out.";
       throw err;
     } finally {
       finished = true;
       clearTimeout(wall);
+      stopSignal?.removeEventListener("abort", onStop);
       session.lastActiveAt = new Date().toISOString();
     }
     if (compactError) return `Compaction failed: ${compactError}`;

@@ -33,6 +33,8 @@ export interface StatusParams {
   sessionId: string;
   session: SessionData | null | undefined;
   liveRuns: RunNode[];
+  /** A /compact holds the session: work in progress with no run node of its own. */
+  compacting?: boolean;
   pricing?: ModelPricing;
 }
 
@@ -132,7 +134,9 @@ function collectStatusData(p: StatusParams): StatusData {
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
   const tagName = tagNameOf(currentModel);
   const displayModel = leafModelId(p.config.llm, currentModel);
-  const live = p.liveRuns.length > 0 ? p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`)).join(", ") : "none";
+  const running = p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`));
+  if (p.compacting) running.push("compaction");
+  const live = running.length > 0 ? running.join(", ") : "none";
   const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
   const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
   // Every clause here is a reason the number can look wrong, so each one that applies is named.

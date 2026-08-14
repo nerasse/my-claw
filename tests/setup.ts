@@ -19,6 +19,16 @@ process.env["MY_CLAW_DIR"] = root;
 delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
 delete process.env["GEOAPIFY_API_KEY"];
 
+// Same hazard on the config side: parseConfig() overwrites the token/password fields with these
+// (applySecretOverrides), so a developer running the suite with the real orchestrator's env got a
+// config whose telegram token never changed between two fixtures -- and the hot-reload test then
+// read an identity swap as a plain behavioral change. Green on CI, red on the machine that has
+// the secrets: exactly the failure mode this block exists to prevent.
+delete process.env["MY_CLAW_TELEGRAM_TOKEN"];
+delete process.env["MY_CLAW_MATRIX_ACCESS_TOKEN"];
+delete process.env["MY_CLAW_MATRIX_PASSWORD"];
+delete process.env["MY_CLAW_WEB_SEARCH_TOKEN"];
+
 // Wipe persisted sessions between every test. Files share one MY_CLAW_DIR and reuse ids
 // ("u1", "session-1", ...), so a session left on disk by one test could be read cold by
 // the next and create an order-dependent pass/fail. Clearing here makes each test start

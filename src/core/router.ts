@@ -156,6 +156,15 @@ export class MessageRouter {
     );
     setRunSession(sessionId);
 
+    // A compaction is rewriting the history this run would resume: starting now would both race
+    // it on the session file and answer from a transcript that is about to be replaced, which is
+    // how a compaction ends up written and then ignored. Waiting is the whole point: the run that
+    // follows is the one that benefits from it.
+    if (runRegistry.isCompacting(sessionId)) {
+      void log("info", "waiting for compaction before routing", { ...messageLogData(message), sessionId });
+      await runRegistry.waitForCompaction(sessionId);
+    }
+
     // A sub-agent's session must never be run from here. This path would give it depth 0, and with
     // it the spawn/send/kill tools that SUBAGENT_EXCLUDED_TOOLS removes on purpose, the default
     // prompt and model instead of the ones its agent type resolves to, and no place in the

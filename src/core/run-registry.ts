@@ -8,6 +8,9 @@
  *  - injection mailbox: a per-session inbox so a message arriving while a run is in
  *    progress is injected into that run at the next iteration boundary (mid-run steering)
  *    instead of waiting for the whole run to finish. See `docs/injection.md`.
+ *  - compaction hold: a compaction rewrites the very history a run would resume, so it takes
+ *    the session for its whole duration. Runs and compactions exclude each other in both
+ *    directions. See `docs/compaction.md`.
  */
 
 import type { UnifiedMessage } from "../channels/types.ts";
@@ -43,10 +46,17 @@ interface Mailbox {
  *  spam keeping a run alive forever. Beyond it, messages fall back to a new queued run. */
 export const MAX_INJECTIONS_PER_RUN = 25;
 
+interface Compaction {
+  controller: AbortController;
+  done: Promise<void>;
+  finish: () => void;
+}
+
 class RunRegistry {
   private controllers = new Map<string, AbortController>();
   private runs = new Map<AbortSignal, RunNode[]>();
   private mailboxes = new Map<string, Mailbox>();
+  private compactions = new Map<string, Compaction>();
 
   /** Called by the router when a top-level run starts. */
   startRoot(sessionId: string): { signal: AbortSignal; end: () => void } {
@@ -80,8 +90,13 @@ class RunRegistry {
     };
   }
 
-  /** Abort the whole subtree of a session's run. Returns false if nothing was running. */
+  /** Abort the whole subtree of a session's run, or its compaction. False if nothing was running. */
   stop(sessionId: string): boolean {
+    const compaction = this.compactions.get(sessionId);
+    if (compaction) {
+      compaction.controller.abort();
+      return true;
+    }
     const controller = this.controllers.get(sessionId);
     if (!controller) return false;
     controller.abort();
@@ -90,6 +105,45 @@ class RunRegistry {
 
   isRunning(sessionId: string): boolean {
     return this.controllers.has(sessionId);
+  }
+
+  // --- Compaction hold ---------------------------------------------------------------
+
+  /**
+   * Takes the session for a compaction. Both engines rewrite the history a run resumes -- the
+   * SDK one by driving a second CLI process on the same session file -- so the two must never
+   * overlap: a run in flight refuses the hold, and a run starting later waits for it
+   * (`waitForCompaction`). Returns null when the session is already taken.
+   */
+  beginCompaction(sessionId: string): { signal: AbortSignal; release: () => void } | null {
+    if (this.controllers.has(sessionId) || this.compactions.has(sessionId)) return null;
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const entry: Compaction = { controller: new AbortController(), done, finish };
+    this.compactions.set(sessionId, entry);
+    return {
+      signal: entry.controller.signal,
+      release: () => {
+        if (this.compactions.get(sessionId) === entry) this.compactions.delete(sessionId);
+        finish();
+      },
+    };
+  }
+
+  isCompacting(sessionId: string): boolean {
+    return this.compactions.has(sessionId);
+  }
+
+  /**
+   * Resolves once no compaction holds the session. Loops rather than awaiting once: releasing
+   * the hold and taking it again is legal, and a caller must not slip in between the two.
+   */
+  async waitForCompaction(sessionId: string): Promise<void> {
+    for (let held = this.compactions.get(sessionId); held; held = this.compactions.get(sessionId)) {
+      await held.done;
+    }
   }
 
   // --- Injection mailbox -------------------------------------------------------------
@@ -118,9 +172,9 @@ class RunRegistry {
     return mailbox !== undefined && mailbox.accepting;
   }
 
-  /** True while any top-level run is in flight, across every session. */
+  /** True while any top-level run or compaction is in flight, across every session. */
   hasAny(): boolean {
-    return this.controllers.size > 0;
+    return this.controllers.size > 0 || this.compactions.size > 0;
   }
 
   /** Live nodes for a session's run subtree (main + sub-agents), for /status. */
@@ -193,6 +247,8 @@ class RunRegistry {
   }
 
   clear(): void {
+    for (const held of this.compactions.values()) held.finish();
+    this.compactions.clear();
     this.controllers.clear();
     this.runs.clear();
     this.mailboxes.clear();

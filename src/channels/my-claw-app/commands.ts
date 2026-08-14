@@ -16,10 +16,10 @@ import { handleAgentModelCommand } from "../agent-model-commands.ts";
 import { handleStatusCommand, statusReport } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
 import { getHelpText } from "../commands-catalog.ts";
-import { effectiveEffort, isSdkBackedModel } from "../../llm/resolver.ts";
+import { effectiveEffort } from "../../llm/resolver.ts";
+import { handleCompactCommand } from "../compact-command.ts";
 import { chatModel } from "../../llm/chat-model.ts";
 import { parseEffortArg, formatEffort } from "../model-picker.ts";
-import { compactSession } from "../../sessions/compaction.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -45,7 +45,7 @@ export interface MyClawAppCommandDeps {
   customDir?: string;
   workspaceSkillsDir?: string;
   listCronJobs?: () => ReturnType<typeof loadJobs>;
-  sdkCompact?: (session: SessionData) => Promise<string>;
+  sdkCompact?: (session: SessionData, stopSignal?: AbortSignal) => Promise<string>;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
@@ -170,15 +170,13 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "compact": {
         const session =
           existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
-        if (isSdkBackedModel(deps.config.llm, session.modelOverride) && deps.sdkCompact) {
-          const outcome = await deps.sdkCompact(session);
-          await deps.sessionManager.persist(sessionId);
-          return outcome;
-        }
-        const result = await compactSession(deps.config, session, args.trim() || undefined);
-        if (!result.ok) return result.reason ?? "Compaction failed.";
-        await deps.sessionManager.persist(sessionId);
-        return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
+        return handleCompactCommand({
+          config: deps.config,
+          session,
+          instructions: args.trim() || undefined,
+          sdkCompact: deps.sdkCompact,
+          persist: () => deps.sessionManager.persist(sessionId),
+        });
       }
 
       case "reload": {
@@ -220,6 +218,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           sessionId,
           session: existing,
           liveRuns: runRegistry.list(sessionId),
+          compacting: runRegistry.isCompacting(sessionId),
           pricing: deps.pricing,
         });
 

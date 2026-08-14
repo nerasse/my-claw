@@ -2202,6 +2202,32 @@ describe("command frames", () => {
     assert.deepEqual(handled, [{ command: "status", args: "--full" }]);
   });
 
+  test("a fast command answers without ever showing a pending bubble", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c2", text: "/status", threadId: "t1" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "chat.command.result", "the result must come first, unannounced");
+  });
+
+  test("a slow command says it is running, and its result replaces that bubble", async () => {
+    let finish!: (text: string) => void;
+    const slow = new Promise<string>((resolve) => {
+      finish = resolve;
+    });
+    adapter.onCommandHandler(async () => slow);
+
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c3", text: "/compact", threadId: "t1" }));
+    const pending = await nextFrame(client);
+    assert.equal(pending["type"], "chat.command.pending");
+    assert.equal(pending["replyToId"], "c3", "the app keys the placeholder on the send it answers");
+    assert.equal(pending["text"], "Running /compact...");
+
+    finish("Context compacted (SDK session summarized).");
+    const result = await nextFrame(client);
+    assert.equal(result["type"], "chat.command.result");
+    assert.equal(result["replyToId"], "c3");
+    assert.equal(result["text"], "Context compacted (SDK session summarized).");
+  });
+
   const STATUS_PAYLOAD = {
     session: {
       id: "my-claw-app/dm/test-device/t9",

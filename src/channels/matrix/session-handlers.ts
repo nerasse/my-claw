@@ -6,8 +6,8 @@ import { writeJsonFileAtomically } from "../../utils/atomic-write.ts";
 import type { EffortLevel, MyClawConfig } from "../../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
-import { compactSession } from "../../sessions/compaction.ts";
-import { isSdkBackedModel, effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
+import { effectiveEffort, type EffectiveEffort } from "../../llm/resolver.ts";
+import { handleCompactCommand } from "../compact-command.ts";
 import { chatModel } from "../../llm/chat-model.ts";
 import { overrideForPick } from "../../llm/run-model.ts";
 import { availabilityWorld } from "../../llm/world.ts";
@@ -81,7 +81,7 @@ interface MatrixSessionHandlerDeps {
   workspaceSkillsDir?: string;
   listCronJobs?: () => Promise<Array<{ id: string; name: string; schedule: { display: string }; enabled: boolean; state: string; nextRunAt: string | null }>>;
   // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
-  sdkCompact?: (session: import("../../sessions/store.ts").SessionData) => Promise<string>;
+  sdkCompact?: (session: import("../../sessions/store.ts").SessionData, stopSignal?: AbortSignal) => Promise<string>;
   // Push an unsolicited message to a room/thread later (Codex device-code login completion).
   postMessage?: (roomId: string, text: string, threadId?: string) => Promise<void>;
   // Ensure the provider exists + re-run model discovery after a Codex/Claude auth change.
@@ -527,17 +527,13 @@ export function createMatrixCommandHandler({
 
       case "compact": {
         const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
-        if (isSdkBackedModel(config.llm, session.modelOverride) && sdkCompact) {
-          const outcome = await sdkCompact(session);
-          await sessionManager.persist(sessionId);
-          return outcome;
-        }
-        const result = await compactSession(config, session, args.trim() || undefined);
-        if (!result.ok) {
-          return result.reason ?? "Compaction failed.";
-        }
-        await sessionManager.persist(sessionId);
-        return `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`;
+        return handleCompactCommand({
+          config,
+          session,
+          instructions: args.trim() || undefined,
+          sdkCompact,
+          persist: () => sessionManager.persist(sessionId),
+        });
       }
 
       case "reload":
@@ -587,6 +583,7 @@ export function createMatrixCommandHandler({
           sessionId,
           session: await sessionManager.peek(sessionId),
           liveRuns: runRegistry.list(sessionId),
+          compacting: runRegistry.isCompacting(sessionId),
           pricing,
         });
       }

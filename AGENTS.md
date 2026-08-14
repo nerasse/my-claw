@@ -110,6 +110,7 @@ src/
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
 │   ├── status-command.ts  # /status diagnostics: context, tokens, cost -- docs/status-command.md
+│   ├── compact-command.ts # /compact for every channel: engine choice + session hold -- docs/compaction.md
 │   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
 │   ├── telegram/

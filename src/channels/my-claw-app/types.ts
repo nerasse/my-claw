@@ -1345,6 +1345,19 @@ export interface MyClawAppCommandResult {
 }
 
 /**
+ * A command is still running. Sent only once a command has taken longer than a blink (`/compact`
+ * on a full session is minutes), so the app can show that something is happening instead of an
+ * unexplained silence. The matching `chat.command.result` replaces it.
+ */
+export interface MyClawAppCommandPending {
+  type: "chat.command.pending";
+  threadId: string;
+  /** The chat.send id that carried the command: what the result is keyed on too. */
+  replyToId: string;
+  text: string;
+}
+
+/**
  * Structured `/status` report for the app's fullscreen diagnostics page. The text form stays the
  * canonical rendering for the chat channels; this is the same report shaped as fields.
  */
@@ -1684,6 +1697,7 @@ export type MyClawAppServerFrame =
   | MyClawAppInstructionsFile
   | MyClawAppInstructionsSaved
   | MyClawAppModelResult
+  | MyClawAppCommandPending
   | MyClawAppCommandResult
   | MyClawAppStatusResult
   | MyClawAppChatCleared

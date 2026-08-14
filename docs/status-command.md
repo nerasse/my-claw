@@ -526,6 +526,11 @@ Runtime
   approved      write, edit
 ```
 
+`active run` names the live run tree (`main`, then each sub-agent as `label[depth]`), and also
+says `compaction` while a `/compact` holds the session: a compaction has no run node of its own,
+and it is the one piece of work that can keep a session busy for minutes (`docs/compaction.md`).
+
+
 One command, one output, always this long. There is no short form and no `/status full`: the value
 of the view is that everything is on screen at once, and a summary that hides the line you needed
 is worse than no command.

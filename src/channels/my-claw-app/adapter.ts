@@ -123,6 +123,8 @@ const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 const STALE_SOCKET_MS = 10 * 60 * 1000;
 /** Per frame. The device queues reports while offline, and one crash loop must not flood the log. */
 const MAX_DIAG_REPORTS = 20;
+/** How long a command may take before the app is told it is still running. */
+const COMMAND_PENDING_NOTICE_MS = 400;
 const SWEEP_INTERVAL_MS = 30_000;
 // A look-aside cache of recently served media; the bytes themselves live in the session store
 // (uploads) or were copied there on send, so evicting an entry here only drops the fast path.
@@ -1276,8 +1278,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (text && !frame.attachments?.length && !hasLocation && this.commandHandler) {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
       if (command && APP_COMMANDS.some((c) => c.command === command)) {
+        // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
+        // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
+        // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
+        // first wins, and the result replaces the notice when both were sent.
+        const pending = setTimeout(() => {
+          this.broadcast(owner, {
+            type: "chat.command.pending",
+            threadId,
+            replyToId: frame.id,
+            text: `Running /${command}...`,
+          });
+        }, COMMAND_PENDING_NOTICE_MS);
         try {
           const output = await this.commandHandler(owner, threadId, command, text.slice(command.length + 1).trim());
+          clearTimeout(pending);
           // /new emptied the conversation server-side; the device must drop its screen copy
           // too, or it shows a chat that no longer exists on disk.
           if (command === "new") {
@@ -1296,6 +1311,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           }
           return;
         } catch (err) {
+          clearTimeout(pending);
           void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
           this.broadcast(owner, {
             type: "chat.command.result",

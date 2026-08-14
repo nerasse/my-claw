@@ -160,14 +160,16 @@ export class BackendDispatcher implements AgentBackend {
     this.sdk.setApprovalHandler(handler);
   }
 
-  /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact). */
-  async compactSdkSession(session: SessionData): Promise<string> {
+  /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact).
+   *  The caller holds the session for the whole operation (handleCompactCommand); this second
+   *  check only guards a caller that would reach the engine without taking that hold. */
+  async compactSdkSession(session: SessionData, stopSignal?: AbortSignal): Promise<string> {
     // Meta-commands bypass the router's session lock; two CLI processes resuming the same
     // SDK session would race on its file.
     if (runRegistry.isRunning(session.id)) {
       return "A run is active on this session — try again once it finishes (or /stop first).";
     }
-    return this.sdk.compact(session);
+    return this.sdk.compact(session, stopSignal);
   }
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {

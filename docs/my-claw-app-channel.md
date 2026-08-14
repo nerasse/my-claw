@@ -315,7 +315,10 @@ provider request URLs.
   next run, so the page calls it out.
 - A `chat.send` whose text is a known slash command (the catalog) is executed server-side
   like on the other channels and answered with `chat.command.result`; it never reaches the
-  agent. Commands outside the catalog still route as normal messages.
+  agent. Commands outside the catalog still route as normal messages. A command that has not
+  answered within 400 ms first gets a `chat.command.pending` frame: `/compact` on a full
+  session runs for minutes, and the chat showed nothing at all for that whole time. The
+  placeholder is only ever sent when the wait is real, so a fast command never flickers one.
 - `notifications.register` hands the device's UnifiedPush subscription (`endpoint`, plus
   `pubKey`/`auth`) to the push store; an empty `endpoint` unregisters the device.
   `notifications.state` reports the device's foreground state (`foreground`, optional
@@ -376,6 +379,7 @@ runs fresh like any other message.
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
+{ "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
@@ -455,6 +459,10 @@ runs fresh like any other message.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
   renders it as a distinct bubble so a command result never masquerades as an agent answer.
+- `chat.command.pending` announces a command still running past 400 ms, keyed on the same
+  `replyToId` as its result. The app draws it as a placeholder bubble that the result replaces
+  in place, so the wait and the answer are one bubble, never two. A placeholder is also dropped
+  when a stream starts on the thread: the agent answered, so no result is coming.
 - `chat.cleared` says the server dropped the thread's history (a typed `/new`); the app drops
   its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread
