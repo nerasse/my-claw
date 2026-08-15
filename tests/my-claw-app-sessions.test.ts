@@ -104,6 +104,47 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(oldest.hasMore, false);
   });
 
+  /**
+   * One agentic turn is easily fifty tool results. Counted flat, the newest page began inside
+   * the work and the question that started it sat on the page above: the owner saw his own
+   * message vanish from a thread he had just written in.
+   */
+  test("a page starts at a turn, so a long turn never pushes its own question off the screen", async () => {
+    const messages: SessionData["messages"] = [
+      { role: "user", content: "la question", timestamp: "2026-01-01T00:00:00.000Z" },
+    ];
+    for (let i = 1; i <= 8; i++) {
+      messages.push({ role: "assistant", content: `a${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+    }
+    await saveSession(sessionId, session(sessionId, messages));
+
+    const page = await store.history(DEVICE, THREAD, 5);
+    assert.equal(page.entries[0]?.role, "user");
+    assert.equal(page.entries[0]?.role === "user" ? page.entries[0].text : "", "la question");
+    assert.equal(page.entries.length, 9, "the page grew to the start of the turn");
+    assert.equal(page.hasMore, false);
+  });
+
+  test("the walk back is bounded: a turn longer than two pages still starts mid-flight", async () => {
+    const messages: SessionData["messages"] = [
+      { role: "user", content: "la question", timestamp: "2026-01-01T00:00:00.000Z" },
+    ];
+    for (let i = 1; i <= 20; i++) {
+      messages.push({ role: "assistant", content: `a${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+    }
+    await saveSession(sessionId, session(sessionId, messages));
+
+    const page = await store.history(DEVICE, THREAD, 5);
+    // Five asked for, ten at most: one page of lookback and not a message more.
+    assert.equal(page.entries.length, 10);
+    assert.equal(page.entries[0]?.role === "assistant" ? page.entries[0].text : "", "a11");
+    assert.equal(page.hasMore, true);
+    // The page above must still end where this one begins, or the walk would duplicate a turn.
+    const older = await store.history(DEVICE, THREAD, 5, page.nextBefore);
+    const last = older.entries.at(-1);
+    assert.equal(last && last.role === "assistant" ? last.text : "", "a10");
+  });
+
   test("a cursor past the start of the session is an empty page, not an error", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "seul message", timestamp: "2026-01-01T00:00:01.000Z" },
@@ -624,6 +665,42 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
       page.entries.map((e) => (e.role === "tool" ? "tool" : e.text));
     assert.deepEqual(text(newest), ["trois", "quatre", "/compact", "Compacted."]);
     assert.deepEqual(text(older), ["un", "deux", "/stop", "Stopped."]);
+  });
+
+  test("a command older than every surviving message is still replayed", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "apres", timestamp: "2026-01-01T00:10:00.000Z" },
+      { role: "assistant", content: "ok", timestamp: "2026-01-01T00:10:01.000Z" },
+    ]));
+    const loaded = (await manager.peek(sessionId))!;
+    loaded.commands = [{ input: "/compact", output: "Compacted.", timestamp: "2026-01-01T00:00:05.000Z" }];
+    await manager.persist(sessionId);
+
+    const page = await store.history(DEVICE, THREAD);
+    assert.equal(page.hasMore, false);
+    assert.deepEqual(
+      page.entries.map((e) => (e.role === "tool" ? "tool" : e.text)),
+      ["/compact", "Compacted.", "apres", "ok"],
+    );
+  });
+
+  test("a long journal does not bury the messages of a compacted session", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const loaded = (await manager.peek(sessionId))!;
+    loaded.commands = Array.from({ length: 30 }, (_, i) => ({
+      input: `/status ${i}`,
+      output: "ok",
+      timestamp: `2026-01-01T01:00:${String(i).padStart(2, "0")}.000Z`,
+    }));
+    await manager.persist(sessionId);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const inputs = entries.filter((e) => e.role === "user").map((e) => (e.role === "tool" ? "" : e.text));
+    assert.equal(inputs.length, 21, "one real message plus the capped journal");
+    assert.equal(inputs.includes("/status 9"), false, "the oldest of the window is the one dropped");
+    assert.equal(inputs.at(-1), "/status 29");
   });
 
   test("a command on a thread with no session yet is dropped rather than creating one", async () => {

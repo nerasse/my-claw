@@ -41,6 +41,24 @@ export function sanitizeThreadId(raw: string): string | null {
 }
 
 const HISTORY_LIMIT = 50;
+/** Journal entries replayed on one history page, newest kept. */
+const MAX_PAGE_COMMANDS = 20;
+
+/**
+ * Walks the page's first message back to the user message that opened its turn.
+ *
+ * A page is a count of messages, but a conversation is read in turns, and one agentic turn is
+ * easily fifty tool results: cut at a fixed count, the newest page begins in the middle of the
+ * work and leaves the question that caused it on the page above, which reads as a lost message
+ * rather than as pagination. The walk is bounded by `lookback` (one extra page at most), so a
+ * turn longer than that still starts mid-flight instead of dragging the whole session in.
+ */
+function turnAlignedStart(messages: { role: string }[], rawStart: number, lookback: number): number {
+  const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
+  let start = rawStart;
+  while (start > floor && messages[start]!.role !== "user") start -= 1;
+  return start;
+}
 
 function parseToolArguments(raw: string): Record<string, unknown> {
   try {
@@ -194,7 +212,8 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // is an app that scrolled further than there is history, which is an empty page, not an error.
     const total = session.messages.length;
     const end = Math.max(total - Math.max(before, 0), 0);
-    const start = Math.max(end - Math.max(limit, 0), 0);
+    const rawStart = Math.max(end - Math.max(limit, 0), 0);
+    const start = turnAlignedStart(session.messages, rawStart, Math.max(limit, 0));
     const window = session.messages.slice(start, end);
     const hasMore = start > 0;
     const nextBefore = total - start;
@@ -210,13 +229,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // A command belongs to the page whose messages surround it in time. The newest page has no
     // upper bound, so a command typed after the last message (the usual case: a `/compact` at the
     // end of a turn) lands there rather than nowhere; an older page stops at the first message of
-    // the page after it, so no command is ever replayed twice.
+    // the page after it, so no command is ever replayed twice. The first page has no lower bound
+    // either: a compaction drops messages the journal outlived, and a command older than every
+    // surviving message must still surface somewhere rather than be silently unreachable.
     const journal = session.commands ?? [];
-    const lowerBound = window[0]?.timestamp ?? "";
+    const lowerBound = hasMore ? (window[0]?.timestamp ?? "") : "";
     const upperBound = end < total ? session.messages[end]!.timestamp : undefined;
-    const pageCommands = journal.filter(
+    const matched = journal.filter(
       (entry) => entry.timestamp >= lowerBound && (upperBound === undefined || entry.timestamp < upperBound),
     );
+    // A compacted session is a handful of messages that a long journal would bury under its own
+    // replay, so a page shows the last commands of its window and no more. The rest stays in the
+    // file: this is a display cap, not a purge (`MAX_SESSION_COMMANDS` is the one that forgets).
+    const pageCommands = matched.length > MAX_PAGE_COMMANDS ? matched.slice(-MAX_PAGE_COMMANDS) : matched;
     let nextCommand = 0;
     // Flushed as the messages are walked, so a command sits where it was typed rather than in a
     // block at one end of the page.

@@ -602,6 +602,14 @@ assistant turn plus its tool card) and a `role:"tool"` message becomes none of i
 the entry count says nothing about how far back the app now is. A cursor past the start of
 the session is an empty page with `hasMore: false`, not an error. A server that answers
 neither field is one that predates this, and the app simply never asks for an older page.
+
+A page is a count of messages but a conversation is read in turns, so the slice is grown
+backwards to the user message that opened the turn it starts in. One agentic turn is easily
+fifty tool results: cut at the count, the newest page began inside the work and left the
+question that caused it on the page above, which reads as a lost message rather than as
+pagination. The walk back is capped at one extra page, so a turn longer than that still starts
+mid-flight instead of dragging the whole session into one reply. Pages stay disjoint: the next
+cursor is the grown start, so the page above ends exactly where this one begins.
 `session.list.result` carries both halves in one round-trip: archived threads are
 flagged `archived: true` rather than left out, so the app can fill its two lists and
 show the archived count without asking twice. Most recently active first, capped at 50.
@@ -704,6 +712,17 @@ the messages are walked, so a command sits where it was typed rather than in a b
 A page is bounded below by its first message and above by the first message of the page after it,
 which is what keeps a command out of two pages at once; the newest page has no upper bound, so a
 command typed after the last message (the usual case) still shows up.
+
+The two ends of the history are deliberately open:
+
+- **The first page has no lower bound.** A local compaction rewrites `session.messages` down to a
+  head, a summary and a tail, so the journal outlives the messages it was interleaved with. Bounded
+  by the oldest surviving message, everything typed before it became unreachable while still
+  sitting in the file.
+- **`MAX_PAGE_COMMANDS` (20) per page, newest kept.** The other half of the same situation: eight
+  messages left and a two hundred entry journal is a screen of replayed commands with the
+  conversation buried under it. This one is a display cap, nothing is deleted; `MAX_SESSION_COMMANDS`
+  remains the only rule that forgets.
 
 ## Security
 
