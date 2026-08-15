@@ -79,7 +79,7 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
 
 ### Tools: in-process MCP server, factory per run
 
-- The 22 registry tools map 1:1 to `createSdkMcpServer`/`tool()` (name,
+- The registry tools map 1:1 to `createSdkMcpServer`/`tool()` (name,
   description, JSON Schema, async execute).
 - The SDK tool handler receives validated args only — no side channel. Per-run
   context (`__message`, `__signal`, `__workspaceDir`, `__depth`, attachments
@@ -92,7 +92,7 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   resolution, one blacklist, one delegation mechanism.
 - `getForAgent` filtering happens at MCP-server build time: only the tools the
   agent type may use are mounted; every call still flows through `canUseTool`.
-- Read-only registry tools (read, ls, find, grep, fetch...) carry
+- Read-only registry tools (read, ls, search, fetch...) carry
   `annotations.readOnlyHint: true` so the SDK runs them in parallel, matching
   the home loop's parallel tool execution.
 - The SDK names those tools `mcp__myclaw__<tool>`. That prefix stops at the edge

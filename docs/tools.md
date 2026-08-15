@@ -43,3 +43,41 @@ empty body while throttled would still look like a genuine "no results".
 MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp__<server>__<tool>`. Both
 backends build from `getForAgent`, so the denylist and MCP tools apply uniformly to the home loop and the
 Claude SDK. See `docs/config.md` and `docs/hot-reload-extensions.md`.
+
+## The file surface: write creates, apply_patch edits, search finds
+
+Measured on 2026-08-15, over a session that shipped three releases: nearly every file operation went
+through `bash`, and the file tools were barely touched. Not a preference, a consequence.
+
+- **There was no way to edit a file.** `write` replaces the whole thing, so changing three lines in a
+  2700-line file meant re-emitting 2700 lines: expensive, and one hallucinated line anywhere in the
+  file destroys the rest. The agent's actual workaround was a `python3` heredoc through `bash`, with
+  a hand-written `assert s.count(anchor) == 1` before each replacement. That is an edit tool,
+  reinvented per call, untested, with no atomic write and no config snapshot.
+- **`grep` and `find` were strict subsets of their shell equivalents.** No context lines, no name
+  filter, no files-only mode, so any real search fell back to `bash grep -A 20`.
+
+What the field does. Anthropic's Claude Code keeps `Read`, `Write`, `Edit`, `Grep` and `Glob` as
+first-class tools next to `Bash`, precisely so edits are anchored replacements and searches are
+bounded and available to read-only modes. OpenAI's Codex goes further and exposes exactly two:
+`shell` and `apply_patch` (a V4A diff), with exploration left to the shell. Both agree on the part
+that matters here: **no serious agent edits a file by rewriting it**, and the edit tool is a patch.
+
+The choice made, given the Claude SDK is the engine and Claude models are post-trained on the
+Claude Code surface:
+
+- **`apply_patch`** takes `{ path, edits: [{ old, new, all? }] }`. Anchored text, never line numbers,
+  which drift between the read and the write. The anchor must be unique unless `all` is set; an
+  ambiguous or missing anchor is refused with the count and the line numbers, and **nothing is
+  written** (a half-applied patch leaves a file that is neither version). All edits of a call apply
+  or none does, then one atomic write, with the same tracked-file snapshot `write` takes.
+- **`write` creates**. An existing file is refused with a pointer to `apply_patch`, unless
+  `overwrite: true` says the full replacement is deliberate.
+- **`search` replaces `grep` and `find`** (one tool, not two): `pattern` searches contents,
+  `glob` filters them or, alone, lists files by name, plus `context`, `filesOnly` and `ignoreCase`.
+  It is kept rather than folded into `bash` for two reasons: research sub-agents have no `bash` at
+  all (`READ_ONLY_TOOLS`), and the tool bounds its own output where a piped shell search does not.
+
+`bash` stays unconfined by design: it is the escape hatch, and it is the only tool that does not go
+through `resolveWorkspacePath`. Tightening the file tools does not sandbox anything as long as it is
+there; that is a separate decision, not a side effect of this one.

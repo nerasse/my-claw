@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
 
 // Tools whose `path` argument is a deterministic signal for the directory being touched.
-const PATH_TOOLS = new Set(["read", "write", "ls", "grep", "find"]);
+const PATH_TOOLS = new Set(["read", "write", "apply_patch", "ls", "search"]);
 const AGENTS_FILE = "AGENTS.md";
 
 function isDir(p: string): boolean {

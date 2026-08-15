@@ -18,7 +18,7 @@ actually mattered. It now happens in both backends, right after the `transform:t
 
 `producesRemoteContent()` in `src/tools/registry.ts` decides which results qualify: `fetch`,
 `web_search`, `delegate_browser_task`, `browser_*` and `mcp__*`. The local file tools -- `read`,
-`grep`, `find`, `ls`, `bash` -- are deliberately excluded, so the agent sees a local file exactly
+`search`, `ls`, `bash` -- are deliberately excluded, so the agent sees a local file exactly
 as it is. Normalising them would let an edit round-trip silently delete invisible characters the
 owner put there on purpose, and for a coding agent corrupting a local file is worse than the
 hidden-instruction risk it would cover.

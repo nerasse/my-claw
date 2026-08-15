@@ -28,7 +28,7 @@ generalise to arbitrary external repos.
 
 ### Two trigger paths, by signal reliability
 
-- File tools (`read`, `write`, `ls`, `grep`, `find`) expose an explicit `path` argument.
+- File tools (`read`, `write`, `apply_patch`, `ls`, `search`) expose an explicit `path` argument.
   This is a deterministic signal: the target directory is `dirname(resolvedPath)`. These
   tools are workspace-locked (`src/tools/workspace.ts`), so this path only ever fires for
   subtrees inside the workspace. This is the primary, reliable trigger.
@@ -46,7 +46,7 @@ generalise to arbitrary external repos.
   ingrained habit. We do NOT run a persistent shell (breaks the parallel tool-call model
   in `src/agent/bridge.ts`, complicates abort/kill), a `pwd` sentinel (fragile output
   parsing), or a shell lexer over arbitrary tokens (false positives like
-  `grep "path/to/file"`).
+  `search "path/to/file"`).
 
 ### Walk boundary: git root
 

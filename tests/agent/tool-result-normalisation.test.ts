@@ -18,7 +18,7 @@ test("remote-content tools are classified for normalisation", () => {
 test("local file tools are excluded, so an edit round-trip cannot silently drop characters", () => {
   // The deliberate line: the agent must see a local file exactly as it is. Normalising `read`
   // would let it rewrite the file without invisible characters the owner put there on purpose.
-  for (const name of ["read", "grep", "find", "ls", "bash", "write", "memory", "spawn"]) {
+  for (const name of ["read", "search", "ls", "bash", "write", "memory", "spawn"]) {
     assert.equal(producesRemoteContent(name), false, `must stay verbatim: ${name}`);
   }
 });

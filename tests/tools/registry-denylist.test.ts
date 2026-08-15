@@ -33,7 +33,7 @@ test("denylist filters tools out of the main set", () => {
 });
 
 test("denylist stacks on top of the per-agent exclusion (research is read-only)", () => {
-  const r = registry(["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "write", "bash"]);
+  const r = registry(["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "write", "bash"]);
   const research = r.getForAgent("research", ["fetch"]).map((t) => t.name);
   assert.ok(research.includes("read"));
   assert.ok(!research.includes("fetch"), "denylist removes fetch even from the read-only set");
@@ -92,7 +92,7 @@ test("adding a tools denylist at runtime is a hot change", () => {
 
 // ── dynamic provider (external MCP tools) ────────────────────────────────────
 
-const readOnlySet = ["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "bash"];
+const readOnlySet = ["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "bash"];
 
 test("dynamic provider tools are added for every agent class the scope allows", () => {
   const r = registry(readOnlySet);

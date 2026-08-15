@@ -191,7 +191,7 @@ src/
 │   ├── types.ts           # Tool interface + safe arg helpers (str, num, bool)
 │   ├── registry.ts
 │   ├── workspace.ts       # Workspace path resolution
-│   ├── bash.ts, read.ts, write.ts, fetch.ts, find.ts, grep.ts, ls.ts, memory.ts
+│   ├── bash.ts, read.ts, write.ts, apply-patch.ts, fetch.ts, search.ts, ls.ts, memory.ts
 │   ├── web-search.ts
 │   ├── browser/           # Browser tools: state, navigation, actions, lowlevel, delegate
 │   ├── plugins.ts         # PluginLoader: external tool plugins
@@ -271,7 +271,7 @@ src/
 - The agent operates inside `~/.my-claw/workspace/` (configurable via `config.workspace`).
 - The workspace is created on boot if it does not exist.
 - Default prompt templates (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`) are copied from `docs/prompt/` into the workspace on first start.
-- All filesystem tools (`bash`, `read`, `write`, `ls`, `find`, `grep`) resolve relative paths against the workspace.
+- All filesystem tools (`bash`, `read`, `write`, `apply_patch`, `ls`, `search`) resolve relative paths against the workspace.
 - `bash` spawns with `cwd` set to the workspace.
 
 ### Imports

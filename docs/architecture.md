@@ -11,7 +11,7 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, fetch, find, grep, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
+| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Nested AGENTS.md | Complete — lazy per-tool discovery: the AGENTS.md chain from the git root down to a touched subtree is appended to the tool result (file tools via `path`, bash via `workdir`), scanned + byte-capped + deduped per run — see `docs/nested-agents.md` |
 | Context pruning + auto-compaction | Complete — prompt-side stubbing of tool results older than 5 assistant turns (session file untouched), auto LLM compaction at 80% of the model context at run start — see `docs/context-pruning.md` |
@@ -186,7 +186,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
 ### Sub-agents
 
-- 2 types: **general** (full tools) and **research** (read-only: read, grep, find, ls, fetch)
+- 2 types: **general** (full tools) and **research** (read-only: read, search, ls, fetch)
 - Mode `run` = one-shot (max 3 concurrent, depth 2), mode `session` = persistent on disk
 - Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
 - 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`

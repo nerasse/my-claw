@@ -149,7 +149,7 @@ When `read_skill("my-skill")` is called, the returned content has `${SKILL_DIR}`
 
 ## Sub-Agent Sharing
 
-Skills are **global** and shared between the main agent and all sub-agents. A sub-agent spawned with `workspaceDir=/tmp/project` still has access to all skills. Only filesystem tools (`read`, `write`, `bash`, `ls`, `find`, `grep`) are scoped to `workspaceDir`.
+Skills are **global** and shared between the main agent and all sub-agents. A sub-agent spawned with `workspaceDir=/tmp/project` still has access to all skills. Only filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) are scoped to `workspaceDir`.
 
 ## Future Extensibility
 

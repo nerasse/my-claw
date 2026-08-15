@@ -40,14 +40,20 @@ test("write: empty path returns success false", async () => {
   assert.equal(result.success, false);
 });
 
-test("write: overwrites existing file", async () => {
+test("write: an existing file is refused and the model is sent to apply_patch", async () => {
   await mkdir(TMP, { recursive: true });
   const file = join(TMP, "overwrite.txt");
   try {
     await writeTool.execute({ path: file, content: "first" });
-    await writeTool.execute({ path: file, content: "second" });
-    const content = await readFile(file, "utf-8");
-    assert.equal(content, "second");
+    // Re-emitting a whole file to change three lines is how the rest of it silently disappears.
+    const refused = await writeTool.execute({ path: file, content: "second" });
+    assert.equal(refused.success, false);
+    assert.match(refused.error ?? "", /apply_patch/);
+    assert.equal(await readFile(file, "utf-8"), "first");
+
+    const forced = await writeTool.execute({ path: file, content: "second", overwrite: true });
+    assert.equal(forced.success, true);
+    assert.equal(await readFile(file, "utf-8"), "second");
   } finally {
     await rm(TMP, { recursive: true, force: true });
   }

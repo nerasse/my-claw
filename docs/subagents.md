@@ -19,8 +19,8 @@ The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subage
 
 | Type | Tools | Use case |
 |---|---|---|
-| `general` | All 8 base tools (bash, read, write, fetch, find, grep, ls, memory) | Execution tasks |
-| `research` | Read-only: read, grep, find, ls, fetch | Exploration, analysis |
+| `general` | All base tools (bash, read, write, apply_patch, fetch, search, ls, memory) | Execution tasks |
+| `research` | Read-only: read, search, ls, fetch | Exploration, analysis |
 
 Depth 0 (orchestrator) can spawn depth 1. `MAX_DEPTH` is 2, but **depth 2 is currently unreachable**:
 `spawn` is in `SUBAGENT_EXCLUDED_TOOLS` (`src/tools/registry.ts`), so no sub-agent of any type can
@@ -35,7 +35,7 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
   `private`, so only the conversation that asked for it sees it, and it dies with that conversation
   (the app's delete cascades, see `docs/subagent-navigation.md`).
 - `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>.json`. Returns stable ID.
-- `workspaceDir` — optional absolute path. All filesystem tools (`read`, `write`, `bash`, `ls`, `find`, `grep`) resolve against this path instead of the global workspace.
+- `workspaceDir` — optional absolute path. All filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) resolve against this path instead of the global workspace.
 
 ### `send(id, message, attachments?)`
 

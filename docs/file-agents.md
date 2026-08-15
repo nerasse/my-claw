@@ -39,7 +39,7 @@ One agent is **one file**, `agents/<name>.md`. Skills are directories because th
 ---
 description: Reviews a diff and reports risks, without touching the tree
 base: research
-tools: read, grep, find, ls
+tools: read, search, ls
 skills: code-review
 model: anthropic/claude-sonnet-4
 instructions: CORE, SOUL, USER
@@ -102,7 +102,7 @@ named `agents/` rather than `.agents/` for the same reason skills are named `ski
 
 A leading dot would buy nothing and cost consistency. `~/.my-claw` is already hidden, so dotting a
 directory inside it only hides it from a listing of `~/.my-claw` -- next to a visible `skills/`. In a
-workspace it is worse: that is the directory the agent itself works in with `ls`, `find` and `grep`,
+workspace it is worse: that is the directory the agent itself works in with `ls` and `search`,
 alongside a visible `AGENTS.md`, `SOUL.md` and `skills/`. `.builtin` keeps its dot, like the skills
 tier, because the parent scan skips dotted entries and that is what keeps it out of the global tier.
 

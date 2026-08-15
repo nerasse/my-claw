@@ -91,8 +91,8 @@ import { bashTool } from "./tools/bash.ts";
 import { readTool } from "./tools/read.ts";
 import { writeTool } from "./tools/write.ts";
 import { fetchTool } from "./tools/fetch.ts";
-import { findTool } from "./tools/find.ts";
-import { grepTool } from "./tools/grep.ts";
+import { searchTool } from "./tools/search.ts";
+import { applyPatchTool } from "./tools/apply-patch.ts";
 import { lsTool } from "./tools/ls.ts";
 import { createMemoryTool } from "./tools/memory.ts";
 import { createConversationSearchTool } from "./tools/conversation-search.ts";
@@ -2406,7 +2406,7 @@ async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<vo
 }
 
 function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
-  for (const tool of [bashTool, readTool, writeTool, fetchTool, findTool, grepTool, lsTool, createMemoryTool(config), createConversationSearchTool()]) {
+  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool()]) {
     registry.register(tool);
   }
 }

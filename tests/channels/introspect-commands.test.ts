@@ -62,7 +62,7 @@ const INSTANCES: SubAgentInfo[] = [
 
 function params(agents: MyClawConfig["agents"], args = "", overrides: Partial<IntrospectParams> = {}): IntrospectParams {
   const tools = new ToolRegistry();
-  for (const n of ["read", "grep", "find", "ls", "fetch", "web_search", "list_skills", "read_skill", "manage_skills", "bash", "memory", "cron", "spawn"]) {
+  for (const n of ["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "manage_skills", "bash", "memory", "cron", "spawn"]) {
     tools.register(tool(n));
   }
   tools.setDynamicProvider(() => [tool("mcp__mailcow__list"), tool("mcp__weather__now")]);
@@ -171,7 +171,7 @@ describe("/agents", () => {
 
   test("a file's tools narrow the count the command reports", async () => {
     const registry = new AgentRegistry(new Map([
-      ["narrow", agent("narrow", "general", { tools: ["read", "grep"] })],
+      ["narrow", agent("narrow", "general", { tools: ["read", "search"] })],
     ]));
     const out = await handleAgentsCommand(params({}, "", { agentRegistry: registry }));
     expect(out).toContain("outils: general (2)");
