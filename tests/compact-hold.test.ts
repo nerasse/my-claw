@@ -12,6 +12,9 @@ import type { HookEventMap } from "../src/hooks/index.ts";
 import { handleCompactCommand } from "../src/channels/compact-command.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { SessionData } from "../src/sessions/store.ts";
+import { MessageRouter } from "../src/core/router.ts";
+import { SessionManager } from "../src/sessions/manager.ts";
+import type { UnifiedMessage } from "../src/channels/types.ts";
 
 function makeConfig(): MyClawConfig {
   return {
@@ -216,4 +219,93 @@ test("the end of a /compact is announced once, whatever the engine answered", as
   assert.equal(seen.length, 3);
   held!.release();
   hooks.off("session:compact:finished", collect);
+});
+
+/**
+ * The silence this covers, observed in production on 2026-08-15: a /compact ran for 110s, a
+ * message sent 62s in was held to its end, and the app showed nothing at all for either. The
+ * result frame is not the problem; the message parked behind it with no feedback is.
+ */
+test("a message parked behind a compaction is announced once, before the wait", async () => {
+  runRegistry.clear();
+  const seen: HookEventMap["message:queued"][] = [];
+  const collect = (p: HookEventMap["message:queued"]): void => {
+    seen.push(p);
+  };
+  hooks.on("message:queued", collect);
+
+  const sessionId = "telegram/dm/u-queued";
+  const config: MyClawConfig = {
+    whitelist: ["u-queued"], blacklist: [], channels: {},
+    llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
+    agents: {},
+  } as unknown as MyClawConfig;
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage() {
+      return "answered";
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const held = runRegistry.beginCompaction(sessionId);
+  assert.notEqual(held, null);
+
+  const message: UnifiedMessage = {
+    id: "m-queued", platform: "telegram", userId: "u-queued", chatId: "c1", chatType: "dm",
+    text: "hello", attachments: [], isForwarded: false, raw: {},
+  };
+  const routed = router.route(message);
+
+  // Announced while the hold stands, not once it is over: the point is to fill the wait.
+  const deadline = Date.now() + 5_000;
+  while (seen.length === 0) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for message:queued");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.reason, "compaction");
+  assert.equal(seen[0]?.sessionId, sessionId);
+  assert.equal(seen[0]?.message.id, "m-queued");
+  assert.equal(runRegistry.isRunning(sessionId), false, "the run must not have started yet");
+
+  held!.release();
+  assert.equal((await routed)?.text, "answered");
+  assert.equal(seen.length, 1, "one message, one announcement");
+
+  hooks.off("message:queued", collect);
+  runRegistry.clear();
+});
+
+/** A clear path stays quiet: nothing to wait for, nothing to say. */
+test("a message on a free session is not announced as parked", async () => {
+  runRegistry.clear();
+  const seen: HookEventMap["message:queued"][] = [];
+  const collect = (p: HookEventMap["message:queued"]): void => {
+    seen.push(p);
+  };
+  hooks.on("message:queued", collect);
+
+  const config: MyClawConfig = {
+    whitelist: ["u-free"], blacklist: [], channels: {},
+    llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
+    agents: {},
+  } as unknown as MyClawConfig;
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage() {
+      return "answered";
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const answered = await router.route({
+    id: "m-free", platform: "telegram", userId: "u-free", chatId: "c2", chatType: "dm",
+    text: "hello", attachments: [], isForwarded: false, raw: {},
+  });
+  assert.equal(answered?.text, "answered");
+  assert.equal(seen.length, 0);
+
+  hooks.off("message:queued", collect);
+  runRegistry.clear();
 });

@@ -22,6 +22,12 @@ export interface HookEventMap {
   "message:route:start": { message: UnifiedMessage; sessionId: string };
   /** Mid-run steering: the message joined an in-flight run instead of starting its own. */
   "message:injected": { message: UnifiedMessage; sessionId: string };
+  /**
+   * The message is parked before its run: a compaction is rewriting the history it would resume.
+   * Nothing else travels for the minute or two this takes, so the channel gets to say so instead
+   * of leaving a send with no answer behind it.
+   */
+  "message:queued": { message: UnifiedMessage; sessionId: string; reason: "compaction" };
   "message:route:complete": {
     message: UnifiedMessage;
     sessionId: string;

@@ -718,6 +718,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * The send is waiting for a compaction to finish before its run can start. Sent on its own
+   * frame rather than as a notice bubble: it belongs to the message the owner already sees, and
+   * the app lifts it when the stream finally arrives.
+   */
+  notifyQueued(owner: string, threadId: string, replyToId: string, reason: "compaction"): void {
+    this.broadcast(owner, { type: "chat.send.queued", threadId, replyToId, reason });
+  }
+
+  /**
    * Delivered to every socket of the owner, like any other frame addressed to a conversation.
    * Transcripts arrive keyed by the file they came from; the id in the path is what the device
    * knows its bubbles by, so the mapping happens here rather than in the agent.

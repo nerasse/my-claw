@@ -54,6 +54,15 @@ wiring turns it into a device notification (`docs/notifications.md`), skipped on
 is already looking at the thread. The three `session:compact:start/end/error` events cannot
 serve here: they live inside the local summarizer and the SDK engine never reaches them.
 
+A message sent while a compaction runs is held by the router, and that wait is announced too:
+`message:queued` fires before `waitForCompaction`, `index.ts` turns it into a `chat.send.queued`
+frame, and the app marks that bubble `waiting for the compaction` with the same running counter.
+Without it the send looked dropped for the length of the compaction, which is what made the hold
+read as a frozen app: on 2026-08-15 a `/compact` ran 110s, the message sent 62s in was released
+with it, and both landed at the same instant, so the message looked like the cause of the result.
+The mark is lifted by the stream, by a non-streamed answer, or by the run's end, so no single lost
+frame can strand it.
+
 The wall on a compaction is 15 minutes, and it is a wall, not an expectation: 250k tokens
 measured at 101 seconds, so the previous two-minute wall aborted a session barely larger than
 that and called it a timeout. It exists for a CLI that hangs, and a hung one hangs forever.

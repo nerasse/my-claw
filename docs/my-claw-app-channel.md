@@ -381,6 +381,7 @@ runs fresh like any other message.
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
+{ "type": "chat.send.queued", "threadId": "projet", "replyToId": "uuid", "reason": "compaction" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
@@ -466,6 +467,11 @@ runs fresh like any other message.
   `replyToId` as its result. The app draws it as a placeholder bubble that the result replaces
   in place, so the wait and the answer are one bubble, never two. A placeholder is also dropped
   when a stream starts on the thread: the agent answered, so no result is coming.
+- `chat.send.queued` says a send is parked: a compaction holds the session, so the router waits
+  for it before opening the run (`docs/compaction.md`). The app marks that bubble with a running
+  counter instead of leaving it silent for the length of the compaction, which read as a dropped
+  message. It is lifted by `chat.stream.start`, by a `chat.message`, or by `chat.run.end`, so a
+  single lost frame cannot strand the mark.
 - `chat.cleared` says the server dropped the thread's history (a typed `/new`); the app drops
   its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread

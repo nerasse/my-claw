@@ -67,6 +67,8 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `message:route:start` -- before agent handle
 - `message:injected` -- mid-run steering: the message joined an in-flight run instead of
   starting its own, so it gets no delivery of its own
+- `message:queued` -- the message is parked behind a compaction; the my-claw-app channel turns
+  it into a `chat.send.queued` frame so the wait is visible on the bubble
 - `message:route:complete` -- after response generated
 - `message:route:error` -- routing threw exception
 - `message:delivered` -- response sent to channel

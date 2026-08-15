@@ -162,6 +162,7 @@ export class MessageRouter {
     // follows is the one that benefits from it.
     if (runRegistry.isCompacting(sessionId)) {
       void log("info", "waiting for compaction before routing", { ...messageLogData(message), sessionId });
+      hooks.emit("message:queued", { message, sessionId, reason: "compaction" });
       await runRegistry.waitForCompaction(sessionId);
     }
 

@@ -1360,6 +1360,20 @@ export interface MyClawAppCommandPending {
 }
 
 /**
+ * The send is parked: a compaction is rewriting the history its run would resume, so the router
+ * holds it until that finishes (a minute or two on a full session). Without this the message sits
+ * in the chat with nothing behind it and the app looks frozen. Lifted by the stream that follows,
+ * or by the run's end.
+ */
+export interface MyClawAppChatQueued {
+  type: "chat.send.queued";
+  threadId: string;
+  /** The chat.send id being held: the app marks that bubble, not the thread. */
+  replyToId: string;
+  reason: "compaction";
+}
+
+/**
  * Structured `/status` report for the app's fullscreen diagnostics page. The text form stays the
  * canonical rendering for the chat channels; this is the same report shaped as fields.
  */
@@ -1701,6 +1715,7 @@ export type MyClawAppServerFrame =
   | MyClawAppModelResult
   | MyClawAppCommandPending
   | MyClawAppCommandResult
+  | MyClawAppChatQueued
   | MyClawAppStatusResult
   | MyClawAppChatCleared
   | MyClawAppChatTranscript

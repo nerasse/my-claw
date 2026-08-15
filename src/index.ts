@@ -952,6 +952,14 @@ async function main() {
     myClawAppRef = myClawApp;
     noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));
 
+    // A send that lands during a compaction is held by the router until the history stops moving,
+    // which is a minute or two with nothing on the wire. The device is told so the bubble says it
+    // is waiting instead of looking dropped; the stream that follows lifts the mark.
+    hooks.on("message:queued", ({ message }) => {
+      if (message.platform !== "my-claw-app") return;
+      myClawApp.notifyQueued(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id, "compaction");
+    });
+
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
     // both redacted here rather than in the adapter, which has no view of the global config.
     myClawApp.onVoiceController({
