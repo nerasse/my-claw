@@ -616,6 +616,9 @@ export class ClaudeSdkBackend implements AgentBackend {
       const seenUsageIds = new Set<string>();
       let iteration = 0;
       let lastAssistantText = "";
+      // Last estimate seen since the previous turn was mirrored: what the bubble was showing
+      // when this turn started answering, so the stored number matches what the owner read.
+      let thinkingTokens: number | undefined;
       let llmWindowStart = Date.now();
       let lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
 
@@ -628,8 +631,9 @@ export class ClaudeSdkBackend implements AgentBackend {
 
           // The only reasoning signal this engine has: the text itself never leaves the bridge.
           if (msg.type === "system" && msg.subtype === "thinking_tokens") {
-            if (reasoningSink?.onTokens && typeof msg.estimated_tokens === "number") {
-              await reasoningSink.onTokens(msg.estimated_tokens);
+            if (typeof msg.estimated_tokens === "number") {
+              thinkingTokens = msg.estimated_tokens;
+              if (reasoningSink?.onTokens) await reasoningSink.onTokens(msg.estimated_tokens);
             }
             continue;
           }
@@ -657,7 +661,8 @@ export class ClaudeSdkBackend implements AgentBackend {
               return iteration;
             }, llmWindowStart) ?? lastUsage;
             llmWindowStart = Date.now();
-            this.mirrorAssistantMessage(msg, session);
+            this.mirrorAssistantMessage(msg, session, thinkingTokens);
+            thinkingTokens = undefined;
             const text = (msg.message.content ?? [])
               .filter((b) => b.type === "text" && b.text)
               .map((b) => b.text)
@@ -970,7 +975,7 @@ export class ClaudeSdkBackend implements AgentBackend {
     return usage;
   }
 
-  private mirrorAssistantMessage(msg: SdkStreamMessage, session: SessionData): void {
+  private mirrorAssistantMessage(msg: SdkStreamMessage, session: SessionData, thinkingTokens?: number): void {
     const blocks = msg.message?.content ?? [];
     const text = blocks.filter((b) => b.type === "text" && b.text).map((b) => b.text).join("");
     const toolUses = blocks.filter((b) => b.type === "tool_use");
@@ -986,9 +991,15 @@ export class ClaudeSdkBackend implements AgentBackend {
           arguments: JSON.stringify(b.input ?? {}),
         })),
         timestamp: new Date().toISOString(),
+        ...(thinkingTokens ? { reasoningTokens: thinkingTokens } : {}),
       });
     } else if (text.trim()) {
-      session.messages.push({ role: "assistant", content: text, timestamp: new Date().toISOString() });
+      session.messages.push({
+        role: "assistant",
+        content: text,
+        timestamp: new Date().toISOString(),
+        ...(thinkingTokens ? { reasoningTokens: thinkingTokens } : {}),
+      });
     }
   }
 

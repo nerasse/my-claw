@@ -111,3 +111,50 @@ describe("the redacted engine reports a count, never text", () => {
     expect(reasoning).toEqual([]);
   });
 });
+
+/**
+ * The count is the only trace this engine can leave behind, so it is stored on the turn it
+ * belongs to. Without it a reopened thread loses the fact that the turn thought at all: the live
+ * counter dies with the stream.
+ */
+describe("the count is kept on the turn it belongs to", () => {
+  test("the estimate seen before a turn is stored on that turn", async () => {
+    const backend = makeBackend(
+      fakeQuery([
+        { type: "system", subtype: "thinking_tokens", estimated_tokens: 900, estimated_tokens_delta: 900 },
+        { type: "assistant", message: { content: [{ type: "text", text: "the answer" }] } },
+        RESULT,
+      ]),
+    );
+    const state = session();
+    await backend.handleMessageStreaming(msg(), state, async () => {});
+    const turn = state.messages.find((m) => m.role === "assistant");
+    expect(turn?.role === "assistant" && turn.reasoningTokens).toBe(900);
+  });
+
+  test("a turn that follows without a new estimate is not credited with the previous one", async () => {
+    const backend = makeBackend(
+      fakeQuery([
+        { type: "system", subtype: "thinking_tokens", estimated_tokens: 900, estimated_tokens_delta: 900 },
+        { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } }] } },
+        { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } },
+        { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+        RESULT,
+      ]),
+    );
+    const state = session();
+    await backend.handleMessageStreaming(msg(), state, async () => {});
+    const turns = state.messages.filter((m) => m.role === "assistant");
+    expect(turns.map((m) => (m.role === "assistant" ? m.reasoningTokens : undefined))).toEqual([900, undefined]);
+  });
+
+  test("a turn that thought nothing carries no field at all", async () => {
+    const backend = makeBackend(
+      fakeQuery([{ type: "assistant", message: { content: [{ type: "text", text: "quick" }] } }, RESULT]),
+    );
+    const state = session();
+    await backend.handleMessageStreaming(msg(), state, async () => {});
+    const turn = state.messages.find((m) => m.role === "assistant");
+    expect(turn && "reasoningTokens" in turn).toBe(false);
+  });
+});

@@ -77,8 +77,15 @@ DeepSeek tool-chain contract is satisfied. It is not.
 
 ```ts
 | { role: "assistant"; content: string; timestamp: string;
-    toolCalls?: [...]; reasoning?: string }
+    toolCalls?: [...]; reasoning?: string; reasoningTokens?: number }
 ```
+
+`reasoningTokens` is the redacted engine's half of the same field. The Claude bridge gives a
+running `estimated_tokens` and no text at all, so the live counter was the whole trace of a turn's
+thinking, and it died with the stream: a reopened thread showed a bubble that had apparently
+thought nothing. The backend keeps the last estimate seen before the turn it mirrors, one integer
+per turn, and the app replays it as `Thought . 12.3k tokens` in the same muted line. A turn that
+thought nothing stores nothing.
 
 It must never reach a model. Two paths replay the mirror, and both build explicit objects field by
 field, so an added field cannot leak by accident:
@@ -248,8 +255,10 @@ Server, each one failing before the change:
   under concurrent pushes.
 - **The leak tests**: an assistant mirror message carrying `reasoning` produces a prompt without it,
   through `toChatMessages` and through `renderPriorConversation`.
-- `sessions.ts`: history replay carries `reasoning`, and a turn without one replays without the
-  field; the cap truncates and marks.
+- `sessions.ts`: history replay carries `reasoning` and `reasoningTokens`, and a turn without
+  either replays without the field; the cap truncates and marks.
+- `claude-sdk/backend.ts`: the estimate seen before a turn is stored on that turn, the turn after
+  it is not credited with the same count, and a turn that never thought carries no field.
 - **Matrix and Telegram**: guaranteed structurally rather than by a channel test — those branches
   build no sink, and every engine is tested to run unchanged when the sink is absent. There is no
   reasoning frame in their protocols to assert on.
