@@ -16,6 +16,9 @@ import { resetPushState } from "../src/notifications/push.ts";
 import { resetAvailabilityWorld } from "../src/llm/world.ts";
 import { resetFallbackNotices } from "../src/llm/fallback-notice.ts";
 import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
+import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
+import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
+import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -60,4 +63,10 @@ beforeEach(() => {
   // Keyed by model and rungs, both of which repeat across files: a leftover would swallow the one
   // clamp warning a later test asserts on.
   resetEffortClampNotices();
+  // Pairing codes and browser sessions are credentials held in memory, and a leaked one would
+  // authenticate a later file's request. The pairing clock is restored with them.
+  resetPairing();
+  resetWebSessions();
+  // The lastSeen throttle would silently skip the write a later test asserts on.
+  resetDeviceSeenCache();
 });

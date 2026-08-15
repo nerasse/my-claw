@@ -896,3 +896,52 @@ export async function renameProvider(from: string, to: string): Promise<ConfigEd
   await journal("edit", artifactId(CONFIG_PATH), { providerRenamed: { from, to } });
   return { ok: true, previous: {} };
 }
+
+export interface DeviceEntry {
+  token: string;
+  name?: string;
+  enabled?: boolean;
+  kind?: "app" | "web";
+  owner?: string;
+  createdAt?: string;
+  lastSeenAt?: string;
+}
+
+/**
+ * Writes one entry under `channels.my-claw-app.devices`.
+ *
+ * Pairing mints a credential, so it goes through the same snapshot + atomic write as every other
+ * edit here: a device that appears out of nowhere is visible in `/config diff` and removable with
+ * `/config rollback`. The token is never logged, only the id.
+ */
+export async function upsertDevice(deviceId: string, entry: DeviceEntry): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const channels = objectAt(read.data, "channels");
+  const channel = objectAt(channels, "my-claw-app");
+  const devices = objectAt(channel, "devices");
+  devices[deviceId] = { ...(devices[deviceId] as Record<string, unknown> | undefined), ...entry };
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout device ${deviceId}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { deviceAdded: deviceId, kind: entry.kind });
+  return { ok: true, previous: {} };
+}
+
+/** Drops a device entry. Returns ok even when it was already gone: revoking twice is not an error. */
+export async function removeDevice(deviceId: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const channels = objectAt(read.data, "channels");
+  const channel = objectAt(channels, "my-claw-app");
+  const devices = objectAt(channel, "devices");
+  if (!(deviceId in devices)) return { ok: true, previous: {} };
+  delete devices[deviceId];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant revocation device ${deviceId}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { deviceRemoved: deviceId });
+  return { ok: true, previous: {} };
+}

@@ -52,10 +52,10 @@ resolve_entry() {
   fi
 }
 
-# Forward `myclaw codex ...` / `myclaw claude ...` to the app entrypoint. Auth tokens must be
-# owned by the service user, so when invoked as root we drop to that user (su preserves the TTY
-# for the interactive `claude login`).
-run_auth() {
+# Forward `myclaw codex|claude|device ...` to the app entrypoint. What they write (auth tokens,
+# config.json) must be owned by the service user, so when invoked as root we drop to that user
+# (su preserves the TTY for the interactive `claude login`).
+run_cli() {
   local provider="$1"; shift
   local entry; entry="$(resolve_entry)"
   if [ "$EUID" -eq 0 ]; then
@@ -81,6 +81,7 @@ usage() {
   echo "  restart   Restart all services"
   echo "  status    Show status of my-claw service"
   echo "  dev       Stop services and run development mode (bun --watch)"
+  echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
   echo "  update    Update to latest release"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
@@ -283,11 +284,15 @@ case "$cmd" in
     ;;
   codex)
     shift
-    run_auth codex "$@"
+    run_cli codex "$@"
     ;;
   claude)
     shift
-    run_auth claude "$@"
+    run_cli claude "$@"
+    ;;
+  device)
+    shift
+    run_cli device "$@"
     ;;
   *)
     usage

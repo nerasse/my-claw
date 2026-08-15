@@ -549,6 +549,7 @@ async function main() {
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
+  sessionManager.startAutosave();
   toolRegistry.register(createWorkspacesTool({ sessionManager, config, reload: reloadConfigNow }));
   const backfilledConversations = await backfillConversationArchive();
   if (backfilledConversations > 0) {
@@ -2358,6 +2359,10 @@ async function main() {
     if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
     await Promise.allSettled(adapters.map((a) => a.stop()));
+    // After the adapters, so nothing can append behind the write, and before the exit: a cached
+    // session that never reached the disk is a conversation the owner loses for good.
+    sessionManager.stopAutosave();
+    await sessionManager.flushAll().catch((err) => log("error", "session flush failed", { error: String(err) }));
     closeDb();
     closeMemoryDb();
     process.exit(0);
@@ -2599,10 +2604,25 @@ async function runConfigCli(args: string[]): Promise<number> {
   return 0;
 }
 
+// Device pairing from the shell, the CLI half of docs/web-pairing.md. Imported lazily like the
+// other CLI paths: the runner must not boot the orchestrator to write one config entry.
+async function runDeviceCliCommand(args: string[]): Promise<number> {
+  const { runDeviceCli } = await import("./channels/my-claw-app/device-cli.ts");
+  const { loadEnv } = await import("./core/config.ts");
+  await loadEnv();
+  return runDeviceCli(args);
+}
+
 const cliArgs = process.argv.slice(2);
-if (cliArgs[0] === "codex" || cliArgs[0] === "claude" || cliArgs[0] === "config") {
+if (cliArgs[0] === "codex" || cliArgs[0] === "claude" || cliArgs[0] === "config" || cliArgs[0] === "device") {
   const runner =
-    cliArgs[0] === "codex" ? runCodexCli : cliArgs[0] === "claude" ? runClaudeCli : runConfigCli;
+    cliArgs[0] === "codex"
+      ? runCodexCli
+      : cliArgs[0] === "claude"
+        ? runClaudeCli
+        : cliArgs[0] === "device"
+          ? runDeviceCliCommand
+          : runConfigCli;
   runner(cliArgs.slice(1))
     .then((code) => process.exit(code))
     .catch((err) => {

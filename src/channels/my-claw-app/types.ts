@@ -593,6 +593,47 @@ export interface MyClawAppProviderEnvList {
 }
 
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
+/** Pairing socket: a browser announcing itself before the challenge -- docs/web-pairing.md. */
+export interface MyClawAppPairHello {
+  type: "pair.hello";
+  /** A browser is given a grant to exchange for a cookie; a native client is given the token. */
+  kind?: "web" | "native";
+  label?: string;
+  userAgent?: string;
+}
+
+/** Pairing socket: presenting a code, from a `myclaw device add` link or typed by hand. */
+export interface MyClawAppPairClaim {
+  type: "pair.claim";
+  code: string;
+}
+
+/** Chat socket: an already paired device inspecting a pairing code before approving it. */
+export interface MyClawAppDevicePairLookup {
+  type: "device.pair.lookup";
+  code: string;
+}
+
+export interface MyClawAppDevicePairApprove {
+  type: "device.pair.approve";
+  code: string;
+  name: string;
+}
+
+export interface MyClawAppDevicePairDeny {
+  type: "device.pair.deny";
+  code: string;
+}
+
+export interface MyClawAppDeviceList {
+  type: "device.list";
+}
+
+export interface MyClawAppDeviceRevoke {
+  type: "device.revoke";
+  deviceId: string;
+}
+
 export type MyClawAppClientFrame =
   | MyClawAppChatSend
   | MyClawAppLocationPreview
@@ -663,6 +704,13 @@ export type MyClawAppClientFrame =
   | MyClawAppJobsRuns
   | MyClawAppSubAgentsList
   | MyClawAppSubAgentsKill
+  | MyClawAppPairHello
+  | MyClawAppPairClaim
+  | MyClawAppDevicePairLookup
+  | MyClawAppDevicePairApprove
+  | MyClawAppDevicePairDeny
+  | MyClawAppDeviceList
+  | MyClawAppDeviceRevoke
   | MyClawAppSubAgentsReset
   | MyClawAppJobSave
   | MyClawAppJobDelete
@@ -1761,6 +1809,79 @@ export interface MyClawAppChatCleared {
   threadId: string;
 }
 
+/** Pairing socket: the code and the digits the owner compares with the approving device. */
+export interface MyClawAppPairChallenge {
+  type: "pair.challenge";
+  code: string;
+  verification: string;
+  expiresAt: number;
+}
+
+/** Pairing socket: somebody has looked this code up and is deciding. */
+export interface MyClawAppPairPending {
+  type: "pair.pending";
+  approver: string;
+}
+
+/** Pairing socket: the credential, delivered once, on the socket that raised the challenge. */
+export interface MyClawAppPairGranted {
+  type: "pair.granted";
+  deviceId: string;
+  owner: string;
+  name: string;
+  /** Browsers: single-use, exchanged for a cookie at POST /my-claw-app/session. */
+  grant?: string;
+  /** Native clients: the device token itself, since they hold no cookie jar. */
+  token?: string;
+}
+
+export interface MyClawAppPairDenied {
+  type: "pair.denied";
+  reason: "denied" | "expired" | "attempts" | "disabled" | "unknown";
+}
+
+/** Chat socket: what an approver sees before deciding. Never carries a credential. */
+export interface MyClawAppDevicePairInfo {
+  type: "device.pair.info";
+  code: string;
+  verification: string;
+  origin?: string;
+  ip?: string;
+  userAgent?: string;
+  expiresAt: number;
+}
+
+export interface MyClawAppDevicePairResult {
+  type: "device.pair.result";
+  ok: boolean;
+  deviceId?: string;
+  error?: string;
+}
+
+export interface MyClawAppDeviceRecordFrame {
+  deviceId: string;
+  name: string;
+  kind: "app" | "web";
+  owner: string;
+  enabled: boolean;
+  createdAt?: string;
+  lastSeenAt?: string;
+  /** True for the device asking: the UI refuses to let it revoke itself by accident. */
+  self?: boolean;
+}
+
+export interface MyClawAppDeviceListResult {
+  type: "device.list.result";
+  devices: MyClawAppDeviceRecordFrame[];
+}
+
+export interface MyClawAppDeviceRevokeResult {
+  type: "device.revoke.result";
+  ok: boolean;
+  deviceId: string;
+  error?: string;
+}
+
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppLocationCapabilities
@@ -1812,6 +1933,14 @@ export type MyClawAppServerFrame =
   | MyClawAppHello
   | MyClawAppTagsResult
   | MyClawAppProviderEnvResult
+  | MyClawAppPairChallenge
+  | MyClawAppPairPending
+  | MyClawAppPairGranted
+  | MyClawAppPairDenied
+  | MyClawAppDevicePairInfo
+  | MyClawAppDevicePairResult
+  | MyClawAppDeviceListResult
+  | MyClawAppDeviceRevokeResult
   | MyClawAppError;
 
 /**

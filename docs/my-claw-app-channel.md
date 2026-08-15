@@ -19,6 +19,11 @@ owner, never the device id.
 src/channels/my-claw-app/
 ├── adapter.ts          # WSS server, device auth, media serving, frame handling
 ├── stream.ts           # Token streaming (chat.stream.* frames)
+├── sessions.ts         # Thread list/history/archive, keyed by owner
+├── files.ts            # Per-thread uploads
+├── devices.ts          # Device mint/list/revoke -- docs/web-pairing.md
+├── pairing.ts          # Pairing sessions, codes, TTL -- docs/web-pairing.md
+├── web.ts              # Static bundle serving (see "Serving the web client")
 └── types.ts            # Wire protocol types
 ```
 
@@ -59,6 +64,209 @@ src/channels/my-claw-app/
   alone under its own id. Changing it moves the device to another namespace: the threads and
   files of the previous owner stay where they are.
 - The app connects to `ws://<host>:<port>/my-claw-app?device=<id>&token=<token>`.
+
+## Serving the web client
+
+The web client (react-native-web, same repo as the Android app) is served by **this adapter**,
+from the same `Bun.serve` and the same port. Not by nginx, not by a second service.
+
+The reason is not performance, it is coupling. The channel already serves `/media`, `/skills` and
+`/health` off that server; a static bundle is one more route on a server that exists. Handing the
+bundle to nginx instead would make the web client a deployment-specific feature: my-claw ships as
+a tarball with an `install.sh` and does not require a reverse proxy today. `web.enabled: true` and
+the client is reachable, over the VPN, with no proxy at all. Same origin comes for free, so no
+CORS, no host to configure in the client, and the media URLs stay relative.
+
+A third service was considered and rejected: it would need its own unit, its own update path and
+its own port, to serve 3 MB of static files that must stay in step with a socket living in
+another process.
+
+### The bundle is private
+
+The bundle is served only to a paired client, like everything else on this port. It carries no
+secret, but an unauthenticated copy of the UI is a free map of the surface: every route, every
+frame name, every dependency version, offered to whoever scans the host.
+
+A browser cannot present the credential the way the app does. `?device=&token=` works for a URL
+the client builds by hand; it does not work for the asset graph of an HTML page, for the service
+worker, or for an `<img src>`. The browser credential is therefore a **cookie**, and the app keeps
+its query parameters. One resolver, `authenticate(req)`, accepts either and returns a device or
+null.
+
+```
+Set-Cookie: claw_session=<32 CSPRNG bytes, base64url>
+            HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000 [; Secure if the request was TLS]
+```
+
+The cookie is an **opaque session id**, not the device token. The browser therefore never holds
+the token at all: a script that finds an XSS cannot read `HttpOnly`, cannot exfiltrate a
+credential, and the session dies the moment the device is revoked. This is strictly better than
+the `localStorage` the first draft of the web spec assumed.
+
+`Secure` is set only when the request arrived over TLS (`X-Forwarded-Proto`, or the scheme).
+Hardcoding it would make the client unusable over plain HTTP on the VPN, where there is no proxy
+to terminate anything.
+
+### Deployment: private network, no SSO, but TLS anyway
+
+The instance is reached over the tailnet and the LAN, never from the public internet, and no
+identity provider sits in front. Pairing plus the device cookie is the whole authentication story.
+That is a deliberate decision, recorded in `docs/web-pairing.md`.
+
+It does **not** mean plain HTTP is enough. A browser gates a long list of APIs behind a *secure
+context*, and `http://<host>:8080` is not one (only `localhost` is exempt):
+
+| API | Used by | Without HTTPS |
+| --- | --- | --- |
+| `getUserMedia` / `MediaRecorder` | voice notes | dead, no fallback |
+| Service Worker | PWA shell, install, push | dead |
+| Push API + Notifications | run-finished notifications | dead |
+| Geolocation | location sharing | dead |
+| `navigator.clipboard` | copy buttons | degraded, falls back to `execCommand` |
+
+**Decided: TLS is terminated by an external nginx on another VM.** my-claw keeps listening in
+plain HTTP on `:8080`, and never learns about certificates. The Android app keeps hitting the port
+directly over the LAN; browsers go through the proxy.
+
+That choice moves four facts out of the process, and the code has to read them from headers
+instead of from the socket. All four are only trusted when the request comes from a configured
+proxy address (`web.trustedProxies`, a list of CIDRs, empty by default), otherwise a client on the
+LAN forges them at will.
+
+| Header | Read for | Broken if missing |
+| --- | --- | --- |
+| `X-Forwarded-Proto` | the `Secure` cookie attribute | the cookie ships without `Secure` |
+| `X-Forwarded-Host` | the `Origin` check on upgrade | every browser socket is refused with 403 |
+| `X-Forwarded-For` | client IP in logs and rate limits | every pairing attempt shares one bucket |
+| `Upgrade` / `Connection` | the WebSocket handshake | no chat at all |
+
+The `Origin` check compares against `X-Forwarded-Host` when the request is proxied, `Host`
+otherwise. Comparing against a configured hostname would break the direct LAN and tailnet access
+the app relies on.
+
+Two nginx defaults will bite, and neither produces a useful error: `client_max_body_size` is 1 MB,
+which rejects any real attachment (the channel sets no limit of its own), and `proxy_read_timeout`
+is 60 s, which kills an idle chat socket.
+
+Plain HTTP stays supported and is the right answer for a quick check from `localhost`. It is a
+degraded mode, not the target, and the client hides what it cannot do rather than failing silently
+on a mic button.
+
+Two alternatives were considered and rejected for now: `web.tls` in the config with `Bun.serve`
+terminating TLS itself (needs cert files and a restart on renewal), and Tailscale serve on the
+host (this VM is reached through a subnet route, it is not on the tailnet directly).
+
+Sessions live in `$MY_CLAW_DIR/web-sessions.json`, mode 0600, atomic writes: they must survive a
+restart, unlike pairing tickets. Fields: id, deviceId, createdAt, lastSeenAt, userAgent. Sliding
+expiry, 30 days. `myclaw device rm` drops every session of that device and closes its sockets.
+
+**Cross-site WebSocket hijacking.** A WebSocket handshake ignores the same-origin policy, so a
+cookie-authenticated socket is reachable from any page unless something says otherwise. Two
+guards, both cheap: `SameSite=Strict` keeps the cookie off cross-site requests, and a cookie-
+authenticated upgrade requires `Origin` to match the request's own `Host`, refusing anything else
+with 403. Matching against `Host` rather than a configured hostname is what keeps the instance
+reachable by tailnet name, LAN name and raw IP without a list to maintain. The app sends no
+`Origin` and authenticates by query parameters, so it is unaffected.
+
+### Routes
+
+| Path | Auth | Behaviour |
+| --- | --- | --- |
+| `/media`, `/media/*`, `/skills`, `/health`, `/my-claw-app` | token or cookie | unchanged |
+| `/pair`, `/pair/*` | none | the pairing shell, the only public surface |
+| `/my-claw-app/pair` | none | pairing socket, `docs/web-pairing.md` |
+| `/my-claw-app/session` | one-time grant | `POST`, exchanges a grant for the cookie |
+| `/my-claw-app/ticket` | token of the device itself | `POST`, a claim code for `myclaw device add` |
+| `/assets/*` | cookie | bundle file, `Cache-Control: private, max-age=31536000, immutable` |
+| anything else | cookie | the file if it exists, otherwise `index.html`, `Cache-Control: private, no-cache` |
+
+Without a valid cookie, a navigation request is redirected to `/pair` and anything else gets a
+bare 401. No 404 versus 403 distinction on bundle paths: an unauthenticated client learns nothing
+about what is installed.
+
+The API routes are matched **before** the static fallback, so a bundle can never shadow one. The
+resolved path is checked to be inside the bundle directory: a `..` in a URL is a 404, never a read
+of `~/.my-claw/config.json`.
+
+`index.html` must never be cached: it is the only file whose name is stable, so a cached copy pins
+the client to a dead asset graph and no update ever lands. `private` on every static response, or
+a shared cache somewhere serves the UI to the next person through it.
+
+Other headers: `Content-Security-Policy: default-src 'self'; connect-src 'self' ws: wss:; img-src
+'self' data: blob:; media-src 'self' blob:`, `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+no-referrer`, `X-Frame-Options: DENY`.
+
+### The pairing shell
+
+Gating the bundle creates a bootstrap problem: the pairing screen cannot live inside the thing it
+unlocks. So it does not. `/pair` serves a self-contained page shipped **with the server**
+(`src/channels/my-claw-app/pair-page.ts`, inline HTML, CSS and vanilla JS, no framework, no
+bundle, a few KB).
+
+It does exactly three things: open `/my-claw-app/pair`, render the QR and the code the server
+sends back, and on `pair.granted` POST the grant to `/my-claw-app/session` before redirecting to
+`/`. It reads no session, lists no thread, names no model. What an attacker gets from it is the
+knowledge that a my-claw instance is here, which the TLS certificate already told them.
+
+Its script and its style are inline, which the shared `default-src 'self'` policy refuses, so the
+page carries a per-response nonce and a CSP of its own (`script-src 'nonce-...'`). `unsafe-inline`
+would have allowed any injected script too, which is the opposite of the point.
+
+The QR is not implemented yet: the page shows the code and takes it typed. Rendering it
+server-side as an SVG in the challenge frame is the plan, because encoding it in the shell means
+shipping an encoder into the one page that must stay small and dependency-free.
+
+A browser that hits `/pair` while already holding a valid cookie is redirected to `/`. The shell
+is versioned with the server, not with the bundle, so a bundle rollback never leaves the door
+without a handle.
+
+### Installing the bundle
+
+The app and the server release independently, so the server pulls the artifact rather than
+embedding it:
+
+```
+myclaw web install [--version vX.Y.Z]   # default: latest release of my-claw-app
+myclaw web ls                           # installed versions, which one is current
+myclaw web use vX.Y.Z                   # flip the symlink, instant rollback
+```
+
+`install` downloads `dist-web.tar.gz` from the my-claw-app release on the Forgejo registry,
+verifies the checksum, extracts to `$MY_CLAW_DIR/web/<version>/` and flips `$MY_CLAW_DIR/web/current`
+atomically (symlink rename). Files are read per request, so a new version is live with no restart
+and a half-extracted tree is never served.
+
+Same CLI dispatch as `myclaw device`, same forwarding in `scripts/myclaw.sh`.
+
+### Configuration
+
+```json
+{
+  "channels": {
+    "my-claw-app": {
+      "web": {
+        "enabled": false,
+        "dir": "$MY_CLAW_DIR/web/current"
+      }
+    }
+  }
+}
+```
+
+Hot-reloads. Disabled, the static routes do not exist and the port behaves exactly as it does
+today. Enabled with a missing directory: the channel logs a `warn` at boot and keeps serving the
+API, it does not refuse to start over a missing UI.
+
+### What nginx still does
+
+TLS, the public hostname, and SSO if the owner wants it in front. It proxies everything to `:8080`
+as one block, including the `Upgrade` headers and a read timeout above the socket idle time (the
+default 60 s kills an idle chat socket). It does not serve a single file.
+
+One consequence to accept: while my-claw restarts, a **cold** page load fails. A warm one does not,
+the service worker serves the shell and the client shows its reconnecting state. Buying protection
+for the cold case means duplicating the bundle into nginx, and that is not worth a second source of
+truth for the few seconds of an auto-update.
 
 ## Wire Protocol
 

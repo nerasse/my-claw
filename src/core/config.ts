@@ -123,6 +123,11 @@ export interface MyClawAppChannelConfig {
       token: string;
       name?: string;
       enabled?: boolean;
+      /** What kind of client holds it: an app, a browser. Only ever informational. */
+      kind?: "app" | "web";
+      createdAt?: string;
+      /** Refreshed at most once a minute: a chatty client must not rewrite the config. */
+      lastSeenAt?: string;
       /**
        * Whose conversations this device opens. Devices sharing an owner share the thread list,
        * the uploaded files and the live replies, so a phone and a browser are two windows onto
@@ -144,6 +149,29 @@ export interface MyClawAppChannelConfig {
   files?: {
     /** Attachments above this size, in bytes, are logged with a warning and stored anyway. Defaults to 50 MB. */
     warnSizeBytes?: number;
+  };
+  /**
+   * Device pairing over the unauthenticated /pair surface -- docs/web-pairing.md.
+   * Off by default: the route does not exist until the owner opens it.
+   */
+  pairing?: {
+    enabled?: boolean;
+    /** Life of a displayed challenge. Defaults to 120 s. */
+    ttlSeconds?: number;
+    /** Life of a `myclaw device add` ticket. Defaults to 600 s. */
+    claimTtlSeconds?: number;
+    maxSessions?: number;
+  };
+  /** Static serving of the web client bundle -- "Serving the web client" in docs/my-claw-app-channel.md. */
+  web?: {
+    enabled?: boolean;
+    /** Defaults to $MY_CLAW_DIR/web/current. */
+    dir?: string;
+    /**
+     * CIDRs whose X-Forwarded-* headers are believed. Empty means none: without this, a client
+     * on the LAN forges X-Forwarded-Proto and talks the server into a Secure cookie it never saw.
+     */
+    trustedProxies?: string[];
   };
 }
 

@@ -14,6 +14,12 @@ import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { readAppVersion } from "../../core/diagnostics.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
+import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
+import { approve, createTicket, deny, lookup, pairingEnabled } from "./pairing.ts";
+import { listDevices, revokeDevice, touchDevice } from "./devices.ts";
+import { pairPageResponse } from "./pair-page.ts";
+import { deviceOfSession, readCookie, revokeSessionsOfDevice, SESSION_COOKIE } from "./web-session.ts";
+import { clientIp, requestHost, requestIsSecure, securityHeaders, serveBundle, webEnabled } from "./web.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { commandsFor } from "../commands-catalog.ts";
@@ -141,6 +147,15 @@ interface MyClawAppSessionData {
   /** Conversation namespace of the device (config `owner`, else the device id). */
   owner: string;
   lastSeen: number;
+  /**
+   * Set on a socket opened at /my-claw-app/pair. It is unauthenticated and speaks a protocol of
+   * its own, so every chat handler refuses it before reading anything else -- docs/web-pairing.md.
+   */
+  pairing?: true;
+  code?: string;
+  origin?: string;
+  ip?: string;
+  userAgent?: string;
 }
 
 interface MediaEntry {
@@ -420,6 +435,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private sockets = new Map<string, ServerWebSocket<MyClawAppSessionData>>();
   private media = new Map<string, MediaEntry>();
   private mediaOrder: string[] = [];
+  /** The unauthenticated pairing surface, kept behind its own object and its own route. */
+  private pairSockets = new PairingSockets(() => this.config);
   private pendingApprovals = new Map<string, PendingApproval>();
   private messageHandler?: (msg: UnifiedMessage) => Promise<void>;
   private diagnostics?: MyClawAppDiagnosticsProvider;
@@ -777,6 +794,78 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return this.config.devices?.[deviceId]?.owner?.trim() || deviceId;
   }
 
+  /**
+   * Revoking a device closes its sockets and drops its browser sessions in the same breath:
+   * waiting for the next connect would leave a revoked laptop reading the conversation.
+   */
+  private async handleDeviceRevoke(ws: ServerWebSocket<MyClawAppSessionData>, deviceId: string): Promise<void> {
+    if (deviceId === ws.data.deviceId) {
+      this.sendFrame(ws, {
+        type: "device.revoke.result",
+        ok: false,
+        deviceId,
+        error: "a device cannot revoke itself",
+      });
+      return;
+    }
+    const revoked = await revokeDevice(deviceId, this.config);
+    if (revoked.ok) {
+      await revokeSessionsOfDevice(deviceId);
+      const live = this.sockets.get(deviceId);
+      if (live) {
+        try {
+          live.close(1008, "revoked");
+        } catch {
+          // already gone
+        }
+        this.sockets.delete(deviceId);
+      }
+    }
+    this.sendFrame(ws, {
+      type: "device.revoke.result",
+      ok: revoked.ok,
+      deviceId,
+      ...(revoked.error ? { error: revoked.error } : {}),
+    });
+  }
+
+  private handlePairLookup(ws: ServerWebSocket<MyClawAppSessionData>, code: string): void {
+    const found = lookup(code, ws.data.deviceId);
+    if (!found.ok) {
+      this.sendFrame(ws, { type: "device.pair.result", ok: false, error: found.reason });
+      return;
+    }
+    // Everything the owner needs to recognise the browser in front of them, and no credential.
+    this.sendFrame(ws, {
+      type: "device.pair.info",
+      code: found.session.code,
+      verification: found.session.verification,
+      expiresAt: found.session.expiresAt,
+      ...(found.session.origin ? { origin: found.session.origin } : {}),
+      ...(found.session.ip ? { ip: found.session.ip } : {}),
+      ...(found.session.userAgent ? { userAgent: found.session.userAgent } : {}),
+    });
+  }
+
+  private async handlePairApprove(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    code: string,
+    name: string,
+  ): Promise<void> {
+    // The new device joins the approver's owner: a browser paired from a phone lands on the
+    // same threads, which is the whole point of the shared namespace.
+    const approved = await approve(this.config, code, {
+      name: name.trim() || "browser",
+      owner: ws.data.owner,
+      approver: ws.data.deviceId,
+    });
+    this.sendFrame(ws, {
+      type: "device.pair.result",
+      ok: approved.ok,
+      ...(approved.ok ? { deviceId: approved.deviceId } : { error: approved.error }),
+    });
+  }
+
   private socketsFor(owner: string): ServerWebSocket<MyClawAppSessionData>[] {
     return [...this.sockets.values()].filter((ws) => ws.data.owner === owner);
   }
@@ -835,21 +924,121 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return Response.json({ activeRun: runRegistry.hasAny() });
     }
 
+    const secure = requestIsSecure(this.config, url, req.headers, server.requestIP(req)?.address);
+    const host = requestHost(this.config, url, req.headers, server.requestIP(req)?.address);
+
+    if (url.pathname === "/my-claw-app/pair") {
+      if (!pairingEnabled(this.config)) return new Response("Not Found", { status: 404 });
+      if (req.headers.get("upgrade") !== "websocket") {
+        return new Response("Upgrade Required", { status: 426 });
+      }
+      const data: PairSocketData = {
+        pairing: true,
+        deviceId: "",
+        owner: "",
+        lastSeen: Date.now(),
+        origin: req.headers.get("origin") ?? undefined,
+        ip: clientIp(this.config, req.headers, server.requestIP(req)?.address),
+        userAgent: req.headers.get("user-agent") ?? undefined,
+      };
+      if (server.upgrade(req, { data })) return undefined;
+      return new Response("Upgrade Failed", { status: 500 });
+    }
+
+    if (url.pathname === "/my-claw-app/ticket" && req.method === "POST") {
+      // `myclaw device add` mints the device by writing the config, then asks the running daemon
+      // for a claim code: a ticket lives in memory, and the CLI is another process. The caller
+      // authenticates with the credential it just created, so it can only ever ticket itself.
+      const deviceId = url.searchParams.get("device") ?? "";
+      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      if (!pairingEnabled(this.config)) {
+        return new Response("Pairing disabled", { status: 409 });
+      }
+      const device = this.config.devices?.[deviceId];
+      if (!device) return new Response("Unauthorized", { status: 401 });
+      const ticket = createTicket(this.config, {
+        deviceId,
+        owner: this.ownerFor(deviceId),
+        name: device.name ?? deviceId,
+        token: device.token,
+      });
+      return Response.json({ code: ticket.code, expiresAt: ticket.expiresAt, host });
+    }
+
+    if (url.pathname === "/my-claw-app/session" && req.method === "POST") {
+      if (!pairingEnabled(this.config)) return new Response("Not Found", { status: 404 });
+      return this.pairSockets.handleSessionPost(req, secure);
+    }
+
+    if (url.pathname === "/pair") {
+      if (!pairingEnabled(this.config)) return new Response("Not Found", { status: 404 });
+      // Already paired: the shell has nothing to offer, and showing a code would mint a second
+      // device for a browser that already has one.
+      if (this.cookieDevice(req)) {
+        return new Response(null, { status: 302, headers: securityHeaders({ Location: "/" }) });
+      }
+      return pairPageResponse();
+    }
+
     if (url.pathname === "/my-claw-app") {
       if (req.headers.get("upgrade") !== "websocket") {
         return new Response("Upgrade Required", { status: 426 });
       }
-      if (!this.deviceFor(url.searchParams.get("device") ?? "", url.searchParams.get("token") ?? "")) {
-        return new Response("Unauthorized", { status: 401 });
+      const queryDevice = url.searchParams.get("device") ?? "";
+      const byQuery = this.deviceFor(queryDevice, url.searchParams.get("token") ?? "");
+      const cookieDevice = byQuery ? null : this.cookieDevice(req);
+      if (cookieDevice && !this.originMatches(req, host)) {
+        // A WebSocket handshake ignores the same-origin policy, so a cookie-authenticated socket
+        // is reachable from any page unless the Origin is checked here.
+        return new Response("Forbidden", { status: 403 });
       }
-      const deviceId = url.searchParams.get("device")!;
+      const deviceId = byQuery ? queryDevice : cookieDevice;
+      if (!deviceId) return new Response("Unauthorized", { status: 401 });
       if (server.upgrade(req, { data: { deviceId, owner: this.ownerFor(deviceId), lastSeen: Date.now() } })) {
         return undefined;
       }
       return new Response("Upgrade Failed", { status: 500 });
     }
 
+    if (webEnabled(this.config)) {
+      if (!this.cookieDevice(req)) {
+        // A navigation is sent to the pairing shell; anything else gets a bare 401, so an
+        // unauthenticated client cannot map what is installed by reading 404s.
+        const wantsHtml = (req.headers.get("accept") ?? "").includes("text/html");
+        if (wantsHtml && pairingEnabled(this.config)) {
+          return new Response(null, { status: 302, headers: securityHeaders({ Location: "/pair" }) });
+        }
+        return new Response("Unauthorized", { status: 401, headers: securityHeaders() });
+      }
+      const served = await serveBundle(this.config, url.pathname);
+      if (served) return served;
+    }
+
     return new Response("Not Found", { status: 404 });
+  }
+
+  /** The device a session cookie stands for, or null. Never trusts a cookie for a disabled device. */
+  private cookieDevice(req: Request): string | null {
+    const sessionId = readCookie(req.headers.get("cookie"), SESSION_COOKIE);
+    const deviceId = deviceOfSession(sessionId);
+    if (!deviceId) return null;
+    const device = this.config.devices?.[deviceId];
+    if (!device || device.enabled === false) return null;
+    return deviceId;
+  }
+
+  /** An Origin is compared with the host the browser used, not with a configured name: the
+   *  instance is reached by tailnet name, LAN name and raw IP, and none of them is canonical. */
+  private originMatches(req: Request, host: string): boolean {
+    const origin = req.headers.get("origin");
+    if (!origin) return true;
+    try {
+      return new URL(origin).host === host;
+    } catch {
+      return false;
+    }
   }
 
   private async serveSkill(source: string, name: string, workspace?: string): Promise<Response> {
@@ -992,6 +1181,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private handleOpen(ws: ServerWebSocket<MyClawAppSessionData>): void {
+    if (ws.data.pairing) {
+      void myClawAppLog("info", "pairing socket opened", { ip: ws.data.ip, origin: ws.data.origin });
+      return;
+    }
+    void touchDevice(this.config, ws.data.deviceId);
     const existing = this.sockets.get(ws.data.deviceId);
     if (existing && existing !== ws) {
       try {
@@ -1017,6 +1211,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private handleClose(ws: ServerWebSocket<MyClawAppSessionData>): void {
+    if (ws.data.pairing) {
+      this.pairSockets.close(ws as unknown as ServerWebSocket<PairSocketData>);
+      return;
+    }
     if (this.sockets.get(ws.data.deviceId) === ws) {
       this.sockets.delete(ws.data.deviceId);
     }
@@ -1026,6 +1224,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private handleMessage(ws: ServerWebSocket<MyClawAppSessionData>, message: string | Buffer): void {
     ws.data.lastSeen = Date.now();
     const raw = typeof message === "string" ? message : Buffer.from(message).toString("utf8");
+
+    // A pairing socket never reaches a chat handler: it is unauthenticated, and its four frames
+    // are the only thing this port accepts without a credential.
+    if (ws.data.pairing) {
+      this.pairSockets.message(ws as unknown as ServerWebSocket<PairSocketData>, raw);
+      return;
+    }
 
     let frame: MyClawAppClientFrame | undefined;
     try {
@@ -1244,6 +1449,30 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "jobs.runs":
         void this.handleJobsRuns(ws, frame);
+        break;
+      case "device.list":
+        this.sendFrame(ws, {
+          type: "device.list.result",
+          devices: listDevices(this.config).map((device) => ({
+            ...device,
+            self: device.deviceId === ws.data.deviceId,
+          })),
+        });
+        break;
+      case "device.revoke":
+        void this.handleDeviceRevoke(ws, frame.deviceId);
+        break;
+      case "device.pair.lookup":
+        this.handlePairLookup(ws, frame.code);
+        break;
+      case "device.pair.approve":
+        void this.handlePairApprove(ws, frame.code, frame.name);
+        break;
+      case "device.pair.deny":
+        this.sendFrame(ws, {
+          type: "device.pair.result",
+          ok: deny(frame.code, ws.data.deviceId),
+        });
         break;
       case "subagents.list":
         void this.handleSubAgentsList(ws, frame);
