@@ -29,10 +29,13 @@ Everything else in a workspace is out of scope for this page:
   them as instructions would be a lie the page tells on every visit.
 - `SKILL.md` files already have their own page.
 
-Nested `AGENTS.md` are included **read-only**. They are not part of the system prompt: they are
+Nested `AGENTS.md` are included, and editable. They are not part of the system prompt: they are
 appended to tool results during a run, for the directories the tools touch
-(`src/agent/prompt/nested-agents.ts`). Showing them editable would misplace them in the model
-the user builds of the prompt; hiding them would leave a source of instructions invisible.
+(`src/agent/prompt/nested-agents.ts`). Hiding them would leave a source of instructions invisible,
+and they are instructions the owner writes like the others, so the page edits them through the
+same guarded write (sha, snapshot, journal). Creation is refused: which directories carry
+instructions at all is not a decision this screen can present. What a *conversation* actually read
+is a different question, answered per thread in docs/session-instructions.md.
 
 ## Inheritance is the point, not a detail
 

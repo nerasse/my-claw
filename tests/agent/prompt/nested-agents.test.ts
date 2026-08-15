@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractTargetDirs, NestedAgentsCollector } from "../../../src/agent/prompt/nested-agents.ts";
+import {
+  extractTargetDirs,
+  recordNestedInjection,
+  MAX_NESTED_RECORDS,
+  NestedAgentsCollector,
+  type NestedAgentsRecord,
+} from "../../../src/agent/prompt/nested-agents.ts";
 
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), "nested-agents-"));
@@ -240,6 +246,74 @@ test("extractTargetDirs: relative path resolves against workspace", () => {
   assert.deepEqual(extractTargetDirs("bash", { command: "wc -l sub/f.ts" }, base), [join(base, "sub")]);
 
   rmSync(base, { recursive: true, force: true });
+});
+
+test("nested: the session is told about every file the run injected, once each", () => {
+  const base = scratch();
+  const repo = join(base, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  mkdirSync(join(repo, "pkg"), { recursive: true });
+  write(join(repo, "AGENTS.md"), "REPO RULES");
+  write(join(repo, "pkg", "AGENTS.md"), "PKG RULES");
+  writeFileSync(join(repo, "pkg", "f.ts"), "x", "utf-8");
+
+  const seen: Array<{ path: string; bytes: number }> = [];
+  const c = new NestedAgentsCollector(join(base, "ws"), 32768, (file) => seen.push(file));
+  c.collect("read", { path: join(repo, "pkg", "f.ts") });
+  // Second call, same files: the run dedup holds, so the trace must not grow either.
+  c.collect("read", { path: join(repo, "pkg", "f.ts") });
+
+  assert.deepEqual(seen.map((f) => f.path), [join(repo, "AGENTS.md"), join(repo, "pkg", "AGENTS.md")]);
+  assert.equal(seen[0]?.bytes, Buffer.byteLength("REPO RULES"));
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("nested: a file skipped by the byte budget is not recorded as read", () => {
+  const base = scratch();
+  const repo = join(base, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  mkdirSync(join(repo, "pkg"), { recursive: true });
+  write(join(repo, "AGENTS.md"), "AAAAAAAAAA");
+  write(join(repo, "pkg", "AGENTS.md"), "BBBBBBBBBB");
+  writeFileSync(join(repo, "pkg", "f.ts"), "x", "utf-8");
+
+  const seen: string[] = [];
+  const c = new NestedAgentsCollector(join(base, "ws"), 10, (file) => seen.push(file.path));
+  c.collect("read", { path: join(repo, "pkg", "f.ts") });
+
+  assert.deepEqual(seen, [join(repo, "AGENTS.md")]);
+
+  rmSync(base, { recursive: true, force: true });
+});
+
+test("recordNestedInjection: a re-read counts a run, it does not duplicate the file", () => {
+  const records: NestedAgentsRecord[] = [];
+  recordNestedInjection(records, { path: "/repo/AGENTS.md", bytes: 10 }, "2026-08-15T10:00:00.000Z");
+  recordNestedInjection(records, { path: "/repo/AGENTS.md", bytes: 12 }, "2026-08-15T11:00:00.000Z");
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.count, 2);
+  assert.equal(records[0]?.firstAt, "2026-08-15T10:00:00.000Z");
+  assert.equal(records[0]?.lastAt, "2026-08-15T11:00:00.000Z");
+  // The size follows the file: it is what the page shows, and the file was rewritten.
+  assert.equal(records[0]?.bytes, 12);
+});
+
+test("recordNestedInjection: over the cap the least recently read file is the one dropped", () => {
+  const records: NestedAgentsRecord[] = [];
+  for (let i = 0; i < MAX_NESTED_RECORDS; i += 1) {
+    const at = new Date(Date.UTC(2026, 7, 15, 0, i)).toISOString();
+    recordNestedInjection(records, { path: `/repo/p${i}/AGENTS.md`, bytes: 1 }, at);
+  }
+  // The oldest timestamp, whatever its position in the list.
+  recordNestedInjection(records, { path: "/repo/p0/AGENTS.md", bytes: 1 }, "2026-08-16T00:00:00.000Z");
+  recordNestedInjection(records, { path: "/repo/new/AGENTS.md", bytes: 1 }, "2026-08-16T01:00:00.000Z");
+
+  assert.equal(records.length, MAX_NESTED_RECORDS);
+  assert.ok(records.some((r) => r.path === "/repo/new/AGENTS.md"), "the new file is kept");
+  assert.ok(records.some((r) => r.path === "/repo/p0/AGENTS.md"), "a re-read file is not the oldest any more");
+  assert.ok(!records.some((r) => r.path === "/repo/p1/AGENTS.md"), "the least recently read one went");
 });
 
 test("nested: disabled path returns nothing when collector not used", () => {

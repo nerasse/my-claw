@@ -2033,15 +2033,15 @@ describe("instructions frames", () => {
         files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
         maxBytes: 262144,
       }),
-      read: async (workspace, file, nested) => {
+      read: async ({ workspace, file, nested }) => {
         if (nested) {
-          return { workspace, file: nested, content: "nested body", origin: "nested", from: workspace, sha: "n1", editable: false };
+          return { workspace, file: nested, content: "nested body", origin: "nested", from: workspace, sha: "n1", editable: true };
         }
         if (file !== "AGENTS.md") return null;
         return { workspace, file, content: "body", origin: "own", from: workspace, sha: "abc123abc123", editable: true };
       },
-      write: async (workspace, file, content, sha) => {
-        written.push({ workspace, file, content, ...(sha ? { sha } : {}) });
+      write: async ({ workspace, file, content, sha }) => {
+        written.push({ workspace, file: file ?? "", content, ...(sha ? { sha } : {}) });
         if (sha === "stale") return { ok: false, sha: "", conflict: true, error: "changed on the server since it was opened" };
         return { ok: true, sha: "newsha", conflict: false };
       },
@@ -2083,11 +2083,22 @@ describe("instructions frames", () => {
     assert.equal(frame["sha"], "abc123abc123");
   });
 
-  test("a nested AGENTS.md comes back read-only", async () => {
+  test("a nested AGENTS.md comes back editable, named as the nested file it is", async () => {
     client.ws.send(JSON.stringify({ type: "instructions.get", workspace: "default", nested: "svc/AGENTS.md" }));
     const frame = await nextFrame(client);
     assert.equal(frame["origin"], "nested");
-    assert.equal(frame["editable"], false);
+    assert.equal(frame["file"], "svc/AGENTS.md");
+    assert.equal(frame["editable"], true);
+  });
+
+  test("a nested write answers on the nested path, not on the empty file field", async () => {
+    client.ws.send(
+      JSON.stringify({ type: "instructions.set", workspace: "default", file: "", nested: "svc/AGENTS.md", content: "new", sha: "n1" }),
+    );
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "instructions.saved");
+    assert.equal(frame["file"], "svc/AGENTS.md");
+    assert.equal(frame["ok"], true);
   });
 
   test("an unknown file is refused with the instructions scope", async () => {
@@ -2344,6 +2355,49 @@ describe("command frames", () => {
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "status");
+  });
+
+  test("session.instructions.get answers the report of the conversation that asked", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    const asked: string[] = [];
+    agent.onSessionInstructions(async (sessionId) => {
+      asked.push(sessionId);
+      return {
+        agent: "orchestrator",
+        workspace: "default",
+        workspaceDir: "/ws",
+        model: "m",
+        backend: "openai",
+        platform: "my-claw-app",
+        totalBytes: 3,
+        layers: [{ id: "CORE", label: "Core directives", bytes: 3, text: "abc" }],
+        nested: [],
+        notes: [],
+      };
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "session.instructions.get", threadId: "t9" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "session.instructions.result");
+    assert.equal(frame["threadId"], "t9");
+    assert.equal((frame["instructions"] as Record<string, unknown>)["totalBytes"], 3);
+    // The provider is handed a session id, never a thread id: the owner mapping stays server side.
+    assert.ok(asked[0]?.includes("t9"));
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("session.instructions.get without a provider is refused on the instructions scope", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "session.instructions.get", threadId: "t9" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "instructions");
+    client2.ws.close();
+    await agent.stop();
   });
 
   test("status.get without a command handler is refused where the page asked", async () => {

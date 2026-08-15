@@ -255,6 +255,12 @@ export interface SessionData {
     dropped: number;
     tokens: number;
   };
+  /**
+   * Nested AGENTS.md this conversation's runs actually injected, in discovery order. The collector
+   * is run-local by design (docs/nested-agents.md), so this is the only lasting trace of the
+   * instructions a session picked up along the way, and what the app's instructions page lists.
+   */
+  nestedAgents?: import("../agent/prompt/nested-agents.ts").NestedAgentsRecord[];
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

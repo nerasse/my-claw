@@ -116,8 +116,9 @@ the first answer wins.
 { "type": "workspaces.list" }
 { "type": "mcp.list" }
 { "type": "instructions.list" }
-{ "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md" }
-{ "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a" }
+{ "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md", "threadId": "t9" }
+{ "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a", "nested": "/home/me/dev/repo/AGENTS.md", "threadId": "t9" }
+{ "type": "session.instructions.get", "threadId": "t9" }
 { "type": "instructions.layer.set", "workspace": "sofa", "file": "SOUL.md", "inherit": "lab|default|builtin|none", "off": true }
 { "type": "agents.config.get" }
  { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
@@ -205,9 +206,19 @@ provider request URLs.
   workspace. `instructions.get` takes either a `file` or a `nested` path from the last list.
   `instructions.set` carries the `sha` the editor loaded, and an absent `sha` means "create this
   override" -- the server refuses a stale sha and an already existing file alike, because
-  `AGENTS.md` is a file the agent writes too. `nestedTruncated` names the workspaces whose nested
+  `AGENTS.md` is a file the agent writes too. A nested `AGENTS.md` is editable through the same
+  two frames, with `nested` instead of `file`: relative to a workspace root as the scan lists it,
+  or absolute when it comes from `session.instructions.result`, and then only with the `threadId`
+  of the conversation that read it (see docs/session-instructions.md). Creation is refused for a
+  nested file: which directories carry instructions is not a decision an editor screen presents. `nestedTruncated` names the workspaces whose nested
   scan hit the per-workspace cap, so the page says the list is incomplete rather than implying the
   directory holds nothing more; it is omitted when none were cut. See `docs/instructions-page.md`.
+- `session.instructions.get` answers `session.instructions.result`: what one conversation is
+  actually loaded with, layer by layer, plus the nested `AGENTS.md` its runs injected. The layers
+  come from `composeSystemPrompt`, the same function the run joins into its system prompt, so the
+  page cannot drift from what the model receives. Each layer carries its text, its size, where it
+  was resolved from and, for the four prompt files, the `edit` target that opens the editor on it.
+  See docs/session-instructions.md.
 - `agents.config.get` answers with the whole agent-defaults snapshot: the global default
   model and effort, the configured providers (never a secret, only whether the env key is
   set) and one entry per agent with the model that actually runs for it (own pin or

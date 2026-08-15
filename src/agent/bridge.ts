@@ -39,7 +39,7 @@ import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { MessagePreprocessor, imageContentFrom } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
-import { NestedAgentsCollector } from "./prompt/nested-agents.ts";
+import { NestedAgentsCollector, recordNestedInjection } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
@@ -186,6 +186,10 @@ export class AgentBridge implements AgentBackend {
     return new NestedAgentsCollector(
       this.workspaceFor(session).workspaceDir,
       resolveNestedAgentsMaxBytes(this.config),
+      (file) => {
+        session.nestedAgents ??= [];
+        recordNestedInjection(session.nestedAgents, file);
+      },
     );
   }
 

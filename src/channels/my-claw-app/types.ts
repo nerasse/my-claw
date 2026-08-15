@@ -275,20 +275,32 @@ export interface MyClawAppInstructionsGet {
   workspace: string;
   /** One of CORE.md, SOUL.md, AGENTS.md, USER.md. Ignored when `nested` is set. */
   file?: string;
-  /** Path relative to the workspace root, as returned by instructions.list.result. */
+  /**
+   * A nested AGENTS.md: a path relative to the workspace root, as returned by
+   * instructions.list.result, or an absolute path as returned by session.instructions.result.
+   * An absolute path is only accepted together with the `threadId` that listed it, and only when
+   * that session actually read the file: the session's trace is the allowlist, never the device's
+   * word. See docs/session-instructions.md.
+   */
   nested?: string;
+  /** The conversation an absolute `nested` path was listed by. Ignored for a relative one. */
+  threadId?: string;
 }
 
 export interface MyClawAppInstructionsSet {
   type: "instructions.set";
   workspace: string;
+  /** One of the four prompt files, or "" when `nested` names the target instead. */
   file: string;
   content: string;
   /**
    * The sha the editor loaded. Absent means "create this override": the server refuses if the
-   * file already exists, just as it refuses a stale sha.
+   * file already exists, just as it refuses a stale sha. A nested file is never created this way.
    */
   sha?: string;
+  /** Same addressing as instructions.get: a nested AGENTS.md instead of a prompt file. */
+  nested?: string;
+  threadId?: string;
 }
 
 /** Sets the per-file prompt policy of one workspace; answers instructions.list.result.
@@ -646,6 +658,7 @@ export type MyClawAppClientFrame =
   | MyClawAppProviderEnvRemove
   | MyClawAppProviderEnvList
   | MyClawAppStatusGet
+  | MyClawAppSessionInstructionsGet
   | MyClawAppJobsList
   | MyClawAppJobsRuns
   | MyClawAppSubAgentsList
@@ -1472,6 +1485,61 @@ export interface MyClawAppStatusGet {
   threadId: string;
 }
 
+/**
+ * The app asks what one conversation is actually loaded with: every prompt layer as the run
+ * composes it, plus the nested AGENTS.md its runs read. See docs/session-instructions.md.
+ */
+export interface MyClawAppSessionInstructionsGet {
+  type: "session.instructions.get";
+  threadId: string;
+}
+
+export interface MyClawAppSessionInstructionsResult {
+  type: "session.instructions.result";
+  threadId: string;
+  instructions: MyClawAppSessionInstructions;
+}
+
+/** One layer of the composed system prompt, in build order. */
+export interface MyClawAppInstructionLayer {
+  /** Stable id: CORE, SOUL, AGENTS, USER, agent, skills, tools, platform, runtime, suggested. */
+  id: string;
+  label: string;
+  bytes: number;
+  text: string;
+  /** Resolution step, for the layers read from a prompt file. */
+  origin?: "own" | "inherited" | "fallback" | "off";
+  /** Workspace key the content comes from, "" for the shipped template. */
+  from?: string;
+  /** Present when the layer is editable: what to open in the instructions editor. */
+  edit?: { workspace: string; file: string };
+}
+
+/** A nested AGENTS.md this conversation's runs injected. Editable through instructions.set. */
+export interface MyClawAppInstructionNested {
+  path: string;
+  label: string;
+  bytes: number;
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  missing: boolean;
+}
+
+export interface MyClawAppSessionInstructions {
+  agent: string;
+  workspace: string;
+  workspaceDir: string;
+  model: string;
+  backend: string;
+  platform: string;
+  totalBytes: number;
+  layers: MyClawAppInstructionLayer[];
+  nested: MyClawAppInstructionNested[];
+  /** What the page cannot show, stated rather than left to be guessed. */
+  notes: string[];
+}
+
 export interface MyClawAppStatusResult {
   type: "status.result";
   threadId: string;
@@ -1723,6 +1791,7 @@ export type MyClawAppServerFrame =
   | MyClawAppCommandResult
   | MyClawAppChatQueued
   | MyClawAppStatusResult
+  | MyClawAppSessionInstructionsResult
   | MyClawAppChatCleared
   | MyClawAppChatTranscript
   | MyClawAppAgentsConfigResult

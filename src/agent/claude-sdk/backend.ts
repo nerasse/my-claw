@@ -10,7 +10,7 @@ import {
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
 } from "../../core/config.ts";
-import { NestedAgentsCollector } from "../prompt/nested-agents.ts";
+import { NestedAgentsCollector, recordNestedInjection } from "../prompt/nested-agents.ts";
 import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
@@ -520,6 +520,10 @@ export class ClaudeSdkBackend implements AgentBackend {
           ? new NestedAgentsCollector(
               this.workspaceFor(session).workspaceDir,
               resolveNestedAgentsMaxBytes(this.config),
+              (file) => {
+                session.nestedAgents ??= [];
+                recordNestedInjection(session.nestedAgents, file);
+              },
             )
           : undefined,
         onToolDone: async (info) => {

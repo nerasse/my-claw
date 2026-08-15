@@ -1,7 +1,7 @@
 import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
-import { loadAllPromptFiles, loadCorePrompt, type PromptResolveOptions } from "./loader.ts";
-import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES, type PromptLayerName } from "./files.ts";
+import { resolveCorePrompt, resolvePromptFile, type PromptFileResolution, type PromptResolveOptions } from "./loader.ts";
+import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES, type PromptFile, type PromptLayerName } from "./files.ts";
 import type { WorkspacePromptPolicy } from "../../core/config.ts";
 import { getPlatformHint } from "./platform-hints.ts";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
@@ -33,8 +33,27 @@ export interface PromptContext {
   instructions?: readonly PromptLayerName[];
 }
 
-export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
-  const layers: string[] = [];
+/** A layer of the composed prompt, kept apart so a reader can be shown what each one contributed. */
+export interface PromptPart {
+  /** Stable across builds: the four files use their layer name, the derived ones their own. */
+  id: PromptLayerName | "agent" | "skills" | "tools" | "platform" | "runtime" | "suggested";
+  label: string;
+  text: string;
+  /** The prompt file this layer was read from, absent for a derived layer. */
+  file?: PromptFile;
+  /** Which step of the resolution ladder produced the text. Only for the file layers. */
+  origin?: PromptFileResolution["origin"];
+  /** Directory the content came from, "" for a shipped template. Only for the file layers. */
+  from?: string;
+}
+
+/**
+ * The prompt as the list of layers it is made of, in build order. `buildSystemPrompt` is the join
+ * of this, so the instructions page and the run cannot drift: the page shows what the run sends,
+ * layer by layer, rather than a second composition written to look like the first.
+ */
+export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPart[]> {
+  const parts: PromptPart[] = [];
   const wants = (layer: PromptLayerName): boolean => ctx.instructions === undefined || ctx.instructions.includes(layer);
 
   const promptOpts: PromptResolveOptions = {
@@ -47,18 +66,23 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
 
   // Layer 0: Core directives. Owner-editable via workspace CORE.md, hardcoded fallback.
   if (wants("CORE")) {
-    layers.push(await loadCorePrompt(promptOpts));
+    const core = await resolveCorePrompt(promptOpts);
+    parts.push({ id: "CORE", label: "Core directives", text: core.content, file: "CORE.md", origin: core.origin, from: core.from });
   }
 
   // Layer 1-4: Workspace files (scanned for injection)
-  const files = await loadAllPromptFiles(promptOpts);
   for (const file of WORKSPACE_PROMPT_FILES) {
     const layer = PROMPT_LAYER_OF_FILE[file];
     if (!wants(layer)) continue;
-    const content = files[file];
-    if (content) {
-      layers.push(normalizeUntrusted(content, file));
-    }
+    const res = await resolvePromptFile(file, promptOpts);
+    parts.push({
+      id: layer,
+      label: file,
+      text: res.content ? normalizeUntrusted(res.content, file) : "",
+      file,
+      origin: res.origin,
+      from: res.from,
+    });
   }
 
   // Layer 4.5: the agent's own mandate. After the persona, which it specialises, and before the
@@ -66,7 +90,7 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
   // Normalised like the workspace files: a workspace `agents/` file is no more trusted than
   // a workspace AGENTS.md.
   if (ctx.agentPrompt) {
-    layers.push(normalizeUntrusted(ctx.agentPrompt, "agent"));
+    parts.push({ id: "agent", label: "Agent mandate", text: normalizeUntrusted(ctx.agentPrompt, "agent") });
   }
 
   // Layer 5: Available skills
@@ -74,12 +98,15 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
     const skillList = ctx.skills
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
-    layers.push(
-      `# Available skills\n\n${skillList}\n\n` +
+    parts.push({
+      id: "skills",
+      label: "Available skills",
+      text:
+        `# Available skills\n\n${skillList}\n\n` +
         `Before replying, scan the skills above. If a skill matches your task, ` +
         `you MUST call read_skill(name) to load its full instructions. ` +
         `Only proceed without loading a skill if genuinely none are relevant.`,
-    );
+    });
   }
 
   // Layer 6: Available tools
@@ -87,20 +114,22 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
     const toolList = ctx.tools
       .map((t) => `- ${t.name}: ${t.description}`)
       .join("\n");
-    layers.push(`# Available tools\n\n${toolList}`);
+    parts.push({ id: "tools", label: "Available tools", text: `# Available tools\n\n${toolList}` });
   }
 
   // Layer 7: Platform hints
   const hint = getPlatformHint(ctx.platform);
   if (hint) {
-    layers.push(hint);
+    parts.push({ id: "platform", label: "Platform hints", text: hint });
   }
 
   // Layer 8: Runtime
   const now = new Date().toISOString();
-  layers.push(
-    `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
-  );
+  parts.push({
+    id: "runtime",
+    label: "Runtime",
+    text: `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
+  });
 
   // Layer 9: Soft skill reminder. Placed last (after the already-dynamic runtime line) so it
   // never busts the cacheable prefix. Complements, not overrides, the "MUST read_skill" catalog.
@@ -108,12 +137,22 @@ export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
     const hints = ctx.suggestedSkills
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
-    layers.push(
-      `# Skills possibly relevant to this request\n\n${hints}\n\n` +
+    parts.push({
+      id: "suggested",
+      label: "Suggested skills",
+      text:
+        `# Skills possibly relevant to this request\n\n${hints}\n\n` +
         `These look related to the current request. If one fits, call read_skill(name) to load ` +
         `its full instructions. Treat this as a hint, not an order.`,
-    );
+    });
   }
 
-  return layers.filter(Boolean).join("\n\n");
+  return parts;
+}
+
+export async function buildSystemPrompt(ctx: PromptContext): Promise<string> {
+  return (await composeSystemPrompt(ctx))
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join("\n\n");
 }

@@ -195,10 +195,21 @@ export async function loadAllPromptFiles(opts: PromptResolveOptions = {}): Promi
  * stays in code by design.
  */
 export async function loadCorePrompt(opts: PromptResolveOptions = {}): Promise<string> {
+  return (await resolveCorePrompt(opts)).content;
+}
+
+/**
+ * The core layer with the step of the ladder that produced it. The instructions page needs to say
+ * whether the text on screen is the workspace's CORE.md or the hardcoded constant, and deriving
+ * that from the content would mean comparing bytes against CORE_PROMPT.
+ */
+export async function resolveCorePrompt(opts: PromptResolveOptions = {}): Promise<PromptFileResolution> {
   const res = await resolvePromptFile("CORE.md", opts);
   const content = res.content.trim();
   // A cut layer stays cut. Only an empty result that means "nothing was found" is refilled, which
   // is what keeps a missing or blank CORE.md from silently emptying the structural prompt.
-  if (!content) return res.empty ? "" : CORE_PROMPT;
-  return normalizeUntrusted(content, "CORE.md");
+  if (!content) {
+    return res.empty ? { ...res, content: "" } : { content: CORE_PROMPT, origin: "fallback", from: "", empty: false };
+  }
+  return { ...res, content: normalizeUntrusted(content, "CORE.md") };
 }

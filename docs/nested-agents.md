@@ -148,7 +148,10 @@ governs both engines instead of two divergent ones.
   set, byte budget, `normalizeUntrusted` and block formatting. One call may name several trees;
   their chains are concatenated in order and deduped.
 - `src/agent/bridge.ts` -- home loop: collector built per `reply`, block appended to the
-  tool result after the `transform:tool:result` hook.
+  tool result after the `transform:tool:result` hook. The collector's `onInject` records each
+  file into `session.nestedAgents`: the dedup set is run-local, so without that trace nothing
+  outside the tool result itself would ever say which local rules a conversation picked up.
+  See docs/session-instructions.md.
 - `src/agent/claude-sdk/backend.ts` + `tools.ts` -- SDK backend: the collector travels on
   the per-run `SdkRunContext` and is appended at the same point, right after the same hook.
 - `src/core/config.ts` -- `agents.nested` (`nestedAgentsEnabled`,

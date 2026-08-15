@@ -80,6 +80,8 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppWorkspacesRename,
   MyClawAppWorkspacesSetPath,
   MyClawAppStatusGet,
+  MyClawAppSessionInstructions,
+  MyClawAppSessionInstructionsGet,
   MyClawAppStatusPayload,
   MyClawAppJobDelete,
   MyClawAppJobSave,
@@ -323,12 +325,9 @@ export interface MyClawAppWorkspacesController {
 /** The prompt files the app may read and edit. See docs/instructions-page.md. */
 export interface MyClawAppInstructionsController {
   list(): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
-  read(workspace: string, file: string | undefined, nested: string | undefined): Promise<Omit<MyClawAppInstructionsFile, "type"> | null>;
+  read(req: InstructionsTarget): Promise<Omit<MyClawAppInstructionsFile, "type"> | null>;
   write(
-    workspace: string,
-    file: string,
-    content: string,
-    sha: string | undefined,
+    req: InstructionsTarget & { content: string; sha: string | undefined },
   ): Promise<{ ok: boolean; sha: string; conflict: boolean; error?: string }>;
   /** Sets the per-file prompt policy; answers with the fresh listing, never an optimistic echo. */
   setPolicy(
@@ -337,6 +336,19 @@ export interface MyClawAppInstructionsController {
     inherit: string | undefined,
     off: boolean | undefined,
   ): Promise<Omit<MyClawAppInstructionsListResult, "type">>;
+}
+
+/**
+ * What one instructions read or write addresses. `nested` may be absolute, and then it is only
+ * accepted against `sessionId`: the controller checks the file is one that session actually read,
+ * so no path typed by a device ever reaches the disk on its own word.
+ */
+export interface InstructionsTarget {
+  workspace: string;
+  file?: string;
+  nested?: string;
+  /** Resolved by the adapter from the frame's threadId, so no owner mapping leaves this file. */
+  sessionId?: string;
 }
 
 /**
@@ -392,6 +404,9 @@ export type MyClawAppCommandOutput = {
 };
 
 /** Text slash commands, executed server-side like on the other channels. */
+/** The instructions report of one conversation, built by the host from the live registries. */
+export type MyClawAppSessionInstructionsProvider = (sessionId: string) => Promise<MyClawAppSessionInstructions>;
+
 export type MyClawAppCommandHandler = (
   owner: string,
   threadId: string,
@@ -417,6 +432,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
+  private sessionInstructions?: MyClawAppSessionInstructionsProvider;
   private jobs?: MyClawAppJobsController;
   private notifications?: MyClawAppNotificationsController;
   private configEditor?: MyClawAppConfigController;
@@ -654,6 +670,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onInstructionsController(controller: MyClawAppInstructionsController): void {
     this.instructions = controller;
+  }
+
+  onSessionInstructions(provider: MyClawAppSessionInstructionsProvider): void {
+    this.sessionInstructions = provider;
   }
 
   onJobsController(controller: MyClawAppJobsController): void {
@@ -1215,6 +1235,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "status.get":
         void this.handleStatusGet(ws, frame);
+        break;
+      case "session.instructions.get":
+        void this.handleSessionInstructionsGet(ws, frame);
         break;
       case "jobs.list":
         void this.handleJobsList(ws);
@@ -2347,6 +2370,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     });
   }
 
+  /** The session a frame names, as a spreadable field: an unusable threadId yields nothing at
+   *  all, so an absolute nested path arrives with no session to authorise it. */
+  private sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string } {
+    const clean = threadId ? sanitizeThreadId(threadId) : null;
+    return clean ? { sessionId: this.store.resolveSessionId(ws.data.owner, clean) } : {};
+  }
+
   private async handleInstructionsList(ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
     if (!this.instructions) {
       await this.refuse(ws, "instructions", "instructions unavailable");
@@ -2368,7 +2398,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const read = await this.instructions.read(frame.workspace, frame.file, frame.nested);
+      const read = await this.instructions.read({
+        workspace: frame.workspace,
+        ...(frame.file ? { file: frame.file } : {}),
+        ...(frame.nested ? { nested: frame.nested } : {}),
+        ...(this.sessionIdOf(ws, frame.threadId)),
+      });
       if (!read) {
         await this.refuse(ws, "instructions", "unknown instruction file", {
           workspace: frame.workspace,
@@ -2395,13 +2430,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const res = await this.instructions.write(frame.workspace, frame.file, frame.content, frame.sha);
+      const res = await this.instructions.write({
+        workspace: frame.workspace,
+        ...(frame.file ? { file: frame.file } : {}),
+        ...(frame.nested ? { nested: frame.nested } : {}),
+        ...(this.sessionIdOf(ws, frame.threadId)),
+        content: frame.content,
+        sha: frame.sha,
+      });
       // A refused write answers on its own frame rather than through the error scope: the editor
       // has to tell a conflict apart from a failure, and only one of them means "reload first".
       this.sendFrame(ws, {
         type: "instructions.saved",
         workspace: frame.workspace,
-        file: frame.file,
+        file: frame.nested ?? frame.file,
         ok: res.ok,
         sha: res.sha,
         conflict: res.conflict,
@@ -2579,6 +2621,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     this.sendFrame(ws, { type: "status.result", threadId, text, status });
+  }
+
+  /**
+   * What this conversation is loaded with, composed on demand: the report is a snapshot of the
+   * next run's prompt, not of the last one's, because that is the one the owner can still change.
+   */
+  private async handleSessionInstructionsGet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionInstructionsGet,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "instructions", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    if (!this.sessionInstructions) {
+      await this.refuse(ws, "instructions", "session instructions unavailable");
+      return;
+    }
+    try {
+      const instructions = await this.sessionInstructions(this.store.resolveSessionId(ws.data.owner, threadId));
+      this.sendFrame(ws, { type: "session.instructions.result", threadId, instructions });
+    } catch (err) {
+      await this.refuse(ws, "instructions", "session.instructions.get failed", { error: String(err) });
+    }
   }
 
   /**

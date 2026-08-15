@@ -8,8 +8,10 @@ import {
   listInstructions,
   readInstruction,
   readNestedInstruction,
+  resolveNestedTarget,
   scanNestedInstructions,
   writeInstruction,
+  writeNestedInstruction,
   workspaceRoots,
   type InstructionRoots,
 } from "../src/channels/my-claw-app/instructions.ts";
@@ -295,6 +297,60 @@ describe("nested AGENTS.md", () => {
     await writeFile(join(outside, "AGENTS.md"), "secret\n", "utf-8");
     await symlink(outside, join(base, "default", "link"), "dir");
     expect(await readNestedInstruction(roots, "default", join("..", "outside", "AGENTS.md"))).toBeNull();
+  });
+});
+
+describe("editing a nested AGENTS.md", () => {
+  test("a session's trace is the allowlist for an absolute path", () => {
+    const read = join(base, "elsewhere", "AGENTS.md");
+    const records = [{ path: read }];
+    // Outside every workspace, and accepted anyway: this session did read it.
+    expect(resolveNestedTarget(roots, "default", read, records)).toBe(read);
+    // The same path with no session behind it, and a neighbour the session never read.
+    expect(resolveNestedTarget(roots, "default", read, undefined)).toBeNull();
+    expect(resolveNestedTarget(roots, "default", join(base, "other", "AGENTS.md"), records)).toBeNull();
+    // A relative path stays fenced by the workspace, whatever the session read.
+    expect(resolveNestedTarget(roots, "default", join("..", "sofa", "AGENTS.md"), records)).toBeNull();
+  });
+
+  test("a write goes through the sha, and lands in the snapshot history", async () => {
+    const dir = join(base, "default", "svc");
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, "AGENTS.md");
+    await writeFile(file, "old rules\n", "utf-8");
+
+    const stale = await writeNestedInstruction(file, "new", "deadbeef1234", { workspace: "default", file: "svc/AGENTS.md" });
+    expect(stale.ok).toBe(false);
+    expect(stale.ok === false && stale.conflict).toBe(true);
+    expect(await readFile(file, "utf-8")).toBe("old rules\n");
+
+    const ok = await writeNestedInstruction(file, "new rules\n", contentSha("old rules\n"), {
+      workspace: "default",
+      file: "svc/AGENTS.md",
+    });
+    expect(ok.ok).toBe(true);
+    expect(await readFile(file, "utf-8")).toBe("new rules\n");
+    // Undoable like any other instruction edit: the previous content is in the store.
+    const versions = await history(file);
+    expect(versions.length).toBeGreaterThan(0);
+    expect(await readSnapshot(file, versions[0]!.ref)).toBe("old rules\n");
+  });
+
+  test("creation is refused: a nested file is edited, never conjured", async () => {
+    const missing = join(base, "default", "ghost", "AGENTS.md");
+    const res = await writeNestedInstruction(missing, "hello", undefined, { workspace: "default", file: "ghost/AGENTS.md" });
+    expect(res.ok).toBe(false);
+    expect(await readNestedInstruction(roots, "default", join("ghost", "AGENTS.md"))).toBeNull();
+  });
+
+  test("nothing but an AGENTS.md can be written this way", async () => {
+    const soul = join(base, "default", "SOUL.md");
+    const res = await writeNestedInstruction(soul, "hijacked", contentSha("default SOUL.md\n"), {
+      workspace: "default",
+      file: "SOUL.md",
+    });
+    expect(res.ok).toBe(false);
+    expect(await readFile(soul, "utf-8")).toBe("default SOUL.md\n");
   });
 });
 

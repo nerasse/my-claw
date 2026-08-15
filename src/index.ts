@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession } from "./sessions/store.ts";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
@@ -56,11 +56,15 @@ import {
   MAX_INSTRUCTION_BYTES,
   listInstructions,
   readInstruction,
+  readNestedByPath,
   readNestedInstruction,
+  resolveNestedTarget,
   scanNestedInstructions,
   writeInstruction,
+  writeNestedInstruction,
   type InstructionRoots,
 } from "./channels/my-claw-app/instructions.ts";
+import { sessionInstructionsReport } from "./channels/session-instructions.ts";
 import { PROMPT_FILES } from "./agent/prompt/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
@@ -1674,6 +1678,16 @@ async function main() {
       return { nested: scan.nested, ...(scan.truncated.length > 0 ? { nestedTruncated: scan.truncated } : {}) };
     };
 
+    // The session is read here and the decision is taken in instructions.ts: the allowlist is a
+    // property of what a session read, and it is testable without a live session manager.
+    const nestedTarget = async (workspace: string, nested: string, sessionId?: string): Promise<string | null> =>
+      resolveNestedTarget(
+        instructionRoots(),
+        workspace,
+        nested,
+        sessionId ? (await sessionManager.peek(sessionId))?.nestedAgents : undefined,
+      );
+
     myClawApp.onInstructionsController({
       list: async () => ({
         entries: await listInstructions(instructionRoots()),
@@ -1687,9 +1701,13 @@ async function main() {
           .map((name) => ({ agent: name, layers: [...(agentRegistry.get(name, "default")?.meta.instructions ?? PROMPT_LAYERS)] }))
           .sort((a, b) => a.agent.localeCompare(b.agent)),
       }),
-      read: async (workspace, file, nested) => {
+      read: async ({ workspace, file, nested, sessionId }) => {
         if (nested) {
-          const content = await readNestedInstruction(instructionRoots(), workspace, nested);
+          const target = await nestedTarget(workspace, nested, sessionId);
+          if (!target) return null;
+          const content = isAbsolute(nested)
+            ? await readNestedByPath(target)
+            : await readNestedInstruction(instructionRoots(), workspace, nested);
           if (content === null) return null;
           return {
             workspace,
@@ -1698,15 +1716,26 @@ async function main() {
             origin: "nested" as const,
             from: workspace,
             sha: contentSha(content),
-            editable: false,
+            // A nested AGENTS.md is not part of the system prompt, but it is instructions the
+            // agent reads, and the owner writes them the same way they write the four files.
+            editable: true,
           };
         }
         const read = await readInstruction(instructionRoots(), workspace, file ?? "");
         if (!read) return null;
         return { workspace, file: file ?? "", ...read, editable: true };
       },
-      write: async (workspace, file, content, sha) => {
-        const res = await writeInstruction(instructionRoots(), workspace, file, content, sha);
+      write: async ({ workspace, file, content, sha, nested, sessionId }) => {
+        if (nested) {
+          const target = await nestedTarget(workspace, nested, sessionId);
+          if (!target) {
+            return { ok: false, sha: "", conflict: false, error: `unknown nested AGENTS.md: ${nested}` };
+          }
+          const res = await writeNestedInstruction(target, content, sha, { workspace, file: nested });
+          if (res.ok) return { ok: true, sha: res.sha, conflict: false };
+          return { ok: false, sha: "", conflict: res.conflict === true, error: res.error };
+        }
+        const res = await writeInstruction(instructionRoots(), workspace, file ?? "", content, sha);
         if (res.ok) return { ok: true, sha: res.sha, conflict: false };
         return { ok: false, sha: "", conflict: res.conflict === true, error: res.error };
       },
@@ -1726,6 +1755,20 @@ async function main() {
         };
       },
     });
+
+    // Composed on demand from the live registries, exactly as a run would: the page has to show
+    // what the next message loads, so nothing here is cached and nothing is read off the last run.
+    myClawApp.onSessionInstructions(async (sessionId) =>
+      sessionInstructionsReport({
+        session: (await sessionManager.peek(sessionId)) ?? null,
+        sessionId,
+        config,
+        skillRegistry,
+        toolRegistry,
+        agentRegistry,
+        platform: "my-claw-app",
+      }),
+    );
 
     // The one surface without a structured editor: the raw config.json, read from disk exactly as
     // the watcher sees it. Every write goes through parseConfig first, so a structurally broken

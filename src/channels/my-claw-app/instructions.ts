@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writeFileAtomically } from "../../utils/atomic-write.ts";
 import { contentSha, snapshot, journal, artifactId } from "../../core/config-store.ts";
 import { resolvePromptFile } from "../../agent/prompt/loader.ts";
@@ -259,6 +259,19 @@ export async function writeInstruction(
 ): Promise<WriteResult> {
   const path = instructionPath(roots, workspace, file);
   if (!path) return { ok: false, error: `unknown instruction file: ${workspace}/${file}` };
+  return writeGuarded(path, content, expectedSha, { workspace, file });
+}
+
+/**
+ * The shared write path: sha guard, snapshot, atomic write, journal. Both the prompt files and
+ * the nested AGENTS.md go through it, so a nested edit is as undoable as a SOUL.md one.
+ */
+async function writeGuarded(
+  path: string,
+  content: string,
+  expectedSha: string | undefined,
+  note: { workspace: string; file: string },
+): Promise<WriteResult> {
   if (Buffer.byteLength(content) > MAX_INSTRUCTION_BYTES) {
     return { ok: false, error: `too large: max ${MAX_INSTRUCTION_BYTES} bytes` };
   }
@@ -274,11 +287,44 @@ export async function writeInstruction(
     return { ok: false, error: "changed on the server since it was opened", conflict: true };
   }
 
-  await snapshot(path, { origin: "pre-write", note: `avant edition ${workspace}/${file}` });
+  await snapshot(path, { origin: "pre-write", note: `avant edition ${note.workspace}/${note.file}` });
   const mode = await stat(path).then((s) => s.mode & 0o777, () => 0o600);
   await writeFileAtomically(path, content, { mode });
-  await journal("edit", artifactId(path), { workspace, file, bytes: Buffer.byteLength(content) });
+  await journal("edit", artifactId(path), { ...note, bytes: Buffer.byteLength(content) });
   return { ok: true, sha: contentSha(content), bytes: Buffer.byteLength(content) };
+}
+
+/**
+ * Absolute path of a nested AGENTS.md inside a workspace, or null when the request names anything
+ * else. Two fences, both needed: the path must stay under the workspace root (so `..` cannot climb
+ * out) and it must be an AGENTS.md, the only file this page addresses.
+ */
+export function nestedPath(roots: InstructionRoots, workspace: string, relPath: string): string | null {
+  const entry = workspaceRoots(roots).find((w) => w.key === workspace);
+  if (!entry) return null;
+  const root = resolve(entry.dir);
+  const target = resolve(join(root, relPath));
+  if (!target.startsWith(root + sep)) return null;
+  if (!target.endsWith(sep + "AGENTS.md")) return null;
+  return target;
+}
+
+/**
+ * Which file a nested request actually names, or null to refuse it.
+ *
+ * A relative path is fenced by the workspace root, exactly as the scan lists it. An absolute one
+ * can only come from a session's instructions page, and is accepted only when that session
+ * recorded reading it: the trace is the allowlist. Without that rule `nested` would be a path
+ * field a device could point anywhere on the disk.
+ */
+export function resolveNestedTarget(
+  roots: InstructionRoots,
+  workspace: string,
+  nested: string,
+  sessionRecords: ReadonlyArray<{ path: string }> | undefined,
+): string | null {
+  if (!isAbsolute(nested)) return nestedPath(roots, workspace, nested);
+  return sessionRecords?.some((record) => record.path === nested) ? nested : null;
 }
 
 /** Raw content of a nested AGENTS.md, addressed by the path the last list returned. */
@@ -287,11 +333,31 @@ export async function readNestedInstruction(
   workspace: string,
   relPath: string,
 ): Promise<string | null> {
-  const entry = workspaceRoots(roots).find((w) => w.key === workspace);
-  if (!entry) return null;
-  const root = resolve(entry.dir);
-  const target = resolve(join(root, relPath));
-  if (!target.startsWith(root + sep)) return null;
-  if (!target.endsWith(sep + "AGENTS.md")) return null;
-  return readIfPresent(target);
+  const target = nestedPath(roots, workspace, relPath);
+  return target ? readIfPresent(target) : null;
+}
+
+/** Raw content of a nested AGENTS.md the caller has already authorised, by absolute path. */
+export async function readNestedByPath(path: string): Promise<string | null> {
+  if (!path.endsWith(sep + "AGENTS.md")) return null;
+  return readIfPresent(resolve(path));
+}
+
+/**
+ * Edits a nested AGENTS.md. The caller decides *which* file, and is the one holding the allowlist;
+ * this enforces only that it is one: an AGENTS.md, already on disk, unchanged since the editor
+ * loaded it. Creation is refused on purpose, because creating a nested file changes which
+ * directories carry instructions at all, and no editor screen can present that decision.
+ */
+export async function writeNestedInstruction(
+  path: string,
+  content: string,
+  expectedSha: string | undefined,
+  label: { workspace: string; file: string },
+): Promise<WriteResult> {
+  if (!path.endsWith(sep + "AGENTS.md")) return { ok: false, error: "not a nested AGENTS.md" };
+  if (expectedSha === undefined) {
+    return { ok: false, error: "a nested AGENTS.md is edited, never created", conflict: true };
+  }
+  return writeGuarded(resolve(path), content, expectedSha, label);
 }

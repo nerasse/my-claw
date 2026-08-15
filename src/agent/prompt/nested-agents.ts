@@ -166,6 +166,49 @@ function chainDirs(targetDir: string, workspaceDir: string): string[] {
 }
 
 /**
+ * What a session remembers of the nested AGENTS.md its runs read. The collector dedups per run,
+ * so `count` is the number of runs that paid for the file again, not the number of tool calls.
+ */
+export interface NestedAgentsRecord {
+  /** Absolute, symlinks resolved: the identity the collector dedups on. */
+  path: string;
+  bytes: number;
+  firstAt: string;
+  lastAt: string;
+  count: number;
+}
+
+/** A session is a JSON file rewritten on every turn: the trace must not grow without end. */
+export const MAX_NESTED_RECORDS = 60;
+
+/**
+ * Folds one injection into a session's trace, in place. Over the cap the least recently injected
+ * file is dropped: the page answers "what is loaded now", so the oldest entry is the one whose
+ * absence costs the least.
+ */
+export function recordNestedInjection(
+  records: NestedAgentsRecord[],
+  file: { path: string; bytes: number },
+  at: string = new Date().toISOString(),
+): void {
+  const existing = records.find((r) => r.path === file.path);
+  if (existing) {
+    existing.bytes = file.bytes;
+    existing.lastAt = at;
+    existing.count += 1;
+    return;
+  }
+  records.push({ path: file.path, bytes: file.bytes, firstAt: at, lastAt: at, count: 1 });
+  if (records.length > MAX_NESTED_RECORDS) {
+    let oldest = 0;
+    for (let i = 1; i < records.length; i += 1) {
+      if (records[i]!.lastAt < records[oldest]!.lastAt) oldest = i;
+    }
+    records.splice(oldest, 1);
+  }
+}
+
+/**
  * Per-run collector for nested AGENTS.md discovery. Holds the dedup set and byte budget so
  * each file is injected at most once per run and the total stays under `maxBytes`. Lives as
  * a run-local instance (never on the persisted session).
@@ -175,9 +218,15 @@ export class NestedAgentsCollector {
   private bytesUsed = 0;
   private readonly workspaceRoot: string;
 
+  /**
+   * @param onInject Called once per file actually appended to a tool result. The collector stays
+   * run-local, but the session has to remember what was read into it: without this the only trace
+   * of an injected file is inside a tool result the owner may never scroll back to.
+   */
   constructor(
     workspaceDir: string,
     private readonly maxBytes: number,
+    private readonly onInject?: (file: { path: string; bytes: number }) => void,
   ) {
     this.workspaceRoot = resolve(workspaceDir);
   }
@@ -223,6 +272,7 @@ export class NestedAgentsCollector {
         break;
       }
       this.bytesUsed += size;
+      this.onInject?.({ path: key, bytes: size });
       blocks.push(`--- ${AGENTS_FILE} (${file}) ---\n${normalizeUntrusted(content, file)}`);
     }
 
