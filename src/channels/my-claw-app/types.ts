@@ -690,6 +690,12 @@ export type MyClawAppHistoryEntry =
       transcripts?: Record<string, string>;
       /** What the model thought before this reply, replayed collapsed -- docs/reasoning-visibility.md. */
       reasoning?: string;
+      /** How much it thought, when the engine redacts the text and only counts it. */
+      reasoningTokens?: number;
+      /** The answer to a slash command, drawn as its own kind of bubble rather than as a reply. */
+      command?: boolean;
+      /** The aside folded under a command answer (a compaction summary). */
+      details?: string;
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 

@@ -17,6 +17,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { commandsFor } from "../commands-catalog.ts";
+import { redactCommandArgs } from "../command-log.ts";
 
 /** What this channel advertises and what it intercepts, from one list so they cannot diverge. */
 const APP_COMMANDS = commandsFor("my-claw-app");
@@ -125,6 +126,9 @@ const STALE_SOCKET_MS = 10 * 60 * 1000;
 const MAX_DIAG_REPORTS = 20;
 /** How long a command may take before the app is told it is still running. */
 const COMMAND_PENDING_NOTICE_MS = 400;
+
+/** Commands that end the conversation they run in: their journal goes with the history they cut. */
+const CLEARING_COMMANDS = new Set(["new"]);
 const SWEEP_INTERVAL_MS = 30_000;
 // A look-aside cache of recently served media; the bytes themselves live in the session store
 // (uploads) or were copied there on send, so evicting an entry here only drops the fast path.
@@ -1271,6 +1275,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
+  /**
+   * Writes a command and its bubble into the conversation's journal. Three things are left out
+   * on purpose: a command that emptied the conversation (`/new` starts a history, it is not part
+   * of one), an answer the app draws as a page instead of a bubble (a structured `/status`, which
+   * is a live snapshot), and the credentials `redactCommandArgs` masks.
+   */
+  private async journalCommand(
+    owner: string,
+    threadId: string,
+    command: string,
+    args: string,
+    output: string,
+    renderedAsPage: boolean,
+    details?: string,
+  ): Promise<void> {
+    if (renderedAsPage || CLEARING_COMMANDS.has(command)) return;
+    const redacted = redactCommandArgs(command, args);
+    const input = redacted ? `/${command} ${redacted}` : `/${command}`;
+    try {
+      await this.store.recordCommand(owner, threadId, input, output, details);
+    } catch (err) {
+      void myClawAppLog("error", "command journal failed", { owner, threadId, command, error: String(err) });
+    }
+  }
+
   private async emitChatSend(
     ws: ServerWebSocket<MyClawAppSessionData>,
     frame: MyClawAppChatSend,
@@ -1289,6 +1318,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (text && !frame.attachments?.length && !hasLocation && this.commandHandler) {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
       if (command && APP_COMMANDS.some((c) => c.command === command)) {
+        const args = text.slice(command.length + 1).trim();
         // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
         // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
         // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
@@ -1302,7 +1332,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           });
         }, COMMAND_PENDING_NOTICE_MS);
         try {
-          const output = await this.commandHandler(owner, threadId, command, text.slice(command.length + 1).trim());
+          const output = await this.commandHandler(owner, threadId, command, args);
           clearTimeout(pending);
           // /new emptied the conversation server-side; the device must drop its screen copy
           // too, or it shows a chat that no longer exists on disk.
@@ -1321,17 +1351,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
               ...(status ? { status } : {}),
               ...(details ? { details } : {}),
             });
+            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details);
           }
           return;
         } catch (err) {
           clearTimeout(pending);
           void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
-          this.broadcast(owner, {
-            type: "chat.command.result",
-            threadId,
-            replyToId: frame.id,
-            text: `error: ${err instanceof Error ? err.message : String(err)}`,
-          });
+          const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
+          this.broadcast(owner, { type: "chat.command.result", threadId, replyToId: frame.id, text: failure });
+          await this.journalCommand(owner, threadId, command, args, failure, false);
           return;
         }
       }

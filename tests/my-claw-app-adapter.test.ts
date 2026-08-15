@@ -176,6 +176,12 @@ class FakeSessionStore {
     return { entries: all.slice(start, end), hasMore: start > 0, nextBefore: all.length - start };
   }
 
+  journal: Array<{ threadId: string; input: string; output: string; details?: string }> = [];
+
+  async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string): Promise<void> {
+    this.journal.push({ threadId, input, output, ...(details ? { details } : {}) });
+  }
+
   async archive(deviceId: string, threadId: string): Promise<void> {
     this.archived.push(threadId);
     const entry = this.summaries.find((summary) => summary.threadId === threadId);
@@ -2202,6 +2208,33 @@ describe("command frames", () => {
     assert.deepEqual(handled, [{ command: "status", args: "--full" }]);
   });
 
+  test("a command and its answer are journaled, so a reopened thread still shows them", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "j1", text: "/compact", threadId: "t1" }));
+    await nextFrame(client);
+    assert.deepEqual(store.journal, [{ threadId: "t1", input: "/compact", output: "compact done" }]);
+  });
+
+  test("the journal never keeps a credential", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "j2", text: "/claude set-token sk-live-secret", threadId: "t1" }));
+    await nextFrame(client);
+    assert.deepEqual(store.journal.map((e) => e.input), ["/claude set-token [redacted]"]);
+  });
+
+  test("a failed command is journaled too: the owner saw that bubble", async () => {
+    adapter.onCommandHandler(async () => {
+      throw new Error("boom");
+    });
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "j3", text: "/compact", threadId: "t1" }));
+    await nextFrame(client);
+    assert.deepEqual(store.journal.map((e) => e.output), ["error: boom"]);
+  });
+
+  test("/new is not journaled: it ends the history a journal belongs to", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "j4", text: "/new", threadId: "t1" }));
+    await nextFrame(client);
+    assert.deepEqual(store.journal, []);
+  });
+
   test("a fast command answers without ever showing a pending bubble", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "c2", text: "/status", threadId: "t1" }));
     const frame = await nextFrame(client);
@@ -2286,6 +2319,7 @@ describe("command frames", () => {
     assert.equal(frame["type"], "chat.command.result");
     assert.equal(frame["text"], "status text");
     assert.deepEqual(frame["status"], STATUS_PAYLOAD);
+    assert.deepEqual(store.journal, [], "a report drawn as a page was never a bubble to replay");
     client2.ws.close();
     await agent.stop();
   });

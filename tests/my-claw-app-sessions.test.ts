@@ -1,7 +1,7 @@
 import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { saveSession, deleteSession, loadSession, type SessionData } from "../src/sessions/store.ts";
+import { saveSession, deleteSession, loadSession, MAX_SESSION_COMMANDS, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { writeFile } from "node:fs/promises";
@@ -553,5 +553,132 @@ describe("MyClawAppSessionStoreImpl.setWorkspace", () => {
     await store.setWorkspace(DEVICE, THREAD, "default");
     const after = await store.list(DEVICE);
     assert.equal(after[0]!.workspace, "default");
+  });
+});
+
+describe("MyClawAppSessionStoreImpl command journal", () => {
+  let manager: SessionManager;
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    manager = new SessionManager();
+    store = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  test("a command and its answer survive a reload, outside the messages", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "salut", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted 120 messages.", "summary text");
+
+    const stored = await loadSession(sessionId);
+    assert.equal(stored?.messages.length, 2, "the journal must never reach the prompt");
+    assert.equal(stored?.commands?.length, 1);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "assistant"]);
+    const answer = entries[3]!;
+    if (answer.role === "tool") throw new Error("expected a text entry");
+    assert.equal(entries[2]!.role === "tool" ? "" : entries[2]!.text, "/compact");
+    assert.equal(answer.text, "Compacted 120 messages.");
+    assert.equal(answer.command, true);
+    assert.equal(answer.details, "summary text");
+  });
+
+  test("a command lands where it was typed, not at the end of the page", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "un", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "deux", timestamp: "2026-01-01T00:00:09.000Z" },
+    ]));
+    const loaded = (await manager.peek(sessionId))!;
+    loaded.commands = [
+      { input: "/status", output: "context 12%", timestamp: "2026-01-01T00:00:05.000Z" },
+    ];
+    await manager.persist(sessionId);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.deepEqual(entries.map((e) => (e.role === "tool" ? "tool" : e.text)), ["un", "/status", "context 12%", "deux"]);
+  });
+
+  test("each page carries its own commands, and only once", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "un", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "deux", timestamp: "2026-01-01T00:00:02.000Z" },
+      { role: "user", content: "trois", timestamp: "2026-01-01T00:00:10.000Z" },
+      { role: "assistant", content: "quatre", timestamp: "2026-01-01T00:00:11.000Z" },
+    ]));
+    const loaded = (await manager.peek(sessionId))!;
+    loaded.commands = [
+      { input: "/stop", output: "Stopped.", timestamp: "2026-01-01T00:00:05.000Z" },
+      { input: "/compact", output: "Compacted.", timestamp: "2026-01-01T00:00:20.000Z" },
+    ];
+    await manager.persist(sessionId);
+
+    const newest = await store.history(DEVICE, THREAD, 2);
+    const older = await store.history(DEVICE, THREAD, 2, newest.nextBefore);
+    const text = (page: Awaited<ReturnType<typeof store.history>>) =>
+      page.entries.map((e) => (e.role === "tool" ? "tool" : e.text));
+    assert.deepEqual(text(newest), ["trois", "quatre", "/compact", "Compacted."]);
+    assert.deepEqual(text(older), ["un", "deux", "/stop", "Stopped."]);
+  });
+
+  test("a command on a thread with no session yet is dropped rather than creating one", async () => {
+    await store.recordCommand(DEVICE, THREAD, "/status", "context 0%");
+    assert.equal(await loadSession(sessionId), null);
+  });
+
+  test("the journal keeps its newest entries only", async () => {
+    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    for (let i = 0; i < MAX_SESSION_COMMANDS + 5; i++) {
+      await store.recordCommand(DEVICE, THREAD, `/status ${i}`, "ok");
+    }
+    const stored = await loadSession(sessionId);
+    assert.equal(stored?.commands?.length, MAX_SESSION_COMMANDS);
+    assert.equal(stored?.commands?.[0]!.input, "/status 5");
+  });
+
+  test("the journal dies with the conversation", async () => {
+    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.");
+    await store.remove(DEVICE, THREAD);
+    assert.equal(await loadSession(sessionId), null);
+  });
+});
+
+describe("MyClawAppSessionStoreImpl thinking counts", () => {
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  test("a replayed turn says how much it thought, even with no text to show", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "9.11 ou 9.8 ?", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "9.11", timestamp: "2026-01-01T00:00:02.000Z", reasoningTokens: 12_300 },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const reply = entries[1]!;
+    if (reply.role === "tool") throw new Error("expected a text entry");
+    assert.equal(reply.reasoningTokens, 12_300);
+    assert.equal(reply.reasoning, undefined);
+  });
+
+  test("a turn that thought nothing replays without the field", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "assistant", content: "hop", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+    const { entries } = await store.history(DEVICE, THREAD);
+    const reply = entries[0]!;
+    if (reply.role === "tool") throw new Error("expected a text entry");
+    assert.equal(reply.reasoningTokens, undefined);
   });
 });

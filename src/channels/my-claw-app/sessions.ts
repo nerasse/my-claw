@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { loadSession } from "../../sessions/store.ts";
+import { loadSession, recordSessionCommand } from "../../sessions/store.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -15,6 +15,11 @@ export interface MyClawAppSessionStore {
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
   history(owner: string, threadId: string, limit?: number, before?: number): Promise<MyClawAppHistoryPage>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
+  /**
+   * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
+   * No-op on a thread that has no session yet: there is no history to put it in.
+   */
+  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void>;
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
@@ -202,7 +207,38 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const stored = window.some((m) => m.role === "user" || m.content.includes("MEDIA:")) ? await this.files.list(owner, threadId) : [];
 
     const entries: MyClawAppHistoryEntry[] = [];
+    // A command belongs to the page whose messages surround it in time. The newest page has no
+    // upper bound, so a command typed after the last message (the usual case: a `/compact` at the
+    // end of a turn) lands there rather than nowhere; an older page stops at the first message of
+    // the page after it, so no command is ever replayed twice.
+    const journal = session.commands ?? [];
+    const lowerBound = window[0]?.timestamp ?? "";
+    const upperBound = end < total ? session.messages[end]!.timestamp : undefined;
+    const pageCommands = journal.filter(
+      (entry) => entry.timestamp >= lowerBound && (upperBound === undefined || entry.timestamp < upperBound),
+    );
+    let nextCommand = 0;
+    // Flushed as the messages are walked, so a command sits where it was typed rather than in a
+    // block at one end of the page.
+    const flushCommandsUpTo = (limit?: string): void => {
+      while (nextCommand < pageCommands.length) {
+        const entry = pageCommands[nextCommand]!;
+        if (limit !== undefined && entry.timestamp > limit) return;
+        nextCommand += 1;
+        entries.push({ id: `c-${entry.timestamp}-${nextCommand}-in`, role: "user", text: entry.input, ts: entry.timestamp });
+        entries.push({
+          id: `c-${entry.timestamp}-${nextCommand}-out`,
+          role: "assistant",
+          text: entry.output,
+          ts: entry.timestamp,
+          command: true,
+          ...(entry.details ? { details: entry.details } : {}),
+        });
+      }
+    };
+
     for (const message of window) {
+      flushCommandsUpTo(message.timestamp);
       if (message.role === "user") {
         const block = splitAttachmentBlock(message.content);
         const { text, spoken } = splitTranscript(block.text);
@@ -239,6 +275,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           ts: message.timestamp,
           ...(media.length > 0 ? { attachments: media } : {}),
           ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+          ...(message.reasoningTokens ? { reasoningTokens: message.reasoningTokens } : {}),
         });
       }
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.
@@ -260,7 +297,21 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         });
       }
     }
+    flushCommandsUpTo();
     return { entries, hasMore, nextBefore };
+  }
+
+  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) return;
+    recordSessionCommand(session, {
+      input,
+      output,
+      timestamp: new Date().toISOString(),
+      ...(details ? { details } : {}),
+    });
+    await this.sessionManager.persist(sessionId);
   }
 
   /**

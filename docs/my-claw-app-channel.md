@@ -319,6 +319,11 @@ provider request URLs.
   answered within 400 ms first gets a `chat.command.pending` frame: `/compact` on a full
   session runs for minutes, and the chat showed nothing at all for that whole time. The
   placeholder is only ever sent when the wait is real, so a fast command never flickers one.
+- A command and the bubble it produced are journaled on the conversation (`session.commands`),
+  because a command never reaches the router and so leaves no trace in `messages`. Without the
+  journal, `/compact`, `/stop` and their answers vanished from the thread at the first history
+  reload: those bubbles only ever existed in the device's memory, and `seedHistory` replaces the
+  screen with what the server has. See "The command journal" below.
 - `notifications.register` hands the device's UnifiedPush subscription (`endpoint`, plus
   `pubKey`/`auth`) to the push store; an empty `endpoint` unregisters the device.
   `notifications.state` reports the device's foreground state (`foreground`, optional
@@ -463,6 +468,8 @@ runs fresh like any other message.
 - `details` on a command result is an aside too long to state inline: today, the summary a
   `/compact` produced. The app folds it under the outcome line, in the same collapsed block it
   uses for a model's reasoning, so the thread keeps one short bubble either way.
+- A replayed command answer carries `command: true` on its history entry, and its aside in
+  `details`: the same two fields the live frames set, so a reopened thread draws the same bubble.
 - `chat.command.pending` announces a command still running past 400 ms, keyed on the same
   `replyToId` as its result. The app draws it as a placeholder bubble that the result replaces
   in place, so the wait and the answer are one bubble, never two. A placeholder is also dropped
@@ -662,6 +669,41 @@ GET /media/<id>?device=<deviceId>&token=<token>
 
 The app builds the URL from its own credentials; the media registry is a small
 look-aside cache over the session store and dropped on adapter stop.
+
+## The command journal
+
+A slash command is answered by the server and never routed, so nothing about it lands in
+`session.messages`. Its three bubbles (the command, the optional `Running /...` placeholder, the
+answer) lived only in the device's memory, and the first `chat.history` wiped them: `seedHistory`
+replaces the screen with the server's version by design, so an old build can never leave a stale
+bubble behind. Observed effect: a `/compact` or a `/stop` disappeared from the thread minutes
+after it ran.
+
+The record is `session.commands`, an array of `{ input, output, timestamp, details? }` stored
+inside the session file:
+
+- **Beside the messages, not among them.** On the home loop `messages` *is* the prompt, so a
+  `/status` table stored there would be fed back to the model and then summarized by the next
+  compaction. The journal is read by `history()` only.
+- **Deleted with the conversation, by construction.** It is a field of the session, so `remove`,
+  the archive purge and `/new` (which builds a fresh session object) take it along. There is no
+  side file to orphan.
+- **Capped at `MAX_SESSION_COMMANDS` (200), newest kept.** A session is one JSON file rewritten
+  in full on every turn, the same reason reasoning is capped.
+- **Masked.** `input` goes through `redactCommandArgs`, so `/claude set-token` is journaled as
+  `set-token [redacted]`.
+
+Three cases are left out on purpose: `/new` (it ends the history a journal belongs to), a
+`/status` answered with a structured payload (the app draws a page rather than a bubble, so
+replaying one would show something that never existed on screen), and a command on a thread with
+no session yet (there is no history to attach it to). Failures are journaled: the owner saw that
+bubble too.
+
+`history()` merges the journal into the page it belongs to, by timestamp. Entries are flushed as
+the messages are walked, so a command sits where it was typed rather than in a block at one end.
+A page is bounded below by its first message and above by the first message of the page after it,
+which is what keeps a command out of two pages at once; the newest page has no upper bound, so a
+command typed after the last message (the usual case) still shows up.
 
 ## Security
 

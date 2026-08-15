@@ -30,6 +30,13 @@ export type SessionMessage =
        * this one is absent from the result.
        */
       reasoning?: string;
+      /**
+       * How much thinking this turn was estimated to have done, when the engine gives a count
+       * instead of the text (the Claude bridge redacts it -- docs/reasoning-visibility.md). One
+       * number, so the replayed bubble can still say the turn thought rather than losing it with
+       * the live stream.
+       */
+      reasoningTokens?: number;
     }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
@@ -96,6 +103,38 @@ export function sealDanglingToolCalls(messages: SessionMessage[]): number {
   return sealed;
 }
 
+/**
+ * One slash command and the answer the channel showed for it. Commands never reach the router,
+ * so nothing about them lands in `messages`: without this record a `/compact` or a `/stop` is
+ * gone from the conversation the moment the app reloads its history from the server.
+ *
+ * Kept beside the messages rather than inside them on purpose. `messages` is the prompt on the
+ * home loop, and a `/status` table replayed into the model is noise it would then summarize.
+ */
+export interface SessionCommandEntry {
+  /** What was typed, arguments included and credentials masked (`redactCommandArgs`). */
+  input: string;
+  /** What the channel put on screen for it. Errors included: the owner saw those too. */
+  output: string;
+  timestamp: string;
+  /** The aside folded under the bubble, when the answer carried one (a compaction summary). */
+  details?: string;
+}
+
+/**
+ * Cap on a conversation's command journal. A session is one JSON file rewritten in full on every
+ * turn, so this is bounded for the same reason reasoning is: the tail is what a reader wants,
+ * and an unbounded list would rewrite itself forever.
+ */
+export const MAX_SESSION_COMMANDS = 200;
+
+/** Appends to the journal, keeping the newest `MAX_SESSION_COMMANDS`. */
+export function recordSessionCommand(session: SessionData, entry: SessionCommandEntry): void {
+  const journal = session.commands ?? [];
+  journal.push(entry);
+  session.commands = journal.length > MAX_SESSION_COMMANDS ? journal.slice(-MAX_SESSION_COMMANDS) : journal;
+}
+
 export interface SubAgentMeta {
   displayName: string;
   /** The agent name this was spawned as. Open set since agents are file-defined, and the two names
@@ -142,6 +181,12 @@ export interface SessionData {
   createdAt: string;
   lastActiveAt: string;
   messages: SessionMessage[];
+  /**
+   * Slash commands run on this conversation and their answers, in order. Not part of the
+   * prompt and not part of `messages`: this is what the owner saw, kept so a reopened thread
+   * shows it again. Dies with the session file, like everything else here.
+   */
+  commands?: SessionCommandEntry[];
   /**
    * Name the owner gave this conversation. Absent means the list falls back to the opening
    * words of the first turn, which is a summary of how a thread started rather than of what it
