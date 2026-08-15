@@ -10,6 +10,7 @@ import {
   stripMarkdown,
   cleanNotificationText,
   buildPushPayload,
+  notificationIdFor,
 } from "../../src/notifications/push.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
@@ -89,6 +90,32 @@ test("the payload carries the channel type the app pre-creates as IMPORTANCE_HIG
   assert.equal(payload.type, "runs");
   assert.equal(payload.title, "t");
   assert.equal(payload.url, "myclaw://thread/x");
+});
+
+test("a notification that names a thread is addressable: same link, same id, and it fits an Android Int", () => {
+  const first = JSON.parse(buildPushPayload({ title: "a", body: "1", url: "myclaw://thread/abc" }));
+  const again = JSON.parse(buildPushPayload({ title: "b", body: "2", url: "myclaw://thread/abc" }));
+  const other = JSON.parse(buildPushPayload({ title: "c", body: "3", url: "myclaw://thread/def" }));
+  assert.equal(first.id, again.id);
+  assert.notEqual(first.id, other.id);
+  assert.equal(first.id, notificationIdFor("myclaw://thread/abc"));
+  for (const id of [first.id, other.id]) {
+    assert.ok(Number.isInteger(id) && id >= 0 && id <= 0x7fffffff, `id out of Int range: ${id}`);
+  }
+});
+
+test("the id of a link is a fixed vector: the app recomputes it to dismiss the notification", () => {
+  // Shared contract with notificationIdFor in the app (src/core/notifications.ts). These three
+  // numbers are asserted on both sides: a drift here stops every dismissal, silently.
+  assert.equal(notificationIdFor("myclaw://thread/abc"), 1185530383);
+  assert.equal(notificationIdFor("myclaw://thread/from-notif"), 333754526);
+  assert.equal(notificationIdFor("myclaw://job/job-1"), 253371665);
+});
+
+test("a notification with no link keeps a unique id: nothing could address it later anyway", () => {
+  const first = JSON.parse(buildPushPayload({ title: "a", body: "1" }));
+  const second = JSON.parse(buildPushPayload({ title: "a", body: "1" }));
+  assert.notEqual(first.id, second.id);
 });
 
 test("an endpoint without encryption keys is skipped rather than sent in the clear", async () => {

@@ -26,9 +26,32 @@ const VAPID_PATH = join(PUSH_DIR, "vapid.json");
 const ENDPOINTS_PATH = join(PUSH_DIR, "endpoints.json");
 const FOREGROUND_PATH = join(PUSH_DIR, "foreground.json");
 
-// The `id` the ntfy app's notification renderer reads first; any number works, it only has
-// to be unique per notification the native side keeps track of.
+// The `id` the ntfy app's notification renderer reads first. A notification that names a target
+// derives it from that target (see notificationIdFor); the counter only serves the ones that do
+// not, where nothing can address them later.
 let notificationCounter = Date.now();
+
+/**
+ * The notification id of a deep link, so a notification stays addressable after it is shown.
+ *
+ * Two things need that. The app dismisses a thread's notification when the owner opens that
+ * thread from anywhere, and the only handle Android offers is the id the notification was posted
+ * with; the app is usually killed when the push lands, so the id has to be derivable from the
+ * link alone rather than remembered. And a second run on the same thread now replaces its own
+ * notification instead of stacking a new one under it.
+ *
+ * FNV-1a folded into a positive 31-bit int: the renderer hands the number to Android as a signed
+ * Int. The app computes the same hash (src/core/notifications.ts), so any change here is a wire
+ * break and belongs in both repos at once.
+ */
+export function notificationIdFor(url: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < url.length; i++) {
+    hash ^= url.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash & 0x7fffffff;
+}
 
 export interface PushEndpoint {
   endpoint: string;
@@ -150,7 +173,7 @@ export interface PushNotification {
  *  so it must stay stable across payloads. */
 export function buildPushPayload(notification: PushNotification): string {
   return JSON.stringify({
-    id: notificationCounter++,
+    id: notification.url ? notificationIdFor(notification.url) : notificationCounter++,
     type: "runs",
     title: notification.title,
     body: notification.body,

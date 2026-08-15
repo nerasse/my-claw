@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, type SessionMessage } from "./sessions/store.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -137,7 +137,8 @@ import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
-import { chatCompletion } from "./llm/provider.ts";
+import { chatCompletion, type ChatMessage } from "./llm/provider.ts";
+import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
@@ -988,6 +989,10 @@ async function main() {
         threadId,
         sessionScope: "per-user",
       });
+    // A tool result is a user turn as far as token counting goes: the same mapping /status uses,
+    // so the header and the report cannot read a different occupancy for one conversation.
+    const sessionToChat = (messages: readonly SessionMessage[]): ChatMessage[] =>
+      messages.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
     /** A model's own full window, for the app's ceiling list (never offered above it). */
     const contextWindowOf = (modelId: string): number | undefined => {
       try {
@@ -1028,6 +1033,9 @@ async function main() {
           effective: choice.effective,
           ...(cap !== undefined && cap < choice.raw ? { cap } : {}),
           ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
+          // The occupancy the compaction gate reads, not a second estimate of it: the chat header
+          // shows a share of the window, and two numbers for one thing would disagree by a turn.
+          ...(session ? { used: occupiedContextTokens(session.messages, sessionToChat, session.lastPrompt) } : {}),
         },
       };
     };

@@ -240,6 +240,15 @@ context limit 262k (default, not declared for this model)
 context limit 1,048,576 (session override: full)
 ```
 
+The app's chat header carries the same reading, permanently, as one number: `ctx 37%`, the
+occupancy over the effective window. It travels on `model.result` (`context.used`, alongside
+`raw` / `effective` / `cap`), which the app already asks for when a conversation opens and now
+re-asks at the end of every run: the turn that just landed is what filled the window. It is the
+same `occupiedContextTokens` the compaction gate reads, deliberately, because a header and a
+trigger that disagreed about how full a conversation is would make the compaction look random.
+A thread with no session yet reports nothing rather than 0%, and the number is never folded
+back to 100: a prompt over its ceiling is exactly the reading worth seeing.
+
 ## Self-hosted models
 
 Unrelated to the window, but resolved by the same pass over the model id.

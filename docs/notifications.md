@@ -48,13 +48,22 @@ termine. Le canal est **UnifiedPush**, avec un serveur **ntfy self-hosté** comm
 
 ```json
 {
-  "id": 1723300000000,
+  "id": 1185530383,
   "type": "runs",
   "title": "<nom de session ou de job>",
   "body": "Run finished in 42s: <extrait de la réponse>",
   "url": "myclaw://thread/<threadId>" | "myclaw://job/<jobId>"
 }
 ```
+
+`id` est **dérivé du deep link** (`notificationIdFor`, FNV-1a replié sur 31 bits positifs, la
+taille d'un Int Android). Deux conséquences voulues : un deuxième run sur le même thread
+**remplace** sa propre notification au lieu d'en empiler une seconde, et l'app peut **effacer**
+la notification d'une conversation quand on l'ouvre, sans être passé par la notif. L'app ne
+reçoit jamais cet id (le push arrive le plus souvent app tuée), elle le **recalcule** avec la
+même fonction (`src/core/notifications.ts` côté app) : les deux implémentations sont un contrat
+de fil, verrouillé des deux côtés par les mêmes vecteurs de test. Une notification sans `url`
+n'est adressable par personne : elle garde un compteur unique.
 
 `type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ce
 canal en `IMPORTANCE_HIGH` au boot, ce qui rend la notification affichable en bannière en haut
@@ -116,6 +125,14 @@ L'app résout au démarrage (`Linking.getInitialURL`) ou en direct (listener) :
 Limitation connue : le rendu natif relance l'activité avec `FLAG_ACTIVITY_CLEAR_TASK`, donc un
 tap alors que l'app est déjà ouverte **recharge** l'écran (état de navigation perdu). À
 corriger dans le module natif si ça dérange.
+
+## Ouverture → effacement
+
+Un tap efface sa propre notification (`setAutoCancel`). Ouvrir la conversation **autrement**
+(tiroir, retour au premier plan sur le thread déjà ouvert) l'effaçait pas : le tiroir de
+notifications continuait d'annoncer un run qu'on est en train de lire. L'app annule donc
+`notificationIdFor("myclaw://thread/<id>")` à l'ouverture d'un thread et au retour au premier
+plan. En arrière-plan la notification reste : elle est légitime tant que personne ne la regarde.
 
 ## Limites (à connaître avant de brancher)
 

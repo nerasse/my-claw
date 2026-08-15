@@ -1007,6 +1007,12 @@ export interface MyClawAppContextState {
   cap?: number;
   /** This conversation's own choice: a ceiling, "full", or absent when it follows policy. */
   choice?: number | "full";
+  /**
+   * How much of `effective` this conversation already holds, in the units the provider bills
+   * (the same number the compaction gate reads). Absent when the thread has no session yet, so
+   * the app shows nothing rather than a confident 0%.
+   */
+  used?: number;
 }
 
 export interface MyClawAppModelListResult {

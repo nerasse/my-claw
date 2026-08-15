@@ -401,7 +401,7 @@ runs fresh like any other message.
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
-{ "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000 } }
+{ "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000, "used": 94000 } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }
 { "type": "workspaces.list.result", "workspaces": [{ "key": "default", "path": "/home/neras/.my-claw/workspace", "default": true }, { "key": "sofa", "path": "/home/neras/dev/SOFA", "default": false }] }
@@ -493,7 +493,9 @@ runs fresh like any other message.
 - `chat.cleared` says the server dropped the thread's history (a typed `/new`); the app drops
   its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread
-  indicator. `effort.level` is `""` when the model discards effort.`commands.list.result` carries the shared command catalog (same source as the
+  indicator. `effort.level` is `""` when the model discards effort. `context.used` is how full
+  the window is (docs/context-window.md): the chat header shows it as a percentage, and the app
+  re-asks `model.get` at the end of each run to refresh it.`commands.list.result` carries the shared command catalog (same source as the
 telegram bot menu), so the app's slash-menu can never drift from the server:
 the device asks for it again whenever the menu opens.
 
