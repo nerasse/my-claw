@@ -1,10 +1,22 @@
-import { statSync, readFileSync } from "node:fs";
+import { statSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { normalizeUntrusted } from "./normalize-untrusted.ts";
 
 // Tools whose `path` argument is a deterministic signal for the directory being touched.
 const PATH_TOOLS = new Set(["read", "write", "apply_patch", "ls", "search"]);
 const AGENTS_FILE = "AGENTS.md";
+/** One call may name several trees; a pathological command must not drain the run's budget. */
+const MAX_DIRS_PER_CALL = 4;
+/** Upper bound on the stat calls one command may cost, whatever its length. */
+const MAX_TOKENS_SCANNED = 60;
+/**
+ * Anything holding a slash: `src/tools/x.ts`, `/opt/my-claw`, `~/dev/repo`, `./sub`. What it is
+ * gets decided by the filesystem, not by this pattern, so it stays deliberately loose.
+ */
+const PATH_TOKEN = /(?:~|\.{0,2})?\/?[\w.@+-]*(?:\/[\w.@+-]+)+\/?/g;
+/** Every `cd <path>`, not only a leading one: `make && cd sub && test` names `sub` too. */
+const CD_TOKEN = /(?:^|[;&|]|&&|\|\|)\s*cd\s+(['"]?)([^'"&;|<>\n]+)\1/g;
 
 function isDir(p: string): boolean {
   try {
@@ -22,6 +34,15 @@ function isFile(p: string): boolean {
   }
 }
 
+/** The path with every symlink resolved, or the path itself when it cannot be resolved. */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 // `.git` is a directory in a normal clone and a file in a submodule/worktree; accept both.
 function hasGit(dir: string): boolean {
   try {
@@ -33,45 +54,82 @@ function hasGit(dir: string): boolean {
 }
 
 function resolveAgainstWorkspace(p: string, workspaceDir: string): string {
-  return isAbsolute(p) ? resolve(p) : resolve(workspaceDir, p);
+  // `~` is the shell's, not the filesystem's: a command carries it unexpanded and the tools
+  // resolve everything else against the workspace.
+  const expanded = p.startsWith("~/") || p === "~" ? join(homedir(), p.slice(1)) : p;
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(workspaceDir, expanded);
+}
+
+/** The directory a path names: itself when it is one, its parent when it is a file, else null. */
+function dirOf(path: string, workspaceDir: string): string | null {
+  const resolved = resolveAgainstWorkspace(path, workspaceDir);
+  if (isDir(resolved)) return resolved;
+  if (isFile(resolved)) return dirname(resolved);
+  return null;
+}
+
+function pushDir(dirs: string[], dir: string | null): void {
+  if (dir && !dirs.includes(dir) && dirs.length < MAX_DIRS_PER_CALL) dirs.push(dir);
 }
 
 /**
- * Determine the directory a tool call operates in, or null when there is no reliable signal.
- * File tools expose an explicit `path`; bash exposes `workdir` (else a leading `cd <path>`).
+ * Directories a tool call operates in, empty when nothing on the call names a real one.
+ *
+ * File tools expose an explicit `path`. bash is read from three angles, because a run measured
+ * on 2026-08-15 (1162 bash calls) used `workdir` exactly zero times, opened with `cd` in 66% of
+ * calls, and named an existing path somewhere else in the command in another 33%: the parameter
+ * built for this is not what the model reaches for, so the command itself has to be read.
+ *
+ * Arbitrary token parsing was rejected in the original design over false positives. The answer
+ * is the filesystem: a token is kept only if it resolves to something that exists, so a "false
+ * positive" is by construction a real directory the command names, which is the signal wanted.
+ * Bounded by MAX_TOKENS_SCANNED stat calls and MAX_DIRS_PER_CALL results.
  */
-export function extractTargetDir(
+export function extractTargetDirs(
   toolName: string,
   args: Record<string, unknown>,
   workspaceDir: string,
-): string | null {
+): string[] {
+  const dirs: string[] = [];
+
   if (PATH_TOOLS.has(toolName)) {
     const path = args["path"];
-    if (typeof path !== "string" || !path.trim()) return null;
+    if (typeof path !== "string" || !path.trim()) return dirs;
+    // A path that does not exist yet is still a signal: `write` creates it, and the rules of the
+    // tree it lands in are what the model needs before writing.
     const resolved = resolveAgainstWorkspace(path, workspaceDir);
-    return isDir(resolved) ? resolved : dirname(resolved);
+    pushDir(dirs, isDir(resolved) ? resolved : dirname(resolved));
+    return dirs;
   }
 
-  if (toolName === "bash") {
-    const workdir = args["workdir"];
-    if (typeof workdir === "string" && workdir.trim()) {
-      const resolved = resolveAgainstWorkspace(workdir, workspaceDir);
-      return isDir(resolved) ? resolved : null;
-    }
-    // Fallback: only a leading `cd <path>` (discovery signal, not execution). Anything more
-    // (parsing arbitrary tokens) invites false positives, so we deliberately stop here.
-    const command = args["command"];
-    if (typeof command === "string") {
-      const m = command.match(/^\s*cd\s+(['"]?)([^'"&;|<>\n]+)\1/);
-      if (m?.[2]) {
-        const resolved = resolveAgainstWorkspace(m[2].trim(), workspaceDir);
-        return isDir(resolved) ? resolved : null;
-      }
-    }
-    return null;
+  // A sub-agent given a workspace works in that tree for its whole life.
+  if (toolName === "spawn") {
+    const dir = args["workspaceDir"];
+    if (typeof dir === "string" && dir.trim()) pushDir(dirs, dirOf(dir, workspaceDir));
+    return dirs;
   }
 
-  return null;
+  if (toolName !== "bash") return dirs;
+
+  const workdir = args["workdir"];
+  if (typeof workdir === "string" && workdir.trim()) pushDir(dirs, dirOf(workdir, workspaceDir));
+
+  const command = args["command"];
+  if (typeof command !== "string") return dirs;
+
+  for (const match of command.matchAll(CD_TOKEN)) {
+    const target = match[2]?.trim();
+    if (target) pushDir(dirs, dirOf(target, workspaceDir));
+  }
+
+  let scanned = 0;
+  for (const match of command.matchAll(PATH_TOKEN)) {
+    if (scanned >= MAX_TOKENS_SCANNED || dirs.length >= MAX_DIRS_PER_CALL) break;
+    scanned += 1;
+    // Trailing punctuation belongs to the sentence, not to the path.
+    pushDir(dirs, dirOf(match[0].replace(/[.,;:]+$/, ""), workspaceDir));
+  }
+  return dirs;
 }
 
 // Ordered list of directories from the git-root boundary down to `targetDir` (inclusive),
@@ -130,15 +188,26 @@ export class NestedAgentsCollector {
    */
   collect(toolName: string, args: Record<string, unknown>): string {
     if (this.bytesUsed >= this.maxBytes) return "";
-    const targetDir = extractTargetDir(toolName, args, this.workspaceRoot);
-    if (!targetDir) return "";
+    const targetDirs = extractTargetDirs(toolName, args, this.workspaceRoot);
+    if (targetDirs.length === 0) return "";
+
+    const chain: string[] = [];
+    for (const target of targetDirs) {
+      for (const dir of chainDirs(target, this.workspaceRoot)) {
+        if (!chain.includes(dir)) chain.push(dir);
+      }
+    }
 
     const blocks: string[] = [];
-    for (const dir of chainDirs(targetDir, this.workspaceRoot)) {
+    for (const dir of chain) {
       if (dir === this.workspaceRoot) continue; // already in the system prompt
       const file = join(dir, AGENTS_FILE);
-      if (this.seen.has(file) || !isFile(file)) continue;
-      this.seen.add(file);
+      if (!isFile(file)) continue;
+      // Keyed on the real file: the same instructions reached through a symlink, or through two
+      // spellings of one path, are one file and must not be paid for twice.
+      const key = realPath(file);
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
 
       let content: string;
       try {
