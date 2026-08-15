@@ -303,6 +303,9 @@ export class MessageRouter {
         void log("info", "run stopped by user", { ...messageLogData(message), sessionId, streaming, durationMs });
         return undefined;
       }
+      // A failed run still happened: the question and whatever the agent got through before the
+      // error are in memory, and only this write keeps them past the next restart.
+      await this.sessionManager.persist(sessionId).catch(() => {});
       runRegistry.settleMailbox(sessionId, "reject", err);
       hooks.emit("message:route:error", { message, sessionId, error: err, durationMs });
       void log("error", "routing failed", {

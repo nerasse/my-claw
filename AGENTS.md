@@ -174,7 +174,7 @@ src/
 │   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
 │   └── claude-auth.ts     # Claude subscription token store
 ├── sessions/
-│   ├── manager.ts         # LRU-cached session manager (max 100, persist-on-evict)
+│   ├── manager.ts         # LRU-cached session manager (max 100, autosave + flush) -- docs/session-durability.md
 │   ├── store.ts           # Session persistence (JSON files)
 │   └── compaction.ts      # Session context compaction (LLM summarization)
 ├── analytics/

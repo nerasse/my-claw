@@ -311,3 +311,29 @@ test("matrix group session ID format", async () => {
 
   assert.equal(capturedId, "matrix/room/!group-xyz:test");
 });
+
+// A failed run used to leave the question in memory only: the next restart dropped it, and the
+// owner saw a message he had sent disappear for good.
+test("a run that throws still writes what the session already holds", async () => {
+  const sessionManager = new SessionManager();
+  const router = new MessageRouter(sessionManager, {
+    async handleMessage(_message: UnifiedMessage, session: SessionData) {
+      session.messages.push({ role: "user", content: "la question", timestamp: new Date().toISOString() });
+      throw new Error("agent exploded");
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never);
+
+  const msg = createMessage("persist-on-error");
+  await assert.rejects(() => router.route(msg), { message: "agent exploded" });
+
+  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "persist-on-error");
+  try {
+    const onDisk = await new SessionManager().read(sessionId);
+    assert.equal(onDisk?.messages.length, 1);
+    assert.equal(onDisk?.messages[0]!.content, "la question");
+  } finally {
+    await sessionManager.deleteSession(sessionId);
+  }
+});

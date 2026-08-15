@@ -125,24 +125,56 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(page.hasMore, false);
   });
 
-  test("the walk back is bounded: a turn longer than two pages still starts mid-flight", async () => {
-    const messages: SessionData["messages"] = [
-      { role: "user", content: "la question", timestamp: "2026-01-01T00:00:00.000Z" },
-    ];
-    for (let i = 1; i <= 20; i++) {
-      messages.push({ role: "assistant", content: `a${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+  test("the walk back is bounded: only a pathological turn still starts mid-flight", async () => {
+    const base = Date.parse("2026-01-01T00:00:00.000Z");
+    const stamp = (i: number): string => new Date(base + i * 1000).toISOString();
+    const messages: SessionData["messages"] = [{ role: "user", content: "la question", timestamp: stamp(0) }];
+    for (let i = 1; i <= 450; i++) {
+      messages.push({ role: "assistant", content: `a${i}`, timestamp: stamp(i) });
     }
     await saveSession(sessionId, session(sessionId, messages));
 
     const page = await store.history(DEVICE, THREAD, 5);
-    // Five asked for, ten at most: one page of lookback and not a message more.
-    assert.equal(page.entries.length, 10);
-    assert.equal(page.entries[0]?.role === "assistant" ? page.entries[0].text : "", "a11");
+    // Five asked for, 405 taken: the walk stops 400 messages back and not one further.
+    assert.equal(page.entries.length, 405);
+    assert.equal(page.entries[0]?.role === "assistant" ? page.entries[0].text : "", "a46");
     assert.equal(page.hasMore, true);
     // The page above must still end where this one begins, or the walk would duplicate a turn.
     const older = await store.history(DEVICE, THREAD, 5, page.nextBefore);
     const last = older.entries.at(-1);
-    assert.equal(last && last.role === "assistant" ? last.text : "", "a10");
+    assert.equal(last && last.role === "assistant" ? last.text : "", "a45");
+  });
+
+  /**
+   * The app replaces the thread on screen with what this returns. Served from the file, a switch
+   * to another conversation and back mid-run wiped the question and every card already streamed,
+   * and a restart before the run ended made that permanent.
+   */
+  test("a turn in flight is part of the history, not something the file has yet", async () => {
+    const manager = new SessionManager();
+    const live = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const cached = await manager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm");
+    cached.messages.push({ role: "user", content: "la question en cours", timestamp: "2026-01-01T00:00:02.000Z" });
+    cached.messages.push({
+      role: "assistant",
+      content: "",
+      timestamp: "2026-01-01T00:00:03.000Z",
+      toolCalls: [{ id: "call-live", name: "bash", arguments: '{"command":"ls"}' }],
+    });
+    cached.messages.push({ role: "tool", toolCallId: "call-live", content: "README.md", timestamp: "2026-01-01T00:00:04.000Z" });
+
+    const { entries } = await live.history(DEVICE, THREAD);
+    assert.deepEqual(entries.map((e) => e.role), ["user", "user", "tool"]);
+    assert.equal(entries[1]?.role === "user" ? entries[1].text : "", "la question en cours");
+    const card = entries[2]!;
+    assert.equal(card.role === "tool" ? card.output : "", "README.md");
+
+    const summary = (await live.list(DEVICE)).find((s) => s.threadId === THREAD);
+    assert.equal(summary?.messageCount, 4, "the drawer counts the turn being produced");
   });
 
   test("a cursor past the start of the session is an empty page, not an error", async () => {

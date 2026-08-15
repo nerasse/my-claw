@@ -231,3 +231,82 @@ test("restart simulation: a fresh manager reloads the session without resetting 
     await deleteSession(sid);
   }
 });
+
+// --- durability: what a run holds in memory ---
+
+// A run only writes when it ends, so anything reading the file mid-turn (the app's history)
+// saw a conversation as it stood before the question was even asked.
+test("read: a turn in flight comes back from memory, not from the stale file", async () => {
+  const sid = `test/manager/${Date.now()}/read-live`;
+  try {
+    const mgr = new SessionManager();
+    const session = await mgr.getOrCreateWithMeta(sid, "my-claw-app", "dm");
+    session.messages.push({ role: "user", content: "premiere question", timestamp: new Date().toISOString() });
+    await mgr.persist(sid);
+    session.messages.push({ role: "user", content: "en cours", timestamp: new Date().toISOString() });
+
+    const live = await mgr.read(sid);
+    assert.equal(live?.messages.length, 2);
+    assert.equal(live?.messages[1]!.content, "en cours");
+
+    const onDisk = await new SessionManager().read(sid);
+    assert.equal(onDisk?.messages.length, 1, "the file is one turn behind, which is the point");
+  } finally {
+    await deleteSession(sid);
+  }
+});
+
+test("read: an unknown session is null and is not cached", async () => {
+  const mgr = new SessionManager();
+  assert.equal(await mgr.read(`test/manager/${Date.now()}/absent`), null);
+  assert.equal(mgr.getInfo(`test/manager/${Date.now()}/absent`), null);
+});
+
+test("flushDirty: writes what a run appended, and only that", async () => {
+  const moved = `test/manager/${Date.now()}/dirty`;
+  const still = `test/manager/${Date.now()}/clean`;
+  try {
+    const mgr = new SessionManager();
+    const a = await mgr.getOrCreateWithMeta(moved, "my-claw-app", "dm");
+    a.messages.push({ role: "user", content: "question", timestamp: new Date().toISOString() });
+    await mgr.getOrCreateWithMeta(still, "my-claw-app", "dm");
+
+    await mgr.flushDirty();
+
+    const reader = new SessionManager();
+    assert.equal((await reader.read(moved))?.messages.length, 1);
+    // An empty conversation nobody wrote in must not leave a file behind.
+    assert.equal(await reader.read(still), null);
+  } finally {
+    await deleteSession(moved);
+    await deleteSession(still);
+  }
+});
+
+// The prod symptom: seven adapter restarts in a day, and every message a cached session had
+// not written yet was gone for good.
+test("flushAll: a restart keeps what was only in memory", async () => {
+  const sid = `test/manager/${Date.now()}/flush-all`;
+  try {
+    const mgr = new SessionManager();
+    const session = await mgr.getOrCreateWithMeta(sid, "my-claw-app", "dm");
+    session.messages.push({ role: "user", content: "jamais persiste", timestamp: new Date().toISOString() });
+    session.title = "nommee pendant le run";
+
+    await mgr.flushAll();
+
+    const reloaded = await new SessionManager().read(sid);
+    assert.equal(reloaded?.messages.length, 1);
+    assert.equal(reloaded?.title, "nommee pendant le run");
+  } finally {
+    await deleteSession(sid);
+  }
+});
+
+test("startAutosave: idempotent, and stoppable without having run", () => {
+  const mgr = new SessionManager();
+  mgr.startAutosave(50_000);
+  mgr.startAutosave(50_000);
+  mgr.stopAutosave();
+  mgr.stopAutosave();
+});

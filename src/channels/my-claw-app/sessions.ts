@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { loadSession, recordSessionCommand } from "../../sessions/store.ts";
+import { recordSessionCommand } from "../../sessions/store.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -43,6 +43,12 @@ export function sanitizeThreadId(raw: string): string | null {
 const HISTORY_LIMIT = 50;
 /** Journal entries replayed on one history page, newest kept. */
 const MAX_PAGE_COMMANDS = 20;
+/**
+ * How far back the newest page may reach to start on a question rather than mid-work. One
+ * agentic turn is easily two hundred messages, and a page that starts inside one reads as a
+ * lost message; the cap only stops a pathological turn from dragging a whole session in.
+ */
+const MAX_TURN_LOOKBACK = 400;
 
 /**
  * Walks the page's first message back to the user message that opened its turn.
@@ -50,8 +56,8 @@ const MAX_PAGE_COMMANDS = 20;
  * A page is a count of messages, but a conversation is read in turns, and one agentic turn is
  * easily fifty tool results: cut at a fixed count, the newest page begins in the middle of the
  * work and leaves the question that caused it on the page above, which reads as a lost message
- * rather than as pagination. The walk is bounded by `lookback` (one extra page at most), so a
- * turn longer than that still starts mid-flight instead of dragging the whole session in.
+ * rather than as pagination. The walk is bounded by `lookback`, so a turn longer than that still
+ * starts mid-flight instead of dragging the whole session in.
  */
 function turnAlignedStart(messages: { role: string }[], rawStart: number, lookback: number): number {
   const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
@@ -183,7 +189,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, limit);
     const summaries: MyClawAppSessionSummary[] = [];
     for (const sessionId of ids) {
-      const session = await loadSession(sessionId);
+      // The live copy, not the file: a conversation with a run in flight must count the turn it
+      // is producing, or the drawer shows a stale message count next to a thread that is moving.
+      const session = await this.sessionManager.read(sessionId);
       if (!session) continue;
       const firstUser = session.messages.find((m) => m.role === "user");
       // Without the block, a "here, look" + photo would be titled by a server path.
@@ -204,7 +212,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   }
 
   async history(owner: string, threadId: string, limit = HISTORY_LIMIT, before = 0): Promise<MyClawAppHistoryPage> {
-    const session = await loadSession(this.resolveSessionId(owner, threadId));
+    // Reading the file here would replay a thread as it stood before the current turn started,
+    // and the app replaces what is on screen with what this returns: the question just sent and
+    // the cards already streamed would vanish until the run ends.
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
     if (!session) return { entries: [], hasMore: false, nextBefore: before };
 
     // `before` counts back from the newest message, so page N is the slice that ends where the
@@ -213,7 +224,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const total = session.messages.length;
     const end = Math.max(total - Math.max(before, 0), 0);
     const rawStart = Math.max(end - Math.max(limit, 0), 0);
-    const start = turnAlignedStart(session.messages, rawStart, Math.max(limit, 0));
+    const start = turnAlignedStart(session.messages, rawStart, MAX_TURN_LOOKBACK);
     const window = session.messages.slice(start, end);
     const hasMore = start > 0;
     const nextBefore = total - start;
