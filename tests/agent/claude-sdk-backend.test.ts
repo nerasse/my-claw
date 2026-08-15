@@ -221,7 +221,9 @@ test("tool_use blocks and tool results are mirrored into session messages", asyn
   const roles = sess.messages.map((m) => m.role);
   assert.deepEqual(roles, ["user", "assistant", "tool", "assistant"]);
   const assistant = sess.messages[1]!;
-  assert.ok(assistant.role === "assistant" && assistant.toolCalls?.[0]?.name === "mcp__myclaw__bash");
+  // Mirrored under the name the rest of the app knows: the MCP wrapper is this backend's
+  // business, and a replayed card that reads `mcp__myclaw__bash` shows the plumbing.
+  assert.ok(assistant.role === "assistant" && assistant.toolCalls?.[0]?.name === "bash");
   const tool = sess.messages[2]!;
   assert.ok(tool.role === "tool" && tool.toolCallId === "tu1" && tool.content === "file.txt");
 });

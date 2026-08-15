@@ -95,6 +95,13 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
 - Read-only registry tools (read, ls, find, grep, fetch...) carry
   `annotations.readOnlyHint: true` so the SDK runs them in parallel, matching
   the home loop's parallel tool execution.
+- The SDK names those tools `mcp__myclaw__<tool>`. That prefix stops at the edge
+  of this backend: `toolDisplayName` strips it before an approval prompt and
+  before the session mirror, so the app's tool cards, a replayed history and a
+  compaction summary all name the tool the way the registry does. A real MCP
+  server's tool keeps its `mcp__<server>__` prefix, which is what tells the two
+  apart. Sessions written before this are cleaned on read by the app's history
+  builder (`channels/my-claw-app/sessions.ts`).
 
 ### Streaming input mode: one query per run, injections included
 

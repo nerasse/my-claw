@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { loadSession } from "../../sessions/store.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
+import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
@@ -247,7 +248,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "tool",
-          name: call.name,
+          // Sessions written before the mirror was cleaned still hold `mcp__myclaw__bash`, the
+          // name the SDK gives our own tools; the card must show the tool, not the plumbing.
+          name: toolDisplayName(call.name),
           args: parseToolArguments(call.arguments),
           durationMs: call.durationMs,
           ok: true,

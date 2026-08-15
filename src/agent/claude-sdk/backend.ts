@@ -42,7 +42,7 @@ import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { readCompactSummary } from "./transcript.ts";
-import { createToolServerForRun } from "./tools.ts";
+import { createToolServerForRun, toolDisplayName } from "./tools.ts";
 
 // Headroom left for the reply when the resolved model does not declare an output limit.
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 32_000;
@@ -596,7 +596,7 @@ export class ClaudeSdkBackend implements AgentBackend {
                 chatType: message.chatType,
                 messageId: message.id,
                 sessionId: session.id,
-                toolName: toolName.replace(/^mcp__myclaw__/, ""),
+                toolName: toolDisplayName(toolName),
                 args: input,
                 replyToId: message.replyToId,
                 threadId: message.threadId,
@@ -980,7 +980,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         content: text,
         toolCalls: toolUses.map((b) => ({
           id: b.id ?? "",
-          name: b.name ?? "",
+          // The mirror is read back by everything that is not the SDK (the app's history, a
+          // replayed conversation, a compaction summary), so the MCP wrapper's name stops here.
+          name: toolDisplayName(b.name ?? ""),
           arguments: JSON.stringify(b.input ?? {}),
         })),
         timestamp: new Date().toISOString(),

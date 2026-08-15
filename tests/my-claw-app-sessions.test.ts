@@ -57,6 +57,32 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(card.truncated, false);
   });
 
+  /**
+   * Our own tools reach the Claude SDK through an in-process MCP server, so the SDK calls them
+   * `mcp__myclaw__bash` and the mirror kept that name. A reopened thread then showed the
+   * plumbing on every card while the live cards, built from the registry, showed `bash`.
+   */
+  test("a replayed card names the tool, not the MCP wrapper the SDK wraps it in", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [
+          { id: "call-3", name: "mcp__myclaw__bash", arguments: '{"command":"ls"}', durationMs: 12 },
+          // A real MCP server's tool keeps its prefix: that is what says where it comes from.
+          { id: "call-4", name: "mcp__mailcow__get_status", arguments: "{}", durationMs: 8 },
+        ],
+      },
+      { role: "tool", toolCallId: "call-3", content: "AGENTS.md", timestamp: "2026-01-01T00:00:03.000Z" },
+      { role: "tool", toolCallId: "call-4", content: "ok", timestamp: "2026-01-01T00:00:04.000Z" },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const names = entries.filter((e) => e.role === "tool").map((e) => (e.role === "tool" ? e.name : ""));
+    assert.deepEqual(names, ["bash", "mcp__mailcow__get_status"]);
+  });
+
   test("pages backwards through a long conversation without repeating or dropping a turn", async () => {
     const messages: SessionData["messages"] = [];
     for (let i = 0; i < 12; i++) {

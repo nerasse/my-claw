@@ -15,6 +15,20 @@ import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
 
 export const MCP_SERVER_NAME = "myclaw";
 
+/** What the SDK prepends to a tool of that server: `bash` reaches the model as `mcp__myclaw__bash`. */
+const MCP_TOOL_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
+
+/**
+ * `mcp__myclaw__bash` becomes `bash`. Our own tools reach the SDK through an in-process MCP
+ * server, and that wrapper is an implementation detail of this backend: everything outside it
+ * (the app's tool cards, an approval prompt, a replayed history, a compaction summary) names a
+ * tool the way the registry does. A tool of a real MCP server keeps its prefix, which is exactly
+ * what tells the two apart.
+ */
+export function toolDisplayName(name: string): string {
+  return name.startsWith(MCP_TOOL_PREFIX) ? name.slice(MCP_TOOL_PREFIX.length) : name;
+}
+
 // Mirrors the home loop's tool-result hygiene (bridge.ts): the model must never see an
 // empty result, and no single output may poison the whole context.
 const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
