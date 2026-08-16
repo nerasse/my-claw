@@ -1,4 +1,5 @@
-import { randomBytes, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
+import QRCode from "qrcode";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { mintDevice } from "./devices.ts";
@@ -294,11 +295,22 @@ export function resetPairing(): void {
   clock = () => Date.now();
 }
 
-/** A QR the browser can render without shipping an encoder: the server draws it as SVG. */
+/**
+ * The QR the pairing page shows, drawn server-side.
+ *
+ * Encoding it in the shell would mean shipping an encoder into the one page that has to stay
+ * small and dependency-free, and the payload is the claim URL rather than the credential: a photo
+ * of the screen is worth nothing without a paired device to approve it.
+ */
 export function claimUrl(host: string, code: string, secure: boolean): string {
   return `${secure ? "https" : "http"}://${host}/pair#${code}`;
 }
 
-export function newVerificationNonce(): string {
-  return randomBytes(8).toString("hex");
+export async function claimQrSvg(host: string, code: string, secure: boolean): Promise<string> {
+  return QRCode.toString(claimUrl(host, code, secure), {
+    type: "svg",
+    margin: 1,
+    errorCorrectionLevel: "M",
+    color: { dark: "#e6e8eb", light: "#0000" },
+  });
 }

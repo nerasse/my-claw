@@ -1815,6 +1815,8 @@ export interface MyClawAppPairChallenge {
   code: string;
   verification: string;
   expiresAt: number;
+  /** The claim URL as an SVG QR, drawn server-side so the shell ships no encoder. */
+  qrSvg?: string;
 }
 
 /** Pairing socket: somebody has looked this code up and is deciding. */

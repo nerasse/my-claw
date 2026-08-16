@@ -887,28 +887,24 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async handleFetch(req: Request, server: Server<MyClawAppSessionData>): Promise<Response | undefined> {
     const url = new URL(req.url);
 
+    // Every authenticated route resolves its device the same way: the query pair a native client
+    // presents, or the session cookie a browser cannot avoid sending. One resolver, so a route
+    // can never end up covering one of the two and not the other.
     if (url.pathname === "/media" && req.method === "POST") {
-      const deviceId = url.searchParams.get("device") ?? "";
-      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
-        return new Response("Unauthorized", { status: 401 });
-      }
+      const deviceId = this.authenticate(req, url);
+      if (!deviceId) return new Response("Unauthorized", { status: 401 });
       return this.handleUpload(this.ownerFor(deviceId), req);
     }
 
     if (url.pathname.startsWith("/media/")) {
       const id = url.pathname.slice("/media/".length);
-      const deviceId = url.searchParams.get("device") ?? "";
-      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
-        return new Response("Unauthorized", { status: 401 });
-      }
+      const deviceId = this.authenticate(req, url);
+      if (!deviceId) return new Response("Unauthorized", { status: 401 });
       return this.serveMedia(id, this.ownerFor(deviceId), url.searchParams.get("thumb") === "1");
     }
 
     if (url.pathname === "/skills") {
-      const deviceId = url.searchParams.get("device") ?? "";
-      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
-        return new Response("Unauthorized", { status: 401 });
-      }
+      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
       return this.serveSkill(
         url.searchParams.get("source") ?? "",
         url.searchParams.get("name") ?? "",
@@ -917,10 +913,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     if (url.pathname === "/health") {
-      const deviceId = url.searchParams.get("device") ?? "";
-      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
-        return new Response("Unauthorized", { status: 401 });
-      }
+      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
       return Response.json({ activeRun: runRegistry.hasAny() });
     }
 
@@ -937,6 +930,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
         deviceId: "",
         owner: "",
         lastSeen: Date.now(),
+        host,
+        secure,
         origin: req.headers.get("origin") ?? undefined,
         ip: clientIp(this.config, req.headers, server.requestIP(req)?.address),
         userAgent: req.headers.get("user-agent") ?? undefined,
@@ -1017,6 +1012,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     return new Response("Not Found", { status: 404 });
+  }
+
+  /** The device behind a request: query credentials for a native client, cookie for a browser. */
+  private authenticate(req: Request, url: URL): string | null {
+    const deviceId = url.searchParams.get("device") ?? "";
+    if (deviceId && this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) return deviceId;
+    return this.cookieDevice(req);
   }
 
   /** The device a session cookie stands for, or null. Never trusts a cookie for a disabled device. */

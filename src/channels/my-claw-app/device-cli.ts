@@ -67,16 +67,27 @@ async function requestTicket(
   token: string,
 ): Promise<{ code: string; host: string } | { error: string }> {
   const url = `http://127.0.0.1:${port}/my-claw-app/ticket?device=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
-  try {
-    const response = await fetch(url, { method: "POST", signal: AbortSignal.timeout(5000) });
-    if (response.status === 409) return { error: "pairing is disabled in the config" };
-    if (!response.ok) return { error: `daemon answered ${response.status}` };
-    const body = (await response.json()) as { code?: string; host?: string };
-    if (!body.code) return { error: "daemon returned no code" };
-    return { code: body.code, host: body.host ?? `127.0.0.1:${port}` };
-  } catch {
-    return { error: "the daemon is not reachable" };
+  // The device exists on disk, but the daemon is another process and learns about it through its
+  // config watcher, which debounces. Asking once answers 401 for a credential that is perfectly
+  // valid, so the call waits for the reload instead of reporting a failure that is only early.
+  let last = "the daemon is not reachable";
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const response = await fetch(url, { method: "POST", signal: AbortSignal.timeout(5000) });
+      if (response.status === 409) return { error: "pairing is disabled in the config" };
+      if (response.ok) {
+        const body = (await response.json()) as { code?: string; host?: string };
+        if (!body.code) return { error: "daemon returned no code" };
+        return { code: body.code, host: body.host ?? `127.0.0.1:${port}` };
+      }
+      last = `daemon answered ${response.status}`;
+      if (response.status !== 401) return { error: last };
+    } catch {
+      return { error: "the daemon is not reachable" };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
   }
+  return { error: `${last} (the config reload did not land in time)` };
 }
 
 function formatCode(code: string): string {

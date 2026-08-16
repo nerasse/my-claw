@@ -146,6 +146,13 @@ attributes and the CSWSH guards are specified in `docs/my-claw-app-channel.md`.
 A `grant` that expires unused leaves a device entry behind with no session attached. That is
 visible in `myclaw device ls` (a device with no `lastSeenAt`) and revocable like any other.
 
+The Devices screen in the app is the other half: it lists the paired devices with their last-seen
+time, revokes one behind a confirmation, and refuses to revoke the credential it is talking on.
+A code reaches it either from the QR scanner or typed by hand, is looked up first, and the three
+digits are shown next to the origin, the IP and the user agent before anything is approved. What
+the scanner reads is validated as a pairing code and dropped otherwise: the approval path is the
+one place where a wrong value costs an account.
+
 ### Authenticated frames (any paired device)
 
 | Direction | Frame | Payload |
@@ -258,9 +265,11 @@ scripts/myclaw.sh  # forwards `device`
 
 ## Open decisions
 
-1. **Camera library in the app**: `expo-camera` (Expo 57 already present, barcode scanning
-   included, autolinking exclusions to adjust) versus `react-native-vision-camera` (heavier,
-   faster). Manual code entry ships either way and is the fallback when permission is refused.
+1. ~~Camera library in the app~~ **Decided: `expo-camera`.** Expo was already a dependency, the
+   barcode scanner comes with it, and the alternative (`react-native-vision-camera`) is heavier
+   for a feature used once per browser. It costs 8 MB of APK and one permission asked when the
+   scanner opens, never at boot. A `.web.tsx` twin of the scanner keeps the camera out of the
+   browser bundle entirely, and the code stays typable everywhere as the fallback.
 2. ~~SSO in front of `/pair`~~ **Decided: no SSO.** The instance lives on the tailnet and the LAN,
    never on the public internet, and pairing plus the device cookie is the whole authentication
    story. Every guard in this document therefore carries its full weight: they are not backed by

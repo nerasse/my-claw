@@ -212,9 +212,11 @@ Its script and its style are inline, which the shared `default-src 'self'` polic
 page carries a per-response nonce and a CSP of its own (`script-src 'nonce-...'`). `unsafe-inline`
 would have allowed any injected script too, which is the opposite of the point.
 
-The QR is not implemented yet: the page shows the code and takes it typed. Rendering it
-server-side as an SVG in the challenge frame is the plan, because encoding it in the shell means
-shipping an encoder into the one page that must stay small and dependency-free.
+The QR is drawn server-side and arrives in a second `pair.challenge` frame, so the code is on
+screen immediately rather than after the encoder. It encodes the claim URL, never the credential:
+a photograph of the screen is worth nothing without a paired device to approve it. Encoding it in
+the page would mean shipping an encoder into the one file that has to stay small and
+dependency-free.
 
 A browser that hits `/pair` while already holding a valid cookie is redirected to `/`. The shell
 is versioned with the server, not with the bundle, so a bundle rollback never leaves the door
@@ -226,15 +228,20 @@ The app and the server release independently, so the server pulls the artifact r
 embedding it:
 
 ```
-myclaw web install [--version vX.Y.Z]   # default: latest release of my-claw-app
-myclaw web ls                           # installed versions, which one is current
-myclaw web use vX.Y.Z                   # flip the symlink, instant rollback
+myclaw web install <version> [--from <url|path>]
+myclaw web ls
+myclaw web use <version>
+myclaw web rm <version>
 ```
 
-`install` downloads `dist-web.tar.gz` from the my-claw-app release on the Forgejo registry,
-verifies the checksum, extracts to `$MY_CLAW_DIR/web/<version>/` and flips `$MY_CLAW_DIR/web/current`
-atomically (symlink rename). Files are read per request, so a new version is live with no restart
-and a half-extracted tree is never served.
+`install` downloads `dist-web.tar.gz` from the my-claw-app release (or takes a local path with
+`--from`), prints its sha256, extracts into a staging directory and only then renames it to
+`$MY_CLAW_DIR/web/<version>/`: a half-extracted tree is never reachable, because the serving path
+only ever sees the finished one. `current` is a symlink, so switching versions and rolling back
+are the same operation. Files are read per request: a new bundle is live without a restart.
+
+A real directory at `current` is refused rather than replaced. It is somebody's hand-installed
+bundle, and deleting files nobody asked to lose is not an upgrade.
 
 Same CLI dispatch as `myclaw device`, same forwarding in `scripts/myclaw.sh`.
 

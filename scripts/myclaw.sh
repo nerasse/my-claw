@@ -82,6 +82,7 @@ usage() {
   echo "  status    Show status of my-claw service"
   echo "  dev       Stop services and run development mode (bun --watch)"
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
+  echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
   echo "  update    Update to latest release"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
@@ -293,6 +294,10 @@ case "$cmd" in
   device)
     shift
     run_cli device "$@"
+    ;;
+  web)
+    shift
+    run_cli web "$@"
     ;;
   *)
     usage

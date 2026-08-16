@@ -1,7 +1,14 @@
 import type { ServerWebSocket } from "bun";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
-import { claim, closeSession, openSession, type PairingDelivery, type PairingDenial } from "./pairing.ts";
+import {
+  claim,
+  claimQrSvg,
+  closeSession,
+  openSession,
+  type PairingDelivery,
+  type PairingDenial,
+} from "./pairing.ts";
 import { redeemGrant, sessionCookie } from "./web-session.ts";
 import { securityHeaders } from "./web.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
@@ -22,6 +29,9 @@ export interface PairSocketData {
   ip?: string;
   userAgent?: string;
   lastSeen: number;
+  /** Host and scheme the browser used, so the QR points back at the page it is shown on. */
+  host?: string;
+  secure?: boolean;
   /** Present so the shape stays compatible with the chat socket data. */
   deviceId: string;
   owner: string;
@@ -131,6 +141,24 @@ export class PairingSockets {
       verification: opened.session.verification,
       expiresAt: opened.session.expiresAt,
     });
+    // The QR is a second frame: drawing it takes a few milliseconds, and the code must be on
+    // screen immediately rather than after the encoder.
+    if (ws.data.host) {
+      void claimQrSvg(ws.data.host, opened.session.code, ws.data.secure === true)
+        .then((qrSvg) => {
+          if (ws.data.code !== opened.session.code) return;
+          send(ws, {
+            type: "pair.challenge",
+            code: opened.session.code,
+            verification: opened.session.verification,
+            expiresAt: opened.session.expiresAt,
+            qrSvg,
+          });
+        })
+        .catch(() => {
+          // No QR is a cosmetic loss: the code is typable and the page says so.
+        });
+    }
   }
 
   private grant(ws: PairWs, delivery: PairingDelivery): void {

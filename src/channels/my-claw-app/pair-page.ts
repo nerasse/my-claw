@@ -30,6 +30,8 @@ const PAGE = String.raw`<!DOCTYPE html>
   main { width: min(420px, 92vw); padding: 28px 24px 32px; }
   h1 { font-size: 19px; font-weight: 600; margin: 0 0 6px; }
   p { margin: 0 0 20px; color: #9aa4b2; }
+  .qr { display: grid; place-items: center; padding: 14px 0 4px; }
+  .qr svg { width: 190px; height: 190px; }
   .code {
     font: 600 30px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
     letter-spacing: 3px; text-align: center; padding: 18px 0;
@@ -55,8 +57,9 @@ const PAGE = String.raw`<!DOCTYPE html>
 <body>
 <main>
   <h1>Pair this browser</h1>
-  <p>Open MyClaw on a paired device, then Settings, Devices, and approve this code.</p>
+  <p>Scan this with MyClaw on a paired device, or approve the code from Settings, Devices.</p>
 
+  <div class="qr" id="qr"></div>
   <div class="code" id="code">--------</div>
   <p class="verify">Check that the app shows <b id="verify">---</b></p>
   <div class="state" id="state">connecting</div>
@@ -71,6 +74,7 @@ const PAGE = String.raw`<!DOCTYPE html>
 <script nonce="__NONCE__">
 (function () {
   var codeEl = document.getElementById('code');
+  var qrEl = document.getElementById('qr');
   var verifyEl = document.getElementById('verify');
   var stateEl = document.getElementById('state');
   var form = document.getElementById('claim');
@@ -103,6 +107,9 @@ const PAGE = String.raw`<!DOCTYPE html>
     if (frame.type === 'pair.challenge') {
       codeEl.textContent = frame.code.slice(0, 4) + '-' + frame.code.slice(4);
       verifyEl.textContent = frame.verification;
+      // The server draws the QR and sends it in a second frame; innerHTML is safe here because
+      // the payload is an SVG this server generated, not anything a client sent.
+      if (frame.qrSvg) qrEl.innerHTML = frame.qrSvg;
       say('waiting for approval');
       return;
     }
@@ -117,7 +124,9 @@ const PAGE = String.raw`<!DOCTYPE html>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ grant: frame.grant }),
       }).then(function (response) {
-        if (response.ok) location.replace('/');
+        // An explicit origin, because replacing with '/' alone leaves the claim code sitting in
+        // the address bar as a fragment, ready to be copied out of a screenshot.
+        if (response.ok) location.replace(location.origin + '/');
         else say('the session could not be opened', 'error');
       }).catch(function () { say('the session could not be opened', 'error'); });
       return;

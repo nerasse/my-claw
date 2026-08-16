@@ -2613,16 +2613,23 @@ async function runDeviceCliCommand(args: string[]): Promise<number> {
   return runDeviceCli(args);
 }
 
+async function runWebCliCommand(args: string[]): Promise<number> {
+  const { runWebCli } = await import("./channels/my-claw-app/web-cli.ts");
+  return runWebCli(args);
+}
+
+const CLI_COMMANDS = ["codex", "claude", "config", "device", "web"] as const;
+
 const cliArgs = process.argv.slice(2);
-if (cliArgs[0] === "codex" || cliArgs[0] === "claude" || cliArgs[0] === "config" || cliArgs[0] === "device") {
-  const runner =
-    cliArgs[0] === "codex"
-      ? runCodexCli
-      : cliArgs[0] === "claude"
-        ? runClaudeCli
-        : cliArgs[0] === "device"
-          ? runDeviceCliCommand
-          : runConfigCli;
+if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
+  const runners: Record<string, (args: string[]) => Promise<number>> = {
+    codex: runCodexCli,
+    claude: runClaudeCli,
+    config: runConfigCli,
+    device: runDeviceCliCommand,
+    web: runWebCliCommand,
+  };
+  const runner = runners[cliArgs[0]!]!;
   runner(cliArgs.slice(1))
     .then((code) => process.exit(code))
     .catch((err) => {
