@@ -49,7 +49,11 @@ async function readPromptPath(path: string, name: string): Promise<string | null
   } catch (err) {
     if (!warned.has(path)) {
       warned.add(path);
-      void log("warn", "prompt file unreadable", {
+      // A prompt layer is optional: a workspace with no SOUL.md is a configuration, not a fault,
+      // and warning about it four times per boot per workspace is how a log stops being read.
+      // Losing a file that was readable a moment ago is the opposite, and keeps the warning.
+      const missing = (err as { code?: string }).code === "ENOENT";
+      void log(missing && cached === undefined ? "debug" : "warn", "prompt file unreadable", {
         path,
         error: String(err),
         keptPreviousContent: cached !== undefined,

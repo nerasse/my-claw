@@ -52,7 +52,12 @@ export function clampEffortToLadder(
   const key = `${modelId}:${level}>${best}`;
   if (!warned.has(key)) {
     warned.add(key);
-    void log("warn", "effort level is not on this model's ladder, clamping", {
+    // Debug, not warn. A warning is something to act on, and this is the documented behaviour of
+    // a pin meeting a ladder that does not have that rung -- already surfaced where it matters,
+    // in the picker, which reports the level actually sent and where it came from. It reads as an
+    // incident because `resolveLlmConfig` runs for every model of the catalogue whenever a menu
+    // is built: 1358 of these in one day drowned the two lines that were real.
+    void log("debug", "effort level is not on this model's ladder, clamping", {
       model: modelId,
       effort: level,
       clamped: best,
