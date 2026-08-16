@@ -18,7 +18,7 @@ import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { approve, createTicket, deny, lookup, pairingEnabled } from "./pairing.ts";
 import { listDevices, revokeDevice, touchDevice } from "./devices.ts";
 import { pairPageResponse } from "./pair-page.ts";
-import { deviceOfSession, readCookie, revokeSessionsOfDevice, SESSION_COOKIE } from "./web-session.ts";
+import { deviceOfSession, pruneOrphanSessions, readCookie, SESSION_COOKIE } from "./web-session.ts";
 import {
   clientIp,
   pairRedirect,
@@ -508,6 +508,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
     });
     this.sweeper = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS);
     this.sweeper.unref?.();
+    // A session whose device is gone is refused at every request anyway; dropping it at boot is
+    // what keeps the store from carrying credentials nobody can account for.
+    const orphans = await pruneOrphanSessions(Object.keys(this.config.devices ?? {})).catch(() => 0);
+    if (orphans > 0) await myClawAppLog("info", "dropped web sessions with no device", { orphans });
     await myClawAppLog("info", "adapter started", { port: this.server.port });
   }
 
@@ -816,9 +820,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
       });
       return;
     }
+    // The browser sessions go with the device inside revokeDevice, for every caller: the socket
+    // is what only this path can close.
     const revoked = await revokeDevice(deviceId, this.config);
     if (revoked.ok) {
-      await revokeSessionsOfDevice(deviceId);
       const live = this.sockets.get(deviceId);
       if (live) {
         try {

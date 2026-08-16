@@ -28,6 +28,7 @@ import {
   createGrant,
   redeemGrant,
   deviceOfSession,
+  pruneOrphanSessions,
   revokeSessionsOfDevice,
   sessionCookie,
   readCookie,
@@ -297,6 +298,19 @@ describe("web sessions", () => {
   test("an unknown cookie authenticates nothing", () => {
     expect(deviceOfSession("not-a-session")).toBeNull();
     expect(deviceOfSession(null)).toBeNull();
+  });
+
+  test("a session whose device is gone is pruned, whichever path removed it", async () => {
+    const kept = await redeemGrant(createGrant("web-1"));
+    const orphan = await redeemGrant(createGrant("web-gone"));
+    expect(kept.ok && orphan.ok).toBe(true);
+    if (!kept.ok || !orphan.ok) return;
+
+    // What `myclaw device rm` used to leave behind: the device removed from config.json, the
+    // session row still in web-sessions.json.
+    expect(await pruneOrphanSessions(["web-1"])).toBe(1);
+    expect(deviceOfSession(orphan.sessionId)).toBeNull();
+    expect(deviceOfSession(kept.sessionId)).toBe("web-1");
   });
 
   test("revoking a device drops the browser sessions it opened", async () => {

@@ -133,6 +133,29 @@ export async function revokeSessionsOfDevice(deviceId: string): Promise<number> 
   return dropped;
 }
 
+/**
+ * Drops every session whose device no longer exists.
+ *
+ * `cookieDevice` already refuses a session pointing at a device that is gone, so this is not what
+ * keeps a revoked browser out; it is what keeps the store honest. A row survived on this install
+ * because `myclaw device rm` removed the device without touching the sessions, and a store that
+ * quietly accumulates dead credentials is the kind of thing that is only noticed the day one of
+ * them is not dead.
+ */
+export async function pruneOrphanSessions(knownDeviceIds: Iterable<string>): Promise<number> {
+  load();
+  const known = new Set(knownDeviceIds);
+  let dropped = 0;
+  for (const [id, session] of sessions) {
+    if (!known.has(session.deviceId)) {
+      sessions.delete(id);
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) await persist();
+  return dropped;
+}
+
 export async function revokeSession(sessionId: string): Promise<boolean> {
   load();
   const removed = sessions.delete(keyOf(sessionId));

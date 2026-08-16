@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { upsertDevice, removeDevice, type DeviceEntry } from "../../core/config-edit.ts";
+import { revokeSessionsOfDevice } from "./web-session.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 
 /**
@@ -124,6 +125,14 @@ export async function mintDevice(
   return { ok: true, device: { deviceId, token, owner } };
 }
 
+/**
+ * Removing a device takes its browser sessions with it, whoever asks.
+ *
+ * The adapter did this itself, so the app's Devices screen was clean and `myclaw device rm` was
+ * not: it left the session row behind, and a store of credentials pointing at devices that no
+ * longer exist is exactly the sort of thing that stays harmless until it is not. It belongs here,
+ * on the one function that removes a device.
+ */
 export async function revokeDevice(
   deviceId: string,
   config?: MyClawAppChannelConfig,
@@ -131,7 +140,8 @@ export async function revokeDevice(
   const written = await removeDevice(deviceId);
   if (!written.ok) return { ok: false, error: written.error };
   if (config?.devices) delete config.devices[deviceId];
-  myClawAppLog("info", "device revoked", { deviceId });
+  const sessions = await revokeSessionsOfDevice(deviceId);
+  myClawAppLog("info", "device revoked", { deviceId, sessions });
   return { ok: true };
 }
 
