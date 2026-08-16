@@ -2,16 +2,44 @@
 // so it can redirect every filesystem root away from the real ~/.my-claw BEFORE
 // config.ts evaluates MY_CLAW_DIR. Without this, running `bun test` writes session
 // files into the user's real ~/.my-claw/sessions and can mutate production data.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach } from "bun:test";
+import { afterAll, afterEach } from "bun:test";
 
 // Redirect MY_CLAW_DIR (sessions, store, config path) to a throwaway temp dir.
 // MY_CLAW_WORKSPACE is deliberately left unset: tool tests rely on the unsandboxed
 // fallback, and the workspace default already derives from MY_CLAW_DIR.
 const root = mkdtempSync(join(tmpdir(), "my-claw-test-"));
 process.env["MY_CLAW_DIR"] = root;
+
+// The root is thrown away with the run. Nothing used to remove it: every `bun test` left a few
+// megabytes in /tmp, and 238 of them had taken 900 MB of a 5.7 GB tmpfs -- on the machine where a
+// full /tmp is already known to break the browser sidecar.
+//
+// `afterAll` from the preload is global, and it is what actually fires: an `exit` listener alone
+// left the directory behind (measured), because the runner does not always reach a clean exit.
+// The listener stays as the second net for a run that ends outside the test lifecycle.
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+
+// A run killed with Ctrl-C never reaches that hook, so older roots are swept on the way in. An
+// hour is well past any suite and far short of a concurrent run's lifetime, which is what keeps
+// this from deleting the directory of a test process running beside this one.
+const STALE_MS = 60 * 60 * 1000;
+try {
+  for (const name of readdirSync(tmpdir())) {
+    if (!name.startsWith("my-claw-test-") || join(tmpdir(), name) === root) continue;
+    const path = join(tmpdir(), name);
+    try {
+      if (Date.now() - statSync(path).mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
+    } catch {
+      // Someone else's directory, or gone already: not this run's problem.
+    }
+  }
+} catch {
+  // No /tmp to read is not a reason to fail a test run.
+}
 
 // Drop ambient provider credentials. Model discovery falls back to process.env when no token
 // file exists, so a developer's real token would otherwise turn a mocked-fetch test into a live
