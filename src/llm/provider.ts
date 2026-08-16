@@ -268,6 +268,12 @@ const body: Record<string, unknown> = {
   if (config.effort) {
     body["reasoning_effort"] = config.effort;
   }
+  // An endpoint the owner pinned in the picker (docs/model-identity.md). Fallbacks are off on
+  // purpose: the point of pinning is the price and the data policy of that one endpoint, and a
+  // silent reroute to another would defeat both. Only ever set for OpenRouter.
+  if (config.providerRoute) {
+    body["provider"] = { order: [config.providerRoute], allow_fallbacks: false };
+  }
 
   return body;
 }

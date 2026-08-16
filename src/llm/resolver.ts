@@ -1,6 +1,7 @@
 import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig, TagConfig } from "../core/config.ts";
 import { tagNameOf } from "../core/config.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
+import { parseModelRef } from "./model-ref.ts";
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -21,8 +22,38 @@ function buildImplicitProvider(config: LlmConfig): LlmProviderConfig {
   };
 }
 
+/**
+ * The model a reference addresses. Three rules, most specific first (docs/model-identity.md):
+ *
+ * 1. the reference is an id verbatim, which covers everything declared in config and every
+ *    qualified reference discovery produced;
+ * 2. it names a provider, so only that provider's copy of the id can answer;
+ * 3. it names no provider, so the first provider that serves it answers, in config order. This is
+ *    the short form, the one the config default, the tags and every stored session use.
+ */
 function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefined {
-  return config.models?.find((m) => m.id === modelId);
+  const models = config.models;
+  if (!models) return undefined;
+  const exact = models.find((m) => m.id === modelId);
+  if (exact) return exact;
+  const ref = parseModelRef(modelId, Object.keys(config.providers ?? {}));
+  if (ref.provider) {
+    return models.find((m) => m.provider === ref.provider && (m.apiId ?? m.id) === ref.apiId);
+  }
+  return models.find((m) => (m.apiId ?? m.id) === ref.apiId);
+}
+
+/**
+ * OpenRouter is recognised by its host, never by the key it was given in the config: the endpoint
+ * pin becomes a `provider` object in the request body, and no other API understands that field.
+ */
+export function isOpenRouterBaseUrl(baseUrl?: string): boolean {
+  if (!baseUrl) return false;
+  try {
+    return new URL(baseUrl).host.endsWith("openrouter.ai");
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -130,12 +161,20 @@ function resolveFromMerged(
   }
 
   const model = findModel(merged, effectiveModelId);
-  const providerName = model?.provider ?? merged.defaultProvider ?? "default";
+  const ref = parseModelRef(effectiveModelId, Object.keys(merged.providers ?? {}));
+  const providerName = model?.provider ?? ref.provider ?? merged.defaultProvider ?? "default";
   const provider = merged.providers?.[providerName];
 
   if (!provider) {
     throw new Error(`Provider "${providerName}" not found in config. Available: ${Object.keys(merged.providers ?? {}).join(", ")}`);
   }
+
+  // What the request carries, as opposed to what the run is called. They differ for a tag, for a
+  // provider-qualified reference and for a pinned endpoint; `model` stays the identity so status,
+  // analytics and the picker keep speaking of the same thing.
+  const wireModel = model?.apiId ?? ref.apiId;
+  const apiModel = wireModel === rawModelId ? {} : { apiModel: wireModel };
+  const providerRoute = ref.endpoint && isOpenRouterBaseUrl(provider.baseUrl) ? { providerRoute: ref.endpoint } : {};
 
   // The tag's own pin rides above every scope: referencing a tag accepts both halves of it.
   if (provider.type === "claude-sdk") {
@@ -144,7 +183,7 @@ function resolveFromMerged(
       // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
       baseUrl: "claude-sdk",
       model: rawModelId,
-      ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
+      ...apiModel,
       provider: providerName,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
@@ -160,7 +199,7 @@ function resolveFromMerged(
       // fetched by the transport (no apiKey here). See docs/codex-backend.md.
       baseUrl: provider.baseUrl ?? "https://chatgpt.com/backend-api",
       model: rawModelId,
-      ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
+      ...apiModel,
       provider: providerName,
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
@@ -172,7 +211,8 @@ function resolveFromMerged(
   return {
     baseUrl: provider.baseUrl ?? "",
     model: rawModelId,
-    ...(expanded.tag ? { apiModel: effectiveModelId } : {}),
+    ...apiModel,
+    ...providerRoute,
     provider: providerName,
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,

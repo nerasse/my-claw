@@ -193,6 +193,10 @@ Each state is a real case on the current box, not a hypothetical:
 
 ## An id must carry its provider
 
+A reference can now name its provider outright (`opencode_go/mimo-v2.5`), which is what the
+catalogue writes for every discovered model: see docs/model-identity.md for the grammar and the
+three resolution rules. The paragraph below is about the remaining hole, a bare id nobody declares.
+
 `resolveFromMerged` takes `model?.provider ?? merged.defaultProvider` (`src/llm/resolver.ts:103`).
 So an id **absent from the merged model list** is sent to the default provider -- and to that
 provider's backend. Measured, with the catalog cold:

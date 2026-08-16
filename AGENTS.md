@@ -167,7 +167,9 @@ src/
 ├── llm/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
 │   ├── tokens.ts          # Token estimation + context window trimming
-│   ├── resolver.ts        # Multi-provider model resolution
+│   ├── resolver.ts        # Multi-provider model resolution -- docs/model-identity.md
+│   ├── model-ref.ts       # Model reference grammar: provider/apiId@endpoint -- docs/model-identity.md
+│   ├── openrouter-endpoints.ts # OpenRouter per-model endpoints and provider names (lazy, cached)
 │   ├── openai-format.ts   # Tool definition + tool call format conversion
 │   ├── catalog.ts         # ModelCatalog: per-provider discovery, merge, cache, resilience
 │   ├── pricing.ts         # models.dev price + context window table -- docs/status-command.md

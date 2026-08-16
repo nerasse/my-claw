@@ -23,6 +23,7 @@ import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
+import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import { pruneOldToolResults } from "./context-pruning.ts";
 import type { ToolCallResult } from "./tool-status.ts";
@@ -461,8 +462,9 @@ export class AgentBridge implements AgentBackend {
           parentSessionId: attributionParent(session),
           platform: message.platform,
           // The model the API actually received, snapshotted at run time: a tag reference is
-          // resolved here so a later tag edit never rewrites the history a row belongs to.
-          model: llmConfig.apiModel ?? llmConfig.model,
+          // resolved here so a later tag edit never rewrites the history a row belongs to. The
+          // endpoint pin stays on it, because two endpoints of one model are two bills.
+          model: usageModelOf(llmConfig),
           baseUrl: llmConfig.baseUrl,
           streaming,
           caller: this.depth === 0 ? "orchestrator" : "subagent",
@@ -835,7 +837,7 @@ export class AgentBridge implements AgentBackend {
       sessionId: session.id,
       parentSessionId: attributionParent(session),
       platform: message.platform,
-      model: llmConfig.apiModel ?? llmConfig.model,
+      model: usageModelOf(llmConfig),
       baseUrl: llmConfig.baseUrl,
       streaming: false,
       caller: this.depth === 0 ? "orchestrator" : "subagent",

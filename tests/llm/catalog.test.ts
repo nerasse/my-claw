@@ -87,20 +87,23 @@ test("refresh discovers SDK + OpenAI models, groups them, skips default alias", 
     await catalog.refresh();
 
     const ids = catalog.discovered().map((m) => m.id);
-    // "default" skipped; sonnet/haiku from SDK; qwen from openai (mimo deduped later by mergeModels, not here)
-    assert.ok(ids.includes("sonnet"));
-    assert.ok(ids.includes("haiku"));
-    assert.ok(ids.includes("qwen-72b"));
-    assert.ok(!ids.includes("default"));
+    // "default" skipped; sonnet/haiku from SDK; qwen from openai. Every reference is qualified by
+    // its provider, and carries the id that provider knows as `apiId`.
+    assert.ok(ids.includes("anthropic/sonnet"));
+    assert.ok(ids.includes("anthropic/haiku"));
+    assert.ok(ids.includes("litellm/qwen-72b"));
+    assert.ok(!ids.some((id) => id.endsWith("/default")));
 
-    const sonnet = catalog.discovered().find((m) => m.id === "sonnet");
+    const sonnet = catalog.discovered().find((m) => m.id === "anthropic/sonnet");
+    assert.equal(sonnet?.apiId, "sonnet");
     assert.equal(sonnet?.provider, "anthropic");
     assert.equal(sonnet?.group, "Claude (abo)");
     assert.equal(sonnet?.vision, true);
     assert.equal(sonnet?.supportsEffort, true);
     assert.deepEqual(sonnet?.supportedEffortLevels, ["low", "high"]);
 
-    const qwen = catalog.discovered().find((m) => m.id === "qwen-72b");
+    const qwen = catalog.discovered().find((m) => m.id === "litellm/qwen-72b");
+    assert.equal(qwen?.apiId, "qwen-72b");
     assert.equal(qwen?.provider, "litellm");
     assert.equal(qwen?.group, "LiteLLM");
 
@@ -126,12 +129,12 @@ test("refresh is resilient: a failing provider keeps its previous models", async
     clearCatalogCache();
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["sonnet"]);
+    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet"]);
 
     // Second refresh: openai now works, adds qwen; sonnet still there.
     failFetch = false;
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["qwen-72b", "sonnet"]);
+    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet", "litellm/qwen-72b"]);
   } finally {
     mock.restore();
   }
@@ -171,7 +174,7 @@ test("answered(): only a provider that listed in full is evidence about its own 
     failFetch = true;
     await catalog.refresh();
     assert.equal(catalog.answered("litellm"), false);
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["qwen-72b", "sonnet"]);
+    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet", "litellm/qwen-72b"]);
   } finally {
     mock.restore();
   }
@@ -190,7 +193,7 @@ test("answered(): half an answer from the anthropic provider is not an answer", 
     await catalog.refresh();
     // The aliases arrived, the versioned list did not: the models kept are partly the previous
     // set, so this listing cannot prove a versioned model disappeared.
-    assert.ok(catalog.discovered().some((m) => m.id === "sonnet"));
+    assert.ok(catalog.discovered().some((m) => m.id === "anthropic/sonnet"));
     assert.equal(catalog.answered("anthropic"), false);
     // The provider that did answer is unaffected by its neighbour's half-failure.
     assert.equal(catalog.answered("litellm"), true);
@@ -261,14 +264,14 @@ test("claude-sdk provider: aliases and pinned versions list flat, like every oth
 
     // One group per provider, no submenu: the label is what tells the moving alias from the
     // pinned versions.
-    const alias = catalog.discovered().find((m) => m.id === "sonnet");
+    const alias = catalog.discovered().find((m) => m.id === "anthropic/sonnet");
     assert.equal(alias?.group, "Claude (abo)");
     assert.equal(alias?.label, "Sonnet (auto)");
     // The aliases still come first, so the list opens on the auto-tracking entries.
     const ids = catalog.discovered().map((m) => m.id);
-    assert.ok(ids.indexOf("sonnet") < ids.indexOf("claude-sonnet-4-6"));
+    assert.ok(ids.indexOf("anthropic/sonnet") < ids.indexOf("anthropic/claude-sonnet-4-6"));
 
-    const opus = catalog.discovered().find((m) => m.id === "claude-opus-4-8");
+    const opus = catalog.discovered().find((m) => m.id === "anthropic/claude-opus-4-8");
     assert.equal(opus?.group, "Claude (abo)");
     assert.equal(opus?.label, "Opus 4.8");
     assert.equal(opus?.provider, "anthropic");
@@ -277,7 +280,7 @@ test("claude-sdk provider: aliases and pinned versions list flat, like every oth
     assert.deepEqual(opus?.limit, { context: 1000000, output: 128000 });
 
     // Effort is per model: a model that reports none must not inherit the global list.
-    const sonnet46 = catalog.discovered().find((m) => m.id === "claude-sonnet-4-6");
+    const sonnet46 = catalog.discovered().find((m) => m.id === "anthropic/claude-sonnet-4-6");
     assert.equal(sonnet46?.group, "Claude (abo)");
     assert.equal(sonnet46?.supportsEffort, false);
     assert.equal(sonnet46?.supportedEffortLevels, undefined);
@@ -300,7 +303,7 @@ test("claude-sdk provider: losing the version endpoint keeps the aliases and the
 
     mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
     await catalog.refresh();
-    assert.ok(catalog.discovered().some((m) => m.id === "claude-opus-4-8"));
+    assert.ok(catalog.discovered().some((m) => m.id === "anthropic/claude-opus-4-8"));
 
     // The aliases are what make the provider usable, so they must survive on their own; the
     // previously discovered versions are kept too rather than vanishing from the menu.
@@ -308,8 +311,8 @@ test("claude-sdk provider: losing the version endpoint keeps the aliases and the
     mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
     await catalog.refresh();
     const ids = catalog.discovered().map((m) => m.id).sort();
-    assert.deepEqual(ids, ["claude-opus-4-8", "claude-sonnet-4-6", "sonnet"]);
-    assert.equal(catalog.discovered().find((m) => m.id === "claude-opus-4-8")?.group, "Claude (abo)");
+    assert.deepEqual(ids, ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6", "anthropic/sonnet"]);
+    assert.equal(catalog.discovered().find((m) => m.id === "anthropic/claude-opus-4-8")?.group, "Claude (abo)");
   } finally {
     mock?.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
@@ -324,7 +327,7 @@ test("claude-sdk provider: no token means aliases only, not a failed refresh", a
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id), ["sonnet"]);
+    assert.deepEqual(catalog.discovered().map((m) => m.id), ["anthropic/sonnet"]);
   } finally {
     mock.restore();
   }
@@ -346,15 +349,15 @@ test("claude-sdk provider: an alias is marked (auto) only when its family is kno
     await catalog.refresh();
 
     // A variant marker names the same family as the plain alias, so it tracks a family too.
-    const variant = catalog.discovered().find((m) => m.id === "opus[1m]");
+    const variant = catalog.discovered().find((m) => m.id === "anthropic/opus[1m]");
     assert.equal(variant?.group, "Claude (abo)");
     assert.equal(variant?.label, "Opus (1M context) (auto)");
     // An alias the versioned list knows nothing about tracks nothing: no "(auto)" on it.
-    const mystery = catalog.discovered().find((m) => m.id === "mystery");
+    const mystery = catalog.discovered().find((m) => m.id === "anthropic/mystery");
     assert.equal(mystery?.group, "Claude (abo)");
     assert.equal(mystery?.label, "Mystery");
     // "default" resolves to another listed model, so it stays out of the menu.
-    assert.ok(!catalog.discovered().some((m) => m.id === "default"));
+    assert.ok(!catalog.discovered().some((m) => m.apiId === "default"));
   } finally {
     mock.restore();
     if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];

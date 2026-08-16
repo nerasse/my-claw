@@ -267,8 +267,18 @@ export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhig
 export const EFFORT_ORDER: readonly EffortLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 export interface LlmModelConfig {
+  /**
+   * How the model is addressed everywhere (menus, sessions, tags, analytics). Discovery writes a
+   * provider-qualified reference (`opencode_go/mimo-v2.5`) because two providers serving the same
+   * name are two different prices; a model declared in config keeps the id its owner wrote. See
+   * docs/model-identity.md.
+   */
   id: string;
   label: string;
+  /**
+   * The id the provider's API knows, when `id` is qualified. Absent means the two are the same.
+   */
+  apiId?: string;
   provider?: string;
   // Optional submenu grouping for the model picker: models sharing a `group` value are
   // collapsed behind a single "<group> >" entry in /model. A "/"-separated value nests
@@ -357,6 +367,10 @@ export interface ResolvedLlmConfig {
   // providers). The dispatcher compares it across resolutions to decide whether an outage on
   // this run can be rerouted to the default provider at all.
   provider?: string;
+  // OpenRouter endpoint the run is pinned to ("azure/eu"), from the `@` suffix of the reference.
+  // Set only for OpenRouter providers: it becomes `provider.order` on the request, and nothing
+  // else understands that field. See docs/model-identity.md.
+  providerRoute?: string;
   apiKey?: string;
   headers?: Record<string, string>;
   vision?: boolean;

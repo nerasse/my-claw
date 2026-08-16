@@ -36,6 +36,7 @@ import { loadAllPromptFiles, loadCorePrompt, type PromptResolveOptions } from ".
 import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES } from "../prompt/files.ts";
 import type { AgentRegistry } from "../../agents/registry.ts";
 import { normalizeUntrusted } from "../prompt/normalize-untrusted.ts";
+import { usageModelOf } from "../../llm/model-ref.ts";
 
 export interface BrowserSubagentResult {
   success: boolean;
@@ -286,7 +287,7 @@ export class BrowserSubagent {
           sessionId: "browser-subagent",
           parentSessionId: this.callerSessionId,
           platform: "internal",
-          model: llmConfig.apiModel ?? llmConfig.model,
+          model: usageModelOf(llmConfig),
           baseUrl: llmConfig.baseUrl,
           streaming: false,
           caller: "browser",
@@ -433,7 +434,7 @@ export class BrowserSubagent {
         sessionId: "browser-subagent",
         parentSessionId: this.callerSessionId,
         platform: "internal",
-        model: llmConfig.apiModel ?? llmConfig.model,
+        model: usageModelOf(llmConfig),
         baseUrl: llmConfig.baseUrl,
         streaming: false,
         caller: "browser",

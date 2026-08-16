@@ -133,6 +133,10 @@ function collapseVersions(s: string): string {
  * so an exact match is never overridden by a normalised one.
  */
 export function modelKeyCandidates(model: string): string[] {
+  // An endpoint pin addresses one route of a model, never a different model: it says nothing to
+  // a price table (docs/model-identity.md). Dropped first, or the last segment would be a region.
+  const at = model.lastIndexOf("@");
+  if (at > 0) model = model.slice(0, at);
   const segment = model.split("/").pop() ?? model;
   const stripped = segment.replace(VARIANT_SUFFIX, "").replace(/-+$/, "");
   const out = [

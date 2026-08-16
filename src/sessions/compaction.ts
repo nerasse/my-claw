@@ -7,6 +7,7 @@ import type { SessionData, SessionMessage } from "./store.ts";
 import { attributionParent } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
+import { usageModelOf } from "../llm/model-ref.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 const HEAD_KEEP = 3;
@@ -171,7 +172,7 @@ export async function compactSession(
       // to the session it is compacting.
       parentSessionId: attributionParent(session),
       platform: session.platform,
-      model: llmConfig.model,
+      model: usageModelOf(llmConfig),
       baseUrl: llmConfig.baseUrl,
       streaming: false,
       caller: "compaction",

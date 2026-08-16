@@ -27,11 +27,24 @@ const DISCOVER_TIMEOUT_MS = 15_000;
 /**
  * Merge curated config models with discovered ones. Config always wins on id collision, so the
  * owner can override a discovered model's label/group/limit/vision by declaring the same id.
+ *
+ * The collision is on the reference, which discovery qualifies by provider: a model declared for
+ * one provider no longer hides the same name served by another. That is the whole point, since
+ * the price, the window and the data policy differ per provider.
  */
 export function mergeModels(base: LlmModelConfig[], discovered: LlmModelConfig[]): LlmModelConfig[] {
   const seen = new Set(base.map((m) => m.id));
   const extra = discovered.filter((m) => !seen.has(m.id));
   return [...base, ...extra];
+}
+
+/**
+ * The reference a discovered model is addressed by: its provider, then the id that provider
+ * knows. Two providers listing `gpt-5.6-luna` produce two entries, and each keeps its own
+ * `apiId` for the wire. See docs/model-identity.md.
+ */
+function discoveredModel(model: Omit<LlmModelConfig, "id"> & { id: string; provider: string }): LlmModelConfig {
+  return { ...model, id: `${model.provider}/${model.id}`, apiId: model.id };
 }
 
 /**
@@ -71,7 +84,8 @@ export function applyModelWindows(
   if (!table) return models;
   return models.map((m) => {
     if (m.limit?.context) return m;
-    const hit = table.contextWindowOf(m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    // The table is keyed by the id the provider publishes, never by our qualified reference.
+    const hit = table.contextWindowOf(m.apiId ?? m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
     if (!hit) return m;
     return { ...m, limit: { ...m.limit, context: hit.tokens }, contextFrom: "models.dev" };
   });
@@ -100,12 +114,12 @@ export function applyModelMetadata(
 ): LlmModelConfig[] {
   if (!table) return models;
   return models.map((m) => {
-    const needsLabel = m.label === m.id;
+    const needsLabel = m.label === m.id || m.label === m.apiId;
     const needsEffort = m.supportsEffort === undefined;
     const needsVision = m.vision === undefined;
     const needsOutput = m.limit?.output === undefined;
     if (!needsLabel && !needsEffort && !needsVision && !needsOutput) return m;
-    const meta = table.metadataOf(m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    const meta = table.metadataOf(m.apiId ?? m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
     if (!meta) return m;
     const next: LlmModelConfig = { ...m };
     if (needsLabel && meta.label !== undefined) next.label = meta.label;
@@ -230,7 +244,7 @@ function aliasModels(
     // Variant markers like "opus[1m]" name the same family as the plain alias.
     const family = families.get(alias.value.replace(/\[.*\]$/, "").toLowerCase());
     const displayName = alias.displayName || alias.value;
-    out.push({
+    out.push(discoveredModel({
       id: alias.value,
       label: family ? `${displayName} (auto)` : displayName,
       provider,
@@ -240,7 +254,7 @@ function aliasModels(
       supportsEffort: alias.supportsEffort === true,
       supportedEffortLevels: alias.supportedEffortLevels,
       vision: true,
-    });
+    }));
   }
   return out;
 }
@@ -320,7 +334,7 @@ export class ModelCatalog {
     const token = await loadClaudeToken();
     if (!token) return [];
     const models = await fetchAnthropicModels(token);
-    return models.map((m) => ({
+    return models.map((m) => discoveredModel({
       id: m.id,
       label: m.label,
       provider: name,
@@ -365,14 +379,14 @@ export class ModelCatalog {
             complete = false;
             void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
             const aliasIds = new Set(aliases.map((m) => m.value));
-            versioned = this.discoveredModels.filter((m) => m.provider === name && !aliasIds.has(m.id));
+            versioned = this.discoveredModels.filter((m) => m.provider === name && !aliasIds.has(m.apiId ?? m.id));
           }
           next.push(...aliasModels(aliases, name, provider, familyIndex(versioned)));
           next.push(...versioned);
         } else if (provider.type === "codex") {
           const models = await fetchCodexModels(provider.baseUrl ?? "");
           for (const m of models) {
-            next.push({
+            next.push(discoveredModel({
               id: m.id,
               label: m.label,
               provider: name,
@@ -380,13 +394,13 @@ export class ModelCatalog {
               supportsEffort: true,
               supportedEffortLevels: m.supportedEffortLevels,
               vision: m.vision,
-            });
+            }));
           }
         } else {
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
           const ids = await fetchOpenAiModels(provider.baseUrl ?? "", apiKey);
           for (const id of ids) {
-            next.push({ id, label: id, provider: name, group: provider.group });
+            next.push(discoveredModel({ id, label: id, provider: name, group: provider.group }));
           }
         }
       } catch (err) {
@@ -398,16 +412,17 @@ export class ModelCatalog {
           if (m.provider === name) next.push(m);
         }
       }
-      // Recorded before the cross-provider dedupe below, which would otherwise hide an id under
-      // whichever provider listed it first and make it look absent from the other.
+      // What this provider listed, in the ids it uses itself: callers ask "does provider X still
+      // serve model Y", and Y is the provider's own name for it, not our qualified reference.
       if (complete) {
-        this.listedByProvider.set(name, new Set(next.slice(before).map((m) => m.id)));
+        this.listedByProvider.set(name, new Set(next.slice(before).map((m) => m.apiId ?? m.id)));
       } else {
         this.listedByProvider.delete(name);
       }
     }
 
-    // Dedupe by id across providers (first wins).
+    // Dedupe on the reference, which carries the provider: a name served by two providers is two
+    // entries on purpose. Only a provider listing the same id twice loses one.
     const seen = new Set<string>();
     this.discoveredModels = next.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 
