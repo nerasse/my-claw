@@ -3,10 +3,12 @@ import type { AgentToolType, EffortLevel, MyClawConfig, ResolvedLlmConfig } from
 import { resolveWorkspaceKey } from "../../core/config.ts";
 import {
   MY_CLAW_DIR,
+  autoCompactEnabled,
   nestedAgentsEnabled,
   resolveAgentSkills,
   resolveAgentMcp,
   resolveAgentLlm,
+  resolveAutoCompactThreshold,
   resolveMaxIterations,
   resolveNestedAgentsMaxBytes,
 } from "../../core/config.ts";
@@ -35,7 +37,7 @@ import { ToolApprovalManager } from "../approvals.ts";
 import type { VoiceManager, SttPipeline } from "../../voice/index.ts";
 import { MessagePreprocessor } from "../preprocess.ts";
 import { renderPriorConversation } from "./history.ts";
-import { estimateTokens } from "../../llm/tokens.ts";
+import { estimateMessagesTokens, estimateTokens } from "../../llm/tokens.ts";
 import { resolveContextWindow, measuredPrompt } from "../../llm/context-window.ts";
 import { recall } from "../../memory/index.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -375,6 +377,77 @@ export class ClaudeSdkBackend implements AgentBackend {
     return { text: resultText.trim() || "Compaction did not run.", ok: false };
   }
 
+  /**
+   * How full the window is on this backend. The SDK owns the transcript, so `session.messages` is
+   * a mirror and not the prompt: the billed size of the last call is the only number that
+   * describes what the model actually holds. The mirror estimate is the fallback for the two
+   * moments there is no measurement: before the first call of a session, and right after a
+   * compaction threw the previous one away.
+   */
+  private occupiedTokens(session: SessionData): number {
+    const measured = session.lastPrompt?.tokens;
+    if (measured !== undefined && measured > 0) return measured;
+    // A tool result is a user turn as far as token counting goes: the mapping /status uses.
+    return estimateMessagesTokens(
+      session.messages.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content })),
+    );
+  }
+
+  /**
+   * The gate the home loop has always applied, on the engine that could not apply it. The SDK
+   * never hears about our context cap (docs/context-window.md), so the ceiling was decorative
+   * here: a conversation filled past 100 percent of it and nothing happened until the SDK's own
+   * threshold fired, which is set on the model's full window rather than on the cap.
+   *
+   * A failure never blocks the run: the SDK still compacts on its own before the model refuses.
+   */
+  private async maybeAutoCompact(
+    session: SessionData,
+    llmConfig: ResolvedLlmConfig,
+    agent: AgentToolType,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    // Nothing to compact before the first run of a conversation: there is no SDK session yet.
+    if (!session.sdkSessionId) return;
+    const window = resolveContextWindow({
+      model: llmConfig.model,
+      config: this.config,
+      declared: llmConfig.limit?.context,
+      baseUrl: llmConfig.baseUrl,
+      sessionOverride: session.contextOverride,
+      agent,
+    });
+    const threshold = resolveAutoCompactThreshold(this.config);
+    const occupied = this.occupiedTokens(session);
+    if (occupied <= window.effective * threshold) return;
+
+    void log("info", "auto-compaction triggered", {
+      sessionId: session.id,
+      engine: "sdk",
+      occupiedTokens: occupied,
+      measured: session.lastPrompt?.tokens,
+      contextLimit: window.effective,
+      rawContextLimit: window.raw,
+      windowSource: window.rawSource,
+      threshold,
+      messageCount: session.messages.length,
+    });
+    try {
+      const outcome = await this.compact(session, signal);
+      if (!outcome.ok) {
+        void log("warn", "auto-compaction skipped", { sessionId: session.id, reason: outcome.text });
+        return;
+      }
+      // The measurement describes a transcript that no longer exists, and nothing ever shrinks the
+      // mirror: kept, it would re-trigger the gate on every single run from here on.
+      delete session.lastPrompt;
+      void log("info", "auto-compaction done", { sessionId: session.id, engine: "sdk" });
+    } catch (err) {
+      if (isAbort(err, signal)) throw err;
+      void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
+    }
+  }
+
   private async handle(
     message: UnifiedMessage,
     session: SessionData,
@@ -457,6 +530,12 @@ export class ClaudeSdkBackend implements AgentBackend {
     let removeAbortListener: (() => void) | undefined;
 
     try {
+      // Run start is the only moment the session is guaranteed idle: the router serializes runs
+      // per session, and a /compact typed meanwhile is refused while a run holds the session.
+      if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
+        await this.maybeAutoCompact(session, llmConfig, agentToolType, signal);
+      }
+
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
       const allSkills = this.skillRegistry.list(agent.skills, session.workspace);

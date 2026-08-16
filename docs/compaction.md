@@ -84,7 +84,24 @@ outcome line alone, since a 16 kB summary posted into a room is not a feature.
 
 ## Auto-compaction
 
-The home loop compacts on its own when the context fills (`bridge.ts`, `context.autoCompact`,
-threshold in `docs/context-window.md`). It runs *inside* the run that triggered it, so it takes
-no hold: the run already owns the session. The SDK does its own auto-compaction, out of reach
-from here, and reports it with `trigger: "auto"` in the transcript boundary.
+Both engines compact on their own when the context fills (`context.autoCompact`, threshold in
+`docs/context-window.md`). The gate runs *inside* the run that triggered it, so it takes no
+hold: the run already owns the session, and a `/compact` typed meanwhile is refused for exactly
+that reason.
+
+|  | home loop (`bridge.ts`) | claude-sdk (`claude-sdk/backend.ts`) |
+|---|---|---|
+| what it measures | `occupiedContextTokens` over the history it is about to send | the billed prompt of the last call, the mirror estimate when there is none |
+| what it runs | the local summarizer (`compactSession`) | the SDK's native `/compact` |
+| after a success | the history is rewritten, so the measurement invalidates itself | `lastPrompt` is dropped by hand |
+
+The asymmetry is the whole point of the second engine's gate. On the SDK the transcript is not
+ours: `session.messages` is a mirror that nothing ever shrinks, and the cap we resolve is a
+number the SDK never hears about. Without the gate the ceiling was decorative there, a
+conversation sat at 110 percent of it, and only the SDK's own threshold, computed on the model's
+full window, ever fired. Dropping `lastPrompt` after a compaction is not bookkeeping either: the
+measurement describes a transcript that no longer exists, and keeping it would re-trigger the
+gate on every run from then on.
+
+The SDK also compacts by itself, out of reach from here, and reports it with `trigger: "auto"`
+in the transcript boundary.
