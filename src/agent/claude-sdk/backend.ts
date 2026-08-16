@@ -402,6 +402,7 @@ export class ClaudeSdkBackend implements AgentBackend {
    * A failure never blocks the run: the SDK still compacts on its own before the model refuses.
    */
   private async maybeAutoCompact(
+    message: UnifiedMessage,
     session: SessionData,
     llmConfig: ResolvedLlmConfig,
     agent: AgentToolType,
@@ -432,6 +433,10 @@ export class ClaudeSdkBackend implements AgentBackend {
       threshold,
       messageCount: session.messages.length,
     });
+    // Nothing travels for a minute or two while this runs, and the owner is looking at a message
+    // he just sent: the same mark a send held behind a `/compact` gets, lifted by the stream that
+    // follows it (docs/compaction.md).
+    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
     try {
       const outcome = await this.compact(session, signal);
       if (!outcome.ok) {
@@ -533,7 +538,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       // Run start is the only moment the session is guaranteed idle: the router serializes runs
       // per session, and a /compact typed meanwhile is refused while a run holds the session.
       if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(session, llmConfig, agentToolType, signal);
+        await this.maybeAutoCompact(message, session, llmConfig, agentToolType, signal);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a

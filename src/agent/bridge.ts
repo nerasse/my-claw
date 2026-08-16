@@ -327,7 +327,7 @@ export class AgentBridge implements AgentBackend {
       // Run start is the only moment the session is guaranteed idle: compacting mid-run
       // would race the tool loop, compacting post-run would race the next inbound message.
       if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(session, llmConfig, agentToolType);
+        await this.maybeAutoCompact(message, session, llmConfig, agentToolType);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
@@ -1023,7 +1023,7 @@ export class AgentBridge implements AgentBackend {
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
+  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const occupied = occupiedContextTokens(session.messages, (msgs) => this.toChatMessages([...msgs]), session.lastPrompt);
@@ -1039,6 +1039,9 @@ export class AgentBridge implements AgentBackend {
       threshold,
       messageCount: session.messages.length,
     });
+    // Nothing travels while this runs, and the owner is looking at a message he just sent: the
+    // same mark a send held behind a `/compact` gets, lifted by the stream that follows it.
+    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
     try {
       const result = await compactSession(this.config, session);
       if (!result.ok) {

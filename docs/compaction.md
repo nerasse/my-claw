@@ -105,3 +105,11 @@ gate on every run from then on.
 
 The SDK also compacts by itself, out of reach from here, and reports it with `trigger: "auto"`
 in the transcript boundary.
+
+### What the owner sees
+
+A triggered gate spends one to two minutes with nothing on the wire, on a message that was just
+sent. Both engines therefore emit `message:queued` with reason `compaction` when they fire, the
+same event a send held behind a `/compact` produces, so the app marks the bubble "waiting for the
+compaction" with its elapsed counter. The mark is lifted by whatever comes next (`chat.stream.start`,
+`chat.message` or `chat.run.end`), so a lost frame cannot strand it.

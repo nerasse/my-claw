@@ -4,6 +4,7 @@ import { ClaudeSdkBackend, type SdkQueryFn } from "../../src/agent/claude-sdk/ba
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
@@ -93,6 +94,52 @@ test("a session past the threshold is compacted before the run starts", async ()
   assert.equal(out, "answer");
   // The measurement described a transcript that no longer exists.
   assert.equal(sess.lastPrompt, undefined);
+});
+
+// A compaction is a minute or two with nothing on the wire, on a message the owner just sent:
+// without the mark the bubble looks dropped, which is the whole reason the mark exists.
+test("the bubble is marked while the compaction runs", async () => {
+  runRegistry.clear();
+  const queued: Array<{ sessionId: string; reason: string }> = [];
+  const onQueued = ({ sessionId, reason }: { sessionId: string; reason: string }): void => {
+    queued.push({ sessionId, reason });
+  };
+  hooks.on("message:queued", onQueued);
+  try {
+    const captured: Call[] = [];
+    const backend = makeBackend(scripted(captured));
+    const sess = session("s-marked");
+    sess.sdkSessionId = "sdk-mark";
+    sess.lastPrompt = { tokens: 900, messageCount: 0 };
+
+    await backend.handleMessage(msg("m1", "salut"), sess);
+
+    assert.deepEqual(queued, [{ sessionId: "s-marked", reason: "compaction" }]);
+  } finally {
+    hooks.off("message:queued", onQueued);
+  }
+});
+
+test("a run that compacts nothing marks nothing", async () => {
+  runRegistry.clear();
+  const queued: string[] = [];
+  const onQueued = ({ sessionId }: { sessionId: string }): void => {
+    queued.push(sessionId);
+  };
+  hooks.on("message:queued", onQueued);
+  try {
+    const captured: Call[] = [];
+    const backend = makeBackend(scripted(captured));
+    const sess = session("s-quiet");
+    sess.sdkSessionId = "sdk-quiet";
+    sess.lastPrompt = { tokens: 700, messageCount: 0 };
+
+    await backend.handleMessage(msg("m1", "salut"), sess);
+
+    assert.deepEqual(queued, []);
+  } finally {
+    hooks.off("message:queued", onQueued);
+  }
 });
 
 test("a session below the threshold runs straight away", async () => {
