@@ -342,6 +342,20 @@ test("effort: effortLevelsFor returns per-model levels when set", () => {
   assert.deepEqual(picker.effortLevelsFor("none"), ["low", "medium", "high", "xhigh", "max"]);
 });
 
+test("effortLevelsFor: a pinned route reads the capabilities of the model it pins", () => {
+  const picker = new ModelPicker(
+    [
+      { id: "openrouter/openai/luna", label: "Luna", supportsEffort: false },
+      { id: "openrouter/anthropic/opus", label: "Opus", supportedEffortLevels: ["low", "max"] },
+    ],
+    { enabled: true, levels: ["low", "medium", "high"] },
+  );
+  // The pin picks a provider for the same model: reading the pinned string found nothing in the
+  // catalogue and fell through to the global guess, which offered levels the model rejects.
+  assert.deepEqual(picker.effortLevelsFor("openrouter/openai/luna@azure/eu"), []);
+  assert.deepEqual(picker.effortLevelsFor("openrouter/anthropic/opus@anthropic"), ["low", "max"]);
+});
+
 test("effort: buildEffortButtons filters levels per model when currentModelId given", () => {
   const picker = new ModelPicker(
     [

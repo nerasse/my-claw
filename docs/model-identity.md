@@ -90,6 +90,24 @@ A pin is only ever set for a provider whose base URL is OpenRouter, recognised b
 by the key it was given in the config. Anything else drops the pin: the field would be an unknown
 key in someone else's request body.
 
+## Picking a route
+
+The app's picker is the surface that pins one: the flow is model, then route, then effort, then
+window. The routing step appears only for a model whose provider is served by OpenRouter, which
+`model.list.result` marks with `routes: true` (read from the provider key, so the catalogue is not
+resolved model by model to build a list). Entering the step sends `model.endpoints`, and the
+server answers with the routes of that one model, cheapest first, each carrying its price, window,
+health flag and 30-minute uptime.
+
+The pin travels inside the model reference the app already sends, so `model.set` stays the one
+frame that changes what a conversation runs, and a config flow (agent, tag, job) pins a route the
+same way. Two consequences the app has to honour, both covered by its own tests:
+
+- every catalogue lookup goes through the bare reference, or a pinned conversation reads no
+  effort levels and no window;
+- re-picking the model already in force keeps its route, so the step is a change of route rather
+  than a silent reset to automatic. Any other model starts unpinned.
+
 ## Defaults
 
 - Automatic routing unless an endpoint is pinned. A pin is a deliberate act, never an inherited

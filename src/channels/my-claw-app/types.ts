@@ -1040,6 +1040,12 @@ export interface MyClawAppModelOption {
   effort?: string;
   /** Whether the model accepts image input; the fallback picker only offers vision-capable ones. */
   vision?: boolean;
+  /**
+   * The model is served by several providers and one of them can be pinned: the picker then
+   * offers a routing step and asks `model.endpoints` for the list. Absent means "one route",
+   * which is every provider but OpenRouter.
+   */
+  routes?: boolean;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */

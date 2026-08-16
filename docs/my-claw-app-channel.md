@@ -338,6 +338,7 @@ the first answer wins.
 { "type": "voice.mode.get" }
 { "type": "voice.mode.set", "mode": "cloud|local|auto" }
 { "type": "model.list" }
+{ "type": "model.endpoints", "model": "openrouter/openai/gpt-5.1" }
 { "type": "model.get", "threadId": "projet" }
 { "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
 { "type": "model.effort.set", "threadId": "projet", "level": "medium" }
@@ -434,6 +435,12 @@ provider request URLs.
   `model.get` / `model.set` / `model.effort.set` answer with `model.result` carrying the state
   the server actually stored (setting the default model id clears the override). `model.set`
   refuses a model the server does not know.
+- `model.endpoints` answers with the routes of one model, cheapest first, and with an empty list
+  for a model that has a single route. Only the models marked `routes: true` in the catalogue are
+  worth asking about, and the app asks when the routing step opens rather than up front: the
+  server calls OpenRouter to answer (docs/model-identity.md). A route is selected by sending its
+  `id` through `model.set`, pin included: the pin is part of the reference, not a field of its
+  own.
 - `instructions.list` / `instructions.get` / `instructions.set` drive the instructions page: the
   four files `buildSystemPrompt` reads (`CORE.md`, `SOUL.md`, `AGENTS.md`, `USER.md`), per
   workspace. `instructions.get` takes either a `file` or a `nested` path from the last list.
@@ -634,6 +641,7 @@ runs fresh like any other message.
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
+{ "type": "model.endpoints.result", "model": "openrouter/openai/gpt-5.1", "endpoints": [{ "id": "openrouter/openai/gpt-5.1@azure/eu", "label": "Azure (azure/eu)", "promptUsd": 0.22, "completionUsd": 0.88, "context": 400000, "uptime30m": 99.9 }] }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000, "used": 94000 } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
 { "type": "tools.list.result", "tools": [{ "name": "bash", "description": "Run a command in the workspace", "source": "built-in", "disabled": false }, { "name": "my_weather", "description": "Forecast for a city", "source": "plugin", "disabled": false }, { "name": "mcp__mailcow__get_status", "description": "Mail server status", "source": "mcp", "server": "mailcow", "disabled": false }], "missing": ["cron"] }

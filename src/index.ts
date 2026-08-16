@@ -1042,34 +1042,47 @@ async function main() {
         },
       };
     };
+    /** Provider keys served by OpenRouter: only their models can have a route pinned. */
+    const routableProviders = (): Set<string> =>
+      new Set(
+        Object.entries(config.llm.providers ?? {})
+          .filter(([, provider]) => isOpenRouterBaseUrl(provider.baseUrl))
+          .map(([name]) => name),
+      );
     myClawApp.onModelController({
-      list: () => ({
-        models: modelPicker.options().map((m) => ({
-          id: m.id,
-          label: m.label,
-          ...(m.group ? { group: m.group } : {}),
-          // The provider key rides along so the app can group the catalog by provider without
-          // asking for a second list that could disagree with this one.
-          ...(m.provider ? { provider: m.provider } : {}),
-          // Per-model effort levels and full window: the app's chained picker offers those two
-          // steps for the model being staged, which is not necessarily the one in force.
-          ...(modelPicker.effortLevelsFor(m.id).length > 0 ? { effortLevels: modelPicker.effortLevelsFor(m.id) } : {}),
-          ...(contextWindowOf(m.id) === undefined ? {} : { context: contextWindowOf(m.id) }),
-          // A tag entry names the effort it pins, so a config flow that stages it can say what
-          // applies instead of silently inheriting the scope's own pin.
-          ...(() => {
-            const tagName = tagNameOf(m.id);
-            const tagEffort = tagName !== undefined ? config.tags?.[tagName]?.effort : undefined;
-            return tagEffort ? { effort: tagEffort } : {};
-          })(),
-          // Whether the model accepts image input: the fallback picker needs it to offer only
-          // models the resolver would actually reroute to. Mirrors the resolver's own guard.
-          ...(config.llm.models?.find((model) => model.id === m.id)?.vision === undefined
-            ? {}
-            : { vision: config.llm.models.find((model) => model.id === m.id)!.vision! }),
-        })),
-        defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
-      }),
+      list: () => {
+        const routable = routableProviders();
+        return {
+          models: modelPicker.options().map((m) => ({
+            id: m.id,
+            label: m.label,
+            ...(m.group ? { group: m.group } : {}),
+            // The provider key rides along so the app can group the catalog by provider without
+            // asking for a second list that could disagree with this one.
+            ...(m.provider ? { provider: m.provider } : {}),
+            // Per-model effort levels and full window: the app's chained picker offers those two
+            // steps for the model being staged, which is not necessarily the one in force.
+            ...(modelPicker.effortLevelsFor(m.id).length > 0 ? { effortLevels: modelPicker.effortLevelsFor(m.id) } : {}),
+            ...(contextWindowOf(m.id) === undefined ? {} : { context: contextWindowOf(m.id) }),
+            // A tag entry names the effort it pins, so a config flow that stages it can say what
+            // applies instead of silently inheriting the scope's own pin.
+            ...(() => {
+              const tagName = tagNameOf(m.id);
+              const tagEffort = tagName !== undefined ? config.tags?.[tagName]?.effort : undefined;
+              return tagEffort ? { effort: tagEffort } : {};
+            })(),
+            // Whether the model accepts image input: the fallback picker needs it to offer only
+            // models the resolver would actually reroute to. Mirrors the resolver's own guard.
+            ...(config.llm.models?.find((model) => model.id === m.id)?.vision === undefined
+              ? {}
+              : { vision: config.llm.models.find((model) => model.id === m.id)!.vision! }),
+            // Whether a routing step is worth offering at all. Read from the provider key rather
+            // than by resolving each of several hundred models; `model.endpoints` answers for real.
+            ...(m.provider !== undefined && routable.has(m.provider) ? { routes: true } : {}),
+          })),
+          defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
+        };
+      },
       endpoints: async (modelRef) => {
         // Only OpenRouter routes a model to several providers, and only its own reference can be
         // pinned: anything else answers with an empty list, which the app reads as "automatic".

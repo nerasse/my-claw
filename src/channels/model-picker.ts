@@ -3,6 +3,7 @@ import type { ConfirmationButton } from "./types.ts";
 import type { AgentConfigKey, EffortLevel, LlmConfig, TagConfig } from "../core/config.ts";
 import { tagNameOf } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, leafModelId, type EffectiveEffort } from "../llm/resolver.ts";
+import { withoutEndpoint } from "../llm/model-ref.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
 export interface ModelOption {
@@ -230,7 +231,10 @@ export class ModelPicker {
   /** Effort levels for a specific model (falls back to global when the model has no override). */
   effortLevelsFor(modelId: string): EffortLevel[] {
     if (!this.effort.enabled) return [];
-    const model = this.models.find((m) => m.id === modelId);
+    // The pin routes the request, it does not change the model: a pinned reference must read the
+    // capabilities of the model it pins, not fall through to the global guess.
+    const bare = withoutEndpoint(modelId);
+    const model = this.models.find((m) => m.id === bare);
     if (model?.effortApplies === false) return [];
     if (model?.supportsEffort === false) return [];
     const levels = model?.supportedEffortLevels;
