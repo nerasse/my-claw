@@ -56,6 +56,13 @@ const IP_MAX_PER_WINDOW = 10;
 
 const sessions = new Map<string, PairingSession>();
 const ipHits = new Map<string, number[]>();
+/**
+ * Codes that existed and no longer do, with the reason. Without this an expired code and a code
+ * that was never issued answer the same "unknown", and the owner retypes a dead code believing
+ * they mistyped it.
+ */
+const tombstones = new Map<string, { reason: PairingDenial; until: number }>();
+const TOMBSTONE_MS = 15 * 60 * 1000;
 
 let clock = (): number => Date.now();
 
@@ -69,8 +76,15 @@ export function pairingEnabled(config: MyClawAppChannelConfig): boolean {
   return config.pairing?.enabled === true;
 }
 
+/**
+ * Ten minutes, not two.
+ *
+ * Two minutes is the time it takes to read a code, pick up the phone, unlock it, open Settings,
+ * Devices, and type eight characters. Measured on the first real pairing: the challenge was gone
+ * before the owner finished typing, and the page still showed a code that no longer existed.
+ */
 function challengeTtlMs(config: MyClawAppChannelConfig): number {
-  return (config.pairing?.ttlSeconds ?? 120) * 1000;
+  return (config.pairing?.ttlSeconds ?? 600) * 1000;
 }
 
 function claimTtlMs(config: MyClawAppChannelConfig): number {
@@ -103,14 +117,27 @@ export function normalizeCode(input: string): string {
     .replace(/U/g, "V");
 }
 
+function bury(code: string, reason: PairingDenial): void {
+  tombstones.set(code, { reason, until: clock() + TOMBSTONE_MS });
+}
+
 function sweep(): void {
   const at = clock();
   for (const [code, session] of sessions) {
     if (session.expiresAt <= at) {
       session.reject?.("expired");
       sessions.delete(code);
+      bury(code, "expired");
     }
   }
+  for (const [code, entry] of tombstones) {
+    if (entry.until <= at) tombstones.delete(code);
+  }
+}
+
+/** Why a code is gone, when it is gone. */
+function reasonFor(code: string): PairingDenial {
+  return tombstones.get(code)?.reason ?? "unknown";
 }
 
 function rateLimited(ip: string | undefined): boolean {
@@ -202,11 +229,12 @@ export function lookup(
   approver?: string,
 ): { ok: true; session: PairingSession } | { ok: false; reason: PairingDenial } {
   const session = findSession(code);
-  if (!session) return { ok: false, reason: "unknown" };
+  if (!session) return { ok: false, reason: reasonFor(normalizeCode(code)) };
   session.attempts += 1;
   if (session.attempts > MAX_ATTEMPTS) {
     session.reject?.("attempts");
     sessions.delete(session.code);
+    bury(session.code, "attempts");
     return { ok: false, reason: "attempts" };
   }
   if (approver) session.pending?.(approver);
@@ -247,6 +275,7 @@ export function deny(code: string, approver: string): boolean {
   if (!session) return false;
   session.reject?.("denied");
   sessions.delete(session.code);
+  bury(session.code, "denied");
   myClawAppLog("warn", "pairing denied", { code: session.code, approver });
   return true;
 }
@@ -274,6 +303,7 @@ export function claim(
 function deliver(session: PairingSession, delivery: PairingDelivery): void {
   session.deliver?.(delivery);
   sessions.delete(session.code);
+  bury(session.code, "denied");
 }
 
 /** A pairing socket that drops takes its session with it: a credential is never redeliverable. */
@@ -292,6 +322,7 @@ export function pendingSessions(): number {
 export function resetPairing(): void {
   sessions.clear();
   ipHits.clear();
+  tombstones.clear();
   clock = () => Date.now();
 }
 

@@ -37,6 +37,7 @@ const PAGE = String.raw`<!DOCTYPE html>
     letter-spacing: 3px; text-align: center; padding: 18px 0;
     background: #14181d; border: 1px solid #232a33; border-radius: 12px;
   }
+  .expiry { text-align: center; margin: 8px 0 0; font-size: 13px; color: #6b7480; }
   .verify { text-align: center; margin: 16px 0 0; color: #9aa4b2; }
   .verify b { color: #e6e8eb; font: 600 22px/1 ui-monospace, monospace; letter-spacing: 2px; }
   .state { margin-top: 22px; text-align: center; min-height: 22px; color: #9aa4b2; }
@@ -61,6 +62,7 @@ const PAGE = String.raw`<!DOCTYPE html>
 
   <div class="qr" id="qr"></div>
   <div class="code" id="code">--------</div>
+  <p class="expiry" id="expiry"></p>
   <p class="verify">Check that the app shows <b id="verify">---</b></p>
   <div class="state" id="state">connecting</div>
 
@@ -75,6 +77,7 @@ const PAGE = String.raw`<!DOCTYPE html>
 (function () {
   var codeEl = document.getElementById('code');
   var qrEl = document.getElementById('qr');
+  var expiryEl = document.getElementById('expiry');
   var verifyEl = document.getElementById('verify');
   var stateEl = document.getElementById('state');
   var form = document.getElementById('claim');
@@ -87,6 +90,24 @@ const PAGE = String.raw`<!DOCTYPE html>
 
   var scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var socket = new WebSocket(scheme + '//' + location.host + '/my-claw-app/pair');
+  var expiresAt = 0;
+  var renewTimer = null;
+
+  // A code that dies while the owner is walking to their phone is the failure this whole page
+  // exists to avoid: the countdown says how long is left, and a new challenge is asked for
+  // before the current one expires, so what is on screen is always live.
+  function askForChallenge() {
+    if (socket.readyState !== 1) return;
+    socket.send(JSON.stringify({ type: 'pair.hello', kind: 'web', userAgent: navigator.userAgent }));
+  }
+
+  setInterval(function () {
+    if (!expiresAt) return;
+    var left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    var minutes = Math.floor(left / 60);
+    var seconds = left % 60;
+    expiryEl.textContent = left > 0 ? 'valid for ' + minutes + ':' + String(seconds).padStart(2, '0') : 'renewing';
+  }, 1000);
 
   socket.onopen = function () {
     socket.send(JSON.stringify({ type: 'pair.hello', kind: 'web', userAgent: navigator.userAgent }));
@@ -105,6 +126,10 @@ const PAGE = String.raw`<!DOCTYPE html>
     try { frame = JSON.parse(event.data); } catch (err) { return; }
 
     if (frame.type === 'pair.challenge') {
+      expiresAt = frame.expiresAt;
+      if (renewTimer) clearTimeout(renewTimer);
+      // Ten seconds before the end, so the owner never reads a code the server has forgotten.
+      renewTimer = setTimeout(askForChallenge, Math.max(5000, frame.expiresAt - Date.now() - 10000));
       codeEl.textContent = frame.code.slice(0, 4) + '-' + frame.code.slice(4);
       verifyEl.textContent = frame.verification;
       // The server draws the QR and sends it in a second frame; innerHTML is safe here because
@@ -132,6 +157,12 @@ const PAGE = String.raw`<!DOCTYPE html>
       return;
     }
     if (frame.type === 'pair.denied') {
+      if (frame.reason === 'expired') {
+        // The socket is still up: ask for a fresh code instead of telling the owner to reload.
+        askForChallenge();
+        say('code renewed');
+        return;
+      }
       say(frame.reason === 'denied' ? 'refused on the device' : 'code ' + frame.reason, 'error');
     }
   };

@@ -220,7 +220,10 @@ describe("pairing", () => {
     time += 119_000;
     expect(lookup(opened.session.code).ok).toBe(true);
     time += 2_000;
-    expect(lookup(opened.session.code)).toMatchObject({ ok: false, reason: "unknown" });
+    // Expired, and said so: a code that ran out and a code that never existed answering the same
+    // "unknown" is what had the owner retyping a dead code believing they had mistyped it.
+    expect(lookup(opened.session.code)).toMatchObject({ ok: false, reason: "expired" });
+    expect(lookup("ZZZZZZZZ")).toMatchObject({ ok: false, reason: "unknown" });
     expect(sink.rejected).toEqual(["expired"]);
   });
 
