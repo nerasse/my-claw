@@ -76,6 +76,9 @@ export type PickerCallback =
   | { kind: "openEffort"; target?: PickerTarget }
   | { kind: "setEffort"; level: EffortLevel; target?: PickerTarget }
   | { kind: "keepEffort"; target?: PickerTarget }
+  | { kind: "openRoute"; target?: PickerTarget }
+  // No endpoint means automatic routing: the pin is dropped and OpenRouter picks again.
+  | { kind: "setRoute"; endpoint?: string; target?: PickerTarget }
   | { kind: "openContext"; target?: PickerTarget }
   | { kind: "setContext"; choice: ContextOverride; target?: PickerTarget }
   | { kind: "keepContext" }
@@ -83,6 +86,13 @@ export type PickerCallback =
   | { kind: "stale" };
 
 const EFFORT_ACTION = "effm";
+const ROUTE_ACTION = "rtem";
+const ROUTE_AUTO_ACTION = "rtea";
+/** An endpoint tag rides verbatim: it is a short slug OpenRouter publishes, and a digest would
+ *  need the route list to be resolved back, which no menu still has when the button is pressed. */
+const ROUTE_PREFIX = "rte:";
+/** Telegram caps callback_data at 64 bytes, and the target suffix spends 5 of them. */
+const ROUTE_ACTION_BUDGET = 58;
 const KEEP_EFFORT_ACTION = "effk";
 const CONTEXT_ACTION = "ctxm";
 const KEEP_CONTEXT_ACTION = "ctxk";
@@ -322,7 +332,11 @@ export class ModelPicker {
    * selecting a model never forces the effort step. The entry is dropped when the current model
    * discards effort, where it would open a submenu that cannot change anything.
    */
-  buildButtons(currentModelId: string, target?: PickerTarget, opts?: { contextChoice?: boolean }): ConfirmationButton[] {
+  buildButtons(
+    currentModelId: string,
+    target?: PickerTarget,
+    opts?: { contextChoice?: boolean; routeChoice?: boolean },
+  ): ConfirmationButton[] {
     const buttons = this.nodeButtons([], currentModelId, target);
     // Effort rides on agent menus too since the config edit pins it now. The entry stays off
     // when the model discards effort, and off an agent whose model is a tag: the tag's own pin
@@ -336,6 +350,34 @@ export class ModelPicker {
     if (opts?.contextChoice) {
       buttons.push({ label: "Context >", action: CONTEXT_ACTION });
     }
+    // Same reasoning as the window: a standing choice that rarely changes, so it is a root entry
+    // rather than a screen everyone walks through on every model switch (docs/model-identity.md).
+    if (opts?.routeChoice) {
+      buttons.push({ label: "Route >", action: `${ROUTE_ACTION}${targetSuffix(target)}` });
+    }
+    return buttons;
+  }
+
+  /**
+   * Route submenu: automatic first, then one entry per endpoint, cheapest first as the API
+   * returned them. A route whose tag does not fit the callback budget is dropped rather than
+   * truncated: a button that pins the wrong provider is worse than a button that is not there.
+   */
+  buildRouteButtons(
+    routes: readonly { tag: string; label: string }[],
+    currentEndpoint?: string,
+    target?: PickerTarget,
+  ): ConfirmationButton[] {
+    const suffix = targetSuffix(target);
+    const buttons: ConfirmationButton[] = [
+      { label: mark("Automatic", currentEndpoint === undefined), action: `${ROUTE_AUTO_ACTION}${suffix}` },
+    ];
+    for (const route of routes) {
+      const action = `${ROUTE_PREFIX}${route.tag}${suffix}`;
+      if (action.length > ROUTE_ACTION_BUDGET) continue;
+      buttons.push({ label: mark(route.label, route.tag === currentEndpoint), action });
+    }
+    buttons.push({ label: "< Back", action: `mdlb${suffix}` });
     return buttons;
   }
 
@@ -431,6 +473,13 @@ export class ModelPicker {
     if (bare === "mdlb") return { kind: "back", ...(target ? { target } : {}) };
     if (bare === EFFORT_ACTION) return { kind: "openEffort", ...(target ? { target } : {}) };
     if (bare === CONTEXT_ACTION) return { kind: "openContext", ...(target ? { target } : {}) };
+    if (bare === ROUTE_ACTION) return { kind: "openRoute", ...(target ? { target } : {}) };
+    if (bare === ROUTE_AUTO_ACTION) return { kind: "setRoute", ...(target ? { target } : {}) };
+
+    if (bare.startsWith(ROUTE_PREFIX)) {
+      const endpoint = bare.slice(ROUTE_PREFIX.length);
+      return endpoint ? { kind: "setRoute", endpoint, ...(target ? { target } : {}) } : null;
+    }
     if (bare === KEEP_CONTEXT_ACTION) return { kind: "keepContext" };
 
     const ctx = /^ctx:(full|[0-9]+)$/.exec(bare);

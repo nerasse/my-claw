@@ -618,3 +618,43 @@ test("syncFromConfig with no tags still rows the virtual Default tag", () => {
   assert.equal(picker.options()[0]?.id, "tag:Default");
   assert.equal(picker.options().length, models.length + 1);
 });
+
+test("the route submenu offers automatic first and marks the pin in force", () => {
+  const picker = new ModelPicker(models);
+  const routes = [
+    { tag: "openai/flex", label: "OpenAI $0.050" },
+    { tag: "azure/eu", label: "Azure $0.220" },
+  ];
+  const buttons = picker.buildRouteButtons(routes, "azure/eu");
+  assert.deepEqual(buttons.map((b) => b.label), ["Automatic", "OpenAI $0.050", "Azure $0.220 [selected]", "< Back"]);
+  assert.deepEqual(buttons.map((b) => b.action), ["rtea", "rte:openai/flex", "rte:azure/eu", "mdlb"]);
+  // Nothing pinned: automatic is the marked one, which is what the run actually does.
+  assert.equal(picker.buildRouteButtons(routes)[0]?.label, "Automatic [selected]");
+});
+
+test("a route callback round-trips, and an agent target rides along with it", () => {
+  const picker = new ModelPicker(models, undefined, () => ["research"]);
+  assert.deepEqual(picker.parseCallbackAction("rtem"), { kind: "openRoute" });
+  assert.deepEqual(picker.parseCallbackAction("rtea"), { kind: "setRoute" });
+  assert.deepEqual(picker.parseCallbackAction("rte:azure/eu"), { kind: "setRoute", endpoint: "azure/eu" });
+  for (const button of picker.buildRouteButtons([{ tag: "azure/eu", label: "Azure" }], undefined, "research")) {
+    const parsed = picker.parseCallbackAction(button.action);
+    assert.ok(parsed && "target" in parsed && parsed.target === "research", button.action);
+  }
+});
+
+test("a route whose tag would overflow the callback budget is dropped, never truncated", () => {
+  const picker = new ModelPicker(models);
+  const long = "a".repeat(60);
+  const buttons = picker.buildRouteButtons([{ tag: long, label: "Too long" }, { tag: "azure", label: "Azure" }]);
+  // A truncated tag is a valid-looking action that pins another provider entirely.
+  assert.deepEqual(buttons.map((b) => b.label), ["Automatic [selected]", "Azure", "< Back"]);
+});
+
+test("the Route entry only shows where a route can be pinned", () => {
+  const picker = new ModelPicker(models);
+  assert.ok(!picker.buildButtons("a").some((b) => b.label === "Route >"));
+  const withRoute = picker.buildButtons("a", undefined, { routeChoice: true });
+  assert.equal(withRoute.at(-1)?.label, "Route >");
+  assert.deepEqual(picker.parseCallbackAction(withRoute.at(-1)!.action), { kind: "openRoute" });
+});

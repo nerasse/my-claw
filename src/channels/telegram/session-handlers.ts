@@ -26,6 +26,8 @@ import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 import { contextChoiceFor, formatContextInfo } from "../context-menu.ts";
+import { referenceWithRoute, routeChoiceFor, routeLabel, routesFor } from "../route-menu.ts";
+import { withoutEndpoint } from "../../llm/model-ref.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 
 type TelegramChatType = "dm" | "group";
@@ -185,7 +187,10 @@ export function createTelegramCommandHandler({
           const agentContext = contextChoiceFor(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target));
           return {
             text: `${agentOutcome.heading} — actuel : ${modelPicker.labelFor(agentOutcome.currentModel)}\n${formatContextInfo(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target))}`,
-            buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target, { contextChoice: agentContext.available }),
+            buttons: modelPicker.buildButtons(agentOutcome.currentModel, agentOutcome.target, {
+              contextChoice: agentContext.available,
+              routeChoice: routeChoiceFor(config, agentOutcome.currentModel).available,
+            }),
           };
         }
 
@@ -216,7 +221,9 @@ export function createTelegramCommandHandler({
         const effort = effectiveEffort(config.llm, currentModel, existingSession?.effortOverride);
         return {
           text: `Current model: ${modelPicker.labelFor(currentModel)}${modelPicker.effortHeaderSuffix(effort)}\n${formatContextInfo(config, currentModel, existingSession?.contextOverride)}`,
-          buttons: modelPicker.buildButtons(currentModel),
+          buttons: modelPicker.buildButtons(currentModel, undefined, {
+            routeChoice: routeChoiceFor(config, currentModel).available,
+          }),
         };
       }
 
@@ -489,6 +496,28 @@ export function createTelegramCallbackHandler({
           answerText: "Effort",
         };
       }
+      if (action.kind === "openRoute") {
+        const routes = await routesFor(config, currentModel);
+        return {
+          text: `Route de l'agent ${target} — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,
+          buttons: modelPicker.buildRouteButtons(
+            routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
+            routeChoiceFor(config, currentModel).current,
+            target,
+          ),
+          answerText: "Route",
+        };
+      }
+      if (action.kind === "setRoute") {
+        // The route rides inside the reference, so pinning one is the same config write as
+        // picking a model: one field, one meaning (docs/model-identity.md).
+        const text = await applyAgentModel(target, referenceWithRoute(currentModel, action.endpoint), {
+          config,
+          modelPicker,
+          reloadConfigNow,
+        });
+        return { text, answerText: action.endpoint ? `Route : ${action.endpoint}` : "Route automatique" };
+      }
       if (action.kind === "setContext") {
         return {
           text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }),
@@ -505,7 +534,10 @@ export function createTelegramCallbackHandler({
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
-          : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
+          : modelPicker.buildButtons(currentModel, target, {
+              contextChoice: agentChoice.available,
+              routeChoice: routeChoiceFor(config, currentModel).available,
+            });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
         text: `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""} — actuel : ${modelPicker.labelFor(currentModel)}\n${formatContextInfo(config, currentModel, undefined, toolTypeOf(target))}`,
@@ -515,11 +547,28 @@ export function createTelegramCallbackHandler({
     }
 
     // Navigation re-render without touching the model (no selection yet).
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
+    if (
+      action.kind === "openGroup" ||
+      action.kind === "back" ||
+      action.kind === "openEffort" ||
+      action.kind === "openContext" ||
+      action.kind === "openRoute"
+    ) {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
       const suffix = modelPicker.effortHeaderSuffix(effort);
+      if (action.kind === "openRoute") {
+        const routes = await routesFor(config, currentModel);
+        return {
+          text: `Route — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,
+          buttons: modelPicker.buildRouteButtons(
+            routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
+            routeChoiceFor(config, currentModel).current,
+          ),
+          answerText: "Route",
+        };
+      }
       if (action.kind === "openGroup") {
         return {
           text: `${modelPicker.groupLabel(action.groupPath) ?? "Models"} — current: ${modelPicker.labelFor(currentModel)}${suffix}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
@@ -545,7 +594,10 @@ export function createTelegramCallbackHandler({
       }
       return {
         text: `Current model: ${modelPicker.labelFor(currentModel)}${suffix}\n${formatContextInfo(config, currentModel, existing?.contextOverride)}`,
-        buttons: modelPicker.buildButtons(currentModel, undefined, { contextChoice: choice.available }),
+        buttons: modelPicker.buildButtons(currentModel, undefined, {
+          contextChoice: choice.available,
+          routeChoice: routeChoiceFor(config, currentModel).available,
+        }),
         answerText: "Back",
       };
     }
@@ -558,6 +610,20 @@ export function createTelegramCallbackHandler({
       await sessionManager.persist(sessionId);
       const model = chatModel(config, session.modelOverride);
       return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`, `Effort: ${action.level}`);
+    }
+
+    if (action.kind === "setRoute") {
+      const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
+      const pinned = referenceWithRoute(chatModel(config, session.modelOverride), action.endpoint);
+      session.modelOverride = overrideForPick(config, { agent: "main" }, pinned, availabilityWorld());
+      session.lastActiveAt = new Date().toISOString();
+      await sessionManager.persist(sessionId);
+      return {
+        text: action.endpoint
+          ? `Route épinglée : ${action.endpoint} — modèle : ${modelPicker.labelFor(withoutEndpoint(pinned))}`
+          : `Routage automatique — modèle : ${modelPicker.labelFor(pinned)}`,
+        answerText: action.endpoint ? `Route : ${action.endpoint}` : "Route automatique",
+      };
     }
 
     if (action.kind === "setContext") {

@@ -92,16 +92,28 @@ key in someone else's request body.
 
 ## Picking a route
 
-The app's picker is the surface that pins one: the flow is model, then route, then effort, then
-window. The routing step appears only for a model whose provider is served by OpenRouter, which
+Three surfaces offer the choice, and one helper answers all three (`channels/route-menu.ts`):
+`routeChoiceFor` says whether a reference can be pinned and to what it is pinned now, `routesFor`
+lists the routes, `referenceWithRoute` spells the result. A menu that built its own list is how
+one surface comes to offer a route another refuses.
+
+On Telegram and Matrix the routes sit behind a `Route >` entry of the root `/model` menu, next to
+`Context >` and for the same reason: pinning is a standing choice that rarely changes, so it is
+one entry away rather than a screen everyone walks through on every model switch. The entry only
+appears for a model that has routes. An endpoint tag rides verbatim in `callback_data` (a digest
+would need the route list to resolve back, and no menu still holds it when the button is pressed);
+a tag that would overflow Telegram's 64 bytes drops out of the menu rather than being truncated
+into a button that pins another provider.
+
+In the app the picker is a chained flow instead: model, then route, then effort, then window. The routing step appears only for a model whose provider is served by OpenRouter, which
 `model.list.result` marks with `routes: true` (read from the provider key, so the catalogue is not
 resolved model by model to build a list). Entering the step sends `model.endpoints`, and the
 server answers with the routes of that one model, cheapest first, each carrying its price, window,
 health flag and 30-minute uptime.
 
-The pin travels inside the model reference the app already sends, so `model.set` stays the one
-frame that changes what a conversation runs, and a config flow (agent, tag, job) pins a route the
-same way. Two consequences the app has to honour, both covered by its own tests:
+Everywhere, the pin travels inside the model reference, so pinning a route is the same write as
+picking a model: `model.set` on the app, the session override on a channel, the agent's `model:`
+in config. Two consequences the app has to honour, both covered by its own tests:
 
 - every catalogue lookup goes through the bare reference, or a pinned conversation reads no
   effort levels and no window;

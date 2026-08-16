@@ -30,6 +30,8 @@ import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 import { contextChoiceFor, formatContextInfo } from "../context-menu.ts";
+import { referenceWithRoute, routeChoiceFor, routeLabel, routesFor } from "../route-menu.ts";
+import { withoutEndpoint } from "../../llm/model-ref.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 
 type MatrixChatType = "dm" | "group";
@@ -161,9 +163,13 @@ function buildMatrixAgentModelMenu(params: {
   outcome: { target: PickerTarget; currentModel: string; heading: string };
   contextInfo: string;
   contextChoice: boolean;
+  routeChoice: boolean;
 }): OutgoingMessage {
   const { modelPicker, outcome } = params;
-  const buttons = modelPicker.buildButtons(outcome.currentModel, outcome.target, { contextChoice: params.contextChoice });
+  const buttons = modelPicker.buildButtons(outcome.currentModel, outcome.target, {
+    contextChoice: params.contextChoice,
+    routeChoice: params.routeChoice,
+  });
   const instruction =
     buttons.length > MATRIX_REACTION_BUTTON_EMOJIS.length
       ? `Réponds avec un numéro/nom, réagis pour les ${MATRIX_REACTION_BUTTON_EMOJIS.length} premiers, ou envoie \`/model ${outcome.target} <nom>\` :`
@@ -195,7 +201,9 @@ function buildMatrixModelMenu(params: {
   return buildMatrixMenuFromButtons({
     modelPicker: params.modelPicker,
     currentModel: params.currentModel,
-    buttons: params.modelPicker.buildButtons(params.currentModel),
+    buttons: params.modelPicker.buildButtons(params.currentModel, undefined, {
+      routeChoice: routeChoiceFor(params.config, params.currentModel).available,
+    }),
     heading: params.heading,
     effort: params.effort,
     contextInfo: params.contextInfo,
@@ -441,6 +449,7 @@ export function createMatrixCommandHandler({
             outcome: agentOutcome,
             contextInfo: formatContextInfo(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target)),
             contextChoice: contextChoiceFor(config, agentOutcome.currentModel, undefined, toolTypeOf(agentOutcome.target)).available,
+            routeChoice: routeChoiceFor(config, agentOutcome.currentModel).available,
           });
         }
 
@@ -791,6 +800,35 @@ export function createMatrixActionHandler({
           supersededText: `Agent ${target} > effort`,
         };
       }
+      if (action.kind === "openRoute") {
+        const routes = await routesFor(config, currentModel);
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildRouteButtons(
+              routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
+              routeChoiceFor(config, currentModel).current,
+              target,
+            ),
+            effort: agentEffort(),
+            heading: `Route de l'agent ${target} — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,
+            contextInfo: formatContextInfo(config, currentModel, undefined, toolTypeOf(target)),
+          }),
+          supersededText: `Agent ${target} > route`,
+        };
+      }
+      if (action.kind === "setRoute") {
+        // The route rides inside the reference, so pinning one is the same config write as
+        // picking a model: one field, one meaning (docs/model-identity.md).
+        return {
+          text: await applyAgentModel(target, referenceWithRoute(currentModel, action.endpoint), {
+            config,
+            modelPicker,
+            reloadConfigNow,
+          }),
+        };
+      }
       if (action.kind === "setContext") {
         return { text: await applyAgentContext(target, action.choice, { config, reloadConfigNow }) };
       }
@@ -800,7 +838,10 @@ export function createMatrixActionHandler({
           ? modelPicker.buildContextButtons(agentChoice.tiers, { target })
           : action.kind === "openGroup"
             ? modelPicker.buildGroupButtons(action.groupPath, currentModel, target)
-            : modelPicker.buildButtons(currentModel, target, { contextChoice: agentChoice.available });
+            : modelPicker.buildButtons(currentModel, target, {
+                contextChoice: agentChoice.available,
+                routeChoice: routeChoiceFor(config, currentModel).available,
+              });
       return {
         text: [
           `Modèle par défaut de l'agent ${target}${groupLabel ? ` — ${groupLabel}` : ""}`,
@@ -817,10 +858,33 @@ export function createMatrixActionHandler({
 
     // Navigation re-renders the target level; the adapter sends it as a NEW message with fresh
     // reactions and collapses the previous menu to the supersededText breadcrumb.
-    if (action.kind === "openGroup" || action.kind === "back" || action.kind === "openEffort" || action.kind === "openContext") {
+    if (
+      action.kind === "openGroup" ||
+      action.kind === "back" ||
+      action.kind === "openEffort" ||
+      action.kind === "openContext" ||
+      action.kind === "openRoute"
+    ) {
       const existing = await sessionManager.peek(sessionId);
       const currentModel = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
+      if (action.kind === "openRoute") {
+        const routes = await routesFor(config, currentModel);
+        return {
+          ...buildMatrixMenuFromButtons({
+            modelPicker,
+            currentModel,
+            buttons: modelPicker.buildRouteButtons(
+              routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
+              routeChoiceFor(config, currentModel).current,
+            ),
+            effort,
+            heading: `Route — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,
+            contextInfo: formatContextInfo(config, currentModel, existing?.contextOverride),
+          }),
+          supersededText: "Model menu > Route",
+        };
+      }
       // Effort submenu, reachable without re-selecting a model.
       if (action.kind === "openEffort") {
         return {
@@ -852,7 +916,10 @@ export function createMatrixActionHandler({
       const buttons =
         action.kind === "openGroup"
           ? modelPicker.buildGroupButtons(action.groupPath, currentModel)
-          : modelPicker.buildButtons(currentModel, undefined, { contextChoice: choice.available });
+          : modelPicker.buildButtons(currentModel, undefined, {
+              contextChoice: choice.available,
+              routeChoice: routeChoiceFor(config, currentModel).available,
+            });
       const groupLabel = action.kind === "openGroup" ? modelPicker.groupLabel(action.groupPath) : undefined;
       return {
         ...buildMatrixMenuFromButtons({
@@ -875,6 +942,19 @@ export function createMatrixActionHandler({
       await sessionManager.persist(sessionId);
       const model = chatModel(config, session.modelOverride);
       return chainContext(model, session.contextOverride, `Effort réglé sur ${action.level} — modèle : ${modelPicker.labelFor(model)}`);
+    }
+
+    if (action.kind === "setRoute") {
+      const session = await sessionManager.getOrCreateWithMeta(sessionId, "matrix", chatType);
+      const pinned = referenceWithRoute(chatModel(config, session.modelOverride), action.endpoint);
+      session.modelOverride = overrideForPick(config, { agent: "main" }, pinned, availabilityWorld());
+      session.lastActiveAt = new Date().toISOString();
+      await sessionManager.persist(sessionId);
+      return {
+        text: action.endpoint
+          ? `Route épinglée : ${action.endpoint} — modèle : ${modelPicker.labelFor(withoutEndpoint(pinned))}`
+          : `Routage automatique — modèle : ${modelPicker.labelFor(pinned)}`,
+      };
     }
 
     if (action.kind === "setContext") {
