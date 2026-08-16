@@ -109,6 +109,7 @@ import { MIME_BY_EXTENSION, SessionFileStore, filePathFor, parseStoredName } fro
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
   MyClawAppModelContextSet,
+  MyClawAppModelEndpoint,
   MyClawAppModelState,
   MyClawAppTagsDelete,
   MyClawAppTagsResult,
@@ -206,6 +207,11 @@ export interface MyClawAppDiagnosticsProvider {
  */
 export interface MyClawAppModelController {
   list(): { models: Array<{ id: string; label: string; group?: string; effortLevels?: string[]; context?: number }>; defaultModel: string };
+  /**
+   * The routes this model can be pinned to, empty for a model whose provider has none. Lazy: the
+   * menu asks when it opens on one model, never for the whole catalogue.
+   */
+  endpoints(model: string): Promise<MyClawAppModelEndpoint[]>;
   /** What runs on this thread now: override or configured default, plus effort and context state. */
   current(owner: string, threadId: string): Promise<MyClawAppModelState>;
   /** Persists the override (or clears it, back to the default) and reports what was stored. */
@@ -1317,6 +1323,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "model.list":
         void this.handleModelList(ws);
         break;
+      case "model.endpoints":
+        void this.handleModelEndpoints(ws, frame.model);
+        break;
       case "skills.copy":
       case "skills.move":
         void this.handleSkillsTransfer(ws, frame);
@@ -1780,6 +1789,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "model.list.result", ...this.models.list() });
     } catch (err) {
       await this.refuse(ws, "model", "model.list failed", { error: String(err) });
+    }
+  }
+
+  private async handleModelEndpoints(ws: ServerWebSocket<MyClawAppSessionData>, model: string): Promise<void> {
+    if (!this.models?.endpoints) {
+      await this.refuse(ws, "model", "model control unavailable");
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "model.endpoints.result", model, endpoints: await this.models.endpoints(model) });
+    } catch (err) {
+      await this.refuse(ws, "model", "model.endpoints failed", { error: String(err) });
     }
   }
 

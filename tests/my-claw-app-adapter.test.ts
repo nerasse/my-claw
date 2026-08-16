@@ -1365,6 +1365,7 @@ describe("model frames", () => {
         ],
         defaultModel: "fast-1",
       }),
+      endpoints: async () => [{ id: "fast-1@azure/eu", label: "Azure (azure/eu)", promptUsd: 0.22 }],
       current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "medium", levels: ["low", "medium", "high"], supported: true }, context: { raw: 200000, effective: 200000 } }),
@@ -1387,6 +1388,18 @@ describe("model frames", () => {
     assert.equal(frame["defaultModel"], "fast-1");
   });
 
+  // The routes of one model are asked for when a menu opens on it, never for the catalogue: it is
+  // one HTTP call per model and there are four hundred of them.
+  test("model.endpoints answers with the routes of one model", async () => {
+    client.ws.send(JSON.stringify({ type: "model.endpoints", model: "fast-1" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.endpoints.result");
+    assert.equal(frame["model"], "fast-1");
+    const routes = frame["endpoints"] as Array<{ id: string; label: string }>;
+    assert.equal(routes.length, 1);
+    assert.equal(routes[0]!.id, "fast-1@azure/eu");
+  });
+
   test("model.list passes the provider key through for the app to group by", async () => {
     store = new FakeSessionStore();
     const withProviders = new MyClawAppAdapter(createConfig(), store as never);
@@ -1398,6 +1411,7 @@ describe("model frames", () => {
         ],
         defaultModel: "fast-1",
       }),
+      endpoints: async () => [],
       current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),

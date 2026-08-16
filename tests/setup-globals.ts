@@ -19,6 +19,7 @@ import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
 import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
 import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
 import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
+import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -69,4 +70,7 @@ beforeEach(() => {
   resetWebSessions();
   // The lastSeen throttle would silently skip the write a later test asserts on.
   resetDeviceSeenCache();
+  // Endpoint lists are keyed by model id and cached for fifteen minutes, including the empty list
+  // a failed lookup leaves: a later file would read another file's mock, or no call at all.
+  clearOpenRouterCache();
 });

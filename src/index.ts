@@ -141,7 +141,9 @@ import { chatCompletion, type ChatMessage } from "./llm/provider.ts";
 import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { openRouterEndpoints } from "./llm/openrouter-endpoints.ts";
+import { withoutEndpoint } from "./llm/model-ref.ts";
 import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
 import { fallbackNoticeText } from "./llm/fallback-notice.ts";
@@ -1068,6 +1070,23 @@ async function main() {
         })),
         defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
       }),
+      endpoints: async (modelRef) => {
+        // Only OpenRouter routes a model to several providers, and only its own reference can be
+        // pinned: anything else answers with an empty list, which the app reads as "automatic".
+        const resolved = tryResolveRunModel(config, { agent: "main", forcedModel: modelRef }, availabilityWorld());
+        if (!resolved || !isOpenRouterBaseUrl(resolved.baseUrl)) return [];
+        const apiId = resolved.apiModel ?? resolved.model;
+        const routes = await openRouterEndpoints(apiId);
+        return routes.map((route) => ({
+          id: `${withoutEndpoint(modelRef)}@${route.tag}`,
+          label: route.providerName === route.tag ? route.tag : `${route.providerName} (${route.tag})`,
+          ...(route.promptUsd === undefined ? {} : { promptUsd: route.promptUsd }),
+          ...(route.completionUsd === undefined ? {} : { completionUsd: route.completionUsd }),
+          ...(route.contextLength === undefined ? {} : { context: route.contextLength }),
+          ...(route.status !== undefined && route.status < 0 ? { degraded: true } : {}),
+          ...(route.uptime30m === undefined ? {} : { uptime30m: route.uptime30m }),
+        }));
+      },
       current: (owner, threadId) => resolveModelState(owner, threadId),
       set: async (owner, threadId, modelId) => {
         const sessionId = modelSessionId(owner, threadId);

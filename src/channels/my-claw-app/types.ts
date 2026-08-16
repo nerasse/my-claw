@@ -321,6 +321,16 @@ export interface MyClawAppModelList {
   type: "model.list";
 }
 
+/**
+ * The endpoints one OpenRouter model can be routed to, asked for when a menu opens on it. Lazy on
+ * purpose: it is one HTTP call per model, and the catalogue is four hundred of them.
+ */
+export interface MyClawAppModelEndpoints {
+  type: "model.endpoints";
+  /** The model reference, as listed by `model.list`. */
+  model: string;
+}
+
 export interface MyClawAppModelGet {
   type: "model.get";
   threadId: string;
@@ -664,6 +674,7 @@ export type MyClawAppClientFrame =
   | MyClawAppInstructionsSet
   | MyClawAppInstructionsLayerSet
   | MyClawAppModelList
+  | MyClawAppModelEndpoints
   | MyClawAppModelGet
   | MyClawAppModelSet
   | MyClawAppModelEffortSet
@@ -1067,6 +1078,31 @@ export interface MyClawAppModelListResult {
   type: "model.list.result";
   models: MyClawAppModelOption[];
   defaultModel: string;
+}
+
+/** One route a model can be pinned to, with what it costs and whether it is healthy. */
+export interface MyClawAppModelEndpoint {
+  /** The reference to select to pin this route: the model, then `@`, then the endpoint tag. */
+  id: string;
+  /** The provider behind the route, spelled as its own catalogue spells it. */
+  label: string;
+  /** USD per million tokens. */
+  promptUsd?: number;
+  completionUsd?: number;
+  context?: number;
+  /** Degraded or down on the provider's own health flag: worth showing, not worth hiding. */
+  degraded?: boolean;
+  uptime30m?: number;
+}
+
+/**
+ * The routes of one model, cheapest first. An empty list means the model has no routing of its
+ * own (anything that is not OpenRouter) or the lookup failed: either way, automatic is the answer.
+ */
+export interface MyClawAppModelEndpointsResult {
+  type: "model.endpoints.result";
+  model: string;
+  endpoints: MyClawAppModelEndpoint[];
 }
 
 /** One skill of the server catalog. `path` is display-only: where the file lives on the server,
@@ -1908,6 +1944,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
   | MyClawAppModelListResult
+  | MyClawAppModelEndpointsResult
   | MyClawAppSkillsListResult
   | MyClawAppToolsListResult
   | MyClawAppWorkspacesListResult
