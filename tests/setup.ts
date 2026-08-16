@@ -2,16 +2,29 @@
 // so it can redirect every filesystem root away from the real ~/.my-claw BEFORE
 // config.ts evaluates MY_CLAW_DIR. Without this, running `bun test` writes session
 // files into the user's real ~/.my-claw/sessions and can mutate production data.
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach } from "bun:test";
 
+// Captured before TMPDIR moves: everything below that reasons about the real /tmp (the run root
+// itself, and the sweep of older roots) has to keep pointing at it.
+const systemTmp = tmpdir();
+
 // Redirect MY_CLAW_DIR (sessions, store, config path) to a throwaway temp dir.
 // MY_CLAW_WORKSPACE is deliberately left unset: tool tests rely on the unsandboxed
 // fallback, and the workspace default already derives from MY_CLAW_DIR.
-const root = mkdtempSync(join(tmpdir(), "my-claw-test-"));
+const root = mkdtempSync(join(systemTmp, "my-claw-test-"));
 process.env["MY_CLAW_DIR"] = root;
+
+// Move os.tmpdir() itself inside the run root, so scratch directories land somewhere that is
+// already deleted with the run. Sweeping /tmp by prefix does not scale: the suite calls mkdtemp
+// from 94 places under ~30 prefixes, plus the production code it exercises (video-frames-, img-,
+// tts-, prompt-), and a sweep only ever knows the prefixes someone remembered to list -- one of
+// them did, and the other 29 had left 13000 directories in a 5.7 GB tmpfs. os.tmpdir() re-reads
+// the environment on every call, so this covers every site without touching one of them.
+process.env["TMPDIR"] = join(root, "tmp");
+mkdirSync(process.env["TMPDIR"], { recursive: true });
 
 // The root is thrown away with the run. Nothing used to remove it: every `bun test` left a few
 // megabytes in /tmp, and 238 of them had taken 900 MB of a 5.7 GB tmpfs -- on the machine where a
@@ -28,9 +41,9 @@ process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 // this from deleting the directory of a test process running beside this one.
 const STALE_MS = 60 * 60 * 1000;
 try {
-  for (const name of readdirSync(tmpdir())) {
-    if (!name.startsWith("my-claw-test-") || join(tmpdir(), name) === root) continue;
-    const path = join(tmpdir(), name);
+  for (const name of readdirSync(systemTmp)) {
+    if (!name.startsWith("my-claw-test-") || join(systemTmp, name) === root) continue;
+    const path = join(systemTmp, name);
     try {
       if (Date.now() - statSync(path).mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
     } catch {

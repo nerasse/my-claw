@@ -24,6 +24,9 @@
 - `bun test` must never touch the real `~/.my-claw`. `bunfig.toml` preloads
   `tests/setup.ts`, which points `MY_CLAW_DIR` at a throwaway temp dir before any
   module loads. Read filesystem roots from `MY_CLAW_DIR` (never hardcode `homedir()`).
+- The same preload moves `TMPDIR` inside that root, so `os.tmpdir()` scratch is deleted with
+  the run and no test has to remember a cleanup. Keep using `mkdtemp(join(tmpdir(), ...))`;
+  never rebuild an absolute `/tmp` path by hand, that is the one way back out of the sandbox.
 - The browser sidecar (`sidecar/`, Node) is exercised by the gated e2e in
   `tests-e2e/browser/` (`BROWSER_E2E=1`); the Bun unit tests mock its HTTP endpoints.
 - Module-level state in `src/` is shared by every test file and leaks across them. Reset it
