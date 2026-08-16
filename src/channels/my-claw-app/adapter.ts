@@ -3084,7 +3084,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
     ws.send(JSON.stringify({ type: "diag.report.result", accepted: reports.length }));
   }
 
+  /**
+   * Keeps a quiet socket alive, and finds out early when it is not.
+   *
+   * The Android app pings every 20s from OkHttp, which is what kept `lastSeen` fresh. A browser
+   * cannot: JavaScript has no way to send a WebSocket ping frame. A web client that sat there
+   * reading was therefore reaped as stale, and any socket the OS had already dropped stayed in
+   * the map until the next sweep. Pinging from here covers both: the browser's own stack answers
+   * with a pong (the `pong` handler refreshes `lastSeen`), and a dead socket surfaces at once.
+   */
+  private keepAlive(): void {
+    for (const ws of this.sockets.values()) {
+      try {
+        ws.ping();
+      } catch {
+        // A socket that cannot be pinged is gone; the sweep below takes it out.
+      }
+    }
+  }
+
   private sweep(): void {
+    this.keepAlive();
     const now = Date.now();
     for (const [deviceId, ws] of this.sockets) {
       if (now - ws.data.lastSeen > STALE_SOCKET_MS) {
