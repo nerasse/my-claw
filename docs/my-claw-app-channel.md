@@ -246,6 +246,18 @@ myclaw web rm <version>
 only ever sees the finished one. `current` is a symlink, so switching versions and rolling back
 are the same operation. Files are read per request: a new bundle is live without a restart.
 
+Two things that shape the download, both learned the hard way on the first real install:
+
+- **The release repository is private**, and a private asset answers an anonymous GET with `404`,
+  not `401`. `FORGEJO_TOKEN` from `~/.my-claw/.env` is sent as an `Authorization: token` header,
+  and only ever to the host in `FORGEJO_URL`: a `--from` pointing anywhere else is a plain
+  download, because a credential handed to whatever host was typed on the command line is how a
+  mirror ends up holding the keys to the repository.
+- **The staging directory lives in `$MY_CLAW_DIR/web/`**, not in `/tmp`. A rename cannot cross a
+  filesystem and `/tmp` is a tmpfs, so staging there failed with `EXDEV` after the download and
+  the extraction had both succeeded. The name starts with a dot, so a leftover from a crash is
+  never listed as a version.
+
 A real directory at `current` is refused rather than replaced. It is somebody's hand-installed
 bundle, and deleting files nobody asked to lose is not an upgrade.
 

@@ -1,6 +1,5 @@
 import { lstat, mkdtemp, mkdir, readdir, readlink, rename, rm, stat, symlink, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../core/config.ts";
 
@@ -23,8 +22,32 @@ const USAGE = `usage: myclaw web <command>
 const WEB_DIR = (): string => join(MY_CLAW_DIR, "web");
 const CURRENT = (): string => join(WEB_DIR(), "current");
 
+const DEFAULT_FORGE = "https://git.kssimi.fr";
+
 const DEFAULT_SOURCE = (version: string): string =>
-  `https://git.kssimi.fr/claw/my-claw-app/releases/download/${version}/dist-web.tar.gz`;
+  `${(process.env["FORGEJO_URL"] ?? DEFAULT_FORGE).replace(/\/+$/, "")}/claw/my-claw-app/releases/download/${version}/dist-web.tar.gz`;
+
+/**
+ * The release repository is private, and a private release asset answers an anonymous GET with a
+ * 404 rather than a 401: `myclaw web install <version>` could therefore never work, and said
+ * "download failed: HTTP 404" as if the version did not exist.
+ *
+ * The token only ever travels to the forge itself. A `--from` pointing anywhere else is a plain
+ * download: handing a credential to whatever host was passed on the command line is how a mirror
+ * ends up holding the keys to the repository.
+ */
+export function authHeaders(source: string): Record<string, string> {
+  const token = process.env["FORGEJO_TOKEN"];
+  if (!token) return {};
+  try {
+    const target = new URL(source);
+    const forge = new URL(process.env["FORGEJO_URL"] ?? DEFAULT_FORGE);
+    if (target.host !== forge.host || target.protocol !== forge.protocol) return {};
+    return { Authorization: `token ${token}` };
+  } catch {
+    return {};
+  }
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -53,7 +76,7 @@ async function listVersions(): Promise<string[]> {
   try {
     const entries = await readdir(WEB_DIR(), { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isDirectory() && entry.name !== "current")
+      .filter((entry) => entry.isDirectory() && entry.name !== "current" && !entry.name.startsWith("."))
       .map((entry) => entry.name)
       .sort();
   } catch {
@@ -61,16 +84,31 @@ async function listVersions(): Promise<string[]> {
   }
 }
 
-/** Extraction goes to a staging directory and is renamed into place: a half-extracted tree is
- *  never served, because the serving path only ever sees the finished one. */
+/**
+ * Extraction goes to a staging directory and is renamed into place: a half-extracted tree is
+ * never served, because the serving path only ever sees the finished one.
+ *
+ * The staging directory sits inside the web directory, not in `/tmp`. A rename only works within
+ * one filesystem, and `/tmp` is a tmpfs on any normal machine: staging there made the last step
+ * fail with EXDEV every single time, after the download and the extraction had both succeeded.
+ * The name starts with a dot so a leftover from a crash is never listed as a version.
+ */
 async function installFrom(source: string, version: string): Promise<{ ok: true } | { ok: false; error: string }> {
-  const staging = await mkdtemp(join(tmpdir(), "myclaw-web-"));
+  await mkdir(WEB_DIR(), { recursive: true });
+  const staging = await mkdtemp(join(WEB_DIR(), ".staging-"));
   const archive = join(staging, "dist-web.tar.gz");
 
   try {
     if (source.startsWith("http://") || source.startsWith("https://")) {
-      const response = await fetch(source);
-      if (!response.ok) return { ok: false, error: `download failed: HTTP ${response.status}` };
+      const headers = authHeaders(source);
+      const response = await fetch(source, { headers });
+      if (!response.ok) {
+        const hint =
+          response.status === 404 && Object.keys(headers).length === 0
+            ? " (a private release reads as 404 when anonymous: set FORGEJO_TOKEN in ~/.my-claw/.env)"
+            : "";
+        return { ok: false, error: `download failed: HTTP ${response.status}${hint}` };
+      }
       await Bun.write(archive, response);
     } else {
       if (!(await exists(source))) return { ok: false, error: `no such file: ${source}` };
@@ -100,7 +138,6 @@ async function installFrom(source: string, version: string): Promise<{ ok: true 
     }
 
     const target = join(WEB_DIR(), version);
-    await mkdir(WEB_DIR(), { recursive: true });
     await rm(target, { recursive: true, force: true });
     await rename(root, target);
 

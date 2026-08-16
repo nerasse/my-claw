@@ -2615,6 +2615,10 @@ async function runDeviceCliCommand(args: string[]): Promise<number> {
 
 async function runWebCliCommand(args: string[]): Promise<number> {
   const { runWebCli } = await import("./channels/my-claw-app/web-cli.ts");
+  // The bundle lives on a private release: without the env the download is anonymous, and a
+  // private asset answers an anonymous GET with a 404.
+  const { loadEnv } = await import("./core/config.ts");
+  await loadEnv();
   return runWebCli(args);
 }
 
