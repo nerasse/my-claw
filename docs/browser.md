@@ -94,6 +94,11 @@ solves the blocker and replies "continue".
   list is injected into the subagent prompt so it focuses an existing relevant tab instead of
   opening duplicates. `new_tab=true` forces a separate tab.
 - **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
+- **Model**: `config.agents.browser.llm.defaultModel`, the global default under it, and only then
+  the first OpenAI-compatible model in the catalogue. The loop speaks chat-completions and cannot
+  run a claude-sdk or codex default, which is why it used to skip agent resolution altogether and
+  take that last fallback whatever `agents.browser` said -- so the model was decided by the order
+  of `llm.models`, and a gateway that blocks the first entry broke every browser task.
 - **Cancellable**: the parent run's `AbortSignal` is threaded into the subagent loop (via the tool's
   `__signal`). `/stop` interrupts it — it bails out before the next LLM call or tool execution and
   returns "Stopped by user."

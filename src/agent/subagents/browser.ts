@@ -1,9 +1,9 @@
-import type { MyClawConfig } from "../../core/config.ts";
+import type { MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
-import { resolveOpenAiLlmConfig } from "../../llm/resolver.ts";
+import { resolveOpenAiAgentLlmConfig } from "../../llm/resolver.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserClient } from "../../browser/client.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -275,7 +275,7 @@ export class BrowserSubagent {
       const openaiTools = toOpenAiToolDefinitions(available);
 
       let response: LlmResponse;
-      const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
+      const llmConfig = this.llmConfig();
       // Snapshots are large; without trimming, a 30-step run can outgrow the model context.
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
       const trimmed = trimToContextWindow(messages, llmConfig.limit?.context, toolSchemaTokens);
@@ -403,9 +403,20 @@ export class BrowserSubagent {
     }
   }
 
+  /**
+   * The model this agent runs on: `config.agents.browser` first, the global default under it.
+   *
+   * A browser run is a long tool loop over an OpenAI-compatible endpoint, so the resolution has
+   * to end on one; what it must not do is skip the pin to get there, which is how every run ended
+   * up on the first model of the catalogue whatever `agents.browser` said.
+   */
+  private llmConfig(): ResolvedLlmConfig {
+    return resolveOpenAiAgentLlmConfig(this.config.agents?.["browser"]?.llm, this.config.llm);
+  }
+
   private async summarizeFindings(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
     if (signal?.aborted) return "";
-    const llmConfig = resolveOpenAiLlmConfig(this.config.llm);
+    const llmConfig = this.llmConfig();
     const prompt: ChatMessage[] = [
       ...messages,
       {

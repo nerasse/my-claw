@@ -367,19 +367,46 @@ export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
   }
 }
 
-/**
- * Resolve a config guaranteed to target an OpenAI-compatible chat/completions endpoint. Utility
- * LLM callers (compaction summarizer, memory consolidation, browser sub-agent) speak
- * chat-completions directly and would break on the non-HTTP claude-sdk path or the Responses-only
- * codex path; they fall back to the first plain openai model instead.
- */
-export function resolveOpenAiLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
-  const isChatCompletions = (c: ResolvedLlmConfig): boolean => c.backend !== "claude-sdk" && c.backend !== "codex";
-  const resolved = resolveLlmConfig(config, modelId);
+function isChatCompletions(resolved: ResolvedLlmConfig): boolean {
+  return resolved.backend !== "claude-sdk" && resolved.backend !== "codex";
+}
+
+/** The resolved config if it speaks chat-completions, else the first configured model that does. */
+function chatCompletionsOrFallback(config: LlmConfig, resolved: ResolvedLlmConfig): ResolvedLlmConfig {
   if (isChatCompletions(resolved)) return resolved;
   for (const model of config.models ?? []) {
     const candidate = resolveLlmConfig(config, model.id);
     if (isChatCompletions(candidate)) return candidate;
   }
   throw new Error("No OpenAI-compatible model configured (all models are claude-sdk or codex backed)");
+}
+
+/**
+ * Resolve a config guaranteed to target an OpenAI-compatible chat/completions endpoint. Utility
+ * LLM callers (compaction summarizer, memory consolidation) speak chat-completions directly and
+ * would break on the non-HTTP claude-sdk path or the Responses-only codex path; they fall back to
+ * the first plain openai model instead.
+ */
+export function resolveOpenAiLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
+  return chatCompletionsOrFallback(config, resolveLlmConfig(config, modelId));
+}
+
+/**
+ * The same guarantee, for an agent that has a model of its own.
+ *
+ * The browser sub-agent runs a chat-completions loop, so it cannot use a claude-sdk default; it
+ * was therefore skipping agent resolution entirely and taking the first OpenAI-compatible model
+ * in the catalogue, which meant `config.agents.browser` was quietly ignored and the model was
+ * whatever happened to be listed first. The pin is honoured here, and the fallback only runs when
+ * the pin itself is not a chat-completions model.
+ */
+export function resolveOpenAiAgentLlmConfig(
+  agentConfig: AgentLlmConfig | undefined,
+  globalConfig: LlmConfig,
+  modelId?: string,
+): ResolvedLlmConfig {
+  return chatCompletionsOrFallback(
+    mergeAgentLlm(agentConfig, globalConfig),
+    resolveAgentLlmConfig(agentConfig, globalConfig, modelId),
+  );
 }
