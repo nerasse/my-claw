@@ -31,7 +31,13 @@ function buildImplicitProvider(config: LlmConfig): LlmProviderConfig {
  * 3. it names no provider, so the first provider that serves it answers, in config order. This is
  *    the short form, the one the config default, the tags and every stored session use.
  */
-function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefined {
+/**
+ * The catalogue entry a reference names, by the three rules of docs/model-identity.md. Exported
+ * because it is the only lookup allowed: the catalogue holds qualified ids (`anthropic/opus`)
+ * while a config, a tag or a session may hold the bare one, and an `id ===` comparison somewhere
+ * else reads that as an unknown model.
+ */
+export function findModel(config: LlmConfig, modelId: string): LlmModelConfig | undefined {
   const models = config.models;
   if (!models) return undefined;
   const exact = models.find((m) => m.id === modelId);

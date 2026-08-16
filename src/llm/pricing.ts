@@ -234,7 +234,7 @@ export class ModelPricing {
     private declaredProviders: () => Record<string, { baseUrl?: string; pricingProvider?: string }>,
     // Discovered models, used only to resolve an alias to a concrete version. Optional so the
     // price table stays usable without a catalogue.
-    private catalogModels: () => Array<{ id: string; group?: string; limit?: { context?: number } }> = () => [],
+    private catalogModels: () => Array<{ id: string; apiId?: string; group?: string; limit?: { context?: number } }> = () => [],
   ) {
     this.loadCache();
   }
@@ -251,11 +251,14 @@ export class ModelPricing {
    */
   private resolveAlias(model: string): string | undefined {
     const models = this.catalogModels();
-    const self = models.find((m) => m.id === model);
+    // A price is looked up under the id the provider bills, never under the qualified reference
+    // the catalogue addresses the model by (docs/model-identity.md).
+    const wireId = (m: { id: string; apiId?: string }): string => m.apiId ?? m.id;
+    const self = models.find((m) => wireId(m) === model);
     if (!self || !self.group || self.limit?.context) return undefined;
-    const siblings = models.filter((m) => m.group === self.group && m.id !== model && m.limit?.context);
+    const siblings = models.filter((m) => m.group === self.group && wireId(m) !== model && m.limit?.context);
     if (siblings.length === 0) return undefined;
-    return siblings.sort((a, b) => compareVersions(versionKey(b.id), versionKey(a.id)))[0]?.id;
+    return siblings.map(wireId).sort((a, b) => compareVersions(versionKey(b), versionKey(a)))[0];
   }
 
   /** Fetch on boot when the copy on disk is missing or stale; never blocks a caller. */

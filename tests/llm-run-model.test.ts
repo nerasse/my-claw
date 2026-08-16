@@ -246,6 +246,31 @@ describe("tags", () => {
     expect(run.skipped[0]).toMatchObject({ source: "session", model: "tag:Fast" });
   });
 
+  test("a tag naming a discovered model resolves, whichever way the catalogue spells it", () => {
+    // The live incident: discovery qualifies its ids (`anthropic/claude-sonnet-5`) while the tag,
+    // the default and every session hold the bare one. Reading availability with `id ===` made
+    // the default model of the whole install an unknown id, and every run threw.
+    const c = config({
+      tags: { Medium: { model: "claude-sonnet-5" } },
+      llm: {
+        ...config().llm,
+        defaultModel: "tag:Medium",
+        // Both halves, the way the boot sync leaves them: the availability chain reads the
+        // top-level section and the resolver reads the llm view.
+        tags: { Medium: { model: "claude-sonnet-5" } },
+        models: [
+          { id: "anthropic/claude-sonnet-5", apiId: "claude-sonnet-5", provider: "anthropic" },
+          { id: "litellm/qwen", apiId: "qwen", provider: "litellm" },
+        ],
+      },
+    });
+    const w = world({ answered: (p) => p === "anthropic", listedBy: () => new Set(["claude-sonnet-5"]) });
+    expect(availabilityOf(c.llm, "claude-sonnet-5", w)).toEqual({ state: "ready" });
+    // And by its qualified name: the provider is asked about the id it published, not about ours.
+    expect(availabilityOf(c.llm, "anthropic/claude-sonnet-5", w)).toEqual({ state: "ready" });
+    expect(resolveRunModel(c, { agent: "main" }, w).apiModel).toBe("claude-sonnet-5");
+  });
+
   test("tag:Default follows the agent's own default, not the global one", () => {
     const c = config({ agents: { orchestrator: { llm: { defaultModel: "claude-opus-5" } } } });
     const run = resolveRunModel(c, { agent: "main", sessionModel: "tag:Default" }, world());

@@ -1,6 +1,6 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
 import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
-import { leafModelId } from "./resolver.ts";
+import { findModel, leafModelId } from "./resolver.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
@@ -53,7 +53,7 @@ export function resolveModelContextWindow(
 ): ResolvedContextWindow {
   const tags = tagsOf(config);
   const leaf = leafModelId(tags && !config.llm?.tags ? { ...config.llm, tags } : config.llm, modelId);
-  const entry = config.llm?.models?.find((m) => m.id === leaf);
+  const entry = config.llm ? findModel(config.llm, leaf) : undefined;
   return resolveContextWindow({
     model: modelId,
     config,

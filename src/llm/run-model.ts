@@ -11,7 +11,7 @@ import {
   type MyClawConfig,
   type ResolvedLlmConfig,
 } from "../core/config.ts";
-import { resolveLlmConfigForAgentMessage } from "./resolver.ts";
+import { findModel, resolveLlmConfigForAgentMessage } from "./resolver.ts";
 
 /**
  * Why a model cannot run, computed and never stored. See docs/model-resolution.md.
@@ -113,7 +113,7 @@ export function availabilityOf(
   modelId: string,
   world: AvailabilityWorld,
 ): Availability | undefined {
-  const model = config.models?.find((m) => m.id === modelId);
+  const model = findModel(config, modelId);
   // Nothing to judge by, and nothing to misroute to: a config with no model list has a single
   // implicit provider (or a catalog that has not spoken yet). Refusing here would reject an id
   // the owner knows exists; the ambiguity this guards against needs a populated list to exist.
@@ -141,8 +141,9 @@ export function availabilityOf(
   if (!keyed && !config.apiKey) {
     return { state: "no-key", provider: providerName, env: env ?? "FIREWORKS_API_KEY" };
   }
-  // Only a provider that answered can testify that a model is gone.
-  if (world.answered(providerName) && !world.listedBy(providerName).has(modelId)) {
+  // Only a provider that answered can testify that a model is gone, and it testifies about the id
+  // it knows: the catalogue qualifies ids for addressing, the provider never sees that spelling.
+  if (world.answered(providerName) && !world.listedBy(providerName).has(model.apiId ?? model.id)) {
     return { state: "stale", provider: providerName };
   }
   return { state: "ready" };

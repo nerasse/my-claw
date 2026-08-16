@@ -141,7 +141,7 @@ import { chatCompletion, type ChatMessage } from "./llm/provider.ts";
 import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
 import { openRouterEndpoints } from "./llm/openrouter-endpoints.ts";
 import { withoutEndpoint } from "./llm/model-ref.ts";
 import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
@@ -1366,7 +1366,7 @@ async function main() {
         // "" removes the pin; a model must be declared and vision-capable or the resolver would
         // silently keep the original model at run time, which is a config that does nothing.
         if (modelId !== "") {
-          const declared = config.llm.models?.find((model) => model.id === modelId);
+          const declared = findModel(config.llm, modelId);
           if (!declared) throw new Error(`unknown model: ${modelId}`);
           if (declared.vision !== true) throw new Error(`${modelId} cannot take images`);
         }
