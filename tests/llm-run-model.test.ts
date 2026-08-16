@@ -259,8 +259,8 @@ describe("tags", () => {
         // top-level section and the resolver reads the llm view.
         tags: { Medium: { model: "claude-sonnet-5" } },
         models: [
-          { id: "anthropic/claude-sonnet-5", apiId: "claude-sonnet-5", provider: "anthropic" },
-          { id: "litellm/qwen", apiId: "qwen", provider: "litellm" },
+          { id: "anthropic/claude-sonnet-5", apiId: "claude-sonnet-5", label: "Sonnet 5", provider: "anthropic" },
+          { id: "litellm/qwen", apiId: "qwen", label: "Qwen", provider: "litellm" },
         ],
       },
     });

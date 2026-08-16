@@ -30,11 +30,11 @@ function config(): MyClawConfig {
         litellm: { baseUrl: "https://litellm.example/v1", apiKeyEnv: "LITELLM_API_KEY", discover: true },
       },
       models: [
-        { id: "openrouter/openai/gpt-5.6-luna", apiId: "openai/gpt-5.6-luna", provider: "openrouter" },
-        { id: "litellm/qwen", apiId: "qwen", provider: "litellm" },
+        { id: "openrouter/openai/gpt-5.6-luna", apiId: "openai/gpt-5.6-luna", label: "Luna", provider: "openrouter" },
+        { id: "litellm/qwen", apiId: "qwen", label: "Qwen", provider: "litellm" },
       ],
     },
-  } as MyClawConfig;
+  } as unknown as MyClawConfig;
 }
 
 test("only a model OpenRouter serves can be pinned", () => {
@@ -68,7 +68,7 @@ test("the routes of a model are asked for under the id its provider knows", asyn
   clearOpenRouterCache();
   let asked = "";
   const mock = mockFetch(async (input) => {
-    asked = typeof input === "string" ? input : input.toString();
+    asked = String(input);
     return new Response(JSON.stringify(ENDPOINTS), { status: 200, headers: { "Content-Type": "application/json" } });
   });
   try {
