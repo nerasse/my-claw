@@ -180,9 +180,15 @@ reachable by tailnet name, LAN name and raw IP without a list to maintain. The a
 | `/assets/*` | cookie | bundle file, `Cache-Control: private, max-age=31536000, immutable` |
 | anything else | cookie | the file if it exists, otherwise `index.html`, `Cache-Control: private, no-cache` |
 
-Without a valid cookie, a navigation request is redirected to `/pair` and anything else gets a
-bare 401. No 404 versus 403 distinction on bundle paths: an unauthenticated client learns nothing
-about what is installed.
+Without a valid cookie, a navigation request is redirected to `/pair?next=<path>` and anything
+else gets a bare 401. No 404 versus 403 distinction on bundle paths: an unauthenticated client
+learns nothing about what is installed.
+
+`next` is what makes a deep link usable from a browser that is not paired yet: the client routes
+on `/t/<threadId>`, so a link to a conversation has to survive the pairing it triggers instead of
+dumping the new browser on the root. It carries a path of ours or nothing, validated on the way
+out (`pairRedirect`) and again in the page before it is used, because a redirect target is
+exactly the sort of parameter that turns into an open redirect.
 
 The API routes are matched **before** the static fallback, so a bundle can never shadow one. The
 resolved path is checked to be inside the bundle directory: a `..` in a URL is a 404, never a read

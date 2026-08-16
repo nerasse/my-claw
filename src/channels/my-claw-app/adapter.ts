@@ -19,7 +19,15 @@ import { approve, createTicket, deny, lookup, pairingEnabled } from "./pairing.t
 import { listDevices, revokeDevice, touchDevice } from "./devices.ts";
 import { pairPageResponse } from "./pair-page.ts";
 import { deviceOfSession, readCookie, revokeSessionsOfDevice, SESSION_COOKIE } from "./web-session.ts";
-import { clientIp, requestHost, requestIsSecure, securityHeaders, serveBundle, webEnabled } from "./web.ts";
+import {
+  clientIp,
+  pairRedirect,
+  requestHost,
+  requestIsSecure,
+  securityHeaders,
+  serveBundle,
+  webEnabled,
+} from "./web.ts";
 import { currentRunId } from "../../utils/run-context.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { commandsFor } from "../commands-catalog.ts";
@@ -1003,7 +1011,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // unauthenticated client cannot map what is installed by reading 404s.
         const wantsHtml = (req.headers.get("accept") ?? "").includes("text/html");
         if (wantsHtml && pairingEnabled(this.config)) {
-          return new Response(null, { status: 302, headers: securityHeaders({ Location: "/pair" }) });
+          return new Response(null, {
+            status: 302,
+            headers: securityHeaders({ Location: pairRedirect(url.pathname) }),
+          });
         }
         return new Response("Unauthorized", { status: 401, headers: securityHeaders() });
       }

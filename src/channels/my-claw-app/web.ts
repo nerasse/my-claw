@@ -99,6 +99,20 @@ export async function serveBundle(
 }
 
 /**
+ * Where an unpaired navigation is sent, carrying the address it was aiming at.
+ *
+ * A link to a conversation is the reason deep links exist, and it must survive the pairing it
+ * triggers rather than dumping the new browser on the root. Only a path of ours travels: the
+ * page validates it again before using it, because a redirect target is exactly the sort of
+ * parameter that turns into an open redirect.
+ */
+export function pairRedirect(pathname: string): string {
+  if (pathname === "/" || !pathname.startsWith("/")) return "/pair";
+  if (pathname.startsWith("//") || pathname.startsWith("/\\")) return "/pair";
+  return `/pair?next=${encodeURIComponent(pathname)}`;
+}
+
+/**
  * Whether the request reached us over TLS, which decides the `Secure` cookie attribute.
  *
  * `X-Forwarded-Proto` is only believed from a configured proxy: a client on the LAN would

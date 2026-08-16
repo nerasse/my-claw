@@ -23,6 +23,7 @@ import {
   type PairingDelivery,
   type PairingDenial,
 } from "../../src/channels/my-claw-app/pairing.ts";
+import { pairRedirect } from "../../src/channels/my-claw-app/web.ts";
 import {
   createGrant,
   redeemGrant,
@@ -321,6 +322,20 @@ describe("web sessions", () => {
     expect(readCookie(`theme=dark; ${SESSION_COOKIE}=abc; other=1`, SESSION_COOKIE)).toBe("abc");
     expect(readCookie("theme=dark", SESSION_COOKIE)).toBeNull();
     expect(readCookie(null, SESSION_COOKIE)).toBeNull();
+  });
+});
+
+describe("deep links", () => {
+  test("an unpaired link to a conversation comes back to it after pairing", () => {
+    expect(pairRedirect("/t/thread-42")).toBe("/pair?next=%2Ft%2Fthread-42");
+    expect(pairRedirect("/")).toBe("/pair");
+  });
+
+  test("the address that travels can only ever be one of ours", () => {
+    // `//evil.example` is a protocol-relative URL: a browser reads it as another host.
+    expect(pairRedirect("//evil.example/steal")).toBe("/pair");
+    expect(pairRedirect("/\\evil.example")).toBe("/pair");
+    expect(pairRedirect("https://evil.example")).toBe("/pair");
   });
 });
 

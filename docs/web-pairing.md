@@ -195,7 +195,7 @@ Being module-level state, it is reset in `tests/setup-globals.ts`, not per test 
 
 | Guard | Value |
 | --- | --- |
-| challenge TTL | 120 s |
+| challenge TTL | 600 s (`pairing.ttlSeconds`) |
 | CLI ticket TTL | 600 s |
 | claim attempts per socket | 5, then the socket is closed |
 | `/pair` connections per IP | token bucket, 10 per minute |
@@ -213,7 +213,7 @@ attempt against a disabled route is logged at `warn`: on a public host, that is 
     "my-claw-app": {
       "pairing": {
         "enabled": false,
-        "ttlSeconds": 120,
+        "ttlSeconds": 600,
         "claimTtlSeconds": 600,
         "maxSessions": 20
       },

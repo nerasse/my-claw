@@ -83,6 +83,18 @@ const PAGE = String.raw`<!DOCTYPE html>
   var form = document.getElementById('claim');
   var ticket = document.getElementById('ticket');
 
+  /**
+   * Where the browser was heading when it was sent here. A link to a conversation must survive
+   * the pairing it triggers, and the value is a path of ours or nothing: anything with a scheme,
+   * a host or a backslash is an open redirect waiting to happen.
+   */
+  function nextPath() {
+    var raw = new URLSearchParams(location.search).get('next') || '/';
+    // 92 is a backslash, spelled by its code point because this page is a String.raw template.
+    if (raw.charAt(0) !== '/' || raw.charAt(1) === '/' || raw.charCodeAt(1) === 92) return '/';
+    return raw;
+  }
+
   function say(text, kind) {
     stateEl.textContent = text;
     stateEl.className = 'state' + (kind ? ' ' + kind : '');
@@ -151,7 +163,7 @@ const PAGE = String.raw`<!DOCTYPE html>
       }).then(function (response) {
         // An explicit origin, because replacing with '/' alone leaves the claim code sitting in
         // the address bar as a fragment, ready to be copied out of a screenshot.
-        if (response.ok) location.replace(location.origin + '/');
+        if (response.ok) location.replace(location.origin + nextPath());
         else say('the session could not be opened', 'error');
       }).catch(function () { say('the session could not be opened', 'error'); });
       return;
