@@ -22,53 +22,68 @@ const PAGE = String.raw`<!DOCTYPE html>
 <title>Pair this browser</title>
 <style nonce="__NONCE__">
   :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center;
     background: #0b0d10; color: #e6e8eb;
-    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  main { width: min(420px, 92vw); padding: 28px 24px 32px; }
-  h1 { font-size: 19px; font-weight: 600; margin: 0 0 6px; }
-  p { margin: 0 0 20px; color: #9aa4b2; }
-  .qr { display: grid; place-items: center; padding: 14px 0 4px; }
-  .qr svg { width: 190px; height: 190px; }
+  main {
+    width: min(380px, 94vw);
+    padding: calc(14px + env(safe-area-inset-top)) 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .lede { margin: 0 0 12px; font-size: 13px; color: #9aa4b2; }
+  .qr { display: grid; place-items: center; min-height: 150px; }
+  .qr svg { width: 150px; height: 150px; display: block; }
+  .code-row { display: flex; gap: 8px; margin-top: 10px; }
   .code {
-    font: 600 30px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 3px; text-align: center; padding: 18px 0;
-    background: #14181d; border: 1px solid #232a33; border-radius: 12px;
+    flex: 1; min-width: 0; font: 600 25px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 2px; text-align: center; padding: 13px 4px; color: inherit;
+    background: #14181d; border: 1px solid #232a33; border-radius: 10px; cursor: pointer;
   }
-  .expiry { text-align: center; margin: 8px 0 0; font-size: 13px; color: #6b7480; }
-  .verify { text-align: center; margin: 16px 0 0; color: #9aa4b2; }
-  .verify b { color: #e6e8eb; font: 600 22px/1 ui-monospace, monospace; letter-spacing: 2px; }
-  .state { margin-top: 22px; text-align: center; min-height: 22px; color: #9aa4b2; }
+  .copy {
+    padding: 0 14px; border-radius: 10px; border: 1px solid #232a33; background: #1b2029;
+    color: #cfd6df; font: 600 13px/1 inherit; cursor: pointer;
+  }
+  .meta {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    margin: 8px 2px 0; font-size: 12.5px; color: #6b7480;
+  }
+  .meta b { color: #e6e8eb; font: 600 16px/1 ui-monospace, monospace; letter-spacing: 1px; }
+  .state { margin-top: 10px; text-align: center; min-height: 18px; font-size: 13px; color: #9aa4b2; }
   .state.error { color: #ff8f8f; }
   .state.ok { color: #7ee08a; }
-  form { display: flex; gap: 8px; margin-top: 22px; }
+  form { display: flex; gap: 8px; margin-top: 10px; }
   input {
-    flex: 1; padding: 11px 12px; border-radius: 10px; border: 1px solid #232a33;
-    background: #14181d; color: inherit; font: 15px/1 ui-monospace, monospace; letter-spacing: 2px;
+    flex: 1; min-width: 0; padding: 10px 11px; border-radius: 10px; border: 1px solid #232a33;
+    background: #14181d; color: inherit; font: 13px/1 ui-monospace, monospace; letter-spacing: 1px;
   }
-  button {
-    padding: 11px 16px; border-radius: 10px; border: 0; background: #2f6df6; color: #fff;
-    font: 600 14px/1 inherit; cursor: pointer;
+  .submit {
+    padding: 10px 14px; border-radius: 10px; border: 0; background: #2f6df6; color: #fff;
+    font: 600 13px/1 inherit; cursor: pointer;
   }
-  .hint { margin-top: 26px; font-size: 13px; color: #6b7480; text-align: center; }
+  .hint { margin: 12px 0 0; font-size: 11.5px; color: #6b7480; text-align: center; }
 </style>
 </head>
 <body>
 <main>
   <h1>Pair this browser</h1>
-  <p>Scan this with MyClaw on a paired device, or approve the code from Settings, Devices.</p>
+  <p class="lede">Scan with MyClaw on a paired device, or approve the code in Settings, Devices.</p>
 
   <div class="qr" id="qr"></div>
-  <div class="code" id="code">--------</div>
-  <p class="expiry" id="expiry"></p>
-  <p class="verify">Check that the app shows <b id="verify">---</b></p>
+
+  <div class="code-row">
+    <button class="code" id="code" type="button" title="copy the code">--------</button>
+    <button class="copy" id="copy" type="button">Copy</button>
+  </div>
+  <p class="meta"><span id="expiry"></span><span>app shows <b id="verify">---</b></span></p>
+
   <div class="state" id="state">connecting</div>
 
   <form id="claim">
-    <input id="ticket" placeholder="or paste a myclaw device add code" autocomplete="off" spellcheck="false" />
-    <button type="submit">Claim</button>
+    <input id="ticket" placeholder="or paste a device add code" autocomplete="off" spellcheck="false" />
+    <button class="submit" type="submit">Claim</button>
   </form>
 
   <p class="hint">This page never receives your device token.</p>
@@ -76,6 +91,7 @@ const PAGE = String.raw`<!DOCTYPE html>
 <script nonce="__NONCE__">
 (function () {
   var codeEl = document.getElementById('code');
+  var copyEl = document.getElementById('copy');
   var qrEl = document.getElementById('qr');
   var expiryEl = document.getElementById('expiry');
   var verifyEl = document.getElementById('verify');
@@ -100,17 +116,105 @@ const PAGE = String.raw`<!DOCTYPE html>
     stateEl.className = 'state' + (kind ? ' ' + kind : '');
   }
 
+  /**
+   * The challenge, kept where a frozen tab can find it again.
+   *
+   * sessionStorage and not localStorage: the resume token is what authorises receiving the
+   * credential, so it dies with the tab that raised the challenge and no other tab can read it.
+   */
+  var STORE_KEY = 'myclaw.pair';
+
+  function remember(code, token) {
+    try { sessionStorage.setItem(STORE_KEY, JSON.stringify({ code: code, token: token })); } catch (err) {}
+  }
+
+  function forget() {
+    try { sessionStorage.removeItem(STORE_KEY); } catch (err) {}
+  }
+
+  function remembered() {
+    try {
+      var raw = sessionStorage.getItem(STORE_KEY);
+      if (!raw) return null;
+      var saved = JSON.parse(raw);
+      return saved && saved.code && saved.token ? saved : null;
+    } catch (err) { return null; }
+  }
+
   var scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var socket = new WebSocket(scheme + '//' + location.host + '/my-claw-app/pair');
+  var socket = null;
+  var done = false;
+  var attempt = 0;
+  var retryTimer = null;
+  var probeTimer = null;
+  var lastFrameAt = 0;
   var expiresAt = 0;
   var renewTimer = null;
 
-  // A code that dies while the owner is walking to their phone is the failure this whole page
-  // exists to avoid: the countdown says how long is left, and a new challenge is asked for
-  // before the current one expires, so what is on screen is always live.
+  function drop() {
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    try { socket.close(); } catch (err) {}
+    socket = null;
+  }
+
+  function connect() {
+    if (done) return;
+    if (socket && socket.readyState <= 1) return;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    drop();
+    socket = new WebSocket(scheme + '//' + location.host + '/my-claw-app/pair');
+    socket.onopen = onOpen;
+    socket.onmessage = onMessage;
+    socket.onclose = onClose;
+  }
+
+  // Backing off matters: the server allows ten pairing sessions per minute and per address, and
+  // a tight retry loop would spend that budget before the owner is back on the page.
+  function retry() {
+    if (done || retryTimer) return;
+    var delay = Math.min(15000, 1000 * Math.pow(2, attempt++));
+    say('reconnecting');
+    retryTimer = setTimeout(function () { retryTimer = null; connect(); }, delay);
+  }
+
+  /** Announces this client, resuming the challenge already on screen when there is one. */
+  function hello() {
+    if (!socket || socket.readyState !== 1) return;
+    var frame = { type: 'pair.hello', kind: 'web', userAgent: navigator.userAgent };
+    var saved = remembered();
+    if (saved) frame.resume = { code: saved.code, token: saved.token };
+    socket.send(JSON.stringify(frame));
+  }
+
+  /** Asks for a new code, dropping the one held: this is renewal, not reconnection. */
   function askForChallenge() {
+    forget();
+    hello();
+  }
+
+  /**
+   * Coming back to the page is the moment that matters. Approving happens in the app, so the tab
+   * is in the background for the whole exchange and the system is free to freeze it and close the
+   * socket. A socket that survived on paper can still be dead on the wire after a network switch,
+   * so the resume doubles as the probe: no frame back within four seconds, and it is replaced.
+   */
+  function wake() {
+    if (done) return;
+    attempt = 0;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    if (!socket || socket.readyState > 1) { connect(); return; }
     if (socket.readyState !== 1) return;
-    socket.send(JSON.stringify({ type: 'pair.hello', kind: 'web', userAgent: navigator.userAgent }));
+    hello();
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = setTimeout(function () {
+      probeTimer = null;
+      if (done || Date.now() - lastFrameAt < 4000) return;
+      drop();
+      connect();
+    }, 4000);
   }
 
   setInterval(function () {
@@ -118,11 +222,12 @@ const PAGE = String.raw`<!DOCTYPE html>
     var left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
     var minutes = Math.floor(left / 60);
     var seconds = left % 60;
-    expiryEl.textContent = left > 0 ? 'valid for ' + minutes + ':' + String(seconds).padStart(2, '0') : 'renewing';
+    expiryEl.textContent = left > 0 ? 'valid ' + minutes + ':' + String(seconds).padStart(2, '0') : 'renewing';
   }, 1000);
 
-  socket.onopen = function () {
-    socket.send(JSON.stringify({ type: 'pair.hello', kind: 'web', userAgent: navigator.userAgent }));
+  function onOpen() {
+    attempt = 0;
+    hello();
     // A code in the fragment comes from "myclaw device add": the fragment never leaves the
     // browser, and it is dropped from the URL as soon as it is read.
     var fragment = (location.hash || '').replace(/^#/, '').trim();
@@ -131,14 +236,16 @@ const PAGE = String.raw`<!DOCTYPE html>
       socket.send(JSON.stringify({ type: 'pair.claim', code: fragment }));
       say('claiming');
     }
-  };
+  }
 
-  socket.onmessage = function (event) {
+  function onMessage(event) {
+    lastFrameAt = Date.now();
     var frame;
     try { frame = JSON.parse(event.data); } catch (err) { return; }
 
     if (frame.type === 'pair.challenge') {
       expiresAt = frame.expiresAt;
+      if (frame.resumeToken) remember(frame.code, frame.resumeToken);
       if (renewTimer) clearTimeout(renewTimer);
       // Ten seconds before the end, so the owner never reads a code the server has forgotten.
       renewTimer = setTimeout(askForChallenge, Math.max(5000, frame.expiresAt - Date.now() - 10000));
@@ -155,6 +262,8 @@ const PAGE = String.raw`<!DOCTYPE html>
       return;
     }
     if (frame.type === 'pair.granted') {
+      done = true;
+      forget();
       say('approved, opening', 'ok');
       fetch('/my-claw-app/session', {
         method: 'POST',
@@ -169,7 +278,7 @@ const PAGE = String.raw`<!DOCTYPE html>
       return;
     }
     if (frame.type === 'pair.denied') {
-      if (frame.reason === 'expired') {
+      if (frame.reason === 'expired' || frame.reason === 'unknown') {
         // The socket is still up: ask for a fresh code instead of telling the owner to reload.
         askForChallenge();
         say('code renewed');
@@ -177,17 +286,64 @@ const PAGE = String.raw`<!DOCTYPE html>
       }
       say(frame.reason === 'denied' ? 'refused on the device' : 'code ' + frame.reason, 'error');
     }
-  };
+  }
 
-  socket.onclose = function () { say('disconnected, reload to try again', 'error'); };
+  function onClose() {
+    if (done) return;
+    socket = null;
+    retry();
+  }
+
+  function copied() {
+    copyEl.textContent = 'copied';
+    setTimeout(function () { copyEl.textContent = 'Copy'; }, 1400);
+  }
+
+  /**
+   * The clipboard API only exists in a secure context, and this page is opened over plain HTTP on
+   * a LAN address as often as not. The textarea road is the one that works there.
+   */
+  function copyFallback(text) {
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.top = '-1000px';
+    document.body.appendChild(area);
+    area.select();
+    area.setSelectionRange(0, text.length);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (err) {}
+    document.body.removeChild(area);
+    if (ok) copied();
+    else copyEl.textContent = 'copy by hand';
+  }
+
+  function copyCode() {
+    var text = codeEl.textContent;
+    if (text.charAt(0) === '-') return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(copied, function () { copyFallback(text); });
+      return;
+    }
+    copyFallback(text);
+  }
+
+  copyEl.addEventListener('click', copyCode);
+  codeEl.addEventListener('click', copyCode);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) wake(); });
+  window.addEventListener('online', wake);
+  window.addEventListener('pageshow', wake);
 
   form.onsubmit = function (event) {
     event.preventDefault();
     var code = ticket.value.trim();
-    if (!code || socket.readyState !== 1) return;
+    if (!code || !socket || socket.readyState !== 1) return;
     socket.send(JSON.stringify({ type: 'pair.claim', code: code }));
     say('claiming');
   };
+
+  connect();
 })();
 </script>
 </body>

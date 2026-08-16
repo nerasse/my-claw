@@ -610,6 +610,11 @@ export interface MyClawAppPairHello {
   kind?: "web" | "native";
   label?: string;
   userAgent?: string;
+  /**
+   * Re-attaches to a challenge this client already raised, instead of asking for a new one.
+   * The token proves it, and a refused resume falls back to a fresh challenge.
+   */
+  resume?: { code: string; token: string };
 }
 
 /** Pairing socket: presenting a code, from a `myclaw device add` link or typed by hand. */
@@ -1859,6 +1864,8 @@ export interface MyClawAppPairChallenge {
   expiresAt: number;
   /** The claim URL as an SVG QR, drawn server-side so the shell ships no encoder. */
   qrSvg?: string;
+  /** Presented in `pair.hello.resume` to pick this challenge back up. Never shown to a human. */
+  resumeToken: string;
 }
 
 /** Pairing socket: somebody has looked this code up and is deciding. */

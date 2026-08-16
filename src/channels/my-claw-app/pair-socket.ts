@@ -5,9 +5,13 @@ import {
   claim,
   claimQrSvg,
   closeSession,
+  detachSession,
+  normalizeCode,
   openSession,
+  resumeSession,
   type PairingDelivery,
   type PairingDenial,
+  type PairingSession,
 } from "./pairing.ts";
 import { redeemGrant, sessionCookie } from "./web-session.ts";
 import { securityHeaders } from "./web.ts";
@@ -52,7 +56,9 @@ export class PairingSockets {
 
   message(ws: PairWs, raw: string): void {
     ws.data.lastSeen = Date.now();
-    let frame: { type?: unknown; kind?: unknown; code?: unknown; userAgent?: unknown } | undefined;
+    let frame:
+      | { type?: unknown; kind?: unknown; code?: unknown; userAgent?: unknown; resume?: unknown }
+      | undefined;
     try {
       frame = JSON.parse(raw) as typeof frame;
     } catch {
@@ -63,6 +69,9 @@ export class PairingSockets {
     if (frame.type === "pair.hello") {
       const kind = frame.kind === "native" ? "native" : "web";
       if (typeof frame.userAgent === "string") ws.data.userAgent = frame.userAgent.slice(0, 200);
+      // A refused resume is not an error worth showing: the challenge simply outlived its
+      // usefulness, and the page gets a new one on the same socket.
+      if (this.resume(ws, frame.resume)) return;
       this.open(ws, kind);
       return;
     }
@@ -79,9 +88,9 @@ export class PairingSockets {
   }
 
   close(ws: PairWs): void {
-    // A dropped socket takes its session with it: a credential is never deliverable twice, and
-    // never to a connection other than the one that raised the challenge.
-    if (ws.data.code) closeSession(ws.data.code);
+    // The challenge outlives the socket, the credential does not: it is only ever sent to a
+    // connection that proves the resume token, and only once.
+    if (ws.data.code) detachSession(ws.data.code);
   }
 
   /** POST /my-claw-app/session: the grant becomes the cookie the bundle is served against. */
@@ -106,6 +115,28 @@ export class PairingSockets {
       status: 204,
       headers: securityHeaders({ "Set-Cookie": sessionCookie(redeemed.sessionId, secure) }),
     });
+  }
+
+  /** Picks a challenge back up after a reconnect. False means there is nothing to pick up. */
+  private resume(ws: PairWs, resume: unknown): boolean {
+    if (typeof resume !== "object" || resume === null) return false;
+    const { code, token } = resume as { code?: unknown; token?: unknown };
+    if (typeof code !== "string" || typeof token !== "string") return false;
+    if (ws.data.code && ws.data.code !== normalizeCode(code)) closeSession(ws.data.code);
+
+    const resumed = resumeSession(code, token, {
+      deliver: (delivery: PairingDelivery): void => this.grant(ws, delivery),
+      reject: (reason: PairingDenial): void => send(ws, { type: "pair.denied", reason }),
+      pending: (approver: string): void => send(ws, { type: "pair.pending", approver }),
+    });
+    if (!resumed.ok) return false;
+    // The approval landed while the page was away and has just been delivered: a challenge frame
+    // on top of it would put a dead code back on a screen that is already leaving.
+    if (resumed.flushed) return true;
+
+    ws.data.code = resumed.session.code;
+    this.sendChallenge(ws, resumed.session);
+    return true;
   }
 
   private open(ws: PairWs, kind: "web" | "native"): void {
@@ -135,30 +166,35 @@ export class PairingSockets {
     }
 
     ws.data.code = opened.session.code;
+    this.sendChallenge(ws, opened.session);
+  }
+
+  private sendChallenge(ws: PairWs, session: PairingSession): void {
     send(ws, {
       type: "pair.challenge",
-      code: opened.session.code,
-      verification: opened.session.verification,
-      expiresAt: opened.session.expiresAt,
+      code: session.code,
+      verification: session.verification,
+      expiresAt: session.expiresAt,
+      resumeToken: session.resumeToken,
     });
     // The QR is a second frame: drawing it takes a few milliseconds, and the code must be on
     // screen immediately rather than after the encoder.
-    if (ws.data.host) {
-      void claimQrSvg(ws.data.host, opened.session.code, ws.data.secure === true)
-        .then((qrSvg) => {
-          if (ws.data.code !== opened.session.code) return;
-          send(ws, {
-            type: "pair.challenge",
-            code: opened.session.code,
-            verification: opened.session.verification,
-            expiresAt: opened.session.expiresAt,
-            qrSvg,
-          });
-        })
-        .catch(() => {
-          // No QR is a cosmetic loss: the code is typable and the page says so.
+    if (!ws.data.host) return;
+    void claimQrSvg(ws.data.host, session.code, ws.data.secure === true)
+      .then((qrSvg) => {
+        if (ws.data.code !== session.code) return;
+        send(ws, {
+          type: "pair.challenge",
+          code: session.code,
+          verification: session.verification,
+          expiresAt: session.expiresAt,
+          resumeToken: session.resumeToken,
+          qrSvg,
         });
-    }
+      })
+      .catch(() => {
+        // No QR is a cosmetic loss: the code is typable and the page says so.
+      });
   }
 
   private grant(ws: PairWs, delivery: PairingDelivery): void {

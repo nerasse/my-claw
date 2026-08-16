@@ -1,9 +1,9 @@
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import QRCode from "qrcode";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { mintDevice } from "./devices.ts";
-import { createGrant } from "./web-session.ts";
+import { createGrant, secretsMatch } from "./web-session.ts";
 
 /**
  * Pairing sessions: the only unauthenticated surface of the channel (docs/web-pairing.md).
@@ -29,9 +29,27 @@ export interface PairingDelivery {
   token?: string;
 }
 
+/**
+ * An approval, before it becomes a credential. The grant is minted when the frame is actually
+ * sent, never when the approval lands: it lives 30 seconds, and the page it is meant for may be
+ * a phone browser that is still in the background.
+ */
+export interface DeliveryIntent {
+  deviceId: string;
+  owner: string;
+  name: string;
+  token: string;
+}
+
 export interface PairingSession {
   code: string;
   verification: string;
+  /**
+   * Proof that a reconnecting socket is the one that raised this challenge. Never displayed,
+   * never in the QR, never sent to the approving device: the code identifies the session, this
+   * is what authorises receiving its credential.
+   */
+  resumeToken: string;
   expiresAt: number;
   kind: PairingKind;
   origin?: string;
@@ -43,6 +61,10 @@ export interface PairingSession {
   reject?: (reason: PairingDenial) => void;
   /** Tells the waiting client that a device is looking at its code, so it can say so. */
   pending?: (approver: string) => void;
+  /** No socket attached: the page was backgrounded, reloaded, or is simply gone. */
+  detachedAt?: number;
+  /** An approval that landed with nothing attached, held until the page comes back. */
+  parked?: DeliveryIntent;
   attempts: number;
 }
 
@@ -159,6 +181,27 @@ export interface OpenOptions {
   pending?: (approver: string) => void;
 }
 
+/**
+ * Makes room for a new challenge by dropping the oldest one nobody is attached to.
+ *
+ * A challenge now outlives its socket, so the cap would otherwise be reachable by reloading the
+ * page in a fresh tab twenty times: the abandoned sessions would hold the door shut for the rest
+ * of their TTL. A detached session has no client left to disappoint.
+ */
+function evictOldestDetached(): boolean {
+  let oldestCode: string | undefined;
+  let oldestAt = Number.POSITIVE_INFINITY;
+  for (const session of sessions.values()) {
+    if (session.detachedAt === undefined || session.detachedAt >= oldestAt) continue;
+    oldestCode = session.code;
+    oldestAt = session.detachedAt;
+  }
+  if (oldestCode === undefined) return false;
+  sessions.delete(oldestCode);
+  bury(oldestCode, "expired");
+  return true;
+}
+
 export function openSession(
   config: MyClawAppChannelConfig,
   options: OpenOptions,
@@ -166,13 +209,16 @@ export function openSession(
   if (!pairingEnabled(config)) return { ok: false, reason: "pairing disabled" };
   sweep();
   if (rateLimited(options.ip)) return { ok: false, reason: "too many attempts" };
-  if (sessions.size >= maxSessions(config)) return { ok: false, reason: "too many pairings in flight" };
+  if (sessions.size >= maxSessions(config) && !evictOldestDetached()) {
+    return { ok: false, reason: "too many pairings in flight" };
+  }
 
   const session: PairingSession = {
     code: newCode(),
     // Three digits the owner compares on both screens: without them, someone else's QR pairs
     // their browser to this owner and the approval looks exactly the same.
     verification: String(randomInt(1000)).padStart(3, "0"),
+    resumeToken: randomBytes(32).toString("base64url"),
     expiresAt: clock() + challengeTtlMs(config),
     kind: options.kind,
     origin: options.origin,
@@ -205,6 +251,7 @@ export function createTicket(
   const session: PairingSession = {
     code: newCode(),
     verification: String(randomInt(1000)).padStart(3, "0"),
+    resumeToken: randomBytes(32).toString("base64url"),
     expiresAt: clock() + claimTtlMs(config),
     kind: "web",
     preApproved: input,
@@ -216,6 +263,60 @@ export function createTicket(
 
 export function closeSession(code: string): void {
   sessions.delete(code);
+}
+
+/**
+ * The socket dropped, the challenge stays.
+ *
+ * Killing it here is what made pairing from a single phone impossible: switching to the app to
+ * approve backgrounds the browser, the browser closes the socket, and the code on screen was
+ * already dead by the time the owner finished typing it. The callbacks go, so an approval that
+ * lands meanwhile is parked rather than written into a socket nobody is reading.
+ */
+export function detachSession(code: string): void {
+  const session = sessions.get(code);
+  if (!session) return;
+  session.deliver = undefined;
+  session.reject = undefined;
+  session.pending = undefined;
+  session.detachedAt = clock();
+}
+
+export interface ResumeHandlers {
+  deliver: (delivery: PairingDelivery) => void;
+  reject: (reason: PairingDenial) => void;
+  pending?: (approver: string) => void;
+}
+
+/**
+ * Re-attaches a reconnecting socket to the challenge it raised, against the token only that page
+ * ever received. `flushed` says the approval had already landed and has just been delivered, so
+ * the caller must not follow it with a challenge frame.
+ */
+export function resumeSession(
+  code: string,
+  resumeToken: string,
+  handlers: ResumeHandlers,
+): { ok: true; session: PairingSession; flushed: boolean } | { ok: false; reason: PairingDenial } {
+  sweep();
+  const normalized = normalizeCode(code);
+  const session = sessions.get(normalized);
+  if (!session) return { ok: false, reason: reasonFor(normalized) };
+  if (!secretsMatch(session.resumeToken, resumeToken)) {
+    myClawAppLog("warn", "pairing resume refused", { code: normalized, ip: session.ip });
+    return { ok: false, reason: "unknown" };
+  }
+
+  session.deliver = handlers.deliver;
+  session.reject = handlers.reject;
+  session.pending = handlers.pending;
+  session.detachedAt = undefined;
+
+  const parked = session.parked;
+  if (!parked) return { ok: true, session, flushed: false };
+  session.parked = undefined;
+  deliver(session, parked);
+  return { ok: true, session, flushed: true };
 }
 
 export function findSession(code: string): PairingSession | undefined {
@@ -257,9 +358,7 @@ export async function approve(
     deviceId: minted.device.deviceId,
     owner: minted.device.owner,
     name: input.name,
-    ...(session.kind === "web"
-      ? { grant: createGrant(minted.device.deviceId) }
-      : { token: minted.device.token }),
+    token: minted.device.token,
   });
   myClawAppLog("info", "pairing approved", {
     deviceId: minted.device.deviceId,
@@ -300,17 +399,26 @@ export function claim(
   return { ok: true, delivery };
 }
 
-function deliver(session: PairingSession, delivery: PairingDelivery): void {
-  session.deliver?.(delivery);
+/**
+ * Hands the credential to the waiting page, or holds the approval until one is back.
+ *
+ * The parked branch is the single-phone case: the owner approves in the app while the browser is
+ * backgrounded. Nothing is minted for a client that is not listening, so a grant is never burning
+ * its 30 seconds in an empty room.
+ */
+function deliver(session: PairingSession, intent: DeliveryIntent): void {
+  if (!session.deliver) {
+    session.parked = intent;
+    return;
+  }
+  const { deviceId, owner, name, token } = intent;
+  session.deliver(
+    session.kind === "web"
+      ? { deviceId, owner, name, grant: createGrant(deviceId) }
+      : { deviceId, owner, name, token },
+  );
   sessions.delete(session.code);
   bury(session.code, "denied");
-}
-
-/** A pairing socket that drops takes its session with it: a credential is never redeliverable. */
-export function releaseByDeliver(deliverFn: (delivery: PairingDelivery) => void): void {
-  for (const [code, session] of sessions) {
-    if (session.deliver === deliverFn) sessions.delete(code);
-  }
 }
 
 export function pendingSessions(): number {

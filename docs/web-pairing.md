@@ -119,16 +119,43 @@ never be upgraded into a chat socket.
 
 | Direction | Frame | Payload |
 | --- | --- | --- |
-| client -> | `pair.hello` | `{ kind: "web" \| "native", label?, userAgent? }`, optional, first frame |
+| client -> | `pair.hello` | `{ kind: "web" \| "native", label?, userAgent?, resume? }`, optional, first frame |
 | client -> | `pair.claim` | `{ code }`, the CLI ticket path and the manual-entry path |
-| -> client | `pair.challenge` | `{ code, verification, qrSvg, expiresAt }` |
+| -> client | `pair.challenge` | `{ code, verification, qrSvg, expiresAt, resumeToken }` |
 | -> client | `pair.pending` | `{ approver }`, an approver has looked the code up |
 | -> client | `pair.granted` | `{ deviceId, owner, name }` plus `grant` (web) or `token` (native) |
 | -> client | `pair.denied` | `{ reason: "denied" \| "expired" \| "attempts" \| "disabled" }` |
 
-A session is bound to the socket that created it. The socket drops, the session dies: a
-credential is never deliverable twice, and never to a connection other than the one that raised
-the challenge.
+A credential is never deliverable twice, and never to a connection that cannot prove it raised
+the challenge. That proof is the `resumeToken`: 32 CSPRNG bytes handed out with the challenge,
+never displayed, never in the QR, and never sent to the approving device.
+
+### Surviving the page
+
+Pairing a phone browser from that same phone means the page is in the background for the entire
+exchange: the owner leaves it to approve in the app, and the system freezes the tab and closes
+the socket underneath. Binding the session to the socket made that flow impossible. The page came
+back to "disconnected, reload to try again", a reload drew a new code, and the code the owner had
+just typed in the app was already dead.
+
+So the challenge outlives its socket, up to its own TTL, and the credential does not.
+
+```
+socket closes    -> detachSession: callbacks dropped, challenge kept
+approval lands   -> parked on the session, nothing minted yet
+page comes back  -> pair.hello { resume: { code, token } }
+                 -> the parked approval is delivered, grant minted on the way out
+```
+
+- The grant is minted when the frame is sent, never when the approval lands: it lives 30 seconds,
+  and the page it belongs to may still be in the background.
+- The token lives in `sessionStorage`, so it dies with the tab and no second tab can read it.
+- A refused resume is not an error: the socket falls back to a fresh challenge on the spot.
+- The page reconnects on its own (backoff to 15 s, immediate on `visibilitychange`, `online` and
+  `pageshow`). A socket that survived a freeze on paper can be dead on the wire, so the resume
+  doubles as a probe: no frame back within four seconds and the connection is replaced.
+- A challenge nobody is attached to is the first thing dropped when `maxSessions` is reached,
+  which is what keeps abandoned tabs from holding the door shut for the rest of their TTL.
 
 **A browser never receives the token.** `kind: "web"` gets a `grant`, 32 CSPRNG bytes valid 30
 seconds and single use, which it exchanges over HTTP:
@@ -254,9 +281,10 @@ scripts/myclaw.sh  # forwards `device`
 
 - `devices.test.ts`: mint writes through the snapshot path, ids and tokens are unique, revoke is
   idempotent, an unparsable `config.json` refuses the write instead of overwriting it.
-- `pairing.test.ts`: expiry, single use, attempt cap, socket binding (a credential is never
-  delivered to a second socket), approval carries the approver's owner, deny is terminal, a web
-  client receives a grant and never a token.
+- `pairing.test.ts`: expiry, single use, attempt cap, approval carries the approver's owner, deny
+  is terminal, a web client receives a grant and never a token. Resume: a challenge outlives its
+  socket and the approval waits for the page, the code alone resumes nothing, the cap drops the
+  oldest detached challenge first.
 - `web-session.test.ts`: a grant is single use and expires in 30 s, the cookie carries no token,
   `Secure` follows the scheme, revoking a device invalidates its sessions, an unknown or expired
   cookie authenticates nothing.

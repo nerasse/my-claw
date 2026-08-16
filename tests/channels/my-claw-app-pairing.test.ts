@@ -16,9 +16,11 @@ import {
   approve,
   deny,
   claim,
+  detachSession,
   lookup,
   normalizeCode,
   pendingSessions,
+  resumeSession,
   setPairingClock,
   type PairingDelivery,
   type PairingDenial,
@@ -270,6 +272,90 @@ describe("pairing", () => {
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) return;
     expect(claimed.delivery.token).toBe("the-token");
+  });
+
+  test("a challenge outlives the socket, and the approval waits for the page to come back", async () => {
+    await writeConfigFile();
+    const sink = recorder();
+    const opened = openSession(PAIRING_ON, { kind: "web", ...sink });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+
+    // Approving happens in the app, which backgrounds the browser and closes its socket. Killing
+    // the challenge here is what made pairing from a single phone impossible.
+    detachSession(opened.session.code);
+    const approved = await approve(PAIRING_ON, opened.session.code, {
+      name: "Brave phone",
+      owner: "neras",
+      approver: "app-1",
+    });
+    expect(approved.ok).toBe(true);
+    expect(sink.delivered).toHaveLength(0);
+    expect(pendingSessions()).toBe(1);
+
+    const back = recorder();
+    const resumed = resumeSession(opened.session.code, opened.session.resumeToken, back);
+    expect(resumed).toMatchObject({ ok: true, flushed: true });
+    expect(back.delivered).toHaveLength(1);
+    expect(back.delivered[0]!.token).toBeUndefined();
+    // The grant is minted on the way out, not when the approval landed: it lives 30 seconds, and
+    // the page it belongs to was in the background for the whole exchange.
+    const redeemed = await redeemGrant(back.delivered[0]!.grant!, "Brave");
+    expect(redeemed.ok).toBe(true);
+    expect(pendingSessions()).toBe(0);
+  });
+
+  test("resuming needs the token the page was given, not just the code", async () => {
+    await writeConfigFile();
+    const sink = recorder();
+    const opened = openSession(PAIRING_ON, { kind: "web", ...sink });
+    if (!opened.ok) return;
+
+    detachSession(opened.session.code);
+    await approve(PAIRING_ON, opened.session.code, { name: "Brave", owner: "neras", approver: "app-1" });
+
+    // Someone who read the code off the screen holds the session identifier and nothing else.
+    const thief = recorder();
+    expect(resumeSession(opened.session.code, "not-the-token", thief)).toMatchObject({ ok: false });
+    expect(thief.delivered).toHaveLength(0);
+
+    const owner = recorder();
+    expect(resumeSession(opened.session.code, opened.session.resumeToken, owner).ok).toBe(true);
+    expect(owner.delivered).toHaveLength(1);
+  });
+
+  test("a page that comes back before the approval keeps the code it is showing", () => {
+    const sink = recorder();
+    const opened = openSession(PAIRING_ON, { kind: "web", ...sink });
+    if (!opened.ok) return;
+
+    detachSession(opened.session.code);
+    const back = recorder();
+    const resumed = resumeSession(opened.session.code, opened.session.resumeToken, back);
+    expect(resumed).toMatchObject({ ok: true, flushed: false });
+    if (!resumed.ok) return;
+    expect(resumed.session.code).toBe(opened.session.code);
+    expect(resumed.session.verification).toBe(opened.session.verification);
+
+    deny(opened.session.code, "app-1");
+    expect(back.rejected).toEqual(["denied"]);
+    expect(sink.rejected).toHaveLength(0);
+  });
+
+  test("the cap makes room by dropping the oldest challenge nobody is attached to", () => {
+    const capped: MyClawAppChannelConfig = { pairing: { enabled: true, maxSessions: 2 } };
+    const sink = recorder();
+    const first = openSession(capped, { kind: "web", ...sink });
+    const second = openSession(capped, { kind: "web", ...sink });
+    expect(second.ok).toBe(true);
+    // Two live pages hold the door: the guard is what it always was.
+    expect(openSession(capped, { kind: "web", ...sink }).ok).toBe(false);
+
+    if (!first.ok) return;
+    detachSession(first.session.code);
+    expect(openSession(capped, { kind: "web", ...sink }).ok).toBe(true);
+    // The abandoned one is gone, and says so rather than answering "never existed".
+    expect(lookup(first.session.code)).toMatchObject({ ok: false, reason: "expired" });
   });
 
   test("one IP cannot open pairing sessions forever", () => {
