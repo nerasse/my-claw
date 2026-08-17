@@ -90,6 +90,10 @@ sudo my-claw-update [version]
 
 Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `/etc/my-claw/.env`. Backs up `config.json` before overwrite.
 
+Without a version argument it also brings the web client bundle to the latest app release, the
+same step the timer runs (`docs/auto-update.md`). With a pinned version it leaves the bundle
+alone, because the bundle must never get ahead of the server it talks to.
+
 ### Development mode
 
 ```bash

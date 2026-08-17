@@ -83,7 +83,7 @@ usage() {
   echo "  dev       Stop services and run development mode (bun --watch)"
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
-  echo "  update    Update to latest release"
+  echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>)"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
   echo ""
@@ -256,7 +256,9 @@ dev_mode() {
 run_update() {
   require_sudo
   if command -v my-claw-update >/dev/null 2>&1; then
-    exec my-claw-update
+    # Arguments are forwarded: without them `myclaw update 0.4.1 --force` silently installed
+    # the latest instead, and pinning a version was only reachable through my-claw-update.
+    exec my-claw-update "$@"
   else
     echo "Error: my-claw-update not found."
     echo "Install my-claw first."
@@ -281,7 +283,8 @@ case "$cmd" in
     dev_mode
     ;;
   update)
-    run_update
+    shift
+    run_update "$@"
     ;;
   codex)
     shift

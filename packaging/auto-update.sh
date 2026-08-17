@@ -55,94 +55,22 @@ fi
 # The web client bundle
 #
 # A second artifact, released from the app repository and served straight off
-# ${TARGET_HOME}/.my-claw/web/current by the running server.
-#
-# Nothing is stopped to swap it: the server resolves the bundle directory per request, so
-# repointing `current` is picked up by the next HTTP request and `myclaw web use <version>` is
-# the rollback. That is why this half has no health gate — the gate exists to protect the server
-# updater's swap window, and this one has no window at all.
+# ${TARGET_HOME}/.my-claw/web/current by the running server. The steps live in
+# packaging/web-bundle.sh, shared with the manual updater so the timer and
+# `sudo myclaw update` can never disagree about what "up to date" means.
 # ---------------------------------------------------------------------------
 
-WEB_KEEP=3
-MYCLAW_BIN="/usr/local/bin/myclaw"
-
-# Deletes the oldest bundles once more than WEB_KEEP are installed. `myclaw web rm` is what does
-# it, because it refuses to delete the one `current` points at; the version just installed is
-# skipped outright so a stale symlink can never turn retention into a 404.
-prune_web_bundles() {
-  local web_dir="$1" keep="$2"
-  local versions=()
-  while IFS= read -r name; do
-    [ -n "$name" ] && versions+=("$name")
-  done < <(find "$web_dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | grep -v '^\.' | sort -V)
-
-  local drop=$(( ${#versions[@]} - WEB_KEEP ))
-  [ "$drop" -gt 0 ] || return 0
-  for version in "${versions[@]}"; do
-    [ "$drop" -gt 0 ] || break
-    [ "$version" = "$keep" ] && continue
-    local removed=""
-    if removed="$("$MYCLAW_BIN" web rm "$version" 2>&1)"; then
-      echo "my-claw auto-update: pruned web bundle ${version}"
-    else
-      echo "Warning: could not prune web bundle ${version}: ${removed}"
-    fi
-    drop=$(( drop - 1 ))
-  done
-}
-
-update_web_bundle() {
-  local config_file="${TARGET_HOME}/.my-claw/config.json"
-  local web_dir="${TARGET_HOME}/.my-claw/web"
-
-  [ -f "$config_file" ] || return 0
-  [ -x "$MYCLAW_BIN" ] || return 0
-  local enabled
-  enabled="$(jq -r '.channels["my-claw-app"].web.enabled // false' "$config_file" 2>/dev/null || echo false)"
-  [ "$enabled" = "true" ] || return 0
-
-  local current=""
-  if [ -L "${web_dir}/current" ]; then
-    current="$(basename "$(readlink "${web_dir}/current")")"
-  fi
-
-  # A release with no dist-web.tar.gz is an app-only release (an APK rebuild): skipping it is
-  # what stops the bundle from chasing a tag that has nothing to install.
-  local latest
-  latest="$(curl -fsS --max-time 30 -H "Authorization: token ${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "${FORGEJO_URL}/api/v1/repos/claw/my-claw-app/releases?limit=20" 2>/dev/null | \
-    jq -r '.[] | select(.draft == false and .prerelease == false)
-                | select([(.assets // [])[].name] | index("dist-web.tar.gz"))
-                | .tag_name' | sort -V | tail -1 || true)"
-  if [ -z "$latest" ] || [ "$latest" = "null" ]; then
-    echo "Warning: could not resolve the latest web bundle — retrying in 15 minutes"
-    return 0
-  fi
-
-  if [ "$current" = "$latest" ]; then
-    echo "my-claw auto-update: web bundle up to date (${current})"
-    return 0
-  fi
-
-  echo "my-claw auto-update: installing web bundle ${latest} (current ${current:-none})..."
-  # myclaw drops to the service user by itself, and the CLI reads the token out of that user's
-  # own .env: no credential ever reaches a command line, where ps would show it.
-  #
-  # Its output is captured and re-emitted rather than inherited: the drop goes through `su`,
-  # pam_systemd moves the child into its own login session scope, and everything it prints is
-  # journalled under that scope instead of this unit. A failure would otherwise read as
-  # "failed to install" with the reason filed somewhere nobody looks.
-  local output=""
-  if ! output="$("$MYCLAW_BIN" web install "$latest" 2>&1)"; then
-    echo "Warning: web bundle ${latest} failed to install — retrying in 15 minutes"
-    [ -n "$output" ] && echo "$output"
-    return 0
-  fi
-  [ -n "$output" ] && echo "$output"
-
-  prune_web_bundles "$web_dir" "$latest"
-}
+# shellcheck disable=SC2034  # read by web-bundle.sh, sourced just below
+WEB_LOG_PREFIX="my-claw auto-update"
+WEB_HELPER="${APP_DIR}/packaging/web-bundle.sh"
+if [ -f "$WEB_HELPER" ]; then
+  # shellcheck source=/dev/null
+  . "$WEB_HELPER"
+else
+  # An install whose tree predates the helper, or a tree caught mid-swap by the timer.
+  echo "Warning: ${WEB_HELPER} missing — the web bundle is left alone this round"
+  web_bundle_step() { return 0; }
+fi
 
 INSTALLED="$(jq -r .version "$APP_DIR/package.json" 2>/dev/null || true)"
 if [ -z "$INSTALLED" ] || [ "$INSTALLED" = "null" ]; then
@@ -167,7 +95,7 @@ fi
 # buttons that die in silence, while a bundle one release behind merely lacks a feature.
 if [ "$INSTALLED" = "$LATEST" ]; then
   echo "my-claw auto-update: up to date (${INSTALLED})"
-  update_web_bundle
+  web_bundle_step
   exit 0
 fi
 echo "my-claw auto-update: ${LATEST} available (installed ${INSTALLED})"

@@ -76,6 +76,32 @@ fi
 # Single-instance lock: two concurrent updates would interleave swaps and
 # service restarts into an unrecoverable state.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The web client bundle
+#
+# Sourced from the tree rather than reimplemented: packaging/web-bundle.sh is the same code the
+# 15-minute timer runs, so `sudo myclaw update` and the timer cannot end up with two ideas of
+# what "up to date" means. Sourced lazily at each call site, because between the two the live
+# tree is renamed and the new release's helper is the one that should run.
+#
+# Never allowed to fail this script: past the swap point, any non-zero exit rolls the server
+# back, and a bundle that could not be downloaded is not a reason to undo a good server update.
+# ---------------------------------------------------------------------------
+web_bundle_now() {
+  local helper="${APP_DIR}/packaging/web-bundle.sh"
+  if [ ! -f "$helper" ]; then
+    echo "Warning: ${helper} missing — the web bundle is left alone"
+    return 0
+  fi
+  (
+    set +e
+    # shellcheck source=/dev/null
+    . "$helper"
+    WEB_LOG_PREFIX="my-claw update" update_web_bundle
+  ) || true
+  return 0
+}
+
 LOCK_FILE="/var/lock/my-claw-update.lock"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -89,6 +115,13 @@ fi
 OWNER="claw"
 PACKAGE="my-claw"
 VERSION="${1:-latest}"
+# A pinned version is a deliberate downgrade or a repair, and the web bundle must never get
+# ahead of the server it talks to: only an update that asked for "latest" may pull the latest
+# bundle behind it.
+WANTS_LATEST=0
+if [ "$VERSION" = "latest" ]; then
+  WANTS_LATEST=1
+fi
 FORCE=0
 if [ "${2:-}" = "--force" ]; then
   FORCE=1
@@ -118,6 +151,11 @@ if [ "$FORCE" -eq 0 ] && [ -f "${APP_DIR}/package.json" ]; then
     echo "Already on my-claw ${VERSION} — nothing to install."
     echo "Skipping, so ${APP_DIR}.prev keeps the previous version as the rollback."
     echo "Re-run with --force to install ${VERSION} anyway."
+    # The server being current is exactly when the bundle is allowed to move, and a run of this
+    # command is a request to be up to date, not a request to swap a tree.
+    if [ "$WANTS_LATEST" -eq 1 ]; then
+      web_bundle_now
+    fi
     exit 0
   fi
 fi
@@ -353,6 +391,9 @@ cp "${APP_DIR}/packaging/auto-update.sh" /usr/local/bin/my-claw-auto-update.new
 chmod 755 /usr/local/bin/my-claw-auto-update.new
 mv -f /usr/local/bin/my-claw-auto-update.new /usr/local/bin/my-claw-auto-update
 
+# The bundle helper is read from the tree, so no /usr/local/bin copy exists to refresh: the
+# call sites below source it out of ${APP_DIR}/packaging/, which after the swap is the new one.
+
 # Re-install CLI wrapper (same rename dance: myclaw wraps this updater and can be running).
 cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw.new
 chmod 755 /usr/local/bin/myclaw.new
@@ -402,6 +443,14 @@ if [ "$HEALTH_OK" -lt 3 ]; then
   echo "Error: my-claw.service did not stay up after the update" >&2
   # Non-zero exit routes through the trap: rollback to PREV_DIR + service restart.
   exit 1
+fi
+
+# The server is new and healthy, so the bundle may follow it. After the swap, so a rollback
+# never leaves a bundle in front of an older server; after the health check, for the same reason.
+if [ "$WANTS_LATEST" -eq 1 ]; then
+  web_bundle_now
+else
+  echo "Pinned version: leaving the web bundle where it is (run without a version to move it)"
 fi
 
 echo ""

@@ -48,6 +48,11 @@ symlink flip: no service is stopped, no run is interrupted, and there is nothing
 gate to protect. `myclaw web use <version>` is the rollback, and it is instant for the same
 reason.
 
+The steps live in `packaging/web-bundle.sh`, sourced by both updaters rather than written twice:
+the timer runs it once the server is already current, and `sudo myclaw update` runs it after a
+successful server update. Two copies of this logic is how the timer and the manual command end
+up with two ideas of what "up to date" means.
+
 1. Only when the server is already up to date. The two artifacts version independently and
    nothing checks that a given pair speaks the same protocol, so the rule is that **the bundle
    never gets ahead of the server**: a bundle sending frames the deployed server does not know
@@ -66,6 +71,23 @@ reason.
 An open tab keeps running the JavaScript it loaded until it is reloaded; nothing pushes a new
 bundle into a live page. The service worker is network-first on the shell and `index.js` is
 served `no-cache`, so a reload is enough and no cache has to be cleared.
+
+### `sudo myclaw update` moves it too
+
+A human running the updater by hand wants the same machine the timer would produce, so the
+bundle is part of that command as well. Three rules make it safe:
+
+1. **Only for `latest`.** `sudo myclaw update 0.4.1` pins a version, which is a downgrade or a
+   repair, and pulling the newest bundle behind it would put the bundle in front of the server.
+   A pinned run says so and leaves the bundle alone.
+2. **After the swap and after the health check.** A server that failed to come up is rolled back,
+   and a bundle installed before that would be left talking to an older server.
+3. **It can never fail the update.** Past the swap point any non-zero exit rolls the server back,
+   so the bundle step runs in a subshell with `set -e` off and returns 0 whatever happens. A
+   registry that could not be reached is a warning, not a reason to undo a good server update.
+
+Running it on a machine that is already current is the useful case, and it is covered: the
+"nothing to install" path checks the bundle before it exits.
 
 ## On demand, from the app
 

@@ -34,6 +34,9 @@ cp "${SCRIPT_DIR}/install.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/uninstall.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/update.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
+# Sourced by both updaters out of the installed tree: without it in the tarball, the deployed
+# machine warns and never moves its web bundle again.
+cp "${SCRIPT_DIR}/web-bundle.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
 
 # Copy CLI wrapper
