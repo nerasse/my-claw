@@ -207,11 +207,6 @@ export interface HookEventMap {
     previousModel: string;
     newModel: string;
   };
-  "session:messages:trimmed": {
-    sessionId: string;
-    beforeCount: number;
-    afterCount: number;
-  };
   /** Local history was replayed into a fresh SDK session (home backend -> claude-sdk). */
   "session:context:transferred": {
     sessionId: string;

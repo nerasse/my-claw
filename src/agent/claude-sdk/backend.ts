@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
-import { trimSessionMessages, sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
+import { sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
 import type { AgentBackend, CompactOutcome, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
@@ -49,8 +49,6 @@ import { createToolServerForRun, toolDisplayName } from "./tools.ts";
 // Headroom left for the reply when the resolved model does not declare an output limit.
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 32_000;
 
-const MAX_SESSION_MESSAGES = 500;
-const MAX_SESSION_MESSAGES_KEEP = 50;
 
 // Without this, Claude's anti-injection training treats a mid-run steering message that
 // contradicts the initial task as an attack and ignores it (verified in the phase 0 spike).
@@ -817,12 +815,6 @@ export class ClaudeSdkBackend implements AgentBackend {
       const last = session.messages[session.messages.length - 1];
       if (!(last && last.role === "assistant" && last.content === response)) {
         session.messages.push({ role: "assistant", content: response, timestamp: new Date().toISOString() });
-      }
-
-      if (session.messages.length > MAX_SESSION_MESSAGES) {
-        const beforeCount = session.messages.length;
-        session.messages = trimSessionMessages(session.messages, MAX_SESSION_MESSAGES_KEEP);
-        hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
       }
 
       // Watermark what this SDK session has now seen. Turns appended after it (by the home

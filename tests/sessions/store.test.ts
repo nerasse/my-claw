@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, trimSessionMessages, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { loadSession, saveSession, deleteSession, pruneOldSessions, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
@@ -211,10 +211,10 @@ describe("trim boundary repair (orphan tool messages)", () => {
     expect(dropLeadingOrphanToolMessages(msgs)).toBe(msgs);
   });
 
-  test("trimSessionMessages never starts on an orphan tool (parallel tool block cut)", () => {
+  test("a window cut inside a parallel tool block never starts on an orphan tool", () => {
     // A block of parallel tool calls; slicing the last 2 would start on a tool result.
     const full = [U("q"), A("", ["t1", "t2"]), T("t1"), T("t2"), A("done")];
-    const trimmed = trimSessionMessages(full, 2);
+    const trimmed = dropLeadingOrphanToolMessages(full.slice(-2));
     expect(trimmed[0]!.role).not.toBe("tool");
   });
 });

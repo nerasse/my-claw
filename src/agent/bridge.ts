@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { trimSessionMessages, dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, capReasoning } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, capReasoning } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
@@ -109,8 +109,6 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
 }
 
 
-const MAX_SESSION_MESSAGES = 500;
-const MAX_SESSION_MESSAGES_KEEP = 50;
 
 // How many of the most recent images ride along with every request. They are resent on each
 // turn, so this is a per-turn tax, not a one-off: a photo is worth ~1-2K tokens.
@@ -531,11 +529,6 @@ export class AgentBridge implements AgentBackend {
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
           });
-          if (session.messages.length > MAX_SESSION_MESSAGES) {
-            const beforeCount = session.messages.length;
-            session.messages = trimSessionMessages(session.messages, MAX_SESSION_MESSAGES_KEEP);
-            hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
-          }
           return transformedResponse;
         }
 
@@ -689,11 +682,6 @@ export class AgentBridge implements AgentBackend {
         }
       }
 
-      if (session.messages.length > MAX_SESSION_MESSAGES) {
-        const beforeCount = session.messages.length;
-        session.messages = trimSessionMessages(session.messages, MAX_SESSION_MESSAGES_KEEP);
-        hooks.emit("session:messages:trimmed", { sessionId: session.id, beforeCount, afterCount: session.messages.length });
-      }
       hooks.emit("agent:budget:exhausted", {
         sessionId: session.id,
         iteration,

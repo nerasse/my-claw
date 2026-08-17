@@ -1,7 +1,7 @@
 import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { saveSession, deleteSession, loadSession, MAX_SESSION_COMMANDS, type SessionData } from "../src/sessions/store.ts";
+import { saveSession, deleteSession, loadSession, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { writeFile } from "node:fs/promises";
@@ -716,7 +716,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     );
   });
 
-  test("a long journal does not bury the messages of a compacted session", async () => {
+  test("a long journal is replayed whole, alongside the messages of its window", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
@@ -730,8 +730,10 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
 
     const { entries } = await store.history(DEVICE, THREAD);
     const inputs = entries.filter((e) => e.role === "user").map((e) => (e.role === "tool" ? "" : e.text));
-    assert.equal(inputs.length, 21, "one real message plus the capped journal");
-    assert.equal(inputs.includes("/status 9"), false, "the oldest of the window is the one dropped");
+    // Nothing is hidden: a journal entry belongs to exactly one page, so a page that showed only
+    // the last twenty put the rest out of reach for good.
+    assert.equal(inputs.length, 31, "one real message plus the whole journal");
+    assert.equal(inputs.includes("/status 0"), true);
     assert.equal(inputs.at(-1), "/status 29");
   });
 
@@ -740,14 +742,14 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     assert.equal(await loadSession(sessionId), null);
   });
 
-  test("the journal keeps its newest entries only", async () => {
+  test("the journal keeps everything, however long the conversation runs", async () => {
     await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
-    for (let i = 0; i < MAX_SESSION_COMMANDS + 5; i++) {
+    for (let i = 0; i < 205; i++) {
       await store.recordCommand(DEVICE, THREAD, `/status ${i}`, "ok");
     }
     const stored = await loadSession(sessionId);
-    assert.equal(stored?.commands?.length, MAX_SESSION_COMMANDS);
-    assert.equal(stored?.commands?.[0]!.input, "/status 5");
+    assert.equal(stored?.commands?.length, 205);
+    assert.equal(stored?.commands?.[0]!.input, "/status 0");
   });
 
   test("the journal dies with the conversation", async () => {

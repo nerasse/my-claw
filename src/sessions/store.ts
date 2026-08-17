@@ -65,11 +65,6 @@ export function dropLeadingOrphanToolMessages(messages: SessionMessage[]): Sessi
   return start === 0 ? messages : messages.slice(start);
 }
 
-/** Trim to the last `keep` messages, then repair the boundary (see above). */
-export function trimSessionMessages(messages: SessionMessage[], keep: number): SessionMessage[] {
-  return dropLeadingOrphanToolMessages(messages.slice(-keep));
-}
-
 /**
  * Guarantee no assistant tool_call is left without a tool response. An aborted run can stop
  * between the tool request and its result; OpenAI-compatible APIs reject a request whose
@@ -122,17 +117,16 @@ export interface SessionCommandEntry {
 }
 
 /**
- * Cap on a conversation's command journal. A session is one JSON file rewritten in full on every
- * turn, so this is bounded for the same reason reasoning is: the tail is what a reader wants,
- * and an unbounded list would rewrite itself forever.
+ * Appends to a conversation's command journal.
+ *
+ * Nothing is dropped: a conversation keeps everything it was told, and the owner asked for the
+ * caps to go. The file is rewritten in full on every turn, so the cost of a long journal is disk
+ * and nothing else.
  */
-export const MAX_SESSION_COMMANDS = 200;
-
-/** Appends to the journal, keeping the newest `MAX_SESSION_COMMANDS`. */
 export function recordSessionCommand(session: SessionData, entry: SessionCommandEntry): void {
   const journal = session.commands ?? [];
   journal.push(entry);
-  session.commands = journal.length > MAX_SESSION_COMMANDS ? journal.slice(-MAX_SESSION_COMMANDS) : journal;
+  session.commands = journal;
 }
 
 export interface SubAgentMeta {

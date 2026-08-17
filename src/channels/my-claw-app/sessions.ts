@@ -41,8 +41,6 @@ export function sanitizeThreadId(raw: string): string | null {
 }
 
 const HISTORY_LIMIT = 50;
-/** Journal entries replayed on one history page, newest kept. */
-const MAX_PAGE_COMMANDS = 20;
 /**
  * How far back the newest page may reach to start on a question rather than mid-work. One
  * agentic turn is easily two hundred messages, and a page that starts inside one reads as a
@@ -185,7 +183,8 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     });
   }
 
-  async list(owner: string, limit = 200): Promise<MyClawAppSessionSummary[]> {
+  /** Every conversation of this owner. A cap here made the oldest ones unreachable and unsearchable. */
+  async list(owner: string, limit = Number.MAX_SAFE_INTEGER): Promise<MyClawAppSessionSummary[]> {
     const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, limit);
     const summaries: MyClawAppSessionSummary[] = [];
     for (const sessionId of ids) {
@@ -249,10 +248,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const matched = journal.filter(
       (entry) => entry.timestamp >= lowerBound && (upperBound === undefined || entry.timestamp < upperBound),
     );
-    // A compacted session is a handful of messages that a long journal would bury under its own
-    // replay, so a page shows the last commands of its window and no more. The rest stays in the
-    // file: this is a display cap, not a purge (`MAX_SESSION_COMMANDS` is the one that forgets).
-    const pageCommands = matched.length > MAX_PAGE_COMMANDS ? matched.slice(-MAX_PAGE_COMMANDS) : matched;
+    // Every command of the window, however many: a page that showed only the last twenty hid the
+    // rest with no way to reach them, since a journal entry belongs to exactly one page.
+    const pageCommands = matched;
     let nextCommand = 0;
     // Flushed as the messages are walked, so a command sits where it was typed rather than in a
     // block at one end of the page.
