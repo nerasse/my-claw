@@ -1,11 +1,9 @@
-import { handleStatusCommand } from "../status-command.ts";
-import { join } from "node:path";
 import type { ModelPricing } from "../../llm/pricing.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../../core/config.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { effectiveEffort } from "../../llm/resolver.ts";
-import { handleCompactCommand } from "../compact-command.ts";
+import { handleSharedSessionCommand } from "../session-commands.ts";
 import { chatModel } from "../../llm/chat-model.ts";
 import { overrideForPick } from "../../llm/run-model.ts";
 import { availabilityWorld } from "../../llm/world.ts";
@@ -13,13 +11,9 @@ import type { OutgoingMessage } from "../types.ts";
 import { ModelPicker, formatEffort, formatModelGroupSummary, parseEffortArg } from "../model-picker.ts";
 import { SkillRegistry } from "../../skills/registry.ts";
 import type { AgentRegistry } from "../../agents/registry.ts";
-import { loadAllSkills } from "../../skills/loader.ts";
 import { hooks } from "../../hooks/index.ts";
-import { runRegistry } from "../../core/run-registry.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
-import { handleConfigCommand } from "../config-commands.ts";
 import { handleAgentModelCommand, applyAgentModel, applyAgentEffort, currentAgentModel, applyAgentContext, toolTypeOf } from "../agent-model-commands.ts";
-import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { McpServerStatus } from "../../mcp/manager.ts";
 import type { SubAgentInfo } from "../../subagents/types.ts";
@@ -146,32 +140,31 @@ export function createTelegramCommandHandler({
       sessionId,
     });
 
+    const shared = await handleSharedSessionCommand({
+      command,
+      args,
+      platform: "telegram",
+      chatType,
+      sessionId,
+      config,
+      sessionManager,
+      skillRegistry,
+      agentRegistry,
+      toolRegistry,
+      mcpStatus,
+      listSubAgents,
+      builtinDir,
+      customDir,
+      workspaceSkillsDir,
+      reloadAgents,
+      listCronJobs,
+      pricing,
+      reloadConfigNow,
+      sdkCompact,
+    });
+    if (shared !== undefined) return shared;
+
     switch (command) {
-      case "new":
-        await sessionManager.resetSession(sessionId, "telegram", chatType);
-        return "New session started.";
-
-      case "archive": {
-        const trimmed = args.trim();
-        if (!trimmed) {
-          return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-        }
-        if (trimmed === "all") {
-          const removed = await sessionManager.purgeArchives({ all: true });
-          return `Archived sessions deleted: ${removed}`;
-        }
-        if (trimmed.startsWith("before ")) {
-          const rawDate = trimmed.slice("before ".length).trim();
-          const date = new Date(rawDate);
-          if (Number.isNaN(date.getTime())) {
-            return "Invalid date. Example: /archive before 2026-05-01";
-          }
-          const removed = await sessionManager.purgeArchives({ before: date });
-          return `Archived sessions deleted: ${removed}`;
-        }
-        return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-      }
-
       case "model": {
         // `/model <agent>` targets a persisted default; anything else is this chat's own override.
         const agentOutcome = await handleAgentModelCommand(args, {
@@ -270,75 +263,6 @@ export function createTelegramCommandHandler({
         ].join("\n");
       }
 
-      case "verbose": {
-        const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-        session.verbose = session.verbose === false ? undefined : false;
-        session.lastActiveAt = new Date().toISOString();
-        await sessionManager.persist(sessionId);
-        return `Verbose mode: ${session.verbose === false ? "OFF" : "ON"}`;
-      }
-
-      case "compact": {
-        const session = await sessionManager.getOrCreateWithMeta(sessionId, "telegram", chatType);
-        // Text channel: the summary would flood the room, so only the outcome line is sent.
-        // The app renders it collapsed instead (docs/compaction.md).
-        const outcome = await handleCompactCommand({
-          config,
-          session,
-          instructions: args.trim() || undefined,
-          sdkCompact,
-          persist: () => sessionManager.persist(sessionId),
-        });
-        return outcome.text;
-      }
-
-      case "reload": {
-        if (!skillRegistry || !builtinDir || !customDir || !workspaceSkillsDir) {
-          return "Skill registry not available.";
-        }
-        const allSkills = await loadAllSkills({
-          builtInDir: builtinDir,
-          customDir: customDir,
-          workspaceDir: workspaceSkillsDir,
-          workspaces: Object.entries(config.workspaces ?? {}).map(([key, dir]) => ({ key, dir: join(dir, "skills") })),
-        });
-        skillRegistry.setAll(allSkills);
-        hooks.emit("skills:reloaded", { count: allSkills.size });
-        return `Skills reloaded. ${allSkills.size} skills available.`;
-      }
-
-      case "reload-agents": {
-        if (!reloadAgents) return "Agent registry not available.";
-        const count = await reloadAgents();
-        return `Agents reloaded. ${count} agents available.`;
-      }
-
-      case "cron": {
-        if (!listCronJobs) return "Cron not available.";
-        const jobs = await listCronJobs();
-        if (jobs.length === 0) return "No scheduled tasks.";
-        const lines = jobs.map((j) => {
-          const status = j.enabled ? j.state : "paused";
-          const next = j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-";
-          return `${j.id} | ${j.name} | ${j.schedule.display} | ${status} | next: ${next}`;
-        });
-        return lines.join("\n");
-      }
-
-      case "stop":
-        return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
-
-      case "status": {
-        return handleStatusCommand({
-          config,
-          sessionId,
-          session: await sessionManager.peek(sessionId),
-          liveRuns: runRegistry.list(sessionId),
-          compacting: runRegistry.isCompacting(sessionId),
-          pricing,
-        });
-      }
-
       case "codex":
       case "claude":
         return handleAuthCommand({
@@ -348,40 +272,6 @@ export function createTelegramCommandHandler({
           postFollowUp: (text) => { void postMessage?.(chatId, text, meta?.threadId); },
           onAuthChanged,
         });
-
-      case "config":
-        return handleConfigCommand({
-          args,
-          isDm: chatType === "dm",
-          workspaceDir: process.env["MY_CLAW_WORKSPACE"] ?? "",
-          applyReload: reloadConfigNow,
-        });
-
-      // The four introspection commands share one body per channel (docs/agent-scoping.md).
-      case "skills":
-      case "agents":
-      case "mcp":
-      case "instructions": {
-        if (!skillRegistry || !toolRegistry || !agentRegistry) {
-          return "Introspection indisponible : les registres ne sont pas injectes.";
-        }
-        const params = {
-          args,
-          config,
-          skillRegistry,
-          agentRegistry,
-          toolRegistry,
-          // Absent means the host wired no MCP manager or sub-agent runner, which reads as "none"
-          // rather than crashing a read-only command.
-          mcpStatus: mcpStatus ?? (() => []),
-          listSubAgents: listSubAgents ? () => listSubAgents(sessionId) : (async () => []),
-          platform: "telegram",
-        };
-        if (command === "skills") return handleSkillsCommand(params);
-        if (command === "agents") return handleAgentsCommand(params);
-        if (command === "mcp") return handleMcpCommand(params);
-        return handleInstructionsCommand(params);
-      }
 
       default:
         return undefined;
