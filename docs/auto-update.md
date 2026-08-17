@@ -66,3 +66,43 @@ reason.
 An open tab keeps running the JavaScript it loaded until it is reloaded; nothing pushes a new
 bundle into a live page. The service worker is network-first on the shell and `index.js` is
 served `no-cache`, so a reload is enough and no cache has to be cleared.
+
+## On demand, from the app
+
+Settings > General > maintenance has an "Update server" action. It does not implement anything:
+it sends `update.run`, and the server asks systemd to run the same unit the timer runs.
+
+```
+app  ──update.run──►  server  ──sudo -n systemctl start --no-block my-claw-auto-update.service
+                        │
+                        └──update.result──►  app        (sent first, on purpose)
+                                             socket dies when the swap window stops the service
+                                             app reconnects, hello carries the new version
+```
+
+Four decisions worth stating:
+
+- **The run registry is the gate on this side.** `requestSelfUpdate()` refuses with `busy` when
+  `runRegistry.hasAny()` is true. The timer asks the server over `GET /health` for the same
+  answer; a request that originates *in* the server reads the registry directly. So the owner
+  cannot press a button that yanks a live conversation out from under the agent, and the refusal
+  is decided server side, never by the button.
+- **`--no-block`, or the answer never leaves.** The unit is a oneshot whose swap window stops
+  `my-claw.service`, which is the process holding the socket. A blocking `systemctl start` would
+  wait for a job whose first act is to kill the caller. With `--no-block`, systemd enqueues and
+  returns in milliseconds, early enough to report a refusal honestly.
+- **The result frame is a decision, not an outcome.** It says whether the unit was started, plus
+  the version currently running. What was actually installed is the version of the `hello` after
+  reconnecting: identical version means the registry had nothing new, which the screen says
+  instead of inventing progress. The daemon runs as the service user and cannot read a root
+  unit's journal, so there is no output to stream and none is faked.
+- **One privilege, one command.** The service user needs exactly this, and nothing else:
+
+  ```
+  # /etc/sudoers.d/my-claw-update
+  neras ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block my-claw-auto-update.service
+  ```
+
+  Without it the frame comes back `reason: "denied"` with sudo's own message in `detail`, so the
+  screen names the missing drop-in rather than showing a button that does nothing. A machine whose
+  service user already has blanket NOPASSWD sudo needs no drop-in at all.

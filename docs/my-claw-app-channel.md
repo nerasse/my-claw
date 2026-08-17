@@ -337,6 +337,7 @@ the first answer wins.
 { "type": "device.capabilities", "accessibility": true }
 { "type": "voice.mode.get" }
 { "type": "voice.mode.set", "mode": "cloud|local|auto" }
+{ "type": "update.run" }
 { "type": "model.list" }
 { "type": "model.endpoints", "model": "openrouter/openai/gpt-5.1" }
 { "type": "model.get", "threadId": "projet" }
@@ -640,6 +641,7 @@ runs fresh like any other message.
 { "type": "chat.send.queued", "threadId": "projet", "replyToId": "uuid", "reason": "compaction" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
+{ "type": "update.result", "started": true, "version": "0.4.2", "reason": "busy|denied|failed", "detail": "sudo: a password is required" }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
 { "type": "model.endpoints.result", "model": "openrouter/openai/gpt-5.1", "endpoints": [{ "id": "openrouter/openai/gpt-5.1@azure/eu", "label": "Azure (azure/eu)", "promptUsd": 0.22, "completionUsd": 0.88, "context": 400000, "uptime30m": 99.9 }] }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000, "used": 94000 } }
@@ -772,6 +774,10 @@ apart. A take that failed has no transcript, so its warning still arrives as a m
 now on" and must survive a restart; `voice` is hot-reloaded, so the next recording uses it.
 `cloudAvailable` is false when no `GROQ_API_KEY` is set, so the app can say why cloud is not an
 option instead of offering a choice that fails.
+
+`update.run` runs the maintenance gate now instead of at the next 15-minute tick; the mechanism,
+the privilege it needs and the reason the answer arrives before the socket dies are in
+`docs/auto-update.md`.
 
 ### Attachments
 

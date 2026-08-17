@@ -1,4 +1,6 @@
 import type { ServerWebSocket } from "bun";
+import { readAppVersion } from "../../core/diagnostics.ts";
+import { requestSelfUpdate } from "../../core/self-update.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { sanitizeThreadId } from "./sessions.ts";
 import type {
@@ -88,6 +90,36 @@ export interface MyClawAppSettingsDeps {
     data?: Record<string, unknown>,
   ): Promise<void>;
   sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string };
+}
+
+/**
+ * Runs the update the timer would have run at the next tick.
+ *
+ * The answer goes out first and the socket is expected to die a few seconds later, when the unit
+ * stops the service. So the frame says what was decided, never what was installed: the version of
+ * the `hello` after reconnecting is what tells the owner whether anything moved.
+ */
+export async function handleUpdateRun(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+): Promise<void> {
+  const version = await readAppVersion();
+  const outcome = await requestSelfUpdate();
+  d.sendFrame(ws, {
+    type: "update.result",
+    started: outcome.started,
+    version,
+    ...(outcome.reason ? { reason: outcome.reason } : {}),
+    ...(outcome.detail ? { detail: outcome.detail } : {}),
+  });
+  await myClawAppLog(outcome.started ? "info" : "warn", "update requested from the app", {
+    owner: ws.data.owner,
+    device: ws.data.deviceId,
+    version,
+    started: outcome.started,
+    ...(outcome.reason ? { reason: outcome.reason } : {}),
+    ...(outcome.detail ? { detail: outcome.detail } : {}),
+  });
 }
 
 /**

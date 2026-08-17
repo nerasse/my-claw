@@ -221,6 +221,16 @@ export interface MyClawAppSessionWorkspaceSet {
   workspace: string;
 }
 
+/**
+ * Runs the maintenance gate now instead of at the next 15-minute tick (docs/auto-update.md).
+ *
+ * Carries nothing: what to install is the registry's answer, not the caller's opinion, and the
+ * decision to install at all belongs to the same script the timer runs.
+ */
+export interface MyClawAppUpdateRun {
+  type: "update.run";
+}
+
 export interface MyClawAppVoiceModeGet {
   type: "voice.mode.get";
 }
@@ -669,6 +679,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionWorkspaceSet
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
+  | MyClawAppUpdateRun
   | MyClawAppSkillsList
   | MyClawAppSkillsTransfer
   | MyClawAppToolsList
@@ -1014,6 +1025,20 @@ export interface MyClawAppChatTranscript {
   replyToId: string;
   /** One entry per recording, keyed by attachment id: a message may carry several. */
   items: Array<{ id: string; text: string }>;
+}
+
+/**
+ * The answer to `update.run`, sent *before* the unit can stop the service: the socket is expected
+ * to drop right after `started: true`, and the version of the next `hello` is the real verdict.
+ */
+export interface MyClawAppUpdateResult {
+  type: "update.result";
+  started: boolean;
+  /** The version that is running right now, so the app can compare after reconnecting. */
+  version: string;
+  /** busy: a run is in flight. denied: no privilege to start the unit. failed: systemd said no. */
+  reason?: "busy" | "denied" | "failed";
+  detail?: string;
 }
 
 export interface MyClawAppVoiceModeResult {
@@ -1956,6 +1981,7 @@ export type MyClawAppServerFrame =
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
+  | MyClawAppUpdateResult
   | MyClawAppModelListResult
   | MyClawAppModelEndpointsResult
   | MyClawAppSkillsListResult

@@ -139,6 +139,7 @@ import {
   handleTagsUpsert,
   handleToolsList,
   handleToolsToggle,
+  handleUpdateRun,
   handleVoiceMode,
   handleWorkspacesAdd,
   handleWorkspacesList,
@@ -932,6 +933,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "voice.mode.set":
         this.detach(handleVoiceMode(this.settingsDeps(), ws, frame.mode), "handleVoiceMode");
+        break;
+      case "update.run":
+        this.detach(handleUpdateRun(this.settingsDeps(), ws), "handleUpdateRun");
         break;
       case "model.list":
         this.detach(handleModelList(this.settingsDeps(), ws), "handleModelList");
