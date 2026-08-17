@@ -39,6 +39,26 @@ test("SessionManager: accessing a session keeps it in cache (LRU touch)", async 
   assert.equal(manager.getInfo("test/session/1"), null, "session 1 should be evicted");
 });
 
+test("SessionManager: a read right after an eviction sees the evicted turns", async () => {
+  const manager = new SessionManager();
+  const victim = "test/evict/victim";
+
+  const session = await manager.getOrCreateWithMeta(victim, "telegram", "dm");
+  session.messages.push({ role: "user", content: "the turn that must survive", timestamp: new Date().toISOString() });
+
+  // Push it out of the cache. The eviction write is async: reading the file before it lands
+  // used to return the pre-eviction copy, and the next run wrote that truncated history back.
+  for (let i = 0; i < 101; i++) {
+    await manager.getOrCreateWithMeta(`test/evict/filler/${i}`, "telegram", "dm");
+  }
+  assert.equal(manager.getInfo(victim), null, "victim should be out of memory");
+
+  const reloaded = await manager.read(victim);
+  assert.ok(reloaded, "victim should be readable from disk");
+  assert.equal(reloaded.messages.length, 1);
+  assert.equal(reloaded.messages[0]?.content, "the turn that must survive");
+});
+
 test("SessionManager: peek loads session into cache", async () => {
   const manager = new SessionManager();
   // peek for a non-existent session returns null (no disk file in test)

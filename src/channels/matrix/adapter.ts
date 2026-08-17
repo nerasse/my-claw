@@ -117,6 +117,8 @@ const MATRIX_TEXT_BATCH_DELAY_MS = 600;
 const MATRIX_TEXT_BATCH_SPLIT_DELAY_MS = 2_000;
 const MATRIX_TEXT_BATCH_SPLIT_THRESHOLD = 3_900;
 const MATRIX_SHORT_TEXT_HOLD_DELAY_MS = 250;
+/** Upper bound on how long `stop()` waits for the coalescing windows above to close. */
+const INGRESS_DRAIN_MS = 2_500;
 const MATRIX_ENCRYPTED_INGRESS_ESCALATION_COUNT = 3;
 const MATRIX_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
 const MATRIX_ATTACHMENT_SUMMARY_LINE = /^\[matrix .+ attachment(?: unavailable| too large)?\]$/;
@@ -227,6 +229,10 @@ export class MatrixAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    // The coalescing window is up to two seconds wide, and a config change landing in it used to
+    // cancel the timer and drop the message for good: the sync token has already moved past it.
+    await this.drainIngressBuffers();
+
     this.timelineOff?.();
     this.timelineOff = undefined;
     this.runtime.sdk.off(RoomEvent.MyMembership, this.handleMembershipChange);
@@ -235,6 +241,13 @@ export class MatrixAdapter implements ChannelAdapter {
     }
     for (const pending of this.pendingBufferedIngress.values()) {
       clearTimeout(pending.timer);
+      await matrixLog("warn", "dropping buffered ingress on stop", {
+        roomId: pending.roomId, eventId: pending.eventId,
+      });
+      // Released, not committed: the claim must not outlive the message it was taken for.
+      for (const release of pending.releasers) {
+        await release().catch(() => undefined);
+      }
     }
     for (const pending of this.pendingConfirmations.values()) {
       clearTimeout(pending.timer);
@@ -808,6 +821,14 @@ export class MatrixAdapter implements ChannelAdapter {
     };
     this.pendingBufferedIngress.set(bufferedItem.eventId, pending);
     return true;
+  }
+
+  /** Waits for the coalescing timers to fire on their own, bounded so a stop always completes. */
+  private async drainIngressBuffers(): Promise<void> {
+    const deadline = Date.now() + INGRESS_DRAIN_MS;
+    while (this.pendingBufferedIngress.size > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 
   private async flushBufferedMessage(batchKey: string, eventId: string): Promise<void> {

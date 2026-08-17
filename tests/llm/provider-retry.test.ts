@@ -208,6 +208,28 @@ describe("LLM provider retry logic", () => {
     }
   });
 
+  test("an open breaker on one provider leaves the others alone", async () => {
+    resetCircuitBreaker();
+    const other: ResolvedLlmConfig = { model: "test-model", baseUrl: "https://healthy.example.com", apiKey: "k" };
+    // A dead local runtime used to open the only breaker there was and refuse every chat,
+    // including the ones pinned on a cloud provider that was answering perfectly.
+    const mock = mockFetch(async (input) => (
+      String(input).startsWith("https://test.example.com")
+        ? errorResponse(501, "server") as never
+        : okResponse("still here") as never
+    ));
+    try {
+      for (let i = 0; i < 5; i++) {
+        await chatCompletion(config, simpleMessages).catch(() => {});
+      }
+      await expect(chatCompletion(config, simpleMessages)).rejects.toThrow("circuit breaker");
+      const result = await chatCompletion(other, simpleMessages);
+      expect(result.content).toBe("still here");
+    } finally {
+      mock.restore();
+    }
+  });
+
   test("circuit breaker ignores non-retryable 4xx client errors", async () => {
     resetCircuitBreaker();
     // A malformed request (400) is request-specific, not a provider outage: it must not push the

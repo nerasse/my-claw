@@ -81,13 +81,26 @@ export class CronScheduler {
 
       for (const job of due) {
         if (job.schedule.kind !== "once") {
-          advanceNextRun(job);
+          // An expression the parser refuses used to throw out of the whole tick, before a single
+          // job had run: one hand-edited jobs.json line froze every schedule, silently.
+          try {
+            advanceNextRun(job);
+          } catch (err) {
+            job.enabled = false;
+            job.state = "paused";
+            job.pausedReason = `unreadable schedule: ${err instanceof Error ? err.message : String(err)}`;
+            job.nextRunAt = null;
+            void log("error", "cron job paused: unreadable schedule", {
+              jobId: job.id, jobName: job.name, error: String(err),
+            });
+          }
         }
       }
       await persistJobRunUpdates(allJobs);
 
       let executed = 0;
       for (const job of due) {
+        if (job.state === "paused") continue;
         try {
           await this.processJob(job);
           markJobRun(job, true);

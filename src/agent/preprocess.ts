@@ -96,9 +96,16 @@ export function splitAttachmentBlock(content: string): { text: string; attachmen
   return { text: content.slice(0, marker), attachments };
 }
 
+/**
+ * A run's scratch bucket outlives `cleanupTempFiles` whenever the router still has attachments,
+ * an echo or a transcript to pick up, and no single caller is last: the bound is what guarantees
+ * the map cannot grow for the life of the daemon. Well past any plausible in-flight count.
+ */
+const MAX_TRACKED_RUNS = 256;
+
 export class MessagePreprocessor {
   private processed = new Set<string>();
-  private runs = new Map<string, PreprocessRunState>();
+  private runs = new LruMap<string, PreprocessRunState>(MAX_TRACKED_RUNS);
 
   constructor(
     private voiceManager?: VoiceManager,

@@ -12,7 +12,7 @@ import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnS
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import { loadSession, saveSession, deleteSession, archiveSession, trimSessionMessages } from "../sessions/store.ts";
+import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
@@ -38,8 +38,6 @@ export interface SubAgentStream {
 
 const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
-const MAX_MESSAGES = 500;
-const MAX_MESSAGES_KEEP = 50;
 
 /**
  * Sub-agents are global on purpose: any chat can list and drive any of them, which is what makes
@@ -190,17 +188,17 @@ export class SubAgentRunner {
         ...(parentMessage.location ? { location: parentMessage.location } : {}),
       });
 
-      if (session.messages.length > MAX_MESSAGES) {
-        session.messages = trimSessionMessages(session.messages, MAX_MESSAGES_KEEP);
-      }
-
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
-      const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream);
-      await saveSession(id, session);
-      indexSessionArchive(session);
-      return result;
+      try {
+        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream);
+      } finally {
+        // In the finally, not after: a failed run used to lose the question too, and the thread
+        // came back from disk with no trace that anything had been sent.
+        await saveSession(id, session);
+        indexSessionArchive(session);
+      }
     });
   }
 
@@ -334,13 +332,21 @@ export class SubAgentRunner {
     signal?: AbortSignal,
     model?: string,
   ): Promise<string> {
-    const session = (await loadSession(id))!;
-    const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
-    // Persist the first run so a session-mode sub-agent remembers its own answer; without this
-    // the next send() reloads a history containing the task but not the reply.
-    await saveSession(id, session);
-    indexSessionArchive(session);
-    return result;
+    // `loadSession` also returns null on a truncated file, and the non-null assertion turned that
+    // into a TypeError the model received as an opaque tool error.
+    const session = await loadSession(id);
+    if (!session) {
+      void log("error", "sub-agent session unreadable", { id });
+      return `Error: sub-agent ${id} not found.`;
+    }
+    try {
+      return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
+    } finally {
+      // Persist the first run so a session-mode sub-agent remembers its own answer; without this
+      // the next send() reloads a history containing the task but not the reply.
+      await saveSession(id, session);
+      indexSessionArchive(session);
+    }
   }
 
   private async executeRunWithSession(

@@ -58,6 +58,8 @@ const TEXT_BATCH_MAX_ID_GAP = 1;
 
 // Media, typing, misc
 const MEDIA_GROUP_TIMEOUT_MS = 500;
+/** Upper bound on how long `stop()` waits for the coalescing windows above to close. */
+const INGRESS_DRAIN_MS = 2500;
 const CAPTION_LIMIT = 1024;
 const TYPING_INTERVAL_MS = 5000;
 const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
@@ -224,12 +226,26 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    // A coalescing window is at most a second and a half wide, and a config change lands in it
+    // often enough: cancelling those timers dropped a message that Telegram had already been
+    // told was delivered. Letting them fire costs a moment and puts the message through.
+    await this.drainIngressBuffers();
+
     for (const [, b] of this.textBatches) clearTimeout(b.timer);
     for (const [, g] of this.mediaGroups) clearTimeout(g.timer);
     for (const [, r] of this.typingRefs) clearInterval(r.interval);
     for (const [, p] of this.pendingConfirmations) {
       clearTimeout(p.timer);
       p.resolve(false);
+    }
+
+    if (this.textBatches.size > 0 || this.mediaGroups.size > 0) {
+      await telegramLog("warn", "dropping buffered ingress on stop", {
+        textBatches: [...this.textBatches.values()].map((b) => b.chatId),
+        mediaGroups: this.mediaGroups.size,
+      });
+      for (const [, b] of this.textBatches) this.releaseClaimedUpdate(b.updateId);
+      for (const [, g] of this.mediaGroups) this.releaseClaimedUpdate(g.updateId);
     }
 
     this.textBatches.clear();
@@ -1002,6 +1018,14 @@ export class TelegramAdapter implements ChannelAdapter {
     } catch (err) {
       await telegramLog("error", "failed to download telegram file", { fileId, error: String(err) });
       return null;
+    }
+  }
+
+  /** Waits for the coalescing timers to fire on their own, bounded so a stop always completes. */
+  private async drainIngressBuffers(): Promise<void> {
+    const deadline = Date.now() + INGRESS_DRAIN_MS;
+    while ((this.textBatches.size > 0 || this.mediaGroups.size > 0) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
     }
   }
 

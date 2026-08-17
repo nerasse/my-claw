@@ -9,19 +9,36 @@ const LLM_RETRY_BASE_MS = 500;
 const LLM_RETRY_MAX_MS = 30_000;
 const LLM_RETRY_JITTER = 0.15;
 const LLM_TIMEOUT_MS = 120_000;
-const LLM_STREAM_TIMEOUT_MS = 300_000;
+/**
+ * Silence, not duration. The old budget covered the whole stream, so a reasoning model still
+ * writing at five minutes was cut off mid-answer, and nothing retries once tokens have shipped.
+ * What has to be caught is a connection that stopped producing, which this timer measures.
+ */
+const LLM_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
 
 const CIRCUIT_BREAKER_THRESHOLD = 5;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 60_000;
 
-const circuitState = {
-  failures: 0,
-  openedAt: 0,
-};
+/**
+ * One breaker per endpoint, not one for the whole process. A single llama.cpp that died used to
+ * open the only breaker there was and refuse every chat, including the ones pinned on a cloud
+ * provider that was answering perfectly, for a full minute.
+ */
+const circuits = new Map<string, { failures: number; openedAt: number }>();
 
-function checkCircuitBreaker(): void {
+function circuitFor(baseUrl: string): { failures: number; openedAt: number } {
+  let state = circuits.get(baseUrl);
+  if (!state) {
+    state = { failures: 0, openedAt: 0 };
+    circuits.set(baseUrl, state);
+  }
+  return state;
+}
+
+function checkCircuitBreaker(baseUrl: string): void {
+  const circuitState = circuitFor(baseUrl);
   if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     const elapsed = Date.now() - circuitState.openedAt;
     if (elapsed < CIRCUIT_BREAKER_COOLDOWN_MS) {
@@ -31,25 +48,26 @@ function checkCircuitBreaker(): void {
   }
 }
 
-function recordCircuitSuccess(): void {
+function recordCircuitSuccess(baseUrl: string): void {
+  const circuitState = circuitFor(baseUrl);
   if (circuitState.failures > 0) {
-    hooks.emit("llm:circuit:closed", {});
+    hooks.emit("llm:circuit:closed", { baseUrl });
   }
   circuitState.failures = 0;
 }
 
-function recordCircuitFailure(): void {
+function recordCircuitFailure(baseUrl: string): void {
+  const circuitState = circuitFor(baseUrl);
   circuitState.failures += 1;
   if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     circuitState.openedAt = Date.now();
-    hooks.emit("llm:circuit:opened", { failures: circuitState.failures, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS });
-    void log("warn", `LLM circuit breaker opened after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures`);
+    hooks.emit("llm:circuit:opened", { failures: circuitState.failures, cooldownMs: CIRCUIT_BREAKER_COOLDOWN_MS, baseUrl });
+    void log("warn", `LLM circuit breaker opened after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures`, { baseUrl });
   }
 }
 
 export function resetCircuitBreaker(): void {
-  circuitState.failures = 0;
-  circuitState.openedAt = 0;
+  circuits.clear();
 }
 
 // A non-retryable 4xx (e.g. one malformed request) is request-specific, not a provider outage:
@@ -372,7 +390,7 @@ export async function chatCompletion(
   tools?: unknown[],
   signal?: AbortSignal,
 ): Promise<LlmResponse> {
-  checkCircuitBreaker();
+  checkCircuitBreaker(config.baseUrl);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -414,7 +432,7 @@ export async function chatCompletion(
       const choice = data.choices[0];
       if (!choice?.message) throw new Error("No response from LLM");
 
-      recordCircuitSuccess();
+      recordCircuitSuccess(config.baseUrl);
       const reasoning = readReasoning(choice.message as Record<string, unknown>);
       return {
         content: choice.message.content ?? "",
@@ -435,14 +453,14 @@ export async function chatCompletion(
         await sleep(delay);
         continue;
       }
-      if (countsTowardBreaker(lastErr)) recordCircuitFailure();
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  if (countsTowardBreaker(lastErr)) recordCircuitFailure();
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
   throw lastErr;
 }
 
@@ -463,7 +481,7 @@ export async function chatCompletionStream(
   signal?: AbortSignal,
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  checkCircuitBreaker();
+  checkCircuitBreaker(config.baseUrl);
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -479,7 +497,11 @@ export async function chatCompletionStream(
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LLM_STREAM_TIMEOUT_MS);
+    let timeout = setTimeout(() => controller.abort(), LLM_STREAM_IDLE_TIMEOUT_MS);
+    const keepAlive = (): void => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => controller.abort(), LLM_STREAM_IDLE_TIMEOUT_MS);
+    };
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
@@ -547,6 +569,7 @@ export async function chatCompletionStream(
       };
 
       for await (const chunk of readStream(response.body)) {
+        keepAlive();
         buffer += decoder.decode(chunk, { stream: true });
 
         let newlineIndex = buffer.indexOf("\n");
@@ -590,7 +613,7 @@ export async function chatCompletionStream(
           arguments: safeJsonParse(toolCall.arguments, "streamed tool_call.arguments"),
         }));
 
-      recordCircuitSuccess();
+      recordCircuitSuccess(config.baseUrl);
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
@@ -602,7 +625,7 @@ export async function chatCompletionStream(
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
       if (err instanceof DOMException && err.name === "AbortError") {
-        lastErr = new Error(`LLM stream timed out after ${LLM_STREAM_TIMEOUT_MS}ms`);
+        lastErr = new Error(`LLM stream stalled for ${LLM_STREAM_IDLE_TIMEOUT_MS}ms`);
       }
       if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && isTransientError(err)) {
         const delay = retryDelay(attempt);
@@ -610,13 +633,13 @@ export async function chatCompletionStream(
         await sleep(delay);
         continue;
       }
-      if (countsTowardBreaker(lastErr)) recordCircuitFailure();
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  if (countsTowardBreaker(lastErr)) recordCircuitFailure();
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
   throw lastErr;
 }

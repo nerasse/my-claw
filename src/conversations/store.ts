@@ -210,6 +210,9 @@ function insertMessage(input: {
     threadId: input.threadId,
     timestamp: input.occurredAt,
   });
+  // The row and its FTS shadow are one write: a failure in between archives a message that the
+  // conversation search can never find again.
+  const insert = d.transaction((): void => {
   const result = d.prepare(
     `INSERT OR IGNORE INTO messages (
        conversation_id, source_id, source_kind, platform, chat_id, chat_type, thread_id,
@@ -232,10 +235,24 @@ function insertMessage(input: {
     input.occurredAt,
     now(),
   );
-  if (Number(result.changes ?? 0) === 0) return;
+  if (Number(result.changes ?? 0) === 0) {
+    // Same message, seen twice: a channel archives what it received, the router archives what
+    // the run actually read. The second pass carries the voice note's transcript, and dropping
+    // it left everything ever said out loud out of the search index.
+    const existing = d.prepare("SELECT id, content FROM messages WHERE source_id = ?")
+      .get(input.sourceId) as { id: number; content: string } | null;
+    if (!existing || existing.content === content) return;
+    d.prepare("UPDATE messages SET content = ? WHERE id = ?").run(content, existing.id);
+    d.prepare("DELETE FROM messages_fts WHERE rowid = ?").run(existing.id);
+    d.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)").run(existing.id, content);
+    return;
+  }
 
-  const row = d.prepare("SELECT id FROM messages WHERE source_id = ?").get(input.sourceId) as { id: number };
+  const row = d.prepare("SELECT id FROM messages WHERE source_id = ?").get(input.sourceId) as { id: number } | null;
+  if (!row) return;
   d.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)").run(row.id, content);
+  });
+  insert();
 }
 
 function normalizeTimestamp(value: string | undefined): string {

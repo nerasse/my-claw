@@ -81,6 +81,8 @@ type MatrixRuntimeCryptoFacade = {
 };
 
 const MATRIX_IDB_PERSIST_INTERVAL_MS = 60_000;
+/** How long the boot waits for the first sync before giving up on this channel. */
+const SYNC_START_TIMEOUT_MS = 120_000;
 const MATRIX_DECRYPT_FAILURE_WINDOW_MS = 2 * 60_000;
 const MATRIX_DECRYPT_FAILURE_THRESHOLD = 3;
 
@@ -204,18 +206,34 @@ export class MatrixClientRuntime {
     await this.initializeCrypto();
     this.client.on(RoomEvent.Timeline, this.handleTimeline);
     this.readyPromise = new Promise<void>((resolve, reject) => {
+      // Two states used to resolve nothing at all: a Stopped client, and an Error carrying no
+      // `data.error`. The boot waits on this promise, so either one hung the whole daemon.
+      const settle = setTimeout(() => {
+        this.client.off(ClientEvent.Sync, onSync);
+        reject(new Error(`matrix sync did not start within ${SYNC_START_TIMEOUT_MS}ms`));
+      }, SYNC_START_TIMEOUT_MS);
+      settle.unref?.();
+      const done = (fn: () => void) => {
+        clearTimeout(settle);
+        this.client.off(ClientEvent.Sync, onSync);
+        fn();
+      };
       const onSync = (state: SyncState, _prev: SyncState | null, data?: { error?: Error }) => {
         if (state === SyncState.Prepared || state === SyncState.Syncing) {
-          this.client.off(ClientEvent.Sync, onSync);
-          resolve();
+          done(resolve);
         }
         if (state === SyncState.Error && data?.error) {
-          this.client.off(ClientEvent.Sync, onSync);
-          reject(data.error);
+          done(() => reject(data.error));
+        }
+        if (state === SyncState.Stopped) {
+          done(() => reject(new Error("matrix sync stopped before it was ready")));
         }
       };
       this.client.on(ClientEvent.Sync, onSync);
     });
+    // A rejection reaching nobody is fatal at process level, and `startClient` below can throw
+    // before anything awaits this one.
+    this.readyPromise.catch(() => undefined);
 
     await this.client.startClient({ initialSyncLimit: this.config.initialSyncLimit ?? 20 });
     await this.readyPromise;

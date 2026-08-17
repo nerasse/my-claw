@@ -110,21 +110,26 @@ export function addEntry(
   embeddingModel: string | null = null,
 ): number {
   const d = getDb();
-  const row = d
-    .prepare(
-      `INSERT INTO entries (content, category, embedding, embedding_model, hash)
-       VALUES ($content, $category, $embedding, $model, $hash)
-       RETURNING id`,
-    )
-    .get({
-      $content: content,
-      $category: category,
-      $embedding: embeddingToBlob(embedding),
-      $model: embedding ? embeddingModel : null,
-      $hash: hash,
-    }) as { id: number };
-  d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(row.id, content);
-  return row.id;
+  // The row and its FTS shadow are one write. Split, a failure between the two leaves a memory
+  // that counts in the exports and can never be recalled again.
+  const insert = d.transaction((): number => {
+    const row = d
+      .prepare(
+        `INSERT INTO entries (content, category, embedding, embedding_model, hash)
+         VALUES ($content, $category, $embedding, $model, $hash)
+         RETURNING id`,
+      )
+      .get({
+        $content: content,
+        $category: category,
+        $embedding: embeddingToBlob(embedding),
+        $model: embedding ? embeddingModel : null,
+        $hash: hash,
+      }) as { id: number };
+    d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(row.id, content);
+    return row.id;
+  });
+  return insert();
 }
 
 export function updateEntry(
@@ -135,20 +140,24 @@ export function updateEntry(
   embeddingModel: string | null = null,
 ): void {
   const d = getDb();
-  d.prepare(
-    `UPDATE entries
-     SET content = $content, embedding = $embedding, embedding_model = $model, hash = $hash,
-         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-     WHERE id = $id`,
-  ).run({
-    $id: id,
-    $content: content,
-    $embedding: embeddingToBlob(embedding),
-    $model: embedding ? embeddingModel : null,
-    $hash: hash,
+  // Delete then insert: interrupted between the two, an existing memory becomes unrecallable.
+  const update = d.transaction((): void => {
+    d.prepare(
+      `UPDATE entries
+       SET content = $content, embedding = $embedding, embedding_model = $model, hash = $hash,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = $id`,
+    ).run({
+      $id: id,
+      $content: content,
+      $embedding: embeddingToBlob(embedding),
+      $model: embedding ? embeddingModel : null,
+      $hash: hash,
+    });
+    d.prepare("DELETE FROM entries_fts WHERE rowid = ?").run(id);
+    d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(id, content);
   });
-  d.prepare("DELETE FROM entries_fts WHERE rowid = ?").run(id);
-  d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(id, content);
+  update();
 }
 
 /** Sentinel for "superseded with no replacement" (forget). Keeps superseded_by non-null. */
@@ -161,12 +170,15 @@ export const SUPERSEDED_DELETED = 0;
  */
 export function supersedeEntry(oldId: number, newId: number | null): void {
   const d = getDb();
-  d.prepare(
-    `UPDATE entries
-     SET superseded_by = $newId, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-     WHERE id = $oldId`,
-  ).run({ $oldId: oldId, $newId: newId ?? SUPERSEDED_DELETED });
-  d.prepare("DELETE FROM entries_fts WHERE rowid = ?").run(oldId);
+  const supersede = d.transaction((): void => {
+    d.prepare(
+      `UPDATE entries
+       SET superseded_by = $newId, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE id = $oldId`,
+    ).run({ $oldId: oldId, $newId: newId ?? SUPERSEDED_DELETED });
+    d.prepare("DELETE FROM entries_fts WHERE rowid = ?").run(oldId);
+  });
+  supersede();
 }
 
 export function incrementAccess(id: number): void {

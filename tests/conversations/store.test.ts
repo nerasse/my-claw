@@ -92,6 +92,19 @@ test("deduplicates repeated channel ingestion by source id", () => {
   expect(searchConversationArchive({ query: "same source", limit: 20 })).toHaveLength(1);
 });
 
+test("a second pass on the same message keeps the enriched text", () => {
+  // The channel archives what it received, the router archives what the run read: the second
+  // pass is the one carrying a voice note's transcript, and it used to be dropped outright.
+  const inbound = message({ text: "look at this", timestamp: "2026-08-04T10:00:00.000Z" });
+  archiveChannelMessage(inbound);
+  archiveChannelMessage({ ...inbound, text: 'look at this\n[Audio]: "the invoice is overdue"' });
+
+  const hits = searchConversationArchive({ query: "invoice overdue", limit: 20 });
+  expect(hits).toHaveLength(1);
+  expect(readConversationHit(hits[0]!.id, 0, 0)?.context[0]?.content).toContain("the invoice is overdue");
+  expect(searchConversationArchive({ query: "look at this", limit: 20 })).toHaveLength(1);
+});
+
 test("reads chronological context around a result", () => {
   const inbound = message({ text: "before decision", timestamp: "2026-08-04T10:00:00.000Z" });
   archiveChannelMessage(inbound);

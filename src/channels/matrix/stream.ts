@@ -270,11 +270,31 @@ export class MatrixMessageStreamer {
     // Redact the stale preview only AFTER the replacement is delivered: redact-first would
     // destroy the streamed content if the final send then fails (crash, network, shutdown).
     const stalePreviewId = this.sentEventId;
+    try {
+      await this.deliverFinalNormally(text);
+    } catch (err) {
+      // The preview id is kept until here on purpose: dropping it first left a half-written
+      // message flagged live in the room, with nothing able to close it ever again.
+      if (stalePreviewId) await this.closeLivePreview(stalePreviewId, text);
+      throw err;
+    }
     this.sentEventId = null;
-    await this.deliverFinalNormally(text);
     if (stalePreviewId) {
       await this.redactEvent(stalePreviewId);
     }
+  }
+
+  /** Rewrites the preview without the live marker, so a failed final does not leave it typing. */
+  private async closeLivePreview(eventId: string, text: string): Promise<void> {
+    const formatted = buildMatrixFormattedText(`${text.trimEnd()}\n\n[interrupted]`);
+    await this.sendMessage(
+      this.editContent(eventId, {
+        body: formatted.body,
+        formatted_body: formatted.formatted_body,
+        mentions: formatted.mentions as Record<string, unknown> | undefined,
+      }, true),
+      "stream-final-close",
+    ).catch(() => undefined);
   }
 
   private async deliverFinalNormally(text: string): Promise<void> {

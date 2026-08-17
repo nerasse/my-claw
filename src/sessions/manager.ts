@@ -27,15 +27,33 @@ export class SessionManager {
   /** Message count at each session's last write: what tells a dirty session from a clean one. */
   private savedCounts = new Map<string, number>();
   private autosaveTimer?: ReturnType<typeof setInterval>;
+  /**
+   * Eviction writes still in flight. The evicted entry leaves the map before its file is
+   * renamed, so a read that raced it used to load the pre-eviction file and the run that
+   * followed wrote that truncated history back over the fresh one.
+   */
+  private pendingWrites = new Map<string, Promise<void>>();
 
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
       hooks.emit("session:evicted", { sessionId: key });
       this.savedCounts.delete(key);
-      saveSession(key, value).catch((err) => {
-        void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
-      });
+      const write = saveSession(key, value)
+        .catch((err) => {
+          void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
+        })
+        .finally(() => {
+          if (this.pendingWrites.get(key) === write) this.pendingWrites.delete(key);
+        });
+      this.pendingWrites.set(key, write);
     });
+  }
+
+  /** Every disk read of a session goes through here, so none of them can overtake an eviction. */
+  private async loadSettled(sessionId: string): Promise<SessionData | null> {
+    const pending = this.pendingWrites.get(sessionId);
+    if (pending) await pending;
+    return loadSession(sessionId);
   }
 
   private createSession(
@@ -128,7 +146,7 @@ export class SessionManager {
       return session;
     }
 
-    session = await loadSession(sessionId) ?? undefined;
+    session = await this.loadSettled(sessionId) ?? undefined;
     if (session) {
       session.lastActiveAt = new Date().toISOString();
       this.cache(sessionId, session);
@@ -152,7 +170,7 @@ export class SessionManager {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
 
-    const loaded = await loadSession(sessionId);
+    const loaded = await this.loadSettled(sessionId);
     if (!loaded) return null;
     this.cache(sessionId, loaded);
     return loaded;
@@ -167,7 +185,7 @@ export class SessionManager {
    * thread list) would churn the LRU and evict the sessions that are actually live.
    */
   async read(sessionId: string): Promise<SessionData | null> {
-    return this.sessions.get(sessionId) ?? await loadSession(sessionId);
+    return this.sessions.get(sessionId) ?? await this.loadSettled(sessionId);
   }
 
   /**
@@ -176,7 +194,7 @@ export class SessionManager {
    * applies from the next run onward.
    */
   async setWorkspace(sessionId: string, workspace: string | undefined): Promise<SessionData> {
-    const session = this.sessions.get(sessionId) ?? await loadSession(sessionId);
+    const session = this.sessions.get(sessionId) ?? await this.loadSettled(sessionId);
     if (!session) throw new Error("conversation not found");
     if (workspace) session.workspace = workspace;
     else delete session.workspace;
@@ -189,7 +207,7 @@ export class SessionManager {
   async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
     const gate = await hooks.check("gate:session:reset", { sessionId });
     if (!gate.allowed) return;
-    const previous = this.sessions.get(sessionId) ?? await loadSession(sessionId);
+    const previous = this.sessions.get(sessionId) ?? await this.loadSettled(sessionId);
     this.sessions.delete(sessionId);
     const archived = await archiveSession(sessionId);
     if (!archived) {

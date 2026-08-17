@@ -124,8 +124,8 @@ export interface HookEventMap {
     attempt: number;
     willRetry: boolean;
   };
-  "llm:circuit:opened": { failures: number; cooldownMs: number };
-  "llm:circuit:closed": Record<string, never>;
+  "llm:circuit:opened": { failures: number; cooldownMs: number; baseUrl: string };
+  "llm:circuit:closed": { baseUrl: string };
 
   // === TOOL LIFECYCLE ===
   "tool:execute:start": {

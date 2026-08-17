@@ -194,6 +194,37 @@ describe("cron scheduler", () => {
       expect(jobs[0]!.nextRunAt).not.toBe(beforeNextRun);
     });
 
+    test("an unreadable schedule pauses its own job and lets the others run", async () => {
+      const broken = createJob({
+        prompt: "broken",
+        schedule: "every 30m",
+        origin: { platform: "telegram", chatId: "123" },
+        deliver: "origin",
+      });
+      // Hand-edited jobs.json: the loose shape check passes, the parser refuses hour 25.
+      broken.schedule = { kind: "cron", expr: "0 25 * * *", display: "0 25 * * *" };
+      broken.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+
+      const healthy = createJob({
+        prompt: "healthy",
+        schedule: "every 30m",
+        origin: { platform: "telegram", chatId: "456" },
+        deliver: "origin",
+      });
+      healthy.nextRunAt = new Date(Date.now() - 60_000).toISOString();
+      await saveJobs([broken, healthy]);
+
+      const result = await scheduler.tick();
+
+      expect(result).toBe(1);
+      expect(sentMessages.map((m) => m.chatId)).toEqual(["456"]);
+      const stored = await loadJobs();
+      const storedBroken = stored.find((j) => j.id === broken.id)!;
+      expect(storedBroken.state).toBe("paused");
+      expect(storedBroken.enabled).toBe(false);
+      expect(storedBroken.pausedReason).toContain("unreadable schedule");
+    });
+
     test("multiple due jobs execute sequentially", async () => {
       let callCount = 0;
       router.routeCron = async () => {
