@@ -24,8 +24,13 @@ export function webDir(config: MyClawAppChannelConfig): string {
  * Referer header of anything the page links to.
  */
 const SECURITY_HEADERS: Record<string, string> = {
+  // `blob:` in connect-src is what lets a picked file be read back. The browser hands a file
+  // over as a blob URL, and the client fetches that URL to get the bytes to upload: without it
+  // the browser refuses the connection and the app shows "Failed to fetch" with the reason only
+  // visible in the console. img-src and media-src already allowed blob:, so a picked image
+  // displayed fine and only sending it failed, which is the confusing half of the bug.
   "Content-Security-Policy":
-    "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'",
+    "default-src 'self'; connect-src 'self' blob: ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "X-Frame-Options": "DENY",
