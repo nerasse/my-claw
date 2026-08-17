@@ -418,6 +418,24 @@ describe("MyClawAppAdapter", () => {
     assert.equal(received.length, 0);
   });
 
+  test("a frame missing its required fields is survived, not fatal", async () => {
+    // A frame is typed on the wire and nowhere else. One field short, these used to throw out of
+    // the socket callback (or out of the promise a handler returned) and take the whole daemon
+    // down, every channel with it, on a device one version off.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m1" }));
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m2", text: "hi", attachments: 7 }));
+    client.ws.send(JSON.stringify({ type: "device.pair.deny" }));
+    client.ws.send(JSON.stringify({ type: "device.pair.lookup" }));
+    client.ws.send(JSON.stringify({ type: "session.history" }));
+    client.ws.send(JSON.stringify({ type: "device.revoke" }));
+
+    // The socket is still up and still serving: send a real frame and expect a real answer.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m3", text: "still alive" }));
+    await waitUntil(() => received.some((msg) => msg.text === "still alive"));
+    // The garbage `attachments` is dropped, the text it came with is not.
+    assert.deepEqual(received.map((msg) => msg.text), ["hi", "still alive"]);
+  });
+
   test("send delivers a chat.message frame to the connected device", async () => {
     await adapter.send(DEVICE_ID, { text: "answer from agent", replyToId: "m1" });
     const frame = await nextFrame(client);

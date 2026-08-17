@@ -24,7 +24,7 @@ import { runRegistry } from "../../core/run-registry.ts";
 import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
-import type { MyClawAppCommandHandler } from "./adapter.ts";
+import type { MyClawAppCommandHandler } from "./controllers.ts";
 
 /**
  * Text slash commands for the my-claw-app channel, mirroring the telegram and matrix handlers:

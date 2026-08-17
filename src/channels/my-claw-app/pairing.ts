@@ -130,7 +130,8 @@ function newCode(): string {
 }
 
 export function normalizeCode(input: string): string {
-  return input
+  // Called straight off the wire, where the field is a promise and not a guarantee.
+  return String(input ?? "")
     .trim()
     .toUpperCase()
     .replace(/[\s-]/g, "")
