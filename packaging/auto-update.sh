@@ -81,8 +81,11 @@ prune_web_bundles() {
   for version in "${versions[@]}"; do
     [ "$drop" -gt 0 ] || break
     [ "$version" = "$keep" ] && continue
-    if "$MYCLAW_BIN" web rm "$version" >/dev/null 2>&1; then
+    local removed=""
+    if removed="$("$MYCLAW_BIN" web rm "$version" 2>&1)"; then
       echo "my-claw auto-update: pruned web bundle ${version}"
+    else
+      echo "Warning: could not prune web bundle ${version}: ${removed}"
     fi
     drop=$(( drop - 1 ))
   done
@@ -125,10 +128,18 @@ update_web_bundle() {
   echo "my-claw auto-update: installing web bundle ${latest} (current ${current:-none})..."
   # myclaw drops to the service user by itself, and the CLI reads the token out of that user's
   # own .env: no credential ever reaches a command line, where ps would show it.
-  if ! "$MYCLAW_BIN" web install "$latest"; then
+  #
+  # Its output is captured and re-emitted rather than inherited: the drop goes through `su`,
+  # pam_systemd moves the child into its own login session scope, and everything it prints is
+  # journalled under that scope instead of this unit. A failure would otherwise read as
+  # "failed to install" with the reason filed somewhere nobody looks.
+  local output=""
+  if ! output="$("$MYCLAW_BIN" web install "$latest" 2>&1)"; then
     echo "Warning: web bundle ${latest} failed to install — retrying in 15 minutes"
+    [ -n "$output" ] && echo "$output"
     return 0
   fi
+  [ -n "$output" ] && echo "$output"
 
   prune_web_bundles "$web_dir" "$latest"
 }
