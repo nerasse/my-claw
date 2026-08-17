@@ -1,6 +1,7 @@
 /** @file Config hot-reload: watch ~/.my-claw/config.json and apply safe changes in place. */
 
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher } from "node:fs";
+import { watchQuiet } from "../utils/watch.ts";
 import { readFile } from "node:fs/promises";
 import { dirname, basename } from "node:path";
 import { hooks } from "../hooks/index.ts";
@@ -365,7 +366,7 @@ export function startConfigWatcher(
   };
 
   try {
-    watcher = watch(dir, (_event, filename) => {
+    watcher = watchQuiet(dir, "config", (_event, filename) => {
       // .env lives beside config.json; a secret rotation there must trigger a reload
       // too (readConfigFromDisk force-refreshes process.env as a side effect).
       if (filename) {

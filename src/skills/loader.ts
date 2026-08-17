@@ -1,4 +1,4 @@
-import { readFile, readdir, access } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Skill, SkillMeta } from "./types.ts";
 import { snapshot } from "../core/config-store.ts";
@@ -63,13 +63,12 @@ async function loadSkillFromFile(path: string, source: Skill["source"]): Promise
 
 async function scanDir(dir: string, source: Skill["source"], workspace?: string): Promise<Skill[]> {
   const skills: Skill[] = [];
-  try {
-    await access(dir);
-  } catch {
-    return skills;
-  }
+  // Both the existence check and the read live in the same try on purpose: `access` only proves
+  // the directory is there, so an unreadable one (or one deleted in between) used to reject out
+  // of `loadAllSkills` into the detached config-reload chain, which is a process-level killer.
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+  if (!entries) return skills;
 
-  const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const skillDir = join(dir, entry.name);

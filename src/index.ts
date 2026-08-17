@@ -2270,6 +2270,10 @@ async function main() {
       // registries have to follow the same config change or the new workspace has skills and
       // no agents until the next restart.
       void log("info", "agents reloaded from config change", { count });
+    }).catch((err) => {
+      // The reload appliers are called detached, so a rejection here reaches the process-level
+      // unhandledRejection handler and shuts the daemon down over an unreadable skill directory.
+      void log("error", "skills/agents reload from config change failed", { error: String(err) });
     }),
     recreateTelegram: () => void recreateTelegramChannel(),
   });

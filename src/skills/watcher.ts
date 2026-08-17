@@ -1,4 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher } from "node:fs";
+import { watchQuiet } from "../utils/watch.ts";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { hooks } from "../hooks/index.ts";
@@ -71,7 +72,7 @@ export function startSkillsWatcher(
         present.add(skillDir);
         if (childWatchers.has(skillDir)) continue;
         try {
-          childWatchers.set(skillDir, watch(skillDir, () => scheduleReload()));
+          childWatchers.set(skillDir, watchQuiet(skillDir, "skill dir", () => scheduleReload()));
         } catch {
           // Skill dir vanished between readdir and watch; the next sync drops it.
         }
@@ -98,7 +99,7 @@ export function startSkillsWatcher(
       if (tierWatchers.has(tier)) continue;
       void mkdir(tier, { recursive: true }).catch(() => undefined);
       try {
-        tierWatchers.set(tier, watch(tier, () => onTierEvent()));
+        tierWatchers.set(tier, watchQuiet(tier, "skills tier", () => onTierEvent()));
       } catch {
         // Race with mkdir: the next event retries.
       }
@@ -111,7 +112,7 @@ export function startSkillsWatcher(
       await mkdir(tier, { recursive: true }).catch(() => undefined);
       if (stopped) return;
       try {
-        tierWatchers.set(tier, watch(tier, () => onTierEvent()));
+        tierWatchers.set(tier, watchQuiet(tier, "skills tier", () => onTierEvent()));
       } catch (err) {
         void log("warn", "skills watcher could not watch tier", { dir: tier, error: String(err) });
       }

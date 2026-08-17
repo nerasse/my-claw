@@ -1,4 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher } from "node:fs";
+import { watchQuiet } from "../utils/watch.ts";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
@@ -133,7 +134,7 @@ export class PluginLoader {
     await this.load();
     // Files are flat in tools.d/, so a non-recursive watch sees edits/adds/removes directly.
     try {
-      this.watcher = watch(this.dir, () => {
+      this.watcher = watchQuiet(this.dir, "tool plugins", () => {
         if (this.timer) clearTimeout(this.timer);
         this.timer = setTimeout(() => {
           void this.load()

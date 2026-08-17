@@ -1,4 +1,5 @@
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher } from "node:fs";
+import { watchQuiet } from "../utils/watch.ts";
 import { mkdir } from "node:fs/promises";
 import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
@@ -60,7 +61,7 @@ export function startAgentsWatcher(
       if (tierWatchers.has(tier)) continue;
       void mkdir(tier, { recursive: true }).catch(() => undefined);
       try {
-        tierWatchers.set(tier, watch(tier, () => onTierEvent()));
+        tierWatchers.set(tier, watchQuiet(tier, "agents tier", () => onTierEvent()));
       } catch {
         // Race with mkdir: the next event retries.
       }
@@ -73,7 +74,7 @@ export function startAgentsWatcher(
       await mkdir(tier, { recursive: true }).catch(() => undefined);
       if (stopped) return;
       try {
-        tierWatchers.set(tier, watch(tier, () => onTierEvent()));
+        tierWatchers.set(tier, watchQuiet(tier, "agents tier", () => onTierEvent()));
       } catch (err) {
         void log("warn", "agents watcher could not watch tier", { dir: tier, error: String(err) });
       }
