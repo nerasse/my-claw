@@ -254,6 +254,30 @@ same check that already reports scope entries matching nothing (`src/core/config
 This keeps `/model reviewer` and the app's Agents page writing to the same place they write today,
 for file agents as for built-in ones.
 
+### Where a spawn's model comes from
+
+`SubAgentRunner` resolves it once, through `resolveRunModel`, and hands the answer to the backend as
+its `llmOverride`: the engine (SDK or home loop) is picked from that same answer, so a second chain
+computed later could only disagree with the process already chosen. The steps, highest first:
+
+```
+spawn's own `model:` argument  >  the model recorded on the instance  >  config.agents.<name>.llm
+  >  the agent file's `model:`  >  llm.defaultModel
+```
+
+The recorded model is what makes a `mode=session` sub-agent keep answering on the same model across
+`send()`. It goes stale like a chat's pick when config moves under it, and self-heals the same way:
+the run drops it and resolves the agent's own chain again. An explicit spawn argument is the
+caller's, so that one fails loudly instead of being quietly replaced.
+
+A sub-agent never inherits the *conversation's* pick. `/model` in a chat writes that chat's session
+and nothing else: `general` and `research` are separate agents whose absent config entry means the
+global default, not whatever the owner picked in the thread he happened to spawn from. Only `cron`
+inherits the orchestrator, and from its config, never from a session.
+
+Because the backend is handed a resolved override, it never resolves and never announces: the
+runner posts the fallback notice itself, into the parent chat.
+
 ## The ceiling
 
 **A file can only narrow a tool set. It can never widen one.**

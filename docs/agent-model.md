@@ -104,8 +104,11 @@ win at run time, so writing one on the agent would be dead config. `Effort >` on
 menu behaves the same way.
 
 The whole ladder is `session > tag > job > agent > global` for effort, and the same shape for the
-model itself (`session.modelOverride > job.model > agents.<key>.llm.defaultModel >
-llm.defaultModel`).
+model itself (`session.modelOverride > job.model > agents.<key>.llm.defaultModel > the agent file's
+model > llm.defaultModel`). A step whose model cannot run is skipped for the one below it, which
+is why the ladder has to be walked in one place (`resolveRunModel`) rather than reduced to a
+merge: a sub-agent that resolved its own model by reading the config entry alone saw neither the
+file step nor the skipping. See docs/file-agents.md.
 
 ## Rejected
 

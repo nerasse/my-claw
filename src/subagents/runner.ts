@@ -2,7 +2,9 @@ import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { MyClawConfig } from "../core/config.ts";
 import { MY_CLAW_DIR, resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyForDir } from "../core/config.ts";
-import { resolveAgentLlmConfig } from "../llm/resolver.ts";
+import { resolveRunModel, type RunModel, type RunModelRequest } from "../llm/run-model.ts";
+import { availabilityWorld } from "../llm/world.ts";
+import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
@@ -359,9 +361,34 @@ export class SubAgentRunner {
     stream?: SubAgentStream,
   ): Promise<string> {
     const depth = 1;
-    // Explicit spawn model wins; a session sub-agent then sticks to it across send()
+    // The same chain every other run resolves, and only once: the engine below is picked from it
+    // and the backend receives it as its override, so nothing resolves a second time. Reading the
+    // config entry alone was the bug: an agent file's `model:` never reached a spawn, and a model
+    // the provider refuses had no step to fall back to. Explicit spawn model sits where a chat's
+    // pick sits, above the agent's own pin; a session sub-agent then sticks to it across send()
     // via the modelOverride recorded on the first run.
-    const resolved = resolveAgentLlmConfig(this.config.agents?.[type]?.llm, this.config.llm, model ?? session.modelOverride);
+    const fileModel = this.agentRegistry?.get(type, session.workspace)?.meta.model;
+    const pick = model ?? session.modelOverride;
+    const request: RunModelRequest = {
+      agent: type,
+      ...(fileModel ? { fileModel } : {}),
+      ...(pick ? { sessionModel: pick } : {}),
+    };
+    let resolved: RunModel;
+    try {
+      resolved = resolveRunModel(this.config, request, availabilityWorld());
+    } catch (err) {
+      // A model recorded on the first run goes stale exactly like a chat's pick, and a send() must
+      // not die of it. An explicit spawn model is the caller's own, so that one still throws.
+      if (model || !pick) throw err;
+      void log("warn", "sub-agent model no longer resolves; falling back to the agent chain", {
+        id: session.id,
+        model: pick,
+        error: String(err),
+      });
+      delete session.modelOverride;
+      resolved = resolveRunModel(this.config, { ...request, sessionModel: undefined }, availabilityWorld());
+    }
 
     // Record which model this sub-agent runs on (surfaced by list/status); the engine uses the
     // fully-resolved config below so the agent's provider (baseUrl/apiKey/headers) is honored,
@@ -410,6 +437,11 @@ export class SubAgentRunner {
       isForwarded: false,
       raw: null,
     };
+
+    // The backend cannot announce this one: it is handed a resolved override and never resolves,
+    // so a sub-agent that ran on something other than its pin would say so nowhere. Posted to the
+    // parent chat, which is where the human who asked for the spawn is looking.
+    announceModelFallback(resolved, subMessage, type);
 
     // The mailbox is what makes this run steerable mid-flight: the app injects a chat.send into it
     // and the engine picks it up at the next iteration boundary. Open for parent-driven runs too
