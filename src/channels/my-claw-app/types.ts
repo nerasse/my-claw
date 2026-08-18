@@ -874,6 +874,27 @@ export interface MyClawAppChatMessage {
   notice?: boolean;
 }
 
+/**
+ * A prompt the owner sent, mirrored to their other windows.
+ *
+ * The sending device draws its own bubble from its own send and never waits for this, so the
+ * echo carries that device's id: whoever already has it ignores it, and everyone else gains the
+ * question their incoming answer is a reply to. Without it a second window showed an answer
+ * hanging under nothing until the thread was reloaded from disk.
+ *
+ * Shaped like a replayed user turn rather than like `chat.message`: it is the same bubble the
+ * history would rebuild, so the app renders it through the same path.
+ */
+export interface MyClawAppChatUser {
+  type: "chat.user";
+  threadId: string;
+  id: string;
+  text: string;
+  ts?: string;
+  attachments?: MyClawAppHistoryAttachment[];
+  location?: ChatLocation;
+}
+
 export interface MyClawAppLocationCapabilities {
   type: "location.capabilities";
   enabled: boolean;
@@ -2023,6 +2044,7 @@ export interface MyClawAppDeviceRevokeResult {
 
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
+  | MyClawAppChatUser
   | MyClawAppLocationCapabilities
   | MyClawAppLocationPreviewResult
   | MyClawAppChatLocation

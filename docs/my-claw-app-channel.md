@@ -1042,6 +1042,36 @@ text the live bubble showed (`briefError`, 200 chars). Stored capped at `FAILURE
   the run produced before it, so there is a real answer under the question already.
 - Deleted with the conversation, like the command journal: it is a field of the session.
 
+## A prompt is mirrored to the owner's other windows
+
+Everything the server produces already goes to every socket of the owner: the stream, the tool
+cards, the reasoning, command answers, approvals, the model state. The prompt did not, because the
+device that typed it draws that bubble itself the moment it hits send.
+
+So a second window saw the answer and not the question. `startStream` anchors its bubble on the
+turn named by `replyToId`; with no such turn it drew the answer at the end of the thread under
+nothing, until a reload from disk (where the question always was) put it back in place.
+
+`chat.user` closes it:
+
+```json
+{ "type": "chat.user", "threadId": "projet", "id": "<the sender's bubble id>", "text": "...", "attachments": [], "location": {} }
+```
+
+Three things make it cheap:
+
+- **It carries the sender's own id**, the `chat.send` id, which is the same identity `sourceId`
+  replays under. A history page merged over it later recognises the turn instead of duplicating it.
+- **It is not sent back to the sender.** That window owns the bubble already, and a frame whose
+  only job is to be ignored is not worth the wire. The app still drops an echo whose id it holds,
+  because a reconnect can leave two sockets of one window in the list for a moment.
+- **It is emitted before the run starts**, and before a command runs, so the answer that quotes it
+  always lands second. Attachments travel as stored metadata, never as a local `uri`: the other
+  window has no copy of the file and fetches it over the media route, exactly as a replay does.
+
+What it does not cover: a window that connects **during** an answer still misses what already
+streamed. That is the page merge below, not this frame.
+
 ## A page is merged, not substituted
 
 `history()` reads the **live** session (`sessionManager.read` returns the cached object a run is

@@ -1409,6 +1409,8 @@ describe("MyClawAppAdapter owners", () => {
     await waitUntil(() => received.length > 0);
     assert.equal(received[0]?.chatId, OWNER, "the message must be keyed by owner, not by device");
     assert.equal(received[0]?.userId, OWNER);
+    // The prompt reaches the other window before anything answers it.
+    assert.equal((await nextFrame(browser))["type"], "chat.user");
 
     browser.ws.send(JSON.stringify({ type: "session.list", id: "s1" }));
     await nextFrame(browser);
@@ -1422,6 +1424,51 @@ describe("MyClawAppAdapter owners", () => {
 
     phone.ws.close();
     browser.ws.close();
+  });
+
+  // Before this, the window that was not typing had no question to hang the answer on: the
+  // stream drew its bubble at the end of the thread, under nothing, until a reload from disk.
+  test("a prompt reaches the owner's other window, under the sender's own bubble id", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "  from the phone  ", threadId: "t-1" }));
+
+      const echo = await nextFrame(browser);
+      assert.equal(echo["type"], "chat.user");
+      assert.equal(echo["threadId"], "t-1");
+      // The sender's id: the browser keys the bubble the same way, so a history page merged over
+      // it later recognises the turn instead of duplicating it.
+      assert.equal(echo["id"], "m1");
+      assert.equal(echo["text"], "from the phone");
+
+      // Nothing goes back to the window that typed it: it drew that bubble on send.
+      await adapter.send(OWNER, { text: "answered", threadId: "t-1" });
+      assert.equal((await nextFrame(phone))["type"], "chat.message");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a slash command is mirrored too, before the answer that quotes it", async () => {
+    adapter.onCommandHandler(async () => "done");
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "chat.send", id: "c1", text: "/status", threadId: "t-1" }));
+
+      const echo = await nextFrame(browser);
+      assert.equal(echo["type"], "chat.user");
+      assert.equal(echo["text"], "/status");
+      // The order is load-bearing: the answer quotes the bubble the echo just created.
+      const answer = await nextFrame(browser);
+      assert.equal(answer["type"], "chat.command.result");
+      assert.equal(answer["replyToId"], "c1");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
   });
 
   test("a device without an owner stays on its own namespace", async () => {

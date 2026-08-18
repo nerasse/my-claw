@@ -42,6 +42,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppChatHistory,
   MyClawAppChatMessage,
   MyClawAppChatSend,
+  MyClawAppHistoryAttachment,
   MyClawAppChatStop,
   MyClawAppClientFrame,
   MyClawAppErrorScope,
@@ -619,6 +620,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   private broadcast(owner: string, frame: MyClawAppServerFrame): void {
     for (const ws of this.socketsFor(owner)) this.sendFrame(ws, frame);
+  }
+
+  /** The owner's other windows: for a frame the sender is the one surface that already has it. */
+  private broadcastExcept(sender: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppServerFrame): void {
+    for (const ws of this.socketsFor(sender.data.owner)) {
+      if (ws !== sender) this.sendFrame(ws, frame);
+    }
   }
 
   private deviceFor(deviceId: string, token: string): boolean {
@@ -1270,6 +1278,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
       if (command && APP_COMMANDS.some((c) => c.command === command)) {
         const args = text.slice(command.length + 1).trim();
+        // A command is a prompt too: the other windows show what was typed, then its answer.
+        this.echoUserMessage(ws, threadId, frame, text, []);
         // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
         // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
         // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
@@ -1345,6 +1355,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     const attachments: Attachment[] = [];
+    const echoed: MyClawAppHistoryAttachment[] = [];
     for (const ref of refs) {
       const stored = await this.files.findById(owner, threadId, ref.id);
       if (!stored) {
@@ -1365,7 +1376,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(voice ? { audioAsVoice: true } : {}),
         ...(stored.type === "audio" && typeof ref.durationMs === "number" ? { durationMs: ref.durationMs } : {}),
       });
+      // The other windows hold no local copy of the file: they name it by its stored id and
+      // fetch it over the media route, exactly as a replayed turn does.
+      echoed.push({
+        id: stored.id,
+        type: stored.type,
+        mimeType: stored.mimeType,
+        filename: stored.filename,
+        sizeBytes: stored.sizeBytes,
+        ...(voice ? { audioAsVoice: true } : {}),
+        ...(stored.type === "audio" && typeof ref.durationMs === "number" ? { durationMs: ref.durationMs } : {}),
+      });
     }
+
+    // Before the run, so the answer that follows finds the question it replies to already on
+    // screen: a stream whose parent is missing draws its bubble at the end of the thread.
+    this.echoUserMessage(ws, threadId, frame, text, echoed, location);
 
     void this.messageHandler({
       id: frame.id,
@@ -1383,6 +1409,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
       raw: frame,
     }).catch((err) => {
       void myClawAppLog("error", "message handling failed", { owner, error: String(err) });
+    });
+  }
+
+  /**
+   * Mirrors a prompt to the owner's *other* windows. The sender drew this bubble the moment it
+   * hit send and owns the id, so echoing it back would be a frame whose only job is to be
+   * ignored. The app still drops an echo whose id it already holds, as a reconnect can put two
+   * sockets of one window in the list for a moment.
+   */
+  private echoUserMessage(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    threadId: string,
+    frame: MyClawAppChatSend,
+    text: string,
+    attachments: MyClawAppHistoryAttachment[],
+    location?: ChatLocation,
+  ): void {
+    this.broadcastExcept(ws, {
+      type: "chat.user",
+      threadId,
+      id: frame.id,
+      text,
+      ...(frame.ts ? { ts: frame.ts } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(location ? { location } : {}),
     });
   }
 
