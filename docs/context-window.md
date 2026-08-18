@@ -227,6 +227,23 @@ effective = max(estimate(all), measured + estimate(messages after measured.messa
   the measurement and falls back to the estimate.
 - Turn one has no measurement and falls back to the estimate.
 
+### When the measurement lands
+
+Each engine records it at the earliest moment its transport states it, and announces that with
+`session:context:measured` (the session id, no number: a listener reads the occupancy from the
+session, so a screen and the compaction gate can never quote two different figures).
+
+| engine | moment | how early |
+|---|---|---|
+| home loop | the response, where usage is accumulated | the end of the turn: an OpenAI-compatible stream carries `usage` in its last chunk and nowhere earlier |
+| claude-sdk | the `message_start` stream event | the start of the turn, a whole generation before the assistant message repeats it |
+
+`message_start` carries the input the API just counted, with empty content, so the input and cache
+buckets are already final while `output_tokens` is still a placeholder. Only the context reading is
+taken there; usage, cost and the analytics row stay with the assistant message, which is the one
+that is deduplicated across a parallel tool batch. Both paths sum the same three buckets (fresh
+input plus cache read plus cache creation), so the two readings of one turn cannot disagree.
+
 ### The floor is wrong when the mirror is not the prompt
 
 That formula assumes `session.messages` is what gets resent, which holds on the home loop and not

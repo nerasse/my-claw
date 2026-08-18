@@ -94,6 +94,14 @@ const AUTH_FAILURE_HINT =
 // depending only on the fields we read keeps the fake query used in tests trivial. The
 // *options* side, in contrast, is typed against the real SDK `Options` so a key typo can
 // never be silently ignored (audited finding: `as unknown as` had disabled that check).
+/** The four token buckets the Anthropic API reports, on `message_start` as on the message itself. */
+interface SdkUsageFields {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 interface SdkStreamMessage {
   type: string;
   subtype?: string;
@@ -103,7 +111,9 @@ interface SdkStreamMessage {
   parent_tool_use_id?: string | null;
   compact_result?: string;
   compact_error?: string;
-  event?: { type?: string; delta?: { type?: string; text?: string } };
+  // `message` on a stream event is the envelope of `message_start`: content is still empty and the
+  // usage is already final for the input side.
+  event?: { type?: string; delta?: { type?: string; text?: string }; message?: { usage?: SdkUsageFields } };
   error?: string;
   // The bridge redacts the thinking text and reports only a running estimate
   // (SDKThinkingTokensMessage) -- docs/reasoning-visibility.md.
@@ -119,12 +129,7 @@ interface SdkStreamMessage {
       tool_use_id?: string;
       content?: unknown;
     }>;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
+    usage?: SdkUsageFields;
   };
 }
 
@@ -789,6 +794,11 @@ export class ClaudeSdkBackend implements AgentBackend {
           }
 
           if (msg.type === "stream_event") {
+            // `message_start` carries the prompt the API just counted, with empty content: the
+            // earliest authoritative reading of this turn's input, a whole generation before the
+            // assistant message repeats it. It also lands on turns that call no tool, which is what
+            // a refresh hung on tool calls could never see.
+            if (msg.event?.type === "message_start") this.recordPromptMeasurement(msg.event.message?.usage, session);
             const delta = msg.event?.delta;
             if (onToken && msg.event?.type === "content_block_delta" && delta?.type === "text_delta" && delta.text) {
               await onToken(delta.text);
@@ -1066,6 +1076,20 @@ export class ClaudeSdkBackend implements AgentBackend {
       void log("warn", "memory recall failed", { error: String(err) });
       return content;
     }
+  }
+
+  /**
+   * This turn's input count, taken from `message_start`. The same sum as the assistant message
+   * (fresh input plus both cache buckets), so the reading can never disagree with the one the
+   * billing path writes a moment later. Only the context is recorded here: usage, cost and the
+   * analytics row stay with the assistant message, which is the one that is deduplicated.
+   */
+  private recordPromptMeasurement(usage: SdkUsageFields | undefined, session: SessionData): void {
+    if (!usage) return;
+    const promptTokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    if (promptTokens <= 0) return;
+    session.lastPrompt = measuredPrompt(promptTokens, session.messages.length) ?? session.lastPrompt;
+    hooks.emit("session:context:measured", { sessionId: session.id });
   }
 
   private recordAssistantUsage(

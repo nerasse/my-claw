@@ -185,6 +185,8 @@ const COMMAND_PENDING_NOTICE_MS = 400;
 /** Commands that end the conversation they run in: their journal goes with the history they cut. */
 const CLEARING_COMMANDS = new Set(["new"]);
 const SWEEP_INTERVAL_MS = 30_000;
+/** The id `SessionManager` builds for a conversation of this channel, read back the other way. */
+const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -519,6 +521,17 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * Never throws and never blocks the caller's turn: a header that failed to refresh must not fail
    * a run.
    */
+  /**
+   * The same push, addressed by the session id the agent hooks carry. Anything that is not one of
+   * this channel's conversations is skipped: another channel's session, or a cron/sub-agent run the
+   * app only displays, has no header of ours to refresh.
+   */
+  notifyModelStateForSession(sessionId: string): void {
+    const match = APP_THREAD_SESSION.exec(sessionId);
+    if (!match) return;
+    void this.notifyModelState(match[1]!, match[2]!);
+  }
+
   async notifyModelState(owner: string, threadId: string): Promise<void> {
     if (!this.models) return;
     try {

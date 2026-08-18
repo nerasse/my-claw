@@ -488,6 +488,9 @@ export class AgentBridge implements AgentBackend {
         });
 
           accumulateUsage(session, response.usage, session.messages.length);
+          // The measurement for this turn has landed. On this transport it is the earliest it can
+          // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
+          if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
           recordApiCall({
           sessionId: session.id,
           parentSessionId: attributionParent(session),

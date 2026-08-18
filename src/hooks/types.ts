@@ -207,6 +207,14 @@ export interface HookEventMap {
     previousModel: string;
     newModel: string;
   };
+  /**
+   * A turn reported the prompt it was sent, so how full the window is has just changed. Emitted at
+   * each engine's earliest authoritative moment: the home loop when the response lands, the SDK on
+   * `message_start`, before a token of the answer. Carries no number on purpose -- a listener reads
+   * the occupancy from the session, so the screen and the compaction gate can never quote two
+   * different figures.
+   */
+  "session:context:measured": { sessionId: string };
   /** Local history was replayed into a fresh SDK session (home backend -> claude-sdk). */
   "session:context:transferred": {
     sessionId: string;

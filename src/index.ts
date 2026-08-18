@@ -2161,6 +2161,11 @@ async function main() {
       },
     });
 
+    // The header shows how full the window is, and that moves at every turn. Both engines say when
+    // their measurement lands, so the share follows the run instead of freezing at what it was when
+    // the run started. Includes the turns that call no tool, which is most of the short ones.
+    hooks.on("session:context:measured", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+
     myClawApp.onMessage(async (msg) => withRunContext({ platform: "my-claw-app" }, async () => {
       let response: RouteResult | undefined;
       try {
@@ -2190,13 +2195,7 @@ async function main() {
             try {
               response = await routeWithReroute(router, msg, {
                 onToken: (token) => active.push(token),
-                onToolUse: async (tools, verbose) => {
-                  await active.appendToolUse(tools, verbose);
-                  // A finished tool call is the one moment both engines have already updated the
-                  // measured prompt and the history: recomputing here is what makes the header's
-                  // context share follow the run instead of reporting where it started.
-                  void myClawApp.notifyModelState(msg.chatId, msg.threadId ?? DEFAULT_THREAD);
-                },
+                onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
                 // Only this channel builds a sink: Matrix and Telegram pass none, which is what
                 // keeps them free of reasoning -- docs/reasoning-visibility.md.
                 reasoning: {

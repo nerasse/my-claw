@@ -1645,6 +1645,20 @@ describe("model frames", () => {
     assert.equal(frame["model"], "fast-1");
   });
 
+  test("a session id of this channel addresses the push, a foreign one is skipped", async () => {
+    adapter.notifyModelStateForSession(`my-claw-app/thread/${DEVICE_ID}/t1`);
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["threadId"], "t1");
+
+    // Another channel's session, and a sub-agent run the app merely displays, own no header here.
+    adapter.notifyModelStateForSession("telegram/dm/u1");
+    adapter.notifyModelStateForSession("subagent/run-1234");
+    client.ws.send(JSON.stringify({ type: "model.list" }));
+    const next = await nextFrame(client);
+    assert.equal(next["type"], "model.list.result");
+  });
+
   test("a push whose state cannot be read reaches neither the client nor the caller", async () => {
     const failing = new MyClawAppAdapter(createConfig(), store as never);
     failing.onModelController({
