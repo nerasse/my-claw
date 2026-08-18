@@ -162,7 +162,7 @@ function collectStatusData(p: StatusParams): StatusData {
     ? p.session.lastPrompt?.tokens ?? (p.session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
   const estimated = p.session ? estimateMessagesTokens(toChat(p.session.messages)) : 0;
-  const mirror = p.session ? sessionMirrorRole(p.config, p.session) : { kind: "prompt" as const };
+  const mirror = p.session ? sessionMirrorRole(p.config, p.session, contextAgent) : { kind: "prompt" as const };
   const occupied = p.session ? occupiedContextTokens(p.session.messages, toChat, p.session.lastPrompt, mirror) : 0;
   const autoCompactOn = autoCompactEnabled(p.config);
   const threshold = resolveAutoCompactThreshold(p.config);

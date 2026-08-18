@@ -1,6 +1,7 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
 import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
 import { findModel, isSdkBackedModel, leafModelId } from "./resolver.ts";
+import { chatModel } from "./chat-model.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
@@ -220,8 +221,13 @@ const PROMPT_MIRROR: MirrorRole = { kind: "prompt" };
 export function sessionMirrorRole(
   config: MyClawConfig,
   session: { modelOverride?: string; sdkTranscriptBase?: number },
+  agent: AgentToolType = "main",
 ): MirrorRole {
-  if (!config.llm || !isSdkBackedModel(config.llm, session.modelOverride)) return PROMPT_MIRROR;
+  // The model the run resolves, never the override alone: an agent pin puts a chat that picked
+  // nothing on the other engine, and an unavailable model steps down to one that may not share its
+  // backend. Reading the override by itself made a display disagree with the gate about which
+  // mirror it was looking at, which is the one thing this function exists to prevent.
+  if (!config.llm || !isSdkBackedModel(config.llm, chatModel(config, session.modelOverride, agent))) return PROMPT_MIRROR;
   return { kind: "transcript", ...(session.sdkTranscriptBase === undefined ? {} : { base: session.sdkTranscriptBase }) };
 }
 

@@ -260,3 +260,32 @@ test("the mirror kind follows the engine of the session's own model", () => {
   expect(sessionMirrorRole(config, { sdkTranscriptBase: 12 })).toEqual({ kind: "transcript", base: 12 });
   expect(sessionMirrorRole(config, { modelOverride: "mimo" })).toEqual({ kind: "prompt" });
 });
+
+/**
+ * The engine is what decides the mirror, and the engine comes from the whole chain. A chat that
+ * picked nothing still runs on whatever its agent is pinned to, and a display that read the
+ * override alone called that a prompt mirror while the gate called it a transcript.
+ */
+test("the mirror kind follows the agent's pin, not just the session's pick", () => {
+  const config = {
+    llm: {
+      providers: {
+        anthropic: { type: "claude-sdk" },
+        litellm: { baseUrl: "https://litellm.example.com", apiKeyEnv: "LITELLM_KEY" },
+      },
+      defaultProvider: "litellm",
+      defaultModel: "mimo",
+      models: [
+        { id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" },
+        { id: "mimo", label: "Mimo", provider: "litellm" },
+      ],
+    },
+    agents: { orchestrator: { llm: { defaultModel: "claude-sonnet-5" } } },
+  } as unknown as MyClawConfig;
+
+  expect(sessionMirrorRole(config, {})).toEqual({ kind: "transcript" });
+  // The chat's own pick still wins over the pin, in both directions.
+  expect(sessionMirrorRole(config, { modelOverride: "mimo" })).toEqual({ kind: "prompt" });
+  // Another agent has its own chain: nothing pinned there, so the global default applies.
+  expect(sessionMirrorRole(config, {}, "research")).toEqual({ kind: "prompt" });
+});

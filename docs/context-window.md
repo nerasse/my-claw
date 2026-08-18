@@ -262,6 +262,13 @@ Occupancy therefore takes the role of the mirror:
 | `prompt` | home loop | `max(estimate(all), measured + estimate(since))` |
 | `transcript` | claude-sdk | `measured + estimate(since)`, no floor |
 
+An engine runs a resolution, so the role has to come from the same one: `sessionMirrorRole` asks
+`chatModel` and reads the backend of what comes back. The session's pick alone is not enough. A chat
+that picked nothing runs on its agent's pin, and a model that cannot run steps down to one that may
+sit on the other engine; either way a display reading the override by itself ends up describing a
+mirror the gate is not looking at. The two engines do not ask at all: each one knows which it is and
+says so (`occupiedTokens` in the SDK backend passes `transcript`, the home loop takes the default).
+
 With no measurement at all, a transcript mirror counts from the last **compaction boundary**
 (`sdkTranscriptBase`, the mirror index where the engine's live transcript starts) rather than from
 the beginning: everything before it lives inside the SDK as a summary. The boundary is recorded
