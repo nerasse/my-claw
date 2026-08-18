@@ -115,6 +115,24 @@ export interface MyClawAppSessionDelete {
   threadId: string;
 }
 
+/** Pins the conversation at the end of the pinned list, or unpins it. */
+export interface MyClawAppSessionPin {
+  type: "session.pin";
+  threadId: string;
+  pinned: boolean;
+}
+
+/**
+ * The pinned list, in the order the owner dragged it to. Ids the owner cannot see are not
+ * touched: a conversation pinned from another device while this list was on screen keeps its pin
+ * and lands after the ones sent here, because a reorder is a statement about what was dragged,
+ * not about what exists.
+ */
+export interface MyClawAppSessionPinOrder {
+  type: "session.pin.order";
+  threadIds: string[];
+}
+
 export interface MyClawAppApprovalResponse {
   type: "approval.response";
   id: string;
@@ -670,6 +688,8 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
+  | MyClawAppSessionPin
+  | MyClawAppSessionPinOrder
   | MyClawAppApprovalResponse
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
@@ -810,6 +830,12 @@ export interface MyClawAppSessionSummary {
    * its two lists from one round-trip, and show the archived count without asking again.
    */
   archived?: boolean;
+  /**
+   * Where this conversation sits in the owner's pinned list, absent when it is not pinned. One
+   * field for both facts, and it is the server's: every device shows the same pins in the same
+   * order. Dense, starting at 0.
+   */
+  pinRank?: number;
   /** A run is answering on this thread right now: the app keeps the Stop button visible. */
   activeRun?: boolean;
   /** Workspace key the conversation runs in: "default" or a config.workspaces key. */

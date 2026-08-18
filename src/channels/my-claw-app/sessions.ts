@@ -22,6 +22,10 @@ export interface MyClawAppSessionStore {
   recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void>;
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
+  /** Pins the conversation at the end of the pinned list, or unpins it. */
+  setPinned(owner: string, threadId: string, pinned: boolean): Promise<void>;
+  /** Rewrites the pinned ranks in the given order. Unknown ids are ignored. */
+  setPinOrder(owner: string, threadIds: string[]): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
   rename(owner: string, threadId: string, title: string): Promise<void>;
   /**
@@ -204,6 +208,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),
+        ...(typeof session.pinRank === "number" ? { pinRank: session.pinRank } : {}),
         workspace: session.workspace ?? "default",
       });
     }
@@ -369,6 +374,68 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (at) session.archivedAt = at;
     else delete session.archivedAt;
     await this.sessionManager.persist(sessionId);
+  }
+
+  /**
+   * Pins the conversation at the end of the pinned list, or unpins it. Appending is the only
+   * defensible default: a fresh pin dropped at the top would displace the row the owner reaches
+   * for without reading it.
+   */
+  async setPinned(owner: string, threadId: string, pinned: boolean): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    // Pinning a thread that was never opened would create an empty one, the way naming does.
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) throw new Error("conversation not found");
+    const current = await this.pinnedSessionIds(owner);
+    if (pinned) {
+      if (current.includes(sessionId)) return;
+      await this.writePinOrder([...current, sessionId]);
+      return;
+    }
+    if (!current.includes(sessionId)) return;
+    delete session.pinRank;
+    await this.sessionManager.persist(sessionId);
+    // Renumbered, so the ranks stay dense and the next pin lands at the end rather than on top
+    // of the rank the removed one left behind.
+    await this.writePinOrder(current.filter((id) => id !== sessionId));
+  }
+
+  async setPinOrder(owner: string, threadIds: string[]): Promise<void> {
+    const wanted: string[] = [];
+    for (const raw of threadIds) {
+      const threadId = sanitizeThreadId(raw);
+      if (!threadId) continue;
+      const sessionId = this.resolveSessionId(owner, threadId);
+      if (!wanted.includes(sessionId)) wanted.push(sessionId);
+    }
+    const current = await this.pinnedSessionIds(owner);
+    const head = wanted.filter((sessionId) => current.includes(sessionId));
+    // A pin made elsewhere while this list was on screen is not in it; it keeps its pin and
+    // follows, because a drop says where the dragged rows go and nothing about the others.
+    const tail = current.filter((sessionId) => !head.includes(sessionId));
+    await this.writePinOrder([...head, ...tail]);
+  }
+
+  /** The owner's pinned conversations, in rank order. */
+  private async pinnedSessionIds(owner: string): Promise<string[]> {
+    const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, Number.MAX_SAFE_INTEGER);
+    const ranked: { sessionId: string; rank: number }[] = [];
+    for (const sessionId of ids) {
+      const session = await this.sessionManager.peek(sessionId);
+      if (session && typeof session.pinRank === "number") ranked.push({ sessionId, rank: session.pinRank });
+    }
+    ranked.sort((left, right) => left.rank - right.rank);
+    return ranked.map((entry) => entry.sessionId);
+  }
+
+  /** Writes dense ranks in the given order, skipping the sessions already carrying theirs. */
+  private async writePinOrder(ordered: string[]): Promise<void> {
+    for (const [rank, sessionId] of ordered.entries()) {
+      const session = await this.sessionManager.peek(sessionId);
+      if (!session || session.pinRank === rank) continue;
+      session.pinRank = rank;
+      await this.sessionManager.persist(sessionId);
+    }
   }
 
   async remove(owner: string, threadId: string): Promise<void> {

@@ -54,6 +54,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
   MyClawAppSessionDelete,
+  MyClawAppSessionPin,
+  MyClawAppSessionPinOrder,
   MyClawAppSessionHistory,
   MyClawAppSessionList,
   MyClawAppSessionRename,
@@ -1145,6 +1147,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.delete":
         this.detach(this.handleSessionDelete(ws, frame), "handleSessionDelete");
         break;
+      case "session.pin":
+      case "session.pin.order":
+        this.detach(this.handleSessionPin(ws, frame), "handleSessionPin");
+        break;
     }
   }
 
@@ -1583,6 +1589,34 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       const action = archiving ? "archive" : "unarchive";
       await this.refuse(ws, "session", `${action} failed`, { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * A pin belongs to the owner, not to the device that set it: the refreshed listing goes to
+   * every socket of that owner, so a second client open on the drawer moves with the first
+   * instead of showing an order nobody chose anymore.
+   */
+  private async handleSessionPin(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionPin | MyClawAppSessionPinOrder,
+  ): Promise<void> {
+    const owner = ws.data.owner;
+    try {
+      if (frame.type === "session.pin") {
+        const threadId = sanitizeThreadId(frame.threadId);
+        if (!threadId) {
+          await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+          return;
+        }
+        await this.store.setPinned(owner, threadId, frame.pinned);
+      } else {
+        await this.store.setPinOrder(owner, frame.threadIds);
+      }
+      const sessions = await this.store.list(owner);
+      this.broadcast(owner, { type: "session.list.result", sessions });
+    } catch (err) {
+      await this.refuse(ws, "session", "pin failed", { error: String(err) });
     }
   }
 

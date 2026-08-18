@@ -143,7 +143,7 @@ function approvalRequest(): ToolApprovalRequest {
 }
 
 class FakeSessionStore {
-  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean }> = [];
+  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean; pinRank?: number }> = [];
   historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
   archived: string[] = [];
   unarchived: string[] = [];
@@ -197,6 +197,25 @@ class FakeSessionStore {
   async remove(deviceId: string, threadId: string): Promise<void> {
     this.removed.push(threadId);
     this.historyMap.delete(threadId);
+  }
+
+  pinCalls: Array<{ threadId: string; pinned: boolean }> = [];
+  pinOrders: string[][] = [];
+
+  async setPinned(deviceId: string, threadId: string, pinned: boolean): Promise<void> {
+    this.pinCalls.push({ threadId, pinned });
+    const entry = this.summaries.find((summary) => summary.threadId === threadId);
+    if (!entry) throw new Error("conversation not found");
+    if (pinned) entry.pinRank = this.summaries.filter((summary) => summary.pinRank !== undefined).length;
+    else delete entry.pinRank;
+  }
+
+  async setPinOrder(deviceId: string, threadIds: string[]): Promise<void> {
+    this.pinOrders.push(threadIds);
+    threadIds.forEach((threadId, rank) => {
+      const entry = this.summaries.find((summary) => summary.threadId === threadId);
+      if (entry) entry.pinRank = rank;
+    });
   }
 
   async rename(deviceId: string, threadId: string, title: string): Promise<void> {
@@ -1210,6 +1229,73 @@ describe("MyClawAppAdapter", () => {
     client.ws.send(JSON.stringify({ type: "session.unarchive", threadId: "../x" }));
     const frame = (await nextFrame(client)) as { type: string };
     assert.equal(frame.type, "error");
+  });
+
+  test("session.pin ranks the thread and every device of the owner is told", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "b", title: "Courses", messageCount: 1, createdAt: "c", lastActiveAt: "l" },
+    ];
+    // Two devices, one owner: the phone and the browser are what this feature exists for.
+    const shared = new MyClawAppAdapter(
+      createConfig({
+        devices: {
+          [DEVICE_ID]: { token: TOKEN, name: "test phone", owner: "neras" },
+          "dev-web": { token: TOKEN, name: "test browser", owner: "neras" },
+        },
+      }),
+      store as never,
+    );
+    shared.onMessage(async () => {});
+    await shared.start();
+    const phone = await connectClient(shared.port);
+    const browser = await connectClient(shared.port, "dev-web");
+    try {
+      phone.ws.send(JSON.stringify({ type: "session.pin", threadId: "a", pinned: true }));
+
+      const own = (await nextFrame(phone)) as { type: string; sessions: Array<{ threadId: string; pinRank?: number }> };
+      assert.equal(own.type, "session.list.result");
+      assert.equal(own.sessions[0]!.pinRank, 0);
+      assert.deepEqual(store.pinCalls, [{ threadId: "a", pinned: true }]);
+      // The pin belongs to the owner, so the other client's drawer moves with it.
+      const echoed = (await nextFrame(browser)) as { type: string; sessions: Array<{ threadId: string; pinRank?: number }> };
+      assert.equal(echoed.type, "session.list.result");
+      assert.equal(echoed.sessions[0]!.pinRank, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+      await shared.stop();
+    }
+  });
+
+  test("session.pin.order hands the dropped order to the store", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", pinRank: 0 },
+      { threadId: "b", title: "Courses", messageCount: 1, createdAt: "c", lastActiveAt: "l", pinRank: 1 },
+    ];
+
+    client.ws.send(JSON.stringify({ type: "session.pin.order", threadIds: ["b", "a"] }));
+
+    const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ threadId: string; pinRank?: number }> };
+    assert.equal(frame.type, "session.list.result");
+    assert.deepEqual(store.pinOrders, [["b", "a"]]);
+    assert.equal(frame.sessions.find((entry) => entry.threadId === "b")!.pinRank, 0);
+    assert.equal(frame.sessions.find((entry) => entry.threadId === "a")!.pinRank, 1);
+  });
+
+  test("session.pin with an unsafe threadId returns an error frame", async () => {
+    client.ws.send(JSON.stringify({ type: "session.pin", threadId: "../x", pinned: true }));
+    const frame = (await nextFrame(client)) as { type: string };
+    assert.equal(frame.type, "error");
+    assert.deepEqual(store.pinCalls, []);
+  });
+
+  test("session.pin on a conversation that does not exist is refused, not silent", async () => {
+    store.summaries = [];
+    client.ws.send(JSON.stringify({ type: "session.pin", threadId: "ghost", pinned: true }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "session");
   });
 
   test("session.delete removes the thread", async () => {
