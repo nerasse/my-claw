@@ -287,6 +287,34 @@ test("a stale claude-sdk pin falls back to the default model, and the engine fol
   }
 });
 
+// The self-heal above judges the reference against the catalogue, and no catalogue id carries a
+// route pin: a pinned override read as a removed model and was deleted on the first message, so
+// the route menus of every channel pinned a route that lasted exactly zero runs.
+test("a pinned route survives the stale-override check", async () => {
+  const calls: Array<string | undefined> = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push(modelId);
+      return "home";
+    },
+  } as unknown as AgentBridge;
+  const routed = mixedConfig();
+  routed.llm.providers!.openrouter = { baseUrl: "https://openrouter.ai/api/v1" };
+  routed.llm.models!.push({ id: "openrouter/deepseek/flash", label: "Flash", provider: "openrouter", apiId: "deepseek/flash" });
+  const dispatcher = new BackendDispatcher(routed, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+
+  const sess = session("s1", "openrouter/deepseek/flash@streamlake/fp8");
+  assert.equal(await dispatcher.handleMessage(msg("m1"), sess), "home");
+  assert.equal(sess.modelOverride, "openrouter/deepseek/flash@streamlake/fp8");
+  assert.deepEqual(calls, [undefined]);
+
+  // The model under a pin is still judged: a reference whose model left the catalogue heals to
+  // the default exactly as an unpinned one does.
+  const gone = session("s2", "openrouter/deepseek/retired@streamlake/fp8");
+  await dispatcher.handleMessage(msg("m2"), gone);
+  assert.equal(gone.modelOverride, undefined);
+});
+
 test("an unavailable global default fails the run instead of substituting a model", async () => {
   const home = { handleMessage: async () => "home" } as unknown as AgentBridge;
   const sdk = { handleMessage: async () => "sdk" } as unknown as ClaudeSdkBackend;

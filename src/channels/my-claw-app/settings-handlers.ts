@@ -3,6 +3,7 @@ import { readAppVersion } from "../../core/diagnostics.ts";
 import { requestSelfUpdate } from "../../core/self-update.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { sanitizeThreadId } from "./sessions.ts";
+import { withoutEndpoint } from "../../llm/model-ref.ts";
 import type {
   MyClawAppAgentsController,
   MyClawAppCommandHandler,
@@ -1109,7 +1110,9 @@ export async function handleModel(
   }
   try {
     if (modelId !== undefined) {
-      const known = d.models.list().models.some((m) => m.id === modelId);
+      // On the bare reference: the app stages a route inside the model string, and no catalogue
+      // id carries a pin (docs/model-identity.md).
+      const known = d.models.list().models.some((m) => m.id === withoutEndpoint(modelId));
       if (!known) {
         await d.refuse(ws, "model", "unknown model", { threadId: safeThread, model: modelId });
         return;

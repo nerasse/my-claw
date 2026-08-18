@@ -1601,6 +1601,22 @@ describe("model frames", () => {
     assert.equal(frame["scope"], "model");
   });
 
+  // The routing step of the chained picker rewrites the staged model into `model@tag`, so the
+  // guard has to read the model under the pin or the whole flow ends on "unknown model".
+  test("model.set accepts a route pinned on a model it knows", async () => {
+    client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "fast-1@azure/eu" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["threadId"], "t1");
+  });
+
+  test("model.set still refuses a route pinned on a model it does not know", async () => {
+    client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "ghost-model@azure/eu" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "model");
+  });
+
   test("model.set answers with the state the server stored", async () => {
     client.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "strong-2" }));
     const frame = await nextFrame(client);

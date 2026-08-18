@@ -153,13 +153,14 @@ export function formatModelGroupSummary(
     counts.set(top, (counts.get(top) ?? 0) + 1);
   }
 
-  const currentTop = splitGroup(models.find((m) => m.id === currentModelId)?.group)[0];
+  const current = withoutEndpoint(currentModelId);
+  const currentTop = splitGroup(models.find((m) => m.id === current)?.group)[0];
   const lines = order.map((group) => {
     const n = counts.get(group) ?? 0;
     return `- ${group}: ${n} model${n > 1 ? "s" : ""}${group === currentTop ? " (current here)" : ""}`;
   });
   for (const m of ungrouped) {
-    lines.push(`- ${m.label}${m.id === currentModelId ? " [selected]" : ""}`);
+    lines.push(`- ${m.label}${m.id === current ? " [selected]" : ""}`);
   }
   return lines;
 }
@@ -312,14 +313,17 @@ export class ModelPicker {
   private nodeButtons(pathSegments: string[], currentModelId: string, target?: PickerTarget): ConfirmationButton[] {
     const { models, subgroups } = this.childrenOf(pathSegments);
     const suffix = targetSuffix(target);
+    // A pinned reference is the same selection as the model it pins: marking on the raw string
+    // leaves the menu with no selection at all while a route is in force.
+    const current = withoutEndpoint(currentModelId);
     const buttons: ConfirmationButton[] = [];
     for (const model of models) {
-      buttons.push({ label: mark(model.label, model.id === currentModelId), action: `mdl:${refFor(model.id)}${suffix}` });
+      buttons.push({ label: mark(model.label, model.id === current), action: `mdl:${refFor(model.id)}${suffix}` });
     }
     for (const childPath of subgroups) {
       const lastSegment = childPath.split("/").pop() ?? childPath;
       buttons.push({
-        label: mark(`${lastSegment} >`, this.pathContainsModel(childPath, currentModelId)),
+        label: mark(`${lastSegment} >`, this.pathContainsModel(childPath, current)),
         action: `mdlg:${refFor(childPath)}${suffix}`,
       });
     }
@@ -548,9 +552,19 @@ export class ModelPicker {
     return this.models.find((model) => model.id === modelId)?.label ?? modelId;
   }
 
+  /**
+   * Whether the catalogue serves this reference. Pin-aware, because a route is pinned on top of a
+   * model and no catalogue id ever carries one: comparing the raw string is how a staged route
+   * came to be refused as an unknown model (docs/model-identity.md).
+   */
+  knows(modelId: string): boolean {
+    const bare = withoutEndpoint(modelId);
+    return this.models.some((model) => model.id === bare);
+  }
+
   /** The provider a model belongs to, or undefined when it follows the global default. */
   providerFor(modelId: string): string | undefined {
-    return this.models.find((model) => model.id === modelId)?.provider;
+    return this.models.find((model) => model.id === withoutEndpoint(modelId))?.provider;
   }
 }
 

@@ -619,6 +619,30 @@ test("syncFromConfig with no tags still rows the virtual Default tag", () => {
   assert.equal(picker.options().length, models.length + 1);
 });
 
+test("knows and providerFor read the model under the pin, not the pinned string", () => {
+  const picker = new ModelPicker([
+    { id: "openrouter/deepseek/flash", label: "Flash", provider: "openrouter" },
+  ]);
+  // The route is staged inside the reference and no catalogue id carries one, so every guard
+  // comparing the raw string refused a pinned pick as an unknown model.
+  assert.ok(picker.knows("openrouter/deepseek/flash"));
+  assert.ok(picker.knows("openrouter/deepseek/flash@streamlake/fp8"));
+  assert.ok(!picker.knows("openrouter/deepseek/gone@streamlake/fp8"));
+  assert.equal(picker.providerFor("openrouter/deepseek/flash@streamlake/fp8"), "openrouter");
+});
+
+test("a pinned model is still the selected one in the menu and in the summary", () => {
+  const grouped = [
+    { id: "openrouter/deepseek/flash", label: "Flash", group: "OpenRouter" },
+    { id: "local", label: "Local" },
+  ];
+  const picker = new ModelPicker(grouped);
+  const pinned = "openrouter/deepseek/flash@streamlake/fp8";
+  assert.ok(picker.buildButtons(pinned).some((b) => b.label === "OpenRouter > [selected]"));
+  assert.equal(picker.buildGroupButtons("OpenRouter", pinned)[0]?.label, "Flash [selected]");
+  assert.ok(formatModelGroupSummary(grouped, pinned)[0]?.includes("(current here)"));
+});
+
 test("the route submenu offers automatic first and marks the pin in force", () => {
   const picker = new ModelPicker(models);
   const routes = [

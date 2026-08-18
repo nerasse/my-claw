@@ -113,12 +113,20 @@ health flag and 30-minute uptime.
 
 Everywhere, the pin travels inside the model reference, so pinning a route is the same write as
 picking a model: `model.set` on the app, the session override on a channel, the agent's `model:`
-in config. Two consequences the app has to honour, both covered by its own tests:
+in config. Two consequences, both covered by tests:
 
 - every catalogue lookup goes through the bare reference, or a pinned conversation reads no
   effort levels and no window;
 - re-picking the model already in force keeps its route, so the step is a change of route rather
   than a silent reset to automatic. Any other model starts unpinned.
+
+The first one binds the server harder than the app, because a lookup there is a verdict rather
+than a display. No catalogue id carries a pin, so a guard comparing the reference verbatim reads
+every pinned pick as an unknown model: the tag editor, the agent and global defaults and the
+thread's own pick all refused a staged route, and the session self-heal deleted a pinned override
+on the first message, which is how a route menu came to pin a route that lasted zero runs.
+`ModelPicker.knows` and `withoutEndpoint` are that lookup; the model under a pin is still judged,
+so a reference whose model left the catalogue heals exactly as an unpinned one does.
 
 ## Defaults
 

@@ -7,6 +7,7 @@ import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel, type RunModel } from "../llm/run-model.ts";
+import { withoutEndpoint } from "../llm/model-ref.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { runRegistry } from "../core/run-registry.ts";
@@ -90,9 +91,12 @@ export class BackendDispatcher implements AgentBackend {
     // A tag reference stays live even though it is absent from `llm.models`: it resolves
     // through config.tags, which the llm view carries (see docs/tags.md). Only a tag that no
     // longer exists self-heals like a removed model.
-    const tagName = tagNameOf(session.modelOverride ?? "");
+    // The pin is a route on top of a model, not a model: judge the model under it, or every
+    // pinned override reads as removed and is wiped on the first message (docs/model-identity.md).
+    const pick = withoutEndpoint(session.modelOverride ?? "");
+    const tagName = tagNameOf(pick);
     const liveTag = tagName !== undefined && (tagName === "Default" || this.config.tags?.[tagName] !== undefined);
-    if (!forcedModelId && session.modelOverride && models?.length && !liveTag && !models.some((m) => m.id === session.modelOverride)) {
+    if (!forcedModelId && session.modelOverride && models?.length && !liveTag && !models.some((m) => m.id === pick)) {
       void log("warn", "session modelOverride no longer in config; falling back to default", {
         sessionId: session.id,
         modelOverride: session.modelOverride,

@@ -1348,7 +1348,7 @@ async function main() {
     myClawApp.onAgentsController({
       get: () => agentsConfigSnapshot(),
       setModel: async (agent, modelId, effort) => {
-        if (!modelPicker.options().some((m) => m.id === modelId)) throw new Error(`unknown model: ${modelId}`);
+        if (!modelPicker.knows(modelId)) throw new Error(`unknown model: ${modelId}`);
         // A tag id must not pin a provider: the tag resolves through config.tags and its model
         // carries its own provider. The "tags" provider key exists only in the UI (docs/tags.md).
         const provider = tagNameOf(modelId) !== undefined ? undefined : modelPicker.providerFor(modelId);
@@ -1486,7 +1486,7 @@ async function main() {
     myClawApp.onTagsController({
       list: () => tagsSnapshot(),
       upsert: async (fields) => {
-        if (!modelPicker.options().some((m) => m.id === fields.model)) throw new Error(`unknown model: ${fields.model}`);
+        if (!modelPicker.knows(fields.model)) throw new Error(`unknown model: ${fields.model}`);
         if (fields.effort) assertEffortOffered(fields.model, fields.effort);
         const result = await setTag(fields.name, fields);
         if (!result.ok) throw new Error(result.error);
