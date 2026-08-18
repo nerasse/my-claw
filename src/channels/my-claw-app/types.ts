@@ -116,6 +116,14 @@ export interface MyClawAppSessionDelete {
 }
 
 /** Pins the conversation at the end of the pinned list, or unpins it. */
+/**
+ * Asks the server to re-run provider discovery now, instead of waiting for the six-hour cycle.
+ * Answered by a fresh `model.list.result` plus one `model.refresh.result` saying what happened.
+ */
+export interface MyClawAppModelRefresh {
+  type: "model.refresh";
+}
+
 export interface MyClawAppSessionPin {
   type: "session.pin";
   threadId: string;
@@ -690,6 +698,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionDelete
   | MyClawAppSessionPin
   | MyClawAppSessionPinOrder
+  | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
@@ -1140,6 +1149,24 @@ export interface MyClawAppModelListResult {
   type: "model.list.result";
   models: MyClawAppModelOption[];
   defaultModel: string;
+}
+
+/**
+ * What a hand-fired discovery found. The listing itself travels as `model.list.result`, so the
+ * app has one code path for a catalogue; this frame only says how the pass went.
+ */
+export interface MyClawAppModelRefreshResult {
+  type: "model.refresh.result";
+  /** Models in the catalogue after the pass: config plus everything discovered. */
+  models: number;
+  /**
+   * Providers that opt into discovery but did not answer in full, by config key. Their previous
+   * models are still listed: a provider that cannot be reached is not evidence that its models
+   * disappeared, so the pass keeps the last known set and says so here instead.
+   */
+  failed: string[];
+  /** False when no provider opts into discovery at all, which makes a refresh a no-op. */
+  enabled: boolean;
 }
 
 /** One route a model can be pinned to, with what it costs and whether it is healthy. */
@@ -2009,6 +2036,7 @@ export type MyClawAppServerFrame =
   | MyClawAppVoiceModeResult
   | MyClawAppUpdateResult
   | MyClawAppModelListResult
+  | MyClawAppModelRefreshResult
   | MyClawAppModelEndpointsResult
   | MyClawAppSkillsListResult
   | MyClawAppToolsListResult

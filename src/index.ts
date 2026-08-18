@@ -1082,6 +1082,18 @@ async function main() {
           defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
         };
       },
+      refresh: async () => {
+        // Awaited, not fired and forgotten: the button exists to be told when the answer is in,
+        // and the catalogue coalesces concurrent passes onto the one already running.
+        await modelCatalog.refresh();
+        // A provider that opts into discovery but has no complete answer on record kept its
+        // previous models (docs/model-identity.md). Saying which ones is the whole point of a
+        // manual refresh: silence would read as "nothing new", which is a different fact.
+        const failed = Object.entries(config.llm.providers ?? {})
+          .filter(([name, provider]) => provider.discover && !modelCatalog.answered(name))
+          .map(([name]) => name);
+        return { models: modelPicker.options().length, failed, enabled: modelCatalog.enabled() };
+      },
       endpoints: async (modelRef) => {
         // One route list for every surface: the same helper answers the two channel menus, so the
         // app can never offer a route the /model menu does not (docs/model-identity.md).

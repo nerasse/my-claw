@@ -273,6 +273,8 @@ export class ModelCatalog {
    * completely", which is not evidence that anything disappeared -- see `answered`.
    */
   private listedByProvider = new Map<string, ReadonlySet<string>>();
+  /** The discovery pass currently running, so callers coalesce onto it rather than pile up. */
+  private inFlight?: Promise<void>;
 
   constructor(
     private getConfig: () => LlmConfig,
@@ -350,8 +352,21 @@ export class ModelCatalog {
   /**
    * Re-discover every `discover` provider and update the merged set. Never throws: a provider
    * that fails to answer keeps its previously discovered models.
+   *
+   * Concurrent calls join the run in flight instead of starting a second one. The boot refresh,
+   * the six-hour timer, a config edit and now a button can all land at once, and two passes
+   * racing would have the loser's `next` array overwrite the winner's for no gain: every caller
+   * wants the same thing, which is one fresh answer from each provider.
    */
-  async refresh(): Promise<void> {
+  refresh(): Promise<void> {
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = this.runRefresh().finally(() => {
+      this.inFlight = undefined;
+    });
+    return this.inFlight;
+  }
+
+  private async runRefresh(): Promise<void> {
     const config = this.getConfig();
     const providers = config.providers ?? {};
     if (!this.enabled()) return;

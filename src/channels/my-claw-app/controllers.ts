@@ -69,6 +69,11 @@ export interface MyClawAppDiagnosticsProvider {
 export interface MyClawAppModelController {
   list(): { models: Array<{ id: string; label: string; group?: string; effortLevels?: string[]; context?: number }>; defaultModel: string };
   /**
+   * Re-runs provider discovery now and reports how it went. Absent on a controller that has no
+   * catalogue to refresh, which the handler answers as a refusal rather than as a silent success.
+   */
+  refresh?(): Promise<{ models: number; failed: string[]; enabled: boolean }>;
+  /**
    * The routes this model can be pinned to, empty for a model whose provider has none. Lazy: the
    * menu asks when it opens on one model, never for the whole catalogue.
    */

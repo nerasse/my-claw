@@ -140,6 +140,42 @@ test("refresh is resilient: a failing provider keeps its previous models", async
   }
 });
 
+test("two refreshes at once are one pass: the second joins the first", async () => {
+  const config = makeConfig();
+  let calls = 0;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mock = mockFetch(async () => {
+    calls += 1;
+    // Held open on purpose: the second caller has to arrive while the first is still in flight,
+    // which is exactly what a button pressed during the boot pass does.
+    await gate;
+    return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+
+  try {
+    clearCatalogCache();
+    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const first = catalog.refresh();
+    const second = catalog.refresh();
+    assert.equal(first, second, "the second call must be handed the run already in flight");
+    release!();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1, "one provider, one HTTP call, however many callers asked");
+
+    // And once it is over, a new call really does run again: this coalesces, it does not memoize.
+    await catalog.refresh();
+    assert.equal(calls, 2);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("answered(): only a provider that listed in full is evidence about its own catalog", async () => {
   // The distinction the model picker rests on: "answered and did not list X" means X is gone,
   // "did not answer" means nothing. Reading the second as the first empties the menu on a hiccup.

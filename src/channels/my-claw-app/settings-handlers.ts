@@ -161,6 +161,24 @@ export async function handleModelList(d: MyClawAppSettingsDeps, ws: ServerWebSoc
   }
 }
 
+/**
+ * A hand-fired discovery. The fresh listing goes out first, so the screen is already showing the
+ * new catalogue when the outcome line appears under it.
+ */
+export async function handleModelRefresh(d: MyClawAppSettingsDeps, ws: ServerWebSocket<MyClawAppSessionData>): Promise<void> {
+  if (!d.models?.refresh) {
+    await d.refuse(ws, "model", "model discovery unavailable");
+    return;
+  }
+  try {
+    const outcome = await d.models.refresh();
+    d.sendFrame(ws, { type: "model.list.result", ...d.models.list() });
+    d.sendFrame(ws, { type: "model.refresh.result", ...outcome });
+  } catch (err) {
+    await d.refuse(ws, "model", "model.refresh failed", { error: String(err) });
+  }
+}
+
 export async function handleModelEndpoints(d: MyClawAppSettingsDeps, ws: ServerWebSocket<MyClawAppSessionData>, model: string): Promise<void> {
   if (!d.models?.endpoints) {
     await d.refuse(ws, "model", "model control unavailable");

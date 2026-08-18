@@ -126,6 +126,7 @@ import {
   handleModelEffort,
   handleModelEndpoints,
   handleModelList,
+  handleModelRefresh,
   handleProviderEnvList,
   handleProviderEnvRemove,
   handleProviderEnvRename,
@@ -938,6 +939,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "update.run":
         this.detach(handleUpdateRun(this.settingsDeps(), ws), "handleUpdateRun");
+        break;
+      case "model.refresh":
+        this.detach(handleModelRefresh(this.settingsDeps(), ws), "handleModelRefresh");
         break;
       case "model.list":
         this.detach(handleModelList(this.settingsDeps(), ws), "handleModelList");

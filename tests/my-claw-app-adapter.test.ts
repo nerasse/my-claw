@@ -1492,6 +1492,59 @@ describe("model frames", () => {
     assert.equal(frame["defaultModel"], "fast-1");
   });
 
+  test("model.refresh re-runs discovery, then sends the listing before the outcome", async () => {
+    const refreshed = new MyClawAppAdapter(createConfig(), store as never);
+    let discoveries = 0;
+    refreshed.onModelController({
+      list: () => ({
+        models: discoveries === 0
+          ? [{ id: "fast-1", label: "Fast" }]
+          : [{ id: "fast-1", label: "Fast" }, { id: "just-appeared", label: "New" }],
+        defaultModel: "fast-1",
+      }),
+      refresh: async () => {
+        discoveries += 1;
+        return { models: 2, failed: ["groq"], enabled: true };
+      },
+      endpoints: async () => [],
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+    });
+    await refreshed.start();
+    const asking = await connectClient(refreshed.port);
+    try {
+      asking.ws.send(JSON.stringify({ type: "model.refresh" }));
+
+      // The listing first: the screen must already show the new catalogue when the outcome line
+      // appears under it, not one frame later.
+      const listing = (await nextFrame(asking)) as { type: string; models: Array<{ id: string }> };
+      assert.equal(listing.type, "model.list.result");
+      assert.deepEqual(listing.models.map((m) => m.id), ["fast-1", "just-appeared"]);
+
+      const outcome = (await nextFrame(asking)) as { type: string; models: number; failed: string[]; enabled: boolean };
+      assert.equal(outcome.type, "model.refresh.result");
+      assert.equal(outcome.models, 2);
+      // A provider that could not be reached is named: its old models are still listed, and
+      // silence would read as "nothing new" instead of "one provider did not answer".
+      assert.deepEqual(outcome.failed, ["groq"]);
+      assert.equal(discoveries, 1);
+    } finally {
+      asking.ws.close();
+      await refreshed.stop();
+    }
+  });
+
+  test("model.refresh on a server with no discovery to run is refused, not answered", async () => {
+    // The controller of this suite has no `refresh`: an older entry point, or a build with no
+    // catalogue at all. A silent success would show the button working and change nothing.
+    client.ws.send(JSON.stringify({ type: "model.refresh" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "model");
+  });
+
   // The routes of one model are asked for when a menu opens on it, never for the catalogue: it is
   // one HTTP call per model and there are four hundred of them.
   test("model.endpoints answers with the routes of one model", async () => {

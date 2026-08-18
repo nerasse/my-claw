@@ -341,6 +341,7 @@ the first answer wins.
 { "type": "voice.mode.set", "mode": "cloud|local|auto" }
 { "type": "update.run" }
 { "type": "model.list" }
+{ "type": "model.refresh" }
 { "type": "model.endpoints", "model": "openrouter/openai/gpt-5.1" }
 { "type": "model.get", "threadId": "projet" }
 { "type": "model.set", "threadId": "projet", "model": "gpt-5.1" }
@@ -450,6 +451,16 @@ provider request URLs.
   `model.get` / `model.set` / `model.effort.set` answer with `model.result` carrying the state
   the server actually stored (setting the default model id clears the override). `model.set`
   refuses a model the server does not know.
+- `model.refresh` re-runs provider discovery on the spot instead of waiting for the six-hour
+  cycle, and answers **two** frames: the fresh `model.list.result` first, then
+  `model.refresh.result` (`models`, `failed`, `enabled`). The listing leads so the screen is
+  already showing the new catalogue when the outcome appears under it. Concurrent passes coalesce
+  in the catalogue, so the button cannot stack discoveries on top of the boot one. `failed` names
+  the providers that opt into discovery and did not answer in full: their previous models are
+  still listed (a provider that cannot be reached is not evidence that its models are gone), so
+  saying which ones is the only way the owner can tell "nothing new" from "nobody answered".
+  `enabled: false` means no provider opts into discovery at all, which makes a refresh a no-op.
+  Refused when the build has no catalogue to refresh, rather than answered with a silent success.
 - `model.endpoints` answers with the routes of one model, cheapest first, and with an empty list
   for a model that has a single route. Only the models marked `routes: true` in the catalogue are
   worth asking about, and the app asks when the routing step opens rather than up front: the
@@ -657,6 +668,7 @@ runs fresh like any other message.
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "update.result", "started": true, "version": "0.4.2", "reason": "busy|denied|failed", "detail": "sudo: a password is required" }
 { "type": "model.list.result", "models": [{ "id": "gpt-5.1", "label": "GPT-5.1", "group": "OpenAI/Pro", "provider": "openai", "effortLevels": ["low", "medium", "high"], "context": 400000 }, { "id": "tag:opus", "label": "opus", "group": "Tags", "effort": "xhigh" }], "defaultModel": "gpt-5.1" }
+{ "type": "model.refresh.result", "models": 412, "failed": ["groq"], "enabled": true }
 { "type": "model.endpoints.result", "model": "openrouter/openai/gpt-5.1", "endpoints": [{ "id": "openrouter/openai/gpt-5.1@azure/eu", "label": "Azure (azure/eu)", "promptUsd": 0.22, "completionUsd": 0.88, "context": 400000, "uptime30m": 99.9 }] }
 { "type": "model.result", "threadId": "projet", "model": "gpt-5.1", "defaultModel": "gpt-5.1", "effort": { "level": "medium", "levels": ["low", "medium", "high"], "supported": true }, "context": { "raw": 400000, "effective": 256000, "cap": 256000, "choice": 256000, "used": 94000 } }
 { "type": "skills.list.result", "skills": [{ "name": "voice", "description": "Voice mode plumbing", "version": "1.0.0", "source": "built-in|custom|workspace", "path": "/home/neras/.my-claw/skills/.builtin/voice/SKILL.md", "workspace": "sofa" }] }
