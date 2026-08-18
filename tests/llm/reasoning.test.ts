@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { chatCompletion, chatCompletionStream, readReasoning } from "../../src/llm/provider.ts";
-import { capReasoning, REASONING_LIMIT } from "../../src/sessions/store.ts";
 
 const config = {
   baseUrl: "https://example.com",
@@ -140,14 +139,23 @@ test("chatCompletion carries reasoning on the non-streaming path", async () => {
   }
 });
 
-describe("capReasoning", () => {
-  test("text under the cap is untouched", () => {
-    expect(capReasoning("short")).toBe("short");
-  });
-
-  test("a long chain is cut and says so, since sessions are rewritten whole every turn", () => {
-    const capped = capReasoning("x".repeat(REASONING_LIMIT + 500));
-    expect(capped.length).toBeLessThan(REASONING_LIMIT + 100);
-    expect(capped.endsWith("[reasoning truncated]")).toBe(true);
-  });
+/**
+ * Reasoning is stored whole. It never goes back to the model (`toChatMessages` maps content and
+ * tool calls, nothing else), so the only thing a ceiling ever bought was disk, at the price of a
+ * thought that stops mid-sentence.
+ */
+test("a long chain of thought is kept whole, not cut", async () => {
+  const long = "x".repeat(50_000);
+  const fetchMock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "hello", reasoning: long } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never,
+  );
+  try {
+    const response = await chatCompletion(config, [{ role: "user", content: "hi" }]);
+    expect(response.reasoning).toBe(long);
+  } finally {
+    fetchMock.restore();
+  }
 });

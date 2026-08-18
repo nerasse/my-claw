@@ -99,10 +99,12 @@ stored `reasoning` is absent from the built prompt. That test is the whole guara
 Compaction summarises messages and drops the field with them — correct, a summary of a reply has no
 reasoning of its own. `trimSessionMessages` and `sealDanglingToolCalls` are untouched.
 
-**Cap:** `REASONING_LIMIT = 8000` characters per assistant turn, truncated with a marker. Same
-reasoning as `TOOL_OUTPUT_LIMIT`: sessions are single JSON files rewritten in full on every turn,
-and an unbounded chain-of-thought would rewrite megabytes per message and push them through the
-socket. A capped tail is a reading aid; the full text was never a durable artifact.
+**No cap.** There was one, 8 000 characters per turn, on the argument that sessions are single JSON
+files rewritten in full and an unbounded chain of thought would rewrite megabytes per message. The
+argument holds for the bytes and fails for the reader: a thought that stops mid-sentence is worth
+less than no thought at all, and the marker admitting it was the most visible thing in the bubble.
+The text never returns to the model, so the only thing the ceiling ever bought was disk. Tool output
+keeps its own limit, which is a different trade: that one *is* replayed into the prompt.
 
 ## One sink, three engines
 
@@ -236,7 +238,7 @@ per-bubble, local, and never persisted: reopening a conversation shows it collap
 what "collapsed by default" has to mean to be worth anything.
 
 **Expanded.** The text in the same muted tone, behind a left rule to mark it as an aside, and
-selectable. A truncated body says so on its last line.
+selectable. Whole, however long it ran.
 
 **Interaction.** The whole row is the tap target, reusing `ToolCard`'s idiom verbatim for
 consistency and accessibility: `Pressable`, `accessibilityRole="button"`,
@@ -266,7 +268,7 @@ Server, each one failing before the change:
 - **The leak tests**: an assistant mirror message carrying `reasoning` produces a prompt without it,
   through `toChatMessages` and through `renderPriorConversation`.
 - `sessions.ts`: history replay carries `reasoning` and `reasoningTokens`, and a turn without
-  either replays without the field; the cap truncates and marks.
+  either replays without the field. A fifty thousand character chain survives the round trip whole.
 - `claude-sdk/backend.ts`: the estimate seen before a turn is stored on that turn, the turn after
   it is not credited with the same count, and a turn that never thought carries no field.
 - **Matrix and Telegram**: guaranteed structurally rather than by a channel test — those branches

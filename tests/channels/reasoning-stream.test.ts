@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MyClawAppStreamer } from "../../src/channels/my-claw-app/stream.ts";
 import type { MyClawAppServerFrame } from "../../src/channels/my-claw-app/types.ts";
-import { REASONING_LIMIT } from "../../src/sessions/store.ts";
 
 function collect(minCharsBeforeDelta?: number) {
   const frames: MyClawAppServerFrame[] = [];
@@ -147,24 +146,24 @@ describe("reasoning belongs to its segment", () => {
     expect(reasoningOf(frames)).toBe("still weighing and weighing");
   });
 
-  test("the reasoning cap is per segment, so a long first thought does not mute the second", async () => {
+  test("a long thought is sent whole, and the next segment still gets its own", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoning("x".repeat(REASONING_LIMIT + 10));
+    const long = "x".repeat(50_000);
+    await streamer.pushReasoning(long);
     await streamer.appendToolUse([{ name: "bash", arguments: {}, output: "ok", ok: true }], true);
     await streamer.pushReasoning("still heard");
     await streamer.finish();
 
-    expect(reasoningOf(frames, "s1").endsWith("[reasoning truncated]")).toBe(true);
+    // No ceiling and no marker: the reader gets the sentence the model finished.
+    expect(reasoningOf(frames, "s1")).toBe(long);
     expect(reasoningOf(frames, "s1#1")).toBe("still heard");
   });
 
-  test("reasoning past the cap stops being sent rather than flooding the socket", async () => {
+  test("nothing stops being sent, however long the thinking runs", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoning("y".repeat(REASONING_LIMIT));
-    await streamer.pushReasoning("this must not be sent");
-    const text = reasoningOf(frames);
-    expect(text).not.toContain("this must not be sent");
-    expect(text.length).toBeLessThanOrEqual(REASONING_LIMIT + 32);
+    await streamer.pushReasoning("y".repeat(100_000));
+    await streamer.pushReasoning("this must still be sent");
+    expect(reasoningOf(frames)).toContain("this must still be sent");
   });
 });
 

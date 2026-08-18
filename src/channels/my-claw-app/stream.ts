@@ -1,5 +1,4 @@
 import { currentRunId } from "../../utils/run-context.ts";
-import { REASONING_LIMIT } from "../../sessions/store.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallResult } from "../../agent/tool-status.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
@@ -26,9 +25,6 @@ export class MyClawAppStreamer {
   /** Visible text already sent for the current segment; the next delta is the diff, since the
    *  device accumulates what it receives. Held-back ref fragments never count as sent. */
   private emittedText = "";
-  /** Reasoning of the current segment only: a tool or a first answer seals the bubble, and what
-   *  the model thinks afterwards belongs to the next one. */
-  private segmentReasoning = "";
   private segment = 0;
   private toolCount = 0;
   private started = false;
@@ -113,10 +109,8 @@ export class MyClawAppStreamer {
   private async reasoningInternal(delta: string): Promise<void> {
     if (this.finished) return;
     await this.sealBeforeReasoning();
-    const room = REASONING_LIMIT - this.segmentReasoning.length;
-    if (room <= 0) return;
-    const text = delta.length > room ? `${delta.slice(0, room)}\n[reasoning truncated]` : delta;
-    this.segmentReasoning += text;
+    // No ceiling: a thought that stops mid-sentence is worse than a long one, and this text never
+    // goes back to the model, so its only cost is the bytes it occupies.
     // Never gated by minCharsBeforeDelta: withholding the thinking to reach a character
     // threshold would defeat the point of showing it.
     if (!this.started) await this.startSegment();
@@ -124,7 +118,7 @@ export class MyClawAppStreamer {
       type: "chat.reasoning.delta",
       id: this.currentId(),
       threadId: this.opts.threadId,
-      text,
+      text: delta,
     });
   }
 
@@ -161,7 +155,6 @@ export class MyClawAppStreamer {
     }
     this.segmentText = "";
     this.emittedText = "";
-    this.segmentReasoning = "";
   }
 
   /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */

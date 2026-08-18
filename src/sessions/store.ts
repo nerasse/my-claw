@@ -55,19 +55,6 @@ export type SessionMessage =
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
 /**
- * Cap on the stored reasoning of one turn. Sessions are single JSON files rewritten in full on
- * every turn, so an unbounded chain-of-thought would rewrite megabytes per message. A capped tail
- * is a reading aid; the full text was never a durable artifact.
- */
-export const REASONING_LIMIT = 8000;
-
-/** Truncates reasoning to the cap, marking it so the reader knows the text is cut. */
-export function capReasoning(text: string): string {
-  if (text.length <= REASONING_LIMIT) return text;
-  return `${text.slice(0, REASONING_LIMIT)}\n[reasoning truncated]`;
-}
-
-/**
  * Slicing history to a fixed tail (keep the last N) can cut inside a tool block, leaving the
  * kept head starting with orphan `tool` messages whose owning assistant `tool_calls` were
  * dropped. OpenAI-compatible APIs reject that with HTTP 400, wedging the session on every

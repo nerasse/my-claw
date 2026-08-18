@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, capReasoning } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
@@ -522,7 +522,7 @@ export class AgentBridge implements AgentBackend {
             role: "assistant",
             content: transformedResponse,
             timestamp: new Date().toISOString(),
-            ...(response.reasoning ? { reasoning: capReasoning(response.reasoning) } : {}),
+            ...(response.reasoning ? { reasoning: response.reasoning } : {}),
           });
 
           // Mid-run steering: a message that arrived during this final call keeps the run going
@@ -598,7 +598,7 @@ export class AgentBridge implements AgentBackend {
             arguments: tc.function.arguments,
           })),
           timestamp: new Date().toISOString(),
-          ...(response.reasoning ? { reasoning: capReasoning(response.reasoning) } : {}),
+          ...(response.reasoning ? { reasoning: response.reasoning } : {}),
         };
         session.messages.push(persistedAssistant);
 
