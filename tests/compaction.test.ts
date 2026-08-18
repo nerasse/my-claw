@@ -238,3 +238,80 @@ test("compactSession handles LLM errors gracefully", async () => {
     fetchMock.restore();
   }
 });
+
+/**
+ * The summarizer follows the session's own agent. Reading it as the orchestrator's is how a
+ * sub-agent pinned to a cheap provider came to be summarized by the expensive default, and a cron
+ * job by whatever the chat happened to run.
+ */
+function agentScopedConfig(): MyClawConfig {
+  return {
+    whitelist: [],
+    blacklist: [],
+    channels: {},
+    llm: {
+      providers: { main: { baseUrl: "https://main.example.com" }, cheap: { baseUrl: "https://cheap.example.com" } },
+      defaultProvider: "main",
+      defaultModel: "main-model",
+      models: [
+        { id: "main-model", label: "Main", provider: "main" },
+        { id: "cheap-model", label: "Cheap", provider: "cheap" },
+      ],
+    },
+    agents: { general: { llm: { defaultModel: "cheap-model" } }, cron: { llm: { defaultModel: "cheap-model" } } },
+  } as unknown as MyClawConfig;
+}
+
+function longSession(over: Partial<SessionData>): SessionData {
+  const now = new Date().toISOString();
+  return {
+    id: "s",
+    platform: "telegram",
+    chatType: "dm",
+    createdAt: now,
+    lastActiveAt: now,
+    messages: Array.from({ length: 20 }, (_, i) => ({
+      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `turn ${i} `.repeat(20),
+      timestamp: now,
+    })),
+    ...over,
+  };
+}
+
+async function summarizerHost(session: SessionData): Promise<string[]> {
+  const hosts: string[] = [];
+  const mock = mockFetch(async (url) => {
+    hosts.push(new URL(String(url)).host);
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "Prior work: a summary long enough to clear the fifty character floor imposed on it." } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+  try {
+    const result = await compactSession(agentScopedConfig(), session);
+    assert.equal(result.ok, true, result.reason ?? "");
+    return hosts;
+  } finally {
+    mock.restore();
+  }
+}
+
+test("a sub-agent session is summarized by the sub-agent's own model", async () => {
+  const session = longSession({
+    id: "subagent/general-1",
+    meta: { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: new Date().toISOString() },
+  });
+  assert.deepEqual(await summarizerHost(session), ["cheap.example.com"]);
+});
+
+test("a cron session is summarized by the cron agent's model", async () => {
+  assert.deepEqual(await summarizerHost(longSession({ id: "cron/job-1/1", platform: "cron" })), ["cheap.example.com"]);
+});
+
+test("a chat session still follows the orchestrator", async () => {
+  assert.deepEqual(await summarizerHost(longSession({ id: "telegram/dm/u1" })), ["main.example.com"]);
+});

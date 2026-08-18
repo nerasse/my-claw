@@ -3,6 +3,7 @@ import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
 import { leafModelId } from "../llm/resolver.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
+import { agentTypeOf } from "../sessions/store.ts";
 import {
   getSessionModelUsage,
   getLastContextTokens,
@@ -140,7 +141,7 @@ function collectStatusData(p: StatusParams): StatusData {
   const running = p.liveRuns.map((r) => (r.depth === 0 ? "main" : `${r.label}[${r.depth}]`));
   if (p.compacting) running.push("compaction");
   const live = running.length > 0 ? running.join(", ") : "none";
-  const contextAgent = p.session?.platform === "cron" ? "cron" : p.session?.meta?.type ?? "main";
+  const contextAgent = p.session ? agentTypeOf(p.session) : "main";
   const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
   // Every clause here is a reason the number can look wrong, so each one that applies is named.
   const contextNotes = [window.rawSource === "default" ? "default, not declared for this model" : window.rawSource];

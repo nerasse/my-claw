@@ -4,7 +4,7 @@ import { resolveOpenAiLlmConfig } from "../llm/resolver.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
-import { attributionParent } from "./store.ts";
+import { agentTypeOf, attributionParent } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
@@ -145,13 +145,15 @@ export async function compactSession(
   const serialized = serializeForCompaction(middle);
   const prompt = buildCompactionPrompt(serialized, instructions);
 
-  // The model the chat actually runs, agent pin and tag included -- not the raw session override,
+  // The model the session actually runs, agent pin and tag included -- not the raw session override,
   // which is absent on every chat that inherits a pin and made the summarizer resolve the global
-  // default while the conversation ran something else. Still forced onto a chat-completions model:
-  // this caller speaks that protocol and nothing else (see resolveOpenAiLlmConfig).
+  // default while the conversation ran something else. The agent comes from the session, so a
+  // sub-agent or a cron job is summarized by its own model rather than the orchestrator's. Still
+  // forced onto a chat-completions model: this caller speaks that protocol and nothing else (see
+  // resolveOpenAiLlmConfig).
   const runModel = tryResolveRunModel(
     config,
-    { agent: "main", ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
+    { agent: agentTypeOf(session), ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
     availabilityWorld(),
   );
   const llmConfig = resolveOpenAiLlmConfig(config.llm, runModel?.apiModel ?? runModel?.model ?? session.modelOverride);

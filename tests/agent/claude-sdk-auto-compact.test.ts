@@ -302,3 +302,23 @@ test("a nested boundary is ignored", async () => {
   assert.equal(sess.sdkTranscriptBase, undefined);
   assert.deepEqual(sess.lastPrompt, { tokens: 700, messageCount: 0 });
 });
+
+// The gate used to be the orchestrator's alone, which left a sub-agent resuming its own SDK session
+// to grow until the engine's own threshold on the model's window.
+test("a sub-agent session over the threshold is compacted too", async () => {
+  runRegistry.clear();
+  const captured: Call[] = [];
+  const backend = new ClaudeSdkBackend(
+    baseConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, 1, undefined, "general", undefined, undefined, scripted(captured),
+  );
+
+  const sess = session("subagent/general-1");
+  sess.meta = { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: new Date().toISOString() };
+  sess.sdkSessionId = "sdk-sub";
+  sess.lastPrompt = { tokens: 900, messageCount: 0 };
+
+  await backend.handleMessage(msg("m1", "salut"), sess);
+
+  assert.equal(captured[0]!.prompt, "/compact");
+  assert.equal(sess.lastPrompt, undefined);
+});

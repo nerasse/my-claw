@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
 import type { SessionData, SessionMessage } from "../../sessions/store.ts";
-import { sealDanglingToolCalls, attributionParent } from "../../sessions/store.ts";
+import { sealDanglingToolCalls, attributionParent, agentTypeOf } from "../../sessions/store.ts";
 import type { AgentBackend, CompactOutcome, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../backend.ts";
 import { buildSystemPrompt } from "../prompt/builder.ts";
 import { selectRelevantSkills } from "../../skills/retrieval.ts";
@@ -575,7 +575,9 @@ export class ClaudeSdkBackend implements AgentBackend {
     try {
       // Run start is the only moment the session is guaranteed idle: the router serializes runs
       // per session, and a /compact typed meanwhile is refused while a run holds the session.
-      if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
+      // Every agent, not only the orchestrator: a sub-agent resumes its own SDK session across
+      // messages, so its transcript grows exactly like a chat's does.
+      if (autoCompactEnabled(this.config)) {
         await this.maybeAutoCompact(message, session, llmConfig, agentToolType, signal);
       }
 
@@ -1158,7 +1160,7 @@ export class ClaudeSdkBackend implements AgentBackend {
 function compactModel(config: MyClawConfig, session: SessionData): string | undefined {
   const run = tryResolveRunModel(
     config,
-    { agent: "main", ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
+    { agent: agentTypeOf(session), ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
     availabilityWorld(),
   );
   if (!run || run.backend !== "claude-sdk") return session.modelOverride;

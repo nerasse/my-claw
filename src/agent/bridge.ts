@@ -328,9 +328,9 @@ export class AgentBridge implements AgentBackend {
     }
 
     try {
-      // Run start is the only moment the session is guaranteed idle: compacting mid-run
-      // would race the tool loop, compacting post-run would race the next inbound message.
-      if (this.depth === 0 && !isCron && autoCompactEnabled(this.config)) {
+      // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
+      // the profile that fills a window, and it used to have nothing but the hard trim.
+      if (autoCompactEnabled(this.config)) {
         await this.maybeAutoCompact(message, session, llmConfig, agentToolType);
       }
 
@@ -424,7 +424,7 @@ export class AgentBridge implements AgentBackend {
         iteration++;
         // Between two iterations, before the prompt is assembled: the loop is the only writer here
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
-        if (this.depth === 0 && !isCron && autoCompactEnabled(this.config) && session.messages.length >= midRunCompactRetryAt) {
+        if (autoCompactEnabled(this.config) && session.messages.length >= midRunCompactRetryAt) {
           const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration);
           if (outcome === "compacted") {
             await rebuildPrompt();

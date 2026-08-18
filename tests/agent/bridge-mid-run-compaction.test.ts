@@ -169,3 +169,92 @@ test("a summarization that produced nothing is not retried on the next iteration
   // Nothing was rewritten, so the run kept its history and the hard trim stayed in charge.
   assert.ok(sess.messages.length >= 15, `history untouched, got ${sess.messages.length} messages`);
 });
+
+/**
+ * Every agent, not the orchestrator alone. A research sub-agent reading documents is the profile
+ * that fills a window fastest, and it had nothing but the hard trim: its beginning was dropped
+ * rather than summarized.
+ */
+test("a sub-agent run is compacted mid-flight", async () => {
+  runRegistry.clear();
+  const now = new Date().toISOString();
+  const sess: SessionData = {
+    id: "subagent/general-a1",
+    platform: "telegram",
+    chatType: "dm",
+    createdAt: now,
+    lastActiveAt: now,
+    messages: [],
+    // A general sub-agent, because the point is the depth: a research one is scoped to a read-only
+    // toolset, which the filler tool is not part of.
+    meta: { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: now },
+  };
+  const bridge = new AgentBridge(config(), registry(), new SkillRegistry(), undefined, undefined, 1, undefined, "general");
+  const { signal, end } = runRegistry.startRoot(sess.id);
+  let compactions = 0;
+  let rounds = 0;
+  const mock = mockFetch(async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
+    const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
+    if (String(body.messages[0]?.content ?? "").includes("context compaction agent")) {
+      compactions += 1;
+      return llmResponse({ content: SUMMARY }, promptTokens);
+    }
+    rounds += 1;
+    if (rounds <= 12) {
+      return llmResponse({ content: "", tool_calls: [{ id: `c${rounds}`, type: "function", function: { name: "filler", arguments: "{}" } }] }, promptTokens);
+    }
+    return llmResponse({ content: "done" }, promptTokens);
+  });
+  try {
+    await bridge.handleMessage(message(), sess, signal);
+  } finally {
+    mock.restore();
+    end();
+    runRegistry.clear();
+  }
+
+  assert.ok(compactions >= 1, "the sub-agent was compacted");
+  assert.ok(sess.messages.some((m) => m.content.includes("Prior context summarized")));
+});
+
+// A cron run is a fresh session every time, so the run-start gate has nothing to do there: what
+// fills the window is the run itself, and that is exactly what the mid-run gate covers.
+test("a cron run is compacted mid-flight too", async () => {
+  runRegistry.clear();
+  const now = new Date().toISOString();
+  const sess: SessionData = {
+    id: "cron/job-1/1700000000000",
+    platform: "cron",
+    chatType: "dm",
+    createdAt: now,
+    lastActiveAt: now,
+    messages: [],
+  };
+  const bridge = new AgentBridge(config(), registry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(sess.id);
+  let compactions = 0;
+  let rounds = 0;
+  const mock = mockFetch(async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
+    const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
+    if (String(body.messages[0]?.content ?? "").includes("context compaction agent")) {
+      compactions += 1;
+      return llmResponse({ content: SUMMARY }, promptTokens);
+    }
+    rounds += 1;
+    if (rounds <= 12) {
+      return llmResponse({ content: "", tool_calls: [{ id: `k${rounds}`, type: "function", function: { name: "filler", arguments: "{}" } }] }, promptTokens);
+    }
+    return llmResponse({ content: "done" }, promptTokens);
+  });
+  try {
+    await bridge.handleMessage({ ...message(), platform: "cron" }, sess, signal);
+  } finally {
+    mock.restore();
+    end();
+    runRegistry.clear();
+  }
+
+  assert.ok(compactions >= 1, "the cron run was compacted");
+});

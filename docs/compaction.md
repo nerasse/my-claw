@@ -89,6 +89,18 @@ Both engines compact on their own when the context fills (`context.autoCompact`,
 hold: the run already owns the session, and a `/compact` typed meanwhile is refused for exactly
 that reason.
 
+### Every agent, not only the orchestrator
+
+The gate used to be `depth === 0 && !isCron`, which left the two profiles most likely to fill a
+window with nothing but the hard trim: a research sub-agent reading documents, and a cron job doing
+the same work on a schedule. Both are sessions, both resume, both grow. The gate is now scoped by
+`context.autoCompact` alone.
+
+That makes the summarizer's model matter. It follows `agentTypeOf(session)` (`cron` for a scheduled
+session, the sub-agent's kind for `subagent/*`, else the orchestrator), so a sub-agent pinned to a
+cheap provider is summarized by that provider instead of the expensive default. `/status` reads the
+same helper for the context ceiling it reports, which is where the rule came from.
+
 |  | home loop (`bridge.ts`) | claude-sdk (`claude-sdk/backend.ts`) |
 |---|---|---|
 | what it measures | `occupiedContextTokens` over the history it is about to send | the billed prompt of the last call, the mirror estimate when there is none |
@@ -117,6 +129,10 @@ output before it answers.
 |---|---|---|
 | home loop | `trimToContextWindow` kept the prompt legal by **dropping** the oldest turns | the gate runs again between iterations and summarises instead |
 | claude-sdk | the engine's own compaction fired on the **model's** window (~967k for a 1M model) | it is handed our effective window, so it fires under our ceiling |
+
+The trim stays, and has to: a compaction can fail (a refusal, a provider outage, a history with no
+middle to summarise) and the request still has to fit. It is the floor under the gate, not its
+replacement, which is why it is a warning in the log when it fires.
 
 On the home loop the check sits between two iterations, before the prompt is assembled. The run is
 the only writer at that point (the router serialises runs per session and meta-commands are refused

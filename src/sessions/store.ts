@@ -153,6 +153,17 @@ export interface SubAgentMeta {
  * rollups complete without a COALESCE, and makes a missing parent show up as an unattributed
  * agent instead of silently misfiling tokens onto the wrong conversation.
  */
+/**
+ * Which agent's settings apply to a stored session: its model, its context ceiling, its summarizer.
+ * A run knows this from the message it is answering; anything working on a session alone (`/status`,
+ * the compaction summarizer) has only the session, and reading it as the orchestrator's is how a
+ * research sub-agent came to be summarized by the orchestrator's model.
+ */
+export function agentTypeOf(session: SessionData): string {
+  if (session.platform === "cron") return "cron";
+  return session.meta?.type ?? "main";
+}
+
 export function attributionParent(session: SessionData): string {
   // Truthiness, not nullish coalescing: callers default a missing session id to "", and an empty
   // parent is worse than no parent -- it would group unrelated work under a blank key.
