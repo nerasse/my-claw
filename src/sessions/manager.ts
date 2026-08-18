@@ -254,6 +254,7 @@ export class SessionManager {
       // id would silently resume everything the user just asked to clear.
       delete session.sdkSessionId;
       delete session.sdkSyncedAt;
+      delete session.sdkTranscriptBase;
       delete session.contextTransfer;
       session.lastActiveAt = new Date().toISOString();
       hooks.emit("session:cleared", { sessionId, previousMessageCount });

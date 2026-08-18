@@ -114,6 +114,11 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
 // turn, so this is a per-turn tax, not a one-off: a photo is worth ~1-2K tokens.
 const MAX_HISTORY_IMAGES = 4;
 
+// Turns a run has to add before the mid-run gate tries again after a summarization that changed
+// nothing (a history too short to split, a refused summary, a provider error). Without it a run
+// sitting over the threshold would pay for one summarization attempt per iteration and never move.
+const MID_RUN_COMPACT_RETRY_TURNS = 10;
+
 /** Images the channel resolved for this turn, in the shape the session keeps. */
 function imageAttachmentsOf(message: UnifiedMessage): SessionAttachment[] {
   return message.attachments
@@ -389,7 +394,21 @@ export class AgentBridge implements AgentBackend {
 
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
 
+      // The prompt is built from the history, so a mid-run compaction has to be followed by this:
+      // rewriting one and keeping the other is how a summary lands in the session while the model
+      // keeps being sent the turns it replaced. Memory is deliberately not re-injected -- it is a
+      // hint attached to the inbound turn, the run has already seen it, and it never enters the
+      // history the summary was made from.
+      const rebuildPrompt = async (): Promise<void> => {
+        chatMessages.length = 0;
+        chatMessages.push({ role: "system", content: systemPrompt }, ...this.toChatMessages(session.messages));
+        if (llmConfig.vision) await this.attachImages(chatMessages, session.messages);
+      };
+
       let iteration = 0;
+      // History length the mid-run gate is allowed to try again at, moved forward only by an attempt
+      // that changed nothing: the summarizer needs new turns to have anything new to say.
+      let midRunCompactRetryAt = 0;
       while (budget.consume()) {
         if (signal?.aborted) throw new AbortedError();
         // Mid-run steering: pick up any message that arrived during the previous tool round and
@@ -403,6 +422,19 @@ export class AgentBridge implements AgentBackend {
           }
         }
         iteration++;
+        // Between two iterations, before the prompt is assembled: the loop is the only writer here
+        // and the alternative is trimToContextWindow dropping the oldest turns for good.
+        if (this.depth === 0 && !isCron && autoCompactEnabled(this.config) && session.messages.length >= midRunCompactRetryAt) {
+          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration);
+          if (outcome === "compacted") {
+            await rebuildPrompt();
+            // The turns this run appended are inside the summary now: rolling back to a longer
+            // history than the session holds would extend the array with holes.
+            messageCountBeforeLoop = session.messages.length;
+          } else if (outcome === "skipped") {
+            midRunCompactRetryAt = session.messages.length + MID_RUN_COMPACT_RETRY_TURNS;
+          }
+        }
         // Prompt-side only: session.messages keeps the full outputs. Re-applied every
         // iteration so the protected window slides along long runs.
         if (contextPruningEnabled(this.config)) {
@@ -1011,24 +1043,40 @@ export class AgentBridge implements AgentBackend {
     });
   }
 
-  // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
-  // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
+  /**
+   * How full the window is, and by how much the gate is crossed. One reading for the run-start gate
+   * and the mid-run one, so the two can never disagree about the same conversation.
+   */
+  private contextGate(
+    session: SessionData,
+    llmConfig: ResolvedLlmConfig,
+    agent: AgentToolType,
+  ): { over: boolean; data: Record<string, unknown> } {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const occupied = occupiedContextTokens(session.messages, (msgs) => this.toChatMessages([...msgs]), session.lastPrompt);
-    if (occupied <= window.effective * threshold) return;
+    return {
+      over: occupied > window.effective * threshold,
+      data: {
+        sessionId: session.id,
+        occupiedTokens: occupied,
+        measured: session.lastPrompt?.tokens,
+        contextLimit: window.effective,
+        rawContextLimit: window.raw,
+        windowSource: window.rawSource,
+        threshold,
+        messageCount: session.messages.length,
+      },
+    };
+  }
 
-    void log("info", "auto-compaction triggered", {
-      sessionId: session.id,
-      occupiedTokens: occupied,
-      measured: session.lastPrompt?.tokens,
-      contextLimit: window.effective,
-      rawContextLimit: window.raw,
-      windowSource: window.rawSource,
-      threshold,
-      messageCount: session.messages.length,
-    });
+  // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
+  // fallback at the limit. A compaction failure must never block the run.
+  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
+    const gate = this.contextGate(session, llmConfig, agent);
+    if (!gate.over) return;
+
+    void log("info", "auto-compaction triggered", gate.data);
     // Nothing travels while this runs, and the owner is looking at a message he just sent: the
     // same mark a send held behind a `/compact` gets, lifted by the stream that follows it.
     hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
@@ -1039,6 +1087,53 @@ export class AgentBridge implements AgentBackend {
       }
     } catch (err) {
       void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
+    }
+  }
+
+  /**
+   * The same gate, between two iterations of one run.
+   *
+   * A single agentic run can add hundreds of thousands of tokens: the run-start gate leaves that
+   * entirely to `trimToContextWindow`, which keeps the prompt inside the window by *dropping* the
+   * oldest turns outright. The window was never exceeded, but the conversation lost its beginning
+   * instead of having it summarised, which is exactly what compaction exists to avoid.
+   *
+   * Between two iterations the loop is the only writer (the router serialises runs per session and
+   * meta-commands are refused while one holds it), so there is no race to lose: the risk is
+   * consistency, and the caller answers it by rebuilding the prompt from the rewritten history.
+   * `under` is the cheap case and carries no penalty: only an attempt that changed nothing is worth
+   * backing off from.
+   */
+  private async compactMidRun(
+    message: UnifiedMessage,
+    session: SessionData,
+    llmConfig: ResolvedLlmConfig,
+    agent: AgentToolType,
+    iteration: number,
+  ): Promise<"under" | "skipped" | "compacted"> {
+    const gate = this.contextGate(session, llmConfig, agent);
+    if (!gate.over) return "under";
+
+    void log("info", "auto-compaction triggered mid-run", { ...gate.data, iteration });
+    // A minute or two with nothing on the wire, in the middle of an answer: the same mark a send
+    // held at run start gets, lifted by the stream that resumes after it.
+    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
+    try {
+      const result = await compactSession(this.config, session);
+      if (!result.ok) {
+        void log("warn", "mid-run auto-compaction skipped", { sessionId: session.id, iteration, reason: result.reason });
+        return "skipped";
+      }
+      void log("info", "mid-run auto-compaction done", {
+        sessionId: session.id,
+        iteration,
+        beforeCount: result.beforeCount,
+        afterCount: result.afterCount,
+      });
+      return "compacted";
+    } catch (err) {
+      void log("error", "mid-run auto-compaction failed", { sessionId: session.id, iteration, error: errorLogData(err) });
+      return "skipped";
     }
   }
 

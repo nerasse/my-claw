@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../../src/llm/context-window.ts";
+import { resolveContextWindow, occupiedContextTokens, measuredPrompt, sessionMirrorRole } from "../../src/llm/context-window.ts";
 import { DEFAULT_CONTEXT_TOKENS } from "../../src/llm/tokens.ts";
 import { DEFAULT_CONTEXT_CAP, resolveContextCap, type MyClawConfig } from "../../src/core/config.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
@@ -204,4 +204,59 @@ test("a zero prompt is not a measurement: error paths report it and would blind 
 test("a measurement covering the whole history adds nothing for turns since", () => {
   const history = ["a".repeat(400), "b".repeat(400)];
   expect(occupiedContextTokens(history, toChat, { tokens: 50_000, messageCount: 2 })).toBe(50_000);
+});
+
+// -- transcript mirror -------------------------------------------------------------------------
+// The SDK owns its history and compacts it behind our back, while `session.messages` keeps every
+// turn and every tool result: flooring on the estimate over that mirror is what reported a
+// conversation at 98 percent of the window minutes after it had been compacted down to 15.
+
+test("on a transcript mirror the measurement stands alone: the mirror estimate is not a floor", () => {
+  const history = ["a".repeat(40_000), "b".repeat(400)];
+  const measured = { tokens: 5_000, messageCount: 1 };
+  expect(occupiedContextTokens(history, toChat, measured)).toBeGreaterThan(10_000);
+  const transcript = occupiedContextTokens(history, toChat, measured, { kind: "transcript" });
+  expect(transcript).toBeGreaterThan(5_000);
+  expect(transcript).toBeLessThan(5_200);
+});
+
+test("without a measurement a transcript mirror counts from the last boundary only", () => {
+  const history = ["a".repeat(40_000), "b".repeat(400)];
+  const fromBoundary = occupiedContextTokens(history, toChat, undefined, { kind: "transcript", base: 1 });
+  expect(fromBoundary).toBeLessThan(200);
+  expect(fromBoundary).toBeLessThan(occupiedContextTokens(history, toChat, undefined, { kind: "transcript" }));
+});
+
+// The local summarizer can run on an SDK session, and it rewrites the mirror: an index into the
+// old array would then point past the end and report an empty context.
+test("a boundary past the end of a rewritten mirror falls back to the whole of it", () => {
+  const history = ["a".repeat(400)];
+  const whole = occupiedContextTokens(history, toChat, undefined, { kind: "transcript" });
+  expect(occupiedContextTokens(history, toChat, undefined, { kind: "transcript", base: 12 })).toBe(whole);
+});
+
+test("a stale measurement is discarded on a transcript mirror too", () => {
+  const history = ["a".repeat(400)];
+  const stale = { tokens: 900_000, messageCount: 12 };
+  expect(occupiedContextTokens(history, toChat, stale, { kind: "transcript" })).toBeLessThan(1000);
+});
+
+// Which mirror a stored session carries is resolved from its own model choice, the same chain the
+// run resolves: a chat pinned to another engine must not be read the way the default one is.
+test("the mirror kind follows the engine of the session's own model", () => {
+  const config = {
+    llm: {
+      providers: { anthropic: { type: "claude-sdk" }, litellm: { baseUrl: "http://x/v1" } },
+      defaultProvider: "anthropic",
+      defaultModel: "claude-sonnet-5",
+      models: [
+        { id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" },
+        { id: "mimo", label: "Mimo", provider: "litellm" },
+      ],
+    },
+  } as unknown as MyClawConfig;
+
+  expect(sessionMirrorRole(config, {})).toEqual({ kind: "transcript" });
+  expect(sessionMirrorRole(config, { sdkTranscriptBase: 12 })).toEqual({ kind: "transcript", base: 12 });
+  expect(sessionMirrorRole(config, { modelOverride: "mimo" })).toEqual({ kind: "prompt" });
 });

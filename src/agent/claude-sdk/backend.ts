@@ -37,8 +37,9 @@ import { ToolApprovalManager } from "../approvals.ts";
 import type { VoiceManager, SttPipeline } from "../../voice/index.ts";
 import { MessagePreprocessor } from "../preprocess.ts";
 import { renderPriorConversation } from "./history.ts";
-import { estimateMessagesTokens, estimateTokens } from "../../llm/tokens.ts";
-import { resolveContextWindow, measuredPrompt } from "../../llm/context-window.ts";
+import { estimateTokens } from "../../llm/tokens.ts";
+import { resolveContextWindow, measuredPrompt, occupiedContextTokens } from "../../llm/context-window.ts";
+import type { ChatMessage } from "../../llm/provider.ts";
 import { recall } from "../../memory/index.ts";
 import { hooks } from "../../hooks/index.ts";
 import { AbortedError, isAbort } from "../../core/aborted.ts";
@@ -67,6 +68,23 @@ export const OWNER_STEERING_NOTE =
  * shows it running, which is what a long wait actually needs.
  */
 const COMPACT_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Bounds the SDK's own auto-compaction to the window we agreed to use.
+ *
+ * Our gate only runs between turns, and a single run can add hundreds of thousands of tokens: the
+ * only compaction that can happen mid-run is the engine's own, and it measures against the model's
+ * full window (1M), not our cap. `settings.autoCompactWindow` is the documented knob for that; the
+ * CLI takes `min(model window, this)` so it can only lower the ceiling, and it validates the number
+ * against [100k, 1M] and silently drops anything outside, hence the clamp rather than the raw cap.
+ * A cap below 100k therefore cannot be enforced mid-run, only by our own gate between turns.
+ */
+const SDK_AUTO_COMPACT_MIN = 100_000;
+const SDK_AUTO_COMPACT_MAX = 1_000_000;
+
+export function sdkAutoCompactWindow(effective: number): number {
+  return Math.min(SDK_AUTO_COMPACT_MAX, Math.max(SDK_AUTO_COMPACT_MIN, Math.round(effective)));
+}
 
 const AUTH_FAILURE_HINT =
   "Claude subscription auth failed — regenerate the token with `claude setup-token` " +
@@ -342,7 +360,10 @@ export class ClaudeSdkBackend implements AgentBackend {
         if (msg.type === "system" && msg.subtype === "init" && msg.session_id) {
           session.sdkSessionId = msg.session_id;
         }
-        if (msg.type === "system" && msg.subtype === "compact_boundary") compacted = true;
+        if (msg.type === "system" && msg.subtype === "compact_boundary") {
+          compacted = true;
+          this.markCompactBoundary(session);
+        }
         if (msg.compact_result === "failed") compactError = msg.compact_error ?? "unknown";
         if (msg.type === "result") {
           if (typeof msg.result === "string") resultText = msg.result;
@@ -380,15 +401,44 @@ export class ClaudeSdkBackend implements AgentBackend {
    * a mirror and not the prompt: the billed size of the last call is the only number that
    * describes what the model actually holds. The mirror estimate is the fallback for the two
    * moments there is no measurement: before the first call of a session, and right after a
-   * compaction threw the previous one away.
+   * compaction threw the previous one away -- and it counts only from the last boundary, since
+   * everything before it lives inside the SDK as a summary.
+   *
+   * The same call every display makes (docs/context-window.md): a header and a gate that
+   * disagreed about how full a conversation is would make the compaction look random.
    */
   private occupiedTokens(session: SessionData): number {
-    const measured = session.lastPrompt?.tokens;
-    if (measured !== undefined && measured > 0) return measured;
     // A tool result is a user turn as far as token counting goes: the mapping /status uses.
-    return estimateMessagesTokens(
-      session.messages.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content })),
-    );
+    const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] =>
+      msgs.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
+    return occupiedContextTokens(session.messages, toChat, session.lastPrompt, {
+      kind: "transcript",
+      ...(session.sdkTranscriptBase === undefined ? {} : { base: session.sdkTranscriptBase }),
+    });
+  }
+
+  /** One resolution for the run: the gate, the mid-run ceiling handed to the SDK and every display
+   *  have to read the same window or the compaction looks random. */
+  private contextWindow(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType) {
+    return resolveContextWindow({
+      model: llmConfig.model,
+      config: this.config,
+      declared: llmConfig.limit?.context,
+      baseUrl: llmConfig.baseUrl,
+      sessionOverride: session.contextOverride,
+      agent,
+    });
+  }
+
+  /**
+   * The engine summarised its transcript: everything mirrored so far is behind the boundary and no
+   * longer in the prompt, and the measurement describes a transcript that does not exist any more.
+   * Reported by the SDK both when we ask for a compaction and when it compacts on its own mid-run,
+   * and the two are indistinguishable from here on purpose.
+   */
+  private markCompactBoundary(session: SessionData): void {
+    session.sdkTranscriptBase = session.messages.length;
+    delete session.lastPrompt;
   }
 
   /**
@@ -408,14 +458,7 @@ export class ClaudeSdkBackend implements AgentBackend {
   ): Promise<void> {
     // Nothing to compact before the first run of a conversation: there is no SDK session yet.
     if (!session.sdkSessionId) return;
-    const window = resolveContextWindow({
-      model: llmConfig.model,
-      config: this.config,
-      declared: llmConfig.limit?.context,
-      baseUrl: llmConfig.baseUrl,
-      sessionOverride: session.contextOverride,
-      agent,
-    });
+    const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const occupied = this.occupiedTokens(session);
     if (occupied <= window.effective * threshold) return;
@@ -441,10 +484,7 @@ export class ClaudeSdkBackend implements AgentBackend {
         void log("warn", "auto-compaction skipped", { sessionId: session.id, reason: outcome.text });
         return;
       }
-      // The measurement describes a transcript that no longer exists, and nothing ever shrinks the
-      // mirror: kept, it would re-trigger the gate on every single run from here on.
-      delete session.lastPrompt;
-      void log("info", "auto-compaction done", { sessionId: session.id, engine: "sdk" });
+      void log("info", "auto-compaction done", { sessionId: session.id, engine: "sdk", transcriptBase: session.sdkTranscriptBase });
     } catch (err) {
       if (isAbort(err, signal)) throw err;
       void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
@@ -656,6 +696,9 @@ export class ClaudeSdkBackend implements AgentBackend {
         tools: [],
         settingSources: [],
         skills: [],
+        // The one thing the engine has to know about our cap: its own compaction is the only one
+        // that can fire mid-run, and by default it measures against the model's full window.
+        settings: { autoCompactWindow: sdkAutoCompactWindow(this.contextWindow(session, llmConfig, agentToolType).effective) },
         strictMcpConfig: true,
         executable: "bun",
         // One-shot sub-agents never resume: skip writing their SDK session files.
@@ -728,6 +771,16 @@ export class ClaudeSdkBackend implements AgentBackend {
           // stream or the session mirror. None expected with the Agent tool disabled,
           // defense in depth.
           if (msg.parent_tool_use_id) continue;
+
+          // The engine compacted on its own, mid-run: without this the mirror kept counting turns
+          // the model had already summarised away, and the header read 98 percent on a prompt that
+          // had just dropped back to 15. Checked after the nested-agent guard: a sub-agent
+          // summarising its own transcript says nothing about this one.
+          if (msg.type === "system" && msg.subtype === "compact_boundary") {
+            this.markCompactBoundary(session);
+            void log("info", "sdk compacted mid-run", { sessionId: session.id, transcriptBase: session.sdkTranscriptBase });
+            continue;
+          }
 
           if (msg.type === "stream_event") {
             const delta = msg.event?.delta;

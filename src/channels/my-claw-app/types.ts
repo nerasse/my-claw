@@ -1610,6 +1610,11 @@ export interface MyClawAppStatusPayload {
     estimated: number;
     /** What actually drives auto-compaction. */
     occupied: number;
+    /**
+     * The engine owns the history and `messages` is only a log of it (claude-sdk), so `estimated`
+     * covers turns the model already summarised away. Absent means the mirror is the prompt.
+     */
+    mirrorIsTranscript?: boolean;
     autoCompactOn: boolean;
     autoCompactThresholdPct: number;
     autoCompactThresholdTokens: number;

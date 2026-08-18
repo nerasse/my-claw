@@ -222,6 +222,9 @@ export async function compactSession(
     };
 
     session.messages = [...head, summaryMessage, ...tail];
+    // The mirror was rewritten under whatever the SDK reported: an index into the old array points
+    // at unrelated turns now, and the local summarizer can run on an SDK session (docs/compaction.md).
+    delete session.sdkTranscriptBase;
     session.lastActiveAt = new Date().toISOString();
     hooks.emit("session:compact:end", {
       sessionId: session.id,

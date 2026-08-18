@@ -15,7 +15,7 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
-import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
+import { resolveModelContextWindow, occupiedContextTokens, sessionMirrorRole } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
@@ -115,6 +115,9 @@ interface StatusData {
   measured?: number;
   estimated: number;
   occupied: number;
+  /** The engine owns the history and `messages` is only a log of it, so the estimate over the
+   *  mirror describes a transcript the model no longer holds. */
+  mirrorIsTranscript: boolean;
   autoCompactOn: boolean;
   autoCompactThresholdPct: number;
   autoCompactThresholdTokens: number;
@@ -158,7 +161,8 @@ function collectStatusData(p: StatusParams): StatusData {
     ? p.session.lastPrompt?.tokens ?? (p.session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
   const estimated = p.session ? estimateMessagesTokens(toChat(p.session.messages)) : 0;
-  const occupied = p.session ? occupiedContextTokens(p.session.messages, toChat, p.session.lastPrompt) : 0;
+  const mirror = p.session ? sessionMirrorRole(p.config, p.session) : { kind: "prompt" as const };
+  const occupied = p.session ? occupiedContextTokens(p.session.messages, toChat, p.session.lastPrompt, mirror) : 0;
   const autoCompactOn = autoCompactEnabled(p.config);
   const threshold = resolveAutoCompactThreshold(p.config);
   const own = p.session ? priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing) : [];
@@ -178,6 +182,7 @@ function collectStatusData(p: StatusParams): StatusData {
     ...(measured ? { measured } : {}),
     estimated,
     occupied,
+    mirrorIsTranscript: mirror.kind === "transcript",
     autoCompactOn,
     autoCompactThresholdPct: Math.round(threshold * 100),
     autoCompactThresholdTokens: autoCompactOn ? Math.round(window.effective * threshold) : 0,
@@ -226,7 +231,7 @@ function formatStatusText(d: StatusData): string {
   } else {
     lines.push("  measured      no call recorded yet");
   }
-  lines.push(`  estimated     ${short(d.estimated)} (chars/4, under-counts)`);
+  lines.push(`  estimated     ${short(d.estimated)} (chars/4${d.mirrorIsTranscript ? ", whole mirror: the SDK compacts its own transcript" : ", under-counts"})`);
   lines.push(`  occupied      ${short(d.occupied)} (measured prompt plus the turns since, drives auto-compaction)`);
   if (d.autoCompactOn) {
     lines.push(`  auto-compact  on, threshold ${d.autoCompactThresholdPct}% = ${short(d.autoCompactThresholdTokens)}`);
@@ -322,6 +327,7 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
       ...(d.measured ? { measured: { tokens: d.measured, pctOfLimit: (d.measured / limit) * 100 } } : {}),
       estimated: d.estimated,
       occupied: d.occupied,
+      ...(d.mirrorIsTranscript ? { mirrorIsTranscript: true } : {}),
       autoCompactOn: d.autoCompactOn,
       autoCompactThresholdPct: d.autoCompactThresholdPct,
       autoCompactThresholdTokens: d.autoCompactThresholdTokens,

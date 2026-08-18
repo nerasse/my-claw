@@ -248,6 +248,10 @@ export interface SessionData {
   // Timestamp of the newest transcript entry the SDK session already knows about, so turns
   // taken on the home backend in between can be replayed instead of silently vanishing.
   sdkSyncedAt?: string;
+  // Index in `messages` where the SDK's live transcript starts: the mirror position of the last
+  // compaction boundary the engine reported. Everything before it is summarised inside the SDK and
+  // is no longer in the prompt, so occupancy must not count it. See docs/context-window.md.
+  sdkTranscriptBase?: number;
   // Last time local history was replayed into a fresh SDK session (crossing from the home
   // backend). Kept so /status can report it, since the transfer is otherwise invisible.
   contextTransfer?: {

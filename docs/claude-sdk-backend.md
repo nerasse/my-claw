@@ -76,6 +76,19 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   `docs/compaction.md`), `/reset` drops the `sdkSessionId`, its transfer
   watermark and the recorded transfer (archive kept
   my-claw-side as today).
+- **The mirror is a log, not the prompt, and occupancy has to know that.** Every
+  `compact_boundary` the engine reports is recorded as `sdkTranscriptBase`, the mirror index its
+  live transcript now starts at, and the stale measurement is dropped with it. Both sources count:
+  the compaction we ask for, and the one the engine runs mid-run on its own (taken after the
+  nested-agent guard, so a sub-agent summarising its own transcript never rebases this one).
+  Without it, the mirror kept counting turns the model had already summarised away and the chat
+  header sat at 98 percent of the window on a prompt that had dropped back to 15 percent. See
+  `docs/context-window.md`.
+- **Our cap is handed to the engine, once per run.** `settings.autoCompactWindow` carries the
+  effective window into the CLI, clamped to the `[100k, 1M]` range it accepts (out of range is
+  silently dropped, which would leave the model's full window in force). Our own gate only runs
+  between turns, so this is what keeps a single long run from filling far past the ceiling: the
+  engine's threshold inside that window is its own and acts as the backstop under our 80 percent.
 
 ### Tools: in-process MCP server, factory per run
 

@@ -138,7 +138,7 @@ import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { chatCompletion, type ChatMessage } from "./llm/provider.ts";
-import { occupiedContextTokens } from "./llm/context-window.ts";
+import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
@@ -1037,7 +1037,9 @@ async function main() {
           ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
           // The occupancy the compaction gate reads, not a second estimate of it: the chat header
           // shows a share of the window, and two numbers for one thing would disagree by a turn.
-          ...(session ? { used: occupiedContextTokens(session.messages, sessionToChat, session.lastPrompt) } : {}),
+          ...(session
+            ? { used: occupiedContextTokens(session.messages, sessionToChat, session.lastPrompt, sessionMirrorRole(config, session)) }
+            : {}),
         },
       };
     };

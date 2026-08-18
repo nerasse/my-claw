@@ -227,6 +227,56 @@ effective = max(estimate(all), measured + estimate(messages after measured.messa
   the measurement and falls back to the estimate.
 - Turn one has no measurement and falls back to the estimate.
 
+### The floor is wrong when the mirror is not the prompt
+
+That formula assumes `session.messages` is what gets resent, which holds on the home loop and not
+on the Claude SDK. There the engine owns the transcript and compacts it on its own, while our
+mirror keeps every turn and every tool result forever. So the estimate over the mirror is not a
+lower bound on the prompt, it is an upper bound that only ever grows, and `max` pinned the reading
+near 100 percent for good. Measured on a live conversation: mirror 2 925 messages, estimate ~500k,
+reported 98 percent of a 512k window, while the last billed prompt was **79 552 tokens** and the
+gate (which reads the measurement) saw 15 percent. The header screamed and nothing compacted,
+which is exactly backwards.
+
+Occupancy therefore takes the role of the mirror:
+
+| mirror | engine | occupancy |
+|---|---|---|
+| `prompt` | home loop | `max(estimate(all), measured + estimate(since))` |
+| `transcript` | claude-sdk | `measured + estimate(since)`, no floor |
+
+With no measurement at all, a transcript mirror counts from the last **compaction boundary**
+(`sdkTranscriptBase`, the mirror index where the engine's live transcript starts) rather than from
+the beginning: everything before it lives inside the SDK as a summary. The boundary is recorded
+wherever the SDK reports one, both for a compaction we asked for and for one it ran mid-run, and it
+is dropped when anything rewrites the mirror underneath it (`clearHistory`, the local summarizer).
+
+`sessionMirrorRole` is the single place that decision is made, resolving the engine from the
+session's own model choice, so a display can never read a conversation differently from the gate
+that compacts it.
+
+### The cap mid-run
+
+The gate above runs between turns, and one run can add hundreds of thousands of tokens. What holds
+the ceiling inside a run differs by engine, and both were leaky (`docs/compaction.md`).
+
+On the **home loop** the gate now runs again between two iterations: the prompt is ours to rebuild,
+so the history can be summarised mid-run instead of leaving `trimToContextWindow` to drop the oldest
+turns for good. Same threshold, same reading, with a ten-turn backoff after an attempt that changed
+nothing.
+
+On the **claude-sdk** path the only compaction that can fire inside a run is the engine's own, and by
+default it measures against the model's full window: on a 1M model with our cap at 512k, it would not
+act before ~967k (measured). The run therefore hands the SDK `settings.autoCompactWindow` (the
+documented knob, `--settings`) set to our effective window. The CLI takes `min(model window, that)`,
+so it can only ever lower the ceiling.
+
+It validates the number against **[100 000, 1 000 000]** and silently drops anything outside, so
+the value is clamped rather than passed raw: a cap below 100k cannot be enforced mid-run at all,
+only by our own gate between turns. The engine's threshold inside that window stays its own
+(roughly window minus 33k), which makes it a backstop under our 80 percent gate rather than a
+second policy: disabling it instead would leave a long run to die on the model's hard refusal.
+
 `trimToContextWindow` remains the hard fallback at the limit. The trigger is a soft gate and a
 compaction failure must never block a run.
 
@@ -242,11 +292,13 @@ context limit 1,048,576 (session override: full)
 ```
 
 The app's chat header carries the same reading, permanently, as one number: `ctx 37%`, the
-occupancy over the effective window. It travels on `model.result` (`context.used`, alongside
+occupancy over the effective window, mirror role included. It travels on `model.result` (`context.used`, alongside
 `raw` / `effective` / `cap`), which the app already asks for when a conversation opens and now
 re-asks at the end of every run: the turn that just landed is what filled the window. It is the
-same `occupiedContextTokens` the compaction gate reads, deliberately, because a header and a
-trigger that disagreed about how full a conversation is would make the compaction look random.
+same `occupiedContextTokens` the compaction gate reads, with the same mirror role, deliberately,
+because a header and a trigger that disagreed about how full a conversation is would make the
+compaction look random. `/status` prints both numbers side by side and names the mirror when it is
+a transcript, since on that engine the estimate describes a history the model no longer holds.
 A thread with no session yet reports nothing rather than 0%, and the number is never folded
 back to 100: a prompt over its ceiling is exactly the reading worth seeing.
 

@@ -1,6 +1,6 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
 import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
-import { findModel, leafModelId } from "./resolver.ts";
+import { findModel, isSdkBackedModel, leafModelId } from "./resolver.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
@@ -189,6 +189,43 @@ export function measuredPrompt(promptTokens: number, historyLength: number): Mea
 }
 
 /**
+ * What `session.messages` is on the engine that ran the conversation.
+ *
+ * On the home loop it *is* the prompt: every entry is resent on the next call, so an estimate over
+ * it is a lower bound worth keeping as a floor. On the Claude SDK the engine owns the transcript
+ * and compacts it behind our back, while the mirror keeps every turn and every tool result
+ * forever: there the estimate is an upper bound that only ever grows, and using it as a floor
+ * reported a conversation at 98 percent of the window minutes after it was compacted to 15.
+ */
+export type MirrorKind = "prompt" | "transcript";
+
+export interface MirrorRole {
+  kind: MirrorKind;
+  /**
+   * Index the engine's live transcript starts at, for a `transcript` mirror: where the last
+   * compaction boundary landed. Everything before it is summarised inside the engine and is not
+   * in the prompt any more.
+   */
+  base?: number;
+}
+
+const PROMPT_MIRROR: MirrorRole = { kind: "prompt" };
+
+/**
+ * The mirror a stored session carries, for the surfaces that read occupancy without running
+ * anything (`/status`, the app's chat header). The engine is resolved the same way the run resolves
+ * it, from the session's own model choice, so a display can never read the window differently from
+ * the gate that compacts it.
+ */
+export function sessionMirrorRole(
+  config: MyClawConfig,
+  session: { modelOverride?: string; sdkTranscriptBase?: number },
+): MirrorRole {
+  if (!config.llm || !isSdkBackedModel(config.llm, session.modelOverride)) return PROMPT_MIRROR;
+  return { kind: "transcript", ...(session.sdkTranscriptBase === undefined ? {} : { base: session.sdkTranscriptBase }) };
+}
+
+/**
  * How full the window is, in the units the provider bills.
  *
  * `chars/4` under-counts badly -- the first live measurement read 10k billed against 4 281
@@ -200,13 +237,21 @@ export function occupiedContextTokens<T>(
   history: readonly T[],
   toChat: (messages: readonly T[]) => ChatMessage[],
   measured?: MeasuredPrompt,
+  mirror: MirrorRole = PROMPT_MIRROR,
 ): number {
-  const estimated = estimateMessagesTokens(toChat(history));
+  // A base past the end means the mirror was rewritten under it (the local summarizer ran on an
+  // SDK session): the whole of what is left is in the prompt.
+  const base = mirror.kind === "transcript" && (mirror.base ?? 0) <= history.length ? mirror.base ?? 0 : 0;
+  const estimated = estimateMessagesTokens(toChat(base > 0 ? history.slice(base) : history));
   if (!measured || measured.tokens <= 0) return estimated;
   // A shorter history than the measurement covered means compaction or a rewrite happened, which
   // invalidates it outright: the tokens it counted are no longer in the prompt.
   if (measured.messageCount > history.length) return estimated;
   const delta = estimateMessagesTokens(toChat(history.slice(measured.messageCount)));
+  // The measurement is the whole truth on a transcript mirror: the engine's own compaction has
+  // already dropped from the prompt what the mirror still holds, so flooring on the estimate
+  // would pin the reading near 100 percent forever.
+  if (mirror.kind === "transcript") return measured.tokens + delta;
   // Never read lower than the pure estimate, so this can only tighten the gate, never loosen it.
   return Math.max(estimated, measured.tokens + delta);
 }

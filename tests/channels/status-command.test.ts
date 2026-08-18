@@ -282,3 +282,67 @@ test("/status names the model the run would use, pin included, exactly like chat
   const picked = handleStatusCommand({ config: pinned, sessionId, session: withPick, liveRuns: [] });
   expect(picked).toContain(chatModel(pinned, "claude-opus-5"));
 });
+
+/**
+ * The SDK owns its transcript and compacts it behind our back, while `messages` keeps every turn
+ * and every tool result: read as a prompt, that mirror put a freshly compacted conversation at 98
+ * percent of its window while the gate, which reads the measurement, saw 15.
+ */
+const sdkConfig = {
+  llm: {
+    providers: { anthropic: { type: "claude-sdk" } },
+    defaultProvider: "anthropic",
+    defaultModel: "claude-sonnet-5",
+    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }],
+  },
+  context: { cap: 512_000 },
+} as unknown as MyClawConfig;
+
+function bulky(count: number): SessionData["messages"] {
+  return Array.from({ length: count }, () => ({
+    role: "user" as const,
+    content: "x".repeat(4000),
+    timestamp: new Date().toISOString(),
+  }));
+}
+
+test("an SDK session reports the measured prompt, not the mirror it no longer sends", () => {
+  const sess = session("my-claw-app/thread/neras/sdk", {
+    messages: bulky(400),
+    sdkSessionId: "sdk-1",
+    lastPrompt: { tokens: 79_552, messageCount: 400 },
+  });
+  const { status } = statusReport({ config: sdkConfig, sessionId: sess.id, session: sess, liveRuns: [] });
+
+  expect(status.context.occupied).toBe(79_552);
+  // The mirror is still reported, labelled for what it is, because it is what an archive holds.
+  expect(status.context.estimated).toBeGreaterThan(300_000);
+  expect(status.context.occupied).toBeLessThan(status.context.autoCompactThresholdTokens);
+});
+
+test("the same history on the home loop keeps the estimate as a floor", () => {
+  const homeConfig = {
+    llm: { defaultModel: "mimo", models: [{ id: "mimo", label: "Mimo", limit: { context: 1_000_000 } }] },
+    context: { cap: 512_000 },
+  } as unknown as MyClawConfig;
+  const sess = session("matrix/room/!home:test", {
+    messages: bulky(400),
+    lastPrompt: { tokens: 79_552, messageCount: 400 },
+  });
+  const { status } = statusReport({ config: homeConfig, sessionId: sess.id, session: sess, liveRuns: [] });
+
+  // Every one of those messages is resent on the next call, so the estimate is a lower bound.
+  expect(status.context.occupied).toBe(status.context.estimated);
+});
+
+test("a boundary reported by the SDK is where occupancy starts counting", () => {
+  const sess = session("my-claw-app/thread/neras/sdk-base", {
+    messages: bulky(400),
+    sdkSessionId: "sdk-2",
+    sdkTranscriptBase: 399,
+  });
+  const { status } = statusReport({ config: sdkConfig, sessionId: sess.id, session: sess, liveRuns: [] });
+
+  // No measurement yet: only the single turn taken since the compaction is in the prompt.
+  expect(status.context.occupied).toBeLessThan(2_000);
+});

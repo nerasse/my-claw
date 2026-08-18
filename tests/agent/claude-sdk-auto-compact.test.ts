@@ -222,3 +222,83 @@ test("auto-compaction switched off in config leaves the run alone", async () => 
 
   assert.equal(captured.length, 1);
 });
+
+/**
+ * Our gate only runs between turns, and one run can add hundreds of thousands of tokens: the
+ * engine's own compaction is the only one that can fire mid-run, and it measures against the
+ * model's full window unless it is told about our cap.
+ */
+test("the run hands the SDK our window, so its own compaction respects the cap", async () => {
+  runRegistry.clear();
+  const captured: Call[] = [];
+  const config = baseConfig();
+  config.llm.models = [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }];
+  config.context = { cap: 512_000 };
+  const backend = new ClaudeSdkBackend(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, 0, undefined, undefined, undefined, undefined, scripted(captured));
+
+  await backend.handleMessage(msg("m1", "salut"), session("s-window"));
+
+  assert.deepEqual(captured[0]!.options["settings"], { autoCompactWindow: 512_000 });
+});
+
+// The CLI validates the number against [100k, 1M] and silently drops anything outside, so a cap
+// below the floor has to be clamped: dropped, it would leave the model's whole window in force.
+test("a cap under the SDK's own floor is clamped instead of being dropped", async () => {
+  runRegistry.clear();
+  const captured: Call[] = [];
+  const backend = makeBackend(scripted(captured));
+
+  await backend.handleMessage(msg("m1", "salut"), session("s-clamp"));
+
+  assert.deepEqual(captured[0]!.options["settings"], { autoCompactWindow: 100_000 });
+});
+
+/**
+ * The engine compacting on its own says the same thing as our /compact: everything mirrored so far
+ * is summarised inside the SDK. Without picking the boundary up, the mirror kept counting turns the
+ * model no longer holds and the header read 98 percent on a prompt that had dropped back to 15.
+ */
+test("a mid-run compaction rebases the mirror and drops the stale measurement", async () => {
+  runRegistry.clear();
+  const captured: Call[] = [];
+  const queryFn: SdkQueryFn = ({ prompt, options }) => {
+    captured.push({ options, prompt: "" });
+    return (async function* () {
+      await prompt.next();
+      yield { type: "system", subtype: "compact_boundary" } as never;
+      yield { type: "result", subtype: "success", result: "answer" } as never;
+      void prompt.next().catch(() => {});
+    })() as AsyncIterable<never>;
+  };
+  const backend = makeBackend(queryFn);
+  const sess = session("s-midrun");
+  sess.sdkSessionId = "sdk-mid";
+  sess.lastPrompt = { tokens: 700, messageCount: 0 };
+
+  await backend.handleMessage(msg("m1", "salut"), sess);
+
+  // The inbound turn is mirrored before the query runs, so the boundary lands after it.
+  assert.equal(sess.sdkTranscriptBase, 1);
+  assert.equal(sess.lastPrompt, undefined);
+});
+
+// A sub-agent summarising its own transcript says nothing about this conversation's.
+test("a nested boundary is ignored", async () => {
+  runRegistry.clear();
+  const queryFn: SdkQueryFn = ({ prompt }) =>
+    (async function* () {
+      await prompt.next();
+      yield { type: "system", subtype: "compact_boundary", parent_tool_use_id: "tool-1" } as never;
+      yield { type: "result", subtype: "success", result: "answer" } as never;
+      void prompt.next().catch(() => {});
+    })() as AsyncIterable<never>;
+  const backend = makeBackend(queryFn);
+  const sess = session("s-nested");
+  sess.sdkSessionId = "sdk-nested";
+  sess.lastPrompt = { tokens: 700, messageCount: 0 };
+
+  await backend.handleMessage(msg("m1", "salut"), sess);
+
+  assert.equal(sess.sdkTranscriptBase, undefined);
+  assert.deepEqual(sess.lastPrompt, { tokens: 700, messageCount: 0 });
+});

@@ -103,13 +103,44 @@ full window, ever fired. Dropping `lastPrompt` after a compaction is not bookkee
 measurement describes a transcript that no longer exists, and keeping it would re-trigger the
 gate on every run from then on.
 
-The SDK also compacts by itself, out of reach from here, and reports it with `trigger: "auto"`
-in the transcript boundary.
+The SDK also compacts by itself, and reports it with `trigger: "auto"` in the transcript boundary.
+Every boundary it reports is recorded as `sdkTranscriptBase` with the stale measurement dropped, so
+the mirror stops being counted as if the model still held it (`docs/context-window.md`).
+
+### Inside a run, not only between two
+
+The gate above runs once, at the start of a run. That was the whole story while a run was a turn or
+two; it is not, on either engine: one agentic run can add hundreds of thousands of tokens of tool
+output before it answers.
+
+| | what used to happen mid-run | what happens now |
+|---|---|---|
+| home loop | `trimToContextWindow` kept the prompt legal by **dropping** the oldest turns | the gate runs again between iterations and summarises instead |
+| claude-sdk | the engine's own compaction fired on the **model's** window (~967k for a 1M model) | it is handed our effective window, so it fires under our ceiling |
+
+On the home loop the check sits between two iterations, before the prompt is assembled. The run is
+the only writer at that point (the router serialises runs per session and meta-commands are refused
+while one holds it), so the risk is not a race but consistency: the prompt is built from the history,
+so a rewritten history means a rebuilt prompt, and the rollback point the error path uses is moved
+with it (`session.messages.length = messageCountBeforeLoop` on a shorter history would extend the
+array with holes). The recalled memory block is not re-injected: it is a hint on the inbound turn,
+the run has already read it, and it never was part of the history the summary came from.
+
+A summarization that changes nothing (history too short to split, a refused summary, a provider
+error) backs off for ten turns. Every iteration past the threshold is a candidate, and without the
+backoff a run would pay for one summarization attempt per tool round and never move.
+
+On the SDK side the ratio cannot be set, only the window: `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` was
+measured against `getContextUsage()` and left the reported threshold untouched, so it is not used.
+The engine's own threshold inside the window we hand it lands around `window - 33k` (measured:
+479 000 for a 512k window, against 934 000 with no setting), which makes it a backstop under our 80
+percent rather than a second policy.
 
 ### What the owner sees
 
 A triggered gate spends one to two minutes with nothing on the wire, on a message that was just
-sent. Both engines therefore emit `message:queued` with reason `compaction` when they fire, the
+sent, or in the middle of an answer already streaming. Both engines therefore emit `message:queued`
+with reason `compaction` when they fire, run start and mid-run alike, the
 same event a send held behind a `/compact` produces, so the app marks the bubble "waiting for the
 compaction" with its elapsed counter. The mark is lifted by whatever comes next (`chat.stream.start`,
 `chat.message` or `chat.run.end`), so a lost frame cannot strand it.
