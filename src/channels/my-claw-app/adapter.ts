@@ -903,6 +903,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       workspacesCtrl: this.workspacesCtrl,
       commandHandler: this.commandHandler,
       sendFrame: (ws, frame) => this.sendFrame(ws, frame),
+      broadcastFrame: (owner, frame) => this.broadcast(owner, frame),
       refuse: (ws, scope, message, data) => this.refuse(ws, scope, message, data),
       sessionIdOf: (ws, threadId) => this.sessionIdOf(ws, threadId),
     };

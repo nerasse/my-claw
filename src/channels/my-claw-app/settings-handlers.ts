@@ -83,6 +83,8 @@ export interface MyClawAppSettingsDeps {
   readonly workspacesCtrl?: MyClawAppWorkspacesController;
   readonly commandHandler?: MyClawAppCommandHandler;
   sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void;
+  /** Every device of one owner. What a state change answers with, since it changed it for all of them. */
+  broadcastFrame(owner: string, frame: MyClawAppServerFrame): void;
   refuse(
     ws: ServerWebSocket<MyClawAppSessionData>,
     scope: MyClawAppErrorScope,
@@ -1113,7 +1115,9 @@ export async function handleModel(
         return;
       }
       const state = await d.models.set(ws.data.owner, safeThread, modelId);
-      d.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+      // The pick belongs to the thread, not to the phone that made it: a browser left open on the
+      // same conversation would otherwise keep naming the previous model until it reloads.
+      d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
       return;
     }
     const state = await d.models.current(ws.data.owner, safeThread);
@@ -1140,7 +1144,7 @@ export async function handleModelEffort(
   }
   try {
     const state = await d.models.setEffort(ws.data.owner, safeThread, level);
-    d.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+    d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
   } catch (err) {
     await d.refuse(ws, "model", "model.effort.set failed", { threadId: safeThread, level, error: String(err) });
   }
@@ -1167,7 +1171,7 @@ export async function handleModelContext(
   }
   try {
     const state = await d.models.setContext(ws.data.owner, safeThread, choice);
-    d.sendFrame(ws, { type: "model.result", threadId: safeThread, ...state });
+    d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
   } catch (err) {
     await d.refuse(ws, "model", "model.context.set failed", { threadId: safeThread, error: String(err) });
   }

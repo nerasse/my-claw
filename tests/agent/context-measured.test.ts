@@ -107,6 +107,19 @@ describe("the prompt is measured when the turn opens", () => {
     expect(announced.length).toBe(1);
   });
 
+  test("a compaction boundary announces the drop it just caused", async () => {
+    const s = session();
+    const backend = makeBackend(fakeQuery([
+      START({ input_tokens: 190000 }),
+      { type: "system", subtype: "compact_boundary" },
+      RESULT,
+    ]));
+    const announced = await withMeasurements(() => backend.handleMessageStreaming(msg(), s, async () => {}));
+    // The engine dropped the prompt it had measured, so the measurement goes with it.
+    expect(s.lastPrompt).toBeUndefined();
+    expect(announced.length).toBe(2);
+  });
+
   test("the reading matches the one the billing path writes for the same turn", async () => {
     const usage = { input_tokens: 120, cache_read_input_tokens: 4000, cache_creation_input_tokens: 900, output_tokens: 12 };
     const fromStart = session();

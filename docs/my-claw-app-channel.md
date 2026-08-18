@@ -767,9 +767,14 @@ runs fresh like any other message.
   for it when it opens a thread and again when a run ends, and the server pushes the same frame
   unasked on every `session:context:measured`, so the share follows a run instead of reporting
   where the run started. One push per turn, tool calls or not, at the earliest moment the engine
-  knows the count: for the SDK that is `message_start`, before a token of the answer. A push is a
-  `model.result` like any other, matched only by `threadId`: there is no correlation id, and the
-  app applies it through the path it already had.
+  knows the count: for the SDK that is `message_start`, before a token of the answer. A compaction,
+  a `/new` and the SDK's own mid-run boundary push it as well, since each moves the figure with no
+  turn behind it. A push is a `model.result` like any other, matched only by `threadId`: there is no
+  correlation id, and the app applies it through the path it already had.
+- `model.set`, `model.effort.set` and `model.context.set` answer **every device of the owner**, not
+  only the one that asked: the pick belongs to the thread, so a browser left open on the same
+  conversation would otherwise keep naming the previous model until it reloaded. `model.get` stays a
+  private answer, since it changes nothing.
 - `commands.list.result` carries the shared command catalog (same source as the
   telegram bot menu), so the app's slash-menu can never drift from the server:
   the device asks for it again whenever the menu opens.

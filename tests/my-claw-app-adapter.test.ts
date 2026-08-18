@@ -1645,6 +1645,43 @@ describe("model frames", () => {
     assert.equal(frame["model"], "fast-1");
   });
 
+  test("a model pick reaches every device of the owner, not just the one that picked", async () => {
+    const shared = new MyClawAppAdapter(
+      createConfig({
+        devices: {
+          [DEVICE_ID]: { token: TOKEN, name: "test phone", owner: "neras" },
+          "dev-web": { token: TOKEN, name: "test browser", owner: "neras" },
+        },
+      }),
+      store as never,
+    );
+    shared.onModelController({
+      list: () => ({ models: [{ id: "fast-1", label: "Fast" }, { id: "strong-2", label: "Strong" }], defaultModel: "fast-1" }),
+      endpoints: async () => [],
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "high", levels: ["high"], supported: true }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 128000, choice: 128000 } }),
+    });
+    await shared.start();
+    const phone = await connectClient(shared.port);
+    const browser = await connectClient(shared.port, "dev-web");
+    try {
+      phone.ws.send(JSON.stringify({ type: "model.set", threadId: "t1", model: "strong-2" }));
+      const own = await nextFrame(phone);
+      assert.equal(own["model"], "strong-2");
+      // The pick belongs to the thread, so the browser left open on it hears about it too.
+      const echoed = await nextFrame(browser);
+      assert.equal(echoed["type"], "model.result");
+      assert.equal(echoed["model"], "strong-2");
+      assert.equal(echoed["threadId"], "t1");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+      await shared.stop();
+    }
+  });
+
   test("a session id of this channel addresses the push, a foreign one is skipped", async () => {
     adapter.notifyModelStateForSession(`my-claw-app/thread/${DEVICE_ID}/t1`);
     const frame = await nextFrame(client);

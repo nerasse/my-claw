@@ -2165,6 +2165,11 @@ async function main() {
     // their measurement lands, so the share follows the run instead of freezing at what it was when
     // the run started. Includes the turns that call no tool, which is most of the short ones.
     hooks.on("session:context:measured", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+    // A compaction or a /new rewrites the history with no turn behind it, so nothing would move the
+    // figure until the next run: a thread the owner just emptied would keep showing it full.
+    hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+    hooks.on("session:cleared", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+    hooks.on("session:reset", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
 
     myClawApp.onMessage(async (msg) => withRunContext({ platform: "my-claw-app" }, async () => {
       let response: RouteResult | undefined;

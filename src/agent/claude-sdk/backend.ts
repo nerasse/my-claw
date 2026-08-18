@@ -444,6 +444,9 @@ export class ClaudeSdkBackend implements AgentBackend {
   private markCompactBoundary(session: SessionData): void {
     session.sdkTranscriptBase = session.messages.length;
     delete session.lastPrompt;
+    // The engine just dropped most of the prompt and there is no turn to measure: without this the
+    // occupancy a screen shows would stay at its pre-compaction figure until the next request.
+    hooks.emit("session:context:measured", { sessionId: session.id });
   }
 
   /**
