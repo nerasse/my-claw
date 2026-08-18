@@ -182,6 +182,12 @@ class FakeSessionStore {
     this.journal.push({ threadId, input, output, ...(details ? { details } : {}) });
   }
 
+  failures: Array<{ threadId: string; error: string }> = [];
+
+  async recordFailure(deviceId: string, threadId: string, error: string): Promise<void> {
+    this.failures.push({ threadId, error });
+  }
+
   async archive(deviceId: string, threadId: string): Promise<void> {
     this.archived.push(threadId);
     const entry = this.summaries.find((summary) => summary.threadId === threadId);

@@ -93,6 +93,47 @@ describe("stored reasoning never reaches a model", () => {
   });
 });
 
+describe("the source id of a turn is display-only too", () => {
+  test("the home loop stores it on the user turn and never sends it", async () => {
+    const registry = new ToolRegistry();
+    const skillRegistry = new SkillRegistry();
+    const bridge = new AgentBridge(config, registry, skillRegistry);
+    let sentBody = "";
+    const fetchMock = mockFetch(async (_url, init) => {
+      sentBody = String((init as RequestInit | undefined)?.body ?? "");
+      return new Response(JSON.stringify({ choices: [{ message: { content: "answered" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }) as never;
+    });
+
+    try {
+      const session = sessionWithReasoning();
+      await bridge.handleMessage(createMessage(), session);
+      const turn = session.messages.find((m) => m.role === "user" && m.content === "hello");
+      expect(turn?.role === "user" ? turn.sourceId : undefined).toBe("m1");
+
+      const sent = JSON.parse(sentBody) as { messages: Array<Record<string, unknown>> };
+      const asked = sent.messages.filter((m) => m["content"] === "hello");
+      expect(asked).toHaveLength(1);
+      expect("sourceId" in asked[0]!).toBe(false);
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("the engine-switch transcript carries no source id", () => {
+    const messages: SessionMessage[] = [
+      { role: "user", content: "first question", timestamp: "2026-01-01T00:00:00.000Z", sourceId: "send-42" },
+      { role: "assistant", content: "first answer", timestamp: "2026-01-01T00:00:01.000Z" },
+    ];
+    const rendered = renderPriorConversation(messages, { maxTokens: 10_000 });
+    expect(rendered).not.toBeNull();
+    expect(rendered!.text).toContain("first question");
+    expect(rendered!.text).not.toContain("send-42");
+  });
+});
+
 describe("the home loop persists what the model thought", () => {
   test("a reasoning-carrying reply is stored on the assistant mirror message", async () => {
     const registry = new ToolRegistry();

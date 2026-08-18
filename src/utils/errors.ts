@@ -5,6 +5,15 @@ export function errorLogData(err: unknown): unknown {
   return String(err);
 }
 
+/**
+ * The one-line form a channel puts on screen when a run dies. Bounded, because an API error can
+ * carry a whole response body and this ends up in a chat bubble and in a session file.
+ */
+export function briefError(err: unknown, limit = 200): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.slice(0, limit);
+}
+
 export function formatError(context: string, rawError: unknown): string {
   const msg = rawError instanceof Error ? rawError.message : String(rawError);
 

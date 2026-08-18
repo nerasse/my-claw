@@ -369,6 +369,7 @@ export class AgentBridge implements AgentBackend {
         role: "user",
         content: transformedContent,
         timestamp: now,
+        ...(message.id ? { sourceId: message.id } : {}),
         ...(images.length > 0 ? { attachments: images } : {}),
         ...(message.location ? { location: message.location } : {}),
       });

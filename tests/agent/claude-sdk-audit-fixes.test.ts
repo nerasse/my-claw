@@ -115,7 +115,7 @@ test("compactSdkSession refuses to race an active run", async () => {
   assert.equal(out2.text, "compacted");
 });
 
-test("a failed run rolls back both the mirror and the SDK session pointer", async () => {
+test("a failed run keeps the question and rolls the rest back", async () => {
   runRegistry.clear();
   const queryFn: SdkQueryFn = ({ prompt }) => {
     return (async function* () {
@@ -129,8 +129,32 @@ test("a failed run rolls back both the mirror and the SDK session pointer", asyn
   sess.sdkSessionId = "sdk-old";
 
   await assert.rejects(() => backend.handleMessage(msg("m1"), sess), /subprocess died/);
-  assert.equal(sess.messages.length, 0);
+  // What the owner typed survives: the app replays this mirror, so dropping it erased his
+  // message from the thread on the next history page.
+  assert.equal(sess.messages.length, 1);
+  assert.equal(sess.messages[0]!.role, "user");
   assert.equal(sess.sdkSessionId, "sdk-old");
+  // Resumed transcript, so the SDK already holds that question: watermarked, never replayed.
+  assert.equal(sess.sdkSyncedAt, sess.messages[0]!.timestamp);
+});
+
+test("a failed run on a fresh SDK session leaves the question to be replayed", async () => {
+  runRegistry.clear();
+  const queryFn: SdkQueryFn = ({ prompt }) => {
+    return (async function* () {
+      await prompt.next();
+      yield { type: "system", subtype: "init", session_id: "sdk-new" } as never;
+      throw new Error("subprocess died");
+    })() as AsyncIterable<never>;
+  };
+  const backend = new ClaudeSdkBackend(mixedConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, 0, undefined, undefined, undefined, undefined, queryFn);
+  const sess = session("s-rollback-fresh");
+
+  await assert.rejects(() => backend.handleMessage(msg("m1"), sess), /subprocess died/);
+  assert.equal(sess.messages.length, 1);
+  // The abandoned session is never resumed, so nothing has seen the question yet.
+  assert.equal(sess.sdkSessionId, undefined);
+  assert.equal(sess.sdkSyncedAt, undefined);
 });
 
 test("compact maps an aborted (timed out) CLI to a friendly message", async () => {

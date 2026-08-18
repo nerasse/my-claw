@@ -982,8 +982,8 @@ inside the session file:
 - **Deleted with the conversation, by construction.** It is a field of the session, so `remove`,
   the archive purge and `/new` (which builds a fresh session object) take it along. There is no
   side file to orphan.
-- **Capped at `MAX_SESSION_COMMANDS` (200), newest kept.** A session is one JSON file rewritten
-  in full on every turn, the same reason reasoning is capped.
+- **Uncapped.** A conversation keeps everything it was told, and the owner asked for the caps to
+  go: the file is rewritten in full on every turn, so a long journal costs disk and nothing else.
 - **Masked.** `input` goes through `redactCommandArgs`, so `/claude set-token` is journaled as
   `set-token [redacted]`.
 
@@ -1005,10 +1005,61 @@ The two ends of the history are deliberately open:
   head, a summary and a tail, so the journal outlives the messages it was interleaved with. Bounded
   by the oldest surviving message, everything typed before it became unreachable while still
   sitting in the file.
-- **`MAX_PAGE_COMMANDS` (20) per page, newest kept.** The other half of the same situation: eight
-  messages left and a two hundred entry journal is a screen of replayed commands with the
-  conversation buried under it. This one is a display cap, nothing is deleted; `MAX_SESSION_COMMANDS`
-  remains the only rule that forgets.
+- **No per-page cap.** A journal entry belongs to exactly one page, so a page that replayed only
+  the last twenty put the rest out of reach for good.
+
+## The failure journal
+
+Same problem one layer up: a run that dies says so on `chat.stream.abort`, a stream frame and
+nothing else. The next `chat.history` replaced the screen with the server's version, where the
+failure had never existed, so the thread reopened on a question with nothing under it. Measured on
+`API Error: 529 Overloaded`, which the CLI only surfaces after minutes of its own retries, and on
+that run the question itself was gone too (see "A failed run keeps the question" in
+`docs/claude-sdk-backend.md`).
+
+The record is `session.failures`, an array of `{ error, timestamp }`, written by
+`recordFailure(owner, threadId, error)` from the same catch that ends the run and with the same
+text the live bubble showed (`briefError`, 200 chars). Stored capped at `FAILURE_TEXT_LIMIT` (500).
+
+- **Its own journal, not an assistant message.** On the home loop `session.messages` *is* the
+  prompt: a stored "run failed: API Error 529" would come back as something the agent had said.
+  Display-only, read by `history()` and never by a model.
+- **Replayed as the bubble it was.** A `role: "assistant"` entry with empty `text` and an `error`,
+  which is exactly the shape `abortStream` builds live, so the reopened thread renders identically.
+- **Merged by timestamp, on one timeline with the commands**, under the question it never answered.
+- **Aborts are not journaled.** A `/stop` is the owner's own doing, and the mirror keeps whatever
+  the run produced before it, so there is a real answer under the question already.
+- Deleted with the conversation, like the command journal: it is a field of the session.
+
+## A page is merged, not substituted
+
+`history()` reads the **live** session (`sessionManager.read` returns the cached object a run is
+mutating, not the file), so the newest page already carries the run in flight: its question, its
+finished bubbles, its tool cards. The app used to refuse that page while a run was active, on the
+assumption that the page lagged behind the frames. Effect measured: a device that reloaded mid-run
+had only the frames broadcast since it connected, so it showed an answer streaming under **no
+question**, and the question appeared minutes later when the run ended and a page was finally
+accepted. Switching device mid-run showed the same thing.
+
+`seedHistory` now takes the page and keeps only what the page cannot know: the bubble still being
+written, a send held behind a compaction (`chat.send.queued` flags it), and a send delivered less
+than 30 s ago whose turn is not pushed yet. Cards, command answers, notices and errors are
+page-owned outright.
+
+That merge needs the two sides to agree on identity, which is what these carry:
+
+- **`sourceId` on the mirrored user turn** — the `chat.send` id, which *is* the bubble id on the
+  device. `history()` replays the turn under it, so the question of the run in flight is recognised
+  instead of duplicated. Display-only, like `reasoning`: both replay paths build their messages
+  field by field and one test per path proves it never reaches a model.
+- **`sourceId` on the command journal entry** — same idea for the two bubbles a command produces:
+  the input replays under the send id, the answer under `cmd-<send id>`, which is the id the app
+  gives that bubble live (placeholder included, so a `/compact` that was placeheld is the same
+  bubble before and after).
+- **The 30 s window** is what keeps a bubble the server will never mirror (a `/status`, drawn as a
+  page and journalled as nothing; a message that never left) from sitting at the end of the thread
+  for good. Both sides of the subtraction are the device's own clock, so there is no skew to reason
+  about.
 
 ## Security
 

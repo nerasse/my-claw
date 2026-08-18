@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { recordSessionCommand } from "../../sessions/store.ts";
+import { recordSessionCommand, recordSessionFailure } from "../../sessions/store.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -19,7 +19,12 @@ export interface MyClawAppSessionStore {
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
    */
-  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void>;
+  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void>;
+  /**
+   * Journals a run that died and the error the owner was shown, so a reopened thread still says
+   * why the question got no answer. No-op on a thread that has no session yet.
+   */
+  recordFailure(owner: string, threadId: string, error: string): Promise<void>;
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
   /** Pins the conversation at the end of the pinned list, or unpins it. */
@@ -247,32 +252,50 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // the page after it, so no command is ever replayed twice. The first page has no lower bound
     // either: a compaction drops messages the journal outlived, and a command older than every
     // surviving message must still surface somewhere rather than be silently unreachable.
-    const journal = session.commands ?? [];
     const lowerBound = hasMore ? (window[0]?.timestamp ?? "") : "";
     const upperBound = end < total ? session.messages[end]!.timestamp : undefined;
-    const matched = journal.filter(
-      (entry) => entry.timestamp >= lowerBound && (upperBound === undefined || entry.timestamp < upperBound),
-    );
-    // Every command of the window, however many: a page that showed only the last twenty hid the
-    // rest with no way to reach them, since a journal entry belongs to exactly one page.
-    const pageCommands = matched;
-    let nextCommand = 0;
-    // Flushed as the messages are walked, so a command sits where it was typed rather than in a
+    const inPage = (ts: string): boolean => ts >= lowerBound && (upperBound === undefined || ts < upperBound);
+    // Everything of the window, however much: a page that showed only the last twenty hid the rest
+    // with no way to reach them, since a journal entry belongs to exactly one page. Commands and
+    // failed runs share one timeline so they land in the order they happened.
+    const asides: { ts: string; entries: MyClawAppHistoryEntry[] }[] = [];
+    (session.commands ?? []).filter((entry) => inPage(entry.timestamp)).forEach((entry, index) => {
+      asides.push({
+        ts: entry.timestamp,
+        entries: [
+          // Same ids the live bubbles had, when the send is known: the device typed the command in
+          // a bubble of its own and drew the answer in `cmd-<send id>`.
+          { id: entry.sourceId ?? `c-${entry.timestamp}-${index}-in`, role: "user", text: entry.input, ts: entry.timestamp },
+          {
+            id: entry.sourceId ? `cmd-${entry.sourceId}` : `c-${entry.timestamp}-${index}-out`,
+            role: "assistant",
+            text: entry.output,
+            ts: entry.timestamp,
+            command: true,
+            ...(entry.details ? { details: entry.details } : {}),
+          },
+        ],
+      });
+    });
+    // A failed run replays as the error bubble the owner saw live, under the question it never
+    // answered: the mirror keeps that question now, and a question with nothing under it reads as
+    // a message the agent ignored.
+    (session.failures ?? []).filter((entry) => inPage(entry.timestamp)).forEach((entry, index) => {
+      asides.push({
+        ts: entry.timestamp,
+        entries: [{ id: `f-${entry.timestamp}-${index}`, role: "assistant", text: "", ts: entry.timestamp, error: entry.error }],
+      });
+    });
+    asides.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+    let nextAside = 0;
+    // Flushed as the messages are walked, so an aside sits where it happened rather than in a
     // block at one end of the page.
     const flushCommandsUpTo = (limit?: string): void => {
-      while (nextCommand < pageCommands.length) {
-        const entry = pageCommands[nextCommand]!;
-        if (limit !== undefined && entry.timestamp > limit) return;
-        nextCommand += 1;
-        entries.push({ id: `c-${entry.timestamp}-${nextCommand}-in`, role: "user", text: entry.input, ts: entry.timestamp });
-        entries.push({
-          id: `c-${entry.timestamp}-${nextCommand}-out`,
-          role: "assistant",
-          text: entry.output,
-          ts: entry.timestamp,
-          command: true,
-          ...(entry.details ? { details: entry.details } : {}),
-        });
+      while (nextAside < asides.length) {
+        const aside = asides[nextAside]!;
+        if (limit !== undefined && aside.ts > limit) return;
+        nextAside += 1;
+        entries.push(...aside.entries);
       }
     };
 
@@ -290,7 +313,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           transcripts[recordings[i]!.id] = spoken[i]!;
         }
         entries.push({
-          id: `h-${message.timestamp}-${entries.length}`,
+          // The device's own bubble id when the message came from it, so a page can be merged
+          // with a thread already on screen: the question of a run in flight is then recognised
+          // rather than duplicated -- docs/my-claw-app-channel.md.
+          id: message.sourceId ?? `h-${message.timestamp}-${entries.length}`,
           role: "user",
           text: stripLocationBlock(text),
           ts: message.timestamp,
@@ -340,7 +366,15 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return { entries, hasMore, nextBefore };
   }
 
-  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void> {
+  async recordFailure(owner: string, threadId: string, error: string): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) return;
+    recordSessionFailure(session, error);
+    await this.sessionManager.persist(sessionId);
+  }
+
+  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
@@ -349,6 +383,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       output,
       timestamp: new Date().toISOString(),
       ...(details ? { details } : {}),
+      ...(sourceId ? { sourceId } : {}),
     });
     await this.sessionManager.persist(sessionId);
   }

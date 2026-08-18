@@ -41,6 +41,7 @@ import {
 } from "./core/config-store.ts";
 import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-health.ts";
 import { writeJsonFileAtomically, writeFileAtomically } from "./utils/atomic-write.ts";
+import { briefError } from "./utils/errors.ts";
 import { TelegramAdapter } from "./channels/telegram/adapter.ts";
 import { escapeHtml } from "./channels/telegram/format.ts";
 import { MatrixAdapter } from "./channels/matrix/adapter.ts";
@@ -2204,7 +2205,7 @@ async function main() {
               await active.finish();
               hooks.emit("stream:finish", { platform: "my-claw-app", chatId: msg.chatId });
             } catch (err) {
-              const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+              const brief = briefError(err);
               await active.abort(brief);
               hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
               throw err;
@@ -2214,7 +2215,13 @@ async function main() {
           }
           myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, "done");
         } catch (err) {
-          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, isAbort(err) ? "aborted" : "error");
+          const aborted = isAbort(err);
+          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, aborted ? "aborted" : "error");
+          // The error was a stream frame and nothing else, so the next history page erased it and
+          // the thread reopened on a question with nothing under it. Journalled here, where the
+          // text is the one the bubble showed. An abort needs no entry: it is the owner's own
+          // doing and the partial answer is kept in the mirror.
+          if (!aborted) await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err));
           throw err;
         }
 

@@ -813,6 +813,11 @@ export type MyClawAppHistoryEntry =
       command?: boolean;
       /** The aside folded under a command answer (a compaction summary). */
       details?: string;
+      /**
+       * Why the run this bubble stands for died. Replays the error the app drew live, which was
+       * only ever a stream frame: the thread reopened showing a question with nothing under it.
+       */
+      error?: string;
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 

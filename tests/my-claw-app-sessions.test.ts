@@ -1,7 +1,7 @@
 import { test, describe, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { saveSession, deleteSession, loadSession, type SessionData } from "../src/sessions/store.ts";
+import { saveSession, deleteSession, loadSession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { writeFile } from "node:fs/promises";
@@ -844,6 +844,109 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
     await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.");
     await store.remove(DEVICE, THREAD);
+    assert.equal(await loadSession(sessionId), null);
+  });
+});
+
+describe("MyClawAppSessionStoreImpl replay ids", () => {
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  // The app merges a page into the thread it already shows, so a replayed bubble has to carry the
+  // id the live one had or the question of a run in flight is either doubled or dropped.
+  test("a user turn replays under the device's own send id", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "la question", timestamp: "2026-01-01T00:00:01.000Z", sourceId: "send-7" },
+      { role: "user", content: "venue d'ailleurs", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.equal(entries[0]!.id, "send-7");
+    // A turn from another channel has no device bubble to match: the positional id stands.
+    assert.match(entries[1]!.id, /^h-/);
+  });
+
+  test("a journalled command replays under the ids its live bubbles had", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined, "send-9");
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const ids = entries.map((e) => e.id);
+    assert.equal(ids.includes("send-9"), true, "the command bubble is the send itself");
+    assert.equal(ids.includes("cmd-send-9"), true, "the answer keeps the id the app gave it");
+  });
+});
+
+describe("MyClawAppSessionStoreImpl failure journal", () => {
+  let manager: SessionManager;
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    manager = new SessionManager();
+    store = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  test("a failed run replays under the question it never answered", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "continue", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.recordFailure(DEVICE, THREAD, "API Error: 529 Overloaded");
+
+    const stored = await loadSession(sessionId);
+    assert.equal(stored?.messages.length, 1, "the journal must never reach the prompt");
+    assert.equal(stored?.failures?.length, 1);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.deepEqual(entries.map((e) => e.role), ["user", "assistant"]);
+    const failed = entries[1]!;
+    if (failed.role === "tool") throw new Error("expected a text entry");
+    assert.equal(failed.error, "API Error: 529 Overloaded");
+    assert.equal(failed.text, "");
+  });
+
+  test("failures and commands replay in the order they happened", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "salut", timestamp: "2026-01-01T00:00:09.000Z" },
+    ]));
+    const loaded = (await manager.peek(sessionId))!;
+    loaded.commands = [{ input: "/status", output: "context 12%", timestamp: "2026-01-01T00:00:05.000Z" }];
+    loaded.failures = [
+      { error: "first died", timestamp: "2026-01-01T00:00:03.000Z" },
+      { error: "second died", timestamp: "2026-01-01T00:00:07.000Z" },
+    ];
+    await manager.persist(sessionId);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const texts = entries.map((e) => (e.role === "tool" ? "tool" : e.error ?? e.text));
+    assert.deepEqual(texts, ["salut", "first died", "/status", "context 12%", "second died", "salut"]);
+  });
+
+  test("an empty error is not journalled, and a long one is capped", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.recordFailure(DEVICE, THREAD, "   ");
+    await store.recordFailure(DEVICE, THREAD, "x".repeat(FAILURE_TEXT_LIMIT + 50));
+
+    const stored = await loadSession(sessionId);
+    assert.equal(stored?.failures?.length, 1);
+    assert.equal(stored?.failures?.[0]!.error.length, FAILURE_TEXT_LIMIT);
+  });
+
+  test("a failure on a thread with no session yet is dropped rather than creating one", async () => {
+    await store.recordFailure(DEVICE, THREAD, "boom");
     assert.equal(await loadSession(sessionId), null);
   });
 });

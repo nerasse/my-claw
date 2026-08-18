@@ -17,7 +17,21 @@ import type { ChatLocation } from "../channels/types.ts";
 export type SessionAttachment = { type: "image"; path: string; mimeType?: string };
 
 export type SessionMessage =
-  | { role: "user"; content: string; timestamp: string; attachments?: SessionAttachment[]; location?: ChatLocation }
+  | {
+      role: "user";
+      content: string;
+      timestamp: string;
+      attachments?: SessionAttachment[];
+      location?: ChatLocation;
+      /**
+       * The channel's own id for the message that opened this turn, when it has one a client can
+       * recognise (the my-claw-app `chat.send` id, which is also the bubble id on the device).
+       * Display-only, and the reason a replayed page can be merged with what a device already
+       * shows instead of replacing it: without it the same question is either duplicated or
+       * dropped -- docs/my-claw-app-channel.md.
+       */
+      sourceId?: string;
+    }
   | {
       role: "assistant";
       content: string;
@@ -114,6 +128,12 @@ export interface SessionCommandEntry {
   timestamp: string;
   /** The aside folded under the bubble, when the answer carried one (a compaction summary). */
   details?: string;
+  /**
+   * The channel's own id for the send that typed this command, when it has one. Same purpose as
+   * `sourceId` on a user turn: the replayed bubbles carry the ids the live ones had, so a page can
+   * be merged into a thread already on screen without doubling anything.
+   */
+  sourceId?: string;
 }
 
 /**
@@ -127,6 +147,31 @@ export function recordSessionCommand(session: SessionData, entry: SessionCommand
   const journal = session.commands ?? [];
   journal.push(entry);
   session.commands = journal;
+}
+
+/** Long enough to carry an API error with its hint, short enough to stay a bubble. */
+export const FAILURE_TEXT_LIMIT = 500;
+
+export interface SessionFailureEntry {
+  /** What the owner was shown when the run died, capped at `FAILURE_TEXT_LIMIT`. */
+  error: string;
+  timestamp: string;
+}
+
+/**
+ * Appends to a conversation's failure journal.
+ *
+ * Its own journal rather than an assistant message, because on the home loop `session.messages`
+ * *is* the prompt: a stored "run failed: API Error 529" would come back as something the agent
+ * itself had said. This side is display-only, so the error survives a reopened thread without ever
+ * reaching a model.
+ */
+export function recordSessionFailure(session: SessionData, error: string): void {
+  const text = error.trim();
+  if (!text) return;
+  const journal = session.failures ?? [];
+  journal.push({ error: text.slice(0, FAILURE_TEXT_LIMIT), timestamp: new Date().toISOString() });
+  session.failures = journal;
 }
 
 export interface SubAgentMeta {
@@ -192,6 +237,12 @@ export interface SessionData {
    * shows it again. Dies with the session file, like everything else here.
    */
   commands?: SessionCommandEntry[];
+  /**
+   * Runs that died on this conversation, in order. Display-only and never part of a prompt: the
+   * mirror keeps the question a failed run was given, this keeps why it got no answer, so a
+   * reopened thread shows both instead of a message that looks ignored.
+   */
+  failures?: SessionFailureEntry[];
   /**
    * Name the owner gave this conversation. Absent means the list falls back to the opening
    * words of the first turn, which is a summary of how a thread started rather than of what it

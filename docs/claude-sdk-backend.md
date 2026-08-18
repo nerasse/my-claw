@@ -213,6 +213,14 @@ subprocess still never reads `CLAUDE.md` or `.claude/settings.json` by itself.
 
 - Per-run guards: `maxTurns` mirrors the home iteration budget; `maxBudgetUsd`
   is available as an extra cost wall (off by default on subscription).
+- **A failed run keeps the question.** The mirror rolls back to just after the user turn, never
+  below it: it is the only copy the app replays, so truncating past it deleted what the owner had
+  typed and the thread reopened as if he had never written anything (measured on a 529 Overloaded,
+  which is the common case since the CLI only surfaces one after minutes of internal retries). The
+  `sdkSessionId` still rolls back, so a fresh session that died is abandoned and the kept question
+  is replayed into the next one. A *resumed* session is the same transcript and already holds the
+  failed turn, question included, so its watermark is advanced onto that turn instead of rolled
+  back: without it the next run would ask the same thing twice.
 - `ResultMessage.subtype` drives error mapping (`error_max_turns`,
   `error_max_budget_usd`, `error_during_execution` for API/auth/quota/process
   failures) into the existing channel error formatting. The CLI retries

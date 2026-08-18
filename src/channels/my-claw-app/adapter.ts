@@ -527,6 +527,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * Journals a run that died, so the error outlives the stream frame that showed it. Swallows its
+   * own failure: this is called from a path that is already handling an error, and losing the
+   * record of it must not replace the error the owner is being told about.
+   */
+  async recordFailure(owner: string, threadId: string, error: string): Promise<void> {
+    try {
+      await this.store.recordFailure(owner, threadId, error);
+    } catch (err) {
+      void myClawAppLog("error", "failure journal failed", { owner, threadId, error: String(err) });
+    }
+  }
+
+  /**
    * The send is waiting for a compaction to finish before its run can start. Sent on its own
    * frame rather than as a notice bubble: it belongs to the message the owner already sees, and
    * the app lifts it when the stream finally arrives.
@@ -1188,13 +1201,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
     args: string,
     output: string,
     renderedAsPage: boolean,
-    details?: string,
+    details: string | undefined,
+    sourceId: string,
   ): Promise<void> {
     if (renderedAsPage || CLEARING_COMMANDS.has(command)) return;
     const redacted = redactCommandArgs(command, args);
     const input = redacted ? `/${command} ${redacted}` : `/${command}`;
     try {
-      await this.store.recordCommand(owner, threadId, input, output, details);
+      await this.store.recordCommand(owner, threadId, input, output, details, sourceId);
     } catch (err) {
       void myClawAppLog("error", "command journal failed", { owner, threadId, command, error: String(err) });
     }
@@ -1254,7 +1268,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
               ...(status ? { status } : {}),
               ...(details ? { details } : {}),
             });
-            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details);
+            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id);
           }
           return;
         } catch (err) {
@@ -1262,7 +1276,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
           const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
           this.broadcast(owner, { type: "chat.command.result", threadId, replyToId: frame.id, text: failure });
-          await this.journalCommand(owner, threadId, command, args, failure, false);
+          await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id);
           return;
         }
       }

@@ -569,6 +569,8 @@ export class ClaudeSdkBackend implements AgentBackend {
     const messageCountBefore = session.messages.length;
     const sdkSessionIdBefore = session.sdkSessionId;
     const sdkSyncedAtBefore = session.sdkSyncedAt;
+    // Set once the question is in the mirror: a failed run rolls back to here, not below it.
+    let userTurnAt: { index: number; timestamp: string } | undefined;
     let toolExecutions = 0;
     let removeAbortListener: (() => void) | undefined;
 
@@ -622,6 +624,8 @@ export class ClaudeSdkBackend implements AgentBackend {
           ? session.messages.filter((m) => m.timestamp > syncedAt)
           : [];
       const userContent = await this.buildUserTurn(message, session);
+      const userTurn = session.messages[session.messages.length - 1]!;
+      userTurnAt = { index: session.messages.length, timestamp: userTurn.timestamp };
       let initialText = await this.prefixMemory(message, userContent);
       initialText = this.withPriorConversation(initialText, priorHistory, session, systemPrompt, llmConfig, agentToolType);
       const initialContent = await this.withImageBlocks(message, initialText, Boolean(llmConfig.vision));
@@ -915,11 +919,18 @@ export class ClaudeSdkBackend implements AgentBackend {
         });
         throw new AbortedError();
       }
-      session.messages.length = messageCountBefore;
-      // Mirror and SDK pointer roll back together: keeping a session id whose SDK-side
-      // history contains the failed turn would desync the two histories.
+      // The question stays, whatever the run did after it is dropped. The app replays this
+      // mirror on reopen, so truncating below the user turn erased what the owner had typed:
+      // an overloaded API (529) took his message down with it and left the thread looking as if
+      // he had never written anything.
+      session.messages.length = userTurnAt?.index ?? messageCountBefore;
+      // The SDK pointer rolls back: a fresh session that failed is abandoned, so the next run
+      // opens a new one and replays the kept question into it.
       session.sdkSessionId = sdkSessionIdBefore;
-      session.sdkSyncedAt = sdkSyncedAtBefore;
+      // A resumed session is the same transcript, and it already contains the failed turn --
+      // everything the run shipped, question included. Watermarking it as seen is what keeps the
+      // next run from asking the same thing twice.
+      session.sdkSyncedAt = sdkSessionIdBefore && userTurnAt ? userTurnAt.timestamp : sdkSyncedAtBefore;
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -1007,6 +1018,7 @@ export class ClaudeSdkBackend implements AgentBackend {
       role: "user",
       content: transformed,
       timestamp: new Date().toISOString(),
+      ...(message.id ? { sourceId: message.id } : {}),
       ...(message.location ? { location: message.location } : {}),
     });
     return transformed;
