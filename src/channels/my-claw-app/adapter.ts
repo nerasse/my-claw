@@ -509,6 +509,26 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * Run lifecycle for one owner's sockets: the app pins its Stop button to these frames, not
    * to the stream bubbles, so the button survives tool calls and model turns.
    */
+  /**
+   * Pushes a thread's model state to the owner's devices, unasked. The header shows the share of
+   * the context window this thread occupies, which moves at every turn of a run, and nothing
+   * refreshed it between the opening of the thread and the end of the run: a long run displayed the
+   * occupancy it had before starting. Same frame `model.get` answers, so the app applies it through
+   * the path it already has.
+   *
+   * Never throws and never blocks the caller's turn: a header that failed to refresh must not fail
+   * a run.
+   */
+  async notifyModelState(owner: string, threadId: string): Promise<void> {
+    if (!this.models) return;
+    try {
+      const state = await this.models.current(owner, threadId);
+      this.broadcast(owner, { type: "model.result", threadId, ...state });
+    } catch (err) {
+      await myClawAppLog("debug", "model state push failed", { threadId, error: String(err) });
+    }
+  }
+
   notifyRun(owner: string, threadId: string, active: boolean, reason?: "done" | "aborted" | "error"): void {
     if (active) {
       this.broadcast(owner, {

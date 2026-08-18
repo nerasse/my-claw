@@ -763,10 +763,16 @@ runs fresh like any other message.
   its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread
   indicator. `effort.level` is `""` when the model discards effort. `context.used` is how full
-  the window is (docs/context-window.md): the chat header shows it as a percentage, and the app
-  re-asks `model.get` at the end of each run to refresh it.`commands.list.result` carries the shared command catalog (same source as the
-telegram bot menu), so the app's slash-menu can never drift from the server:
-the device asks for it again whenever the menu opens.
+  the window is (docs/context-window.md): the chat header shows it as a percentage. The app asks
+  for it when it opens a thread and again when a run ends, and the server pushes the same frame
+  unasked after every finished tool call, so the share follows a long run instead of reporting
+  where the run started. That instant is the one both engines have already updated the measured
+  prompt and the history mirror, so the pushed number is never a turn behind. A push is a
+  `model.result` like any other, matched only by `threadId`: there is no correlation id, and the
+  app applies it through the path it already had.
+- `commands.list.result` carries the shared command catalog (same source as the
+  telegram bot menu), so the app's slash-menu can never drift from the server:
+  the device asks for it again whenever the menu opens.
 
 
 Every refusal goes through one exit that logs it and tags it with the screen that asked

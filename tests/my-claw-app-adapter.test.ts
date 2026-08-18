@@ -1636,6 +1636,40 @@ describe("model frames", () => {
     assert.equal(frame["type"], "model.result");
     assert.equal((frame["effort"] as { level: string }).level, "medium");
   });
+
+  test("a mid-run push sends the same state, unasked", async () => {
+    await adapter.notifyModelState(DEVICE_ID, "t1");
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["threadId"], "t1");
+    assert.equal(frame["model"], "fast-1");
+  });
+
+  test("a push whose state cannot be read reaches neither the client nor the caller", async () => {
+    const failing = new MyClawAppAdapter(createConfig(), store as never);
+    failing.onModelController({
+      list: () => ({ models: [{ id: "fast-1", label: "Fast" }], defaultModel: "fast-1" }),
+      endpoints: async () => [],
+      current: async () => {
+        throw new Error("session unreadable");
+      },
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+    });
+    await failing.start();
+    const other = await connectClient(failing.port);
+    try {
+      await failing.notifyModelState(DEVICE_ID, "t1");
+      // Nothing queued ahead of it: the next answer is the one this asks for, not a stale push.
+      other.ws.send(JSON.stringify({ type: "model.list" }));
+      const frame = await nextFrame(other);
+      assert.equal(frame["type"], "model.list.result");
+    } finally {
+      other.ws.close();
+      await failing.stop();
+    }
+  });
 });
 
 describe("agents frames", () => {
