@@ -181,6 +181,16 @@ Rules:
 - **Reasoning belongs to its segment.** `toolInternal` seals the bubble and resets the reasoning
   accumulator, so a model that thinks again after a tool fills the *next* bubble's reasoning
   instead of appending to a sealed one.
+- **An answer seals the bubble for the next thought too.** A tool call is not the only thing that
+  ends a segment: reasoning that arrives once visible text has been sent seals the bubble and opens
+  the next one (`sealBeforeReasoning`). Without it the thinking was patched onto the bubble the
+  reader was already reading, where it renders *above* that text, and the words that followed
+  continued the same bubble: two answers glued together under the header of the second one.
+  Reported from the app, and it is the shape the mirror already has, since
+  `mirrorAssistantMessage` stores one assistant message per model turn and attaches the estimate of
+  the thinking that *preceded* it. Live stream and replayed history now agree.
+  A thinking phase that has not answered yet is never split: the condition is visible text
+  (`emittedText`), so a running token estimate keeps landing on the bubble it opened.
 - **A reasoning-only bubble survives `finish`.** Today an empty-text bubble is removed
   (`chat.ts:224`). A bubble that carries reasoning but no text is not empty: it explains a tool
   call that produced no prose. Keep it.

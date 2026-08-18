@@ -26,8 +26,8 @@ export class MyClawAppStreamer {
   /** Visible text already sent for the current segment; the next delta is the diff, since the
    *  device accumulates what it receives. Held-back ref fragments never count as sent. */
   private emittedText = "";
-  /** Reasoning of the current segment only: a tool seals the bubble, and what the model thinks
-   *  afterwards belongs to the next one. */
+  /** Reasoning of the current segment only: a tool or a first answer seals the bubble, and what
+   *  the model thinks afterwards belongs to the next one. */
   private segmentReasoning = "";
   private segment = 0;
   private toolCount = 0;
@@ -112,6 +112,7 @@ export class MyClawAppStreamer {
 
   private async reasoningInternal(delta: string): Promise<void> {
     if (this.finished) return;
+    await this.sealBeforeReasoning();
     const room = REASONING_LIMIT - this.segmentReasoning.length;
     if (room <= 0) return;
     const text = delta.length > room ? `${delta.slice(0, room)}\n[reasoning truncated]` : delta;
@@ -129,6 +130,7 @@ export class MyClawAppStreamer {
 
   private async reasoningTokensInternal(tokens: number): Promise<void> {
     if (this.finished) return;
+    await this.sealBeforeReasoning();
     if (!this.started) await this.startSegment();
     await this.opts.send({
       type: "chat.reasoning.tokens",
@@ -136,6 +138,30 @@ export class MyClawAppStreamer {
       threadId: this.opts.threadId,
       tokens,
     });
+  }
+
+  /**
+   * Thinking that follows an answer belongs to the next bubble. Attached to the open one it would
+   * render above text the reader has already read, and the words that come after it would continue
+   * that same bubble -- so a second thinking phase rewrote the first answer's header. The stored
+   * mirror already splits there (one assistant message per turn, its estimate taken from the
+   * thinking that preceded it), so sealing here is what makes the live stream match the replay.
+   */
+  private async sealBeforeReasoning(): Promise<void> {
+    if (!this.started || this.emittedText.length === 0) return;
+    await this.sealSegment();
+  }
+
+  /** Closes the open bubble and moves to the next one; the buffers belong to the segment. */
+  private async sealSegment(): Promise<void> {
+    if (this.started) {
+      await this.opts.send({ type: "chat.stream.done", id: this.currentId(), threadId: this.opts.threadId });
+      this.started = false;
+      this.segment += 1;
+    }
+    this.segmentText = "";
+    this.emittedText = "";
+    this.segmentReasoning = "";
   }
 
   /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */
@@ -153,14 +179,7 @@ export class MyClawAppStreamer {
 
   private async toolInternal(toolCalls: ToolCallResult[]): Promise<void> {
     if (this.finished) return;
-    if (this.started) {
-      await this.opts.send({ type: "chat.stream.done", id: this.currentId(), threadId: this.opts.threadId });
-      this.started = false;
-      this.segment += 1;
-    }
-    this.segmentText = "";
-    this.emittedText = "";
-    this.segmentReasoning = "";
+    await this.sealSegment();
     for (const tool of toolCalls) {
       this.toolCount += 1;
       const output = tool.output ?? "";

@@ -28,6 +28,14 @@ function reasoningOf(frames: MyClawAppServerFrame[], id = "s1"): string {
     .join("");
 }
 
+function textOf(frames: MyClawAppServerFrame[], id = "s1"): string {
+  return frames
+    .filter((f): f is MyClawAppServerFrame & { type: "chat.stream.delta"; text: string; id: string } => f.type === "chat.stream.delta")
+    .filter((f) => f.id === id)
+    .map((f) => f.text)
+    .join("");
+}
+
 describe("reasoning opens the bubble", () => {
   // The thinking phase is exactly the silence the owner stares at, so the bubble has to exist
   // before the first word of the answer. See docs/reasoning-visibility.md.
@@ -98,6 +106,47 @@ describe("reasoning belongs to its segment", () => {
     expect(reasoningOf(frames, "s1#1")).toBe("second thought");
   });
 
+  // Reported from the app: a second thinking phase rendered above the answer already on screen,
+  // and the words that came after it continued that same bubble.
+  test("thinking that follows an answer seals it and opens the next bubble", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("first thought");
+    await streamer.push("first answer");
+    await streamer.pushReasoning("second thought");
+    await streamer.push("second answer");
+    await streamer.finish();
+
+    expect(reasoningOf(frames, "s1")).toBe("first thought");
+    expect(reasoningOf(frames, "s1#1")).toBe("second thought");
+    expect(textOf(frames, "s1")).toBe("first answer");
+    expect(textOf(frames, "s1#1")).toBe("second answer");
+    // The first bubble closes before the second opens, so the app renders them in order.
+    expect(types(frames).filter((t) => t === "chat.stream.start")).toHaveLength(2);
+    expect(types(frames).indexOf("chat.stream.done")).toBeLessThan(types(frames).lastIndexOf("chat.stream.start"));
+  });
+
+  test("a token estimate after an answer seals it too, for a redacted engine", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("first answer");
+    await streamer.pushReasoningTokens(512);
+    await streamer.push("second answer");
+    await streamer.finish();
+
+    expect(textOf(frames, "s1")).toBe("first answer");
+    expect(textOf(frames, "s1#1")).toBe("second answer");
+    const tokens = frames.find((f) => f.type === "chat.reasoning.tokens");
+    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe("s1#1");
+  });
+
+  test("a thinking phase that never answered is not split in two", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("still weighing");
+    await streamer.pushReasoningTokens(64);
+    await streamer.pushReasoning(" and weighing");
+    expect(types(frames).filter((t) => t === "chat.stream.start")).toHaveLength(1);
+    expect(reasoningOf(frames)).toBe("still weighing and weighing");
+  });
+
   test("the reasoning cap is per segment, so a long first thought does not mute the second", async () => {
     const { streamer, frames } = collect();
     await streamer.pushReasoning("x".repeat(REASONING_LIMIT + 10));
@@ -150,5 +199,10 @@ test("reasoning and text keep their order under interleaved pushes", async () =>
   // One queue owns every frame, so start is first and done is last no matter the call order.
   expect(frames[0]!.type).toBe("chat.stream.start");
   expect(frames[frames.length - 1]!.type).toBe("chat.stream.done");
-  expect(reasoningOf(frames)).toBe("r1r2");
+  // r2 arrives after t1 is on screen, so it belongs to the next bubble, not to the one the
+  // reader is already looking at.
+  expect(reasoningOf(frames, "s1")).toBe("r1");
+  expect(reasoningOf(frames, "s1#1")).toBe("r2");
+  expect(textOf(frames, "s1")).toBe("t1");
+  expect(textOf(frames, "s1#1")).toBe("t2");
 });
