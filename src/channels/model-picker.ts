@@ -585,6 +585,10 @@ export function formatEffort(effort: EffectiveEffort): string {
       return `${effort.level} (config)`;
     case "sdk-default":
       return `${effort.level} (SDK default)`;
+    case "api-default":
+      // The Messages API documents `high` as the value it applies when the field is absent, so
+      // naming it is not a guess: it is what the server does either way.
+      return `${effort.level} (API default)`;
     case "provider-default":
       // Codex and opt-in OpenAI-compatible providers document no default, so naming one would
       // be an invention. The honest answer is that nothing is sent and the provider decides.

@@ -7,7 +7,10 @@
 
 // `/claude set-token <token>` (and its `token` alias) carries a subscription token the owner is
 // told to delete from the chat right after sending it. It must never reach a log file.
-const SENSITIVE_SUBCOMMANDS = new Set(["set-token", "token"]);
+//
+// `/claude code <code>` carries an OAuth authorization code. Single-use and short-lived, but it is
+// exchangeable for a refresh token until it is spent, so it is a credential while it sits in a log.
+const SENSITIVE_SUBCOMMANDS = new Set(["set-token", "token", "code"]);
 
 export function redactCommandArgs(command: string, args: string): string {
   const trimmed = args.trim();

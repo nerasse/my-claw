@@ -482,3 +482,85 @@ Answered by P0, kept here for the record: the beta list is the eight flags of th
 capture, not ex-machina's two; the user-agent suffix is `(external, sdk-cli)`;
 `x-stainless-*`, `x-app` and `x-claude-code-session-id` are all part of the real
 request; tool definitions carry no `cache_control`.
+
+## Subscription auth: two credentials, one file
+
+`~/.my-claw/claude/auth.json` (0600) holds both kinds, and `loadClaudeToken()` is the only reader:
+
+| field | source | life | refresh |
+|---|---|---|---|
+| `oauth` | `/claude login` (PKCE, code pasted back) | ~8 h | in place, before expiry |
+| `token` | `claude setup-token` in a terminal, or `/claude set-token` | ~1 year | none |
+
+Order: `oauth` first, then `token`, then `CLAUDE_CODE_OAUTH_TOKEN`. The fallback also runs on a
+**failed** refresh, which is the reason for keeping both: a refresh outage degrades to the long-lived
+token instead of stopping every run. Pasting a token clears the OAuth credential, because a paste is
+a choice of which authentication to use and a silently outranked paste looks like a bug.
+
+The client id, both endpoints and the scope string come out of the shipped CLI bundle, not out of a
+community plugin: `9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
+`https://platform.claude.com/oauth/authorize`, `https://platform.claude.com/v1/oauth/token`,
+and `user:profile user:inference user:sessions:claude_code user:mcp_servers`. The plugins add
+`org:create_api_key` and `user:file_upload`, which this flow does not use.
+
+The CLI's own login redirects to a localhost listener, which needs a browser on the same host. The
+chat flow uses the manual variant the same page serves (`code=true`): Anthropic displays the code and
+the owner sends it back with `/claude code <code>`. The verifier and the state stay in memory for
+10 minutes and never touch the disk. `/claude code` is masked in the command log: an authorization
+code is exchangeable for a refresh token until it is spent.
+
+One in-process guard collapses concurrent refreshes. A rotation that omits the new refresh token
+keeps the old one, because dropping it would throw away the only way back in.
+
+## Thinking off: it exists, per model, and it is not discoverable
+
+`thinking: {type: "disabled"}` is real. Three constraints, all measured on the wire:
+
+```
+opus-5   disabled + effort xhigh  -> 400 output_config.effort 'xhigh' is not supported when
+                                        thinking is disabled on this model. Use effort 'high' or below
+opus-5   disabled + display       -> 400 thinking.disabled.display: Extra inputs are not permitted
+fable-5  disabled                 -> 400 "thinking.type.disabled" is not supported for this model
+opus-5   disabled + effort low    -> 200
+```
+
+The first error is itself the proof that Opus 5 accepts the mode: it complains about the *effort*,
+where Fable 5 complains about the *mode*.
+
+`/v1/models` does not say which models accept it. `capabilities.thinking.types` reports only
+`adaptive` and `enabled`, so support for being told not to think is invisible there, and it differs
+inside one generation (Opus 5 yes, Fable 5 no). A hardcoded list would be wrong the day the next
+model ships, so the transport **learns**: the first `thinking.type.disabled` refusal per model per
+process is remembered and the request is replayed with thinking left on. Measured: one 400, one log
+line, then a 200 on the same turn.
+
+How it is exposed: discovery prepends a `none` rung to the ladder of every model that has thinking
+to turn off, because my-claw shows one ladder and the API has two parameters. `none` is **never**
+sent as an effort value (`output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or
+'max'`); it becomes the thinking block, and the effort riding with it is the floor of the published
+ladder, which is also what the Opus 5 ceiling would force.
+
+**The caveat that matters here more than anywhere.** Anthropic documents that with thinking off,
+Opus 5 "can occasionally emit tool calls as plain text or include internal XML tags in its visible
+output". In an agent loop that is silent breakage: the model narrates the tool call and nothing runs.
+The transport logs a warning once per model when `none` rides with tools. Prefer `low` over `none`
+for any turn that needs tools.
+
+## Effort is validated per model, not per family
+
+`/v1/models` publishes a ladder per model and the API enforces it:
+
+```
+claude-opus-5      low medium high xhigh max      thinking: adaptive
+claude-sonnet-4-6  low medium high max            thinking: adaptive + enabled
+```
+
+Asking Sonnet 4.6 for `xhigh` is `HTTP 400 This model does not support effort level 'xhigh'.
+Supported levels: high, low, max, medium.` So the ladder rides on the resolved config
+(`effortLevels`, straight from discovery) and the transport clamps against it, with the five-rung
+union as the fallback for a model whose ladder was never read. my-claw's own vocabulary is wider than
+the API's: `none` and `minimal` clamp to `low`, `ultra` clamps to `max`. Dropping the field instead
+would land on the API default, which is `high`, so a request for the least would get nearly the most.
+
+Measured live, all rungs answering 200: five on Opus 5, and seven asked of Sonnet 4.6 (four of its
+own plus `xhigh`, `ultra` and `minimal`, which clamp).

@@ -1,6 +1,15 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { resolveLlmConfig, resolveLlmConfigForMessage, listAvailableModels, effortOptionsFor, effectiveEffort } from "../../src/llm/resolver.ts";
+import {
+  resolveLlmConfig,
+  resolveLlmConfigForMessage,
+  listAvailableModels,
+  effortOptionsFor,
+  effectiveEffort,
+  providerBaseUrl,
+  ANTHROPIC_BASE_URL,
+  isEffortNativeBackend,
+} from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 
 const newFormatConfig: LlmConfig = {
@@ -336,4 +345,52 @@ test("effectiveEffort: an unresolvable model or provider claims nothing", () => 
   // Provider resolution throws here; a display must not invent a level out of the failure.
   const broken: LlmConfig = { ...effortConfig, models: [{ id: "orphan", label: "Orphan", provider: "vanished" }] };
   assert.deepEqual(effectiveEffort(broken, "orphan"), { source: "unsupported" });
+});
+
+test("providerBaseUrl: the three subscription backends default their endpoint, the rest declare it", () => {
+  // The declared field wins whenever it is set, including on a subscription provider pinned at a
+  // proxy. Only the absence is filled, and only for a type whose endpoint is not a choice.
+  assert.equal(providerBaseUrl({ type: "anthropic" }), ANTHROPIC_BASE_URL);
+  assert.equal(providerBaseUrl({ type: "anthropic", baseUrl: "http://127.0.0.1:8787" }), "http://127.0.0.1:8787");
+  assert.equal(providerBaseUrl({ type: "codex" }), "https://chatgpt.com/backend-api");
+  // No HTTP endpoint exists on this path, so the marker is the effective identity.
+  assert.equal(providerBaseUrl({ type: "claude-sdk" }), "claude-sdk");
+  // An openai-shaped provider without a baseUrl is a broken config, not a default to invent.
+  assert.equal(providerBaseUrl({ type: "openai" }), "");
+  assert.equal(providerBaseUrl(undefined), "");
+});
+
+test("effectiveEffort: the native Anthropic backend names the default the API applies", () => {
+  const config: LlmConfig = {
+    defaultProvider: "anthropic",
+    defaultModel: "anthropic/claude-opus-5",
+    providers: { anthropic: { type: "anthropic", discover: true } },
+    models: [
+      {
+        id: "anthropic/claude-opus-5",
+        provider: "anthropic",
+        label: "Opus 5",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+    ],
+  };
+  // Nothing pinned: the effort doc states an absent field behaves exactly like `high`, so the menu
+  // names it instead of claiming nothing is known.
+  const unset = effectiveEffort(config, "anthropic/claude-opus-5");
+  assert.equal(unset.level, "high");
+  assert.equal(unset.source, "api-default");
+  // A pin is reported as the pin, and the effort menu is offered at all.
+  assert.equal(effectiveEffort(config, "anthropic/claude-opus-5", "xhigh").level, "xhigh");
+  assert.equal(effortOptionsFor(config).enabled, true);
+  // A level outside the API ladder is reported as the rung the request will actually carry.
+  assert.equal(effectiveEffort(config, "anthropic/claude-opus-5", "minimal").level, "low");
+});
+
+test("isEffortNativeBackend covers every engine that steers effort itself", () => {
+  assert.equal(isEffortNativeBackend("claude-sdk"), true);
+  assert.equal(isEffortNativeBackend("codex"), true);
+  assert.equal(isEffortNativeBackend("anthropic"), true);
+  assert.equal(isEffortNativeBackend("openai"), false);
+  assert.equal(isEffortNativeBackend(undefined), false);
 });

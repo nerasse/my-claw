@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ResolvedLlmConfig } from "../core/config.ts";
+import type { EffortLevel, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
+import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
+import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
 
@@ -18,33 +20,6 @@ const RETRY_BASE_MS = 800;
  * client's own fallback ceiling (`aph` in the 2.1.206 bundle, next to `sph = 32000`).
  */
 const FALLBACK_OUTPUT_LIMIT = 128_000;
-
-/**
- * The three values a subscription request claims about the client it pretends to be.
- *
- * **Pinned on purpose, and pinned together.** They ship as one CLI release, so a user-agent from
- * one release beside a stainless package version from another is an inconsistency the account does
- * not need to advertise. Deriving them at runtime was considered and rejected: it would make the
- * request shape depend on whichever `claude` happens to sit on the box, so an unrelated CLI upgrade
- * would silently change what we send.
- *
- * How to refresh, when a capture shows drift:
- *
- * 1. `scripts/capture-anthropic-proxy.ts`, then drive `claude -p` through it
- * 2. read `user-agent`, `x-stainless-package-version` and `x-stainless-runtime-version` off the
- *    captured request and replace all three here, never one at a time
- * 3. re-run `tests/llm/anthropic-capture-parity.test.ts` against the new artifact
- *
- * `ANTHROPIC_CLI_VERSION` and `ANTHROPIC_USER_AGENT` override without a rebuild. The node version
- * is the runtime the CLI bundles, not the one we run: my-claw is on Bun.
- */
-const CLI_RELEASE = {
-  version: process.env["ANTHROPIC_CLI_VERSION"] || "2.1.217",
-  stainlessPackage: "0.94.0",
-  nodeVersion: "v26.3.0",
-} as const;
-
-const USER_AGENT = process.env["ANTHROPIC_USER_AGENT"] || `claude-cli/${CLI_RELEASE.version} (external, sdk-cli)`;
 
 // Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.206.json.
 const BETAS = [
@@ -442,8 +417,21 @@ function retryDelay(response: Response, attempt: number): number {
  * included, and it works with or without thinking. An earlier version of this file mapped effort
  * onto `thinking.budget_tokens` through a share table, which was wrong in kind, not merely in
  * calibration.
+ *
+ * Declared as the ordered ladder rather than a set: it is also the last line of defence for a level
+ * that reached here off-ladder, and dropping one silently is the worst of the three outcomes,
+ * because the server then applies `high` and a request for `minimal` gets nearly the most.
+ *
+ * **Per model, not per family.** The union below is only the fallback for a model whose ladder we
+ * never read: validation happens against the model's own list, measured on the wire as
+ * `HTTP 400 This model does not support effort level 'xhigh'. Supported levels: high, low, max,
+ * medium.` for Sonnet 4.6, which publishes four rungs while Opus 5 publishes five. So the ladder
+ * the model declared through `/v1/models` is what clamps when it is known.
+ *
+ * There is no off rung. Anthropic's ladder starts at `low`, so "as little as possible" clamps to
+ * `low` and thinking is governed by the model's declared types, not by effort.
  */
-const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const API_EFFORT_LADDER: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
 /**
  * The reply budget, resolved rather than pinned: the provider's own declared output limit first
@@ -483,6 +471,43 @@ function thinkingFor(
   return { type: "enabled", budget_tokens: Math.max(1024, maxTokens - 1), ...display };
 }
 
+/**
+ * Models that answered 400 to `thinking: {type: "disabled"}`. Learned rather than listed: whether
+ * thinking can be turned off is **not** in `/v1/models` (its `capabilities.thinking.types` reports
+ * only `adaptive` and `enabled`), and the answer differs inside one generation. Measured:
+ * Opus 5 accepts it, Fable 5 answers `"thinking.type.disabled" is not supported for this model`.
+ * A hardcoded list would be wrong the day Anthropic ships the next model, so the first refusal per
+ * model per process is what teaches this, and the request is replayed with thinking left on.
+ */
+const cannotDisableThinking = new Set<string>();
+const DISABLE_REFUSED = /thinking\.type\.disabled/;
+
+/**
+ * With thinking off, effort is capped: Opus 5 answers `output_config.effort 'max' is not supported
+ * when thinking is disabled on this model. Use effort 'high' or below.` The floor is what `none`
+ * means anyway, so the two constraints agree.
+ */
+const THINKING_OFF_EFFORT: EffortLevel = "low";
+
+/** Whether this request asks for no thinking at all, and the model has not already refused. */
+function wantsThinkingOff(config: Partial<ResolvedLlmConfig>): boolean {
+  return config.effort === "none" && !cannotDisableThinking.has(config.model ?? "");
+}
+
+const warnedThinkingOff = new Set<string>();
+
+/**
+ * Anthropic documents a failure mode that matters more here than anywhere else: with thinking off,
+ * Opus 5 "can occasionally emit tool calls as plain text or include internal XML tags in its visible
+ * output". In an agent loop that is silent breakage, the model narrates the tool call and nothing
+ * runs, so the reason lands in the log once per model rather than being discovered from behaviour.
+ */
+function warnThinkingOffWithTools(model: string, toolCount: number): void {
+  if (toolCount === 0 || warnedThinkingOff.has(model)) return;
+  warnedThinkingOff.add(model);
+  void log("warn", "thinking is off on a request carrying tools; tool calls can arrive as plain text", { model, tools: toolCount });
+}
+
 /** The whole request body, pure so P2 can diff it against the capture without a network call. */
 function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] = [], tools?: unknown[]): Record<string, unknown> {
   const { system, turns } = buildRequest(messages);
@@ -507,7 +532,25 @@ function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] =
   // conversation (the docs are explicit: effort shapes the rendered prompt). At a measured 96 %
   // cache-read ratio that makes a mid-session effort change expensive, so it is worth holding
   // constant rather than varying per turn.
-  if (config.effort && EFFORT_LEVELS.has(config.effort)) body["output_config"] = { effort: config.effort };
+  // `none` is a my-claw rung, never an API effort value: sending it is
+  // `output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or 'max'`. It is
+  // expressed by the thinking block below, and the effort that rides with it is the floor. That
+  // holds whether the model accepted being told not to think or refused and left it on.
+  const thinkingOff = wantsThinkingOff(config);
+  const level = config.effort === "none" ? THINKING_OFF_EFFORT : config.effort;
+  if (level) {
+    const published = (config.effortLevels ?? []).filter((rung) => rung !== "none");
+    const ladder = published.length > 0 ? published : API_EFFORT_LADDER;
+    body["output_config"] = { effort: clampEffortToLadder(level, ladder, config.model ?? "") };
+  }
+
+  if (thinkingOff) {
+    // No `display` beside it: `thinking.disabled.display: Extra inputs are not permitted`. And no
+    // `context_management`, which needs thinking enabled or adaptive.
+    body["thinking"] = { type: "disabled" };
+    warnThinkingOffWithTools(config.model ?? "", anthropicTools.length);
+    return body;
+  }
 
   const thinking = thinkingFor(config.thinkingTypes, maxTokens);
   if (thinking) {
@@ -528,11 +571,9 @@ async function runAnthropic(
   signal?: AbortSignal,
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  const body = buildBody(config, messages, tools);
-
   const base = config.baseUrl && config.baseUrl.startsWith("http") ? config.baseUrl : ANTHROPIC_BASE_URL;
   const url = `${base.replace(/\/+$/, "")}/v1/messages?beta=true`;
-  const payload = JSON.stringify(body);
+  let payload = JSON.stringify(buildBody(config, messages, tools));
 
   let lastErr: unknown;
   let tokensDelivered = false;
@@ -557,7 +598,7 @@ async function runAnthropic(
           "anthropic-dangerous-direct-browser-access": "true",
           "content-type": "application/json",
           accept: "application/json",
-          "user-agent": USER_AGENT,
+          "user-agent": CLAUDE_USER_AGENT,
           "x-app": "cli",
           "x-claude-code-session-id": SESSION_ID,
           "x-stainless-arch": "x64",
@@ -578,6 +619,15 @@ async function runAnthropic(
         const detail = (await response.text().catch(() => "")).slice(0, 500);
         const err = new Error(`Anthropic request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
         err.status = response.status;
+        // The one 400 worth replaying: this model refuses to have thinking turned off. Remember it
+        // and rebuild the body with thinking left on, so the turn answers instead of failing.
+        if (response.status === 400 && DISABLE_REFUSED.test(detail) && wantsThinkingOff(config)) {
+          cannotDisableThinking.add(config.model ?? "");
+          await log("info", "model refuses thinking disabled, retrying with thinking on", { model: config.model });
+          payload = JSON.stringify(buildBody(config, messages, tools));
+          lastErr = err;
+          continue;
+        }
         if (attempt < MAX_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = retryDelay(response, attempt);
           await log("warn", `Anthropic ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
@@ -637,4 +687,17 @@ export function anthropicResponseStream(
   return runAnthropic(config, messages, tools, onToken, signal, reasoningSink);
 }
 
-export const __testing = { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, maxTokensFor, thinkingFor, wireToolName, localToolName, normalizeUsage };
+export const __testing = {
+  billingHeader,
+  billingSuffix,
+  billingSampleText,
+  buildBody,
+  buildRequest,
+  buildSystem,
+  maxTokensFor,
+  thinkingFor,
+  wireToolName,
+  localToolName,
+  normalizeUsage,
+  cannotDisableThinking,
+};

@@ -22,3 +22,8 @@ test("redactCommandArgs keeps arguments that carry no secret", () => {
   assert.equal(redactCommandArgs("claude", ""), "");
   assert.equal(redactCommandArgs("claude", "   "), "");
 });
+
+test("redactCommandArgs hides an OAuth code, which is exchangeable until it is spent", () => {
+  assert.equal(redactCommandArgs("claude", "code Zm9vYmFy-authorization-code#state"), "code [redacted]");
+  assert.equal(redactCommandArgs("claude", "code"), "code");
+});

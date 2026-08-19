@@ -4,6 +4,7 @@ import {
   fetchAnthropicModels,
   splitAnthropicDisplayName,
   anthropicEffortLevels,
+  anthropicLadder,
 } from "../../src/llm/anthropic-models.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
@@ -118,4 +119,17 @@ test("fetchAnthropicModels: a non-ok response throws so the caller keeps its cac
   } finally {
     mock.restore();
   }
+});
+
+test("the offered ladder adds an off rung wherever there is thinking to turn off", () => {
+  // `none` is not an effort value on this API: it maps to `thinking: {type: "disabled"}`. The two
+  // controls collapse into the one ladder my-claw shows everywhere.
+  assert.deepEqual(
+    anthropicLadder(["low", "medium", "high", "xhigh", "max"], { adaptive: true, enabled: false }),
+    ["none", "low", "medium", "high", "xhigh", "max"],
+  );
+  // No thinking means nothing to turn off, so no rung is invented.
+  assert.deepEqual(anthropicLadder(["low", "high"], { adaptive: false, enabled: false }), ["low", "high"]);
+  // A model that publishes no ladder at all gets no effort menu, and an off rung alone would be one.
+  assert.deepEqual(anthropicLadder([], { adaptive: true, enabled: true }), []);
 });

@@ -367,6 +367,13 @@ export interface ResolvedLlmConfig {
   backend?: "openai" | "claude-sdk" | "codex" | "anthropic";
   // Carried from discovery so the Anthropic transport can name a thinking type the model accepts.
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
+  /**
+   * The effort ladder this model publishes, carried to the transport so a level that is not on it
+   * can be clamped instead of refused. The Messages API validates per model, not per family:
+   * `xhigh` on Sonnet 4.6 answers HTTP 400 "This model does not support effort level 'xhigh'.
+   * Supported levels: high, low, max, medium."
+   */
+  effortLevels?: EffortLevel[];
   baseUrl: string;
   model: string;
   // The model id the API actually receives. When `model` is a tag reference (`tag:<name>`)

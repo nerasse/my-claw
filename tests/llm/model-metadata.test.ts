@@ -69,6 +69,21 @@ function rawApi(): Record<string, unknown> {
       api: "https://api.xiaomimimo.com/v1",
       models: { "mimo-v2.5-pro": { name: "MiMo v2.5 Pro", cost: { input: 0.435, output: 0.87 } } },
     },
+    // Deliberately without an `api`, as the live file has it: models.dev describes Anthropic's own
+    // models while publishing an endpoint only for the resellers. Nothing can resolve this provider
+    // by host, which is why the vendor is named by the engine instead.
+    anthropic: {
+      models: {
+        "claude-opus-5": {
+          name: "Claude Opus 5",
+          reasoning: true,
+          reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }],
+          modalities: { input: ["text", "image"] },
+          limit: { context: 1_000_000, output: 128_000 },
+          cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
+        },
+      },
+    },
   };
 }
 
@@ -137,6 +152,27 @@ test("a level outside the vocabulary never reaches a menu", async () => {
   const [enriched] = applyModelMetadata([model({ id: "junk-model" })], PROVIDERS, pricing);
   // Criterion 4: the live file carries one "default" and two nulls.
   expect(enriched?.supportedEffortLevels).toEqual(["high"]);
+});
+
+test("a subscription provider is described even though it declares no endpoint", async () => {
+  const pricing = await withApi();
+  // What the config actually holds: a type, a discovery flag, and no baseUrl. Reading the declared
+  // field here returned undefined, so the gap-fill skipped the three subscription providers -- the
+  // ones whose own discovery says the least. The effective endpoint is what names the vendor.
+  const providers: Record<string, LlmProviderConfig> = {
+    anthropic: { type: "anthropic", discover: true },
+    "claude-sdk": { type: "claude-sdk", discover: true },
+  };
+  const models = [
+    { id: "claude-opus-5", label: "claude-opus-5", provider: "anthropic" },
+    { id: "claude-opus-5", label: "claude-opus-5", provider: "claude-sdk" },
+  ];
+  for (const enriched of applyModelMetadata(models, providers, pricing)) {
+    expect(enriched.label).toBe("Claude Opus 5");
+    expect(enriched.limit?.output).toBe(128_000);
+    expect(enriched.supportedEffortLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(enriched.vision).toBe(true);
+  }
 });
 
 test("effortLadderOf: an effort entry outranks a toggle on the same model", () => {

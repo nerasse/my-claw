@@ -72,6 +72,23 @@ export function anthropicEffortLevels(effort: (AnthropicCapability & Record<stri
 }
 
 /**
+ * The ladder my-claw offers, which is the published one plus an off rung when the model has thinking
+ * to turn off.
+ *
+ * `none` is not an effort value on this API. It maps to `thinking: {type: "disabled"}` in the
+ * transport, which is a separate parameter, so the two controls are collapsed into the one ladder
+ * my-claw shows everywhere. `/v1/models` does not report whether a model accepts being told not to
+ * think (`capabilities.thinking.types` lists only `adaptive` and `enabled`) and the answer differs
+ * inside one generation, so the rung is offered wherever thinking exists and the transport learns
+ * the refusals from the API itself.
+ */
+export function anthropicLadder(published: EffortLevel[], thinkingTypes: { adaptive: boolean; enabled: boolean }): EffortLevel[] {
+  if (published.length === 0) return published;
+  if (!thinkingTypes.adaptive && !thinkingTypes.enabled) return published;
+  return ["none", ...published];
+}
+
+/**
  * Which `thinking.type` values a model takes. The absence of the capability block is read as
  * "neither" rather than "both": a request that names an unsupported type is a 400, so guessing
  * upward costs a failed turn while guessing downward only omits the block.
@@ -110,12 +127,13 @@ export async function fetchAnthropicModels(
       const id = entry.id;
       if (!id) continue;
       const { label, family } = splitAnthropicDisplayName(entry.display_name ?? "", id);
+      const thinkingTypes = anthropicThinkingTypes(entry.capabilities?.thinking);
       out.push({
         id,
         label,
         family,
-        effortLevels: anthropicEffortLevels(entry.capabilities?.effort),
-        thinkingTypes: anthropicThinkingTypes(entry.capabilities?.thinking),
+        effortLevels: anthropicLadder(anthropicEffortLevels(entry.capabilities?.effort), thinkingTypes),
+        thinkingTypes,
         vision: entry.capabilities?.image_input?.supported === true,
         contextLimit: entry.max_input_tokens,
         outputLimit: entry.max_tokens,

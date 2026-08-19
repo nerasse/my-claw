@@ -22,7 +22,9 @@ function withTable(): ModelPricing {
     },
     models: {
       anthropic: {
-        "claude-opus-5": { cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, id: "claude-opus-5" },
+        // `output` is the reply limit, as models.dev publishes it: it is what makes the entry
+        // describe the model rather than only price it.
+        "claude-opus-5": { cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, id: "claude-opus-5", output: 128_000 },
         "claude-opus-48": { cost: { input: 5, output: 25, cacheRead: 0.5 }, id: "claude-opus-4-8" },
         "claude-opus-4-8": { cost: { input: 5, output: 25, cacheRead: 0.5 }, id: "claude-opus-4-8" },
         "claude-opus-41": { cost: { input: 15, output: 75 }, id: "claude-opus-4-1" },
@@ -66,6 +68,23 @@ test("the engine names the vendor, and a subscription is never reported as a cha
   const codex = p.costOf({ ...base, model: "gpt-5.6-luna", baseUrl: "https://chatgpt.com/backend-api" });
   expect(codex?.usd).toBeCloseTo(0.2, 6);
   expect(codex?.billed).toBe(false);
+});
+
+test("the native Anthropic endpoint prices from Anthropic, not from a median", () => {
+  const p = withTable();
+  // models.dev lists no api base for the `anthropic` provider, so without the engine entry this
+  // resolves to nothing and falls to the median rung.
+  const r = p.costOf({ ...base, model: "claude-opus-5", baseUrl: "https://api.anthropic.com" });
+  expect(r?.usd).toBeCloseTo(5, 6);
+  expect(r?.billed).toBe(false);
+  expect(r?.source).toBe("engine anthropic");
+});
+
+test("the native Anthropic endpoint fills a capability gap from the table", () => {
+  const p = withTable();
+  const meta = p.metadataOf("claude-opus-5", "https://api.anthropic.com");
+  expect(meta?.source).toBe("engine anthropic");
+  expect(meta?.outputLimit).toBe(128_000);
 });
 
 test("a direct vendor resolves by host and is billed", () => {

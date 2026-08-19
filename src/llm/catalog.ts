@@ -8,6 +8,7 @@ import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { fetchAnthropicModels } from "./anthropic-models.ts";
+import { providerBaseUrl } from "./resolver.ts";
 import type { ModelMetadata } from "./pricing.ts";
 
 export interface DiscoveredSdkModel {
@@ -119,7 +120,7 @@ export function applyModelMetadata(
     const needsVision = m.vision === undefined;
     const needsOutput = m.limit?.output === undefined;
     if (!needsLabel && !needsEffort && !needsVision && !needsOutput) return m;
-    const meta = table.metadataOf(m.apiId ?? m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    const meta = table.metadataOf(m.apiId ?? m.id, m.provider ? providerBaseUrl(providers[m.provider]) : undefined);
     if (!meta) return m;
     const next: LlmModelConfig = { ...m };
     if (needsLabel && meta.label !== undefined) next.label = meta.label;

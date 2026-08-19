@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { handleAuthCommand } from "../../src/channels/auth-commands.ts";
-import { loadClaudeToken, clearClaudeToken } from "../../src/llm/claude-auth.ts";
+import { resetClaudeAuthState, loadClaudeToken, clearClaudeToken } from "../../src/llm/claude-auth.ts";
 
 const noop = () => {};
 // MY_CLAW_DIR is shared across test files, so another suite may leave a codex
@@ -71,10 +71,30 @@ test("claude set-token without a token shows usage", async () => {
   assert.match(out, /set-token <token>/);
 });
 
-test("claude login returns terminal/paste instructions (no in-chat OAuth)", async () => {
+test("claude login hands out the authorize url and names the step that follows", async () => {
   const out = await handleAuthCommand({ provider: "claude", args: "login", isDm: true, postFollowUp: noop });
-  assert.match(out, /setup-token/);
-  assert.match(out, /set-token/);
+  assert.match(out, /platform\.claude\.com\/oauth\/authorize/);
+  assert.match(out, /code_challenge_method=S256/);
+  // The code has to come back through the chat, so the reply must say how.
+  assert.match(out, /\/claude code/);
+});
+
+test("claude login and claude code are private-only, like every credential path", async () => {
+  for (const args of ["login", "code abc"]) {
+    const out = await handleAuthCommand({ provider: "claude", args, isDm: false, postFollowUp: noop });
+    assert.match(out, /message priv/);
+  }
+});
+
+test("claude code without a started login refuses instead of calling out", async () => {
+  resetClaudeAuthState();
+  const out = await handleAuthCommand({ provider: "claude", args: "code some-code", isDm: true, postFollowUp: noop });
+  assert.match(out, /No login in progress/);
+});
+
+test("claude code with no argument shows usage", async () => {
+  const out = await handleAuthCommand({ provider: "claude", args: "code", isDm: true, postFollowUp: noop });
+  assert.match(out, /code <code>/);
 });
 
 test("claude status reflects a stored token", async () => {

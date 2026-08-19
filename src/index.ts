@@ -2639,7 +2639,8 @@ async function runClaudeCli(args: string[]): Promise<number> {
       console.log("Not logged in to Claude. Run: my-claw claude login");
       return 1;
     }
-    console.log(`Logged in to Claude (source: ${st.source}, ${st.masked}).`);
+    const life = st.expiresInMin === undefined ? "" : `, access token ${st.expiresInMin > 0 ? `valid ~${st.expiresInMin} min` : "expired (refreshed on the next call)"}`;
+    console.log(`Logged in to Claude (source: ${st.source}, ${st.masked}${life}${st.hasFallbackToken ? ", long-lived token kept as fallback" : ""}).`);
     return 0;
   }
   if (cmd === "logout") {
@@ -2647,6 +2648,9 @@ async function runClaudeCli(args: string[]): Promise<number> {
     console.log("Cleared the my-claw Claude token.");
     return 0;
   }
+  // The chat has `/claude login` (PKCE with a pasted code) because it has no browser. Here the
+  // browser is one command away, so `login` stays the vendor's own tool and mints the long-lived
+  // token that backs the OAuth credential when a refresh fails.
   console.log("Usage: my-claw claude <login|set-token <token>|status|logout>");
   return cmd ? 1 : 0;
 }

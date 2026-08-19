@@ -102,9 +102,18 @@ export interface UsageForCost {
   proxyCostUsd?: number;
 }
 
-/** Two backends talk to exactly one company, so their vendor is not inferred. */
+/**
+ * Backends that talk to exactly one company, so their vendor is not inferred.
+ *
+ * `api.anthropic.com` is here because models.dev publishes no api base for the `anthropic`
+ * provider itself (only for Anthropic-compatible third parties), so host resolution cannot find
+ * it and the native Messages transport would fall all the way to the cross-market median. Every
+ * my-claw route to that host is subscription auth: the `anthropic` backend sends a bearer token
+ * and no api key, by construction. See docs/anthropic-backend.md.
+ */
 const ENGINE_PROVIDER: Record<string, string> = {
   "claude-sdk": "anthropic",
+  "api.anthropic.com": "anthropic",
   "chatgpt.com": "openai",
 };
 

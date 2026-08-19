@@ -1,5 +1,12 @@
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, type DeviceCodePrompt } from "../llm/codex-auth.ts";
-import { claudeTokenStatus, setClaudeToken, clearClaudeToken } from "../llm/claude-auth.ts";
+import {
+  claudeTokenStatus,
+  setClaudeToken,
+  clearClaudeToken,
+  claudeLoginStart,
+  claudeLoginComplete,
+  claudeLoginPending,
+} from "../llm/claude-auth.ts";
 
 // Shared handler for the `/codex` and `/claude` auth commands on every channel. The channel
 // passes a `postFollowUp` that pushes an unsolicited message to the same chat/thread (via the
@@ -90,7 +97,13 @@ async function handleClaude(sub: string, parts: string[], p: AuthCommandParams):
     case "status": {
       const st = await claudeTokenStatus();
       if (!st.present) return "Claude : non connecté. Voir `/claude login`.";
-      return `Claude : connecté (source ${st.source}, ${st.masked}).`;
+      if (st.source !== "oauth") return `Claude : connecté (source ${st.source}, ${st.masked}).`;
+      const life =
+        st.expiresInMin !== undefined && st.expiresInMin > 0
+          ? `valide ~${st.expiresInMin} min`
+          : "expiré (rafraîchi au prochain appel)";
+      const fallback = st.hasFallbackToken ? ", repli sur le token longue durée" : "";
+      return `Claude : connecté en OAuth (${st.masked}). Token ${life}${fallback}.`;
     }
     case "set-token":
     case "token": {
@@ -106,15 +119,32 @@ async function handleClaude(sub: string, parts: string[], p: AuthCommandParams):
       await clearClaudeToken();
       await p.onAuthChanged?.("claude");
       return "Claude : token supprimé.";
-    case "login":
+    case "login": {
+      if (!p.isDm) return DM_ONLY;
+      const { url } = claudeLoginStart();
       return [
-        "Le login Claude passe par l'outil officiel `claude setup-token` (navigateur), qui ne peut",
-        "pas tourner depuis le chat. Deux options :",
-        "- sur le serveur : `my-claw claude login` (dans un terminal) ;",
-        "- ailleurs : génère le token avec `claude setup-token`, puis envoie-le ici avec",
-        "  `/claude set-token <token>` (en privé).",
+        "Connexion Claude (abonnement) :",
+        `1. Ouvre ${url}`,
+        "2. Autorise avec ton compte Claude",
+        "3. Copie le code affiché et renvoie-le ici : `/claude code <code>`",
+        "(le lien expire dans 10 min ; supprime le message contenant le code après coup)",
       ].join("\n");
-    default:
-      return "Usage : `/claude login` | `/claude set-token <token>` | `/claude status` | `/claude logout`";
+    }
+    case "code": {
+      if (!p.isDm) return DM_ONLY;
+      const code = parts.slice(1).join(" ").trim();
+      if (!code) return "Usage : `/claude code <code>` (le code affiché après `/claude login`).";
+      try {
+        const { expiresInMin } = await claudeLoginComplete(code);
+        await p.onAuthChanged?.("claude");
+        return `Claude : connecté en OAuth (token valide ~${expiresInMin} min, rafraîchi automatiquement). Les modèles sont dans /model. Supprime le message contenant le code.`;
+      } catch (err) {
+        return `Claude : échec de la connexion (${errMsg(err)}).`;
+      }
+    }
+    default: {
+      const next = claudeLoginPending() ? " — login en cours, renvoie le code avec `/claude code <code>`" : "";
+      return `Usage : \`/claude login\` | \`/claude code <code>\` | \`/claude set-token <token>\` | \`/claude status\` | \`/claude logout\`${next}`;
+    }
   }
 }

@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { __testing } from "../../src/llm/anthropic.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
+import type { EffortLevel } from "../../src/core/config.ts";
 
 const {
   billingHeader,
@@ -182,13 +183,31 @@ test("effort rides in output_config, not in the thinking block", () => {
   assert.equal((body["thinking"] as { budget_tokens?: number }).budget_tokens, undefined);
 });
 
-test("an effort value the API does not define is dropped rather than forwarded", () => {
-  // The ladder is low, medium, high, xhigh, max. my-claw's global vocabulary is wider.
-  assert.equal(buildBody({ effort: "minimal" })["output_config"], undefined);
+test("an effort value the API does not define is clamped to the ladder, never dropped", () => {
+  // The ladder is low, medium, high, xhigh, max. my-claw's global vocabulary is wider, and the
+  // resolver only clamps against a ladder the model published. Dropping the field here would make
+  // the server apply `high`, so a request asking for as little as possible would get nearly the
+  // most: the two rungs outside the ladder collapse onto its ends instead.
+  assert.deepEqual(buildBody({ effort: "none" })["output_config"], { effort: "low" });
+  assert.deepEqual(buildBody({ effort: "minimal" })["output_config"], { effort: "low" });
+  assert.deepEqual(buildBody({ effort: "ultra" })["output_config"], { effort: "max" });
+  // No pin at all stays absent: that is the one case where the API default is what was asked for.
   assert.equal(buildBody({})["output_config"], undefined);
   for (const level of ["low", "medium", "high", "xhigh", "max"] as const) {
     assert.deepEqual(buildBody({ effort: level })["output_config"], { effort: level });
   }
+});
+
+test("effort clamps to the ladder the model itself published, not to the union", () => {
+  // Measured on the wire: Sonnet 4.6 publishes four rungs and answers HTTP 400 "This model does not
+  // support effort level 'xhigh'. Supported levels: high, low, max, medium." Opus 5 publishes five.
+  const sonnet = { effortLevels: ["low", "medium", "high", "max"] as EffortLevel[] };
+  assert.deepEqual(buildBody({ ...sonnet, effort: "xhigh" })["output_config"], { effort: "high" });
+  assert.deepEqual(buildBody({ ...sonnet, effort: "ultra" })["output_config"], { effort: "max" });
+  assert.deepEqual(buildBody({ ...sonnet, effort: "medium" })["output_config"], { effort: "medium" });
+  // A model whose ladder was never read keeps the union as its fallback, which is all the evidence
+  // there is: refusing to send anything would land on the API default instead.
+  assert.deepEqual(buildBody({ effort: "xhigh" })["output_config"], { effort: "xhigh" });
 });
 
 test("the reply budget is resolved, never pinned", () => {
@@ -209,4 +228,41 @@ test("server-side thinking pruning never ships without an enabled thinking block
   const without = buildBody({});
   assert.equal(without["thinking"], undefined);
   assert.equal(without["context_management"], undefined);
+});
+
+const OFFERED_LADDER = ["none", "low", "medium", "high", "xhigh", "max"] as EffortLevel[];
+
+test("effort none turns thinking off, with neither display nor thinking pruning beside it", () => {
+  const body = buildBody({ effort: "none", model: "claude-opus-5", effortLevels: OFFERED_LADDER, thinkingTypes: { adaptive: true, enabled: false } });
+  // `thinking.disabled.display: Extra inputs are not permitted`, measured on the wire.
+  assert.deepEqual(body["thinking"], { type: "disabled" });
+  // `clear_thinking_20251015` needs thinking enabled or adaptive, so it must not ride along.
+  assert.equal(body["context_management"], undefined);
+  // Opus 5: "output_config.effort 'max' is not supported when thinking is disabled on this model.
+  // Use effort 'high' or below." The floor is what `none` means anyway.
+  assert.deepEqual(body["output_config"], { effort: "low" });
+});
+
+test("a model that refused to stop thinking keeps thinking, without another round trip", () => {
+  const config = { effort: "none" as const, model: "claude-fable-5", effortLevels: OFFERED_LADDER, thinkingTypes: { adaptive: true, enabled: false } };
+  __testing.cannotDisableThinking.add("claude-fable-5");
+  try {
+    const body = buildBody(config);
+    // Fable 5 answers `"thinking.type.disabled" is not supported for this model`, so the rung
+    // degrades to the floor of the ladder with thinking left on rather than failing the turn.
+    assert.deepEqual(body["thinking"], { type: "adaptive", display: "omitted" });
+    assert.deepEqual(body["output_config"], { effort: "low" });
+    assert.ok(body["context_management"]);
+  } finally {
+    __testing.cannotDisableThinking.delete("claude-fable-5");
+  }
+});
+
+test("none is never sent as an effort value, whatever the offered ladder says", () => {
+  // `output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or 'max'`, measured on
+  // the wire. The rung lives in the thinking block; the effort beside it is the floor.
+  for (const model of ["claude-opus-5", "claude-fable-5"]) {
+    const body = buildBody({ effort: "none", model, effortLevels: OFFERED_LADDER, thinkingTypes: { adaptive: true, enabled: false } });
+    assert.deepEqual(body["output_config"], { effort: "low" }, model);
+  }
 });

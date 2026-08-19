@@ -2,6 +2,34 @@ import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProvide
 import { tagNameOf } from "../core/config.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { parseModelRef } from "./model-ref.ts";
+import { CODEX_BASE_URL } from "./codex-auth.ts";
+
+/** Native Messages endpoint of the Claude subscription backend. */
+export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+
+/**
+ * The endpoint a provider actually talks to, which is not always the one it declares: the three
+ * subscription backends default theirs, and `claude-sdk` has no HTTP endpoint at all so it carries
+ * a marker instead.
+ *
+ * Exported because the resolver is not the only consumer. Anything that has to recognise the
+ * vendor behind a provider (pricing, the models.dev capability gap-fill) needs the effective
+ * endpoint, and reading `provider.baseUrl` there silently returns undefined for exactly the three
+ * providers whose own discovery says the least about its models.
+ */
+export function providerBaseUrl(provider: LlmProviderConfig | undefined): string {
+  if (provider?.baseUrl) return provider.baseUrl;
+  switch (provider?.type) {
+    case "claude-sdk":
+      return "claude-sdk";
+    case "anthropic":
+      return ANTHROPIC_BASE_URL;
+    case "codex":
+      return CODEX_BASE_URL;
+    default:
+      return "";
+  }
+}
 
 function resolveApiKey(provider?: LlmProviderConfig, globalApiKey?: string): string | undefined {
   if (globalApiKey) return globalApiKey;
@@ -187,7 +215,7 @@ function resolveFromMerged(
     return {
       backend: "claude-sdk",
       // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
-      baseUrl: "claude-sdk",
+      baseUrl: providerBaseUrl(provider),
       model: rawModelId,
       ...apiModel,
       provider: providerName,
@@ -203,7 +231,7 @@ function resolveFromMerged(
       backend: "anthropic",
       // Claude subscription on the home loop with the native Messages transport; the token is
       // fetched by the transport, so no apiKey rides here. See docs/anthropic-backend.md.
-      baseUrl: provider.baseUrl ?? "https://api.anthropic.com",
+      baseUrl: providerBaseUrl(provider),
       model: rawModelId,
       ...apiModel,
       provider: providerName,
@@ -211,6 +239,7 @@ function resolveFromMerged(
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       thinkingTypes: model?.thinkingTypes,
+      effortLevels: model?.supportedEffortLevels,
       fallbackModel: provider.fallbackModel,
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
     };
@@ -221,7 +250,7 @@ function resolveFromMerged(
       backend: "codex",
       // ChatGPT subscription via the Codex Responses backend; auth is the stored OAuth token,
       // fetched by the transport (no apiKey here). See docs/codex-backend.md.
-      baseUrl: provider.baseUrl ?? "https://chatgpt.com/backend-api",
+      baseUrl: providerBaseUrl(provider),
       model: rawModelId,
       ...apiModel,
       provider: providerName,
@@ -355,8 +384,7 @@ export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels:
   const models = config.models ?? [];
   const anyNative = models.some((m) => {
     try {
-      const backend = resolveLlmConfig(config, m.id).backend;
-      return backend === "claude-sdk" || backend === "codex";
+      return isEffortNativeBackend(resolveLlmConfig(config, m.id).backend);
     } catch {
       return false;
     }
@@ -365,12 +393,22 @@ export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels:
   return { enabled: anyNative || anySupports || config.effort !== undefined, levels: EFFORT_LEVELS };
 }
 
-// The Claude Agent SDK documents `high` as what it applies when a query carries no effort
-// (see the EffortLevel doc comment in its typings). Codex and plain OpenAI-compatible providers
-// document no such value, so their unset state stays unnamed instead of guessed.
-const SDK_DEFAULT_EFFORT: EffortLevel = "high";
+// Two engines document `high` as what they apply when a request carries no effort: the Claude Agent
+// SDK (the EffortLevel doc comment in its typings) and the Messages API itself, where the effort
+// doc states naming `high` is identical to omitting the field. Codex and plain OpenAI-compatible
+// providers document no such value, so their unset state stays unnamed instead of guessed.
+const DOCUMENTED_DEFAULT_EFFORT: EffortLevel = "high";
 
-export type EffortSource = "session" | "tag" | "scope" | "config" | "sdk-default" | "provider-default" | "unsupported";
+/**
+ * Backends that steer effort themselves rather than forwarding a `reasoning_effort` field an
+ * OpenAI-compatible provider may or may not read. Written once: three call sites used to spell the
+ * list out, and each new engine had to be remembered in all of them.
+ */
+export function isEffortNativeBackend(backend: ResolvedLlmConfig["backend"]): boolean {
+  return backend === "claude-sdk" || backend === "codex" || backend === "anthropic";
+}
+
+export type EffortSource = "session" | "tag" | "scope" | "config" | "sdk-default" | "api-default" | "provider-default" | "unsupported";
 
 export interface EffectiveEffort {
   // Absent when nothing sets a level and the provider documents no default of its own.
@@ -404,7 +442,7 @@ export function effectiveEffort(
 
   const model = findModel(config, expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").modelId);
   const tag = expandTag(config, modelId ?? config.defaultModel ?? config.model ?? "").tag;
-  const native = backend === "claude-sdk" || backend === "codex";
+  const native = isEffortNativeBackend(backend);
   if (!effortApplies(model, native)) return { source: "unsupported" };
 
   // The level the run would send, clamp included: reporting the pin verbatim is how a menu came to
@@ -414,7 +452,8 @@ export function effectiveEffort(
   if (tag?.effort) return { level: shown(tag.effort), source: "tag" };
   if (scopeEffort) return { level: shown(scopeEffort), source: "scope" };
   if (config.effort) return { level: shown(config.effort), source: "config" };
-  if (backend === "claude-sdk") return { level: SDK_DEFAULT_EFFORT, source: "sdk-default" };
+  if (backend === "claude-sdk") return { level: DOCUMENTED_DEFAULT_EFFORT, source: "sdk-default" };
+  if (backend === "anthropic") return { level: DOCUMENTED_DEFAULT_EFFORT, source: "api-default" };
   return { source: "provider-default" };
 }
 
@@ -431,8 +470,13 @@ export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
   }
 }
 
+/**
+ * Allowlist, not a denylist: this decides which model can serve as the fallback for the paths that
+ * only speak chat-completions (compaction, memory consolidation). Naming the engines to exclude
+ * meant every new engine was silently declared compatible until someone remembered it.
+ */
 function isChatCompletions(resolved: ResolvedLlmConfig): boolean {
-  return resolved.backend !== "claude-sdk" && resolved.backend !== "codex";
+  return resolved.backend === undefined || resolved.backend === "openai";
 }
 
 /** The resolved config if it speaks chat-completions, else the first configured model that does. */
