@@ -4,6 +4,7 @@ import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
+import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
 
@@ -431,10 +432,15 @@ function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] =
   const { system, turns } = buildRequest(messages);
   const anthropicTools = convertTools(tools);
 
+  // Appended here rather than by the prompt builder, for the same reason the SDK appends it after
+  // composition: it must be the last thing the model reads, and it is a property of talking to a
+  // Claude model, not of any workspace's prompt. Static, so it stays inside the cached prefix.
+  const withNote = system + OWNER_STEERING_NOTE;
+
   const body: Record<string, unknown> = {
     model: config.apiModel ?? config.model ?? "",
     max_tokens: MAX_TOKENS,
-    system: buildSystem(system, billingSampleText(messages)),
+    system: buildSystem(withNote, billingSampleText(messages)),
     messages: turns,
     stream: true,
   };

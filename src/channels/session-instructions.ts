@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { composeSystemPrompt, type PromptPart } from "../agent/prompt/builder.ts";
-import { OWNER_STEERING_NOTE } from "../agent/claude-sdk/backend.ts";
+import { OWNER_STEERING_NOTE, needsOwnerSteeringNote } from "../agent/owner-steering.ts";
 import { resolveAgent as resolveAgentDefinition } from "../agents/resolve.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { resolveWorkspaceDir, resolveWorkspaceKey, type AgentToolType, type MyClawConfig } from "../core/config.ts";
@@ -141,12 +141,12 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
     ...(part.file ? { edit: { workspace: workspaceKey, file: part.file } } : {}),
   }));
 
-  // The SDK appends its steering note after the composition, so no file holds it and no layer
-  // above carries it. It is shown for what it is: text the model receives that nothing can edit.
-  if (backend === "claude-sdk") {
+  // The Claude engines append the steering note after the composition, so no file holds it and no
+  // layer above carries it. It is shown for what it is: text the model receives that nothing can edit.
+  if (needsOwnerSteeringNote(backend)) {
     layers.push({
       id: "runtime",
-      label: "SDK steering note",
+      label: "steering note",
       bytes: Buffer.byteLength(OWNER_STEERING_NOTE, "utf-8"),
       text: OWNER_STEERING_NOTE.trim(),
     });

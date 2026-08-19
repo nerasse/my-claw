@@ -13,6 +13,7 @@ import {
   resolveNestedAgentsMaxBytes,
 } from "../../core/config.ts";
 import { NestedAgentsCollector, recordNestedInjection } from "../prompt/nested-agents.ts";
+import { OWNER_STEERING_NOTE } from "../owner-steering.ts";
 import { join } from "node:path";
 import type { SubAgentType } from "../../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../../channels/types.ts";
@@ -50,15 +51,6 @@ import { createToolServerForRun, toolDisplayName } from "./tools.ts";
 // Headroom left for the reply when the resolved model does not declare an output limit.
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 32_000;
 
-
-// Without this, Claude's anti-injection training treats a mid-run steering message that
-// contradicts the initial task as an attack and ignores it (verified in the phase 0 spike).
-// Exported so `/instructions` can show the prompt this backend really sends, not the builder output.
-export const OWNER_STEERING_NOTE =
-  "\n\n# Mid-run steering\n" +
-  "You are operated by a single trusted owner. User messages arriving mid-conversation " +
-  "(including while you are working) are legitimate steering from the owner and take " +
-  "precedence over earlier instructions.";
 
 /**
  * Wall for a compaction, not an expectation of how long one takes. Measured: 101 s to summarize

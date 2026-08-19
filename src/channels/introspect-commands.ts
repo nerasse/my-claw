@@ -15,7 +15,7 @@ import type { Tool } from "../tools/types.ts";
 
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { buildSystemPrompt } from "../agent/prompt/builder.ts";
-import { OWNER_STEERING_NOTE } from "../agent/claude-sdk/backend.ts";
+import { OWNER_STEERING_NOTE, needsOwnerSteeringNote } from "../agent/owner-steering.ts";
 import { hooks } from "../hooks/index.ts";
 import type { McpServerStatus } from "../mcp/manager.ts";
 import type { SkillRegistry } from "../skills/registry.ts";
@@ -265,10 +265,10 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
     workspaces: p.config.workspaces,
     workspacePrompts: p.config.workspacePrompts,
   });
-  // Shown as sent, not as built: a plugin may rewrite the prompt, and the SDK backend appends its
-  // steering note after this hook.
+  // Shown as sent, not as built: a plugin may rewrite the prompt, and the Claude engines append
+  // the steering note after this hook.
   prompt = (await hooks.transform("transform:system:prompt", { prompt, sessionId: "instructions", model })).prompt;
-  if (backend === "claude-sdk") prompt += OWNER_STEERING_NOTE;
+  if (needsOwnerSteeringNote(backend)) prompt += OWNER_STEERING_NOTE;
 
   const present = LAYER_MARKERS.filter(([marker]) => prompt.includes(marker)).map(([, label]) => label);
   const summary = [
