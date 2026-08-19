@@ -158,7 +158,9 @@ test("the thinking type comes from what the model declares, never from its name"
   const adaptive = thinkingFor({ adaptive: true, enabled: false }, 128_000)!;
   assert.equal(adaptive.type, "adaptive");
   assert.equal(adaptive.budget_tokens, undefined, "adaptive carries no budget by design");
-  assert.equal(adaptive.display, "omitted");
+  // Named, not omitted: `omitted` is already the default on every model that matters, so an absent
+  // field is what returns empty thinking blocks. Asking for the text has to be explicit.
+  assert.equal(adaptive.display, "summarized");
 
   // An extended-thinking-only model still needs a number: the ceiling minus one, as the client does.
   const explicit = thinkingFor({ adaptive: false, enabled: true }, 64_000)!;
@@ -250,7 +252,7 @@ test("a model that refused to stop thinking keeps thinking, without another roun
     const body = buildBody(config);
     // Fable 5 answers `"thinking.type.disabled" is not supported for this model`, so the rung
     // degrades to the floor of the ladder with thinking left on rather than failing the turn.
-    assert.deepEqual(body["thinking"], { type: "adaptive", display: "omitted" });
+    assert.deepEqual(body["thinking"], { type: "adaptive", display: "summarized" });
     assert.deepEqual(body["output_config"], { effort: "low" });
     assert.ok(body["context_management"]);
   } finally {
@@ -265,4 +267,15 @@ test("none is never sent as an effort value, whatever the offered ladder says", 
     const body = buildBody({ effort: "none", model, effortLevels: OFFERED_LADDER, thinkingTypes: { adaptive: true, enabled: false } });
     assert.deepEqual(body["output_config"], { effort: "low" }, model);
   }
+});
+
+test("a redacted turn still reports that it thought", () => {
+  // `display: "omitted"` returns the thinking block with an empty text field, so this count is the
+  // only evidence the model reasoned. Measured on one prompt, same model: omitted gave
+  // `{thinking_tokens: 57}` with no text, summarized gave 54 with text.
+  const usage = normalizeUsage({ input_tokens: 100, output_tokens: 106, output_tokens_details: { thinking_tokens: 57 } }, 106);
+  assert.ok(usage);
+  assert.equal(usage.completionTokens, 106);
+  // Thinking is billed inside the output count, never beside it, so the total must not double it.
+  assert.equal(usage.totalTokens, 206);
 });

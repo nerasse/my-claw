@@ -98,7 +98,10 @@ test("the thinking block has the captured shape and stays under the reply budget
   const theirs = capture.request.body.thinking as { type: string; budget_tokens: number; display: string };
   const ours = body["thinking"] as { type: string; budget_tokens: number; display: string };
   assert.equal(ours.type, theirs.type);
-  assert.equal(ours.display, theirs.display);
+  // The one field we deliberately differ on: the client asks for `omitted`, we ask for the text so
+  // the reasoning reaches the chat like every other model's does. Documented in anthropic.ts.
+  assert.equal(theirs.display, "omitted");
+  assert.equal(ours.display, "summarized");
   // Both are the model's output ceiling minus one, which is the client's own formula.
   assert.equal(theirs.budget_tokens, capture.request.body.max_tokens! - 1);
   assert.equal(ours.budget_tokens, (body["max_tokens"] as number) - 1);

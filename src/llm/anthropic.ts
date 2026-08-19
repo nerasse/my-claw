@@ -35,10 +35,21 @@ const BETAS = [
 
 const IDENTITY_BLOCK = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
-// The real client sends `display: "omitted"`, which is why a redacted engine can only report a
-// thinking token count. Flip this to stream the reasoning text instead, at the cost of being the
-// one field where we knowingly differ from the capture.
-const STREAM_THINKING = false;
+/**
+ * Whether to ask for the reasoning text or only for its token count.
+ *
+ * `true` sends `display: "summarized"`, so thinking arrives as `thinking_delta` events and reaches
+ * the reasoning sink exactly as the Codex transport's `response.reasoning_text.delta` does. That is
+ * what makes this backend behave like every other model in the picker rather than like a black box.
+ *
+ * It is the one field where we knowingly differ from the captured client, which sends `"omitted"`.
+ * Two costs, both accepted: the first text token arrives later (skipping thinking tokens is the
+ * documented point of `"omitted"`), and the reasoning text crosses the wire. Nothing else changes,
+ * the thinking happens and is billed either way. Measured on one prompt, same model: `"omitted"`
+ * returned `{thinking_tokens: 57}` with an empty thinking block, `"summarized"` returned 54 with the
+ * text. `ANTHROPIC_HIDE_THINKING=1` restores the captured shape without a rebuild.
+ */
+const STREAM_THINKING = process.env["ANTHROPIC_HIDE_THINKING"] !== "1";
 
 // One id per process, exactly like the CLI: it is a client-side correlation handle, and a fresh
 // one per request would be the anomaly.
@@ -268,6 +279,13 @@ interface AnthropicUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /**
+   * How many of the billed output tokens were thinking. Present whatever `display` says, which is
+   * what makes a redacted turn reportable: with `display: "omitted"` the thinking block arrives with
+   * an empty text field and only this number says the model thought at all. Measured on one prompt,
+   * same model: omitted gave `{thinking_tokens: 57}` with no text, summarized gave 54 with text.
+   */
+  output_tokens_details?: { thinking_tokens?: number };
 }
 
 /**
@@ -368,6 +386,11 @@ async function processStream(
       case "message_delta": {
         const usage = event["usage"] as AnthropicUsage | undefined;
         if (usage?.output_tokens) outputTokens = usage.output_tokens;
+        // Only ever arrives here, on the last event of the stream, so it cannot be reported while
+        // the model is still thinking. It is still the difference between a turn that says it
+        // thought and one that looks like it did not.
+        const thought = usage?.output_tokens_details?.thinking_tokens;
+        if (thought && reasoningSink?.onTokens) await reasoningSink.onTokens(thought);
         break;
       }
       case "error": {
@@ -462,9 +485,12 @@ function maxTokensFor(config: Partial<ResolvedLlmConfig>): number {
 function thinkingFor(
   types: { adaptive: boolean; enabled: boolean } | undefined,
   maxTokens: number,
-): { type: "adaptive" | "enabled"; budget_tokens?: number; display?: "omitted" } | undefined {
+): { type: "adaptive" | "enabled"; budget_tokens?: number; display?: "omitted" | "summarized" } | undefined {
   if (!types?.adaptive && !types?.enabled) return undefined;
-  const display = STREAM_THINKING ? {} : { display: "omitted" as const };
+  // Named in both directions on purpose. Leaving the field out is not neutral: `omitted` is already
+  // the default on Opus 5, Sonnet 5, Fable 5 and Opus 4.7/4.8, so an absent field returns empty
+  // thinking blocks on exactly the models we care about.
+  const display = { display: STREAM_THINKING ? ("summarized" as const) : ("omitted" as const) };
   if (types.adaptive) return { type: "adaptive", ...display };
   // Extended-thinking-only models still need a number. The client's own formula, from the 2.1.206
   // bundle: the model's output ceiling minus one, clamped to at least 1024.

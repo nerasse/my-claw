@@ -512,6 +512,35 @@ code is exchangeable for a refresh token until it is spent.
 One in-process guard collapses concurrent refreshes. A rotation that omits the new refresh token
 keeps the old one, because dropping it would throw away the only way back in.
 
+## Reasoning is shown, which is the one field we differ on
+
+The captured client sends `thinking.display: "omitted"`: the thinking block comes back with an empty
+text field and only `usage.output_tokens_details.thinking_tokens` says the model reasoned at all.
+Reproducing that made this backend the only engine in my-claw whose reasoning never reached the chat,
+while the Codex transport streams its own through the same sink.
+
+So the transport asks for `display: "summarized"`, and thinking arrives as `thinking_delta` events
+that feed `ReasoningSink.onText` exactly as `response.reasoning_text.delta` does on Codex. Measured
+through the real transport on Haiku 4.5:
+
+```
+texte      : "24 divise par 8 egale **3**. (Verification: 8 x 3 = 24)"
+reasoning  : "L'utilisateur me demande de penser puis de lui dire le resultat de 24 divise par 8..."
+sink tokens: 88
+```
+
+Two things this cost, both accepted: the first text token arrives later, since skipping thinking
+tokens is the documented point of `"omitted"`, and the reasoning text crosses the wire. Nothing else
+changes. The thinking happens and is billed either way, which one prompt on one model shows directly:
+`"omitted"` returned `{thinking_tokens: 57}` with no text, `"summarized"` returned 54 with the text.
+
+`ANTHROPIC_HIDE_THINKING=1` restores the captured shape without a rebuild.
+
+**Naming the field is the whole point.** Leaving `display` out is not neutral: `omitted` is already
+the default on Opus 5, Sonnet 5, Fable 5 and Opus 4.7/4.8, so an absent field returns empty thinking
+blocks on exactly the models that matter. The count is read either way, so a turn that reasoned in
+silence can still say so.
+
 ## Thinking off: it exists, per model, and it is not discoverable
 
 `thinking: {type: "disabled"}` is real. Three constraints, all measured on the wire:
