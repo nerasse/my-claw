@@ -433,23 +433,17 @@ function retryDelay(response: Response, attempt: number): number {
 }
 
 /**
- * Effort as a share of the reply budget.
+ * Effort levels the Messages API accepts, in the documented ladder. `high` is the API default, so
+ * naming it is identical to omitting the parameter.
  *
- * This is the one policy table left, and it is a policy rather than a discovered fact because the
- * wire has no effort field: `thinking` accepts `adaptive`, `disabled`, or `enabled` with a
- * `budget_tokens` integer, and nothing else. `/v1/models` advertises named levels
- * (`capabilities.effort`), so something has to turn a name into an integer, and a share of the
- * model's own ceiling is the only form that keeps the levels distinct on every model instead of
- * collapsing them onto one hardcoded count.
+ * `output_config.effort` is the real mechanism, documented at
+ * platform.claude.com/docs/en/build-with-claude/effort, and it needs no beta header. It is a
+ * behavioural signal rather than a token budget: it shapes every token in the response, tool calls
+ * included, and it works with or without thinking. An earlier version of this file mapped effort
+ * onto `thinking.budget_tokens` through a share table, which was wrong in kind, not merely in
+ * calibration.
  */
-const EFFORT_SHARE: Record<string, number> = {
-  minimal: 0.06,
-  low: 0.2,
-  medium: 0.5,
-  high: 0.75,
-  xhigh: 0.9,
-  max: 1,
-};
+const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 /**
  * The reply budget, resolved rather than pinned: the provider's own declared output limit first
@@ -466,28 +460,27 @@ function maxTokensFor(config: Partial<ResolvedLlmConfig>): number {
 }
 
 /**
- * The thinking block, in the client's own order of preference.
+ * The `thinking` block, chosen from what the model says it accepts rather than from its name.
  *
- * The bundle reads: if the model supports it, send `{ type: "adaptive" }` and let the server pick
- * the budget; otherwise compute `upperLimit - 1` and clamp it with
- * `Math.max(1024, Math.min(maxTokens - 1, budget))`. Adaptive is the client's default whenever
- * thinking is on at all, which is why it is used here for the level that means "no ceiling".
+ * `/v1/models` reports `capabilities.thinking.types` per model, and the two are not
+ * interchangeable: Opus 5 reports `enabled: false`, so an explicit `budget_tokens` request to it is
+ * a 400. Adaptive carries no budget at all, which is the point of it: the server decides the depth,
+ * steered by `output_config.effort`, and the docs call that the recommended control wherever
+ * adaptive exists.
+ *
+ * Never `{ type: "disabled" }`: on Opus 5 that is a 400 at xhigh and max effort, and omitting the
+ * block expresses the same thing without the failure mode.
  */
 function thinkingFor(
-  effort: string | undefined,
+  types: { adaptive: boolean; enabled: boolean } | undefined,
   maxTokens: number,
 ): { type: "adaptive" | "enabled"; budget_tokens?: number; display?: "omitted" } | undefined {
-  const share = effort ? EFFORT_SHARE[effort] : undefined;
-  if (!share) return undefined;
+  if (!types?.adaptive && !types?.enabled) return undefined;
   const display = STREAM_THINKING ? {} : { display: "omitted" as const };
-  // The top level means "as far as you want", which is exactly what adaptive expresses, and it
-  // spares us inventing a ceiling the server is better placed to choose.
-  if (share >= 1) return { type: "adaptive", ...display };
-  return { type: "enabled", budget_tokens: thinkingBudget(share, maxTokens), ...display };
-}
-
-function thinkingBudget(share: number, maxTokens: number): number {
-  return Math.max(1024, Math.min(maxTokens - 1, Math.round(maxTokens * share)));
+  if (types.adaptive) return { type: "adaptive", ...display };
+  // Extended-thinking-only models still need a number. The client's own formula, from the 2.1.206
+  // bundle: the model's output ceiling minus one, clamped to at least 1024.
+  return { type: "enabled", budget_tokens: Math.max(1024, maxTokens - 1), ...display };
 }
 
 /** The whole request body, pure so P2 can diff it against the capture without a network call. */
@@ -510,7 +503,13 @@ function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] =
   };
   if (anthropicTools.length > 0) body["tools"] = anthropicTools;
 
-  const thinking = thinkingFor(config.effort, maxTokens);
+  // A request-level setting, and one that invalidates the cached prefix when it changes mid
+  // conversation (the docs are explicit: effort shapes the rendered prompt). At a measured 96 %
+  // cache-read ratio that makes a mid-session effort change expensive, so it is worth holding
+  // constant rather than varying per turn.
+  if (config.effort && EFFORT_LEVELS.has(config.effort)) body["output_config"] = { effort: config.effort };
+
+  const thinking = thinkingFor(config.thinkingTypes, maxTokens);
   if (thinking) {
     body["thinking"] = thinking;
     // Server-side thinking pruning is only legal next to a thinking block: sending it alone is a

@@ -15,6 +15,12 @@ export interface DiscoveredAnthropicModel {
   /** Version-less family name used as the submenu, e.g. "Opus". */
   family: string;
   effortLevels: EffortLevel[];
+  /**
+   * Which `thinking.type` values the model accepts. Not cosmetic: Opus 5 reports
+   * `enabled: false`, so sending `{ type: "enabled", budget_tokens }` to it is a 400, and the
+   * modern models only take `adaptive`, where the server picks the depth itself.
+   */
+  thinkingTypes: { adaptive: boolean; enabled: boolean };
   vision: boolean;
   contextLimit?: number;
   outputLimit?: number;
@@ -32,6 +38,9 @@ interface AnthropicModelEntry {
   capabilities?: {
     effort?: AnthropicCapability & Record<string, unknown>;
     image_input?: AnthropicCapability;
+    thinking?: AnthropicCapability & {
+      types?: { adaptive?: AnthropicCapability; enabled?: AnthropicCapability };
+    };
   };
 }
 
@@ -63,6 +72,21 @@ export function anthropicEffortLevels(effort: (AnthropicCapability & Record<stri
 }
 
 /**
+ * Which `thinking.type` values a model takes. The absence of the capability block is read as
+ * "neither" rather than "both": a request that names an unsupported type is a 400, so guessing
+ * upward costs a failed turn while guessing downward only omits the block.
+ */
+export function anthropicThinkingTypes(
+  thinking: (AnthropicCapability & { types?: { adaptive?: AnthropicCapability; enabled?: AnthropicCapability } }) | undefined,
+): { adaptive: boolean; enabled: boolean } {
+  if (!thinking?.supported) return { adaptive: false, enabled: false };
+  return {
+    adaptive: thinking.types?.adaptive?.supported === true,
+    enabled: thinking.types?.enabled?.supported === true,
+  };
+}
+
+/**
  * List the versioned Claude models the account can run. The Claude Agent SDK only exposes
  * moving aliases (opus/sonnet/haiku), so this REST endpoint is the only way to pin a specific
  * version. The subscription OAuth token is accepted here — no separate API key needed.
@@ -91,6 +115,7 @@ export async function fetchAnthropicModels(
         label,
         family,
         effortLevels: anthropicEffortLevels(entry.capabilities?.effort),
+        thinkingTypes: anthropicThinkingTypes(entry.capabilities?.thinking),
         vision: entry.capabilities?.image_input?.supported === true,
         contextLimit: entry.max_input_tokens,
         outputLimit: entry.max_tokens,

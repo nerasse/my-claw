@@ -49,11 +49,15 @@ const tools = [
   { type: "function", function: { name: "bash", description: "d", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "read", description: "d", parameters: { type: "object", properties: {} } } },
 ];
-// The capture ran on Haiku 4.5, which does not support `thinking: {type: "adaptive"}`, so it shows
-// the explicit-budget branch. `xhigh` reaches that same branch here; `max` is deliberately adaptive
-// and is covered in anthropic.test.ts instead.
+// The capture ran on Haiku 4.5, an extended-thinking-only model, so it shows the explicit-budget
+// branch. Declaring `enabled` reaches that same branch here; the adaptive branch, which the modern
+// models take and which carries no budget, is covered in anthropic.test.ts.
 const body = buildBody(
-  { model: "claude-opus-5", effort: "xhigh", limit: { context: 200_000, output: 32_000 } },
+  {
+    model: "claude-opus-5",
+    limit: { context: 200_000, output: 32_000 },
+    thinkingTypes: { adaptive: false, enabled: true },
+  },
   messages,
   tools,
 );
@@ -95,10 +99,9 @@ test("the thinking block has the captured shape and stays under the reply budget
   const ours = body["thinking"] as { type: string; budget_tokens: number; display: string };
   assert.equal(ours.type, theirs.type);
   assert.equal(ours.display, theirs.display);
-  // The captured number is `upperLimit - 1` for that model. Ours is a share of this model's own
-  // ceiling, so the invariant is the clamp the client applies, not the literal value.
-  assert.ok(theirs.budget_tokens < capture.request.body.max_tokens!);
-  assert.ok(ours.budget_tokens >= 1024 && ours.budget_tokens < (body["max_tokens"] as number));
+  // Both are the model's output ceiling minus one, which is the client's own formula.
+  assert.equal(theirs.budget_tokens, capture.request.body.max_tokens! - 1);
+  assert.equal(ours.budget_tokens, (body["max_tokens"] as number) - 1);
 });
 
 test("context_management and stream match the capture exactly", () => {

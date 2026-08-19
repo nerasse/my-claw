@@ -297,6 +297,10 @@ export interface LlmModelConfig {
   // Per-model supported effort levels (SDK discovery provides these). When set, the effort
   // submenu only shows these levels instead of the full global list.
   supportedEffortLevels?: EffortLevel[];
+  // Which `thinking.type` values the Anthropic Messages API accepts for this model, straight from
+  // `/v1/models`. Naming an unsupported type is a 400: Opus 5 reports `enabled: false` and takes
+  // `adaptive` only, so this cannot be inferred from the family or the version.
+  thinkingTypes?: { adaptive: boolean; enabled: boolean };
     vision?: boolean;
     limit?: {
       context?: number;
@@ -361,6 +365,8 @@ export interface ResolvedLlmConfig {
   // the home loop too, but the loop swaps in their own transport (docs/codex-backend.md,
   // docs/anthropic-backend.md).
   backend?: "openai" | "claude-sdk" | "codex" | "anthropic";
+  // Carried from discovery so the Anthropic transport can name a thinking type the model accepts.
+  thinkingTypes?: { adaptive: boolean; enabled: boolean };
   baseUrl: string;
   model: string;
   // The model id the API actually receives. When `model` is a tag reference (`tag:<name>`)

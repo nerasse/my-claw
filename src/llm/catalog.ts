@@ -344,6 +344,7 @@ export class ModelCatalog {
       family: m.family,
       supportsEffort: m.effortLevels.length > 0,
       supportedEffortLevels: m.effortLevels.length > 0 ? m.effortLevels : undefined,
+      thinkingTypes: m.thinkingTypes,
       vision: m.vision,
       limit: { context: m.contextLimit, output: m.outputLimit },
     }));

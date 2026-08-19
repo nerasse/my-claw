@@ -210,6 +210,7 @@ function resolveFromMerged(
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
+      thinkingTypes: model?.thinkingTypes,
       fallbackModel: provider.fallbackModel,
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
     };

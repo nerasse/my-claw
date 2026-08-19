@@ -152,39 +152,46 @@ test("usage is undefined when nothing was reported", () => {
   assert.equal(normalizeUsage({}, 0), undefined);
 });
 
-test("every effort level below the top gets a distinct thinking budget", () => {
-  // A fixed table collapsed high, xhigh and max onto one number, so two of the five levels
-  // /v1/models advertises did nothing at all.
-  const levels = ["minimal", "low", "medium", "high", "xhigh"];
-  const budgets = levels.map((l) => thinkingFor(l, 32_000)!.budget_tokens!);
-  assert.equal(new Set(budgets).size, levels.length, `collapsed levels: ${budgets.join(", ")}`);
-  for (let i = 1; i < budgets.length; i++) assert.ok(budgets[i]! > budgets[i - 1]!);
-  // Clamped as the client clamps it: never below 1024, never at or above the reply budget.
-  assert.ok(budgets.every((b) => b >= 1024 && b < 32_000));
+test("the thinking type comes from what the model declares, never from its name", () => {
+  // Opus 5 reports enabled: false and adaptive: true. Sending it a budget is a 400.
+  const adaptive = thinkingFor({ adaptive: true, enabled: false }, 128_000)!;
+  assert.equal(adaptive.type, "adaptive");
+  assert.equal(adaptive.budget_tokens, undefined, "adaptive carries no budget by design");
+  assert.equal(adaptive.display, "omitted");
+
+  // An extended-thinking-only model still needs a number: the ceiling minus one, as the client does.
+  const explicit = thinkingFor({ adaptive: false, enabled: true }, 64_000)!;
+  assert.equal(explicit.type, "enabled");
+  assert.equal(explicit.budget_tokens, 63_999);
+
+  // Adaptive wins when both are offered: no budget to guess, and the docs recommend it.
+  assert.equal(thinkingFor({ adaptive: true, enabled: true }, 64_000)!.type, "adaptive");
 });
 
-test("the top effort level is adaptive, with no budget at all", () => {
-  // The bundle prefers `{type:"adaptive"}` and lets the server pick, which is what "no ceiling"
-  // means. Inventing a number here would be worse than not sending one.
-  const top = thinkingFor("max", 32_000)!;
-  assert.equal(top.type, "adaptive");
-  assert.equal(top.budget_tokens, undefined);
-  assert.equal(top.display, "omitted");
+test("a model that declares no thinking gets no thinking block, never a disabled one", () => {
+  // `{type: "disabled"}` is a 400 on Opus 5 at xhigh and max effort. Omission says the same thing.
+  assert.equal(thinkingFor({ adaptive: false, enabled: false }, 64_000), undefined);
+  assert.equal(thinkingFor(undefined, 64_000), undefined);
 });
 
-test("no effort level means no thinking block", () => {
-  assert.equal(thinkingFor(undefined, 32_000), undefined);
-  assert.equal(thinkingFor("off", 32_000), undefined);
+test("effort rides in output_config, not in the thinking block", () => {
+  // The documented mechanism: output_config.effort, no beta header, a behavioural signal that
+  // shapes every token including tool calls rather than a token budget.
+  const body = buildBody({ effort: "medium", thinkingTypes: { adaptive: true, enabled: false } });
+  assert.deepEqual(body["output_config"], { effort: "medium" });
+  assert.equal((body["thinking"] as { budget_tokens?: number }).budget_tokens, undefined);
 });
 
-test("the thinking budget follows a smaller model's own reply limit", () => {
-  // 8192 output means a 31999 budget is impossible, and asking anyway is a 400.
-  const budget = thinkingFor("xhigh", maxTokensFor({ limit: { context: 200_000, output: 8_192 } }))!.budget_tokens!;
-  assert.ok(budget < 8_192, `${budget} must stay under the model's own limit`);
+test("an effort value the API does not define is dropped rather than forwarded", () => {
+  // The ladder is low, medium, high, xhigh, max. my-claw's global vocabulary is wider.
+  assert.equal(buildBody({ effort: "minimal" })["output_config"], undefined);
+  assert.equal(buildBody({})["output_config"], undefined);
+  for (const level of ["low", "medium", "high", "xhigh", "max"] as const) {
+    assert.deepEqual(buildBody({ effort: level })["output_config"], { effort: level });
+  }
 });
 
 test("the reply budget is resolved, never pinned", () => {
-  // The provider's own declared limit wins, whatever its size.
   assert.equal(maxTokensFor({ limit: { context: 1_000_000, output: 128_000 } }), 128_000);
   assert.equal(maxTokensFor({ limit: { context: 200_000, output: 8_192 } }), 8_192);
   // Nothing declared falls back to the client's own ceiling constant, not to its default.
@@ -196,7 +203,7 @@ test("server-side thinking pruning never ships without an enabled thinking block
   // Anthropic answers 400 `clear_thinking_20251015 strategy requires thinking to be enabled` when
   // the edit rides alone. The real client never hits it because it always thinks; a model with no
   // effort level does, and it cost a live request to find out.
-  const withEffort = buildBody({ effort: "high" });
+  const withEffort = buildBody({ thinkingTypes: { adaptive: true, enabled: false } });
   assert.ok(withEffort["thinking"]);
   assert.ok(withEffort["context_management"]);
   const without = buildBody({});
