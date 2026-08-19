@@ -80,6 +80,18 @@ export async function handleDeviceRevoke(d: MyClawAppDeviceDeps, ws: ServerWebSo
     deviceId,
     ...(revoked.error ? { error: revoked.error } : {}),
   });
+  if (revoked.ok) mirrorDeviceList(d, ws);
+}
+
+/**
+ * The roster after a change, to the owner's *other* windows. Rebuilt per socket instead of
+ * mirrored as one frame, because `self` is a statement about the socket it goes to: a device
+ * revoked or paired from the phone has to leave (or join) the laptop's list without a reload.
+ */
+function mirrorDeviceList(d: MyClawAppDeviceDeps, sender: ServerWebSocket<MyClawAppSessionData>): void {
+  for (const other of d.sockets.values()) {
+    if (other !== sender && other.data.owner === sender.data.owner) handleDeviceList(d, other);
+  }
 }
 
 export function handlePairLookup(d: MyClawAppDeviceDeps, ws: ServerWebSocket<MyClawAppSessionData>, code: string): void {
@@ -118,6 +130,7 @@ export async function handlePairApprove(
     ok: approved.ok,
     ...(approved.ok ? { deviceId: approved.deviceId } : { error: approved.error }),
   });
+  if (approved.ok) mirrorDeviceList(d, ws);
 }
 
 export function handleDeviceList(d: MyClawAppDeviceDeps, ws: ServerWebSocket<MyClawAppSessionData>): void {

@@ -1506,6 +1506,119 @@ describe("MyClawAppAdapter owners", () => {
   });
 });
 
+/**
+ * A change is a fact about the owner, not about the window that made it. What answers a *read*
+ * still goes to the asker alone, which is the line these tests draw (docs/my-claw-app-channel.md).
+ */
+describe("a mutation reaches every window of the owner", () => {
+  const OWNER = "neras";
+  let adapter: MyClawAppAdapter;
+  let store: FakeSessionStore;
+  let phone: WsClient;
+  let browser: WsClient;
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    store.summaries = [{ threadId: "projet", title: "salut", messageCount: 2, createdAt: "c", lastActiveAt: "l" }];
+    adapter = new MyClawAppAdapter(
+      {
+        port: 0,
+        devices: { phone: { token: TOKEN, owner: OWNER }, browser: { token: TOKEN, owner: OWNER } },
+        streaming: { enabled: true, minChars: 1 },
+      },
+      store as never,
+    );
+    adapter.onMessage(async () => {});
+    adapter.onTagsController({
+      list: () => ({ type: "tags.result", tags: [{ name: "Default", model: "fast-1" }] }),
+      upsert: async (fields) => ({ type: "tags.result", tags: [{ name: fields.name, model: fields.model }] }),
+      delete: async () => ({ type: "tags.result", tags: [] }),
+    });
+    adapter.onToolsController({
+      list: () => ({ tools: [{ name: "bash", description: "Run", source: "built-in", disabled: false }], missing: [] }),
+      toggle: async (name, disabled) => ({ tools: [{ name, description: "Run", source: "built-in", disabled }], missing: [] }),
+    });
+    let mode: "cloud" | "local" | "auto" = "auto";
+    adapter.onVoiceController({
+      status: () => ({ mode, resolved: mode === "local" ? "local" : "cloud", cloudAvailable: true }),
+      setMode: async (next) => { mode = next; },
+    });
+    await adapter.start();
+    phone = await connectClient(adapter.port, "phone");
+    browser = await connectClient(adapter.port, "browser");
+  });
+
+  afterEach(async () => {
+    phone.ws.close();
+    browser.ws.close();
+    await adapter.stop();
+  });
+
+  test("a conversation renamed, filed or deleted moves on both screens", async () => {
+    phone.ws.send(JSON.stringify({ type: "session.rename", threadId: "projet", title: "Infra maison" }));
+    assert.equal((await nextFrame(phone))["type"], "session.list.result");
+    const renamed = await nextFrame(browser);
+    assert.equal(renamed["type"], "session.list.result");
+    assert.equal((renamed["sessions"] as Array<{ title: string }>)[0]?.title, "Infra maison");
+
+    phone.ws.send(JSON.stringify({ type: "session.archive", threadId: "projet" }));
+    assert.equal((await nextFrame(phone))["type"], "session.list.result");
+    assert.equal((await nextFrame(browser))["type"], "session.list.result");
+
+    phone.ws.send(JSON.stringify({ type: "session.delete", threadId: "projet" }));
+    // The other window drops the bubbles of a conversation that no longer exists, then its row.
+    assert.equal((await nextFrame(browser))["type"], "chat.cleared");
+    assert.equal((await nextFrame(browser))["type"], "session.list.result");
+  });
+
+  test("a file deleted from one window leaves the other window's explorer", async () => {
+    const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=phone&token=${TOKEN}`, {
+      method: "POST",
+      headers: { "x-filename": "note.pdf", "x-type": "file", "x-thread-id": "projet" },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const meta = (await upload.json()) as { id: string };
+
+    // A read is the asker's business: the browser hears nothing about it.
+    phone.ws.send(JSON.stringify({ type: "files.list", threadId: "projet" }));
+    assert.equal((await nextFrame(phone))["type"], "files.list.result");
+    assert.equal(browser.frames.length, 0);
+
+    phone.ws.send(JSON.stringify({ type: "files.delete", threadId: "projet", id: meta.id }));
+    const mirrored = await nextFrame(browser);
+    assert.equal(mirrored["type"], "files.list.result");
+    assert.equal((mirrored["files"] as unknown[]).length, 0);
+  });
+
+  test("a tag, a tool and the voice engine are shared state, a read is not", async () => {
+    phone.ws.send(JSON.stringify({ type: "tags.upsert", name: "sonnet", model: "claude-sonnet-5" }));
+    assert.equal((await nextFrame(browser))["type"], "tags.result");
+
+    phone.ws.send(JSON.stringify({ type: "tools.toggle", name: "bash", disabled: true }));
+    const tools = await nextFrame(browser);
+    assert.equal(tools["type"], "tools.list.result");
+    assert.equal((tools["tools"] as Array<{ disabled: boolean }>)[0]?.disabled, true);
+
+    phone.ws.send(JSON.stringify({ type: "voice.mode.set", mode: "local" }));
+    assert.equal((await nextFrame(browser))["resolved"], "local");
+
+    // Reads of the same three surfaces answer the asker and nobody else.
+    browser.frames.length = 0;
+    phone.ws.send(JSON.stringify({ type: "tags.list" }));
+    phone.ws.send(JSON.stringify({ type: "tools.list" }));
+    phone.ws.send(JSON.stringify({ type: "voice.mode.get" }));
+    await waitUntil(() => phone.frames.length >= 3);
+    assert.equal(browser.frames.length, 0, "a read must not travel to the other windows");
+  });
+
+  test("the workspace of a conversation is the conversation's, not the device's", async () => {
+    phone.ws.send(JSON.stringify({ type: "session.workspace.set", threadId: "projet", workspace: "sofa" }));
+    const mirrored = await nextFrame(browser);
+    assert.equal(mirrored["type"], "session.workspace.set.result");
+    assert.equal(mirrored["workspace"], "sofa");
+  });
+});
+
 describe("model frames", () => {
   let adapter: MyClawAppAdapter;
   let client: WsClient;

@@ -48,6 +48,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppErrorScope,
   MyClawAppFileDelete,
   MyClawAppFilesList,
+  MyClawAppFilesListResult,
   MyClawAppDiagReport,
   MyClawAppDiagSnapshot,
   MyClawAppLogsTail,
@@ -59,6 +60,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionPinOrder,
   MyClawAppSessionHistory,
   MyClawAppSessionList,
+  MyClawAppSessionListResult,
   MyClawAppSessionRename,
   MyClawAppSessionWorkspaceSet,
   MyClawAppSessionInstructionsGet,
@@ -1450,7 +1452,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.store.rename(ws.data.owner, threadId, frame.title ?? "");
       // Answered with the whole list, like every other mutation of it: the device renders the
       // result the server actually stored rather than the name it hoped for.
-      this.handleSessionList(ws, { type: "session.list" });
+      this.broadcast(ws.data.owner, await this.sessionListFrame(ws.data.owner));
     } catch (err) {
       await this.refuse(ws, "session", "rename failed", { threadId, error: String(err) });
     }
@@ -1471,7 +1473,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     try {
       await this.store.setWorkspace(ws.data.owner, threadId, frame.workspace);
-      this.sendFrame(ws, { type: "session.workspace.set.result", threadId, workspace: frame.workspace });
+      this.broadcast(ws.data.owner, { type: "session.workspace.set.result", threadId, workspace: frame.workspace });
     } catch (err) {
       await this.refuse(ws, "session", "workspace.set failed", { threadId, workspace: frame.workspace, error: String(err) });
     }
@@ -1634,13 +1636,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.sendFrame(ws, { type: "error", message, scope });
   }
 
+  /**
+   * The listing as the server holds it now. Built apart from the handlers because the same frame
+   * answers a read, where it goes to the asker, and every mutation of the list, where it goes to
+   * every window of the owner: a conversation renamed, filed or deleted on the phone is not a
+   * fact about the phone (docs/my-claw-app-channel.md).
+   */
+  private async sessionListFrame(owner: string): Promise<MyClawAppSessionListResult> {
+    const sessions = await this.store.list(owner);
+    const withRuns = this.runActive
+      ? sessions.map((session) => ({ ...session, activeRun: this.runActive!(this.store.resolveSessionId(owner, session.threadId)) }))
+      : sessions;
+    return { type: "session.list.result", sessions: withRuns };
+  }
+
   private async handleSessionList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionList): Promise<void> {
     try {
-      const sessions = await this.store.list(ws.data.owner);
-      const withRuns = this.runActive
-        ? sessions.map((session) => ({ ...session, activeRun: this.runActive!(this.store.resolveSessionId(ws.data.owner, session.threadId)) }))
-        : sessions;
-      this.sendFrame(ws, { type: "session.list.result", sessions: withRuns });
+      this.sendFrame(ws, await this.sessionListFrame(ws.data.owner));
     } catch (err) {
       await this.refuse(ws, "session", "session list failed", { error: String(err) });
     }
@@ -1687,8 +1699,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     try {
       if (archiving) await this.store.archive(ws.data.owner, threadId);
       else await this.store.unarchive(ws.data.owner, threadId);
-      const sessions = await this.store.list(ws.data.owner);
-      this.sendFrame(ws, { type: "session.list.result", sessions });
+      this.broadcast(ws.data.owner, await this.sessionListFrame(ws.data.owner));
     } catch (err) {
       const action = archiving ? "archive" : "unarchive";
       await this.refuse(ws, "session", `${action} failed`, { threadId, error: String(err) });
@@ -1716,8 +1727,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       } else {
         await this.store.setPinOrder(owner, frame.threadIds);
       }
-      const sessions = await this.store.list(owner);
-      this.broadcast(owner, { type: "session.list.result", sessions });
+      this.broadcast(owner, await this.sessionListFrame(owner));
     } catch (err) {
       await this.refuse(ws, "session", "pin failed", { error: String(err) });
     }
@@ -1733,6 +1743,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.store.remove(ws.data.owner, threadId);
       await this.files.removeSessionFiles(ws.data.owner, threadId);
       this.sendFrame(ws, { type: "chat.history", threadId, messages: [] });
+      // The conversation is gone from disk, so it must go from every screen: the other windows
+      // drop its bubbles and its row instead of offering a thread that no longer exists.
+      this.broadcastExcept(ws, { type: "chat.cleared", threadId });
+      this.broadcast(ws.data.owner, await this.sessionListFrame(ws.data.owner));
     } catch (err) {
       await this.refuse(ws, "session", "delete failed", { threadId, error: String(err) });
     }
@@ -1775,6 +1789,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
+  /** Same split as the session listing: a read answers the asker, a delete answers every window. */
+  private async filesListFrame(owner: string, threadId: string): Promise<MyClawAppFilesListResult> {
+    const [files, totalBytes] = await Promise.all([
+      this.files.list(owner, threadId),
+      this.files.sessionSizeBytes(owner, threadId),
+    ]);
+    return { type: "files.list.result", threadId, files, totalBytes };
+  }
+
   private async handleFilesList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppFilesList): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId) {
@@ -1782,11 +1805,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const [files, totalBytes] = await Promise.all([
-        this.files.list(ws.data.owner, threadId),
-        this.files.sessionSizeBytes(ws.data.owner, threadId),
-      ]);
-      this.sendFrame(ws, { type: "files.list.result", threadId, files, totalBytes });
+      this.sendFrame(ws, await this.filesListFrame(ws.data.owner, threadId));
     } catch (err) {
       await this.refuse(ws, "files", "files.list failed", { threadId, error: String(err) });
     }
@@ -1801,7 +1820,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     try {
       const removed = await this.files.remove(ws.data.owner, threadId, frame.id);
       if (removed) {
-        await this.handleFilesList(ws, { type: "files.list", threadId });
+        this.broadcast(ws.data.owner, await this.filesListFrame(ws.data.owner, threadId));
       } else {
         await this.refuse(ws, "files", "file not found", { threadId, id: frame.id });
       }

@@ -146,7 +146,11 @@ export async function handleVoiceMode(
       }
       await d.voice.setMode(mode);
     }
-    d.sendFrame(ws, { type: "voice.mode.result", ...d.voice.status() });
+    // A set moves a machine-wide setting, and a get asks about it: the first is news for every
+     // window of the owner, the second only for the asker (docs/my-claw-app-channel.md).
+    const state: MyClawAppServerFrame = { type: "voice.mode.result", ...d.voice.status() };
+    if (mode) d.broadcastFrame(ws.data.owner, state);
+    else d.sendFrame(ws, state);
   } catch (err) {
     await d.refuse(ws, "voice", "voice.mode failed", { mode, error: String(err) });
   }
@@ -175,7 +179,8 @@ export async function handleModelRefresh(d: MyClawAppSettingsDeps, ws: ServerWeb
   }
   try {
     const outcome = await d.models.refresh();
-    d.sendFrame(ws, { type: "model.list.result", ...d.models.list() });
+    // The catalogue is shared, the outcome line belongs to the hand that fired the discovery.
+    d.broadcastFrame(ws.data.owner, { type: "model.list.result", ...d.models.list() });
     d.sendFrame(ws, { type: "model.refresh.result", ...outcome });
   } catch (err) {
     await d.refuse(ws, "model", "model.refresh failed", { error: String(err) });
@@ -236,7 +241,7 @@ export async function handleTagsUpsert(
     return;
   }
   try {
-    d.sendFrame(ws, await d.tags.upsert(frame));
+    d.broadcastFrame(ws.data.owner, await d.tags.upsert(frame));
   } catch (err) {
     await d.refuse(ws, "tags", "tags.upsert failed", { name: frame.name, model: frame.model, error: String(err) });
   }
@@ -256,7 +261,7 @@ export async function handleTagsDelete(
     return;
   }
   try {
-    d.sendFrame(ws, await d.tags.delete(frame.name));
+    d.broadcastFrame(ws.data.owner, await d.tags.delete(frame.name));
   } catch (err) {
     await d.refuse(ws, "tags", "tags.delete failed", { name: frame.name, error: String(err) });
   }
@@ -276,7 +281,7 @@ export async function handleProviderUpsert(
     return;
   }
   try {
-    d.sendFrame(ws, await d.providers.upsert(frame));
+    d.broadcastFrame(ws.data.owner, await d.providers.upsert(frame));
   } catch (err) {
     await d.refuse(ws, "providers", "providers.upsert failed", { key: frame.key, error: String(err) });
   }
@@ -296,7 +301,7 @@ export async function handleProviderRemove(
     return;
   }
   try {
-    d.sendFrame(ws, await d.providers.remove(frame.key));
+    d.broadcastFrame(ws.data.owner, await d.providers.remove(frame.key));
   } catch (err) {
     await d.refuse(ws, "providers", "providers.remove failed", { key: frame.key, error: String(err) });
   }
@@ -316,7 +321,7 @@ export async function handleProviderRename(
     return;
   }
   try {
-    d.sendFrame(ws, await d.providers.rename(frame.from, frame.to));
+    d.broadcastFrame(ws.data.owner, await d.providers.rename(frame.from, frame.to));
   } catch (err) {
     await d.refuse(ws, "providers", "providers.rename failed", { from: frame.from, to: frame.to, error: String(err) });
   }
@@ -338,7 +343,7 @@ export async function handleProviderEnvSet(
   }
   try {
     await d.providers.envSet(frame.name, frame.value);
-    await d.sendFrame(ws, await d.providers.envList());
+    d.broadcastFrame(ws.data.owner, await d.providers.envList());
   } catch (err) {
     await d.refuse(ws, "providers", "providers.env.set failed", { name: frame.name, error: String(err) });
   }
@@ -359,7 +364,7 @@ export async function handleProviderEnvRename(
   }
   try {
     await d.providers.envRename(frame.from, frame.to);
-    await d.sendFrame(ws, await d.providers.envList());
+    d.broadcastFrame(ws.data.owner, await d.providers.envList());
   } catch (err) {
     await d.refuse(ws, "providers", "providers.env.rename failed", { from: frame.from, to: frame.to, error: String(err) });
   }
@@ -392,7 +397,7 @@ export async function handleProviderEnvRemove(
   }
   try {
     await d.providers.envRemove(frame.name);
-    await d.sendFrame(ws, await d.providers.envList());
+    d.broadcastFrame(ws.data.owner, await d.providers.envList());
   } catch (err) {
     await d.refuse(ws, "providers", "providers.env.remove failed", { name: frame.name, error: String(err) });
   }
@@ -412,7 +417,7 @@ export async function handleAgentsModelSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setModel(frame.agent, frame.model, frame.effort));
+    d.broadcastFrame(ws.data.owner, await d.agents.setModel(frame.agent, frame.model, frame.effort));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.model.set failed", { agent: frame.agent, model: frame.model, effort: frame.effort, error: String(err) });
   }
@@ -432,7 +437,7 @@ export async function handleAgentsModelClear(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.clearModel(frame.agent));
+    d.broadcastFrame(ws.data.owner, await d.agents.clearModel(frame.agent));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.model.clear failed", { agent: frame.agent, error: String(err) });
   }
@@ -452,7 +457,7 @@ export async function handleAgentsFallbackSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setFallback(frame.model));
+    d.broadcastFrame(ws.data.owner, await d.agents.setFallback(frame.model));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.fallback.set failed", { model: frame.model, error: String(err) });
   }
@@ -472,7 +477,7 @@ export async function handleAgentsScopeSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setScope(frame.agent, frame.field, frame.mode, frame.names ?? []));
+    d.broadcastFrame(ws.data.owner, await d.agents.setScope(frame.agent, frame.field, frame.mode, frame.names ?? []));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.scope.set failed", { agent: frame.agent, error: String(err) });
   }
@@ -492,7 +497,7 @@ export async function handleAgentsWorkspaceSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setWorkspace(frame.agent, frame.workspace));
+    d.broadcastFrame(ws.data.owner, await d.agents.setWorkspace(frame.agent, frame.workspace));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.workspace.set failed", { agent: frame.agent, error: String(err) });
   }
@@ -512,7 +517,7 @@ export async function handleAgentsIterationsSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setMaxIterations(frame.agent, frame.value));
+    d.broadcastFrame(ws.data.owner, await d.agents.setMaxIterations(frame.agent, frame.value));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.iterations.set failed", { agent: frame.agent, error: String(err) });
   }
@@ -532,7 +537,7 @@ export async function handleAgentsContextCapSet(
     return;
   }
   try {
-    d.sendFrame(ws, await d.agents.setContextCap(frame.agent, frame.value));
+    d.broadcastFrame(ws.data.owner, await d.agents.setContextCap(frame.agent, frame.value));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.contextcap.set failed", { agent: frame.agent, error: String(err) });
   }
@@ -578,6 +583,10 @@ export async function handleAgentFileSet(
   }
   try {
     d.sendFrame(ws, await d.agents.fileSet(frame.agent, frame));
+    // The roster moved for everyone, but the sha-carrying answer stays with the editor that
+    // saved: a window adopting a sha it never asked for is how the next save silently
+    // overwrites the draft someone else is typing.
+    d.broadcastFrame(ws.data.owner, d.agents.get());
   } catch (err) {
     await d.refuse(ws, "agents", "agents.file.set failed", { agent: frame.agent, error: String(err) });
   }
@@ -598,6 +607,7 @@ export async function handleAgentFileCreate(
   }
   try {
     d.sendFrame(ws, await d.agents.fileCreate(frame.name, frame.description));
+    d.broadcastFrame(ws.data.owner, d.agents.get());
   } catch (err) {
     await d.refuse(ws, "agents", "agents.file.create failed", { name: frame.name, error: String(err) });
   }
@@ -619,6 +629,7 @@ export async function handleAgentFileDelete(
   try {
     await d.agents.fileDelete(frame.agent);
     d.sendFrame(ws, { type: "agents.file.saved", name: frame.agent, ok: true, sha: "", conflict: false });
+    d.broadcastFrame(ws.data.owner, d.agents.get());
   } catch (err) {
     await d.refuse(ws, "agents", "agents.file.delete failed", { agent: frame.agent, error: String(err) });
   }
@@ -638,7 +649,7 @@ export async function handleToolsToggle(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "tools.list.result", ...(await d.tools.toggle(frame.name, frame.disabled)) });
+    d.broadcastFrame(ws.data.owner, { type: "tools.list.result", ...(await d.tools.toggle(frame.name, frame.disabled)) });
   } catch (err) {
     await d.refuse(ws, "tools", "tools.toggle failed", { name: frame.name, error: String(err) });
   }
@@ -654,7 +665,7 @@ export async function handleMcpAdd(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "mcp.list.result", servers: await d.mcp.add(frame) });
+    d.broadcastFrame(ws.data.owner, { type: "mcp.list.result", servers: await d.mcp.add(frame) });
   } catch (err) {
     await d.refuse(ws, "mcp", "mcp.add failed", { name: frame.name, error: String(err) });
   }
@@ -674,7 +685,7 @@ export async function handleMcpRemove(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "mcp.list.result", servers: await d.mcp.remove(frame.name) });
+    d.broadcastFrame(ws.data.owner, { type: "mcp.list.result", servers: await d.mcp.remove(frame.name) });
   } catch (err) {
     await d.refuse(ws, "mcp", "mcp.remove failed", { name: frame.name, error: String(err) });
   }
@@ -694,7 +705,7 @@ export async function handleMcpEnable(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "mcp.list.result", servers: await d.mcp.setEnabled(frame.name, frame.enabled) });
+    d.broadcastFrame(ws.data.owner, { type: "mcp.list.result", servers: await d.mcp.setEnabled(frame.name, frame.enabled) });
   } catch (err) {
     await d.refuse(ws, "mcp", "mcp.enable failed", { name: frame.name, error: String(err) });
   }
@@ -727,6 +738,9 @@ export async function handleConfigSet(
     return;
   }
   try {
+    // Sender only, and deliberately: the answer carries the new sha and the conflict verdict of
+    // *this* write. Pushing it to a window with the editor open would mark its unsaved draft as
+    // stored and hand it a sha that defeats the very check meant to protect it.
     d.sendFrame(ws, { type: "config.saved", ...(await d.configEditor.set(frame.sha, frame.content)) });
   } catch (err) {
     await d.refuse(ws, "config", "config.set failed", { error: String(err) });
@@ -785,7 +799,7 @@ export async function handleSkillsTransfer(
       },
       ...(frame.overwrite ? { overwrite: true } : {}),
     });
-    d.sendFrame(ws, { type: "skills.list.result", ...result });
+    d.broadcastFrame(ws.data.owner, { type: "skills.list.result", ...result });
   } catch (err) {
     await d.refuse(ws, "skills", `${frame.type} failed`, { ...detail, error: String(err) });
   }
@@ -817,7 +831,7 @@ export async function handleWorkspacesAdd(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.add(frame.key, frame.path) });
+    d.broadcastFrame(ws.data.owner, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.add(frame.key, frame.path) });
   } catch (err) {
     await d.refuse(ws, "workspaces", "workspaces.add failed", { key: frame.key, error: String(err) });
   }
@@ -837,7 +851,7 @@ export async function handleWorkspacesRemove(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.remove(frame.key) });
+    d.broadcastFrame(ws.data.owner, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.remove(frame.key) });
   } catch (err) {
     await d.refuse(ws, "workspaces", "workspaces.remove failed", { key: frame.key, error: String(err) });
   }
@@ -857,7 +871,7 @@ export async function handleWorkspacesRename(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.rename(frame.from, frame.to) });
+    d.broadcastFrame(ws.data.owner, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.rename(frame.from, frame.to) });
   } catch (err) {
     await d.refuse(ws, "workspaces", "workspaces.rename failed", { from: frame.from, error: String(err) });
   }
@@ -877,7 +891,7 @@ export async function handleWorkspacesSetPath(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.setPath(frame.key, frame.path) });
+    d.broadcastFrame(ws.data.owner, { type: "workspaces.list.result", workspaces: await d.workspacesCtrl.setPath(frame.key, frame.path) });
   } catch (err) {
     await d.refuse(ws, "workspaces", "workspaces.path.set failed", { key: frame.key, error: String(err) });
   }
@@ -953,7 +967,7 @@ export async function handleJobSave(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "jobs.list.result", jobs: await d.jobs.save(frame) });
+    d.broadcastFrame(ws.data.owner, { type: "jobs.list.result", jobs: await d.jobs.save(frame) });
   } catch (err) {
     await d.refuse(ws, "jobs", "jobs.save failed", { name: frame.name, id: frame.id, error: String(err) });
   }
@@ -969,7 +983,7 @@ export async function handleJobDelete(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "jobs.list.result", jobs: await d.jobs.remove(frame.id) });
+    d.broadcastFrame(ws.data.owner, { type: "jobs.list.result", jobs: await d.jobs.remove(frame.id) });
   } catch (err) {
     await d.refuse(ws, "jobs", "jobs.delete failed", { id: frame.id, error: String(err) });
   }
@@ -1079,7 +1093,7 @@ export async function handleInstructionsLayerSet(
     // A policy mutation answers with the fresh listing, like every other mutation: the layer
     // screen redraws from what the server stored, never from what it hoped to store.
     const list = await d.instructions.setPolicy(frame.workspace, frame.file, frame.inherit, frame.off);
-    d.sendFrame(ws, { type: "instructions.list.result", ...list });
+    d.broadcastFrame(ws.data.owner, { type: "instructions.list.result", ...list });
   } catch (err) {
     await d.refuse(ws, "instructions", "instructions.layer.set failed", {
       workspace: frame.workspace,

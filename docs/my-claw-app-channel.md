@@ -1072,6 +1072,46 @@ Three things make it cheap:
 What it does not cover: a window that connects **during** an answer still misses what already
 streamed. That is the page merge below, not this frame.
 
+### The frame has to be on the app's whitelist to exist at all
+
+`parseServerFrame` is a whitelist (`FRAME_TYPES` in the app's `core/protocol.ts`) and it answers
+`null` for anything else. `chat.user` shipped without being added to it, so every client, phone and
+browser alike, threw the mirrored prompt away: the server was measurably right and nothing arrived.
+Every adapter test passed (the frame does leave the socket), and so did every app test, because they
+hand `routeFrame` a typed object and never cross the parser.
+
+The guard is now an invariant test rather than a habit: the app's `protocol.test.ts` reads the
+`case` labels out of `frameRouter.ts` and asserts each one gets through `parseServerFrame`. A new
+server frame is therefore only ever half-shipped until the app knows the name.
+
+## A mutation is a fact about the owner, a read is a fact about the asker
+
+One rule decides who a frame goes to:
+
+- **A committed change to shared state goes to every window of the owner.** The listing after a
+  rename, an archive or a delete; the explorer after a file is deleted; a tag, a provider, an env
+  name, an agent default, a scope, a workspace, a tool toggle, an MCP server, a skill transfer, a
+  scheduled job, a prompt-layer policy, the voice engine, the model catalogue after a discovery, the
+  conversation's model, effort, context and workspace. None of these is a fact about the phone that
+  typed it, and a second window left on the same screen was reading a state nobody chose anymore.
+- **An answer to a read goes to the asker.** `session.list`, `chat.history`, `files.list`, the
+  catalogues, `/status`, `diag.snapshot`, `logs.tail`, `voice.mode.get`, the transcript. Mirroring a
+  read is pure noise: nothing changed.
+
+Two deliberate exceptions, both because the answer carries per-request bookkeeping rather than
+state: `config.saved`, `instructions.saved` and `agents.file.result` stay with the sender. They hold
+the new `sha` and the conflict verdict of *that* write, and handing them to a window with an open
+editor would mark its unsaved draft as stored and give it a sha that defeats the very check meant to
+protect it. What is shared there is the roster, so `agents.*` file writes mirror
+`agents.config.result` on top of the private ack.
+
+The device roster is rebuilt per socket instead of mirrored, because `self` is a statement about the
+socket it goes to: a revoke or a pairing rebuilds the list for each of the owner's other windows.
+
+Nothing is replayed to a window that was offline. That is deliberate (a per-device queue would be a
+mailbox with an eviction policy to argue about), and the app closes the gap from its side: on
+`connected` it refetches the conversation on screen, not only the catalogs (`core/resume.ts`).
+
 ## A page is merged, not substituted
 
 `history()` reads the **live** session (`sessionManager.read` returns the cached object a run is
