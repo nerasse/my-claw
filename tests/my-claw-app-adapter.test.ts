@@ -1471,6 +1471,30 @@ describe("MyClawAppAdapter owners", () => {
     }
   });
 
+  // The hold is the longest silence the app ever shows (a compaction runs for minutes), so it is
+  // the moment a second window most needs to know a message is in flight at all.
+  test("a send parked behind a compaction is marked on both screens", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "pendant la compaction", threadId: "t-1" }));
+      // The bubble reaches the other window first: the mark names it by the sender's id, and a
+      // mark landing on a bubble that does not exist yet marks nothing at all.
+      assert.equal((await nextFrame(browser))["type"], "chat.user");
+
+      adapter.notifyQueued(OWNER, "t-1", "m1", "compaction");
+      for (const window of [phone, browser]) {
+        const queued = await nextFrame(window);
+        assert.equal(queued["type"], "chat.send.queued");
+        assert.equal(queued["replyToId"], "m1");
+        assert.equal(queued["reason"], "compaction");
+      }
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
   test("a device without an owner stays on its own namespace", async () => {
     const loner = await connectClient(adapter.port, "loner");
     const phone = await connectClient(adapter.port, "phone");
