@@ -49,9 +49,14 @@ const tools = [
   { type: "function", function: { name: "bash", description: "d", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "read", description: "d", parameters: { type: "object", properties: {} } } },
 ];
-// `max`, not `high`: the capture reads `budget_tokens: 31999` against a 32000 reply budget, which
-// is the ceiling. Reading it as `high` is what made the effort scale wrong in the first place.
-const body = buildBody({ model: "claude-opus-5", effort: "max" }, messages, tools);
+// The capture ran on Haiku 4.5, which does not support `thinking: {type: "adaptive"}`, so it shows
+// the explicit-budget branch. `xhigh` reaches that same branch here; `max` is deliberately adaptive
+// and is covered in anthropic.test.ts instead.
+const body = buildBody(
+  { model: "claude-opus-5", effort: "xhigh", limit: { context: 200_000, output: 32_000 } },
+  messages,
+  tools,
+);
 
 test("system[] has the captured arity and the captured breakpoint placement", () => {
   const ours = body["system"] as Array<{ cache_control?: unknown }>;
@@ -85,11 +90,23 @@ test("at most four cache breakpoints ride in one request", () => {
   assert.equal(used, 2);
 });
 
-test("thinking and context_management match the captured values", () => {
-  assert.deepEqual(body["thinking"], capture.request.body.thinking);
+test("the thinking block has the captured shape and stays under the reply budget", () => {
+  const theirs = capture.request.body.thinking as { type: string; budget_tokens: number; display: string };
+  const ours = body["thinking"] as { type: string; budget_tokens: number; display: string };
+  assert.equal(ours.type, theirs.type);
+  assert.equal(ours.display, theirs.display);
+  // The captured number is `upperLimit - 1` for that model. Ours is a share of this model's own
+  // ceiling, so the invariant is the clamp the client applies, not the literal value.
+  assert.ok(theirs.budget_tokens < capture.request.body.max_tokens!);
+  assert.ok(ours.budget_tokens >= 1024 && ours.budget_tokens < (body["max_tokens"] as number));
+});
+
+test("context_management and stream match the capture exactly", () => {
   assert.deepEqual(body["context_management"], capture.request.body.context_management);
-  assert.equal(body["max_tokens"], capture.request.body.max_tokens);
   assert.equal(body["stream"], capture.request.body.stream);
+  // max_tokens is resolved from the model rather than pinned, so the capture's 32000 is reproduced
+  // by declaring that limit, not by hardcoding it.
+  assert.equal(body["max_tokens"], capture.request.body.max_tokens);
 });
 
 test("metadata is the one body field we deliberately drop", () => {

@@ -13,14 +13,30 @@ const ANTHROPIC_TIMEOUT_MS = 600_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 800;
-const MAX_TOKENS = 32_000;
+/**
+ * Only reached when neither the provider nor models.dev declares an output limit. Taken from the
+ * client's own fallback ceiling (`aph` in the 2.1.206 bundle, next to `sph = 32000`).
+ */
+const FALLBACK_OUTPUT_LIMIT = 128_000;
 
 /**
- * The three values a subscription request claims about the client it pretends to be. They ship
- * together in one CLI release, so they are pinned together: a user-agent from one release beside
- * a stainless package version from another is an inconsistency the account does not need to
- * advertise. Re-derive the whole tuple from a fresh capture (scripts/capture-anthropic-proxy.ts),
- * never one field at a time. Node version is the runtime the CLI bundles, not the one we run.
+ * The three values a subscription request claims about the client it pretends to be.
+ *
+ * **Pinned on purpose, and pinned together.** They ship as one CLI release, so a user-agent from
+ * one release beside a stainless package version from another is an inconsistency the account does
+ * not need to advertise. Deriving them at runtime was considered and rejected: it would make the
+ * request shape depend on whichever `claude` happens to sit on the box, so an unrelated CLI upgrade
+ * would silently change what we send.
+ *
+ * How to refresh, when a capture shows drift:
+ *
+ * 1. `scripts/capture-anthropic-proxy.ts`, then drive `claude -p` through it
+ * 2. read `user-agent`, `x-stainless-package-version` and `x-stainless-runtime-version` off the
+ *    captured request and replace all three here, never one at a time
+ * 3. re-run `tests/llm/anthropic-capture-parity.test.ts` against the new artifact
+ *
+ * `ANTHROPIC_CLI_VERSION` and `ANTHROPIC_USER_AGENT` override without a rebuild. The node version
+ * is the runtime the CLI bundles, not the one we run: my-claw is on Bun.
  */
 const CLI_RELEASE = {
   version: process.env["ANTHROPIC_CLI_VERSION"] || "2.1.217",
@@ -417,11 +433,14 @@ function retryDelay(response: Response, attempt: number): number {
 }
 
 /**
- * Effort as a share of the reply budget, not as a fixed token count.
+ * Effort as a share of the reply budget.
  *
- * A fixed table collapsed `high`, `xhigh` and `max` onto the same number, so two of the levels
- * `/v1/models` advertises did nothing. A share keeps them distinct on every model and survives a
- * model whose output limit is not 32000.
+ * This is the one policy table left, and it is a policy rather than a discovered fact because the
+ * wire has no effort field: `thinking` accepts `adaptive`, `disabled`, or `enabled` with a
+ * `budget_tokens` integer, and nothing else. `/v1/models` advertises named levels
+ * (`capabilities.effort`), so something has to turn a name into an integer, and a share of the
+ * model's own ceiling is the only form that keeps the levels distinct on every model instead of
+ * collapsing them onto one hardcoded count.
  */
 const EFFORT_SHARE: Record<string, number> = {
   minimal: 0.06,
@@ -433,22 +452,41 @@ const EFFORT_SHARE: Record<string, number> = {
 };
 
 /**
- * The reply budget for a request. The captured client sent 32000, and a model that cannot produce
- * that much follows its own declared limit downward: asking for more output than a model can emit
- * is a 400 waiting to happen, and the resolver already carries the number.
+ * The reply budget, resolved rather than pinned: the provider's own declared output limit first
+ * (`/v1/models`, carried through the catalogue and the resolver), then the models.dev table that
+ * backs every other provider, then 128000.
+ *
+ * 128000 is not a guess: it is the client's own fallback ceiling, `aph` in the bundle, sitting
+ * beside `sph = 32000` which is its fallback *default*. We take the ceiling because a model that
+ * declares nothing should not be capped below what the vendor itself allows.
  */
 function maxTokensFor(config: Partial<ResolvedLlmConfig>): number {
   const declared = config.limit?.output;
-  return declared && declared > 0 ? Math.min(declared, MAX_TOKENS) : MAX_TOKENS;
+  return declared && declared > 0 ? declared : FALLBACK_OUTPUT_LIMIT;
 }
 
 /**
- * Clamped exactly as the CLI clamps it (`Math.max(1024, Math.min(maxTokens - 1, budget))`), which
- * is also why the capture reads 31999 against a 32000 reply budget rather than a round number.
+ * The thinking block, in the client's own order of preference.
+ *
+ * The bundle reads: if the model supports it, send `{ type: "adaptive" }` and let the server pick
+ * the budget; otherwise compute `upperLimit - 1` and clamp it with
+ * `Math.max(1024, Math.min(maxTokens - 1, budget))`. Adaptive is the client's default whenever
+ * thinking is on at all, which is why it is used here for the level that means "no ceiling".
  */
-function thinkingBudget(effort: string | undefined, maxTokens: number): number | undefined {
+function thinkingFor(
+  effort: string | undefined,
+  maxTokens: number,
+): { type: "adaptive" | "enabled"; budget_tokens?: number; display?: "omitted" } | undefined {
   const share = effort ? EFFORT_SHARE[effort] : undefined;
   if (!share) return undefined;
+  const display = STREAM_THINKING ? {} : { display: "omitted" as const };
+  // The top level means "as far as you want", which is exactly what adaptive expresses, and it
+  // spares us inventing a ceiling the server is better placed to choose.
+  if (share >= 1) return { type: "adaptive", ...display };
+  return { type: "enabled", budget_tokens: thinkingBudget(share, maxTokens), ...display };
+}
+
+function thinkingBudget(share: number, maxTokens: number): number {
   return Math.max(1024, Math.min(maxTokens - 1, Math.round(maxTokens * share)));
 }
 
@@ -472,15 +510,11 @@ function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] =
   };
   if (anthropicTools.length > 0) body["tools"] = anthropicTools;
 
-  const budget = thinkingBudget(config.effort, maxTokens);
-  if (budget) {
-    body["thinking"] = {
-      type: "enabled",
-      budget_tokens: budget,
-      ...(STREAM_THINKING ? {} : { display: "omitted" }),
-    };
-    // Server-side thinking pruning is only legal next to an enabled thinking block: sending it
-    // alone is a 400, `clear_thinking_20251015 strategy requires thinking to be enabled`. The real
+  const thinking = thinkingFor(config.effort, maxTokens);
+  if (thinking) {
+    body["thinking"] = thinking;
+    // Server-side thinking pruning is only legal next to a thinking block: sending it alone is a
+    // 400, `clear_thinking_20251015 strategy requires thinking to be enabled or adaptive`. The real
     // client never hits this because it always thinks; a model with no effort level does.
     body["context_management"] = { edits: [{ type: "clear_thinking_20251015", keep: "all" }] };
   }
@@ -604,4 +638,4 @@ export function anthropicResponseStream(
   return runAnthropic(config, messages, tools, onToken, signal, reasoningSink);
 }
 
-export const __testing = { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, maxTokensFor, thinkingBudget, wireToolName, localToolName, normalizeUsage };
+export const __testing = { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, maxTokensFor, thinkingFor, wireToolName, localToolName, normalizeUsage };

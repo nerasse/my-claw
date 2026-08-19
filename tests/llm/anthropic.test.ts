@@ -11,7 +11,7 @@ const {
   buildRequest,
   buildSystem,
   maxTokensFor,
-  thinkingBudget,
+  thinkingFor,
   wireToolName,
   localToolName,
   normalizeUsage,
@@ -152,31 +152,44 @@ test("usage is undefined when nothing was reported", () => {
   assert.equal(normalizeUsage({}, 0), undefined);
 });
 
-test("every effort level the API advertises gets a distinct thinking budget", () => {
+test("every effort level below the top gets a distinct thinking budget", () => {
   // A fixed table collapsed high, xhigh and max onto one number, so two of the five levels
   // /v1/models advertises did nothing at all.
-  const levels = ["minimal", "low", "medium", "high", "xhigh", "max"];
-  const budgets = levels.map((l) => thinkingBudget(l, 32_000)!);
+  const levels = ["minimal", "low", "medium", "high", "xhigh"];
+  const budgets = levels.map((l) => thinkingFor(l, 32_000)!.budget_tokens!);
   assert.equal(new Set(budgets).size, levels.length, `collapsed levels: ${budgets.join(", ")}`);
-  // Monotonic, and clamped as the CLI clamps it.
   for (let i = 1; i < budgets.length; i++) assert.ok(budgets[i]! > budgets[i - 1]!);
+  // Clamped as the client clamps it: never below 1024, never at or above the reply budget.
   assert.ok(budgets.every((b) => b >= 1024 && b < 32_000));
-  assert.equal(budgets.at(-1), 31_999, "max should reach the captured ceiling");
-  assert.equal(thinkingBudget(undefined, 32_000), undefined);
+});
+
+test("the top effort level is adaptive, with no budget at all", () => {
+  // The bundle prefers `{type:"adaptive"}` and lets the server pick, which is what "no ceiling"
+  // means. Inventing a number here would be worse than not sending one.
+  const top = thinkingFor("max", 32_000)!;
+  assert.equal(top.type, "adaptive");
+  assert.equal(top.budget_tokens, undefined);
+  assert.equal(top.display, "omitted");
+});
+
+test("no effort level means no thinking block", () => {
+  assert.equal(thinkingFor(undefined, 32_000), undefined);
+  assert.equal(thinkingFor("off", 32_000), undefined);
 });
 
 test("the thinking budget follows a smaller model's own reply limit", () => {
   // 8192 output means a 31999 budget is impossible, and asking anyway is a 400.
-  const budget = thinkingBudget("max", maxTokensFor({ limit: { context: 200_000, output: 8_192 } }))!;
-  assert.equal(budget, 8_191);
-  assert.ok(budget < maxTokensFor({ limit: { context: 200_000, output: 8_192 } }));
+  const budget = thinkingFor("xhigh", maxTokensFor({ limit: { context: 200_000, output: 8_192 } }))!.budget_tokens!;
+  assert.ok(budget < 8_192, `${budget} must stay under the model's own limit`);
 });
 
-test("the reply budget never exceeds the captured value nor the model's limit", () => {
-  // Opus can emit 128000, but the captured client asked for 32000 and that is the shape we keep.
-  assert.equal(maxTokensFor({ limit: { context: 1_000_000, output: 128_000 } }), 32_000);
+test("the reply budget is resolved, never pinned", () => {
+  // The provider's own declared limit wins, whatever its size.
+  assert.equal(maxTokensFor({ limit: { context: 1_000_000, output: 128_000 } }), 128_000);
   assert.equal(maxTokensFor({ limit: { context: 200_000, output: 8_192 } }), 8_192);
-  assert.equal(maxTokensFor({}), 32_000);
+  // Nothing declared falls back to the client's own ceiling constant, not to its default.
+  assert.equal(maxTokensFor({}), 128_000);
+  assert.equal(maxTokensFor({ limit: { context: 200_000, output: 0 } }), 128_000);
 });
 
 test("server-side thinking pruning never ships without an enabled thinking block", () => {
