@@ -523,6 +523,9 @@ export class AgentBridge implements AgentBackend {
             content: transformedResponse,
             timestamp: new Date().toISOString(),
             ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+            // Dropped when a hook rewrote the answer: the cuts are offsets into text that no
+            // longer exists, and a wrong cut is worse than none.
+            ...(response.segments && transformedResponse === response.content ? { segments: response.segments } : {}),
           });
 
           // Mid-run steering: a message that arrived during this final call keeps the run going
@@ -599,6 +602,7 @@ export class AgentBridge implements AgentBackend {
           })),
           timestamp: new Date().toISOString(),
           ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+          ...(response.segments ? { segments: response.segments } : {}),
         };
         session.messages.push(persistedAssistant);
 

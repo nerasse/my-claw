@@ -3,6 +3,7 @@ import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
+import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
 
 const CODEX_TIMEOUT_MS = 300_000;
@@ -173,6 +174,7 @@ async function processStream(
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
+  const segmenter = new ReasoningSegmenter();
   let usage: LlmUsage | undefined;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
@@ -211,6 +213,7 @@ async function processStream(
         const delta = event["delta"];
         if (typeof delta === "string" && delta.length > 0) {
           content += delta;
+          segmenter.text(delta);
           if (onToken) await onToken(delta);
         }
         break;
@@ -222,6 +225,7 @@ async function processStream(
         const delta = event["delta"];
         if (typeof delta === "string" && delta.length > 0) {
           reasoning += delta;
+          segmenter.reasoning(delta);
           if (reasoningSink?.onText) await reasoningSink.onText(delta);
         }
         break;
@@ -270,11 +274,13 @@ async function processStream(
     .filter((s) => s.callId && s.name)
     .map((s) => ({ id: s.callId, name: s.name, arguments: safeJson(s.args || "{}") }));
 
+  const segments = segmenter.list();
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     usage,
     ...(reasoning ? { reasoning } : {}),
+    ...(segments ? { segments } : {}),
   };
 }
 

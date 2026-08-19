@@ -77,7 +77,8 @@ DeepSeek tool-chain contract is satisfied. It is not.
 
 ```ts
 | { role: "assistant"; content: string; timestamp: string;
-    toolCalls?: [...]; reasoning?: string; reasoningTokens?: number }
+    toolCalls?: [...]; reasoning?: string; reasoningTokens?: number;
+    segments?: Array<{ reasoning?: string; content: string }> }
 ```
 
 `reasoningTokens` is the redacted engine's half of the same field. The Claude bridge gives a
@@ -95,6 +96,33 @@ field, so an added field cannot leak by accident:
 
 "Cannot leak by accident" is not the same as "is tested not to leak": one test per path asserts a
 stored `reasoning` is absent from the built prompt. That test is the whole guarantee.
+
+### `segments`: where the turn was cut on screen
+
+One API call can think, answer, think again and keep writing. The live stream closes its bubble at
+the second thought (see "An answer seals the bubble for the next thought too"), the mirror stores
+one assistant message per call, and those two shapes disagree: replayed, the phases came back glued
+into one bubble with every thought stacked above text they were not about. The app refetches the
+open conversation on every reconnect, so the merged version overwrote the split one the reader had
+watched being written.
+
+`segments` records the cuts, and only when there is more than one phase: a single-phase turn says
+exactly what `content` and `reasoning` already say, and storing it would double every turn on disk.
+`content` remains the whole turn, so nothing about the prompt or the compaction changes.
+
+The cut rule lives once, in `llm/reasoning-segments.ts` (`ReasoningSegmenter`), fed by
+`chatCompletionStream` and `codexResponseStream` as the deltas arrive. It is the streamer's own
+rule, reasoning after visible text opens the next phase, and
+`tests/channels/reasoning-segments.test.ts` runs one event order through both and asserts they
+produce the same phases: two implementations of one rule drift, so the drift is what the test
+watches.
+
+A hook that rewrites the answer (`transform:agent:response`) drops the cuts: they are positions in
+text that no longer exists, and a cut in the wrong place is worse than no cut.
+
+The non-streaming path reports none. It sees a finished message, not the order the pieces arrived
+in, so it cannot know where the thinking restarted. The claude-sdk path reports none either: its
+thinking is redacted, so there is nothing to cut on.
 
 Compaction summarises messages and drops the field with them — correct, a summary of a reply has no
 reasoning of its own. `trimSessionMessages` and `sealDanglingToolCalls` are untouched.
@@ -158,6 +186,11 @@ Two additive server frames, and one additive history field.
 `MyClawAppHistoryEntry`'s assistant entry gains `reasoning?: string`, filled by
 `sessions.ts:211` from the mirror field.
 
+A replayed turn is walked phase by phase (`HistoryPhase`), so a turn with `segments` becomes one
+entry per phase and a turn without them stays one entry. A phase that thought and then called a
+tool has no prose, and it is still an entry: the bubble the reader saw *was* that thought, and
+dropping it made a reopened thread jump from the question straight to a tool card.
+
 No lockstep release. The app validates incoming frames against a `Set` (`protocol.ts:872`), so an
 older app drops both frames and renders exactly what it renders today; a newer app on an older
 server simply never receives them.
@@ -188,9 +221,9 @@ Rules:
   the next one (`sealBeforeReasoning`). Without it the thinking was patched onto the bubble the
   reader was already reading, where it renders *above* that text, and the words that followed
   continued the same bubble: two answers glued together under the header of the second one.
-  Reported from the app, and it is the shape the mirror already has, since
-  `mirrorAssistantMessage` stores one assistant message per model turn and attaches the estimate of
-  the thinking that *preceded* it. Live stream and replayed history now agree.
+  Reported from the app. The mirror does not have that shape by itself, since it stores one message
+  per API call: `segments` is what carries the cuts to the replay, so the live stream and a reopened
+  conversation agree.
   A thinking phase that has not answered yet is never split: the condition is visible text
   (`emittedText`), so a running token estimate keeps landing on the bubble it opened.
 - **A reasoning-only bubble survives `finish`.** Today an empty-text bubble is removed
@@ -240,6 +273,13 @@ what "collapsed by default" has to mean to be worth anything.
 **Expanded.** The text in the same muted tone, behind a left rule to mark it as an aside, and
 selectable. Whole, however long it ran.
 
+**Two phases are two blocks.** The app groups consecutive bubbles of one author into a single
+visual block (4px instead of 10px, timestamp on the last one only). A bubble that opens on a
+thinking phase leaves that block (`core/grouping.ts`), because grouping it put back exactly what
+the seal had separated: the thought read as a note stuck under the answer already on screen, and
+the words after it as that same message continuing. This is the same bug as the merged replay,
+seen one layer higher.
+
 **Interaction.** The whole row is the tap target, reusing `ToolCard`'s idiom verbatim for
 consistency and accessibility: `Pressable`, `accessibilityRole="button"`,
 `accessibilityState={{ expanded }}`, `accessibilityHint` of "Show the model's reasoning" /
@@ -269,6 +309,14 @@ Server, each one failing before the change:
   through `toChatMessages` and through `renderPriorConversation`.
 - `sessions.ts`: history replay carries `reasoning` and `reasoningTokens`, and a turn without
   either replays without the field. A fifty thousand character chain survives the round trip whole.
+  A turn carrying `segments` replays as one entry per phase, a last phase that only thought is kept,
+  and a thought with no answer at all no longer leaves its tool card alone.
+- `provider.ts` and `codex.ts`: two thinking phases in one response report the cuts, one phase
+  reports none, and `content` still comes back whole either way.
+- `reasoning-segments.test.ts`: the streamer's bubbles and the stored phases match, event order for
+  event order.
+- the leak tests again: `segments` carries the same display-only text, so the prompt is asserted to
+  hold neither it nor the sentinel inside it. A hook-rewritten answer stores no cuts.
 - `claude-sdk/backend.ts`: the estimate seen before a turn is stored on that turn, the turn after
   it is not credited with the same count, and a turn that never thought carries no field.
 - **Matrix and Telegram**: guaranteed structurally rather than by a channel test — those branches

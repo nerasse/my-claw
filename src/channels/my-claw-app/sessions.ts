@@ -148,6 +148,17 @@ function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["at
  * a ref resolves by filename -- newest copy wins when the agent regenerated the same file. A ref
  * whose copy is gone replays as a deleted attachment rather than dead text.
  */
+/**
+ * One bubble's worth of a replayed turn: a thinking phase and the text it produced. A turn that
+ * thought once is one phase, and the stored `segments` are the cuts of a turn that thought again
+ * mid-answer -- docs/reasoning-visibility.md.
+ */
+interface HistoryPhase {
+  reasoning?: string;
+  reasoningTokens?: number;
+  content: string;
+}
+
 function mediaRefAttachments(refs: Array<{ path: string }>, files: SessionFile[]): MyClawAppHistoryAttachment[] {
   const used = new Set<string>();
   const out: MyClawAppHistoryAttachment[] = [];
@@ -327,20 +338,36 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         continue;
       }
       if (message.role !== "assistant") continue;
-      // The agent names its files with MEDIA: refs, but a replayed turn must show real
-      // attachments: resolve each ref against the thread's store, like the user side does.
-      const refs = extractMediaRefs(message.content);
-      const text = stripMediaRefs(message.content).trim();
-      const media = refs.length > 0 ? mediaRefAttachments(refs, stored) : [];
-      if (text || media.length > 0) {
+      // One bubble per thinking phase, exactly where the live stream closed one and opened the
+      // next. Without the cuts the turn came back as a single bubble with every thought stacked
+      // above text they were not about -- docs/reasoning-visibility.md. A turn with one phase is
+      // stored without them, and is its own only phase.
+      const phases: HistoryPhase[] = message.segments ?? [
+        {
+          ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+          ...(message.reasoningTokens ? { reasoningTokens: message.reasoningTokens } : {}),
+          content: message.content,
+        },
+      ];
+      for (const phase of phases) {
+        // The agent names its files with MEDIA: refs, but a replayed turn must show real
+        // attachments: resolve each ref against the thread's store, like the user side does.
+        const refs = extractMediaRefs(phase.content);
+        const text = stripMediaRefs(phase.content).trim();
+        const media = refs.length > 0 ? mediaRefAttachments(refs, stored) : [];
+        const tokens = phase.reasoningTokens;
+        // A phase that thought and then called a tool wrote no prose, and the bubble the reader
+        // saw was that thought: dropping it here is what made a reopened thread jump from the
+        // question to a tool card.
+        if (!text && media.length === 0 && !phase.reasoning?.trim() && !tokens) continue;
         entries.push({
           id: `h-${message.timestamp}-${entries.length}`,
           role: "assistant",
           text,
           ts: message.timestamp,
           ...(media.length > 0 ? { attachments: media } : {}),
-          ...(message.reasoning ? { reasoning: message.reasoning } : {}),
-          ...(message.reasoningTokens ? { reasoningTokens: message.reasoningTokens } : {}),
+          ...(phase.reasoning ? { reasoning: phase.reasoning } : {}),
+          ...(tokens ? { reasoningTokens: tokens } : {}),
         });
       }
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.

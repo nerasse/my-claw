@@ -123,6 +123,82 @@ describe("chatCompletionStream reasoning", () => {
   });
 });
 
+describe("chatCompletionStream cuts the answer where the thinking restarted", () => {
+  async function segmentsOf(chunks: unknown[]) {
+    const fetchMock = mockFetch(async () =>
+      new Response(sse(chunks), { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never,
+    );
+    try {
+      return (await chatCompletionStream(config, [{ role: "user", content: "hi" }], () => {})).segments;
+    } finally {
+      fetchMock.restore();
+    }
+  }
+
+  test("one thinking phase is not a split, so nothing is stored", async () => {
+    const segments = await segmentsOf([
+      { choices: [{ delta: { reasoning_content: "weighing" } }] },
+      { choices: [{ delta: { content: "answer" } }] },
+    ]);
+    expect(segments).toBeUndefined();
+  });
+
+  test("thinking again after answering opens a second phase", async () => {
+    const segments = await segmentsOf([
+      { choices: [{ delta: { reasoning_content: "first thought" } }] },
+      { choices: [{ delta: { content: "first answer" } }] },
+      { choices: [{ delta: { reasoning_content: "second thought" } }] },
+      { choices: [{ delta: { content: "second answer" } }] },
+    ]);
+    expect(segments).toEqual([
+      { reasoning: "first thought", content: "first answer" },
+      { reasoning: "second thought", content: "second answer" },
+    ]);
+  });
+
+  test("deltas of one phase stay in it, however many arrive", async () => {
+    const segments = await segmentsOf([
+      { choices: [{ delta: { content: "one " } }] },
+      { choices: [{ delta: { content: "answer" } }] },
+      { choices: [{ delta: { reasoning_content: "now " } }] },
+      { choices: [{ delta: { reasoning_content: "thinking" } }] },
+      { choices: [{ delta: { content: "the rest" } }] },
+    ]);
+    expect(segments).toEqual([
+      { content: "one answer" },
+      { reasoning: "now thinking", content: "the rest" },
+    ]);
+  });
+
+  test("a phase that thought and then stopped is still a phase", async () => {
+    const segments = await segmentsOf([
+      { choices: [{ delta: { content: "answer" } }] },
+      { choices: [{ delta: { reasoning_content: "about to call a tool" } }] },
+    ]);
+    expect(segments).toEqual([{ content: "answer" }, { reasoning: "about to call a tool", content: "" }]);
+  });
+
+  test("the whole answer still comes back merged, since that is what a model reads", async () => {
+    const fetchMock = mockFetch(async () =>
+      new Response(
+        sse([
+          { choices: [{ delta: { content: "first" } }] },
+          { choices: [{ delta: { reasoning_content: "again" } }] },
+          { choices: [{ delta: { content: " second" } }] },
+        ]),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ) as never,
+    );
+    try {
+      const response = await chatCompletionStream(config, [{ role: "user", content: "hi" }], () => {});
+      expect(response.content).toBe("first second");
+      expect(response.reasoning).toBe("again");
+    } finally {
+      fetchMock.restore();
+    }
+  });
+});
+
 test("chatCompletion carries reasoning on the non-streaming path", async () => {
   const fetchMock = mockFetch(async () =>
     new Response(

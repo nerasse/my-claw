@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import { renderPriorConversation } from "../../src/agent/claude-sdk/history.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
@@ -17,6 +18,25 @@ const config: MyClawConfig = {
 };
 
 const SECRET = "SENTINEL_THOUGHT_THAT_MUST_NOT_REACH_A_MODEL";
+
+/** An SSE body, the only path that reports where the thinking restarted. */
+function sse(chunks: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n`));
+      controller.enqueue(encoder.encode("data: [DONE]\n"));
+      controller.close();
+    },
+  });
+}
+
+const TWO_PHASES = [
+  { choices: [{ delta: { reasoning_content: "first thought" } }] },
+  { choices: [{ delta: { content: "first answer" } }] },
+  { choices: [{ delta: { reasoning_content: "second thought" } }] },
+  { choices: [{ delta: { content: " second answer" } }] },
+];
 
 function createMessage(): UnifiedMessage {
   return {
@@ -36,7 +56,14 @@ function createMessage(): UnifiedMessage {
 function sessionWithReasoning(): SessionData {
   const messages: SessionMessage[] = [
     { role: "user", content: "first question", timestamp: "2026-01-01T00:00:00.000Z" },
-    { role: "assistant", content: "first answer", timestamp: "2026-01-01T00:00:01.000Z", reasoning: SECRET },
+    {
+      role: "assistant",
+      content: "first answer",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      reasoning: SECRET,
+      // The per-phase copy is the same display-only text, so it is the same leak if it travels.
+      segments: [{ reasoning: SECRET, content: "first answer" }],
+    },
   ];
   return {
     id: "telegram/dm/u1",
@@ -80,6 +107,7 @@ describe("stored reasoning never reaches a model", () => {
       expect(replayed[0]!["content"]).toBe("first answer");
       expect("reasoning" in replayed[0]!).toBe(false);
       expect("reasoning_content" in replayed[0]!).toBe(false);
+      expect("segments" in replayed[0]!).toBe(false);
     } finally {
       fetchMock.restore();
     }
@@ -154,6 +182,48 @@ describe("the home loop persists what the model thought", () => {
       expect(last?.role === "assistant" ? last.reasoning : undefined).toBe("the thinking");
     } finally {
       fetchMock.restore();
+    }
+  });
+
+  test("a turn that thought twice stores where the phases split", async () => {
+    const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+    const fetchMock = mockFetch(async () =>
+      new Response(sse(TWO_PHASES), { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never,
+    );
+
+    try {
+      const session = sessionWithReasoning();
+      await bridge.handleMessageStreaming(createMessage(), session, async () => {});
+      const last = session.messages[session.messages.length - 1];
+      expect(last?.role === "assistant" ? last.content : undefined).toBe("first answer second answer");
+      expect(last?.role === "assistant" ? last.segments : undefined).toEqual([
+        { reasoning: "first thought", content: "first answer" },
+        { reasoning: "second thought", content: " second answer" },
+      ]);
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  // The cuts are positions in the text the model produced. A hook that rewrites the answer moves
+  // them, and a cut in the wrong place is worse than no cut at all.
+  test("a hook that rewrites the answer drops the cuts instead of misplacing them", async () => {
+    const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+    const rewrite = (payload: { response: string; sessionId: string; model: string }) => ({ ...payload, response: "rewritten" });
+    hooks.tap("transform:agent:response", rewrite);
+    const fetchMock = mockFetch(async () =>
+      new Response(sse(TWO_PHASES), { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never,
+    );
+
+    try {
+      const session = sessionWithReasoning();
+      await bridge.handleMessageStreaming(createMessage(), session, async () => {});
+      const last = session.messages[session.messages.length - 1];
+      expect(last?.role === "assistant" ? last.content : undefined).toBe("rewritten");
+      expect(last?.role === "assistant" ? "segments" in last : true).toBe(false);
+    } finally {
+      fetchMock.restore();
+      hooks.untap("transform:agent:response", rewrite);
     }
   });
 

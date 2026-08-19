@@ -1,6 +1,7 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
+import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 
@@ -130,6 +131,12 @@ export interface LlmResponse {
   usage?: LlmUsage;
   /** What the model thought, when the endpoint reports it. Display only -- docs/reasoning-visibility.md. */
   reasoning?: string;
+  /**
+   * The same answer cut where the thinking restarted, set only when there is more than one phase.
+   * The live stream splits its bubbles there, so the replay has to know where the cuts were or a
+   * reopened conversation glues them back into one -- docs/reasoning-visibility.md.
+   */
+  segments?: ReasoningSegment[];
   // A proxy that bills us can report the authoritative figure for the call it just served.
   // Preferred over any price table when present and positive.
   proxyCostUsd?: number;
@@ -529,6 +536,7 @@ export async function chatCompletionStream(
       let buffer = "";
       let content = "";
       let reasoning = "";
+      const segmenter = new ReasoningSegmenter();
       let streamUsage: LlmUsage | undefined;
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
@@ -543,11 +551,13 @@ export async function chatCompletionStream(
         const reasoningDelta = readReasoning(delta as Record<string, unknown>);
         if (reasoningDelta) {
           reasoning += reasoningDelta;
+          segmenter.reasoning(reasoningDelta);
           if (reasoningSink?.onText) await reasoningSink.onText(reasoningDelta);
         }
 
         if (typeof delta.content === "string" && delta.content.length > 0) {
           content += delta.content;
+          segmenter.text(delta.content);
           tokensDelivered = true;
           await onToken(delta.content);
         }
@@ -614,11 +624,13 @@ export async function chatCompletionStream(
         }));
 
       recordCircuitSuccess(config.baseUrl);
+      const segments = segmenter.list();
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
         usage: streamUsage,
         ...(reasoning ? { reasoning } : {}),
+        ...(segments ? { segments } : {}),
         ...readProxyHeaders(response),
       };
     } catch (err) {

@@ -102,6 +102,40 @@ describe("Codex Responses reasoning", () => {
     expect(text).toBe("fine");
   });
 
+  // GPT-5 answers, thinks again and keeps writing inside one response, so this transport is the
+  // one that needs the cuts most -- docs/reasoning-visibility.md.
+  test("a response that thinks again mid-answer reports where it split", async () => {
+    writeAuth();
+    mock = mockFetch(async () =>
+      sseResponse([
+        { type: "response.reasoning_summary_text.delta", delta: "checking" },
+        { type: "response.output_text.delta", output_index: 0, delta: "one moment" },
+        { type: "response.reasoning_summary_text.delta", delta: "now sure" },
+        { type: "response.output_text.delta", output_index: 0, delta: "the answer" },
+        { type: "response.completed", response: {} },
+      ]) as never,
+    );
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    expect(response.segments).toEqual([
+      { reasoning: "checking", content: "one moment" },
+      { reasoning: "now sure", content: "the answer" },
+    ]);
+    expect(response.content).toBe("one momentthe answer");
+  });
+
+  test("one thinking phase reports no split at all", async () => {
+    writeAuth();
+    mock = mockFetch(async () =>
+      sseResponse([
+        { type: "response.reasoning_summary_text.delta", delta: "thinking" },
+        { type: "response.output_text.delta", output_index: 0, delta: "answer" },
+        { type: "response.completed", response: {} },
+      ]) as never,
+    );
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    expect(response.segments).toBeUndefined();
+  });
+
   test("a run that reasons but has no sink still returns the text", async () => {
     writeAuth();
     mock = mockFetch(async () =>

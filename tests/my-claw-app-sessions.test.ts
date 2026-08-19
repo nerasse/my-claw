@@ -513,6 +513,72 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     if (turn.role !== "assistant") throw new Error("expected an assistant entry");
     assert.equal("reasoning" in turn, false);
   });
+
+  // A turn that thinks again mid-answer was streamed as two bubbles. Replaying it as one put every
+  // thought above text it was not about -- docs/reasoning-visibility.md.
+  test("a turn that thought twice replays as the two bubbles it was", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "et apres ?", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        role: "assistant",
+        content: "first answersecond answer",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        reasoning: "first thoughtsecond thought",
+        segments: [
+          { reasoning: "first thought", content: "first answer" },
+          { reasoning: "second thought", content: "second answer" },
+        ],
+      },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.equal(entries.length, 3);
+    const [, first, second] = entries;
+    if (first?.role !== "assistant" || second?.role !== "assistant") throw new Error("expected two assistant entries");
+    assert.equal(first.text, "first answer");
+    assert.equal(first.reasoning, "first thought");
+    assert.equal(second.text, "second answer");
+    assert.equal(second.reasoning, "second thought");
+    assert.notEqual(first.id, second.id);
+  });
+
+  test("a last phase that only thought is kept, since the reader saw that bubble", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "answer",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        reasoning: "answeringabout to call a tool",
+        segments: [{ reasoning: "answering", content: "answer" }, { reasoning: "about to call a tool", content: "" }],
+      },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.equal(entries.length, 2);
+    const last = entries[1]!;
+    if (last.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(last.text, "");
+    assert.equal(last.reasoning, "about to call a tool");
+  });
+
+  test("a thought with no answer at all still replays, instead of leaving a tool card alone", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        reasoning: "straight to the tool",
+        toolCalls: [{ id: "c1", name: "bash", arguments: "{}" }],
+      },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.equal(entries.length, 2);
+    const thought = entries[0]!;
+    if (thought.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(thought.reasoning, "straight to the tool");
+    assert.equal(entries[1]!.role, "tool");
+  });
 });
 
 describe("SessionFileStore naming", () => {

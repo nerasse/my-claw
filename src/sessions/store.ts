@@ -51,6 +51,14 @@ export type SessionMessage =
        * the live stream.
        */
       reasoningTokens?: number;
+      /**
+       * The same turn cut where the thinking restarted, set only when a single API call produced
+       * more than one phase. The live stream closes its bubble when reasoning follows text, so
+       * without these cuts a reopened conversation glues the phases back into one bubble with
+       * every thought stacked on top -- docs/reasoning-visibility.md. Display only, like
+       * `reasoning`: `content` stays the whole turn and is what any model ever reads.
+       */
+      segments?: Array<{ reasoning?: string; content: string }>;
     }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
