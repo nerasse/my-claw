@@ -49,7 +49,9 @@ const tools = [
   { type: "function", function: { name: "bash", description: "d", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "read", description: "d", parameters: { type: "object", properties: {} } } },
 ];
-const body = buildBody({ model: "claude-opus-5", effort: "high" }, messages, tools);
+// `max`, not `high`: the capture reads `budget_tokens: 31999` against a 32000 reply budget, which
+// is the ceiling. Reading it as `high` is what made the effort scale wrong in the first place.
+const body = buildBody({ model: "claude-opus-5", effort: "max" }, messages, tools);
 
 test("system[] has the captured arity and the captured breakpoint placement", () => {
   const ours = body["system"] as Array<{ cache_control?: unknown }>;

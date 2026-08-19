@@ -416,16 +416,41 @@ function retryDelay(response: Response, attempt: number): number {
   return RETRY_BASE_MS * 2 ** (attempt - 1);
 }
 
-// Effort maps to a thinking budget rather than a level: `budget_tokens` must stay below
-// `max_tokens`, and the capture's 31999 against a 32000 cap is the ceiling of that range.
-const EFFORT_BUDGET: Record<string, number> = {
-  minimal: 2_000,
-  low: 6_000,
-  medium: 16_000,
-  high: MAX_TOKENS - 1,
-  xhigh: MAX_TOKENS - 1,
-  max: MAX_TOKENS - 1,
+/**
+ * Effort as a share of the reply budget, not as a fixed token count.
+ *
+ * A fixed table collapsed `high`, `xhigh` and `max` onto the same number, so two of the levels
+ * `/v1/models` advertises did nothing. A share keeps them distinct on every model and survives a
+ * model whose output limit is not 32000.
+ */
+const EFFORT_SHARE: Record<string, number> = {
+  minimal: 0.06,
+  low: 0.2,
+  medium: 0.5,
+  high: 0.75,
+  xhigh: 0.9,
+  max: 1,
 };
+
+/**
+ * The reply budget for a request. The captured client sent 32000, and a model that cannot produce
+ * that much follows its own declared limit downward: asking for more output than a model can emit
+ * is a 400 waiting to happen, and the resolver already carries the number.
+ */
+function maxTokensFor(config: Partial<ResolvedLlmConfig>): number {
+  const declared = config.limit?.output;
+  return declared && declared > 0 ? Math.min(declared, MAX_TOKENS) : MAX_TOKENS;
+}
+
+/**
+ * Clamped exactly as the CLI clamps it (`Math.max(1024, Math.min(maxTokens - 1, budget))`), which
+ * is also why the capture reads 31999 against a 32000 reply budget rather than a round number.
+ */
+function thinkingBudget(effort: string | undefined, maxTokens: number): number | undefined {
+  const share = effort ? EFFORT_SHARE[effort] : undefined;
+  if (!share) return undefined;
+  return Math.max(1024, Math.min(maxTokens - 1, Math.round(maxTokens * share)));
+}
 
 /** The whole request body, pure so P2 can diff it against the capture without a network call. */
 function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] = [], tools?: unknown[]): Record<string, unknown> {
@@ -437,16 +462,17 @@ function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] =
   // Claude model, not of any workspace's prompt. Static, so it stays inside the cached prefix.
   const withNote = system + OWNER_STEERING_NOTE;
 
+  const maxTokens = maxTokensFor(config);
   const body: Record<string, unknown> = {
     model: config.apiModel ?? config.model ?? "",
-    max_tokens: MAX_TOKENS,
+    max_tokens: maxTokens,
     system: buildSystem(withNote, billingSampleText(messages)),
     messages: turns,
     stream: true,
   };
   if (anthropicTools.length > 0) body["tools"] = anthropicTools;
 
-  const budget = config.effort ? EFFORT_BUDGET[config.effort] : undefined;
+  const budget = thinkingBudget(config.effort, maxTokens);
   if (budget) {
     body["thinking"] = {
       type: "enabled",
@@ -578,4 +604,4 @@ export function anthropicResponseStream(
   return runAnthropic(config, messages, tools, onToken, signal, reasoningSink);
 }
 
-export const __testing = { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, wireToolName, localToolName, normalizeUsage };
+export const __testing = { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, maxTokensFor, thinkingBudget, wireToolName, localToolName, normalizeUsage };

@@ -3,8 +3,19 @@ import assert from "node:assert/strict";
 import { __testing } from "../../src/llm/anthropic.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 
-const { billingHeader, billingSuffix, billingSampleText, buildBody, buildRequest, buildSystem, wireToolName, localToolName, normalizeUsage } =
-  __testing;
+const {
+  billingHeader,
+  billingSuffix,
+  billingSampleText,
+  buildBody,
+  buildRequest,
+  buildSystem,
+  maxTokensFor,
+  thinkingBudget,
+  wireToolName,
+  localToolName,
+  normalizeUsage,
+} = __testing;
 
 // Ground truth from docs/captures/claude-cli-2.1.206.json: driving the real CLI with this exact
 // prompt made it emit `cc_version=2.1.206.ca4`. This is the one assertion in the file that pins
@@ -139,6 +150,33 @@ test("usage folds the cache buckets into promptTokens", () => {
 test("usage is undefined when nothing was reported", () => {
   assert.equal(normalizeUsage(undefined, 0), undefined);
   assert.equal(normalizeUsage({}, 0), undefined);
+});
+
+test("every effort level the API advertises gets a distinct thinking budget", () => {
+  // A fixed table collapsed high, xhigh and max onto one number, so two of the five levels
+  // /v1/models advertises did nothing at all.
+  const levels = ["minimal", "low", "medium", "high", "xhigh", "max"];
+  const budgets = levels.map((l) => thinkingBudget(l, 32_000)!);
+  assert.equal(new Set(budgets).size, levels.length, `collapsed levels: ${budgets.join(", ")}`);
+  // Monotonic, and clamped as the CLI clamps it.
+  for (let i = 1; i < budgets.length; i++) assert.ok(budgets[i]! > budgets[i - 1]!);
+  assert.ok(budgets.every((b) => b >= 1024 && b < 32_000));
+  assert.equal(budgets.at(-1), 31_999, "max should reach the captured ceiling");
+  assert.equal(thinkingBudget(undefined, 32_000), undefined);
+});
+
+test("the thinking budget follows a smaller model's own reply limit", () => {
+  // 8192 output means a 31999 budget is impossible, and asking anyway is a 400.
+  const budget = thinkingBudget("max", maxTokensFor({ limit: { context: 200_000, output: 8_192 } }))!;
+  assert.equal(budget, 8_191);
+  assert.ok(budget < maxTokensFor({ limit: { context: 200_000, output: 8_192 } }));
+});
+
+test("the reply budget never exceeds the captured value nor the model's limit", () => {
+  // Opus can emit 128000, but the captured client asked for 32000 and that is the shape we keep.
+  assert.equal(maxTokensFor({ limit: { context: 1_000_000, output: 128_000 } }), 32_000);
+  assert.equal(maxTokensFor({ limit: { context: 200_000, output: 8_192 } }), 8_192);
+  assert.equal(maxTokensFor({}), 32_000);
 });
 
 test("server-side thinking pruning never ships without an enabled thinking block", () => {
