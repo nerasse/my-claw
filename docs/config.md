@@ -112,10 +112,10 @@ SDK subprocess per run (survives restarts; wins over any `CLAUDE_CODE_OAUTH_TOKE
 
 ```json
 "providers": {
-  "anthropic": { "type": "claude-sdk", "fallbackModel": "claude-haiku-4" }
+  "claude-sdk": { "type": "claude-sdk", "fallbackModel": "claude-haiku-4" }
 },
 "models": [
-  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic", "vision": true }
+  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "claude-sdk", "vision": true }
 ]
 ```
 
@@ -338,14 +338,14 @@ Give models an optional `group` label to collapse them behind a single submenu e
 ```json
 "models": [
   { "id": "mimo-v2.5-pro", "label": "MiMo v2.5 Pro", "provider": "litellm" },
-  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic", "group": "Claude (abo)" },
-  { "id": "opus",  "label": "Opus",  "provider": "anthropic", "group": "Claude (abo)" },
-  { "id": "haiku", "label": "Haiku", "provider": "anthropic", "group": "Claude (abo)" },
-  { "id": "fable", "label": "Fable", "provider": "anthropic", "group": "Claude (abo)" }
+  { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "claude-sdk", "group": "Claude SDK (abo)" },
+  { "id": "opus",  "label": "Opus",  "provider": "claude-sdk", "group": "Claude SDK (abo)" },
+  { "id": "haiku", "label": "Haiku", "provider": "claude-sdk", "group": "Claude SDK (abo)" },
+  { "id": "fable", "label": "Fable", "provider": "claude-sdk", "group": "Claude SDK (abo)" }
 ]
 ```
 
-The root menu shows `MiMo v2.5 Pro` and a `Claude (abo) >` entry; tapping it opens the group
+The root menu shows `MiMo v2.5 Pro` and a `Claude SDK (abo) >` entry; tapping it opens the group
 (with a `< Back` entry). On Matrix the same levels work via reactions and number/name replies.
 The Claude Agent SDK accepts both aliases (`sonnet`, `opus`, `haiku`, `fable`) and full ids
 (`claude-sonnet-5`, `claude-opus-4-8`); availability depends on your subscription.
@@ -356,10 +356,10 @@ Discovery builds exactly this shape on its own for a `claude-sdk` provider (see
 
 ```json
 "models": [
-  { "id": "opus",            "label": "Latest", "provider": "anthropic", "group": "Claude/Opus" },
-  { "id": "claude-opus-4-8", "label": "4.8",    "provider": "anthropic", "group": "Claude/Opus" },
-  { "id": "sonnet",          "label": "Latest", "provider": "anthropic", "group": "Claude/Sonnet" },
-  { "id": "haiku",           "label": "Haiku",  "provider": "anthropic", "group": "Claude" }
+  { "id": "opus",            "label": "Latest", "provider": "claude-sdk", "group": "Claude/Opus" },
+  { "id": "claude-opus-4-8", "label": "4.8",    "provider": "claude-sdk", "group": "Claude/Opus" },
+  { "id": "sonnet",          "label": "Latest", "provider": "claude-sdk", "group": "Claude/Sonnet" },
+  { "id": "haiku",           "label": "Haiku",  "provider": "claude-sdk", "group": "Claude" }
 ]
 ```
 
@@ -424,7 +424,7 @@ answer (`effortApplies` in `src/llm/resolver.ts`): they used to disagree, and th
 "llm": {
   "effort": "high",
   "models": [
-    { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "anthropic" },
+    { "id": "claude-sonnet-5", "label": "Sonnet", "provider": "claude-sdk" },
     { "id": "grok-reasoner", "label": "Grok", "provider": "litellm", "supportsEffort": true, "effort": "medium" }
   ]
 }
@@ -440,7 +440,7 @@ OAuth); OpenAI-compatible providers use `GET {baseUrl}/models`. Discovered model
 ```json
 "providers": {
   "litellm":   { "baseUrl": "https://litellm.example/v1", "apiKeyEnv": "LITELLM_API_KEY", "discover": true, "group": "LiteLLM" },
-  "anthropic": { "type": "claude-sdk", "discover": true, "group": "Claude (abo)" }
+  "claude-sdk": { "type": "claude-sdk", "discover": true, "group": "Claude SDK (abo)" }
 }
 ```
 
@@ -505,7 +505,7 @@ Settable from chat with `/model <agent>` (`docs/agent-model.md`), which writes t
 
 ```json
 "agents": {
-  "orchestrator": { "llm": { "defaultModel": "claude-opus-5", "defaultProvider": "anthropic" } },
+  "orchestrator": { "llm": { "defaultModel": "claude-opus-5", "defaultProvider": "claude-sdk" } },
   "general":      { "llm": { "defaultModel": "llama-3.3-70b-versatile" } },
   "research":     { "llm": { "defaultModel": "mimo-v2.5" } },
   "cron":         { "llm": { "defaultModel": "mimo-v2.5-pro" } }

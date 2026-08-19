@@ -54,7 +54,7 @@ function discoveredModel(model: Omit<LlmModelConfig, "id"> & { id: string; provi
  * A provider that declares no `group` groups under its own key rather than spilling its models
  * at the root: a discovering provider is not a handful of models (OpenRouter alone returns 400+),
  * and the root is the one screen every picker opens on. `group` stays the exception, for the
- * providers whose key is not what the owner wants to read ("anthropic" -> "Claude (abo)").
+ * providers whose key is not what the owner wants to read ("claude-sdk" -> "Claude SDK (abo)").
  */
 export function applyProviderGroups(
   models: LlmModelConfig[],

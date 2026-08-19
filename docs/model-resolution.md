@@ -165,9 +165,9 @@ Two consequences to accept knowingly:
 
 - On the current box the picker loses **2 models of 436**: the two `mimo` entries that
   `config.llm.models` still declares on `litellm`, which the gateway answered without listing.
-  Everything else -- 9 litellm, 405 openrouter, 13 anthropic, 7 chatgpt -- is keyed, authenticated
+  Everything else -- 9 litellm, 405 openrouter, 13 claude-sdk, 7 chatgpt -- is keyed, authenticated
   and listed. Measured, not predicted.
-- If the Claude subscription token expires, all 13 `anthropic` models go `no-auth` -- **including
+- If the Claude subscription token expires, all 13 `claude-sdk` models go `no-auth` -- **including
   `claude-sonnet-5`, which is the global default**. There is nothing below the global default to
   fall back to, so that case is a loud run failure naming the provider and the auth, never another
   silent substitution.

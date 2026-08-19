@@ -32,7 +32,7 @@ live list from the source of truth so `/model` always reflects what the account 
 - **Grouping.** Each provider's discovered models land under its `group` label (a submenu entry
   in `/model`). The redundant Claude `default` alias is dropped.
 - **One submenu per family, alias included.** Every Claude model goes to
-  `Claude (abo)/<Family>`, the family coming from the API display name (`Claude Opus 4.8` ->
+  `Claude SDK (abo)/<Family>`, the family coming from the API display name (`Claude Opus 4.8` ->
   family `Opus`, label `Opus 4.8`), so no family list is hardcoded. The moving alias joins its own
   family as `Opus (auto)` and is listed first: side by side with the family it read as the same
   entry twice (`Opus` and `Opus >`) and picking it silently skipped the version choice. An alias

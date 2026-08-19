@@ -390,9 +390,12 @@ async function main() {
   // discovery is a no-op and the subscription's models never reach /model. After an auth change
   // we ensure the provider exists (added to config, persisted for restarts) and re-run discovery
   // now that a token is available. Provider spec per auth kind:
+  // The claude entry is keyed after the engine, not the vendor: the key becomes the prefix of
+  // every discovered model id, and "anthropic" is left free for a provider that would talk to
+  // the Anthropic API directly rather than through the SDK.
   const AUTH_PROVIDER: Record<"codex" | "claude", { type: "codex" | "claude-sdk"; key: string; group: string }> = {
     codex: { type: "codex", key: "chatgpt", group: "ChatGPT (abo)" },
-    claude: { type: "claude-sdk", key: "anthropic", group: "Claude (abo)" },
+    claude: { type: "claude-sdk", key: "claude-sdk", group: "Claude SDK (abo)" },
   };
   const hasProviderType = (providers: Record<string, { type?: string }> | undefined, type: string): boolean =>
     Object.values(providers ?? {}).some((p) => p.type === type);

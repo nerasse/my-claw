@@ -272,9 +272,9 @@ resolves server-side. But the catalogue my-claw already builds does carry them, 
 next to the concrete versions:
 
 ```json
-{"id":"opus",          "label":"Opus (auto)", "group":"Claude (abo)/Opus"}
-{"id":"claude-opus-5", "label":"Opus 5",      "group":"Claude (abo)/Opus", "limit":{...}}
-{"id":"claude-opus-4-8","label":"Opus 4.8",   "group":"Claude (abo)/Opus", "limit":{...}}
+{"id":"opus",          "label":"Opus (auto)", "group":"Claude SDK (abo)/Opus"}
+{"id":"claude-opus-5", "label":"Opus 5",      "group":"Claude SDK (abo)/Opus", "limit":{...}}
+{"id":"claude-opus-4-8","label":"Opus 4.8",   "group":"Claude SDK (abo)/Opus", "limit":{...}}
 ```
 
 The alias is recognisable without a hardcoded list: it shares a `group` with concrete models and

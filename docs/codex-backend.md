@@ -92,7 +92,7 @@ sink.
   The provider is written to the **raw** on-disk config (not the runtime-merged
   in-memory config, and not `readConfigFromDisk()` which overlays env secrets), so
   no secret is ever persisted back. The same callback handles Claude
-  (`/claude set-token` -> auto-creates an `anthropic` `claude-sdk` provider); see
+  (`/claude set-token` -> auto-creates a `claude-sdk` provider); see
   `docs/claude-sdk-backend.md`.
 - Tokens persist at `$MY_CLAW_DIR/codex/auth.json` (mode `0600`, atomic write):
   `{ access, refresh, expires, accountId }`. `accountId` is decoded from the

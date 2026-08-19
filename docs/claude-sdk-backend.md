@@ -152,8 +152,9 @@ Integrating it means delegating entire runs to it, not swapping the HTTP client.
   rejected: ToS violation, account ban risk.
 - In-chat `/claude set-token <token>` (and `/claude logout`) fire
   `onAuthChanged("claude")` (wired in `index.ts`, shared with Codex): it
-  **auto-creates an `anthropic` `claude-sdk` provider** (`discover: true`,
-  `group: "Claude (abo)"`) in `config.json` if none exists, then re-runs
+  **auto-creates a `claude-sdk` provider under the key `claude-sdk`**
+  (`discover: true`, `group: "Claude SDK (abo)"`) in `config.json` if none
+  exists, then re-runs
   `ModelCatalog.refresh()`. Discovery (`discoverSdkModels`) injects
   `loadClaudeToken()`, so the fresh token lists the account's models
   immediately — no restart. Without this, the token would be stored but
