@@ -1,0 +1,206 @@
+{
+  "note": "Ground truth capture of the claude CLI 2.1.206 (the binary the Claude Agent SDK spawns), taken 2026-08-19 through a local logging proxy. Secrets and account identifiers are redacted; prompt bodies and tool schemas are reduced to their shape.",
+  "method": "ANTHROPIC_BASE_URL=http://127.0.0.1:8899 claude -p ... --model claude-haiku-4-5-20251001 --allowedTools Read",
+  "request": {
+    "path": "/v1/messages?beta=true",
+    "headers": {
+      "accept": "application/json",
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,claude-code-20250219,advisor-tool-2026-03-01,extended-cache-ttl-2025-04-11",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "authorization": "Bearer <redacted len=108>",
+      "connection": "keep-alive",
+      "content-length": "140263",
+      "content-type": "application/json",
+      "host": "127.0.0.1:8899",
+      "user-agent": "claude-cli/2.1.206 (external, sdk-cli)",
+      "x-app": "cli",
+      "x-claude-code-session-id": "<uuid, stable per process>",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.94.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.3.0",
+      "x-stainless-timeout": "600"
+    },
+    "body": {
+      "model": "claude-haiku-4-5-20251001",
+      "messages": [
+        {
+          "role": "user",
+          "content_shape": [
+            "text",
+            "text",
+            "text",
+            "text"
+          ]
+        }
+      ],
+      "system": [
+        {
+          "type": "text",
+          "cache_control": null,
+          "first_line": "x-anthropic-billing-header: cc_version=2.1.206.ca4; cc_entrypoint=sdk-cli;",
+          "bytes": 74
+        },
+        {
+          "type": "text",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          },
+          "first_line": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+          "bytes": 62
+        },
+        {
+          "type": "text",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          },
+          "first_line": "You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools ",
+          "bytes": 27170
+        }
+      ],
+      "tools": [
+        {
+          "name": "Agent",
+          "has_cache_control": false
+        },
+        {
+          "name": "Bash",
+          "has_cache_control": false
+        },
+        {
+          "name": "CronCreate",
+          "has_cache_control": false
+        },
+        {
+          "name": "CronDelete",
+          "has_cache_control": false
+        },
+        {
+          "name": "CronList",
+          "has_cache_control": false
+        },
+        {
+          "name": "DesignSync",
+          "has_cache_control": false
+        },
+        {
+          "name": "Edit",
+          "has_cache_control": false
+        },
+        {
+          "name": "EnterWorktree",
+          "has_cache_control": false
+        },
+        {
+          "name": "ExitWorktree",
+          "has_cache_control": false
+        },
+        {
+          "name": "Monitor",
+          "has_cache_control": false
+        },
+        {
+          "name": "NotebookEdit",
+          "has_cache_control": false
+        },
+        {
+          "name": "PushNotification",
+          "has_cache_control": false
+        },
+        {
+          "name": "Read",
+          "has_cache_control": false
+        },
+        {
+          "name": "RemoteTrigger",
+          "has_cache_control": false
+        },
+        {
+          "name": "ReportFindings",
+          "has_cache_control": false
+        },
+        {
+          "name": "ScheduleWakeup",
+          "has_cache_control": false
+        },
+        {
+          "name": "SendMessage",
+          "has_cache_control": false
+        },
+        {
+          "name": "ShareOnboardingGuide",
+          "has_cache_control": false
+        },
+        {
+          "name": "Skill",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskCreate",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskGet",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskList",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskOutput",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskStop",
+          "has_cache_control": false
+        },
+        {
+          "name": "TaskUpdate",
+          "has_cache_control": false
+        },
+        {
+          "name": "WebFetch",
+          "has_cache_control": false
+        },
+        {
+          "name": "WebSearch",
+          "has_cache_control": false
+        },
+        {
+          "name": "Workflow",
+          "has_cache_control": false
+        },
+        {
+          "name": "Write",
+          "has_cache_control": false
+        }
+      ],
+      "metadata": {
+        "user_id": "{\"device_id\":\"<sha256, redacted>\",\"account_uuid\":\"<uuid, redacted>\",\"session_id\":\"<uuid>\"}"
+      },
+      "max_tokens": 32000,
+      "thinking": {
+        "budget_tokens": 31999,
+        "type": "enabled",
+        "display": "omitted"
+      },
+      "context_management": {
+        "edits": [
+          {
+            "type": "clear_thinking_20251015",
+            "keep": "all"
+          }
+        ]
+      },
+      "stream": true
+    }
+  }
+}
