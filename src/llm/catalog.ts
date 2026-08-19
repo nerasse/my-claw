@@ -379,7 +379,11 @@ export class ModelCatalog {
       const before = next.length;
       let complete = true;
       try {
-        if (provider.type === "claude-sdk") {
+        if (provider.type === "anthropic") {
+          // No aliases on this path: the moving opus/sonnet/haiku names are an SDK control-channel
+          // feature, and /v1/models answers with versioned ids the transport can send as-is.
+          next.push(...(await this.claudeVersionedModels(name, provider)));
+        } else if (provider.type === "claude-sdk") {
           if (!this.sdkDiscoverer) continue;
           const aliases = await this.sdkDiscoverer();
           // Versioned models come from a separate endpoint: losing it must not drop the aliases,

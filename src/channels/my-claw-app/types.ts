@@ -582,14 +582,14 @@ export interface MyClawAppWorkspacesSetPath {
 /**
  * Creates or edits a provider under `llm.providers`. `key` names the entry, so upsert is both
  * the create form and the edit form. Empty strings delete the field, an absent one leaves it
- * alone. `providerType` is the engine ("openai", "claude-sdk", "codex"); the frame's own `type`
+ * alone. `providerType` is the engine ("openai", "claude-sdk", "codex", "anthropic"); the frame's own `type`
  * discriminates the message, so the two cannot share a name. The env key is never carried here:
  * it has its own pages (providers.env.*).
  */
 export interface MyClawAppProviderUpsert {
   type: "providers.upsert";
   key: string;
-  providerType?: "openai" | "claude-sdk" | "codex";
+  providerType?: "openai" | "claude-sdk" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
   group?: string;

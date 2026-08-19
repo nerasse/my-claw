@@ -130,22 +130,55 @@ field, which is a deliberate, documented divergence rather than an oversight.
    block, **with** `cache_control: { type: "ephemeral", ttl: "1h" }`.
 3. The rest of the system prompt, **with** `cache_control: { type: "ephemeral", ttl: "1h" }`.
 
-Billing header string:
+Billing header string, transcribed from the CLI's own bundle rather than from a
+community reimplementation (`WLn`, `qxu`, `OHg`, `OYi` in claude 2.1.206, a
+greppable 247 MB single-file bundle at `~/.local/share/claude/versions/<v>`):
 
+```js
+function OHg(entries) {            // pick the text to sample
+  const t = entries.find((n) => n.type === "user" && !n.isMeta);
+  if (!t) return "";
+  const r = t.message.content;
+  if (typeof r === "string") return r;
+  if (Array.isArray(r)) { const n = r.find((o) => o.type === "text"); if (n) return n.text; }
+  return "";
+}
+function OYi(text, version) {      // the three-char suffix
+  const n = [4, 7, 20].map((s) => text[s] || "0").join("");
+  return sha256("59cf53e54c78" + n + version).slice(0, 3);
+}
+function WLn(suffix, ctx, prevReqId) {
+  if (truthy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) return "";
+  const cch = (kind === "firstParty" && Ud()) || kind === "vertex" ? " cch=00000;" : "";
+  return `x-anthropic-billing-header: cc_version=${VERSION}.${suffix}; ` +
+         `cc_entrypoint=${process.env.CLAUDE_CODE_ENTRYPOINT ?? "unknown"};${cch}` +
+         `${workload}${isSubagent}${prevReq}`;
+}
 ```
-x-anthropic-billing-header: cc_version=<version>.<suffix>; cc_entrypoint=sdk-cli; cch=<cch>;
-```
 
-* `text` = the first `user` message's text (string content, or its first `text` block)
-* `cch` = `sha256(text)` hex, first 5 chars
-* `sampled` = characters of `text` at indices `[4, 7, 20]`, each defaulting to `"0"`
-* `suffix` = `sha256("59cf53e54c78" + sampled + version)` hex, first 3 chars
-* `version` = the installed `claude --version`, `2.1.206` on this box today
-* Empty first user text means no header at all, not a header computed on `""`.
+So the salt, the sampled positions `[4, 7, 20]` and the 3-char slice are right,
+and three things an earlier draft of this document had wrong:
 
-The capture read `cc_version=2.1.206.ca4`, which confirms both the algorithm and
-the source of the version: the real client uses the CLI it ships in, not a pinned
-constant. See below.
+* **`cch` is not a hash.** It is the literal string `00000`, and it only ships on
+  the first-party and vertex paths. A subscription request carries no `cch` at
+  all. The four community plugins all compute `cch = sha256(text)[:5]`, which is
+  their invention; theirs are accepted, but they are not what the client sends.
+* **The sampled text skips meta entries.** `OHg` filters `!isMeta`, which on the
+  wire means skipping the `<system-reminder>` blocks. Sampling the first block of
+  the first user message yields `f9a` where the real client sent `ca4`.
+* **The header is always emitted.** `OYi` defaults each missing character to
+  `"0"`, so an empty prompt produces a real suffix, not a missing header.
+
+Three optional fields exist and none apply here: `cc_workload=<w>` (set inside a
+cron workload), `cc_is_subagent=true` (a non-main agent context), and
+`cc_prev_req=<id>` (first-party only). `CLAUDE_CODE_ATTRIBUTION_HEADER` disables
+the header outright, and `cc_entrypoint` is read from `CLAUDE_CODE_ENTRYPOINT`,
+which the SDK sets to `sdk-cli`.
+
+Verified end to end: driving the real CLI with `Read the file
+/tmp/capture/hello.txt and tell me what is in it` produced
+`cc_version=2.1.206.ca4`, and the transcribed algorithm reproduces `ca4` exactly.
+`tests/llm/anthropic.test.ts` pins that vector.
 
 Tool naming reproduces what my-claw's own SDK path already sends, not what the
 bare CLI sends. The capture shows the CLI declaring its 29 native tools in bare
@@ -307,7 +340,7 @@ step that can prove the constants above are right.
 
 Exit: a redacted capture of one real SDK turn with tools, committed.
 
-### P1 -- transport, coexisting
+### P1 -- transport, coexisting (done, 2026-08-19)
 
 New provider type `anthropic`, new provider key `anthropic`, `src/llm/anthropic.ts`,
 two lines in `bridge.ts`, the resolver branch, and the type union everywhere it is
@@ -320,16 +353,41 @@ the SDK. Resolve the pruning conflict and the two P1 decisions here.
 No `apiKey` on this branch: like `codex`, the transport fetches the credential
 itself, and `x-api-key` is never sent next to a bearer token.
 
-Exit: a real conversation with tools and thinking completes on the new provider.
+Exit met. Two live haiku requests through the transport: the model called `read`,
+the id and the reassembled arguments came back, the tool result was accepted and
+answered. Both 200, both carrying `anthropic-ratelimit-unified-*` with
+`representative-claim: five_hour`, which is the subscription counter rather than
+the API-key one.
+
+Two faults only the live calls could surface:
+
+* `context_management.clear_thinking_20251015` sent without an enabled `thinking`
+  block is a 400, `strategy requires thinking to be enabled or adaptive`. The real
+  client never meets it because it always thinks; a model with no effort level
+  does. The two fields now ship together or not at all.
+* A `cache_control` breakpoint below the model's minimum cacheable length (1024
+  tokens, 2048 on Haiku) is ignored **silently**: usage reports zero on both
+  buckets, with no error and no warning. The first live test had a 60-byte system
+  prompt and therefore measured nothing while looking like a success. Re-measured
+  above the floor, on a 28 789-byte system prompt: write `prompt=6829
+  cacheWrite=6816 fresh=13`, then read `prompt=6829 cacheRead=6816 fresh=13`.
+  99.8 % on the second identical call, which proves the breakpoints place a real
+  entry, that the prefix survives across calls, and that the usage folding is right.
 
 ### P2 -- parity gates
 
 Three criteria, all measured, none subjective:
 
 1. Payload byte-identical to the P0 capture, the prompt body excepted.
+   **Automated: `tests/llm/anthropic-capture-parity.test.ts`** reads the committed
+   artifact and compares arity, breakpoint placement, the billing block's byte
+   length, the beta list and its order, `thinking`, `context_management`,
+   `max_tokens`, `stream`, and the header set. The one deliberate divergence
+   (`metadata` dropped) is asserted as a divergence so it stays a decision.
 2. Cache read ratio at or above 95 %, measured in `api_calls` against the 96.3 %
-   baseline, over a day of real use.
-3. Zero 400 over that same day.
+   baseline, over a day of real use. **Blocked on elapsed time, not on work.** The
+   99.8 % above is a synthetic pair, not a day of traffic.
+3. Zero 400 over that same day. Same gate: needs the day.
 
 Exit: all three green on a week of daily use with the SDK still available.
 

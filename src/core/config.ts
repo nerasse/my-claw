@@ -223,8 +223,11 @@ export interface LlmProviderConfig {
   // "openai" (default) = OpenAI-compatible HTTP endpoint driven by the home agent loop.
   // "claude-sdk" = runs delegated to the Claude Agent SDK (subscription auth, own loop).
   // "codex" = OpenAI ChatGPT subscription via the Responses backend (device-code OAuth,
-  // home loop with the Codex transport). See docs/claude-sdk-backend.md and docs/codex-backend.md.
-  type?: "openai" | "claude-sdk" | "codex";
+  // home loop with the Codex transport).
+  // "anthropic" = Claude subscription on the home loop with the native Messages transport,
+  // the engine-less successor to "claude-sdk". See docs/anthropic-backend.md,
+  // docs/claude-sdk-backend.md and docs/codex-backend.md.
+  type?: "openai" | "claude-sdk" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
@@ -354,9 +357,10 @@ export function tagNameOf(modelId: string): string | undefined {
 
 export interface ResolvedLlmConfig {
   // Which agent engine runs this model. Absent = "openai" (home loop). The dispatcher
-  // routes on this before any HTTP/SDK specifics come into play. "codex" runs on the home
-  // loop too, but the loop swaps in the Codex Responses transport (see docs/codex-backend.md).
-  backend?: "openai" | "claude-sdk" | "codex";
+  // routes on this before any HTTP/SDK specifics come into play. "codex" and "anthropic" run on
+  // the home loop too, but the loop swaps in their own transport (docs/codex-backend.md,
+  // docs/anthropic-backend.md).
+  backend?: "openai" | "claude-sdk" | "codex" | "anthropic";
   baseUrl: string;
   model: string;
   // The model id the API actually receives. When `model` is a tag reference (`tag:<name>`)

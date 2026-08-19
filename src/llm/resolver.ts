@@ -198,6 +198,23 @@ function resolveFromMerged(
     };
   }
 
+  if (provider.type === "anthropic") {
+    return {
+      backend: "anthropic",
+      // Claude subscription on the home loop with the native Messages transport; the token is
+      // fetched by the transport, so no apiKey rides here. See docs/anthropic-backend.md.
+      baseUrl: provider.baseUrl ?? "https://api.anthropic.com",
+      model: rawModelId,
+      ...apiModel,
+      provider: providerName,
+      headers: provider.headers,
+      vision: model?.vision ?? merged.vision,
+      limit: model?.limit ?? merged.limit,
+      fallbackModel: provider.fallbackModel,
+      effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
+    };
+  }
+
   if (provider.type === "codex") {
     return {
       backend: "codex",

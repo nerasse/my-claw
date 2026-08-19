@@ -17,6 +17,7 @@ import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
 import { codexResponse, codexResponseStream } from "../llm/codex.ts";
+import { anthropicResponse, anthropicResponseStream } from "../llm/anthropic.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel } from "../llm/run-model.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
@@ -50,8 +51,9 @@ import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 // The home loop is provider-agnostic except for these two transport calls: codex-backed models
-// speak the OpenAI Responses API (docs/codex-backend.md), everything else chat/completions. Both
-// share the ChatMessage[] in / LlmResponse out contract so the loop is untouched.
+// speak the OpenAI Responses API (docs/codex-backend.md), anthropic-backed ones the Messages API
+// (docs/anthropic-backend.md), everything else chat/completions. All three share the
+// ChatMessage[] in / LlmResponse out contract so the loop is untouched.
 function completeStream(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
@@ -60,9 +62,9 @@ function completeStream(
   signal?: AbortSignal,
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  return config.backend === "codex"
-    ? codexResponseStream(config, messages, onToken, tools, signal, reasoningSink)
-    : chatCompletionStream(config, messages, onToken, tools, signal, reasoningSink);
+  if (config.backend === "codex") return codexResponseStream(config, messages, onToken, tools, signal, reasoningSink);
+  if (config.backend === "anthropic") return anthropicResponseStream(config, messages, onToken, tools, signal, reasoningSink);
+  return chatCompletionStream(config, messages, onToken, tools, signal, reasoningSink);
 }
 
 function complete(
@@ -71,9 +73,9 @@ function complete(
   tools?: unknown[],
   signal?: AbortSignal,
 ): Promise<LlmResponse> {
-  return config.backend === "codex"
-    ? codexResponse(config, messages, tools, signal)
-    : chatCompletion(config, messages, tools, signal);
+  if (config.backend === "codex") return codexResponse(config, messages, tools, signal);
+  if (config.backend === "anthropic") return anthropicResponse(config, messages, tools, signal);
+  return chatCompletion(config, messages, tools, signal);
 }
 
 function accumulateUsage(session: SessionData, usage?: LlmUsage, historyLength?: number): void {
@@ -438,7 +440,11 @@ export class AgentBridge implements AgentBackend {
         }
         // Prompt-side only: session.messages keeps the full outputs. Re-applied every
         // iteration so the protected window slides along long runs.
-        if (contextPruningEnabled(this.config)) {
+        // Never on the Anthropic transport: its cache is a prefix, so rewriting an older tool
+        // result invalidates every cached block after it. At the measured 96 % cache-read ratio
+        // that trades a few thousand pruned tokens for a full prompt re-read, and
+        // `context_management.clear_thinking` already prunes server-side there.
+        if (llmConfig.backend !== "anthropic" && contextPruningEnabled(this.config)) {
           const pruned = pruneOldToolResults(chatMessages, resolveContextPruning(this.config));
           if (pruned !== chatMessages) {
             chatMessages.length = 0;
