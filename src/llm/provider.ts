@@ -342,8 +342,9 @@ function describeStalePin(status: number, detail: string, route: string | undefi
   if (!route || status !== 404) return undefined;
   if (!/no endpoints found|no allowed providers/i.test(detail)) return undefined;
   return (
-    `the pinned OpenRouter endpoint "${route}" no longer serves this model ` +
-    `(pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it)`
+    `the pinned OpenRouter endpoint "${route}" is not serving this model right now ` +
+    `(either it was removed, or OpenRouter temporarily excluded it from the pool, e.g. for capacity). ` +
+    `Retry, pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it`
   );
 }
 
