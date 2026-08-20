@@ -4,6 +4,7 @@ import type { AgentConfigKey, EffortLevel, LlmConfig, TagConfig } from "../core/
 import { tagNameOf } from "../core/config.ts";
 import { effectiveEffort, effortOptionsFor, findModel, leafModelId, type EffectiveEffort } from "../llm/resolver.ts";
 import { withoutEndpoint } from "../llm/model-ref.ts";
+import { ROUTE_SORTS, ROUTE_SORT_LABELS, type RouteSort } from "./route-menu.ts";
 import type { ContextOverride } from "../llm/context-window.ts";
 
 export interface ModelOption {
@@ -76,7 +77,7 @@ export type PickerCallback =
   | { kind: "openEffort"; target?: PickerTarget }
   | { kind: "setEffort"; level: EffortLevel; target?: PickerTarget }
   | { kind: "keepEffort"; target?: PickerTarget }
-  | { kind: "openRoute"; target?: PickerTarget }
+  | { kind: "openRoute"; sort?: RouteSort; target?: PickerTarget }
   // No endpoint means automatic routing: the pin is dropped and OpenRouter picks again.
   | { kind: "setRoute"; endpoint?: string; target?: PickerTarget }
   | { kind: "openContext"; target?: PickerTarget }
@@ -91,6 +92,9 @@ const ROUTE_AUTO_ACTION = "rtea";
 /** An endpoint tag rides verbatim: it is a short slug OpenRouter publishes, and a digest would
  *  need the route list to be resolved back, which no menu still has when the button is pressed. */
 const ROUTE_PREFIX = "rte:";
+/** Reopens the route list under another order. The sort is not stored: it is a way of reading the
+ *  list, not a setting, so it lives in the button that asks for it. */
+const ROUTE_SORT_PREFIX = "rts:";
 /** Telegram caps callback_data at 64 bytes, and the target suffix spends 5 of them. */
 const ROUTE_ACTION_BUDGET = 58;
 const KEEP_EFFORT_ACTION = "effk";
@@ -371,6 +375,7 @@ export class ModelPicker {
     routes: readonly { tag: string; label: string }[],
     currentEndpoint?: string,
     target?: PickerTarget,
+    sort: RouteSort = "price",
   ): ConfirmationButton[] {
     const suffix = targetSuffix(target);
     const buttons: ConfirmationButton[] = [
@@ -380,6 +385,15 @@ export class ModelPicker {
       const action = `${ROUTE_PREFIX}${route.tag}${suffix}`;
       if (action.length > ROUTE_ACTION_BUDGET) continue;
       buttons.push({ label: mark(route.label, route.tag === currentEndpoint), action });
+    }
+    // One row of orderings, the active one marked. Offered only when there is something to reorder.
+    if (routes.length > 1) {
+      for (const option of ROUTE_SORTS) {
+        buttons.push({
+          label: mark(`Tri: ${ROUTE_SORT_LABELS[option]}`, option === sort),
+          action: `${ROUTE_SORT_PREFIX}${option}${suffix}`,
+        });
+      }
     }
     buttons.push({ label: "< Back", action: `mdlb${suffix}` });
     return buttons;
@@ -478,6 +492,12 @@ export class ModelPicker {
     if (bare === EFFORT_ACTION) return { kind: "openEffort", ...(target ? { target } : {}) };
     if (bare === CONTEXT_ACTION) return { kind: "openContext", ...(target ? { target } : {}) };
     if (bare === ROUTE_ACTION) return { kind: "openRoute", ...(target ? { target } : {}) };
+    if (bare.startsWith(ROUTE_SORT_PREFIX)) {
+      const sort = bare.slice(ROUTE_SORT_PREFIX.length);
+      return ROUTE_SORTS.includes(sort as RouteSort)
+        ? { kind: "openRoute", sort: sort as RouteSort, ...(target ? { target } : {}) }
+        : null;
+    }
     if (bare === ROUTE_AUTO_ACTION) return { kind: "setRoute", ...(target ? { target } : {}) };
 
     if (bare.startsWith(ROUTE_PREFIX)) {

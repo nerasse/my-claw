@@ -331,10 +331,15 @@ const body: Record<string, unknown> = {
  */
 async function clampOutputToPinnedEndpoint(config: ResolvedLlmConfig, body: Record<string, unknown>): Promise<void> {
   const route = config.providerRoute;
-  const asked = body["max_tokens"];
-  if (!route || typeof asked !== "number") return;
+  if (!route) return;
 
+  // Awaited even when there is no ask to clamp: this is also what warms the endpoints cache for
+  // the synchronous readers (window resolution, and the per-endpoint price a usage row is billed
+  // at). A pinned run that never reached this call would be priced from the model-level table.
   const limits = await openRouterEndpointLimits(config.apiModel ?? config.model, route);
+
+  const asked = body["max_tokens"];
+  if (typeof asked !== "number") return;
   const ceiling = limits?.maxOutput;
   if (ceiling === undefined || asked <= ceiling) return;
 

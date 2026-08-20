@@ -650,8 +650,18 @@ test("the route submenu offers automatic first and marks the pin in force", () =
     { tag: "azure/eu", label: "Azure $0.220" },
   ];
   const buttons = picker.buildRouteButtons(routes, "azure/eu");
-  assert.deepEqual(buttons.map((b) => b.label), ["Automatic", "OpenAI $0.050", "Azure $0.220 [selected]", "< Back"]);
-  assert.deepEqual(buttons.map((b) => b.action), ["rtea", "rte:openai/flex", "rte:azure/eu", "mdlb"]);
+  // The orderings sit between the routes and Back: reading order is what the list holds, then how
+  // it is sorted, then the way out.
+  assert.deepEqual(buttons.map((b) => b.label), [
+    "Automatic", "OpenAI $0.050", "Azure $0.220 [selected]",
+    "Tri: Prix [selected]", "Tri: Contexte", "Tri: Sortie", "Tri: Uptime",
+    "< Back",
+  ]);
+  assert.deepEqual(buttons.map((b) => b.action), [
+    "rtea", "rte:openai/flex", "rte:azure/eu",
+    "rts:price", "rts:context", "rts:output", "rts:uptime",
+    "mdlb",
+  ]);
   // Nothing pinned: automatic is the marked one, which is what the run actually does.
   assert.equal(picker.buildRouteButtons(routes)[0]?.label, "Automatic [selected]");
 });
@@ -672,7 +682,9 @@ test("a route whose tag would overflow the callback budget is dropped, never tru
   const long = "a".repeat(60);
   const buttons = picker.buildRouteButtons([{ tag: long, label: "Too long" }, { tag: "azure", label: "Azure" }]);
   // A truncated tag is a valid-looking action that pins another provider entirely.
-  assert.deepEqual(buttons.map((b) => b.label), ["Automatic [selected]", "Azure", "< Back"]);
+  assert.deepEqual(buttons.filter((b) => !b.action.startsWith("rts:")).map((b) => b.label), [
+    "Automatic [selected]", "Azure", "< Back",
+  ]);
 });
 
 test("the Route entry only shows where a route can be pinned", () => {

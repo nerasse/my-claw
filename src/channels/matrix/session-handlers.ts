@@ -24,7 +24,7 @@ import type { SubAgentInfo } from "../../subagents/types.ts";
 import { redactCommandArgs } from "../command-log.ts";
 import { log } from "../../utils/logger.ts";
 import { contextChoiceFor, formatContextInfo } from "../context-menu.ts";
-import { referenceWithRoute, routeChoiceFor, routeLabel, routesFor } from "../route-menu.ts";
+import { referenceWithRoute, routeChoiceFor, routeLabel, routesFor, sortRoutes } from "../route-menu.ts";
 import { withoutEndpoint } from "../../llm/model-ref.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 
@@ -692,7 +692,8 @@ export function createMatrixActionHandler({
         };
       }
       if (action.kind === "openRoute") {
-        const routes = await routesFor(config, currentModel);
+        const sort = action.sort ?? "price";
+        const routes = sortRoutes(await routesFor(config, currentModel), sort);
         return {
           ...buildMatrixMenuFromButtons({
             modelPicker,
@@ -701,6 +702,7 @@ export function createMatrixActionHandler({
               routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
               routeChoiceFor(config, currentModel).current,
               target,
+              sort,
             ),
             effort: agentEffort(),
             heading: `Route de l'agent ${target} — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,
@@ -760,7 +762,8 @@ export function createMatrixActionHandler({
       const currentModel = chatModel(config, existing?.modelOverride);
       const effort = effectiveEffort(config.llm, currentModel, existing?.effortOverride);
       if (action.kind === "openRoute") {
-        const routes = await routesFor(config, currentModel);
+        const sort = action.sort ?? "price";
+        const routes = sortRoutes(await routesFor(config, currentModel), sort);
         return {
           ...buildMatrixMenuFromButtons({
             modelPicker,
@@ -768,6 +771,8 @@ export function createMatrixActionHandler({
             buttons: modelPicker.buildRouteButtons(
               routes.map((route) => ({ tag: route.tag, label: routeLabel(route) })),
               routeChoiceFor(config, currentModel).current,
+              undefined,
+              sort,
             ),
             effort,
             heading: `Route — ${modelPicker.labelFor(currentModel)} — actuelle : ${routeChoiceFor(config, currentModel).current ?? "automatique"}`,

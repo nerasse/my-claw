@@ -10,6 +10,7 @@ import {
   type RouteOption,
 } from "../src/channels/route-menu.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
+import { ModelPicker } from "../src/channels/model-picker.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 
 /**
@@ -148,4 +149,34 @@ test("sorting never mutates the list it was given", () => {
   ];
   sortRoutes(routes, "price");
   assert.deepEqual(routes.map((r) => r.tag), ["b", "a"]);
+});
+
+/**
+ * The sort has to be reachable from the menu itself, not only from the helper: a picker offering
+ * one order and an API offering four is the same list presented two ways.
+ */
+test("the route menu offers every ordering, marks the active one, and round-trips", () => {
+  const picker = new ModelPicker([]);
+  const routes = [
+    { tag: "streamlake/fp8", label: "StreamLake $0.067 1M/384k" },
+    { tag: "cloudflare", label: "Cloudflare $0.440 1.3M/1.3M" },
+  ];
+  const buttons = picker.buildRouteButtons(routes, "streamlake/fp8", undefined, "output");
+  const sortButtons = buttons.filter((b) => b.action.startsWith("rts:"));
+  assert.deepEqual(sortButtons.map((b) => b.action), ["rts:price", "rts:context", "rts:output", "rts:uptime"]);
+
+  // The active ordering is the one marked, so the menu says how it is currently sorted.
+  const active = sortButtons.filter((b) => b.label.includes("Sortie"));
+  assert.equal(active.length, 1);
+  assert.notEqual(active[0]!.label, `Tri: ${"Sortie"}`);
+
+  // And the button parses back into the action that reopens the list that way.
+  assert.deepEqual(picker.parseCallbackAction("rts:output"), { kind: "openRoute", sort: "output" });
+  assert.equal(picker.parseCallbackAction("rts:nonsense"), null);
+});
+
+test("a single-route model is offered no ordering: there is nothing to reorder", () => {
+  const picker = new ModelPicker([]);
+  const buttons = picker.buildRouteButtons([{ tag: "only/one", label: "Only" }], "only/one");
+  assert.equal(buttons.filter((b) => b.action.startsWith("rts:")).length, 0);
 });

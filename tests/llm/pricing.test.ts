@@ -1,9 +1,11 @@
 import { test, expect } from "bun:test";
+import assert from "node:assert/strict";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { ModelPricing, modelKeyCandidates, CACHE_VERSION, isSelfHosted } from "../../src/llm/pricing.ts";
+import { openRouterEndpoints, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 
 /**
  * The price table is written to disk rather than fetched, so these tests exercise the resolution
@@ -312,4 +314,97 @@ test("a window declared without a price survives compaction of the downloaded ta
   } finally {
     mock.restore();
   }
+});
+
+/**
+ * A pinned OpenRouter endpoint publishes its own tariff, and one model's endpoints span a 6.8x
+ * range (0.065 to 0.44 USD/M input measured on deepseek-v4-flash). The model-level table cannot
+ * express that: it priced streamlake/fp8 at 2.08x its real rate.
+ */
+test("a pinned endpoint is billed at its own published price, not the model's", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({
+    data: { endpoints: [
+      { tag: "streamlake/fp8", provider_name: "StreamLake", pricing: { prompt: "0.000000067", completion: "0.000000134", input_cache_read: "0.0000000134" } },
+      { tag: "cloudflare", provider_name: "Cloudflare", pricing: { prompt: "0.00000044", completion: "0.00000132" } },
+    ] },
+  }), { status: 200 }) as never);
+  try {
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+  } finally {
+    mock.restore();
+  }
+
+  const pricing = new ModelPricing(() => ({}), () => []);
+  const usage = { baseUrl: "https://openrouter.ai/api/v1", promptTokens: 1_000_000, completionTokens: 1_000_000 };
+
+  const cheap = pricing.costOf({ ...usage, model: "deepseek/deepseek-v4-flash@streamlake/fp8" });
+  assert.ok(cheap, "a pinned run must be priced");
+  assert.equal(cheap.usd.toFixed(3), (0.067 + 0.134).toFixed(3));
+  assert.equal(cheap.billed, true);
+  assert.equal(cheap.approximate, false);
+  assert.match(cheap.source, /endpoint streamlake\/fp8/);
+
+  // Same model, same tokens, the expensive endpoint: a 6.8x input gap must show up in the bill.
+  const dear = pricing.costOf({ ...usage, model: "deepseek/deepseek-v4-flash@cloudflare" });
+  assert.ok(dear);
+  assert.equal(dear.usd.toFixed(3), (0.44 + 1.32).toFixed(3));
+});
+
+test("the endpoint's cache-read rate is used, which dominates a cached conversation", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({
+    data: { endpoints: [{ tag: "streamlake/fp8", pricing: { prompt: "0.000000067", completion: "0.000000134", input_cache_read: "0.0000000134" } }] },
+  }), { status: 200 }) as never);
+  try {
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+  } finally {
+    mock.restore();
+  }
+  const cost = new ModelPricing(() => ({}), () => []).costOf({
+    model: "deepseek/deepseek-v4-flash@streamlake/fp8",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+    cacheReadTokens: 1_000_000,
+  });
+  // Every input token was a cache hit, so the whole prompt is billed at 0.0134, not 0.067.
+  assert.ok(cost);
+  assert.equal(cost.usd.toFixed(4), "0.0134");
+});
+
+// A cold cache must not silently bill an endpoint at zero, and an unpinned run has no endpoint
+// to be billed at in the first place.
+test("no cached listing and no pin both fall through to the usual ladder", () => {
+  clearOpenRouterCache();
+  const pricing = new ModelPricing(() => ({}), () => []);
+  const cold = pricing.costOf({
+    model: "deepseek/deepseek-v4-flash@streamlake/fp8",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 1000,
+    completionTokens: 1000,
+  });
+  // Whatever the ladder answers, it must never be the endpoint rung.
+  if (cold) assert.doesNotMatch(cold.source, /^endpoint /);
+});
+
+test("a proxy's own figure still outranks the endpoint price", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({
+    data: { endpoints: [{ tag: "streamlake/fp8", pricing: { prompt: "0.000000067", completion: "0.000000134" } }] },
+  }), { status: 200 }) as never);
+  try {
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+  } finally {
+    mock.restore();
+  }
+  const cost = new ModelPricing(() => ({}), () => []).costOf({
+    model: "deepseek/deepseek-v4-flash@streamlake/fp8",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 1_000_000,
+    completionTokens: 1_000_000,
+    proxyCostUsd: 0.42,
+  });
+  assert.equal(cost?.usd, 0.42);
+  assert.equal(cost?.source, "proxy");
 });

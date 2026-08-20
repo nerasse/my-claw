@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { MY_CLAW_DIR, type EffortLevel } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
+import { cachedOpenRouterEndpointPricing } from "./openrouter-endpoints.ts";
 import { log } from "../utils/logger.ts";
 
 /**
@@ -311,6 +312,14 @@ export class ModelPricing {
     if (usage.proxyCostUsd !== undefined && usage.proxyCostUsd > 0) {
       return { usd: usage.proxyCostUsd, billed: true, approximate: false, source: "proxy" };
     }
+
+    // 1b. A pinned OpenRouter endpoint publishes its own price, and one model's endpoints span a
+    //     6.8x range (0.065 to 0.44 USD/M input on deepseek-v4-flash). The model-level table
+    //     cannot express that: it priced streamlake/fp8 at 2.08x its real rate. This outranks
+    //     every table below because it is the tariff of the exact endpoint that served the call.
+    const pinned = this.pinnedEndpointCost(usage.model);
+    if (pinned) return this.priced(usage, pinned.cost, true, false, `endpoint ${pinned.tag}`);
+
     if (!this.cache) return undefined;
 
     const engine = ENGINE_PROVIDER[usage.baseUrl] ?? ENGINE_PROVIDER[hostOf(usage.baseUrl)];
@@ -347,6 +356,29 @@ export class ModelPricing {
     const median = this.medianCost(usage.model);
     if (median) return this.priced(usage, median.cost, false, true, `median of ${median.offers}`);
     return undefined;
+  }
+
+  /**
+   * The published tariff of the endpoint a usage row was filed under, when the row carries a pin.
+   *
+   * The `model` of a usage row keeps its `@endpoint` suffix on purpose (see usageModelOf): two
+   * endpoints of one model are two different bills. Read from the endpoints cache only, since
+   * pricing happens while the row is written.
+   */
+  private pinnedEndpointCost(model: string): { cost: ModelCost; tag: string } | undefined {
+    const at = model.lastIndexOf("@");
+    if (at <= 0) return undefined;
+    const tag = model.slice(at + 1);
+    const priced = cachedOpenRouterEndpointPricing(model.slice(0, at), tag);
+    if (!priced) return undefined;
+    return {
+      tag,
+      cost: {
+        input: priced.input,
+        output: priced.output,
+        ...(priced.cacheRead === undefined ? {} : { cacheRead: priced.cacheRead }),
+      },
+    };
   }
 
   private priced(usage: UsageForCost, cost: ModelCost, billed: boolean, approximate: boolean, source: string): CostBreakdown {

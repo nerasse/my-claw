@@ -25,6 +25,11 @@ export interface OpenRouterEndpoint {
   promptUsd?: number;
   /** USD per million output tokens. */
   completionUsd?: number;
+  /**
+   * USD per million cached input tokens. Published per endpoint and often an order of magnitude
+   * under the input rate, so a cached conversation priced at the input rate reads far too high.
+   */
+  cacheReadUsd?: number;
   contextLength?: number;
   /**
    * The output ceiling of this endpoint alone. The model-level catalogue publishes the ceiling of
@@ -81,7 +86,7 @@ export async function openRouterEndpoints(apiId: string): Promise<OpenRouterEndp
           max_completion_tokens?: number | null;
           status?: number;
           uptime_last_30m?: number;
-          pricing?: { prompt?: string; completion?: string };
+          pricing?: { prompt?: string; completion?: string; input_cache_read?: string };
         }>;
       };
     };
@@ -93,6 +98,7 @@ export async function openRouterEndpoints(apiId: string): Promise<OpenRouterEndp
         providerName: e.provider_name ?? e.tag,
         ...(perMillion(e.pricing?.prompt) === undefined ? {} : { promptUsd: perMillion(e.pricing?.prompt)! }),
         ...(perMillion(e.pricing?.completion) === undefined ? {} : { completionUsd: perMillion(e.pricing?.completion)! }),
+        ...(perMillion(e.pricing?.input_cache_read) === undefined ? {} : { cacheReadUsd: perMillion(e.pricing?.input_cache_read)! }),
         ...(typeof e.context_length === "number" ? { contextLength: e.context_length } : {}),
         ...(typeof e.max_completion_tokens === "number" ? { maxOutput: e.max_completion_tokens } : {}),
         ...(typeof e.status === "number" ? { status: e.status } : {}),
@@ -145,6 +151,29 @@ export async function openRouterEndpointLimits(
   return {
     ...(endpoint.contextLength === undefined ? {} : { context: endpoint.contextLength }),
     ...(endpoint.maxOutput === undefined ? {} : { maxOutput: endpoint.maxOutput }),
+  };
+}
+
+/**
+ * What a pinned endpoint charges, if its listing is already cached. Same cache-only rule as the
+ * limits: pricing is read while a usage row is written, which must never wait on the network.
+ *
+ * A model's endpoints span a 6.8x price range (measured on deepseek-v4-flash: 0.065 to 0.44 USD/M
+ * input), so pricing a pinned run from the model-level table is wrong by whatever the pin is worth.
+ */
+export function cachedOpenRouterEndpointPricing(
+  apiId: string,
+  tag: string,
+): { input: number; output: number; cacheRead?: number } | undefined {
+  const hit = endpointsCache.get(apiId);
+  if (!hit || Date.now() - hit.at >= ENDPOINTS_TTL_MS) return undefined;
+  const endpoint = hit.value.find((candidate) => candidate.tag === tag);
+  // Both halves are required: half a price would bill the other half at zero.
+  if (endpoint?.promptUsd === undefined || endpoint.completionUsd === undefined) return undefined;
+  return {
+    input: endpoint.promptUsd,
+    output: endpoint.completionUsd,
+    ...(endpoint.cacheReadUsd === undefined ? {} : { cacheRead: endpoint.cacheReadUsd }),
   };
 }
 
