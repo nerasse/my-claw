@@ -897,6 +897,141 @@ export async function renameProvider(from: string, to: string): Promise<ConfigEd
   return { ok: true, previous: {} };
 }
 
+/** Everything a declared model may carry. `id` names it; every other field is an override. */
+export interface ModelDeclaration {
+  id: string;
+  label?: string;
+  apiId?: string;
+  provider?: string;
+  group?: string;
+  family?: string;
+  vision?: boolean;
+  limit?: { context?: number; output?: number };
+  supportsEffort?: boolean;
+  supportedEffortLevels?: EffortLevel[];
+  thinkingTypes?: { adaptive: boolean; enabled: boolean };
+}
+
+/** `@` is the endpoint separator of the reference grammar, so an id may not contain one. */
+const MODEL_ID_RE = /^[^\s@]+$/;
+const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+
+function positiveInt(value: number | undefined, field: string): string | null {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value <= 0) return `${field} must be a positive integer, got ${value}`;
+  return null;
+}
+
+/**
+ * Everything refused before the file is touched. See docs/model-declarations.md for the table.
+ *
+ * The provider check has teeth beyond a typo: `parseModelRef` reads the head of a qualified id as
+ * the provider whenever a provider by that name exists, so `litellm/foo` declared on `groq` sends
+ * every request to litellm and nothing in the config says so.
+ */
+function modelDeclarationError(entry: ModelDeclaration, providers: Record<string, unknown>): string | null {
+  if (!entry.id || !MODEL_ID_RE.test(entry.id)) {
+    return `Invalid model id: "${entry.id}" (no whitespace, no "@")`;
+  }
+  if (tagNameOf(entry.id) !== undefined) return `The prefix "tag:" is reserved for tag references`;
+  if (entry.provider !== undefined && entry.provider !== "" && providers[entry.provider] === undefined) {
+    return `Provider not declared: ${entry.provider}`;
+  }
+  const head = entry.id.includes("/") ? entry.id.slice(0, entry.id.indexOf("/")) : undefined;
+  if (head !== undefined && providers[head] !== undefined && entry.provider !== undefined && entry.provider !== head) {
+    return `The id is qualified with "${head}", so it cannot be declared on "${entry.provider}"`;
+  }
+  if (entry.apiId !== undefined && entry.apiId !== "" && !MODEL_ID_RE.test(entry.apiId)) {
+    return `Invalid apiId: "${entry.apiId}" (no whitespace, no "@")`;
+  }
+  const windowError = positiveInt(entry.limit?.context, "limit.context") ?? positiveInt(entry.limit?.output, "limit.output");
+  if (windowError) return windowError;
+  const unknown = (entry.supportedEffortLevels ?? []).find((level) => !(EFFORT_LEVELS as readonly string[]).includes(level));
+  if (unknown) return `Unknown effort level: ${unknown}`;
+  if (entry.thinkingTypes !== undefined) {
+    const { adaptive, enabled } = entry.thinkingTypes;
+    if (typeof adaptive !== "boolean" || typeof enabled !== "boolean") {
+      return "thinkingTypes needs both adaptive and enabled";
+    }
+  }
+  return null;
+}
+
+function modelsAt(data: Record<string, unknown>): Record<string, unknown>[] {
+  const llm = objectAt(data, "llm");
+  const existing = llm["models"];
+  if (Array.isArray(existing)) return existing as Record<string, unknown>[];
+  const created: Record<string, unknown>[] = [];
+  llm["models"] = created;
+  return created;
+}
+
+/**
+ * Creates or replaces one entry of `llm.models`, which is what `models.upsert` means.
+ *
+ * Replaced, not merged: the app sends the declaration it wants stored, so a field it stops sending
+ * is a field the owner cleared. The merge that does happen is with *discovery*, field by field, in
+ * `mergeModels` -- so an entry here only has to carry what differs from what the provider says.
+ */
+export async function upsertModel(entry: ModelDeclaration): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const providers = providersAt(read.data);
+  const invalid = modelDeclarationError(entry, providers);
+  if (invalid) return { ok: false, error: invalid };
+
+  const stored: Record<string, unknown> = { id: entry.id, label: entry.label || entry.id };
+  for (const field of ["apiId", "provider", "group", "family"] as const) {
+    if (entry[field]) stored[field] = entry[field];
+  }
+  for (const field of ["vision", "supportsEffort"] as const) {
+    if (entry[field] !== undefined) stored[field] = entry[field];
+  }
+  if (entry.supportedEffortLevels?.length) stored["supportedEffortLevels"] = entry.supportedEffortLevels;
+  if (entry.thinkingTypes) stored["thinkingTypes"] = entry.thinkingTypes;
+  const limit: Record<string, number> = {};
+  if (entry.limit?.context) limit["context"] = entry.limit.context;
+  if (entry.limit?.output) limit["output"] = entry.limit.output;
+  if (Object.keys(limit).length > 0) stored["limit"] = limit;
+
+  const models = modelsAt(read.data);
+  const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === entry.id);
+  const created = at < 0;
+  if (created) models.push(stored);
+  else models[at] = stored;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} modèle ${entry.id}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { modelUpserted: entry.id, created });
+  return { ok: true, previous: {} };
+}
+
+/**
+ * Deletes one entry of `llm.models`. For an id discovery also serves, this is the reset: the
+ * declaration disappears and the provider's own answer applies again.
+ *
+ * An unknown id is refused rather than reported as done. "Nothing to delete" and "deleted" look
+ * identical from the app, and the difference is exactly what tells the owner the id they are
+ * staring at came from discovery and not from their file.
+ */
+export async function removeModel(id: string): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const llm = objectAt(read.data, "llm");
+  const models = Array.isArray(llm["models"]) ? (llm["models"] as Record<string, unknown>[]) : [];
+  const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === id);
+  if (at < 0) return { ok: false, error: `No model declared with the id "${id}"` };
+  models.splice(at, 1);
+  llm["models"] = models;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression modèle ${id}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { modelRemoved: id });
+  return { ok: true, previous: {} };
+}
+
 export interface DeviceEntry {
   token: string;
   name?: string;

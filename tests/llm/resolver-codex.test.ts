@@ -1,11 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import {
-  resolveLlmConfig,
-  resolveUtilityAgentLlmConfig,
-  resolveUtilityLlmConfig,
-  effortOptionsFor,
-} from "../../src/llm/resolver.ts";
+import { resolveLlmConfig, effortOptionsFor } from "../../src/llm/resolver.ts";
+import { resolveUtilityAgentLlmConfig, resolveUtilityLlmConfig } from "../../src/llm/utility-model.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 
 const config: LlmConfig = {
@@ -102,9 +98,10 @@ test("an agent pinned to a claude-sdk model falls back rather than breaking the 
   assert.equal(resolved.model, "blocked-by-the-gateway");
 });
 
-test("the utility fallback is declaration order, nothing else", () => {
-  // The whole policy, stated so it stops being surprising: no quality, size or liveness check, so
-  // the model at the top of config.models is the one that summarizes an SDK session.
+test("declaration order decides only once the preferred candidates are out", () => {
+  // The default is claude-sdk and there is no anthropic provider to twin with, so nothing is
+  // preferred and the list order is all that is left. It is still stated, because it is still what
+  // answers in that case.
   const sdkDefault: LlmConfig = {
     defaultProvider: "anthropic",
     defaultModel: "claude-sonnet",

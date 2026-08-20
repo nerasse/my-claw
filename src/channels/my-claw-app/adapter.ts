@@ -130,6 +130,8 @@ import {
   handleModelEndpoints,
   handleModelList,
   handleModelRefresh,
+  handleModelUpsert,
+  handleModelRemove,
   handleProviderEnvList,
   handleProviderEnvRemove,
   handleProviderEnvRename,
@@ -1005,6 +1007,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "model.endpoints":
         this.detach(handleModelEndpoints(this.settingsDeps(), ws, frame.model), "handleModelEndpoints");
+        break;
+      case "models.upsert":
+        this.detach(handleModelUpsert(this.settingsDeps(), ws, frame), "handleModelUpsert");
+        break;
+      case "models.remove":
+        this.detach(handleModelRemove(this.settingsDeps(), ws, frame), "handleModelRemove");
         break;
       case "skills.copy":
       case "skills.move":

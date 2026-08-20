@@ -26,17 +26,39 @@ const CACHE_PATH = join(MY_CLAW_DIR, "model-catalog.json");
 const DISCOVER_TIMEOUT_MS = 15_000;
 
 /**
- * Merge curated config models with discovered ones. Config always wins on id collision, so the
- * owner can override a discovered model's label/group/limit/vision by declaring the same id.
+ * Merge curated config models with discovered ones. Config wins on id collision, so the owner can
+ * override a discovered model's label, group, limit, vision or effort by declaring the same id.
  *
  * The collision is on the reference, which discovery qualifies by provider: a model declared for
  * one provider no longer hides the same name served by another. That is the whole point, since
  * the price, the window and the data policy differ per provider.
+ *
+ * **Field-level, not entry-level.** A declaration that shares an id used to replace the discovered
+ * entry outright, which was harmless only as long as declarations used bare ids and could never
+ * actually collide. Once an override can be written from the app, pinning one context window would
+ * drop `apiId`, `family` and `thinkingTypes` with it, and a missing `thinkingTypes` on an Anthropic
+ * model is an HTTP 400. So the declared fields win and the discovered ones fill the rest: what the
+ * owner did not touch keeps following the provider. See docs/model-declarations.md.
  */
 export function mergeModels(base: LlmModelConfig[], discovered: LlmModelConfig[]): LlmModelConfig[] {
+  const byId = new Map(discovered.map((m) => [m.id, m]));
+  const overridden = base.map((declared) => {
+    const found = byId.get(declared.id);
+    if (!found) return declared;
+    const merged = { ...found, ...pruneUndefined(declared) };
+    // Rebuilt rather than overwritten so pinning one half of a window keeps the other. Left absent
+    // when neither side states one: an empty object would read as "declared" and stop the model
+    // from inheriting the global `llm.limit`.
+    const limit = { ...found.limit, ...pruneUndefined(declared.limit ?? {}) };
+    return Object.keys(limit).length > 0 ? { ...merged, limit } : merged;
+  });
   const seen = new Set(base.map((m) => m.id));
-  const extra = discovered.filter((m) => !seen.has(m.id));
-  return [...base, ...extra];
+  return [...overridden, ...discovered.filter((m) => !seen.has(m.id))];
+}
+
+/** An explicit `undefined` in a declaration means "not stated", never "unset what discovery found". */
+function pruneUndefined<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
 /**

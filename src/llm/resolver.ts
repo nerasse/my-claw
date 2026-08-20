@@ -313,7 +313,7 @@ export function resolveLlmConfigForMessage(
  * the effort of the scope is passed to the resolvers explicitly, never merged here, so it
  * stays under the tag's pin (a merge would slot it where the global default sits).
  */
-function mergeAgentLlm(agentConfig: AgentLlmConfig | undefined, globalConfig: LlmConfig): LlmConfig {
+export function mergeAgentLlm(agentConfig: AgentLlmConfig | undefined, globalConfig: LlmConfig): LlmConfig {
   return {
     ...globalConfig,
     defaultProvider: agentConfig?.defaultProvider ?? globalConfig.defaultProvider,
@@ -468,61 +468,4 @@ export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Whether a single completion can be issued against this model from the home loop.
- *
- * Everything with an HTTP transport qualifies, which is every backend but one: `claude-sdk` is a
- * subprocess owning its own session, so there is no request to send. Allowlisting the exception
- * rather than the members is what keeps a new engine from being excluded by omission, which is how
- * the native Anthropic transport spent its first days barred from compaction.
- */
-function hasHomeLoopTransport(resolved: ResolvedLlmConfig): boolean {
-  return resolved.backend !== "claude-sdk";
-}
-
-/**
- * The resolved config when the home loop can call it, else the first configured model it can.
- *
- * The fallback is the first entry of `config.models` that qualifies, in declaration order. No
- * quality, size or liveness check: the list order is the whole policy, so the model at the top is
- * the one that summarizes an SDK session.
- */
-function homeLoopOrFallback(config: LlmConfig, resolved: ResolvedLlmConfig): ResolvedLlmConfig {
-  if (hasHomeLoopTransport(resolved)) return resolved;
-  for (const model of config.models ?? []) {
-    const candidate = resolveLlmConfig(config, model.id);
-    if (hasHomeLoopTransport(candidate)) return candidate;
-  }
-  throw new Error("No model with an HTTP transport configured (every model is claude-sdk backed)");
-}
-
-/**
- * Resolve a config the utility LLM callers can issue one completion against (compaction summarizer,
- * memory consolidation). They dispatch through `llmComplete`, so any wire protocol will do and the
- * session's own model is kept: only a claude-sdk pin has to borrow another one.
- */
-export function resolveUtilityLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
-  return homeLoopOrFallback(config, resolveLlmConfig(config, modelId));
-}
-
-/**
- * The same guarantee, for an agent that has a model of its own.
- *
- * The browser sub-agent runs on the home loop, so it cannot use a claude-sdk default; it was
- * therefore skipping agent resolution entirely and taking the first OpenAI-compatible model in the
- * catalogue, which meant `config.agents.browser` was quietly ignored and the model was whatever
- * happened to be listed first. The pin is honoured here, and the fallback only runs when the pin
- * itself has no HTTP transport.
- */
-export function resolveUtilityAgentLlmConfig(
-  agentConfig: AgentLlmConfig | undefined,
-  globalConfig: LlmConfig,
-  modelId?: string,
-): ResolvedLlmConfig {
-  return homeLoopOrFallback(
-    mergeAgentLlm(agentConfig, globalConfig),
-    resolveAgentLlmConfig(agentConfig, globalConfig, modelId),
-  );
 }

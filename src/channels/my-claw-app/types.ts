@@ -638,6 +638,36 @@ export interface MyClawAppProviderEnvList {
   type: "providers.env.list";
 }
 
+/**
+ * Creates or replaces one entry of `llm.models`, the hand-declared half of the catalogue.
+ *
+ * The entry is stored as sent, and merged over discovery field by field: it only has to carry what
+ * differs from what the provider answers. Deleting it is therefore also "reset to discovered".
+ * See docs/model-declarations.md.
+ */
+export interface MyClawAppModelUpsert {
+  type: "models.upsert";
+  id: string;
+  label?: string;
+  apiId?: string;
+  provider?: string;
+  group?: string;
+  family?: string;
+  vision?: boolean;
+  context?: number;
+  output?: number;
+  supportsEffort?: boolean;
+  effortLevels?: string[];
+  thinkingAdaptive?: boolean;
+  thinkingEnabled?: boolean;
+}
+
+/** Deletes a declaration. For an id discovery also serves, this is the reset to its answer. */
+export interface MyClawAppModelRemove {
+  type: "models.remove";
+  id: string;
+}
+
 /** Accepted from the device. Plain-text frames are treated as chat.send (M1 console). */
 /** Pairing socket: a browser announcing itself before the challenge -- docs/web-pairing.md. */
 export interface MyClawAppPairHello {
@@ -754,6 +784,8 @@ export type MyClawAppClientFrame =
   | MyClawAppProviderEnvRename
   | MyClawAppProviderEnvRemove
   | MyClawAppProviderEnvList
+  | MyClawAppModelUpsert
+  | MyClawAppModelRemove
   | MyClawAppStatusGet
   | MyClawAppSessionInstructionsGet
   | MyClawAppJobsList
@@ -1137,6 +1169,27 @@ export interface MyClawAppModelOption {
    * which is every provider but OpenRouter.
    */
   routes?: boolean;
+  /** A `llm.models` entry contributes this model, wholly (custom) or partly (override). */
+  declared?: boolean;
+  /** Discovery also serves this id, so deleting the declaration resets it instead of removing it. */
+  discovered?: boolean;
+}
+
+/**
+ * A model that exists and cannot run. Never offered by a picker, always shown by the management
+ * view: a filtered list cannot say what it removed, which is how three declarations survived their
+ * own deletion from a gateway unnoticed (docs/model-declarations.md).
+ */
+export interface MyClawAppUnavailableModel {
+  id: string;
+  label: string;
+  provider?: string;
+  declared?: boolean;
+  discovered?: boolean;
+  /** The availability verdict of run-model.ts. */
+  state: "stale" | "no-key" | "no-auth";
+  /** Ready to print: "litellm no longer lists it", "LITELLM_API_KEY is not set". */
+  reason: string;
 }
 
 /** Effort state of a thread: what applies now, what is on offer for the active model. */
@@ -1173,8 +1226,11 @@ export interface MyClawAppContextState {
 
 export interface MyClawAppModelListResult {
   type: "model.list.result";
+  /** What may run: unchanged semantics, so no picker in the app can regress into offering a 400. */
   models: MyClawAppModelOption[];
   defaultModel: string;
+  /** Known and not runnable, with the reason. Read by the management view only. */
+  unavailable: MyClawAppUnavailableModel[];
 }
 
 /**

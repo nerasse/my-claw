@@ -143,9 +143,10 @@ import { llmComplete } from "./llm/transport.ts";
 import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveUtilityLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
 import { referenceWithRoute, routesFor } from "./channels/route-menu.ts";
-import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
+import { availabilityOf, describe as describeAvailability, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
 import { fallbackNoticeText } from "./llm/fallback-notice.ts";
 import { setAvailabilityWorld, availabilityWorld } from "./llm/world.ts";
@@ -186,6 +187,8 @@ import {
   removeProvider,
   renameProvider,
   repointEnvKey,
+  upsertModel,
+  removeModel,
 } from "./core/config-edit.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
@@ -1055,10 +1058,41 @@ async function main() {
           .filter(([, provider]) => isOpenRouterBaseUrl(provider.baseUrl))
           .map(([name]) => name),
       );
+    /** The declared half of the catalogue: what `llm.models` contributes, by id. */
+    const declaredIds = (): Set<string> => new Set(baseModels.map((m) => m.id));
+    /**
+     * A declaration edit, applied before the answer goes out. Awaited on purpose: the watcher's
+     * own reload is debounced, so a broadcast that did not wait would carry the catalogue from
+     * before the write and the app would show the edit as a no-op until something else moved.
+     */
+    const applyModelEdit = async (note: string): Promise<void> => {
+      await reloadConfigNow().catch((err) => {
+        void log("warn", "config reload after model edit failed", { note, error: String(err) });
+      });
+    };
     myClawApp.onModelController({
       list: () => {
         const routable = routableProviders();
+        const declared = declaredIds();
+        const discovered = new Set(modelCatalog.discovered().map((m) => m.id));
+        const world = availabilityWorld();
         return {
+          // Known and not runnable: never offered, always shown by the management view. A filtered
+          // list cannot say what it removed, which is how three declarations survived their own
+          // deletion from a gateway unnoticed (docs/model-declarations.md).
+          unavailable: (config.llm.models ?? []).flatMap((model) => {
+            const availability = availabilityOf(config.llm, model.id, world);
+            if (availability === undefined || availability.state === "ready") return [];
+            return [{
+              id: model.id,
+              label: model.label || model.id,
+              ...(model.provider ? { provider: model.provider } : {}),
+              ...(declared.has(model.id) ? { declared: true } : {}),
+              ...(discovered.has(model.id) ? { discovered: true } : {}),
+              state: availability.state,
+              reason: describeAvailability(availability),
+            }];
+          }),
           models: modelPicker.options().map((m) => ({
             id: m.id,
             label: m.label,
@@ -1085,9 +1119,39 @@ async function main() {
             // Whether a routing step is worth offering at all. Read from the provider key rather
             // than by resolving each of several hundred models; `model.endpoints` answers for real.
             ...(m.provider !== undefined && routable.has(m.provider) ? { routes: true } : {}),
+            // Where this entry comes from, so the app can label it (custom vs override) and word
+            // its delete button as a reset when the provider serves the id too.
+            ...(declared.has(m.id) ? { declared: true } : {}),
+            ...(discovered.has(m.id) ? { discovered: true } : {}),
           })),
           defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
         };
+      },
+      upsert: async (entry) => {
+        const result = await upsertModel({
+          id: entry.id,
+          ...(entry.label === undefined ? {} : { label: entry.label }),
+          ...(entry.apiId === undefined ? {} : { apiId: entry.apiId }),
+          ...(entry.provider === undefined ? {} : { provider: entry.provider }),
+          ...(entry.group === undefined ? {} : { group: entry.group }),
+          ...(entry.family === undefined ? {} : { family: entry.family }),
+          ...(entry.vision === undefined ? {} : { vision: entry.vision }),
+          ...(entry.supportsEffort === undefined ? {} : { supportsEffort: entry.supportsEffort }),
+          ...(entry.effortLevels === undefined ? {} : { supportedEffortLevels: entry.effortLevels as EffortLevel[] }),
+          ...(entry.thinkingAdaptive === undefined && entry.thinkingEnabled === undefined
+            ? {}
+            : { thinkingTypes: { adaptive: entry.thinkingAdaptive === true, enabled: entry.thinkingEnabled === true } }),
+          ...(entry.context === undefined && entry.output === undefined
+            ? {}
+            : { limit: { ...(entry.context === undefined ? {} : { context: entry.context }), ...(entry.output === undefined ? {} : { output: entry.output }) } }),
+        });
+        if (!result.ok) throw new Error(result.error);
+        await applyModelEdit(`modèle ${entry.id}`);
+      },
+      remove: async (id) => {
+        const result = await removeModel(id);
+        if (!result.ok) throw new Error(result.error);
+        await applyModelEdit(`retrait modèle ${id}`);
       },
       refresh: async () => {
         // Awaited, not fired and forgotten: the button exists to be told when the answer is in,

@@ -526,12 +526,25 @@ subprocess owning its own session and there is no request to send. Measured on t
 
 ```
 anthropic/claude-opus-5     run=anthropic   compaction=anthropic   anthropic/claude-opus-5
-claude-sdk/claude-opus-5    run=claude-sdk  compaction=openai      Qwen3.6-35B-A3B-uncensored
+claude-sdk/claude-opus-5    run=claude-sdk  compaction=anthropic   anthropic/claude-opus-5
 chatgpt/gpt-5.6-luna        run=codex       compaction=codex       chatgpt/gpt-5.6-luna
 ```
 
-The fallback picks the **first entry of `config.models` that qualifies, in declaration order**. No
-quality, size or liveness check: the list order is the whole policy.
+The borrowing order lives in `src/llm/utility-model.ts` and prefers, in this order:
+
+1. **The native twin**, the same wire id under a provider of type `anthropic`. Same model, same
+   subscription, so an SDK Opus session is summarized by Opus. The `opus`/`sonnet` aliases are
+   resolved server-side by the SDK and appear in no `/v1/models`, so they have no twin and fall
+   through rather than being guessed at.
+2. **The default's twin**, which is what an alias pin inherits.
+3. **The default model**, the one model the owner actually picked.
+4. **Declaration order**, which is what is left when none of the above applies.
+
+Every candidate must be *runnable*, not merely declared: a provider that answered and did not list
+the id has testified that it is gone (docs/model-resolution.md). Declaration order alone was the
+whole policy until 0.4.19, and both halves of that hurt on the live config: the entry at the top was
+a local 35B, and it had been renamed on the gateway months earlier, so every SDK-session compaction
+resolved to a model that answered HTTP 400.
 
 **The circuit breaker was chat-completions only.** One breaker per endpoint lives in `provider.ts`,
 and both subscription transports now call the same three helpers. A subscription outage used to be

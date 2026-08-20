@@ -20,6 +20,8 @@ import type {
   MyClawAppNotificationsRegister,
   MyClawAppProviderEnvResult,
   MyClawAppProviderUpsert,
+  MyClawAppModelUpsert,
+  MyClawAppUnavailableModel,
   MyClawAppSessionInstructions,
   MyClawAppSkillEntry,
   MyClawAppStatusPayload,
@@ -67,7 +69,14 @@ export interface MyClawAppDiagnosticsProvider {
  * reach into the global config, the model picker or the session manager itself.
  */
 export interface MyClawAppModelController {
-  list(): { models: Array<{ id: string; label: string; group?: string; effortLevels?: string[]; context?: number }>; defaultModel: string };
+  list(): { models: Array<{ id: string; label: string; group?: string; effortLevels?: string[]; context?: number }>; defaultModel: string; unavailable: MyClawAppUnavailableModel[] };
+  /**
+   * Creates or replaces one `llm.models` declaration. Absent on a controller with no config to
+   * edit, which the handler refuses rather than reporting as a silent success.
+   */
+  upsert?(entry: MyClawAppModelUpsert): Promise<void>;
+  /** Deletes a declaration, which for a discovered id resets it to what the provider answers. */
+  remove?(id: string): Promise<void>;
   /**
    * Re-runs provider discovery now and reports how it went. Absent on a controller that has no
    * catalogue to refresh, which the handler answers as a refusal rather than as a silent success.

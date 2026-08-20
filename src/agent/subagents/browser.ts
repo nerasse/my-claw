@@ -3,7 +3,7 @@ import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
-import { resolveUtilityAgentLlmConfig } from "../../llm/resolver.ts";
+import { resolveUtilityAgentLlmConfig } from "../../llm/utility-model.ts";
 import { llmComplete } from "../../llm/transport.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserClient } from "../../browser/client.ts";

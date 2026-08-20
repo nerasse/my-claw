@@ -1,6 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { chatCompletion } from "../llm/provider.ts";
-import { resolveUtilityLlmConfig } from "../llm/resolver.ts";
+import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { llmComplete } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";

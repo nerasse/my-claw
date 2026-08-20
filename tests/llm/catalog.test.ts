@@ -27,6 +27,46 @@ test("mergeModels: config wins on id collision, appends extras in order", () => 
   assert.equal(merged.find((m) => m.id === "shared")?.label, "Shared (curated)");
 });
 
+test("mergeModels: a declaration overrides field by field and keeps the rest of discovery", () => {
+  const discovered: LlmModelConfig[] = [
+    {
+      id: "anthropic/claude-opus-5",
+      label: "Opus 5",
+      provider: "anthropic",
+      apiId: "claude-opus-5",
+      family: "Opus",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "high", "max"],
+      thinkingTypes: { adaptive: true, enabled: false },
+      limit: { context: 1_000_000, output: 128_000 },
+    },
+  ];
+  // The owner pins one window and nothing else. Replacing the entry outright would drop `apiId`
+  // (wrong endpoint) and `thinkingTypes` (an HTTP 400 on the first request).
+  const base: LlmModelConfig[] = [
+    { id: "anthropic/claude-opus-5", label: "Opus 5 (200k)", limit: { context: 200_000 } },
+  ];
+  const merged = mergeModels(base, discovered);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]?.label, "Opus 5 (200k)");
+  assert.equal(merged[0]?.limit?.context, 200_000);
+  // Untouched fields keep following the provider.
+  assert.equal(merged[0]?.limit?.output, 128_000);
+  assert.equal(merged[0]?.apiId, "claude-opus-5");
+  assert.equal(merged[0]?.provider, "anthropic");
+  assert.deepEqual(merged[0]?.thinkingTypes, { adaptive: true, enabled: false });
+  assert.deepEqual(merged[0]?.supportedEffortLevels, ["low", "high", "max"]);
+});
+
+test("mergeModels: an entry with no window and no discovered window declares none at all", () => {
+  // An empty `limit` object would read as "declared" and stop the model inheriting `llm.limit`.
+  const merged = mergeModels(
+    [{ id: "litellm/local", label: "Local" }],
+    [{ id: "litellm/local", label: "local", provider: "litellm", apiId: "local" }],
+  );
+  assert.equal(merged[0]?.limit, undefined);
+});
+
 test("applyProviderGroups: ungrouped models inherit their provider's group, or its key", () => {
   const providers = {
     litellm: { baseUrl: "x", group: "LiteLLM" },

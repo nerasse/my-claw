@@ -241,6 +241,27 @@ for out-of-band statements). The app has no equivalent, so `chat.message` gains 
 and the app renders it as a statement of the system rather than a reply from the agent -- a warning
 that looks like the assistant talking is a warning that gets read as content.
 
+## A utility call borrows, and borrows deliberately
+
+Compaction, memory consolidation and the browser sub-agent need a single completion, so they need a
+model with an HTTP transport. Every backend has one except `claude-sdk`, which is a subprocess
+owning its own session: there is no request to send. Only that one has to borrow, and
+`src/llm/utility-model.ts` decides from whom.
+
+1. **The native twin** -- the same wire id under a provider of type `anthropic`. Same model, same
+   subscription: an SDK Opus session is summarized by Opus. The `opus` and `sonnet` aliases are
+   resolved server-side and listed by no `/v1/models`, so they have no twin and fall through
+   instead of being guessed at.
+2. **The default's twin** -- what an alias pin inherits, since the default is normally versioned.
+3. **The default model** -- the one model the owner picked on purpose.
+4. **Declaration order** -- what is left when none of the above applies.
+
+Every candidate goes through `availabilityOf` first, so a `stale` entry is skipped rather than
+called. Declaration order used to be the entire policy, and on this box it selected
+`Qwen3.6-35B-A3B-uncensored`: first in `config.llm.models`, dropped by the gateway months earlier,
+hidden from every picker for exactly that reason, and still the model every SDK-session compaction
+resolved to. The failure surfaced as "compaction does nothing", never as "that model is gone".
+
 ## Verification
 
 All eight hold; where a test pins behaviour that was already correct rather than catching a

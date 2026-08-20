@@ -52,6 +52,8 @@ import type {
   MyClawAppProviderRemove,
   MyClawAppProviderRename,
   MyClawAppProviderUpsert,
+  MyClawAppModelUpsert,
+  MyClawAppModelRemove,
   MyClawAppServerFrame,
   MyClawAppSkillsTransfer,
   MyClawAppStatusGet,
@@ -184,6 +186,55 @@ export async function handleModelRefresh(d: MyClawAppSettingsDeps, ws: ServerWeb
     d.sendFrame(ws, { type: "model.refresh.result", ...outcome });
   } catch (err) {
     await d.refuse(ws, "model", "model.refresh failed", { error: String(err) });
+  }
+}
+
+/**
+ * Writes one declaration, then broadcasts the catalogue it produced.
+ *
+ * Broadcast, not sent: a declaration changes what every device of this owner may run, and the app
+ * never patches its own copy of the list. Answering with the fresh listing is what makes an override
+ * visibly take effect on the model it overrides.
+ */
+export async function handleModelUpsert(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppModelUpsert,
+): Promise<void> {
+  if (!d.models?.upsert) {
+    await d.refuse(ws, "model", "model config unavailable");
+    return;
+  }
+  if (!frame.id) {
+    await d.refuse(ws, "model", "invalid model id");
+    return;
+  }
+  try {
+    await d.models.upsert(frame);
+    d.broadcastFrame(ws.data.owner, { type: "model.list.result", ...d.models.list() });
+  } catch (err) {
+    await d.refuse(ws, "model", "models.upsert failed", { id: frame.id, error: String(err) });
+  }
+}
+
+export async function handleModelRemove(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppModelRemove,
+): Promise<void> {
+  if (!d.models?.remove) {
+    await d.refuse(ws, "model", "model config unavailable");
+    return;
+  }
+  if (!frame.id) {
+    await d.refuse(ws, "model", "invalid model id");
+    return;
+  }
+  try {
+    await d.models.remove(frame.id);
+    d.broadcastFrame(ws.data.owner, { type: "model.list.result", ...d.models.list() });
+  } catch (err) {
+    await d.refuse(ws, "model", "models.remove failed", { id: frame.id, error: String(err) });
   }
 }
 

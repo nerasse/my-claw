@@ -1658,6 +1658,7 @@ describe("model frames", () => {
           { id: "strong-2", label: "Strong", group: "Strong/Advanced" },
         ],
         defaultModel: "fast-1",
+        unavailable: [],
       }),
       endpoints: async () => [{ id: "fast-1@azure/eu", label: "Azure (azure/eu)", promptUsd: 0.22 }],
       current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
@@ -1691,6 +1692,7 @@ describe("model frames", () => {
           ? [{ id: "fast-1", label: "Fast" }]
           : [{ id: "fast-1", label: "Fast" }, { id: "just-appeared", label: "New" }],
         defaultModel: "fast-1",
+        unavailable: [],
       }),
       refresh: async () => {
         discoveries += 1;
@@ -1757,6 +1759,7 @@ describe("model frames", () => {
           { id: "naked", label: "Naked" },
         ],
         defaultModel: "fast-1",
+        unavailable: [],
       }),
       endpoints: async () => [],
       current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
@@ -1776,6 +1779,56 @@ describe("model frames", () => {
     } finally {
       await withProviders.stop();
     }
+  });
+
+  test("models.upsert writes the declaration and answers with the fresh catalogue", async () => {
+    store = new FakeSessionStore();
+    const editable = new MyClawAppAdapter(createConfig(), store as never);
+    const written: Array<Record<string, unknown>> = [];
+    const declared: Array<{ id: string; label: string; declared?: boolean }> = [{ id: "fast-1", label: "Fast" }];
+    editable.onModelController({
+      list: () => ({ models: declared, defaultModel: "fast-1", unavailable: [] }),
+      endpoints: async () => [],
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      upsert: async (entry) => {
+        written.push(entry as unknown as Record<string, unknown>);
+        declared.push({ id: entry.id, label: entry.label ?? entry.id, declared: true });
+      },
+      remove: async (id) => {
+        declared.splice(declared.findIndex((m) => m.id === id), 1);
+      },
+    });
+    await editable.start();
+    try {
+      const c = await connectClient(editable.port);
+      c.ws.send(JSON.stringify({ type: "models.upsert", id: "litellm/new", label: "New", provider: "litellm", context: 200000 }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "model.list.result");
+      assert.equal(written.length, 1);
+      assert.equal(written[0]!["context"], 200000);
+      const models = frame["models"] as Array<{ id: string }>;
+      assert.equal(models.length, 2);
+      assert.equal(models[1]!.id, "litellm/new");
+
+      c.ws.send(JSON.stringify({ type: "models.remove", id: "litellm/new" }));
+      const after = await nextFrame(c);
+      assert.equal(after["type"], "model.list.result");
+      assert.equal((after["models"] as unknown[]).length, 1);
+      c.ws.close();
+    } finally {
+      await editable.stop();
+    }
+  });
+
+  test("models.upsert is refused when the controller cannot write config", async () => {
+    // The read-only controller of this suite has no upsert: a refusal, never a silent success.
+    client.ws.send(JSON.stringify({ type: "models.upsert", id: "litellm/new" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "model");
   });
 
   test("model.set refuses an id the server does not know", async () => {
@@ -1856,7 +1909,7 @@ describe("model frames", () => {
       store as never,
     );
     shared.onModelController({
-      list: () => ({ models: [{ id: "fast-1", label: "Fast" }, { id: "strong-2", label: "Strong" }], defaultModel: "fast-1" }),
+      list: () => ({ models: [{ id: "fast-1", label: "Fast" }, { id: "strong-2", label: "Strong" }], defaultModel: "fast-1", unavailable: [] }),
       endpoints: async () => [],
       current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
@@ -1899,7 +1952,7 @@ describe("model frames", () => {
   test("a push whose state cannot be read reaches neither the client nor the caller", async () => {
     const failing = new MyClawAppAdapter(createConfig(), store as never);
     failing.onModelController({
-      list: () => ({ models: [{ id: "fast-1", label: "Fast" }], defaultModel: "fast-1" }),
+      list: () => ({ models: [{ id: "fast-1", label: "Fast" }], defaultModel: "fast-1", unavailable: [] }),
       endpoints: async () => [],
       current: async () => {
         throw new Error("session unreadable");
