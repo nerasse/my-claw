@@ -164,6 +164,17 @@ describe("E2E pipeline", () => {
     }
   });
 
+  /**
+   * 31 full router passes, which is 31 agent runs, a session save each: the default 5s budget is
+   * enough on an idle box and not on a loaded one. It went red on CI the day two runs of the same
+   * commit landed on the runner at once (2m38s against 1m41s for the twin), and the abort took the
+   * next test with it: the timed-out body had already run its `mock.restore()` while its own
+   * requests were still in flight, so they left for the real `https://example.com` and came back
+   * as the Example Domain page. The limit is a module constant, so the count cannot be lowered
+   * from here; the budget is what has to hold.
+   */
+  const RATE_LIMIT_TEST_TIMEOUT_MS = 30_000;
+
   test("rate limiting blocks excessive messages", async () => {
     const registry = new ToolRegistry();
     const skillRegistry = new SkillRegistry();
@@ -191,7 +202,7 @@ describe("E2E pipeline", () => {
     } finally {
       mock.restore();
     }
-  });
+  }, RATE_LIMIT_TEST_TIMEOUT_MS);
 
   test("different users have separate rate limits", async () => {
     const registry = new ToolRegistry();
@@ -220,5 +231,5 @@ describe("E2E pipeline", () => {
     } finally {
       mock.restore();
     }
-  });
+  }, RATE_LIMIT_TEST_TIMEOUT_MS);
 });
