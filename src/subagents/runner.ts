@@ -42,14 +42,36 @@ const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
 
 /**
- * Sub-agents are global on purpose: any chat can list and drive any of them, which is what makes
- * them useful as shared workers. A private one is scoped to the session that created it -- either
- * because the owner asked, or because it is a one-shot with no name to share.
+ * Who a caller is, for the visibility rule. The workspace is the caller conversation's own key
+ * (undefined = the default workspace), which is what a `workspace` agent is scoped to.
  */
-function isReachableFrom(meta: SubAgentMeta, callerSessionId: string): boolean {
-  if (meta.visibility !== "private") return true;
-  // An unknown caller must not match an agent whose parent is also unknown.
-  return callerSessionId.length > 0 && meta.parentSessionId === callerSessionId;
+export interface SubAgentCaller {
+  sessionId: string;
+  workspaceKey?: string;
+}
+
+/**
+ * Sub-agents are global on purpose: any chat can list and drive any of them, which is what makes
+ * them useful as shared workers. Two narrower scopes exist:
+ *
+ * - `private`: the session that created it -- either because the owner asked, or because it is a
+ *   one-shot with no name to share.
+ * - `workspace`: any conversation of the workspace that created it. A shared worker inside one
+ *   project, invisible to the others -- docs/subagent-visibility.md.
+ */
+function isReachableFrom(meta: SubAgentMeta, caller: SubAgentCaller): boolean {
+  if (meta.visibility === "private") {
+    // An unknown caller must not match an agent whose parent is also unknown.
+    return caller.sessionId.length > 0 && meta.parentSessionId === caller.sessionId;
+  }
+  if (meta.visibility === "workspace") {
+    // Compared as written, `undefined` included: an agent of the default workspace is reachable
+    // from the default workspace alone, so the unkeyed case is a scope like any other and not a
+    // wildcard. An unknown caller has no workspace, so it only ever matches the default one --
+    // which is why the caller identity must be resolved, never guessed, at every entry point.
+    return (meta.workspaceKey ?? undefined) === (caller.workspaceKey ?? undefined);
+  }
+  return true;
 }
 
 export class SubAgentRunner {
@@ -69,6 +91,24 @@ export class SubAgentRunner {
     return this.activeCount < MAX_CONCURRENT_RUNS && depth < MAX_DEPTH;
   }
 
+  /**
+   * The caller's identity for the visibility rule, read from its own session rather than passed
+   * in. Every entry point takes a session id and nothing else, so resolving here is what keeps a
+   * caller from asserting a workspace it is not in -- and what makes a workspace switch apply to
+   * reachability at once, since `session.workspace` is persisted on the switch.
+   *
+   * An unreadable or unknown session yields no workspace, which matches the default workspace: a
+   * caller that cannot be placed sees the default scope, never every scope.
+   */
+  private async resolveCaller(callerSessionId: string): Promise<SubAgentCaller> {
+    if (!callerSessionId) return { sessionId: "" };
+    const session = await loadSession(callerSessionId);
+    return {
+      sessionId: callerSessionId,
+      ...(session?.workspace ? { workspaceKey: session.workspace } : {}),
+    };
+  }
+
   // An options object rather than positional arguments: this call already carried eleven of them,
   // and a caller or a test asserting on argument position silently binds to the wrong one as soon
   // as a parameter is inserted.
@@ -84,7 +124,7 @@ export class SubAgentRunner {
     existingIds: Set<string>;
     generateId: (name: string, existing: Set<string>) => string;
     parentSessionId: string;
-    visibility: "global" | "private";
+    visibility: "global" | "workspace" | "private";
     signal?: AbortSignal;
     model?: string;
     // Same per-agent queue as send(): without it, a send() issued while the spawn's first
@@ -108,12 +148,17 @@ export class SubAgentRunner {
     }
 
     const id = generateId(displayName, existingIds);
+    // The scope of a workspace-visible agent is the conversation that spawned it, not the
+    // workspace the agent was pinned to run in: `agents.<name>.workspace` moves the filesystem,
+    // not the roster the orchestrator sees.
+    const spawnedFrom = await this.resolveCaller(parentSessionId);
     const meta: SubAgentMeta = {
       displayName,
       type,
       workspaceDir: resolved.dir,
       parentSessionId,
       visibility,
+      ...(visibility === "workspace" && spawnedFrom.workspaceKey ? { workspaceKey: spawnedFrom.workspaceKey } : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -178,7 +223,7 @@ export class SubAgentRunner {
       if (!session || !session.meta) {
         return `Error: sub-agent ${id} not found.`;
       }
-      if (!isReachableFrom(session.meta, callerSessionId)) {
+      if (!isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
         return `Error: sub-agent ${id} not found.`;
       }
 
@@ -208,7 +253,7 @@ export class SubAgentRunner {
     // deleteSession takes any session id, so without this guard `kill_agent` could be pointed at
     // a chat session and delete a conversation.
     const session = await loadSession(id);
-    if (!id.startsWith("subagent/") || !session?.meta || !isReachableFrom(session.meta, callerSessionId)) {
+    if (!id.startsWith("subagent/") || !session?.meta || !isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
       return `Error: sub-agent ${id} not found.`;
     }
     await deleteSession(id);
@@ -218,7 +263,7 @@ export class SubAgentRunner {
 
   async reset(id: string, callerSessionId: string): Promise<string> {
     const session = await loadSession(id);
-    if (!session || !session.meta || !isReachableFrom(session.meta, callerSessionId)) {
+    if (!session || !session.meta || !isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
       return `Error: sub-agent ${id} not found.`;
     }
     await archiveSession(id);
@@ -233,6 +278,9 @@ export class SubAgentRunner {
   async list(registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentInfo[]> {
     const dir = join(MY_CLAW_DIR, "sessions", "subagent");
     const out: SubAgentInfo[] = [];
+    // Resolved once for the whole scan rather than per entry: the caller does not change between
+    // two files, and a read per sub-agent would make listing quadratic in disk reads.
+    const caller = await this.resolveCaller(callerSessionId);
     try {
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
@@ -240,7 +288,7 @@ export class SubAgentRunner {
         const id = `subagent/${entry.name.slice(0, -5)}`;
         const session = await loadSession(id);
         if (!session?.meta) continue;
-        if (!isReachableFrom(session.meta, callerSessionId)) continue;
+        if (!isReachableFrom(session.meta, caller)) continue;
         out.push({
           id,
           displayName: session.meta.displayName,
@@ -248,6 +296,7 @@ export class SubAgentRunner {
           messageCount: session.messages.length,
           status: registry.isRunning(id) ? "running" : "idle",
           visibility: session.meta.visibility,
+          ...(session.meta.workspaceKey ? { workspaceKey: session.meta.workspaceKey } : {}),
           ...(session.modelOverride ? { model: session.modelOverride } : {}),
           createdAt: session.meta.createdAt,
         });

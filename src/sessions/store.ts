@@ -179,9 +179,18 @@ export interface SubAgentMeta {
   // of the agent rather than of a run -- so it survives restarts and needs no argument threading.
   parentSessionId: string;
   // Sub-agents are addressable from any chat by default, which is the point. A private one is
-  // only visible and drivable from parentSessionId. One-shot agents are always private: they are
-  // unnamed and short-lived, and were invisible before they had metadata at all.
-  visibility: "global" | "private";
+  // only visible and drivable from parentSessionId, a workspace one from any conversation of
+  // `workspaceKey`. One-shot agents are always private: they are unnamed and short-lived, and
+  // were invisible before they had metadata at all.
+  visibility: "global" | "workspace" | "private";
+  /**
+   * What the `workspace` visibility is scoped to, and set for that visibility alone: the key of
+   * the conversation that spawned the agent, never the one it runs in (`workspaceDir`). The two
+   * differ whenever `agents.<name>.workspace` pins the agent elsewhere, and an agent must stay
+   * with the orchestrator that created it rather than follow where its filesystem points.
+   * Absent means the default workspace, exactly like `SessionData.workspace`.
+   */
+  workspaceKey?: string;
   createdAt: string;
 }
 

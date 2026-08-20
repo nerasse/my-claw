@@ -1935,7 +1935,9 @@ export interface MyClawAppSubAgentEntry {
   type: string;
   messageCount: number;
   status: "idle" | "running";
-  visibility: "global" | "private";
+  visibility: "global" | "workspace" | "private";
+  /** Which workspace a `workspace`-visible agent is scoped to; absent means the default one. */
+  workspaceKey?: string;
   model?: string;
   createdAt: string;
 }

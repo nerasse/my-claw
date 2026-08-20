@@ -69,6 +69,10 @@ Flat frontmatter only: one `key: value` per line, no nesting, no lists. Everythi
 - A file that stops parsing keeps its last good version (the watcher logs it).
 - The orchestrator is not a file: its instructions are the workspace prompt files.
 - `spawn` shows only spawnable agents of the current workspace; `/agents` lists everything.
+- **Visibility is not a frontmatter field.** A file defines what an agent *is*; who can reach a
+  spawned instance is decided per spawn (`visibility: global | workspace | private`), because the
+  same agent may be shared once and private the next time. Do not confuse it with `workspace:`,
+  which pins where the agent runs and grants nobody anything.
 
 ## References
 

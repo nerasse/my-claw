@@ -25,6 +25,8 @@ export function createSpawnTool(
       return "Spawn a sub-agent. mode='run' = one-shot (deleted after run). mode='session' = persistent on disk, reusable via send(). " +
         types +
         "Provide workspaceDir to isolate the sub-agent's filesystem. " +
+        "visibility decides who can later list and drive it: 'global' (default, every conversation), " +
+        "'workspace' (only conversations of the workspace spawning it), 'private' (this conversation alone). " +
         "Optionally pick the sub-agent's model from the listed ones (default: the configured sub-agent model). " +
         "Max 3 concurrent runs, max depth 2.";
     },
@@ -45,7 +47,12 @@ export function createSpawnTool(
           mode: { type: "string", enum: ["run", "session"], description: "'run' = one-shot, 'session' = persistent" },
           task: { type: "string", description: "Task description for the sub-agent" },
           workspaceDir: { type: "string", description: "Optional absolute workspace directory for the sub-agent" },
-          private: { type: "boolean", description: "Restrict this sub-agent to the current conversation. Default false: sub-agents are usable from any chat." },
+          visibility: {
+            type: "string",
+            enum: ["global", "workspace", "private"],
+            description: "Who can list and drive this sub-agent later. 'global' (default) = any conversation; 'workspace' = only conversations of the workspace it was spawned from; 'private' = only this conversation.",
+          },
+          private: { type: "boolean", description: "Deprecated alias for visibility='private'. Ignored when visibility is set." },
           ...(models.length > 0
             ? { model: { type: "string", enum: models, description: "Optional model for this sub-agent" } }
             : {}),
@@ -90,8 +97,14 @@ export function createSpawnTool(
         const signal = args["__signal"] as AbortSignal | undefined;
         const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
         // Global unless asked otherwise, so a sub-agent stays a shared worker by default. A
-        // one-shot is forced private inside the runner regardless of what is passed here.
-        const visibility = args["private"] === true ? "private" : "global";
+        // one-shot is forced private inside the runner regardless of what is passed here. The
+        // scope of `workspace` is resolved there too, from the calling session: a value passed
+        // here could name a workspace the caller is not in.
+        const requested = strOpt(args, "visibility");
+        if (requested !== undefined && requested !== "global" && requested !== "workspace" && requested !== "private") {
+          return { success: false, output: "", error: `Invalid visibility '${requested}'. Use global, workspace or private.` };
+        }
+        const visibility: "global" | "workspace" | "private" = requested ?? (args["private"] === true ? "private" : "global");
         const existing = await registry.listExistingIds();
         const { id, result } = await runner.spawn({
           displayName: name,

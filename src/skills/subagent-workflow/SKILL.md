@@ -48,17 +48,20 @@ Spawn deliberately:
 
 ## Workflow
 
-1. **Spawn** : `spawn(name, type, mode, task, workspaceDir?)`
+1. **Spawn** : `spawn(name, type, mode, task, workspaceDir?, visibility?)`
    - `mode: "run"` — one-shot, auto-deleted after. Use for simple isolated tasks.
    - `mode: "session"` — persistent, keeps history. Returns ID like `subagent/explorer-a7b3`.
    - `workspaceDir` — optional absolute path. Sub-agent filesystem tools resolve here instead of shared workspace. Must be inside the main workspace (paths outside are rejected).
+   - `visibility` — who can list and drive it **later**: `global` (default, any conversation), `workspace` (only conversations of the workspace you are in), `private` (this conversation only). One-shots are always private.
+
+   `visibility` and `workspaceDir` are unrelated: the first decides who reaches the agent, the second where its files live. Pick `workspace` for a worker that belongs to one project, `global` for a general assistant, `private` for scratch work.
 
 2. **Send** : `send(id, message, attachments?)`
    - Continues the conversation. Full history preserved.
    - Attachments: `[{path, type}]` to pass images, videos, documents.
    - Concurrent sends to the same sub-agent queue automatically.
 
-3. **List / Monitor** : `list_agents()` to see status (`running` or `idle`).
+3. **List / Monitor** : `list_agents()` to see status (`running` or `idle`) and scope. It lists only what this conversation can reach: an agent private to another chat, or scoped to another workspace, is absent and cannot be driven.
 
 4. **Kill / Reset** : `kill_agent(id)` deletes permanently. `reset_agent(id)` archives history and starts fresh (keeps name, type, workspaceDir).
 

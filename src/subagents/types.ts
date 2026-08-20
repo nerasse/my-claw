@@ -13,7 +13,9 @@ export interface SubAgentInfo {
   messageCount: number;
   status: "idle" | "running";
   /** The rest is what a roster needs and `list` already had loaded -- docs/subagent-navigation.md. */
-  visibility: "global" | "private";
+  visibility: "global" | "workspace" | "private";
+  /** Which workspace a `workspace`-visible agent belongs to; absent means the default one. */
+  workspaceKey?: string;
   model?: string;
   createdAt: string;
 }
