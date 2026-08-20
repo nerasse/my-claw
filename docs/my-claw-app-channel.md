@@ -929,6 +929,21 @@ A tool card seals the text bubble it interrupts: the streamer sends
 `chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
 therefore stay in chronological order without the client reordering anything.
 
+### Several surfaces per device
+
+A device may hold **as many sockets as it opens**, and every broadcast reaches all of them
+(`SocketRegistry`). It used to be one socket per device id, with a new one closing the old on
+`1000 "replaced"`, which was wrong for the web: a browser's device id comes from its session
+cookie, so it belongs to the profile and not to the tab. Two tabs of one profile were therefore one
+device fighting itself, each open evicting the other, each close scheduling a one second retry, and
+a successful open resetting the backoff so the war never decayed. Measured on 2026-08-20: eleven
+connect/disconnect cycles in eleven seconds on a single device id.
+
+The two operations that address a device rather than an owner, `device.revoke` and disabling a
+device in the config, close **every** socket of it: leaving one tab connected would defeat their
+purpose. The client has its own half of the fix, a connection that dies within five seconds counts
+as a failed attempt so the backoff keeps growing whatever the close code says.
+
 ### Drafts
 
 `draft.set` carries what the owner has typed and not sent; the server stores it per conversation and

@@ -15,6 +15,7 @@ import { readAppVersion } from "../../core/diagnostics.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
+import { SocketRegistry } from "./socket-registry.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
 import { touchDevice } from "./devices.ts";
 import { pairPageResponse } from "./pair-page.ts";
@@ -201,7 +202,7 @@ interface PendingApproval {
 export class MyClawAppAdapter implements ChannelAdapter {
   readonly platform = "my-claw-app" as const;
   private server?: Server<MyClawAppSessionData>;
-  private sockets = new Map<string, ServerWebSocket<MyClawAppSessionData>>();
+  private sockets = new SocketRegistry();
   private media = new Map<string, MediaEntry>();
   private mediaOrder: string[] = [];
   /** The unauthenticated pairing surface, kept behind its own object and its own route. */
@@ -281,7 +282,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     if (this.sweeper) clearInterval(this.sweeper);
     this.sweeper = undefined;
-    for (const ws of this.sockets.values()) {
+    for (const ws of this.sockets.all()) {
       try {
         ws.close(1001, "server shutdown");
       } catch {
@@ -623,7 +624,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private socketsFor(owner: string): ServerWebSocket<MyClawAppSessionData>[] {
-    return [...this.sockets.values()].filter((ws) => ws.data.owner === owner);
+    return this.sockets.forOwner(owner);
   }
 
   private broadcast(owner: string, frame: MyClawAppServerFrame): void {
@@ -841,16 +842,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     void touchDevice(this.config, ws.data.deviceId);
-    const existing = this.sockets.get(ws.data.deviceId);
-    if (existing && existing !== ws) {
-      try {
-        existing.close(1000, "replaced");
-      } catch {
-        // already closed
-      }
-    }
-    this.sockets.set(ws.data.deviceId, ws);
-    void myClawAppLog("info", "device connected", { deviceId: ws.data.deviceId });
+    // Several surfaces of one device are welcome. Closing the previous one used to make two tabs
+    // of a browser fight over a device id that belongs to the profile, not to the tab -- see
+    // SocketRegistry.
+    this.sockets.add(ws);
+    void myClawAppLog("info", "device connected", {
+      deviceId: ws.data.deviceId,
+      surfaces: this.sockets.countFor(ws.data.deviceId),
+    });
     // The server names itself first: the settings page labels its "connected" state with it.
     void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version }));
     const locationCapabilities: MyClawAppLocationCapabilities = {
@@ -871,10 +870,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.pairSockets.close(ws as unknown as ServerWebSocket<PairSocketData>);
       return;
     }
-    if (this.sockets.get(ws.data.deviceId) === ws) {
-      this.sockets.delete(ws.data.deviceId);
-    }
-    void myClawAppLog("info", "device disconnected", { deviceId: ws.data.deviceId });
+    this.sockets.remove(ws);
+    void myClawAppLog("info", "device disconnected", {
+      deviceId: ws.data.deviceId,
+      surfaces: this.sockets.countFor(ws.data.deviceId),
+    });
   }
 
   /**
@@ -1933,7 +1933,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * with a pong (the `pong` handler refreshes `lastSeen`), and a dead socket surfaces at once.
    */
   private keepAlive(): void {
-    for (const ws of this.sockets.values()) {
+    for (const ws of this.sockets.all()) {
       try {
         ws.ping();
       } catch {
@@ -1945,14 +1945,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private sweep(): void {
     this.keepAlive();
     const now = Date.now();
-    for (const [deviceId, ws] of this.sockets) {
+    for (const ws of this.sockets.all()) {
       if (now - ws.data.lastSeen > STALE_SOCKET_MS) {
         try {
           ws.close(1001, "stale");
         } catch {
           // already closed
         }
-        this.sockets.delete(deviceId);
+        this.sockets.remove(ws);
       }
     }
     // A pairing socket is unauthenticated and short-lived by nature: a code expires in minutes,

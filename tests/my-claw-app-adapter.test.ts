@@ -1470,6 +1470,44 @@ describe("MyClawAppAdapter owners", () => {
     }
   });
 
+  test("two tabs of one device both stay connected and both get the answer", async () => {
+    // A browser's device id comes from its session cookie, which belongs to the profile and not to
+    // the tab: opening a second tab used to close the first, and the two then fought at one
+    // reconnect per second forever.
+    const first = await connectClient(adapter.port, "browser");
+    const second = await connectClient(adapter.port, "browser");
+    try {
+      await adapter.send(OWNER, { text: "answered", threadId: "t-1" });
+
+      assert.equal((await nextFrame(first))["text"], "answered");
+      assert.equal((await nextFrame(second))["text"], "answered");
+      assert.equal(first.closed, null, "the first tab must not be evicted by the second");
+      assert.equal(second.closed, null);
+    } finally {
+      first.ws.close();
+      second.ws.close();
+    }
+  });
+
+  test("a draft typed in one tab reaches the other tab of the same device", async () => {
+    const first = await connectClient(adapter.port, "browser");
+    const second = await connectClient(adapter.port, "browser");
+    try {
+      first.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-1", text: "commence dans cet onglet" }));
+
+      const mirrored = await nextFrame(second);
+      assert.equal(mirrored["type"], "draft.changed");
+      assert.equal(mirrored["text"], "commence dans cet onglet");
+
+      // Still not echoed to the tab that typed it: same rule, whatever the device.
+      await adapter.send(OWNER, { text: "marker", threadId: "t-1" });
+      assert.equal((await nextFrame(first))["type"], "chat.message");
+    } finally {
+      first.ws.close();
+      second.ws.close();
+    }
+  });
+
   test("a draft typed on one device reaches the other, and never comes back to the sender", async () => {
     const phone = await connectClient(adapter.port, "phone");
     const browser = await connectClient(adapter.port, "browser");

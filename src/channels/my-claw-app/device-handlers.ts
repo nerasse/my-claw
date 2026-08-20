@@ -4,13 +4,14 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import type { MyClawAppSessionData } from "./controllers.ts";
 import { listDevices, revokeDevice } from "./devices.ts";
 import { approve, lookup } from "./pairing.ts";
+import type { SocketRegistry } from "./socket-registry.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
 
 /** What a device frame needs from the adapter: the roster it reads, the live sockets it closes,
  *  and the one exit every frame answers through. */
 export interface MyClawAppDeviceDeps {
   readonly config: MyClawAppChannelConfig;
-  readonly sockets: Map<string, ServerWebSocket<MyClawAppSessionData>>;
+  readonly sockets: SocketRegistry;
   sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void;
 }
 
@@ -20,15 +21,11 @@ export interface MyClawAppDeviceDeps {
  * until it happened to reconnect. Revoking closes the socket; disabling now does too.
  */
 export function dropDisabledSockets(d: MyClawAppDeviceDeps): void {
-  for (const [deviceId, ws] of d.sockets) {
+  for (const deviceId of d.sockets.deviceIds()) {
     if (d.config.devices?.[deviceId]?.enabled !== false) continue;
-    try {
-      ws.close(1008, "disabled");
-    } catch {
-      // already gone
-    }
-    d.sockets.delete(deviceId);
-    void myClawAppLog("info", "device socket closed: disabled", { deviceId });
+    // Every surface of it: leaving one tab connected would defeat the point of disabling.
+    const closed = d.sockets.closeDevice(deviceId, 1008, "disabled");
+    void myClawAppLog("info", "device sockets closed: disabled", { deviceId, closed });
   }
 }
 
@@ -63,17 +60,7 @@ export async function handleDeviceRevoke(d: MyClawAppDeviceDeps, ws: ServerWebSo
   // The browser sessions go with the device inside revokeDevice, for every caller: the socket
   // is what only this path can close.
   const revoked = await revokeDevice(deviceId, d.config);
-  if (revoked.ok) {
-    const live = d.sockets.get(deviceId);
-    if (live) {
-      try {
-        live.close(1008, "revoked");
-      } catch {
-        // already gone
-      }
-      d.sockets.delete(deviceId);
-    }
-  }
+  if (revoked.ok) d.sockets.closeDevice(deviceId, 1008, "revoked");
   d.sendFrame(ws, {
     type: "device.revoke.result",
     ok: revoked.ok,
@@ -89,7 +76,7 @@ export async function handleDeviceRevoke(d: MyClawAppDeviceDeps, ws: ServerWebSo
  * revoked or paired from the phone has to leave (or join) the laptop's list without a reload.
  */
 function mirrorDeviceList(d: MyClawAppDeviceDeps, sender: ServerWebSocket<MyClawAppSessionData>): void {
-  for (const other of d.sockets.values()) {
+  for (const other of d.sockets.all()) {
     if (other !== sender && other.data.owner === sender.data.owner) handleDeviceList(d, other);
   }
 }
