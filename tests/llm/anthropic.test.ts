@@ -311,3 +311,35 @@ test("the thinking token count is never reported to the sink, only the text is",
   assert.equal(result.content, "3");
   assert.equal(result.usage?.completionTokens, 20);
 });
+
+test("the final turn carries the conversation cache breakpoint, not the middle ones", () => {
+  const messages: ChatMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "question one" },
+    { role: "assistant", content: "answer one" },
+    { role: "user", content: "question two" },
+    { role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "bash", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "t1", content: "output" },
+  ];
+  const { turns } = buildRequest(messages);
+  // Only the last block of the last turn is a breakpoint; every earlier turn must stay clean so
+  // the cache prefix can only grow at the tail.
+  for (const [i, turn] of turns.entries()) {
+    for (const [j, block] of turn.content.entries()) {
+      const isLast = i === turns.length - 1 && j === turn.content.length - 1;
+      if (isLast) {
+        assert.deepEqual(
+          (block as { cache_control?: unknown }).cache_control,
+          { type: "ephemeral", ttl: "1h" },
+          `turn ${i} block ${j} should be the conversation breakpoint`,
+        );
+      } else {
+        assert.equal(
+          (block as { cache_control?: unknown }).cache_control,
+          undefined,
+          `turn ${i} block ${j} must not carry a breakpoint`,
+        );
+      }
+    }
+  }
+});

@@ -150,6 +150,7 @@ interface AnthropicToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
   content: string;
+  cache_control?: typeof CACHE_1H;
 }
 type AnthropicBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
 
@@ -172,7 +173,7 @@ interface ChatToolDefinition {
 function convertTools(tools?: unknown[]): AnthropicTool[] {
   if (!tools?.length) return [];
   // No cache_control on any tool: the tools ride inside the prefix the system breakpoints cover,
-  // and a fifth breakpoint would exceed Anthropic's cap of four.
+  // and a fourth breakpoint would exceed Anthropic's cap of four (2 system + 1 final turn).
   return (tools as ChatToolDefinition[]).map((t) => ({
     name: wireToolName(t.function.name),
     description: t.function.description,
@@ -248,6 +249,18 @@ function buildRequest(messages: ChatMessage[]): { system: string; turns: Anthrop
       case "tool":
         push("user", [{ type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content }]);
         break;
+    }
+  }
+
+  // Cache the whole conversation, not just the system prefix: without a breakpoint on the final
+  // turn, every agent iteration re-sends the entire history as fresh input tokens. The system
+  // breakpoints alone cost ~12M input tokens on one observed 54-iteration run. Total breakpoint
+  // count stays at three (2 system + 1 final), under Anthropic's cap of four.
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn) {
+    const lastBlock = lastTurn.content[lastTurn.content.length - 1];
+    if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "tool_result")) {
+      lastBlock.cache_control = CACHE_1H;
     }
   }
 
