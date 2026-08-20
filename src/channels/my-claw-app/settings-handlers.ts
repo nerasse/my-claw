@@ -238,13 +238,18 @@ export async function handleModelRemove(
   }
 }
 
-export async function handleModelEndpoints(d: MyClawAppSettingsDeps, ws: ServerWebSocket<MyClawAppSessionData>, model: string): Promise<void> {
+export async function handleModelEndpoints(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  model: string,
+  sort?: "price" | "context" | "output" | "uptime",
+): Promise<void> {
   if (!d.models?.endpoints) {
     await d.refuse(ws, "model", "model control unavailable");
     return;
   }
   try {
-    d.sendFrame(ws, { type: "model.endpoints.result", model, endpoints: await d.models.endpoints(model) });
+    d.sendFrame(ws, { type: "model.endpoints.result", model, endpoints: await d.models.endpoints(model, sort) });
   } catch (err) {
     await d.refuse(ws, "model", "model.endpoints failed", { error: String(err) });
   }

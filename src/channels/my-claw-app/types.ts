@@ -375,6 +375,11 @@ export interface MyClawAppModelEndpoints {
   type: "model.endpoints";
   /** The model reference, as listed by `model.list`. */
   model: string;
+  /**
+   * How to order the routes. Absent is "price", which is what pinning is usually about. The
+   * server sorts rather than the client so every surface orders one model's providers the same way.
+   */
+  sort?: "price" | "context" | "output" | "uptime";
 }
 
 export interface MyClawAppModelGet {
@@ -1297,14 +1302,20 @@ export interface MyClawAppModelEndpoint {
   promptUsd?: number;
   completionUsd?: number;
   context?: number;
+  /**
+   * The output ceiling of this route. Carried because it is the limit that actually refuses a
+   * call: showing the context alone reads as if a 1M-context route accepts a 1M-token answer.
+   */
+  maxOutput?: number;
   /** Degraded or down on the provider's own health flag: worth showing, not worth hiding. */
   degraded?: boolean;
   uptime30m?: number;
 }
 
 /**
- * The routes of one model, cheapest first. An empty list means the model has no routing of its
- * own (anything that is not OpenRouter) or the lookup failed: either way, automatic is the answer.
+ * The routes of one model, ordered by the requested sort (price by default). An empty list means
+ * the model has no routing of its own (anything that is not OpenRouter) or the lookup failed:
+ * either way, automatic is the answer.
  */
 export interface MyClawAppModelEndpointsResult {
   type: "model.endpoints.result";

@@ -148,6 +148,28 @@ export async function openRouterEndpointLimits(
   };
 }
 
+/**
+ * The limits of a pinned endpoint if they are already cached, without ever reaching the network.
+ *
+ * Window resolution is synchronous and sits on the hot path of every display and every trim, so it
+ * cannot await a lookup. Cache-only is enough in practice: the listing is fetched when a route menu
+ * opens and when the transport clamps its output ask, and a cold cache simply means no clamp, which
+ * is the same "no evidence, change nothing" rule applied everywhere else here.
+ */
+export function cachedOpenRouterEndpointLimits(
+  apiId: string,
+  tag: string,
+): { context?: number; maxOutput?: number } | undefined {
+  const hit = endpointsCache.get(apiId);
+  if (!hit || Date.now() - hit.at >= ENDPOINTS_TTL_MS) return undefined;
+  const endpoint = hit.value.find((candidate) => candidate.tag === tag);
+  if (!endpoint) return undefined;
+  return {
+    ...(endpoint.contextLength === undefined ? {} : { context: endpoint.contextLength }),
+    ...(endpoint.maxOutput === undefined ? {} : { maxOutput: endpoint.maxOutput }),
+  };
+}
+
 /** Test seam: both caches are module state, and module state leaks across test files. */
 export function clearOpenRouterCache(): void {
   endpointsCache.clear();

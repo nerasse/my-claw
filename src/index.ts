@@ -145,7 +145,7 @@ import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
 import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
-import { referenceWithRoute, routesFor } from "./channels/route-menu.ts";
+import { referenceWithRoute, routesFor, sortRoutes } from "./channels/route-menu.ts";
 import { availabilityOf, describe as describeAvailability, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
 import { fallbackNoticeText } from "./llm/fallback-notice.ts";
@@ -1165,16 +1165,19 @@ async function main() {
           .map(([name]) => name);
         return { models: modelPicker.options().length, failed, enabled: modelCatalog.enabled() };
       },
-      endpoints: async (modelRef) => {
+      endpoints: async (modelRef, sort) => {
         // One route list for every surface: the same helper answers the two channel menus, so the
-        // app can never offer a route the /model menu does not (docs/model-identity.md).
-        const routes = await routesFor(config, modelRef);
+        // app can never offer a route the /model menu does not (docs/model-identity.md). Sorting
+        // happens here for the same reason: three surfaces ordering one model's providers three
+        // ways is how a menu comes to present a different "cheapest" than the next one.
+        const routes = sortRoutes(await routesFor(config, modelRef), sort ?? "price");
         return routes.map((route) => ({
           id: referenceWithRoute(modelRef, route.tag),
           label: route.providerName === route.tag ? route.tag : `${route.providerName} (${route.tag})`,
           ...(route.promptUsd === undefined ? {} : { promptUsd: route.promptUsd }),
           ...(route.completionUsd === undefined ? {} : { completionUsd: route.completionUsd }),
           ...(route.context === undefined ? {} : { context: route.context }),
+          ...(route.maxOutput === undefined ? {} : { maxOutput: route.maxOutput }),
           ...(route.degraded ? { degraded: true } : {}),
           ...(route.uptime30m === undefined ? {} : { uptime30m: route.uptime30m }),
         }));

@@ -1010,7 +1010,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         this.detach(handleModelList(this.settingsDeps(), ws), "handleModelList");
         break;
       case "model.endpoints":
-        this.detach(handleModelEndpoints(this.settingsDeps(), ws, frame.model), "handleModelEndpoints");
+        this.detach(handleModelEndpoints(this.settingsDeps(), ws, frame.model, frame.sort), "handleModelEndpoints");
         break;
       case "models.upsert":
         this.detach(handleModelUpsert(this.settingsDeps(), ws, frame), "handleModelUpsert");

@@ -4,6 +4,7 @@ import { resolveLlmConfig, isOpenRouterBaseUrl } from "../../src/llm/resolver.ts
 import { resolveModelContextWindow } from "../../src/llm/context-window.ts";
 import { modelKeyCandidates } from "../../src/llm/pricing.ts";
 import { chatCompletion } from "../../src/llm/provider.ts";
+import { openRouterEndpoints, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import type { LlmConfig, MyClawConfig } from "../../src/core/config.ts";
 
@@ -117,4 +118,68 @@ test("a pinned run sends the endpoint in the request body, fallbacks off", async
   } finally {
     mock.restore();
   }
+});
+
+/**
+ * The pinned-endpoint limits. OpenRouter publishes model-level figures taken from its *best*
+ * endpoint, so a pinned run that trusts them reasons about capacity it does not have: the output
+ * ask comes back as a 404, and the context budget aims past the endpoint's real window.
+ */
+test("a pinned run inherits the endpoint's limits, not the model's best-endpoint figures", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({
+    data: { endpoints: [{ tag: "streamlake/fp8", context_length: 1024000, max_completion_tokens: 384000 }] },
+  }), { status: 200 }) as never);
+  try {
+    // Warms the cache the synchronous resolver reads: a menu opening on the model does this.
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+  } finally {
+    mock.restore();
+  }
+
+  const config = {
+    defaultProvider: "openrouter",
+    providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1" } },
+    limit: { context: 1310720, output: 393216 },
+  };
+  const pinned = resolveLlmConfig(config, "openrouter/deepseek/deepseek-v4-flash@streamlake/fp8");
+  assert.equal(pinned.limit?.output, 384000);
+  assert.equal(pinned.limit?.context, 1024000);
+
+  // Same model, no pin: nothing is lowered, because no endpoint was chosen.
+  const unpinned = resolveLlmConfig(config, "openrouter/deepseek/deepseek-v4-flash");
+  assert.equal(unpinned.limit?.output, 393216);
+  assert.equal(unpinned.limit?.context, 1310720);
+});
+
+test("a declared limit tighter than the endpoint's is kept: the pin is a ceiling, not a floor", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({
+    data: { endpoints: [{ tag: "streamlake/fp8", context_length: 1024000, max_completion_tokens: 384000 }] },
+  }), { status: 200 }) as never);
+  try {
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+  } finally {
+    mock.restore();
+  }
+  const pinned = resolveLlmConfig({
+    defaultProvider: "openrouter",
+    providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1" } },
+    limit: { context: 200000, output: 8192 },
+  }, "openrouter/deepseek/deepseek-v4-flash@streamlake/fp8");
+  assert.equal(pinned.limit?.output, 8192);
+  assert.equal(pinned.limit?.context, 200000);
+});
+
+// The resolver runs on every display and every trim, so it cannot await a lookup. A cold cache
+// must therefore change nothing rather than block or guess.
+test("a cold cache leaves a pinned run's limits exactly as declared", () => {
+  clearOpenRouterCache();
+  const pinned = resolveLlmConfig({
+    defaultProvider: "openrouter",
+    providers: { openrouter: { baseUrl: "https://openrouter.ai/api/v1" } },
+    limit: { context: 1310720, output: 393216 },
+  }, "openrouter/deepseek/deepseek-v4-flash@streamlake/fp8");
+  assert.equal(pinned.limit?.output, 393216);
+  assert.equal(pinned.limit?.context, 1310720);
 });

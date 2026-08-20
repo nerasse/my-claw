@@ -86,7 +86,7 @@ export interface MyClawAppModelController {
    * The routes this model can be pinned to, empty for a model whose provider has none. Lazy: the
    * menu asks when it opens on one model, never for the whole catalogue.
    */
-  endpoints(model: string): Promise<MyClawAppModelEndpoint[]>;
+  endpoints(model: string, sort?: "price" | "context" | "output" | "uptime"): Promise<MyClawAppModelEndpoint[]>;
   /** What runs on this thread now: override or configured default, plus effort and context state. */
   current(owner: string, threadId: string): Promise<MyClawAppModelState>;
   /** Persists the override (or clears it, back to the default) and reports what was stored. */

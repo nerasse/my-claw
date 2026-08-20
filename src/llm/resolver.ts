@@ -2,6 +2,7 @@ import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProvide
 import { tagNameOf } from "../core/config.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { parseModelRef } from "./model-ref.ts";
+import { cachedOpenRouterEndpointLimits } from "./openrouter-endpoints.ts";
 import { CODEX_BASE_URL } from "./codex-auth.ts";
 
 /** Native Messages endpoint of the Claude subscription backend. */
@@ -270,10 +271,41 @@ function resolveFromMerged(
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,
-    limit: model?.limit ?? merged.limit,
+    limit: pinnedLimit(model?.limit ?? merged.limit, wireModel, providerRoute.providerRoute),
     effort: computeEffort(merged, model, false, effortOverride, scopeEffort, tagEffort),
     promptCache: provider.promptCache,
   };
+}
+
+/**
+ * Lower a model's declared limits to the pinned endpoint's own, when they are known.
+ *
+ * OpenRouter publishes model-level figures taken from its *best* endpoint, so a pinned run would
+ * otherwise reason about capacity it does not have: the output ask becomes a 404 (see
+ * clampOutputToPinnedEndpoint in provider.ts) and the context budget aims past the endpoint's real
+ * window, which shows up much later as a trim that never trims enough. Read from the cache only,
+ * because resolution is synchronous; no cached listing means the declared limits stand.
+ */
+function pinnedLimit(
+  limit: { context?: number; output?: number } | undefined,
+  wireModel: string,
+  route: string | undefined,
+): { context?: number; output?: number } | undefined {
+  if (!route) return limit;
+  const endpoint = cachedOpenRouterEndpointLimits(wireModel, route);
+  if (!endpoint) return limit;
+
+  const context = smaller(limit?.context, endpoint.context);
+  const output = smaller(limit?.output, endpoint.maxOutput);
+  if (context === undefined && output === undefined) return limit;
+  return { ...(context === undefined ? {} : { context }), ...(output === undefined ? {} : { output }) };
+}
+
+/** The tighter of two ceilings, ignoring the ones nobody declared. */
+function smaller(declared?: number, endpoint?: number): number | undefined {
+  if (declared === undefined) return endpoint;
+  if (endpoint === undefined) return declared;
+  return Math.min(declared, endpoint);
 }
 
 export function resolveLlmConfig(
