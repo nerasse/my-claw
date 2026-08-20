@@ -1320,6 +1320,12 @@ export interface MyClawAppModelEndpoint {
 export interface MyClawAppModelEndpointsResult {
   type: "model.endpoints.result";
   model: string;
+  /**
+   * The ordering this list is in, echoed back. A client caches routes per model and per order, and
+   * the answer carries no request id: without this it would have to guess which pending ask it
+   * belongs to, and a reorder would read as the order before it.
+   */
+  sort: "price" | "context" | "output" | "uptime";
   endpoints: MyClawAppModelEndpoint[];
 }
 

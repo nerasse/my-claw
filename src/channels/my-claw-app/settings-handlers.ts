@@ -249,7 +249,13 @@ export async function handleModelEndpoints(
     return;
   }
   try {
-    d.sendFrame(ws, { type: "model.endpoints.result", model, endpoints: await d.models.endpoints(model, sort) });
+    const ordering = sort ?? "price";
+    d.sendFrame(ws, {
+      type: "model.endpoints.result",
+      model,
+      sort: ordering,
+      endpoints: await d.models.endpoints(model, ordering),
+    });
   } catch (err) {
     await d.refuse(ws, "model", "model.endpoints failed", { error: String(err) });
   }
