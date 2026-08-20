@@ -331,15 +331,16 @@ async function readErrorBody(response: Response): Promise<string> {
 }
 
 /**
- * OpenRouter answers 404 "No allowed providers are available for this model" when the pinned
- * endpoint no longer serves the model (provider decommissioned it, or was removed from the
- * marketplace). The raw HTTP error names neither the pin nor the fix, and from the outside it
- * looks like the model itself is gone. Rewrite it so the message says which pin is stale and how
- * to move (the route picker, or dropping the `@endpoint` suffix from the model reference).
+ * OpenRouter answers 404 when a pinned endpoint (provider.order + allow_fallbacks:false) no
+ * longer serves the model. Two shapes on the wire, both verified live: "No endpoints found for
+ * <model>" when nothing matches the order, and "No allowed providers are available" when
+ * endpoints exist but none match the constraints. The raw error names neither the pin nor the
+ * fix, so it reads as if the model itself is gone. Rewrite it so the message says which pin is
+ * stale and how to move (the route picker, or dropping the `@endpoint` suffix).
  */
 function describeStalePin(status: number, detail: string, route: string | undefined): string | undefined {
   if (!route || status !== 404) return undefined;
-  if (!/no allowed providers/i.test(detail)) return undefined;
+  if (!/no endpoints found|no allowed providers/i.test(detail)) return undefined;
   return (
     `the pinned OpenRouter endpoint "${route}" no longer serves this model ` +
     `(pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it)`

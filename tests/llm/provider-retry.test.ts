@@ -302,23 +302,29 @@ describe("LLM provider retry logic", () => {
 
   test("404 no-allowed-providers with a pin names the stale endpoint instead of the model", async () => {
     const pinned: ResolvedLlmConfig = { ...config, providerRoute: "deepseek/foundation" };
+    // 404 is not retryable, so exactly one call proves no retry burned quota on a dead pin.
+    let calls = 0;
+    const mock = mockFetch(async () => {
+      calls++;
+      return errorResponse(404, "No allowed providers are available for this model") as never;
+    });
+    try {
+      await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "deepseek/foundation"');
+      expect(calls).toBe(1);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("404 no-endpoints-found (the other live shape) is also caught", async () => {
+    // Verified live against OpenRouter: an order pointing at a provider that never served the
+    // model answers "No endpoints found for <model>" rather than "no allowed providers".
+    const pinned: ResolvedLlmConfig = { ...config, providerRoute: "azure/eu" };
     const mock = mockFetch(async () =>
-      errorResponse(404, "No allowed providers are available for this model") as never,
+      errorResponse(404, "No endpoints found for google/gemini-3.7-flash") as never,
     );
     try {
-      // 404 is not retryable, so exactly one call proves no retry burned quota on a dead pin.
-      let calls = 0;
-      mock.restore();
-      const counting = mockFetch(async () => {
-        calls++;
-        return errorResponse(404, "No allowed providers are available for this model") as never;
-      });
-      try {
-        await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "deepseek/foundation"');
-        expect(calls).toBe(1);
-      } finally {
-        counting.restore();
-      }
+      await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "azure/eu"');
     } finally {
       mock.restore();
     }
