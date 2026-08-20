@@ -4,6 +4,7 @@ import { AbortedError } from "../core/aborted.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { openRouterEndpoints } from "./openrouter-endpoints.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
 const LLM_RETRY_BASE_MS = 500;
@@ -331,21 +332,28 @@ async function readErrorBody(response: Response): Promise<string> {
 }
 
 /**
- * OpenRouter answers 404 when a pinned endpoint (provider.order + allow_fallbacks:false) no
- * longer serves the model. Two shapes on the wire, both verified live: "No endpoints found for
- * <model>" when nothing matches the order, and "No allowed providers are available" when
- * endpoints exist but none match the constraints. The raw error names neither the pin nor the
- * fix, so it reads as if the model itself is gone. Rewrite it so the message says which pin is
- * stale and how to move (the route picker, or dropping the `@endpoint` suffix).
+ * OpenRouter uses the same 404 both for a removed pin and for an endpoint it temporarily excludes
+ * from routing. Only the endpoint catalogue can separate them. An empty catalogue is inconclusive
+ * because that helper deliberately degrades to [] when OpenRouter's metadata API is unavailable.
  */
-function describeStalePin(status: number, detail: string, route: string | undefined): string | undefined {
-  if (!route || status !== 404) return undefined;
-  if (!/no endpoints found|no allowed providers/i.test(detail)) return undefined;
-  return (
-    `the pinned OpenRouter endpoint "${route}" is not serving this model right now ` +
-    `(either it was removed, or OpenRouter temporarily excluded it from the pool, e.g. for capacity). ` +
-    `Retry, pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it`
-  );
+async function pinnedRoute404(
+  config: ResolvedLlmConfig,
+  status: number,
+  detail: string,
+): Promise<{ message: string; retryable: boolean } | undefined> {
+  const route = config.providerRoute;
+  if (!route || status !== 404 || !/no endpoints found|no allowed providers/i.test(detail)) return undefined;
+
+  const endpoints = await openRouterEndpoints(config.apiModel ?? config.model);
+  const routeIsListed = endpoints.some((endpoint) => endpoint.tag === route);
+  const catalogueIsInconclusive = endpoints.length === 0;
+  return {
+    message:
+      `the pinned OpenRouter endpoint "${route}" is not serving this model right now ` +
+      `(either it was removed, or OpenRouter temporarily excluded it from the pool, e.g. for capacity). ` +
+      `Retry, pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it`,
+    retryable: routeIsListed || catalogueIsInconclusive,
+  };
 }
 
 function retryDelay(attempt: number, retryAfterMs?: number): number {
@@ -450,14 +458,14 @@ export async function chatCompletion(
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
-          const stalePin = describeStalePin(response.status, detail, config.providerRoute);
+          const pinned404 = await pinnedRoute404(config, response.status, detail);
           const err = new Error(
-            stalePin ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
+            pinned404?.message ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
           ) as Error & { status?: number; stalePin?: boolean };
           err.status = response.status;
-          if (stalePin) err.stalePin = true;
+          if (pinned404) err.stalePin = true;
 
-          if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
+          if (attempt < LLM_RETRY_ATTEMPTS && (RETRYABLE_STATUS.has(response.status) || pinned404?.retryable)) {
             const delay = retryDelay(attempt, parseRetryAfterMs(response));
             hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: true });
             await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
@@ -552,14 +560,14 @@ export async function chatCompletionStream(
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
-        const stalePin = describeStalePin(response.status, detail, config.providerRoute);
+        const pinned404 = await pinnedRoute404(config, response.status, detail);
         const err = new Error(
-          stalePin ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
+          pinned404?.message ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
         ) as Error & { status?: number; stalePin?: boolean };
         err.status = response.status;
-        if (stalePin) err.stalePin = true;
+        if (pinned404) err.stalePin = true;
 
-        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
+        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (RETRYABLE_STATUS.has(response.status) || pinned404?.retryable)) {
           const delay = retryDelay(attempt, parseRetryAfterMs(response));
           await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
           await sleep(delay);

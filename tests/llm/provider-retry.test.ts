@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { chatCompletion, resetCircuitBreaker } from "../../src/llm/provider.ts";
+import { chatCompletion, chatCompletionStream, resetCircuitBreaker } from "../../src/llm/provider.ts";
+import { clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 import type { ResolvedLlmConfig } from "../../src/core/config.ts";
 
 const config: ResolvedLlmConfig = {
@@ -28,6 +29,7 @@ function errorResponse(status: number, message = "error") {
 describe("LLM provider retry logic", () => {
   beforeEach(() => {
     resetCircuitBreaker();
+    clearOpenRouterCache();
   });
 
   test("successful request returns content and usage", async () => {
@@ -300,17 +302,19 @@ describe("LLM provider retry logic", () => {
     }
   });
 
-  test("404 no-allowed-providers with a pin names the stale endpoint instead of the model", async () => {
-    const pinned: ResolvedLlmConfig = { ...config, providerRoute: "deepseek/foundation" };
-    // 404 is not retryable, so exactly one call proves no retry burned quota on a dead pin.
-    let calls = 0;
-    const mock = mockFetch(async () => {
-      calls++;
+  test("404 no-allowed-providers with an absent pin fails without retrying", async () => {
+    const pinned: ResolvedLlmConfig = { ...config, apiModel: "vendor/model", providerRoute: "deepseek/foundation" };
+    let completionCalls = 0;
+    const mock = mockFetch(async (input) => {
+      if (String(input).includes("/models/vendor/model/endpoints")) {
+        return new Response(JSON.stringify({ data: { endpoints: [{ tag: "deepinfra/fp8" }] } }), { status: 200 }) as never;
+      }
+      completionCalls++;
       return errorResponse(404, "No allowed providers are available for this model") as never;
     });
     try {
       await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "deepseek/foundation"');
-      expect(calls).toBe(1);
+      expect(completionCalls).toBe(1);
     } finally {
       mock.restore();
     }
@@ -319,12 +323,76 @@ describe("LLM provider retry logic", () => {
   test("404 no-endpoints-found (the other live shape) is also caught", async () => {
     // Verified live against OpenRouter: an order pointing at a provider that never served the
     // model answers "No endpoints found for <model>" rather than "no allowed providers".
-    const pinned: ResolvedLlmConfig = { ...config, providerRoute: "azure/eu" };
-    const mock = mockFetch(async () =>
-      errorResponse(404, "No endpoints found for google/gemini-3.7-flash") as never,
-    );
+    const pinned: ResolvedLlmConfig = { ...config, apiModel: "vendor/model", providerRoute: "azure/eu" };
+    let completionCalls = 0;
+    const mock = mockFetch(async (input) => {
+      if (String(input).includes("/models/vendor/model/endpoints")) {
+        return new Response(JSON.stringify({ data: { endpoints: [{ tag: "deepinfra/fp8" }] } }), { status: 200 }) as never;
+      }
+      completionCalls++;
+      return errorResponse(404, "No endpoints found for google/gemini-3.7-flash") as never;
+    });
     try {
       await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "azure/eu"');
+      expect(completionCalls).toBe(1);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("retries a pinned OpenRouter 404 while the endpoint remains listed", async () => {
+    const pinned: ResolvedLlmConfig = { ...config, apiModel: "vendor/model", providerRoute: "streamlake/fp8" };
+    let completionCalls = 0;
+    const mock = mockFetch(async (input) => {
+      if (String(input).includes("/models/vendor/model/endpoints")) {
+        return new Response(JSON.stringify({ data: { endpoints: [{ tag: "streamlake/fp8" }] } }), { status: 200 }) as never;
+      }
+      completionCalls++;
+      if (completionCalls === 1) {
+        return new Response(JSON.stringify({ error: { message: "No endpoints found for vendor/model" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json", "Retry-After": "0.001" },
+        }) as never;
+      }
+      return okResponse("recovered") as never;
+    });
+    try {
+      const result = await chatCompletion(pinned, simpleMessages);
+      expect(result.content).toBe("recovered");
+      expect(completionCalls).toBe(2);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("retries a pinned OpenRouter 404 in streaming mode", async () => {
+    const pinned: ResolvedLlmConfig = { ...config, apiModel: "vendor/model", providerRoute: "streamlake/fp8" };
+    let completionCalls = 0;
+    const mock = mockFetch(async (input) => {
+      if (String(input).includes("/models/vendor/model/endpoints")) {
+        return new Response(JSON.stringify({ data: { endpoints: [{ tag: "streamlake/fp8" }] } }), { status: 200 }) as never;
+      }
+      completionCalls++;
+      if (completionCalls === 1) {
+        return new Response(JSON.stringify({ error: { message: "No endpoints found for vendor/model" } }), {
+          status: 404,
+          headers: { "Content-Type": "application/json", "Retry-After": "0.001" },
+        }) as never;
+      }
+      const payload = JSON.stringify({ choices: [{ delta: { content: "recovered" } }] });
+      return new Response(`data: ${payload}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      }) as never;
+    });
+    try {
+      const tokens: string[] = [];
+      const result = await chatCompletionStream(pinned, simpleMessages, (token) => {
+        tokens.push(token);
+      });
+      expect(result.content).toBe("recovered");
+      expect(tokens).toEqual(["recovered"]);
+      expect(completionCalls).toBe(2);
     } finally {
       mock.restore();
     }
