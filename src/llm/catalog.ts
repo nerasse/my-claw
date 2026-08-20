@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig } from "../core/config.ts";
-import { MY_CLAW_DIR, EFFORT_ORDER } from "../core/config.ts";
-import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
+import { EFFORT_ORDER } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
@@ -22,7 +19,7 @@ export interface DiscoveredSdkModel {
 /** Injected so the llm layer never imports the agent/claude-sdk backend. */
 export type SdkDiscoverer = () => Promise<DiscoveredSdkModel[]>;
 
-const CACHE_PATH = join(MY_CLAW_DIR, "model-catalog.json");
+// The model catalog is fully dynamic: no disk cache. See the ModelCatalog constructor.
 const DISCOVER_TIMEOUT_MS = 15_000;
 
 /**
@@ -303,7 +300,10 @@ export class ModelCatalog {
     private getConfig: () => LlmConfig,
     private sdkDiscoverer?: SdkDiscoverer,
   ) {
-    this.loadCache();
+    // No disk cache: the catalog is rebuilt from live provider answers on every boot and refresh.
+    // The trade is deliberate — a provider down at boot shows no models until it answers again,
+    // instead of a cached list serving models that no longer exist (deepseek decommissions,
+    // marketplace removals) for up to a full boot cycle.
   }
 
   discovered(): LlmModelConfig[] {
@@ -335,16 +335,6 @@ export class ModelCatalog {
   enabled(): boolean {
     const providers = this.getConfig().providers ?? {};
     return Object.values(providers).some((p) => p.discover);
-  }
-
-  private loadCache(): void {
-    try {
-      const raw = readFileSync(CACHE_PATH, "utf-8");
-      const parsed = JSON.parse(raw) as { models?: LlmModelConfig[] };
-      if (Array.isArray(parsed.models)) this.discoveredModels = parsed.models;
-    } catch {
-      // No cache yet (or unreadable) — discovery will populate it.
-    }
   }
 
   private notify(): void {
@@ -477,9 +467,6 @@ export class ModelCatalog {
     const seen = new Set<string>();
     this.discoveredModels = next.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 
-    await writeJsonFileAtomically(CACHE_PATH, { models: this.discoveredModels }, true).catch((err) =>
-      void log("warn", "model catalog cache write failed", { error: String(err) }),
-    );
     hooks.emit("models:discovered", { count: this.discoveredModels.length, anyFailed });
     this.notify();
   }

@@ -1,16 +1,11 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "../../src/llm/catalog.ts";
-import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
-// Discovery persists to a shared cache file; clear it so tests don't inherit each other's state.
-function clearCatalogCache(): void {
-  rmSync(join(MY_CLAW_DIR, "model-catalog.json"), { force: true });
-}
+// The catalog is fully dynamic (no disk cache): each ModelCatalog starts empty and is populated
+// by its own discovery, so tests no longer inherit each other's state through a shared file.
 
 test("mergeModels: config wins on id collision, appends extras in order", () => {
   const base: LlmModelConfig[] = [
@@ -112,7 +107,7 @@ test("refresh discovers SDK + OpenAI models, groups them, skips default alias", 
   });
 
   try {
-    clearCatalogCache();
+
     const config = makeConfig();
     const catalog = new ModelCatalog(
       () => config,
@@ -166,7 +161,7 @@ test("refresh is resilient: a failing provider keeps its previous models", async
   });
 
   try {
-    clearCatalogCache();
+
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     await catalog.refresh();
     assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet"]);
@@ -199,7 +194,7 @@ test("two refreshes at once are one pass: the second joins the first", async () 
   });
 
   try {
-    clearCatalogCache();
+
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     const first = catalog.refresh();
     const second = catalog.refresh();
@@ -230,7 +225,7 @@ test("answered(): only a provider that listed in full is evidence about its own 
   });
 
   try {
-    clearCatalogCache();
+
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     // Before any refresh: nothing has testified, so nothing is missing.
     assert.equal(catalog.answered("litellm"), false);
@@ -264,7 +259,7 @@ test("answered(): half an answer from the anthropic provider is not an answer", 
   process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
   const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
   try {
-    clearCatalogCache();
+
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     await catalog.refresh();
     // The aliases arrived, the versioned list did not: the models kept are partly the previous
@@ -331,7 +326,7 @@ test("claude-sdk provider: aliases and pinned versions list flat, like every oth
   const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
 
   try {
-    clearCatalogCache();
+
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [
       { value: "sonnet", displayName: "Sonnet", supportsEffort: true, supportedEffortLevels: ["low", "max"] },
@@ -373,7 +368,7 @@ test("claude-sdk provider: losing the version endpoint keeps the aliases and the
   let mock: { restore(): void } | undefined;
 
   try {
-    clearCatalogCache();
+
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
 
@@ -399,7 +394,7 @@ test("claude-sdk provider: losing the version endpoint keeps the aliases and the
 test("claude-sdk provider: no token means aliases only, not a failed refresh", async () => {
   const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
   try {
-    clearCatalogCache();
+
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
     await catalog.refresh();
@@ -415,7 +410,7 @@ test("claude-sdk provider: an alias is marked (auto) only when its family is kno
   const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
 
   try {
-    clearCatalogCache();
+
     const config = makeConfig();
     const catalog = new ModelCatalog(() => config, async () => [
       { value: "default", displayName: "Default" },
