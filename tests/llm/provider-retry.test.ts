@@ -409,3 +409,87 @@ describe("LLM provider retry logic", () => {
     }
   });
 });
+
+/**
+ * The incident: OpenRouter publishes the output ceiling of a model's *best* endpoint, so a run
+ * pinned to a lesser one asked for more than that endpoint accepts and got "404 No endpoints
+ * found" naming the model. Measured live on deepseek-v4-flash@streamlake/fp8: 384000 -> 200,
+ * 393216 -> 404, the rest of the request being equal.
+ */
+describe("max_tokens against a pinned endpoint ceiling", () => {
+  beforeEach(() => {
+    resetCircuitBreaker();
+    clearOpenRouterCache();
+  });
+
+  const endpointsBody = (tag: string, maxOutput: number | null) =>
+    new Response(JSON.stringify({ data: { endpoints: [{ tag, max_completion_tokens: maxOutput }] } }), { status: 200 });
+
+  async function sentMaxTokens(
+    cfg: ResolvedLlmConfig,
+    endpoints: () => Response,
+  ): Promise<number | undefined> {
+    let sent: number | undefined;
+    const mock = mockFetch(async (input, init) => {
+      if (String(input).includes("/endpoints")) return endpoints() as never;
+      sent = JSON.parse(String((init as RequestInit).body)).max_tokens;
+      return okResponse() as never;
+    });
+    try {
+      await chatCompletion(cfg, simpleMessages);
+    } finally {
+      mock.restore();
+    }
+    return sent;
+  }
+
+  test("an ask above the pinned endpoint ceiling is lowered to it", async () => {
+    const pinned: ResolvedLlmConfig = {
+      ...config, apiModel: "vendor/model", providerRoute: "streamlake/fp8", limit: { output: 393216 },
+    };
+    expect(await sentMaxTokens(pinned, () => endpointsBody("streamlake/fp8", 384000))).toBe(384000);
+  });
+
+  test("an ask the endpoint accepts is sent untouched", async () => {
+    const pinned: ResolvedLlmConfig = {
+      ...config, apiModel: "vendor/model", providerRoute: "streamlake/fp8", limit: { output: 122880 },
+    };
+    expect(await sentMaxTokens(pinned, () => endpointsBody("streamlake/fp8", 384000))).toBe(122880);
+  });
+
+  test("an endpoint that publishes no ceiling leaves the ask alone: absent is not zero", async () => {
+    const pinned: ResolvedLlmConfig = {
+      ...config, apiModel: "vendor/model", providerRoute: "digitalocean", limit: { output: 393216 },
+    };
+    expect(await sentMaxTokens(pinned, () => endpointsBody("digitalocean", null))).toBe(393216);
+  });
+
+  test("an unreachable endpoints API leaves the ask alone rather than inventing a ceiling", async () => {
+    const pinned: ResolvedLlmConfig = {
+      ...config, apiModel: "vendor/model", providerRoute: "streamlake/fp8", limit: { output: 393216 },
+    };
+    expect(await sentMaxTokens(pinned, () => new Response("nope", { status: 500 }))).toBe(393216);
+  });
+
+  test("an unpinned run is never clamped, whatever the catalogue says", async () => {
+    const unpinned: ResolvedLlmConfig = { ...config, apiModel: "vendor/model", limit: { output: 393216 } };
+    let endpointCalls = 0;
+    let sent: number | undefined;
+    const mock = mockFetch(async (input, init) => {
+      if (String(input).includes("/endpoints")) {
+        endpointCalls++;
+        return endpointsBody("streamlake/fp8", 384000) as never;
+      }
+      sent = JSON.parse(String((init as RequestInit).body)).max_tokens;
+      return okResponse() as never;
+    });
+    try {
+      await chatCompletion(unpinned, simpleMessages);
+    } finally {
+      mock.restore();
+    }
+    expect(sent).toBe(393216);
+    // No pin, no lookup: an unpinned run must not pay a round trip it cannot use.
+    expect(endpointCalls).toBe(0);
+  });
+});

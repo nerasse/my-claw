@@ -4,7 +4,7 @@ import { AbortedError } from "../core/aborted.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
-import { openRouterEndpoints } from "./openrouter-endpoints.ts";
+import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
 const LLM_RETRY_BASE_MS = 500;
@@ -316,6 +316,37 @@ const body: Record<string, unknown> = {
   return body;
 }
 
+/**
+ * Clamp the output ask to what the pinned endpoint itself accepts.
+ *
+ * OpenRouter publishes, at the model level, the output ceiling of its *best* endpoint. Discovery
+ * reads that number, so a run pinned to a lesser endpoint asks for more than the endpoint accepts:
+ * OpenRouter drops it from the pool and, since a pin sets allow_fallbacks:false, reports the empty
+ * pool as "404 No endpoints found" naming the model rather than the parameter that emptied it.
+ * Measured live on deepseek-v4-flash pinned to streamlake/fp8: 384000 answers 200, 393216 (the
+ * model-level figure) answers 404, everything else in the request being equal.
+ *
+ * Only ever lowers the ask, and only with evidence: no listing, or an endpoint that publishes no
+ * ceiling, leaves the request exactly as it was.
+ */
+async function clampOutputToPinnedEndpoint(config: ResolvedLlmConfig, body: Record<string, unknown>): Promise<void> {
+  const route = config.providerRoute;
+  const asked = body["max_tokens"];
+  if (!route || typeof asked !== "number") return;
+
+  const limits = await openRouterEndpointLimits(config.apiModel ?? config.model, route);
+  const ceiling = limits?.maxOutput;
+  if (ceiling === undefined || asked <= ceiling) return;
+
+  body["max_tokens"] = ceiling;
+  void log("info", "clamped max_tokens to the pinned endpoint ceiling", {
+    route,
+    apiModel: config.apiModel ?? config.model,
+    asked,
+    ceiling,
+  });
+}
+
 async function readErrorBody(response: Response): Promise<string> {
   try {
     const body = await response.text();
@@ -340,6 +371,7 @@ async function pinnedRoute404(
   config: ResolvedLlmConfig,
   status: number,
   detail: string,
+  body?: Record<string, unknown>,
 ): Promise<{ message: string; retryable: boolean } | undefined> {
   const route = config.providerRoute;
   if (!route || status !== 404 || !/no endpoints found|no allowed providers/i.test(detail)) return undefined;
@@ -347,6 +379,26 @@ async function pinnedRoute404(
   const endpoints = await openRouterEndpoints(config.apiModel ?? config.model);
   const routeIsListed = endpoints.some((endpoint) => endpoint.tag === route);
   const catalogueIsInconclusive = endpoints.length === 0;
+
+  // OpenRouter drops an endpoint that cannot honour a requested parameter, then reports the empty
+  // pool as a 404 naming the model -- never the parameter that emptied it. Only the request that
+  // actually failed can name it, so the body's own shape is logged here. Values only, no content:
+  // messages and tool schemas never reach the log.
+  void log("warn", "pinned OpenRouter endpoint answered 404", {
+    route,
+    apiModel: config.apiModel ?? config.model,
+    routeIsListed,
+    listedTags: endpoints.map((endpoint) => endpoint.tag),
+    detail,
+    requestParams: Object.keys(body ?? {}),
+    maxTokens: body?.["max_tokens"],
+    reasoningEffort: body?.["reasoning_effort"],
+    stream: body?.["stream"],
+    promptCache: config.promptCache === true,
+    toolCount: Array.isArray(body?.["tools"]) ? (body["tools"] as unknown[]).length : 0,
+    messageCount: Array.isArray(body?.["messages"]) ? (body["messages"] as unknown[]).length : 0,
+  });
+
   return {
     message:
       `the pinned OpenRouter endpoint "${route}" is not serving this model right now ` +
@@ -442,7 +494,9 @@ export async function chatCompletion(
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     ...config.headers,
   };
-  const body = JSON.stringify(buildRequestBody(config, messages, tools));
+  const bodyObject = buildRequestBody(config, messages, tools);
+  await clampOutputToPinnedEndpoint(config, bodyObject);
+  const body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
@@ -458,7 +512,7 @@ export async function chatCompletion(
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
-          const pinned404 = await pinnedRoute404(config, response.status, detail);
+          const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
           const err = new Error(
             pinned404?.message ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
           ) as Error & { status?: number; stalePin?: boolean };
@@ -539,7 +593,9 @@ export async function chatCompletionStream(
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     ...config.headers,
   };
-  const body = JSON.stringify(buildRequestBody(config, messages, tools, true));
+  const bodyObject = buildRequestBody(config, messages, tools, true);
+  await clampOutputToPinnedEndpoint(config, bodyObject);
+  const body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
@@ -560,7 +616,7 @@ export async function chatCompletionStream(
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
-        const pinned404 = await pinnedRoute404(config, response.status, detail);
+        const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
         const err = new Error(
           pinned404?.message ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
         ) as Error & { status?: number; stalePin?: boolean };

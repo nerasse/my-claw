@@ -1,7 +1,14 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import type { MyClawConfig } from "../src/core/config.ts";
-import { referenceWithRoute, routeChoiceFor, routeLabel, routesFor } from "../src/channels/route-menu.ts";
+import {
+  referenceWithRoute,
+  routeChoiceFor,
+  routeLabel,
+  routesFor,
+  sortRoutes,
+  type RouteOption,
+} from "../src/channels/route-menu.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 
@@ -94,4 +101,51 @@ test("a model with a single route is never asked about", async () => {
   } finally {
     mock.restore();
   }
+});
+
+/**
+ * The label used to show the context window alone. A 1M-context route whose output ceiling is
+ * 384k then read as if it accepted a 1M-token answer, which is exactly the confusion that hid the
+ * pinned-endpoint 404 for a whole debugging session.
+ */
+test("a label shows both sides of the window, input and output", () => {
+  const route: RouteOption = { tag: "streamlake/fp8", providerName: "StreamLake", promptUsd: 0.0672, context: 1024000, maxOutput: 384000 };
+  assert.equal(routeLabel(route), "StreamLake $0.067 1M/384k");
+});
+
+test("a route publishing no output ceiling shows the context alone, not a fabricated one", () => {
+  const route: RouteOption = { tag: "digitalocean", providerName: "DigitalOcean", context: 1048576 };
+  assert.equal(routeLabel(route), "DigitalOcean 1M");
+});
+
+test("sorting: price ascends, every other figure descends", () => {
+  const routes: RouteOption[] = [
+    { tag: "mid", providerName: "Mid", promptUsd: 0.5, context: 262144, maxOutput: 262144, uptime30m: 95 },
+    { tag: "cheap", providerName: "Cheap", promptUsd: 0.1, context: 131072, maxOutput: 131072, uptime30m: 80 },
+    { tag: "big", providerName: "Big", promptUsd: 0.9, context: 1048576, maxOutput: 384000, uptime30m: 99 },
+  ];
+  assert.deepEqual(sortRoutes(routes, "price").map((r) => r.tag), ["cheap", "mid", "big"]);
+  assert.deepEqual(sortRoutes(routes, "context").map((r) => r.tag), ["big", "mid", "cheap"]);
+  assert.deepEqual(sortRoutes(routes, "output").map((r) => r.tag), ["big", "mid", "cheap"]);
+  assert.deepEqual(sortRoutes(routes, "uptime").map((r) => r.tag), ["big", "mid", "cheap"]);
+});
+
+// A missing figure must not sort as zero: on price that would present "unknown" as "free", and
+// pinning the cheapest route is the whole reason the menu is ordered by price by default.
+test("sorting: a route missing the figure sinks instead of winning", () => {
+  const routes: RouteOption[] = [
+    { tag: "unknown", providerName: "Unknown" },
+    { tag: "priced", providerName: "Priced", promptUsd: 0.4, context: 262144 },
+  ];
+  assert.deepEqual(sortRoutes(routes, "price").map((r) => r.tag), ["priced", "unknown"]);
+  assert.deepEqual(sortRoutes(routes, "context").map((r) => r.tag), ["priced", "unknown"]);
+});
+
+test("sorting never mutates the list it was given", () => {
+  const routes: RouteOption[] = [
+    { tag: "b", providerName: "B", promptUsd: 2 },
+    { tag: "a", providerName: "A", promptUsd: 1 },
+  ];
+  sortRoutes(routes, "price");
+  assert.deepEqual(routes.map((r) => r.tag), ["b", "a"]);
 });

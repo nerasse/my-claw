@@ -26,6 +26,12 @@ export interface OpenRouterEndpoint {
   /** USD per million output tokens. */
   completionUsd?: number;
   contextLength?: number;
+  /**
+   * The output ceiling of this endpoint alone. The model-level catalogue publishes the ceiling of
+   * the *best* endpoint, so a pinned run that trusts it asks for more than its own endpoint
+   * accepts; OpenRouter then drops the endpoint and, with fallbacks off, answers 404.
+   */
+  maxOutput?: number;
   /** OpenRouter's own health flag: 0 is serving, anything negative is degraded or down. */
   status?: number;
   uptime30m?: number;
@@ -72,6 +78,7 @@ export async function openRouterEndpoints(apiId: string): Promise<OpenRouterEndp
           tag?: string;
           provider_name?: string;
           context_length?: number;
+          max_completion_tokens?: number | null;
           status?: number;
           uptime_last_30m?: number;
           pricing?: { prompt?: string; completion?: string };
@@ -87,6 +94,7 @@ export async function openRouterEndpoints(apiId: string): Promise<OpenRouterEndp
         ...(perMillion(e.pricing?.prompt) === undefined ? {} : { promptUsd: perMillion(e.pricing?.prompt)! }),
         ...(perMillion(e.pricing?.completion) === undefined ? {} : { completionUsd: perMillion(e.pricing?.completion)! }),
         ...(typeof e.context_length === "number" ? { contextLength: e.context_length } : {}),
+        ...(typeof e.max_completion_tokens === "number" ? { maxOutput: e.max_completion_tokens } : {}),
         ...(typeof e.status === "number" ? { status: e.status } : {}),
         ...(typeof e.uptime_last_30m === "number" ? { uptime30m: e.uptime_last_30m } : {}),
       });
@@ -121,6 +129,23 @@ export async function openRouterProviderNames(): Promise<Map<string, string>> {
     providersCache = { at: Date.now(), value: new Map() };
     return providersCache.value;
   }
+}
+
+/**
+ * The limits of one pinned endpoint, or undefined when it is not listed (or the API is down).
+ * Undefined means "no evidence", never "no limit": the caller must leave the request untouched
+ * rather than invent a ceiling.
+ */
+export async function openRouterEndpointLimits(
+  apiId: string,
+  tag: string,
+): Promise<{ context?: number; maxOutput?: number } | undefined> {
+  const endpoint = (await openRouterEndpoints(apiId)).find((candidate) => candidate.tag === tag);
+  if (!endpoint) return undefined;
+  return {
+    ...(endpoint.contextLength === undefined ? {} : { context: endpoint.contextLength }),
+    ...(endpoint.maxOutput === undefined ? {} : { maxOutput: endpoint.maxOutput }),
+  };
 }
 
 /** Test seam: both caches are module state, and module state leaks across test files. */
