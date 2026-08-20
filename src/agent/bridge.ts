@@ -404,6 +404,12 @@ export class AgentBridge implements AgentBackend {
       };
 
       let iteration = 0;
+      // Some OpenAI-compatible gateways can terminate after emitting reasoning (or after a tool
+      // round) without a final text or tool call. That is not a successful assistant turn. Keep a
+      // small retry budget here; otherwise the old `no tool calls => finished` rule silently ended
+      // the run with responseChars=0 and left the user with no bubble at all.
+      let emptyTurnRetries = 0;
+      const MAX_EMPTY_TURN_RETRIES = 2;
       // History length the mid-run gate is allowed to try again at, moved forward only by an attempt
       // that changed nothing: the summarizer needs new turns to have anything new to say.
       let midRunCompactRetryAt = 0;
@@ -515,7 +521,30 @@ export class AgentBridge implements AgentBackend {
           upstreamApiBase: response.upstreamApiBase,
         });
 
-        hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length) });
+        hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length), finishReason: response.finishReason, incomplete: response.incomplete });
+
+        if (!response.toolCalls?.length && response.content.trim().length === 0) {
+          emptyTurnRetries++;
+          void log("warn", "LLM ended an empty turn; retrying instead of finishing silently", {
+            ...runLogData(message, session),
+            model: llmConfig.model,
+            iteration,
+            emptyTurnRetries,
+            maxEmptyTurnRetries: MAX_EMPTY_TURN_RETRIES,
+            finishReason: response.finishReason,
+            incomplete: response.incomplete,
+            reasoningChars: response.reasoning?.length ?? 0,
+          });
+          if (emptyTurnRetries <= MAX_EMPTY_TURN_RETRIES) {
+            // A retry is correction, not work: give the iteration back so a run with a small
+            // maxIterations cannot exhaust its budget on retries and fall through to the
+            // max-iterations summary path (which would mask this very failure mode).
+            budget.grant(1);
+            continue;
+          }
+          throw new Error(`LLM returned an empty final turn after ${MAX_EMPTY_TURN_RETRIES} retries (finish=${response.finishReason ?? "unknown"})`);
+        }
+        emptyTurnRetries = 0;
 
         if (!response.toolCalls?.length) {
           const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;

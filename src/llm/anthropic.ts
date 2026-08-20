@@ -339,6 +339,7 @@ async function processStream(
   const segmenter = new ReasoningSegmenter();
   let rawUsage: AnthropicUsage | undefined;
   let outputTokens = 0;
+  let finishReason: string | undefined;
   const slots = new Map<number, ToolUseSlot>();
   const order: number[] = [];
 
@@ -384,6 +385,8 @@ async function processStream(
         break;
       }
       case "message_delta": {
+        const delta = event["delta"] as { stop_reason?: string | null } | undefined;
+        if (delta?.stop_reason) finishReason = delta.stop_reason;
         const usage = event["usage"] as AnthropicUsage | undefined;
         if (usage?.output_tokens) outputTokens = usage.output_tokens;
         // `output_tokens_details.thinking_tokens` lands here and is deliberately not sent to
@@ -411,6 +414,10 @@ async function processStream(
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    finishReason,
+    // A normal end_turn is still incomplete when Anthropic emitted only thinking. The user needs
+    // an answer or a tool call; reasoning alone must not look like a successful final turn.
+    incomplete: !content && toolCalls.length === 0,
     usage: normalizeUsage(rawUsage, outputTokens),
     ...(reasoning ? { reasoning } : {}),
     ...(segments ? { segments } : {}),

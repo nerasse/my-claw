@@ -151,17 +151,116 @@ describe("AgentBridge error handling", () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
 
-    const mock = mockFetch(async () =>
-      new Response(
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      return new Response(
         JSON.stringify({ choices: [{ message: { content: "" } }] }),
         { status: 200, headers: { "Content-Type": "application/json" } },
-      ) as never,
-    );
+      ) as never;
+    });
+
+    try {
+      const session = createSession();
+      await expect(bridge.handleMessage(createMessage(), session)).rejects.toThrow("empty final turn");
+      // 1 initial call + MAX_EMPTY_TURN_RETRIES(2) retries.
+      expect(callCount).toBe(3);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("an empty turn is retried and a valid answer completes the run", async () => {
+    const registry = new ToolRegistry();
+    const bridge = new AgentBridge(config, registry, new SkillRegistry());
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount <= 2) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ) as never;
+      }
+      return okResponse("recovered") as never;
+    });
 
     try {
       const session = createSession();
       const result = await bridge.handleMessage(createMessage(), session);
-      expect(result).toBe("");
+      expect(result).toBe("recovered");
+      expect(callCount).toBe(3);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("empty-turn retries do not consume the iteration budget", async () => {
+    // maxIterations=1: without the grant(1) refund, the two retries would exhaust the budget and
+    // fall through to the max-iterations summary path, masking the failure with a fake answer.
+    const tightConfig: MyClawConfig = {
+      ...config,
+      agents: { orchestrator: { maxIterations: 1 } },
+    };
+    const registry = new ToolRegistry();
+    const bridge = new AgentBridge(tightConfig, registry, new SkillRegistry());
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ) as never;
+      }
+      return okResponse("budget preserved") as never;
+    });
+
+    try {
+      const session = createSession();
+      const result = await bridge.handleMessage(createMessage(), session);
+      expect(result).toBe("budget preserved");
+      expect(callCount).toBe(2);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("the empty-turn counter resets after a valid turn", async () => {
+    // empty, valid, empty, valid: the second empty must still be retried, proving the counter
+    // reset rather than accumulating across turns.
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "echo",
+      description: "echo",
+      parameters: {},
+      async execute() {
+        return { success: true, output: "echoed" };
+      },
+    });
+    const bridge = new AgentBridge(config, registry, new SkillRegistry());
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      // 1: empty (retry) -> 2: tool call -> 3: empty (retry, counter was reset) -> 4: final text
+      if (callCount === 1 || callCount === 3) {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ) as never;
+      }
+      if (callCount === 2) return toolCallResponse("echo") as never;
+      return okResponse("done after reset") as never;
+    });
+
+    try {
+      const session = createSession();
+      const result = await bridge.handleMessage(createMessage(), session);
+      expect(result).toBe("done after reset");
+      expect(callCount).toBe(4);
     } finally {
       mock.restore();
     }
@@ -180,8 +279,7 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
-      expect(result).toBe("");
+      await expect(bridge.handleMessage(createMessage(), session)).rejects.toThrow("empty final turn");
     } finally {
       mock.restore();
     }

@@ -177,6 +177,7 @@ async function processStream(
   let reasoning = "";
   const segmenter = new ReasoningSegmenter();
   let usage: LlmUsage | undefined;
+  let finishReason: string | undefined;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
 
@@ -255,7 +256,12 @@ async function processStream(
       }
       case "response.completed":
       case "response.incomplete": {
-        const response = event["response"] as { usage?: ResponsesUsage } | undefined;
+        finishReason = type === "response.incomplete" ? "incomplete" : "completed";
+        const response = event["response"] as { usage?: ResponsesUsage; status?: string; incomplete_details?: unknown } | undefined;
+        // Preserve the provider's more specific status when it supplies one. `incomplete` is
+        // intentionally retained for the event form: a completed response with no text/tool is
+        // still abnormal and the agent loop must not silently accept it.
+        if (response?.status) finishReason = response.status;
         usage = normalizeUsage(response?.usage);
         break;
       }
@@ -279,6 +285,8 @@ async function processStream(
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    finishReason,
+    incomplete: !content && toolCalls.length === 0 && finishReason !== "completed",
     usage,
     ...(reasoning ? { reasoning } : {}),
     ...(segments ? { segments } : {}),

@@ -148,8 +148,10 @@ describe("E2E pipeline", () => {
 
     const mock = mockFetch(async () =>
       new Response(
-        JSON.stringify({ choices: [{ message: { content: "streamed reply" } }] }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
+        'data: {"choices":[{"delta":{"content":"streamed reply"}}]}\n\n' +
+        'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n' +
+        'data: [DONE]\n\n',
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
       ) as never,
     );
 

@@ -134,6 +134,10 @@ export interface LlmUsage {
 export interface LlmResponse {
   content: string;
   toolCalls?: ToolCall[];
+  /** Provider terminal state, when the wire protocol exposes one (stop, length, incomplete...). */
+  finishReason?: string;
+  /** The provider ended the turn before producing a final answer. */
+  incomplete?: boolean;
   usage?: LlmUsage;
   /** What the model thought, when the endpoint reports it. Display only -- docs/reasoning-visibility.md. */
   reasoning?: string;
@@ -181,6 +185,7 @@ interface RawUsage {
 
 interface ChatCompletionResponse {
   choices: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string;
       tool_calls?: Array<{
@@ -194,6 +199,7 @@ interface ChatCompletionResponse {
 
 interface ChatCompletionStreamChunk {
   choices?: Array<{
+    finish_reason?: string | null;
     delta?: {
       content?: string;
       tool_calls?: Array<{
@@ -450,6 +456,8 @@ export async function chatCompletion(
       return {
         content: choice.message.content ?? "",
         toolCalls: parseToolCalls(choice.message.tool_calls),
+        finishReason: choice.finish_reason ?? undefined,
+        incomplete: !choice.message.content && !choice.message.tool_calls?.length && choice.finish_reason !== "stop",
         usage: normalizeUsage(data.usage),
         ...(reasoning ? { reasoning } : {}),
         ...readProxyHeaders(response),
@@ -544,6 +552,7 @@ export async function chatCompletionStream(
       let reasoning = "";
       const segmenter = new ReasoningSegmenter();
       let streamUsage: LlmUsage | undefined;
+      let finishReason: string | undefined;
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
       const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
@@ -551,7 +560,9 @@ export async function chatCompletionStream(
           streamUsage = normalizeUsage(payload.usage);
         }
 
-        const delta = payload.choices?.[0]?.delta;
+        const choice = payload.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice?.delta;
         if (!delta) return;
 
         const reasoningDelta = readReasoning(delta as Record<string, unknown>);
@@ -634,6 +645,8 @@ export async function chatCompletionStream(
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
+        finishReason,
+        incomplete: !content && streamedToolCalls.length === 0 && finishReason !== "stop",
         usage: streamUsage,
         ...(reasoning ? { reasoning } : {}),
         ...(segments ? { segments } : {}),

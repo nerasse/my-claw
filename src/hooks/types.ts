@@ -70,6 +70,8 @@ export interface HookEventMap {
     model: string;
     iteration: number;
     hasToolCalls: boolean;
+    finishReason?: string;
+    incomplete?: boolean;
   };
   "agent:run:finish": {
     messageId: string;
