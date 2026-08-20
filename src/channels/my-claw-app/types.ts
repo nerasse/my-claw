@@ -124,6 +124,16 @@ export interface MyClawAppModelRefresh {
   type: "model.refresh";
 }
 
+/**
+ * What the owner has typed and not sent on this conversation. Empty text clears it. Debounced
+ * device-side: this is the one frame with a keystroke behind it -- docs/draft-sync.md.
+ */
+export interface MyClawAppDraftSet {
+  type: "draft.set";
+  threadId: string;
+  text: string;
+}
+
 export interface MyClawAppSessionPin {
   type: "session.pin";
   threadId: string;
@@ -728,6 +738,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionDelete
   | MyClawAppSessionPin
   | MyClawAppSessionPinOrder
+  | MyClawAppDraftSet
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
   | MyClawAppCapabilitiesFrame
@@ -857,6 +868,8 @@ export type MyClawAppHistoryEntry =
 export interface MyClawAppHistoryPage {
   entries: MyClawAppHistoryEntry[];
   hasMore: boolean;
+  /** The thread's unsent draft, filled on the newest page only. */
+  draft?: string;
   /**
    * The cursor for the page before this one. The app cannot compute it: one stored message can
    * become two bubbles (an assistant turn plus its tool card) and a `role:"tool"` message becomes
@@ -886,6 +899,11 @@ export interface MyClawAppSessionSummary {
   activeRun?: boolean;
   /** Workspace key the conversation runs in: "default" or a config.workspaces key. */
   workspace?: string;
+  /**
+   * The conversation holds unsent text. One bit, not the text: the listing is refetched on every
+   * reconnect and shipping every draft in it would be paid for by every device, every time.
+   */
+  hasDraft?: boolean;
 }
 
 export interface MyClawAppChatMessage {
@@ -1074,6 +1092,24 @@ export interface MyClawAppChatHistory {
   hasMore?: boolean;
   /** What to send as `before` to get the page just older than this one. */
   nextBefore?: number;
+  /**
+   * The conversation's unsent draft, on the newest page only. Opening a thread is exactly when its
+   * draft is wanted, and a page reaching backwards has no business carrying it -- docs/draft-sync.md.
+   */
+  draft?: string;
+}
+
+/**
+ * A draft changed somewhere else. Sent to the owner's *other* windows only: the device that typed
+ * it already has it. Applied only when the receiving composer is empty or unfocused, or it would
+ * overwrite what is being typed there.
+ */
+export interface MyClawAppDraftChanged {
+  type: "draft.changed";
+  threadId: string;
+  text: string;
+  /** Server clock: device clocks drift, and last-write-wins on a drifting clock loses the wrong write. */
+  ts: number;
 }
 
 /** Which request was refused, so the app can show it where the user is looking. */
@@ -2116,6 +2152,7 @@ export type MyClawAppServerFrame =
   | MyClawAppApprovalRequest
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult
+  | MyClawAppDraftChanged
   | MyClawAppCommandsResult
   | MyClawAppFilesListResult
   | MyClawAppDiagSnapshotResult

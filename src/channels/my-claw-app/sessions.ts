@@ -4,6 +4,7 @@ import { recordSessionCommand, recordSessionFailure } from "../../sessions/store
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
+import { DraftStore, type DraftWrite } from "./drafts.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary } from "./types.ts";
@@ -33,6 +34,14 @@ export interface MyClawAppSessionStore {
   setPinOrder(owner: string, threadIds: string[]): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
   rename(owner: string, threadId: string, title: string): Promise<void>;
+  /**
+   * Stores what the owner has typed and not sent, so every device they own sees it. Reports whether
+   * anything actually changed: the caller broadcasts only then -- docs/draft-sync.md.
+   */
+  setDraft(owner: string, threadId: string, text: string): Promise<DraftWrite>;
+  clearDraft(owner: string, threadId: string): Promise<boolean>;
+  /** Writes the pending drafts. Awaited by the adapter's shutdown, which runs before the exit. */
+  flushDrafts(): Promise<void>;
   /**
    * Sets the conversation's workspace ("default" or a config.workspaces key), creating the
    * session if it does not exist yet. Throws on an unknown key.
@@ -194,7 +203,20 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     private onRemove?: (sessionId: string) => Promise<void>,
     /** Injected from the entry point: the adapter must not read the global config itself. */
     private isWorkspaceKey: (key: string) => boolean = () => true,
+    private drafts: DraftStore = new DraftStore(),
   ) {}
+
+  async setDraft(owner: string, threadId: string, text: string): Promise<DraftWrite> {
+    return this.drafts.set(this.resolveSessionId(owner, threadId), text);
+  }
+
+  async clearDraft(owner: string, threadId: string): Promise<boolean> {
+    return this.drafts.clear(this.resolveSessionId(owner, threadId));
+  }
+
+  async flushDrafts(): Promise<void> {
+    return this.drafts.flush();
+  }
 
   resolveSessionId(owner: string, threadId: string): string {
     return SessionManager.resolveSessionId("my-claw-app", "dm", owner, owner, {
@@ -206,6 +228,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   /** Every conversation of this owner. A cap here made the oldest ones unreachable and unsearchable. */
   async list(owner: string, limit = Number.MAX_SAFE_INTEGER): Promise<MyClawAppSessionSummary[]> {
     const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, limit);
+    // Once for the whole listing: the drawer marks every conversation holding unsent text, and a
+    // per-thread lookup would await the same loaded map N times.
+    const drafted = await this.drafts.drafted();
     const summaries: MyClawAppSessionSummary[] = [];
     for (const sessionId of ids) {
       // The live copy, not the file: a conversation with a run in flight must count the turn it
@@ -226,6 +251,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         ...(session.archivedAt ? { archived: true } : {}),
         ...(typeof session.pinRank === "number" ? { pinRank: session.pinRank } : {}),
         workspace: session.workspace ?? "default",
+        ...(drafted.has(sessionId) ? { hasDraft: true } : {}),
       });
     }
     return summaries;
@@ -235,8 +261,12 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // Reading the file here would replay a thread as it stood before the current turn started,
     // and the app replaces what is on screen with what this returns: the question just sent and
     // the cards already streamed would vanish until the run ends.
-    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
-    if (!session) return { entries: [], hasMore: false, nextBefore: before };
+    const sessionId = this.resolveSessionId(owner, threadId);
+    // The newest page only, and even when there is no session yet: a thread whose first message is
+    // still being written is exactly where a draft matters most.
+    const draft = before ? "" : await this.drafts.textOf(sessionId);
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
 
     // `before` counts back from the newest message, so page N is the slice that ends where the
     // previous one began. Clamped rather than validated: a cursor past the start of a session
@@ -390,7 +420,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       }
     }
     flushCommandsUpTo();
-    return { entries, hasMore, nextBefore };
+    return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
   async recordFailure(owner: string, threadId: string, error: string): Promise<void> {

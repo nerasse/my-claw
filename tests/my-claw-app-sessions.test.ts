@@ -1,10 +1,12 @@
-import { test, describe, beforeEach } from "bun:test";
+import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
 import { saveSession, deleteSession, loadSession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
 import { join } from "node:path";
 
 const DEVICE = "dev-test";
@@ -1048,5 +1050,80 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
     const reply = entries[0]!;
     if (reply.role === "tool") throw new Error("expected a text entry");
     assert.equal(reply.reasoningTokens, undefined);
+  });
+});
+
+describe("MyClawAppSessionStoreImpl drafts", () => {
+  let store: MyClawAppSessionStoreImpl;
+  let drafts: DraftStore;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "session-drafts-"));
+    drafts = new DraftStore(join(dir, "drafts.json"));
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), undefined, undefined, drafts);
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  afterEach(() => {
+    drafts.close();
+  });
+
+  test("the listing marks a conversation holding unsent text, and only that one", async () => {
+    const other = store.resolveSessionId(DEVICE, "thread-2");
+    await saveSession(sessionId, session(sessionId, []));
+    await saveSession(other, session(other, []));
+    try {
+      await store.setDraft(DEVICE, THREAD, "pas encore envoye");
+
+      const listed = await store.list(DEVICE);
+      const marked = listed.find((entry) => entry.threadId === THREAD);
+      const plain = listed.find((entry) => entry.threadId === "thread-2");
+      assert.equal(marked?.hasDraft, true);
+      assert.equal(plain?.hasDraft, undefined, "one bit, and absent rather than false");
+    } finally {
+      await deleteSession(other);
+    }
+  });
+
+  test("the newest page carries the draft, a page reaching backwards does not", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "premiere", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "reponse", timestamp: "2026-01-01T00:00:02.000Z" },
+      { role: "user", content: "seconde", timestamp: "2026-01-01T00:00:03.000Z" },
+    ]));
+    await store.setDraft(DEVICE, THREAD, "en cours d'ecriture");
+
+    const newest = await store.history(DEVICE, THREAD, 1);
+    assert.equal(newest.draft, "en cours d'ecriture");
+
+    const older = await store.history(DEVICE, THREAD, 1, 1);
+    assert.equal(older.draft, undefined);
+  });
+
+  test("a thread with no session yet still replays its draft", async () => {
+    // Where it matters most: the first message of a new conversation, written before anything
+    // exists on disk to attach it to.
+    await store.setDraft(DEVICE, "brand-new", "premier message, long");
+    const page = await store.history(DEVICE, "brand-new");
+    assert.deepEqual(page.entries, []);
+    assert.equal(page.draft, "premier message, long");
+  });
+
+  test("a draft never enters the session file, so no prompt can ever read it", async () => {
+    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "envoye", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    await store.setDraft(DEVICE, THREAD, "SECRET-DRAFT-SENTINEL");
+    await drafts.flush();
+
+    const reloaded = await loadSession(sessionId);
+    assert.ok(reloaded);
+    assert.equal(JSON.stringify(reloaded).includes("SECRET-DRAFT-SENTINEL"), false);
+  });
+
+  test("clearing a draft reports whether there was one", async () => {
+    await store.setDraft(DEVICE, THREAD, "quelque chose");
+    assert.equal(await store.clearDraft(DEVICE, THREAD), true);
+    assert.equal(await store.clearDraft(DEVICE, THREAD), false);
   });
 });

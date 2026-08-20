@@ -55,6 +55,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppServerFrame,
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
+  MyClawAppDraftSet,
   MyClawAppSessionDelete,
   MyClawAppSessionPin,
   MyClawAppSessionPinOrder,
@@ -297,6 +298,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.pendingApprovals.clear();
     this.server?.stop(true);
     this.server = undefined;
+    // Before the exit and after the sockets are gone, so nothing can append behind the write. The
+    // `app:shutdown` hook would not do: emission is fire and forget, this is awaited.
+    await this.store.flushDrafts().catch(() => undefined);
     await myClawAppLog("info", "adapter stopped");
   }
 
@@ -1220,6 +1224,41 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.pin.order":
         this.detach(this.handleSessionPin(ws, frame), "handleSessionPin");
         break;
+      case "draft.set":
+        this.detach(this.handleDraftSet(ws, frame), "handleDraftSet");
+        break;
+    }
+  }
+
+  /**
+   * A draft typed on one device, mirrored to the owner's others -- docs/draft-sync.md. Nothing is
+   * refused out loud: a draft is not an action, and an error frame about one would interrupt the
+   * owner over text they have not even sent yet.
+   */
+  private async handleDraftSet(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppDraftSet): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId ?? "");
+    if (!threadId) return;
+    const text = typeof frame.text === "string" ? frame.text : "";
+    try {
+      const write = await this.store.setDraft(ws.data.owner, threadId, text);
+      // Unchanged text is not news: a device that reconnects and re-sends its draft costs nothing.
+      if (!write.changed) return;
+      this.broadcastExcept(ws, { type: "draft.changed", threadId, text, ts: write.ts });
+    } catch (err) {
+      await myClawAppLog("warn", "draft store failed", { chars: text.length, error: String(err) });
+    }
+  }
+
+  /**
+   * The composer that sent this has emptied itself, so the owner's other windows must too: they
+   * were mirroring a message that has now been sent.
+   */
+  private async dropDraft(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string): Promise<void> {
+    try {
+      if (!(await this.store.clearDraft(ws.data.owner, threadId))) return;
+      this.broadcastExcept(ws, { type: "draft.changed", threadId, text: "", ts: Date.now() });
+    } catch (err) {
+      await myClawAppLog("warn", "draft clear failed", { error: String(err) });
     }
   }
 
@@ -1279,6 +1318,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!text && refs.length === 0 && !hasLocation) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
+    // Awaited, and before the mirrored bubble: the other window would otherwise draw the message
+    // while its own composer still held the same text, showing it twice for a frame. Memory work
+    // only, the disk write is on its own timer.
+    await this.dropDraft(ws, threadId);
 
     // Slash commands run on the server, exactly as they do on the other channels: a command
     // sent to the model as a plain question would be answered from nothing. The user's own
@@ -1680,6 +1723,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         messages: page.entries,
         hasMore: page.hasMore,
         nextBefore: page.nextBefore,
+        ...(page.draft ? { draft: page.draft } : {}),
         // Echoed so the app can tell an older page, which it prepends, from the newest one,
         // which replaces the thread. The two arrive on the same frame type.
         ...(frame.before ? { before: frame.before } : {}),

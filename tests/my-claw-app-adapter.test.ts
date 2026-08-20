@@ -230,6 +230,25 @@ class FakeSessionStore {
     entry.title = title.trim() || "(new conversation)";
   }
 
+  drafts = new Map<string, string>();
+  draftFlushes = 0;
+
+  async setDraft(deviceId: string, threadId: string, text: string): Promise<{ changed: boolean; ts: number }> {
+    const key = `${deviceId}/${threadId}`;
+    if ((this.drafts.get(key) ?? "") === text) return { changed: false, ts: 0 };
+    if (text) this.drafts.set(key, text);
+    else this.drafts.delete(key);
+    return { changed: true, ts: 1_700_000_000_000 };
+  }
+
+  async clearDraft(deviceId: string, threadId: string): Promise<boolean> {
+    return this.drafts.delete(`${deviceId}/${threadId}`);
+  }
+
+  async flushDrafts(): Promise<void> {
+    this.draftFlushes += 1;
+  }
+
   workspaceByThread = new Map<string, string>();
 
   async setWorkspace(deviceId: string, threadId: string, workspace: string): Promise<void> {
@@ -1445,6 +1464,83 @@ describe("MyClawAppAdapter owners", () => {
       // Nothing goes back to the window that typed it: it drew that bubble on send.
       await adapter.send(OWNER, { text: "answered", threadId: "t-1" });
       assert.equal((await nextFrame(phone))["type"], "chat.message");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a draft typed on one device reaches the other, and never comes back to the sender", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-1", text: "un debut de" }));
+
+      const mirrored = await nextFrame(browser);
+      assert.equal(mirrored["type"], "draft.changed");
+      assert.equal(mirrored["threadId"], "t-1");
+      assert.equal(mirrored["text"], "un debut de");
+      assert.equal(typeof mirrored["ts"], "number");
+
+      // The sender already has its own text: an echo would be a frame whose only job is to be
+      // ignored, and it would arrive as the owner keeps typing.
+      await adapter.send(OWNER, { text: "marker", threadId: "t-1" });
+      assert.equal((await nextFrame(phone))["type"], "chat.message");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("an unchanged draft is not re-broadcast", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-1", text: "stable" }));
+      assert.equal((await nextFrame(browser))["type"], "draft.changed");
+
+      // A reconnecting device re-sends what it holds. That is not news, and the other window is
+      // possibly showing it in a composer the owner is looking at.
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-1", text: "stable" }));
+      await adapter.send(OWNER, { text: "marker", threadId: "t-1" });
+      assert.equal((await nextFrame(browser))["type"], "chat.message");
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("sending clears the draft and empties the other window's composer", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-1", text: "presque fini" }));
+      assert.equal((await nextFrame(browser))["type"], "draft.changed");
+
+      phone.ws.send(JSON.stringify({ type: "chat.send", id: "m1", text: "presque fini, voila", threadId: "t-1" }));
+
+      const cleared = await nextFrame(browser);
+      assert.equal(cleared["type"], "draft.changed");
+      assert.equal(cleared["text"], "", "the message was sent: the mirrored composer must empty");
+      assert.equal((await nextFrame(browser))["type"], "chat.user");
+      assert.equal(store.drafts.size, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a draft on an unusable threadId is dropped in silence", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "../etc", text: "nope" }));
+
+      // No error frame: a draft is not an action, and an error about unsent text would interrupt
+      // the owner for nothing.
+      await adapter.send(OWNER, { text: "marker", threadId: "t-1" });
+      assert.equal((await nextFrame(browser))["type"], "chat.message");
+      assert.equal(store.drafts.size, 0);
     } finally {
       phone.ws.close();
       browser.ws.close();

@@ -333,6 +333,7 @@ the first answer wins.
 { "type": "session.delete", "threadId": "projet" }
 { "type": "session.pin", "threadId": "projet", "pinned": true }
 { "type": "session.pin.order", "threadIds": ["projet", "courses"] }
+{ "type": "draft.set", "threadId": "projet", "text": "ce qui est tape et pas envoye" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "session.workspace.set", "threadId": "projet", "workspace": "default|sofa" }
 { "type": "approval.response", "id": "uuid", "accepted": true }
@@ -655,7 +656,8 @@ runs fresh like any other message.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "pinRank": 0, "activeRun": true, "workspace": "default" }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "pinRank": 0, "activeRun": true, "workspace": "default", "hasDraft": true }] }
+{ "type": "draft.changed", "threadId": "projet", "text": "ce qui est tape ailleurs", "ts": 1755690000000 }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
@@ -926,6 +928,16 @@ A tool card seals the text bubble it interrupts: the streamer sends
 `chat.stream.done` for the current id, then the cards, then a fresh
 `chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
 therefore stay in chronological order without the client reordering anything.
+
+### Drafts
+
+`draft.set` carries what the owner has typed and not sent; the server stores it per conversation and
+mirrors it to their **other** windows as `draft.changed`, never back to the sender. It is debounced
+device-side and deduped server-side, so typing costs a handful of frames and a reconnect costs none.
+The newest page of `chat.history` carries the draft of the thread it replays, and `session.list`
+reports `hasDraft` so the drawer can mark a conversation without shipping every draft in the
+listing. A `draft.changed` is applied only into a composer that is empty or unfocused. Full rules,
+lifecycle and caps: docs/draft-sync.md.
 
 ### Reasoning
 
