@@ -38,6 +38,10 @@ cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
 # machine warns and never moves its web bundle again.
 cp "${SCRIPT_DIR}/web-bundle.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
+# The local STT sidecar the whisper unit runs. Without it in the tarball the unit points at a file
+# that is not there, which is the shape of the bug it replaces.
+cp "${SCRIPT_DIR}/whisper-server.py" "${TAR_DIR}/packaging/"
+chmod 755 "${TAR_DIR}/packaging/whisper-server.py"
 
 # Copy CLI wrapper
 mkdir -p "${TAR_DIR}/scripts"
