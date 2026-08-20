@@ -16,7 +16,18 @@ const {
   wireToolName,
   localToolName,
   normalizeUsage,
+  processStream,
 } = __testing;
+
+function sse(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      controller.close();
+    },
+  });
+}
 
 // Ground truth from docs/captures/claude-cli-2.1.206.json: driving the real CLI with this exact
 // prompt made it emit `cc_version=2.1.206.ca4`. This is the one assertion in the file that pins
@@ -269,13 +280,34 @@ test("none is never sent as an effort value, whatever the offered ladder says", 
   }
 });
 
-test("a redacted turn still reports that it thought", () => {
-  // `display: "omitted"` returns the thinking block with an empty text field, so this count is the
-  // only evidence the model reasoned. Measured on one prompt, same model: omitted gave
-  // `{thinking_tokens: 57}` with no text, summarized gave 54 with text.
+test("thinking tokens are billed inside the output count, never beside it", () => {
   const usage = normalizeUsage({ input_tokens: 100, output_tokens: 106, output_tokens_details: { thinking_tokens: 57 } }, 106);
   assert.ok(usage);
   assert.equal(usage.completionTokens, 106);
-  // Thinking is billed inside the output count, never beside it, so the total must not double it.
   assert.equal(usage.totalTokens, 206);
+});
+
+test("the thinking token count is never reported to the sink, only the text is", async () => {
+  // The count arrives on the stream's last event, after the answer, where the app's streamer seals
+  // the bubble and opens another one: it produced a stray token-count bubble under a reply that was
+  // already showing its reasoning in full. That shape belongs to the redacted SDK bridge, which
+  // reports its estimate while the model is still thinking.
+  const tokens: number[] = [];
+  const text: string[] = [];
+  const result = await processStream(
+    sse([
+      { type: "message_start", message: { usage: { input_tokens: 10 } } },
+      { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "il demande 24/8" } },
+      { type: "content_block_delta", delta: { type: "text_delta", text: "3" } },
+      { type: "message_delta", usage: { output_tokens: 20, output_tokens_details: { thinking_tokens: 14 } } },
+    ]),
+    undefined,
+    { onText: async (d) => void text.push(d), onTokens: async (n) => void tokens.push(n) },
+  );
+
+  assert.deepEqual(tokens, []);
+  assert.deepEqual(text, ["il demande 24/8"]);
+  assert.equal(result.reasoning, "il demande 24/8");
+  assert.equal(result.content, "3");
+  assert.equal(result.usage?.completionTokens, 20);
 });

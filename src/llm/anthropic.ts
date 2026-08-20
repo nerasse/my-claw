@@ -281,10 +281,9 @@ interface AnthropicUsage {
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
   /**
-   * How many of the billed output tokens were thinking. Present whatever `display` says, which is
-   * what makes a redacted turn reportable: with `display: "omitted"` the thinking block arrives with
-   * an empty text field and only this number says the model thought at all. Measured on one prompt,
-   * same model: omitted gave `{thinking_tokens: 57}` with no text, summarized gave 54 with text.
+   * How many of the billed output tokens were thinking. Read only to be ignored: thinking is billed
+   * *inside* `output_tokens`, so adding it would double it. Never reported to the reasoning sink,
+   * see the `message_delta` case.
    */
   output_tokens_details?: { thinking_tokens?: number };
 }
@@ -387,11 +386,13 @@ async function processStream(
       case "message_delta": {
         const usage = event["usage"] as AnthropicUsage | undefined;
         if (usage?.output_tokens) outputTokens = usage.output_tokens;
-        // Only ever arrives here, on the last event of the stream, so it cannot be reported while
-        // the model is still thinking. It is still the difference between a turn that says it
-        // thought and one that looks like it did not.
-        const thought = usage?.output_tokens_details?.thinking_tokens;
-        if (thought && reasoningSink?.onTokens) await reasoningSink.onTokens(thought);
+        // `output_tokens_details.thinking_tokens` lands here and is deliberately not sent to
+        // `reasoningSink.onTokens`. The count belongs to the redacted engine: the SDK bridge reports
+        // it *while* the model thinks, so it opens the bubble the answer then fills. This one arrives
+        // on the last event of the stream, after the answer, where the streamer seals the bubble and
+        // opens a fresh one -- a stray "Thought . 14 tokens" bubble under a reply whose reasoning is
+        // already displayed in full, and which no replay reproduces since the mirror stores no count
+        // for this transport. This transport reports thinking as text, and only as text.
         break;
       }
       case "error": {
@@ -734,4 +735,5 @@ export const __testing = {
   localToolName,
   normalizeUsage,
   cannotDisableThinking,
+  processStream,
 };

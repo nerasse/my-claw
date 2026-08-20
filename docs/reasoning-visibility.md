@@ -17,10 +17,17 @@ one instead of pretending they are uniform.
 | home loop, `type: "codex"` | OpenAI Responses | **summary text**, already requested and thrown away | `codex.ts:289` sends `reasoning: { effort, summary: "auto" }`; the `switch` handles no `response.reasoning_*` event |
 | `type: "claude-sdk"` | Claude Code bridge | **none — redacted** | `SDKThinkingTokensMessage` (`sdk.d.ts:4641`): the raw text never leaves the bridge, only a running `estimated_tokens` "for spinners/pills, not the authoritative billed output_tokens" |
 
+| `type: "anthropic"` | Messages API | **full, streamed** | `thinking_delta` blocks, asked for with `thinking.display: "summarized"` -- docs/anthropic-backend.md |
+
 The redaction is a property of the **subscription bridge**, not of Anthropic: the Messages API
-streams real `thinking_delta` blocks. my-claw has no `anthropic-messages` transport today, so the
-question is moot; if one is ever added it lands in the "full text" row, and this spec's data model
-already carries it.
+streams real `thinking_delta` blocks, which is what the native transport added when it landed.
+
+That transport reports **no token count**. `usage.output_tokens_details.thinking_tokens` only
+arrives on the stream's last event, after the answer, where `sealBeforeReasoning` turns it into a
+second bubble holding nothing but a count -- under a reply already showing its reasoning in full,
+and with no stored `reasoningTokens` to replay it. `onTokens` is the bridge's shape, and only the
+bridge's: it reports while the model is still thinking, which is the whole reason the count is worth
+a bubble there. Reasoning as text, or nothing.
 
 `minimax-m3` proves the feature must degrade to nothing gracefully: a model that reasons silently
 is normal, not an error.
@@ -81,7 +88,8 @@ DeepSeek tool-chain contract is satisfied. It is not.
     segments?: Array<{ reasoning?: string; content: string }> }
 ```
 
-`reasoningTokens` is the redacted engine's half of the same field. The Claude bridge gives a
+`reasoningTokens` is the redacted engine's half of the same field, and the bridge is its only
+writer. The Claude bridge gives a
 running `estimated_tokens` and no text at all, so the live counter was the whole trace of a turn's
 thinking, and it died with the stream: a reopened thread showed a bubble that had apparently
 thought nothing. The backend keeps the last estimate seen before the turn it mirrors, one integer

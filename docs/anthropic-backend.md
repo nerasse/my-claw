@@ -302,8 +302,9 @@ Two behaviours are SDK-only today and need a decision in P1:
   the `claude-sdk` branch. Keep it for `anthropic`, or drop it and rely on the
   dispatcher's outage reroute.
 * Reasoning visibility. `ReasoningSink` has two shapes because the SDK redacts
-  thinking and only reports a token count. This transport can stream the text, so
-  the app starts receiving `onText` where it received `onTokens`.
+  thinking and only reports a token count. This transport streams the text, so
+  the app receives `onText` where it received `onTokens`, and `onTokens` is left
+  to the bridge (see "The token count is not reported").
 
 Analytics needs nothing either: `api_calls` records `base_url` as an engine
 sentinel and `model` as the bare wire id, so cost attribution is untouched by the
@@ -572,7 +573,6 @@ through the real transport on Haiku 4.5:
 ```
 texte      : "24 divise par 8 egale **3**. (Verification: 8 x 3 = 24)"
 reasoning  : "L'utilisateur me demande de penser puis de lui dire le resultat de 24 divise par 8..."
-sink tokens: 88
 ```
 
 Two things this cost, both accepted: the first text token arrives later, since skipping thinking
@@ -584,8 +584,26 @@ changes. The thinking happens and is billed either way, which one prompt on one 
 
 **Naming the field is the whole point.** Leaving `display` out is not neutral: `omitted` is already
 the default on Opus 5, Sonnet 5, Fable 5 and Opus 4.7/4.8, so an absent field returns empty thinking
-blocks on exactly the models that matter. The count is read either way, so a turn that reasoned in
-silence can still say so.
+blocks on exactly the models that matter.
+
+### The token count is not reported, and that is not an oversight
+
+`usage.output_tokens_details.thinking_tokens` is read off the stream and dropped.
+`ReasoningSink.onTokens` exists for the SDK bridge, which reports a running estimate **while** the
+model thinks: the count opens the bubble that the answer then fills, and it is the only trace a
+redacted turn leaves. Neither property holds here.
+
+The count arrives on `message_delta`, the last event of the stream, so it lands *after* the answer.
+The app's streamer seals a bubble that already holds visible text before any reasoning
+(`sealBeforeReasoning`), so the count opened a **second** bubble reading `Thought . 14 tokens`,
+under a reply whose reasoning was already displayed in full above it. Worse, the mirror stores no
+`reasoningTokens` for this transport, so the stray bubble vanished on the next reopen of the thread:
+the live stream and the replay disagreed, and the replay was the correct one.
+
+So this transport reports thinking as text, and only as text. Under `ANTHROPIC_HIDE_THINKING=1`
+there is no text and nothing is reported: a turn's thinking is then invisible in the app, which is
+what asking for `omitted` means. The tokens are still billed and still counted in `output_tokens`,
+so `/status` and the analytics are unaffected either way.
 
 ## Thinking off: it exists, per model, and it is not discoverable
 
