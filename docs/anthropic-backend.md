@@ -512,6 +512,39 @@ code is exchangeable for a refresh token until it is spent.
 One in-process guard collapses concurrent refreshes. A rotation that omits the new refresh token
 keeps the old one, because dropping it would throw away the only way back in.
 
+## It is a provider, not a special case
+
+Three things separated it from a plain litellm provider, all closed.
+
+**Compaction and memory consolidation used to refuse it.** Both callers forced their model onto a
+chat-completions one, so a 1M-context Opus session was summarized by whichever model sat at the top
+of `config.models`. The dispatch moved into `src/llm/transport.ts` (`llmComplete`,
+`llmCompleteStream`), the agent loop, the summarizer, the consolidation pass and the browser
+sub-agent all go through it, and the resolver's guarantee changed from "speaks chat-completions" to
+"has an HTTP transport at all". Only `claude-sdk` still borrows another model, because it is a
+subprocess owning its own session and there is no request to send. Measured on the live config:
+
+```
+anthropic/claude-opus-5     run=anthropic   compaction=anthropic   anthropic/claude-opus-5
+claude-sdk/claude-opus-5    run=claude-sdk  compaction=openai      Qwen3.6-35B-A3B-uncensored
+chatgpt/gpt-5.6-luna        run=codex       compaction=codex       chatgpt/gpt-5.6-luna
+```
+
+The fallback picks the **first entry of `config.models` that qualifies, in declaration order**. No
+quality, size or liveness check: the list order is the whole policy.
+
+**The circuit breaker was chat-completions only.** One breaker per endpoint lives in `provider.ts`,
+and both subscription transports now call the same three helpers. A subscription outage used to be
+retried three times on every single turn for as long as it lasted; it now opens the breaker like any
+other dead endpoint.
+
+**Discovery reported a network fault instead of a config one.** A provider with no `baseUrl` reached
+fetch as the relative `/models`, which answers `TypeError [ERR_INVALID_URL]: fetch() URL is invalid`
+and names nothing. It happens for real: a config naming a provider type the running build does not
+know falls through to the openai branch, which is exactly how an `anthropic` entry looked like a
+network error on the build before the one that understood it. It now names the provider and the
+missing field.
+
 ## Reasoning is shown, which is the one field we differ on
 
 The captured client sends `thinking.display: "omitted"`: the thinking block comes back with an empty

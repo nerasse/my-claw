@@ -15,9 +15,8 @@ import type { SessionData, SessionMessage, SessionAttachment } from "../sessions
 import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
-import { chatCompletion, chatCompletionStream, type ChatMessage, type LlmResponse, type LlmUsage } from "../llm/provider.ts";
-import { codexResponse, codexResponseStream } from "../llm/codex.ts";
-import { anthropicResponse, anthropicResponseStream } from "../llm/anthropic.ts";
+import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
+import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel } from "../llm/run-model.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
@@ -62,9 +61,7 @@ function completeStream(
   signal?: AbortSignal,
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  if (config.backend === "codex") return codexResponseStream(config, messages, onToken, tools, signal, reasoningSink);
-  if (config.backend === "anthropic") return anthropicResponseStream(config, messages, onToken, tools, signal, reasoningSink);
-  return chatCompletionStream(config, messages, onToken, tools, signal, reasoningSink);
+  return llmCompleteStream(config, messages, onToken, tools, signal, reasoningSink);
 }
 
 function complete(
@@ -73,9 +70,7 @@ function complete(
   tools?: unknown[],
   signal?: AbortSignal,
 ): Promise<LlmResponse> {
-  if (config.backend === "codex") return codexResponse(config, messages, tools, signal);
-  if (config.backend === "anthropic") return anthropicResponse(config, messages, tools, signal);
-  return chatCompletion(config, messages, tools, signal);
+  return llmComplete(config, messages, tools, signal);
 }
 
 function accumulateUsage(session: SessionData, usage?: LlmUsage, historyLength?: number): void {

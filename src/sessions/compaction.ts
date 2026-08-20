@@ -1,6 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { chatCompletion } from "../llm/provider.ts";
-import { resolveOpenAiLlmConfig } from "../llm/resolver.ts";
+import { resolveUtilityLlmConfig } from "../llm/resolver.ts";
+import { llmComplete } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
@@ -148,19 +149,19 @@ export async function compactSession(
   // The model the session actually runs, agent pin and tag included -- not the raw session override,
   // which is absent on every chat that inherits a pin and made the summarizer resolve the global
   // default while the conversation ran something else. The agent comes from the session, so a
-  // sub-agent or a cron job is summarized by its own model rather than the orchestrator's. Still
-  // forced onto a chat-completions model: this caller speaks that protocol and nothing else (see
-  // resolveOpenAiLlmConfig).
+  // sub-agent or a cron job is summarized by its own model rather than the orchestrator's. The
+  // dispatch in `llmComplete` accepts any wire protocol, so the session's own model summarizes it;
+  // only a claude-sdk pin has to borrow another one.
   const runModel = tryResolveRunModel(
     config,
     { agent: agentTypeOf(session), ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
     availabilityWorld(),
   );
-  const llmConfig = resolveOpenAiLlmConfig(config.llm, runModel?.apiModel ?? runModel?.model ?? session.modelOverride);
+  const llmConfig = resolveUtilityLlmConfig(config.llm, runModel?.apiModel ?? runModel?.model ?? session.modelOverride);
 
   try {
     const compactionStartedAt = Date.now();
-    const response = await chatCompletion(
+    const response = await llmComplete(
       llmConfig,
       [
         { role: "system", content: "You are a conversational context compaction agent." },

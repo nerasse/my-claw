@@ -7,7 +7,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { resolveOpenAiLlmConfig, isSdkBackedModel } from "../../src/llm/resolver.ts";
+import { resolveUtilityLlmConfig, isSdkBackedModel } from "../../src/llm/resolver.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
@@ -40,18 +40,18 @@ function session(id: string, modelOverride?: string): SessionData {
   return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
 }
 
-test("resolveOpenAiLlmConfig falls back off a claude-sdk default model", () => {
+test("resolveUtilityLlmConfig falls back off a claude-sdk default model", () => {
   const config = mixedConfig();
-  const resolved = resolveOpenAiLlmConfig(config.llm);
+  const resolved = resolveUtilityLlmConfig(config.llm);
   assert.equal(resolved.backend, undefined);
   assert.equal(resolved.model, "mimo");
   assert.equal(resolved.baseUrl, "https://litellm.local/v1");
 });
 
-test("resolveOpenAiLlmConfig throws when every model is SDK-backed", () => {
+test("resolveUtilityLlmConfig throws when every model is SDK-backed", () => {
   const config = mixedConfig();
   config.llm.models = [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }];
-  assert.throws(() => resolveOpenAiLlmConfig(config.llm), /No OpenAI-compatible model/);
+  assert.throws(() => resolveUtilityLlmConfig(config.llm), /HTTP transport/);
 });
 
 test("isSdkBackedModel follows the default provider for unknown ids", () => {

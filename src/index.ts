@@ -138,11 +138,12 @@ import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
-import { chatCompletion, type ChatMessage } from "./llm/provider.ts";
+import type { ChatMessage } from "./llm/provider.ts";
+import { llmComplete } from "./llm/transport.ts";
 import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
-import { resolveLlmConfig, resolveOpenAiLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveUtilityLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
 import { referenceWithRoute, routesFor } from "./channels/route-menu.ts";
 import { availabilityOf, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
@@ -2485,8 +2486,8 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
   if (memCfg?.consolidation?.enabled !== false) {
     const every = memCfg?.consolidation?.every ?? 20;
     const caller: LlmCaller = async (system, user) => {
-      const llmCfg = resolveOpenAiLlmConfig(config.llm, memCfg?.consolidation?.model);
-      const res = await chatCompletion(llmCfg, [
+      const llmCfg = resolveUtilityLlmConfig(config.llm, memCfg?.consolidation?.model);
+      const res = await llmComplete(llmCfg, [
         { role: "system", content: system },
         { role: "user", content: user },
       ]);

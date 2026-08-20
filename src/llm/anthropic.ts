@@ -5,6 +5,7 @@ import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
+import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
@@ -601,6 +602,10 @@ async function runAnthropic(
   const url = `${base.replace(/\/+$/, "")}/v1/messages?beta=true`;
   let payload = JSON.stringify(buildBody(config, messages, tools));
 
+  // One breaker per endpoint, shared with the chat-completions client: a subscription outage
+  // must stop being retried on every turn, not only inside one call's three attempts.
+  checkCircuitBreaker(base);
+
   let lastErr: unknown;
   let tokensDelivered = false;
 
@@ -671,6 +676,7 @@ async function runAnthropic(
             await onToken(t);
           }
         : undefined;
+      recordCircuitSuccess(base);
       return await processStream(response.body, wrappedOnToken, reasoningSink);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
@@ -684,12 +690,14 @@ async function runAnthropic(
         await sleep(delay);
         continue;
       }
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
   throw lastErr;
 }
 

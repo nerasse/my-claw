@@ -418,8 +418,16 @@ export class ModelCatalog {
             }));
           }
         } else {
+          // An empty baseUrl used to reach fetch as the relative "/models", which answers
+          // `TypeError [ERR_INVALID_URL]: fetch() URL is invalid` and says nothing about the
+          // provider. It happens for real: a config naming a provider type the running build does
+          // not know falls through to this branch, which is how an `anthropic` entry looked like a
+          // network fault on the build before the one that understood it.
+          if (!provider.baseUrl) {
+            throw new Error(`provider "${name}" has type "${provider.type ?? "openai"}" and no baseUrl to discover from`);
+          }
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
-          const ids = await fetchOpenAiModels(provider.baseUrl ?? "", apiKey);
+          const ids = await fetchOpenAiModels(provider.baseUrl, apiKey);
           for (const id of ids) {
             next.push(discoveredModel({ id, label: id, provider: name, group: provider.group }));
           }

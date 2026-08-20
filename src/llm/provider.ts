@@ -38,7 +38,13 @@ function circuitFor(baseUrl: string): { failures: number; openedAt: number } {
   return state;
 }
 
-function checkCircuitBreaker(baseUrl: string): void {
+/**
+ * Exported because the breaker is per endpoint, not per transport: the Codex and Anthropic
+ * transports call the same three helpers so that one dead endpoint stops being hammered whichever
+ * wire protocol reaches it. Keeping them private meant a subscription outage retried on every turn
+ * for as long as it lasted.
+ */
+export function checkCircuitBreaker(baseUrl: string): void {
   const circuitState = circuitFor(baseUrl);
   if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
     const elapsed = Date.now() - circuitState.openedAt;
@@ -49,7 +55,7 @@ function checkCircuitBreaker(baseUrl: string): void {
   }
 }
 
-function recordCircuitSuccess(baseUrl: string): void {
+export function recordCircuitSuccess(baseUrl: string): void {
   const circuitState = circuitFor(baseUrl);
   if (circuitState.failures > 0) {
     hooks.emit("llm:circuit:closed", { baseUrl });
@@ -57,7 +63,7 @@ function recordCircuitSuccess(baseUrl: string): void {
   circuitState.failures = 0;
 }
 
-function recordCircuitFailure(baseUrl: string): void {
+export function recordCircuitFailure(baseUrl: string): void {
   const circuitState = circuitFor(baseUrl);
   circuitState.failures += 1;
   if (circuitState.failures >= CIRCUIT_BREAKER_THRESHOLD) {
@@ -73,7 +79,7 @@ export function resetCircuitBreaker(): void {
 
 // A non-retryable 4xx (e.g. one malformed request) is request-specific, not a provider outage:
 // counting it would let a single bad call push the breaker toward opening for ALL traffic.
-function countsTowardBreaker(err: unknown): boolean {
+export function countsTowardBreaker(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;
   if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return false;
   return true;

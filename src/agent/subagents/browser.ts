@@ -3,7 +3,8 @@ import { recordApiCall } from "../../analytics/usage-db.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
-import { resolveOpenAiAgentLlmConfig } from "../../llm/resolver.ts";
+import { resolveUtilityAgentLlmConfig } from "../../llm/resolver.ts";
+import { llmComplete } from "../../llm/transport.ts";
 import { toOpenAiToolDefinitions } from "../../llm/openai-format.ts";
 import { BrowserClient } from "../../browser/client.ts";
 import { ToolRegistry } from "../../tools/registry.ts";
@@ -282,7 +283,7 @@ export class BrowserSubagent {
       const trimmed = trimToContextWindow(messages, llmConfig.limit?.context, toolSchemaTokens);
       const browserLlmStart = Date.now();
       try {
-        response = await chatCompletion(llmConfig, trimmed, openaiTools, signal);
+        response = await llmComplete(llmConfig, trimmed, openaiTools, signal);
         recordApiCall({
           sessionId: "browser-subagent",
           parentSessionId: this.callerSessionId,
@@ -412,7 +413,7 @@ export class BrowserSubagent {
    * up on the first model of the catalogue whatever `agents.browser` said.
    */
   private llmConfig(): ResolvedLlmConfig {
-    return resolveOpenAiAgentLlmConfig(this.config.agents?.["browser"]?.llm, this.config.llm);
+    return resolveUtilityAgentLlmConfig(this.config.agents?.["browser"]?.llm, this.config.llm);
   }
 
   private async summarizeFindings(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
@@ -429,7 +430,7 @@ export class BrowserSubagent {
     const trimmed = trimToContextWindow(prompt, llmConfig.limit?.context, 0);
     const start = Date.now();
     try {
-      const response = await chatCompletion(llmConfig, trimmed, undefined, signal);
+      const response = await llmComplete(llmConfig, trimmed, undefined, signal);
       recordApiCall({
         sessionId: "browser-subagent",
         parentSessionId: this.callerSessionId,

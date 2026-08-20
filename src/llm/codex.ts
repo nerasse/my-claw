@@ -5,6 +5,7 @@ import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
+import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 
 const CODEX_TIMEOUT_MS = 300_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -314,8 +315,13 @@ async function runCodex(
   if (responsesTools.length > 0) body["tools"] = responsesTools;
   if (config.effort) body["reasoning"] = { effort: config.effort, summary: "auto" };
 
-  const url = `${(config.baseUrl || CODEX_BASE_URL).replace(/\/+$/, "")}/codex/responses`;
+  const base = config.baseUrl || CODEX_BASE_URL;
+  const url = `${base.replace(/\/+$/, "")}/codex/responses`;
   const payload = JSON.stringify(body);
+
+  // One breaker per endpoint, shared with the chat-completions client: a subscription outage
+  // must stop being retried on every turn, not only inside one call's three attempts.
+  checkCircuitBreaker(base);
 
   let lastErr: unknown;
   let tokensDelivered = false;
@@ -365,6 +371,7 @@ async function runCodex(
             await onToken(t);
           }
         : undefined;
+      recordCircuitSuccess(base);
       return await processStream(response.body, wrappedOnToken, reasoningSink);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
@@ -378,12 +385,14 @@ async function runCodex(
         await sleep(delay);
         continue;
       }
+      if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
       throw lastErr;
     } finally {
       clearTimeout(timeout);
     }
   }
 
+  if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
   throw lastErr;
 }
 
