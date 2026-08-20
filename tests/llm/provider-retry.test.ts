@@ -299,4 +299,39 @@ describe("LLM provider retry logic", () => {
       mock.restore();
     }
   });
+
+  test("404 no-allowed-providers with a pin names the stale endpoint instead of the model", async () => {
+    const pinned: ResolvedLlmConfig = { ...config, providerRoute: "deepseek/foundation" };
+    const mock = mockFetch(async () =>
+      errorResponse(404, "No allowed providers are available for this model") as never,
+    );
+    try {
+      // 404 is not retryable, so exactly one call proves no retry burned quota on a dead pin.
+      let calls = 0;
+      mock.restore();
+      const counting = mockFetch(async () => {
+        calls++;
+        return errorResponse(404, "No allowed providers are available for this model") as never;
+      });
+      try {
+        await expect(chatCompletion(pinned, simpleMessages)).rejects.toThrow('pinned OpenRouter endpoint "deepseek/foundation"');
+        expect(calls).toBe(1);
+      } finally {
+        counting.restore();
+      }
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("404 without a pin keeps the generic error", async () => {
+    const mock = mockFetch(async () =>
+      errorResponse(404, "No allowed providers are available for this model") as never,
+    );
+    try {
+      await expect(chatCompletion(config, simpleMessages)).rejects.toThrow("HTTP 404");
+    } finally {
+      mock.restore();
+    }
+  });
 });

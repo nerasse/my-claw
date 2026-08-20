@@ -330,6 +330,22 @@ async function readErrorBody(response: Response): Promise<string> {
   }
 }
 
+/**
+ * OpenRouter answers 404 "No allowed providers are available for this model" when the pinned
+ * endpoint no longer serves the model (provider decommissioned it, or was removed from the
+ * marketplace). The raw HTTP error names neither the pin nor the fix, and from the outside it
+ * looks like the model itself is gone. Rewrite it so the message says which pin is stale and how
+ * to move (the route picker, or dropping the `@endpoint` suffix from the model reference).
+ */
+function describeStalePin(status: number, detail: string, route: string | undefined): string | undefined {
+  if (!route || status !== 404) return undefined;
+  if (!/no allowed providers/i.test(detail)) return undefined;
+  return (
+    `the pinned OpenRouter endpoint "${route}" no longer serves this model ` +
+    `(pick another route, or remove the @${route} suffix from the model reference to let OpenRouter route it)`
+  );
+}
+
 function retryDelay(attempt: number, retryAfterMs?: number): number {
   if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, LLM_RETRY_MAX_MS);
   const base = LLM_RETRY_BASE_MS * Math.pow(2, attempt - 1);
@@ -432,8 +448,12 @@ export async function chatCompletion(
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
-          const err = new Error(`LLM request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
+          const stalePin = describeStalePin(response.status, detail, config.providerRoute);
+          const err = new Error(
+            stalePin ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
+          ) as Error & { status?: number; stalePin?: boolean };
           err.status = response.status;
+          if (stalePin) err.stalePin = true;
 
           if (attempt < LLM_RETRY_ATTEMPTS && RETRYABLE_STATUS.has(response.status)) {
             const delay = retryDelay(attempt, parseRetryAfterMs(response));
@@ -530,8 +550,12 @@ export async function chatCompletionStream(
 
       if (!response.ok) {
         const detail = await readErrorBody(response);
-        const err = new Error(`LLM stream request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
+        const stalePin = describeStalePin(response.status, detail, config.providerRoute);
+        const err = new Error(
+          stalePin ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
+        ) as Error & { status?: number; stalePin?: boolean };
         err.status = response.status;
+        if (stalePin) err.stalePin = true;
 
         if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = retryDelay(attempt, parseRetryAfterMs(response));
