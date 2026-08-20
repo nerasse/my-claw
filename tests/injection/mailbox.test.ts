@@ -5,7 +5,7 @@ import { IterationBudget } from "../../src/agent/iteration-budget.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
 function msg(id: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: id, attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: id, attachments: [], isForwarded: false, raw: {} };
 }
 
 test("enqueueInjection returns null when no run is active", () => {

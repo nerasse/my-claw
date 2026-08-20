@@ -20,12 +20,12 @@ function baseConfig(): MyClawConfig {
 }
 
 function msg(): UnifiedMessage {
-  return { id: "m1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
+  return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
 }
 
 function session(): SessionData {
   const now = new Date().toISOString();
-  return { id: "telegram/dm/u1", platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id: "telegram/dm/u1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 
 /** Replays a scripted SDK stream, consuming the prompt generator like the real query does. */

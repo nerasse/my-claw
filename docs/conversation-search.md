@@ -13,7 +13,7 @@ $MY_CLAW_DIR/conversations.db
 ```
 
 The database uses SQLite WAL mode and an FTS5 `messages_fts` index. It stores
-normalized provenance for Telegram, Matrix, cron, the main orchestrator, and
+normalized provenance for the app channel, cron, the main orchestrator, and
 sub-agent messages. The file is created with mode `0600`.
 
 `memory.db` remains reserved for curated durable facts and is not used as a
@@ -63,8 +63,8 @@ There is no automatic conversation purge in this first version; the archive is
 intended to retain historical search data until an explicit lifecycle policy is
 added.
 
-Telegram history before the bot received an update cannot be recovered through
-the generic Bot API. Matrix history can be imported only where the client has
+History that predates the archive cannot be recovered: only what the server saw
+is indexed. Older material can be imported only where a client has
 access and, for encrypted rooms, after local decryption.
 
 ## Agent Visibility

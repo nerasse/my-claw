@@ -14,10 +14,10 @@ const config: MyClawConfig = {
   llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
   agents: {}, memory: { enabled: false },
 };
-const SESSION_ID = "telegram/dm/u1";
+const SESSION_ID = "my-claw-app/dm/u1";
 
 function message(id: string, text: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 function llm(message: object): never {
   return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { "Content-Type": "application/json" } }) as never;

@@ -8,7 +8,7 @@ import type { SessionData } from "../src/sessions/store.ts";
 function createMessage(userId = "u1"): UnifiedMessage {
   return {
     id: "m1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId,
     chatId: "c1",
     chatType: "dm",
@@ -72,13 +72,12 @@ test("MessageRouter forwards streaming callbacks", async () => {
   assert.deepEqual(events, ["a", "tool"]);
 });
 
-test("MessageRouter uses room-scoped Matrix DM sessions when requested", async () => {
+test("MessageRouter keys an app conversation by its thread", async () => {
   const sessionManager = new SessionManager();
   let capturedSessionId = "";
   const router = new MessageRouter(sessionManager, {
-    async handleMessage(_message: UnifiedMessage, session: SessionData) {
+    async handleMessage(_msg: UnifiedMessage, session: SessionData) {
       capturedSessionId = session.id;
-      session.modelOverride = "alt-model";
       return "ok";
     },
     async handleMessageStreaming() {
@@ -90,20 +89,20 @@ test("MessageRouter uses room-scoped Matrix DM sessions when requested", async (
   } as never);
 
   const response = await router.route({
-    id: "$evt1",
-    platform: "matrix",
-    userId: "@u1:example.org",
-    chatId: "!dm-room:test",
+    id: "m1",
+    platform: "my-claw-app",
+    userId: "neras",
+    chatId: "neras",
     chatType: "dm",
     text: "hello",
     attachments: [],
     isForwarded: false,
-    sessionScope: "per-room",
+    threadId: "t7",
     raw: {},
   });
 
   assert.equal(response?.text, "ok");
-  assert.equal(capturedSessionId, "matrix/dm-room/!dm-room:test");
+  assert.equal(capturedSessionId, "my-claw-app/thread/neras/t7");
 });
 
 test("first 30 messages from one user all succeed", async () => {
@@ -230,7 +229,7 @@ test("agent error propagates and next message to same session still works", asyn
   assert.equal(result?.text, "recovered");
 });
 
-test("telegram DM session ID format", async () => {
+test("app DM session ID format", async () => {
   const sessionManager = new SessionManager();
   let capturedId = "";
   const router = new MessageRouter(sessionManager, {
@@ -244,9 +243,9 @@ test("telegram DM session ID format", async () => {
 
   await router.route({
     id: "t1",
-    platform: "telegram",
-    userId: "tg-user-42",
-    chatId: "tg-chat-42",
+    platform: "my-claw-app",
+    userId: "neras",
+    chatId: "neras",
     chatType: "dm",
     text: "hi",
     attachments: [],
@@ -254,62 +253,7 @@ test("telegram DM session ID format", async () => {
     raw: {},
   });
 
-  assert.equal(capturedId, "telegram/dm/tg-user-42");
-});
-
-test("matrix DM with per-room scope session ID format", async () => {
-  const sessionManager = new SessionManager();
-  let capturedId = "";
-  const router = new MessageRouter(sessionManager, {
-    async handleMessage(_msg: UnifiedMessage, session: SessionData) {
-      capturedId = session.id;
-      return "ok";
-    },
-    async handleMessageStreaming() { throw new Error("unused"); },
-    getResponseAttachments() { return []; },
-  } as never);
-
-  await router.route({
-    id: "$evt2",
-    platform: "matrix",
-    userId: "@bob:example.org",
-    chatId: "!room-abc:test",
-    chatType: "dm",
-    text: "hi",
-    attachments: [],
-    isForwarded: false,
-    sessionScope: "per-room",
-    raw: {},
-  });
-
-  assert.equal(capturedId, "matrix/dm-room/!room-abc:test");
-});
-
-test("matrix group session ID format", async () => {
-  const sessionManager = new SessionManager();
-  let capturedId = "";
-  const router = new MessageRouter(sessionManager, {
-    async handleMessage(_msg: UnifiedMessage, session: SessionData) {
-      capturedId = session.id;
-      return "ok";
-    },
-    async handleMessageStreaming() { throw new Error("unused"); },
-    getResponseAttachments() { return []; },
-  } as never);
-
-  await router.route({
-    id: "$evt3",
-    platform: "matrix",
-    userId: "@alice:example.org",
-    chatId: "!group-xyz:test",
-    chatType: "group",
-    text: "hi",
-    attachments: [],
-    isForwarded: false,
-    raw: {},
-  });
-
-  assert.equal(capturedId, "matrix/room/!group-xyz:test");
+  assert.equal(capturedId, "my-claw-app/dm/neras");
 });
 
 // A failed run used to leave the question in memory only: the next restart dropped it, and the
@@ -328,7 +272,7 @@ test("a run that throws still writes what the session already holds", async () =
   const msg = createMessage("persist-on-error");
   await assert.rejects(() => router.route(msg), { message: "agent exploded" });
 
-  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "persist-on-error");
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "c1", "persist-on-error");
   try {
     const onDisk = await new SessionManager().read(sessionId);
     assert.equal(onDisk?.messages.length, 1);

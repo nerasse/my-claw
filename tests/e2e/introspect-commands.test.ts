@@ -2,10 +2,8 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { createTelegramCommandHandler } from "../../src/channels/telegram/session-handlers.ts";
-import { createMatrixCommandHandler } from "../../src/channels/matrix/session-handlers.ts";
-import { getHelpText, COMMANDS, commandsFor } from "../../src/channels/telegram/commands.ts";
-import { getMatrixHelpText, MATRIX_COMMANDS, parseMatrixCommand } from "../../src/channels/matrix/commands.ts";
+import { createMyClawAppCommandHandler } from "../../src/channels/my-claw-app/commands.ts";
+import { getHelpText, COMMANDS, commandsFor } from "../../src/channels/commands-catalog.ts";
 import { isMetaCommand } from "../../src/channels/meta-commands.ts";
 import { ModelPicker } from "../../src/channels/model-picker.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
@@ -63,10 +61,10 @@ function toolRegistry(): ToolRegistry {
   return tools;
 }
 
-type Handler = (chatId: string, userId: string, chatType: "dm", command: string, args: string) => Promise<OutgoingMessage | string | undefined>;
+type Handler = (owner: string, threadId: string, command: string, args: string) => Promise<OutgoingMessage | string | undefined>;
 
-/** Both channels' real command handlers over one live config, as index.ts wires them. */
-async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ telegram: Handler; matrix: Handler }> {
+/** The real command handler over one live config, as index.ts wires it. */
+async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ app: Handler }> {
   const skills = await realSkills();
   const deps = {
     config,
@@ -80,10 +78,7 @@ async function handlers(config: MyClawConfig, mcp?: McpManager): Promise<{ teleg
       { id: "subagent/deploy-a1b2", displayName: "deploy", type: "general" as const, messageCount: 3, status: "idle" as const, visibility: "global" as const, createdAt: "2026-01-01T00:00:00.000Z" },
     ],
   };
-  return {
-    telegram: createTelegramCommandHandler(deps) as Handler,
-    matrix: createMatrixCommandHandler(deps) as Handler,
-  };
+  return { app: createMyClawAppCommandHandler(deps) as Handler };
 }
 
 const text = (r: OutgoingMessage | string | undefined): string =>
@@ -111,30 +106,25 @@ async function writeUntilReloaded(file: string, content: string, reloaded: Promi
 }
 
 describe("E2E introspection commands", () => {
-  test("all four answer on both channels, with the same body", async () => {
+  test("all four answer", async () => {
     const h = await handlers(baseConfig({ general: { skills: ["alpha"] } }));
     for (const command of NEW_COMMANDS) {
-      const tg = text(await h.telegram("c1", "u1", "dm", command, ""));
-      const mx = text(await h.matrix("!r:test", "@u1:example.org", "dm", command, ""));
-      expect(tg.length).toBeGreaterThan(0);
-      // One shared body per command: the channels must not drift apart. The runtime line inside an
-      // /instructions dump carries a timestamp, so compare the summary's first line there.
-      const norm = (s: string) => s.split("\n")[0]!.replace(/\d+ octets/, "N octets");
-      expect(norm(mx)).toBe(norm(tg));
+      const out = text(await h.app("u1", "t1", command, ""));
+      expect(out.length).toBeGreaterThan(0);
     }
   });
 
   test("the agent argument is honoured through the channel handler", async () => {
     const h = await handlers(baseConfig({ orchestrator: { skills: ["*"] }, general: { skills: ["alpha"] } }));
-    const scoped = text(await h.telegram("c1", "u1", "dm", "skills", "general"));
+    const scoped = text(await h.app("u1", "t1", "skills", "general"));
     expect(scoped).toContain("- alpha:");
     expect(scoped).not.toContain("- beta:");
 
-    const all = text(await h.telegram("c1", "u1", "dm", "skills", ""));
+    const all = text(await h.app("u1", "t1", "skills", ""));
     expect(all).toContain("- beta:");
 
     // A live sub-agent id resolves through its type.
-    const byId = text(await h.matrix("!r:test", "@u1:example.org", "dm", "skills", "subagent/deploy-a1b2"));
+    const byId = text(await h.app("u1", "t1", "skills", "subagent/deploy-a1b2"));
     expect(byId).toContain("(type general)");
     expect(byId).not.toContain("- beta:");
   });
@@ -145,28 +135,20 @@ describe("E2E introspection commands", () => {
     await mcp.sync({ broken: { transport: "stdio", command: "definitely-not-a-real-binary-xyz" } });
 
     const h = await handlers(baseConfig(), mcp);
-    const out = text(await h.telegram("c1", "u1", "dm", "mcp", ""));
+    const out = text(await h.app("u1", "t1", "mcp", ""));
     expect(out).toContain("broken | stdio | failed");
     expect(out).toContain("1 sur 1");
   });
 
-  test("/instructions delivers a file both channels can send, then cleans up", async () => {
+  test("/instructions inlines the dump and leaves no temp file behind", async () => {
     const h = await handlers(baseConfig());
-    for (const [name, handler] of [["telegram", h.telegram], ["matrix", h.matrix]] as const) {
-      const res = await handler("c1", "u1", "dm", "instructions", "");
-      expect(typeof res).not.toBe("string");
-      const att = (res as OutgoingMessage).attachments?.[0];
-      expect(att?.type).toBe("file");
-      expect(att?.mimeType).toBe("text/markdown");
-      const body = await readFile(att!.path!, "utf-8");
-      expect(body).toContain("# Available tools");
-      expect(text(res)).toContain(`${body.length} octets`);
-      // Both adapters call this after sending; without the prompt- prefix the dir would survive.
-      await cleanupGeneratedTempFiles((res as OutgoingMessage).attachments);
-      await expect(readFile(att!.path!, "utf-8")).rejects.toThrow();
-      expect(name).toBeTruthy();
-      void dirname(att!.path!);
-    }
+    const res = await h.app("u1", "t1", "instructions", "");
+    // The app inlines the dump: a frame carries the whole text, so there is no attachment to
+    // send and no file to clean up afterwards.
+    const body = text(res);
+    expect(body).toContain("# Available tools");
+    expect(body).not.toContain("[object Object]");
+    expect((res as OutgoingMessage).attachments ?? []).toHaveLength(0);
   });
 
   test("a scope edited on disk shows up in the next command, with no restart", async () => {
@@ -177,7 +159,7 @@ describe("E2E introspection commands", () => {
 
     const config = parseConfig(await Bun.file(file).text());
     const h = await handlers(config);
-    expect(text(await h.telegram("c1", "u1", "dm", "skills", "general"))).not.toContain("- beta:");
+    expect(text(await h.app("u1", "t1", "skills", "general"))).not.toContain("- beta:");
 
     const watcher = startConfigWatcher(config, {}, {
       path: file,
@@ -195,44 +177,31 @@ describe("E2E introspection commands", () => {
     await writeUntilReloaded(file, JSON.stringify(baseConfig({ general: { skills: ["alpha", "beta"] } }), null, 2), reloaded);
 
     // The handler holds the same live config object, so no re-registration should be needed.
-    expect(text(await h.telegram("c1", "u1", "dm", "skills", "general"))).toContain("- beta:");
+    expect(text(await h.app("u1", "t1", "skills", "general"))).toContain("- beta:");
   });
 
-  test("each command is routable and discoverable on both channels", async () => {
+  test("each command is routable and discoverable", async () => {
     for (const command of NEW_COMMANDS) {
       // Without this the command and its reply are replayed to the LLM as conversation context.
       expect(isMetaCommand(`/${command}`)).toBe(true);
       expect(isMetaCommand(`/${command}@mybot`)).toBe(true);
-      // Drives /help and the Telegram native menu.
+      // Drives /help and the app slash-menu.
       expect(COMMANDS.some((c) => c.command === command)).toBe(true);
-      expect(MATRIX_COMMANDS.some((c) => c.command === command)).toBe(true);
-      expect(getHelpText("telegram")).toContain(`/${command}`);
       expect(getHelpText("my-claw-app")).toContain(`/${command}`);
-      expect(getMatrixHelpText()).toContain(`/${command}`);
-      // Matrix parses generically; the name must survive that regex, which excludes hyphens.
-      expect(parseMatrixCommand(`/${command} general`)).toEqual({ command, args: "general" });
+      expect(commandsFor("my-claw-app").some((c) => c.command === command)).toBe(true);
     }
   });
 
-  test("a channel advertises exactly what it runs, and /clear is gone from all of them", () => {
-    // The app archives from its own menu, reversibly; /archive deletes the snapshots that
-    // /new leaves behind, which only the chat platforms produce.
-    expect(commandsFor("telegram").some((c) => c.command === "archive")).toBe(true);
-    expect(commandsFor("my-claw-app").some((c) => c.command === "archive")).toBe(false);
-    expect(getHelpText("my-claw-app")).not.toContain("/archive");
-
-    // A command that is advertised nowhere must not run anywhere either: a hidden command
-    // that still works is exactly what we refuse to ship.
-    for (const catalog of [COMMANDS, MATRIX_COMMANDS]) {
-      expect(catalog.some((c) => c.command === "clear")).toBe(false);
-    }
+  test("a command that is advertised nowhere does not run either", () => {
+    // A hidden command that still works is exactly what we refuse to ship.
+    expect(COMMANDS.some((c) => c.command === "clear")).toBe(false);
     expect(isMetaCommand("/clear")).toBe(false);
   });
 
   test("an unknown agent name is reported, not silently treated as the orchestrator", async () => {
     const h = await handlers(baseConfig({ general: { skills: ["alpha"] } }));
     for (const command of ["skills", "mcp", "instructions"]) {
-      const out = text(await h.telegram("c1", "u1", "dm", command, "ghost-agent"));
+      const out = text(await h.app("u1", "t1", command, "ghost-agent"));
       expect(out).toContain("Agent inconnu : ghost-agent");
     }
   });
@@ -240,7 +209,7 @@ describe("E2E introspection commands", () => {
   test("the commands still answer when no MCP manager or runner is wired", async () => {
     // A read-only command must degrade, not throw, if the host omitted an optional dep.
     const config = baseConfig();
-    const handler = createTelegramCommandHandler({
+    const handler = createMyClawAppCommandHandler({
       config,
       sessionManager: new SessionManager(),
       modelPicker: new ModelPicker([]),
@@ -248,16 +217,16 @@ describe("E2E introspection commands", () => {
       agentRegistry: await realAgents(),
       toolRegistry: toolRegistry(),
     }) as Handler;
-    expect(text(await handler("c1", "u1", "dm", "mcp", ""))).toContain("Aucun serveur déclaré");
-    expect(text(await handler("c1", "u1", "dm", "agents", ""))).toContain("- (aucun)");
+    expect(text(await handler("u1", "t1", "mcp", ""))).toContain("Aucun serveur déclaré");
+    expect(text(await handler("u1", "t1", "agents", ""))).toContain("- (aucun)");
   });
 
   test("without the registries the commands report the gap instead of throwing", async () => {
-    const handler = createTelegramCommandHandler({
+    const handler = createMyClawAppCommandHandler({
       config: baseConfig(),
       sessionManager: new SessionManager(),
       modelPicker: new ModelPicker([]),
     }) as Handler;
-    expect(text(await handler("c1", "u1", "dm", "skills", ""))).toContain("Introspection indisponible");
+    expect(text(await handler("u1", "t1", "skills", ""))).toContain("Introspection unavailable");
   });
 });

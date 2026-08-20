@@ -24,9 +24,9 @@ describe("integration: session lifecycle", () => {
     hooks.on("session:created", spy);
     const manager = new SessionManager();
     const sid = uniqId("s");
-    await manager.getOrCreateWithMeta(sid, "telegram", "dm");
+    await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, platform: "telegram", chatType: "dm" }));
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, platform: "my-claw-app", chatType: "dm" }));
   });
 
   test("session:loaded fires on existing session from disk", async () => {
@@ -34,13 +34,13 @@ describe("integration: session lifecycle", () => {
     hooks.on("session:loaded", spy);
     const manager = new SessionManager();
     const sid = uniqId("s");
-    const session = await manager.getOrCreateWithMeta(sid, "telegram", "dm");
+    const session = await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
     session.messages.push({ role: "user", content: "test", timestamp: new Date().toISOString() });
     await manager.persist(sid);
     const manager2 = new SessionManager();
     const createdSpy = mock(() => {});
     hooks.on("session:created", createdSpy);
-    await manager2.getOrCreateWithMeta(sid, "telegram", "dm");
+    await manager2.getOrCreateWithMeta(sid, "my-claw-app", "dm");
     expect(spy).toHaveBeenCalledTimes(1);
     expect(createdSpy).not.toHaveBeenCalled();
   });
@@ -50,7 +50,7 @@ describe("integration: session lifecycle", () => {
     hooks.on("session:persisted", spy);
     const manager = new SessionManager();
     const sid = uniqId("s");
-    await manager.getOrCreateWithMeta(sid, "telegram", "dm");
+    await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
     await manager.persist(sid);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid }));
@@ -61,10 +61,10 @@ describe("integration: session lifecycle", () => {
     hooks.on("session:reset", spy);
     const manager = new SessionManager();
     const sid = uniqId("s");
-    await manager.getOrCreateWithMeta(sid, "telegram", "dm");
-    await manager.resetSession(sid, "telegram", "dm");
+    await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
+    await manager.resetSession(sid, "my-claw-app", "dm");
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, platform: "telegram" }));
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, platform: "my-claw-app" }));
   });
 
   test("gate:session:reset blocks reset", async () => {
@@ -72,7 +72,7 @@ describe("integration: session lifecycle", () => {
     hooks.on("session:reset", spy);
     hooks.gate("gate:session:reset", () => ({ allow: false, reason: "no" }));
     const manager = new SessionManager();
-    await manager.resetSession("telegram/dm/u1", "telegram", "dm");
+    await manager.resetSession("telegram/dm/u1", "my-claw-app", "dm");
     expect(spy).not.toHaveBeenCalled();
   });
 });
@@ -86,7 +86,7 @@ describe("integration: message routing lifecycle", () => {
     const spy = mock(() => {});
     hooks.on("message:received", spy);
     hooks.emit("message:received", {
-      message: { id: "1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: null },
+      message: { id: "1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: null },
     });
     expect(spy).toHaveBeenCalledTimes(1);
   });
@@ -96,7 +96,7 @@ describe("integration: message routing lifecycle", () => {
     hooks.on("message:route:start", spy);
     hooks.gate("gate:message:incoming", () => ({ allow: false, reason: "test" }));
     const result = await hooks.check("gate:message:incoming", {
-      message: { id: "1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: null },
+      message: { id: "1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: null },
     });
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("test");
@@ -147,7 +147,7 @@ describe("integration: waterfall transforms", () => {
     hooks.tap("transform:outgoing:message", (p) => ({ ...p, text: p.text + " [footer]" }));
     const result = await hooks.transform("transform:outgoing:message", {
       text: "hello",
-      platform: "telegram",
+      platform: "my-claw-app",
       chatId: "c1",
     });
     expect(result.text).toBe("hello [footer]");

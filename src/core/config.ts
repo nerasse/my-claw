@@ -4,114 +4,6 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { PROMPT_FILES, type PromptFile } from "../agent/prompt/files.ts";
 
-export interface TelegramChannelConfig {
-  enabled?: boolean;
-  token: string;
-  mode?: "polling" | "webhook";
-  dm?: {
-    enabled?: boolean;
-    policy?: "open" | "allowlist" | "disabled";
-    allowFrom?: string[];
-    sessionScope?: "per-user" | "per-chat";
-  };
-  groupPolicy?: "open" | "allowlist" | "disabled";
-  groupAllowFrom?: string[];
-  botUserIds?: string[];
-  allowBots?: boolean | "mentions";
-  groups?: Record<
-    string,
-    {
-      enabled?: boolean;
-      requireMention?: boolean;
-      users?: string[];
-      autoReply?: boolean;
-      allowBots?: boolean | "mentions";
-    }
-  >;
-  threadReplies?: "off" | "inbound" | "always";
-  replyToMode?: "off" | "first" | "all";
-  historyLimit?: number;
-  contextVisibility?: "all" | "allowlist" | "allowlist_quote";
-  webhook?: {
-    url: string;
-    secret: string;
-    port: number;
-  };
-  linkPreview?: boolean;
-  streaming?: {
-    enabled?: boolean;
-    minChars?: number;
-    throttleMs?: number;
-  };
-  reactions?: {
-    enabled?: boolean;
-    received?: string;
-    thinking?: string;
-    toolUse?: string;
-    done?: string;
-    error?: string;
-  };
-  errorPolicy?: "always" | "once" | "silent";
-}
-
-export interface MatrixChannelConfig {
-  enabled?: boolean;
-  homeserver: string;
-  accessToken: string;
-  encryption?: boolean;
-  userId?: string;
-  password?: string;
-  deviceId?: string;
-  displayName?: string;
-  initialSyncLimit?: number;
-  autoJoin?: "off" | "always" | "allowlist";
-  autoJoinAllowlist?: string[];
-  dm?: {
-    enabled?: boolean;
-    policy?: "open" | "allowlist" | "disabled";
-    allowFrom?: string[];
-    sessionScope?: "per-user" | "per-room";
-    threadReplies?: "off" | "inbound" | "always";
-    historyLimit?: number;
-  };
-  groupPolicy?: "open" | "allowlist" | "disabled";
-  groupAllowFrom?: string[];
-  botUserIds?: string[];
-  allowBots?: boolean | "mentions";
-  groups?: Record<
-    string,
-    {
-      enabled?: boolean;
-      requireMention?: boolean;
-      users?: string[];
-      autoReply?: boolean;
-      allowBots?: boolean | "mentions";
-    }
-  >;
-  threadReplies?: "off" | "inbound" | "always";
-  replyToMode?: "off" | "first" | "all" | "batched";
-  historyLimit?: number;
-  textChunkLimit?: number;
-  chunkMode?: "length" | "newline";
-  contextVisibility?: "all" | "allowlist" | "allowlist_quote";
-  streaming?: {
-    enabled?: boolean;
-    mode?: "partial" | "quiet";
-    minChars?: number;
-    throttleMs?: number;
-  };
-  reactions?: {
-    enabled?: boolean;
-    received?: string;
-    thinking?: string;
-    toolUse?: string;
-    done?: string;
-    error?: string;
-  };
-  errorPolicy?: "always" | "once" | "silent";
-  mediaMaxMb?: number;
-}
-
 export interface MyClawAppChannelConfig {
   enabled?: boolean;
   /** Port the WSS server binds. Defaults to 8080. Reboot-only: the socket is created at start. */
@@ -539,8 +431,6 @@ export interface MyClawConfig {
   whitelist: string[];
   blacklist: string[];
   channels: {
-    telegram?: TelegramChannelConfig;
-    matrix?: MatrixChannelConfig;
     "my-claw-app"?: MyClawAppChannelConfig;
   };
   llm: LlmConfig;
@@ -966,8 +856,7 @@ export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-cl
  * without this, a rotated token would survive until the next process restart.
  * Only secrets read fresh per run (CLAUDE_CODE_OAUTH_TOKEN, consumed by the
  * Claude SDK backend which rebuilds env + respawns the CLI every run) take
- * effect immediately; channel tokens update process.env but the live Telegram/
- * Matrix client keeps its old connection until reboot.
+ * effect immediately.
  */
 export async function loadEnv(forceRefresh = false): Promise<void> {
   const envPath = join(MY_CLAW_DIR, ".env");
@@ -990,32 +879,9 @@ export async function loadEnv(forceRefresh = false): Promise<void> {
 }
 
 function applySecretOverrides(config: MyClawConfig): void {
-  const tg = config.channels.telegram;
-  if (tg && process.env.MY_CLAW_TELEGRAM_TOKEN) {
-    tg.token = process.env.MY_CLAW_TELEGRAM_TOKEN;
-  }
-
-  const mx = config.channels.matrix;
-  if (mx) {
-    if (process.env.MY_CLAW_MATRIX_ACCESS_TOKEN) {
-      mx.accessToken = process.env.MY_CLAW_MATRIX_ACCESS_TOKEN;
-    }
-    if (process.env.MY_CLAW_MATRIX_PASSWORD) {
-      mx.password = process.env.MY_CLAW_MATRIX_PASSWORD;
-    }
-  }
-
   if (config.webSearch && process.env.MY_CLAW_WEB_SEARCH_TOKEN) {
     config.webSearch.token = process.env.MY_CLAW_WEB_SEARCH_TOKEN;
   }
-}
-
-export function isTelegramChannelEnabled(config: MyClawConfig): boolean {
-  return config.channels.telegram?.enabled !== false && Boolean(config.channels.telegram);
-}
-
-export function isMatrixChannelEnabled(config: MyClawConfig): boolean {
-  return config.channels.matrix?.enabled !== false && Boolean(config.channels.matrix);
 }
 
 export function isMyClawAppChannelEnabled(config: MyClawConfig): boolean {
@@ -1169,9 +1035,9 @@ export function parseConfig(raw: string): MyClawConfig {
 
   config.whitelist = config.whitelist ?? [];
   config.blacklist = config.blacklist ?? [];
-  // A config.json without "channels" used to reach applySecretOverrides and die on
-  // `config.channels.telegram` with an opaque "undefined is not an object". The type says the key
-  // is required, which is exactly why nothing checked it.
+  // A config.json without "channels" used to reach the channel readers and die with an opaque
+  // "undefined is not an object". The type says the key is required, which is exactly why
+  // nothing checked it.
   config.channels = config.channels ?? {};
   applySecretOverrides(config);
   return config;

@@ -35,7 +35,7 @@ function registryWith(agent: FileAgent): AgentRegistry {
 function parentMessage(): UnifiedMessage {
   return {
     id: `m-${Math.random().toString(36).slice(2, 8)}`,
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",

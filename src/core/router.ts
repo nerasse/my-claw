@@ -149,7 +149,7 @@ export class MessageRouter {
       message.chatId,
       message.userId,
       {
-        roomId: message.platform === "matrix" ? message.chatId : undefined,
+        roomId: undefined,
         threadId: message.threadId,
         sessionScope: message.sessionScope,
       },

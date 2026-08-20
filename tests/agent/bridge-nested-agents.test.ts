@@ -20,11 +20,11 @@ function baseConfig(): MyClawConfig {
   };
 }
 function msg(id: string, text: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 function session(id: string): SessionData {
   const now = new Date().toISOString();
-  return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 function llm(message: object): never {
   return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { status: 200, headers: { "Content-Type": "application/json" } }) as never;

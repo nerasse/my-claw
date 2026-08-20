@@ -7,7 +7,7 @@ import { AbortedError } from "../../src/core/aborted.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
 function createMessage(userId: string): UnifiedMessage {
-  return { id: "m1", platform: "telegram", userId, chatId: "c1", chatType: "dm", text: "hello", attachments: [], isForwarded: false, raw: {} };
+  return { id: "m1", platform: "my-claw-app", userId, chatId: "c1", chatType: "dm", text: "hello", attachments: [], isForwarded: false, raw: {} };
 }
 
 test("router.stop aborts the in-flight run; route resolves to undefined (no delivery)", async () => {
@@ -30,7 +30,7 @@ test("router.stop aborts the in-flight run; route resolves to undefined (no deli
     getResponseAttachments() { return []; },
   } as never);
 
-  const sessionId = "telegram/dm/stop-user";
+  const sessionId = "my-claw-app/dm/stop-user";
   const p = router.route(createMessage("stop-user"));
   await handlerListening;
 
@@ -50,7 +50,7 @@ test("router.stop on an idle session returns false", async () => {
     async handleMessageStreaming() { throw new Error("unused"); },
     getResponseAttachments() { return []; },
   } as never);
-  assert.equal(router.stop("telegram/dm/nobody"), false);
+  assert.equal(router.stop("my-claw-app/dm/nobody"), false);
   runRegistry.clear();
 });
 
@@ -81,7 +81,7 @@ test("router.stop targets only the requested session", async () => {
   const pB = router.route(createMessage("user-b"));
   await bothListening;
 
-  assert.equal(router.stop("telegram/dm/user-a"), true);
+  assert.equal(router.stop("my-claw-app/dm/user-a"), true);
   const [rA, rB] = await Promise.all([pA, pB]);
   assert.equal(rA, undefined);          // A aborted
   assert.equal(rB?.text, "ok");         // B untouched

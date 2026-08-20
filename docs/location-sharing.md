@@ -1,5 +1,10 @@
 # Chat Location Sharing
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 Status: implemented for the Android app and the my-claw-app server protocol. The protocol also
 accepts the browser shape; the current repository does not ship a browser client or an iOS
 DeviceBridge yet.

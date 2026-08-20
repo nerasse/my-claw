@@ -32,7 +32,7 @@ export interface LogQuery {
   limit?: number;
   /** Substring match on the message, case-insensitive. */
   contains?: string;
-  /** Scopes to leave out. The matrix SDK alone drowns everything else at warn level. */
+  /** Scopes to leave out. */
   excludeScopes?: string[];
 }
 
@@ -106,9 +106,6 @@ export function collectSecrets(config: MyClawConfig): string[] {
     addEnv(provider.apiKeyEnv);
     for (const header of Object.values(provider.headers ?? {})) add(header);
   }
-  add(config.channels.telegram?.token);
-  add(config.channels.matrix?.password);
-  add(config.channels.matrix?.accessToken);
   for (const device of Object.values(config.channels["my-claw-app"]?.devices ?? {})) add(device.token);
   add(config.webSearch?.token);
   return [...secrets];
@@ -204,8 +201,8 @@ export async function buildDiagnostics(input: DiagnosticsInput): Promise<string>
   }
 
   // The SDK's own chatter is not a symptom of anything; ask for it explicitly if needed.
-  const errors = await readLogEntries({ level: "warn", limit: 15, excludeScopes: ["matrix-sdk"] });
-  lines.push("", `last ${errors.length} warnings/errors (matrix-sdk excluded):`);
+  const errors = await readLogEntries({ level: "warn", limit: 15 });
+  lines.push("", `last ${errors.length} warnings/errors:`);
   lines.push(errors.length > 0 ? formatLogEntries(errors, secrets) : "  none");
 
   return redactSecrets(lines.join("\n"), secrets);

@@ -28,7 +28,7 @@ const baseConfig: MyClawConfig = {
 function createParentMessage(): UnifiedMessage {
   return {
     id: "msg-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user1",
     chatId: "chat1",
     chatType: "dm",

@@ -11,7 +11,7 @@ import { hooks } from "../hooks/index.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /** Per-run scratch state, keyed by message id. A single MessagePreprocessor instance is shared
- *  by the one AgentBridge that serves telegram + matrix + cron, so concurrent runs (different
+ *  by the one AgentBridge that serves the app + cron, so concurrent runs (different
  *  sessions/platforms) MUST NOT share these buffers — otherwise run B wipes or steals run A's
  *  response attachments/echoes/temp dirs, and a voice note can be delivered to the wrong chat.
  *  Keying by the (unique) message id isolates each run. */

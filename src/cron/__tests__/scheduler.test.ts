@@ -29,7 +29,7 @@ describe("cron scheduler", () => {
     hooks.clear();
     sentMessages.length = 0;
     adapterMock = {
-      platform: "telegram",
+      platform: "my-claw-app",
       start: async () => {},
       stop: async () => {},
       send: async (chatId, msg) => {
@@ -55,7 +55,7 @@ describe("cron scheduler", () => {
     config = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, agents: {}, cron: { enabled: true } } as MyClawConfig;
 
     scheduler = new CronScheduler(router, sessionManager, config);
-    scheduler.adapters.set("telegram", adapterMock);
+    scheduler.adapters.set("my-claw-app", adapterMock);
   });
 
   afterEach(() => {
@@ -72,7 +72,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -94,7 +94,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
         silent: true,
       });
@@ -130,7 +130,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -147,7 +147,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -163,7 +163,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -181,7 +181,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -198,7 +198,7 @@ describe("cron scheduler", () => {
       const broken = createJob({
         prompt: "broken",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       // Hand-edited jobs.json: the loose shape check passes, the parser refuses hour 25.
@@ -208,7 +208,7 @@ describe("cron scheduler", () => {
       const healthy = createJob({
         prompt: "healthy",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "456" },
+        origin: { platform: "my-claw-app", chatId: "456" },
         deliver: "origin",
       });
       healthy.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -232,8 +232,8 @@ describe("cron scheduler", () => {
         return { text: `Response ${callCount}` };
       };
 
-      const job1 = createJob({ prompt: "test1", schedule: "every 30m", origin: { platform: "telegram", chatId: "123" }, deliver: "origin" });
-      const job2 = createJob({ prompt: "test2", schedule: "every 30m", origin: { platform: "telegram", chatId: "456" }, deliver: "origin" });
+      const job1 = createJob({ prompt: "test1", schedule: "every 30m", origin: { platform: "my-claw-app", chatId: "123" }, deliver: "origin" });
+      const job2 = createJob({ prompt: "test2", schedule: "every 30m", origin: { platform: "my-claw-app", chatId: "456" }, deliver: "origin" });
       job1.nextRunAt = new Date(Date.now() - 60_000).toISOString();
       job2.nextRunAt = new Date(Date.now() - 60_000).toISOString();
       await saveJobs([job1, job2]);
@@ -247,7 +247,7 @@ describe("cron scheduler", () => {
       // Without the wall-clock guard, a job that never returns would pin the tick forever.
       config.cron = { enabled: true, timeoutMs: 10 };
       scheduler = new CronScheduler(router, sessionManager, config);
-      scheduler.adapters.set("telegram", adapterMock);
+      scheduler.adapters.set("my-claw-app", adapterMock);
 
       const stopCalls: string[] = [];
       router.stop = (sessionId: string) => { stopCalls.push(sessionId); return true; };
@@ -259,7 +259,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -287,7 +287,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -309,7 +309,7 @@ describe("cron scheduler", () => {
     const job = createJob({
       prompt: "test",
       schedule: "every 30m",
-      origin: { platform: "telegram", chatId: "123" },
+      origin: { platform: "my-claw-app", chatId: "123" },
       deliver: "origin",
       workspace: "sofa",
     });
@@ -332,7 +332,7 @@ describe("cron scheduler", () => {
     const job = createJob({
       prompt: "test",
       schedule: "every 30m",
-      origin: { platform: "telegram", chatId: "123" },
+      origin: { platform: "my-claw-app", chatId: "123" },
       deliver: "origin",
       workspace: "sofa",
     });
@@ -370,7 +370,7 @@ describe("cron scheduler", () => {
     const job = createJob({
       prompt: "test",
       schedule: "every 30m",
-      origin: { platform: "telegram", chatId: "123" },
+      origin: { platform: "my-claw-app", chatId: "123" },
       deliver: "origin",
     });
     job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -397,7 +397,7 @@ describe("cron scheduler", () => {
     const job = createJob({
       prompt: "test",
       schedule: "every 30m",
-      origin: { platform: "telegram", chatId: "123" },
+      origin: { platform: "my-claw-app", chatId: "123" },
       deliver: "origin",
     });
     job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -415,7 +415,7 @@ describe("cron scheduler", () => {
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
@@ -444,7 +444,7 @@ describe("cron scheduler", () => {
         prompt: "test",
         schedule: "every 30m",
         origin: null,
-        deliver: "telegram:456",
+        deliver: "my-claw-app:456",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();
       await saveJobs([job]);
@@ -454,11 +454,11 @@ describe("cron scheduler", () => {
     });
 
     test("missing adapter logs error gracefully", async () => {
-      scheduler.adapters.delete("telegram");
+      scheduler.adapters.delete("my-claw-app");
       const job = createJob({
         prompt: "test",
         schedule: "every 30m",
-        origin: { platform: "telegram", chatId: "123" },
+        origin: { platform: "my-claw-app", chatId: "123" },
         deliver: "origin",
       });
       job.nextRunAt = new Date(Date.now() - 60_000).toISOString();

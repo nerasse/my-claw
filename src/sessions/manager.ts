@@ -80,35 +80,6 @@ export class SessionManager {
     userId: string,
     meta?: { roomId?: string; threadId?: string; sessionScope?: "per-user" | "per-room" | "per-chat" },
   ): string {
-    if (platform === "matrix") {
-      const roomId = meta?.roomId ?? chatId;
-      const threadId = meta?.threadId?.trim();
-      if (threadId) {
-        return `matrix/thread/${roomId}/${threadId}`;
-      }
-      if (chatType === "dm") {
-        if (meta?.sessionScope === "per-room") {
-          return `matrix/dm-room/${roomId}`;
-        }
-        return `matrix/dm/${userId}`;
-      }
-      return `matrix/room/${roomId}`;
-    }
-
-    if (platform === "telegram") {
-      const threadId = meta?.threadId?.trim();
-      if (threadId) {
-        return `telegram/thread/${chatId}/${threadId}`;
-      }
-      if (chatType === "dm") {
-        if (meta?.sessionScope === "per-chat") {
-          return `telegram/dm-chat/${chatId}`;
-        }
-        return `telegram/dm/${userId}`;
-      }
-      return `telegram/group/${chatId}`;
-    }
-
     if (platform === "my-claw-app") {
       const threadId = meta?.threadId?.trim();
       if (threadId) {

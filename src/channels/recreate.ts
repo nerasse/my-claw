@@ -21,8 +21,8 @@ export interface RecreateChannelOptions<T extends RecreatableAdapter> {
  * Recreate a channel adapter in place on an identity/token change, without a restart.
  *
  * Sequential by contract: the old adapter is FULLY stopped before the new one is built, so the
- * two never overlap on the same credentials/store (Telegram 409 from two pollers, Matrix crypto
- * store contention). A failing stop is logged, not thrown, so the new adapter still comes up.
+ * two never overlap on the same credentials/store. A failing stop is logged, not thrown, so the
+ * new adapter still comes up.
  */
 export async function recreateChannelAdapter<T extends RecreatableAdapter>(
   opts: RecreateChannelOptions<T>,

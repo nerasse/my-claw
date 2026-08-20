@@ -1,5 +1,10 @@
 # Sub-agent visibility
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 Sub-agents are addressable from any conversation by default. That is the point: a named agent with
 a workspace is a shared worker, and scoping it to the chat that happened to create it would waste
 it. A single owner runs this instance, so cross-chat access is a capability rather than a leak.

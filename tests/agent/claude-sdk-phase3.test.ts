@@ -35,7 +35,7 @@ function baseConfig(): MyClawConfig {
 
 function session(id: string, modelOverride?: string): SessionData {
   const now = new Date().toISOString();
-  return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
 }
 
 test("compact maps to the SDK /compact slash command", async () => {
@@ -92,7 +92,7 @@ test("spawn tool exposes a live model enum and validates the model", async () =>
   assert.deepEqual(params2.properties["model"]?.enum, ["mimo"]);
   models = ["mimo", "claude-sonnet-5"];
 
-  const message = { id: "m1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "", attachments: [], isForwarded: false, raw: {} };
+  const message = { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "", attachments: [], isForwarded: false, raw: {} };
   const bad = await tool.execute({ name: "a", type: "research", mode: "run", task: "t", model: "nope", __message: message });
   assert.equal(bad.success, false);
   assert.ok(bad.error?.includes("Unknown model"));
@@ -150,7 +150,7 @@ test("images ride along as base64 blocks when the model has vision", async () =>
 
   const backend = new ClaudeSdkBackend(baseConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, 0, undefined, undefined, undefined, preprocessor, queryFn);
   const message: UnifiedMessage = {
-    id: "m1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "look",
+    id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "look",
     attachments: [{ type: "image", path: "/tmp/x.png" }], isForwarded: false, raw: {},
   };
   const out = await backend.handleMessage(message, session("s1", "claude-sonnet-5"));

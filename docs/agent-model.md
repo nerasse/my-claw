@@ -1,5 +1,10 @@
 # Per-agent model from chat
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 `/model <agent>` sets which model an agent uses by default, and writes it to `config.json`.
 
 ```

@@ -322,7 +322,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     const mediaRefs = extractMediaRefs(message.text);
     const text = stripMediaRefs(message.text);
-    // The agent's explicit MEDIA: refs are trusted over programmatic attachments (same as telegram).
+    // The agent's explicit MEDIA: refs are trusted over programmatic attachments.
     const attachmentsToSend = mediaRefs.length > 0 ? [] : (message.attachments ?? []);
 
     if (!text && !mediaRefs.length && !attachmentsToSend.length) return;

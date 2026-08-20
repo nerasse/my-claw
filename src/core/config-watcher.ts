@@ -18,20 +18,8 @@ import { snapshot, reject, confirm, readQuarantine, contentSha, HEALTH_GATE_MS }
 
 const DEBOUNCE_MS = 300;
 
-// Channel fields that cannot be hot-swapped on a live adapter. Telegram bakes the token into
-// the Grammy Bot + polling loop; Matrix derives its E2E crypto store from the identity/token.
-// The my-claw-app WSS server binds its socket at start, so its identity is the listen port.
-const TELEGRAM_REBOOT_FIELDS = ["enabled", "token", "mode", "webhook"];
-const MATRIX_REBOOT_FIELDS = [
-  "enabled",
-  "homeserver",
-  "accessToken",
-  "userId",
-  "password",
-  "deviceId",
-  "encryption",
-  "initialSyncLimit",
-];
+// Channel fields that cannot be hot-swapped on a live adapter. The my-claw-app WSS server binds
+// its socket at start, so its identity is the listen port.
 const MY_CLAW_APP_REBOOT_FIELDS = ["enabled", "port"];
 
 // Top-level sections wired at boot (timers, clients, env) that need a restart to re-apply.
@@ -53,11 +41,6 @@ export interface ReloadResult {
   recreate: string[];
 }
 
-interface ChannelTarget {
-  setWhitelist(whitelist: Set<string>): void;
-  applyConfigReload(): void;
-}
-
 export interface ConfigReloadContext {
   modelPicker?: {
     syncFromConfig(llm: import("./config.ts").LlmConfig, tags?: Record<string, import("./config.ts").TagConfig>): void;
@@ -65,14 +48,10 @@ export interface ConfigReloadContext {
   // Owns the base/discovered merge into config.llm.models + the picker sync. When provided it
   // supersedes the built-in modelPicker sync (which only knows the curated config models).
   syncModels?: () => void;
-  getTelegram?: () => ChannelTarget | undefined;
-  getMatrix?: () => ChannelTarget | undefined;
-  normalizeMatrixUserId?: (id: string) => string;
   registerWebSearch?: () => void;
   syncMcp?: (mcp: MyClawConfig["mcp"]) => void;
   reloadCron?: () => void;
   reloadMemory?: (memory: MyClawConfig["memory"]) => void;
-  recreateTelegram?: () => void;
   /** Re-scan the skill layers: the workspace list is hot, so new keys take effect without a restart. */
   reloadSkills?: () => void;
 }
@@ -150,7 +129,7 @@ function behavioralDiffers(
 }
 
 function applyChannelReload(
-  name: "telegram" | "matrix" | "my-claw-app",
+  name: "my-claw-app",
   current: MyClawConfig,
   next: MyClawConfig,
   rebootFields: string[],
@@ -175,7 +154,7 @@ function applyChannelReload(
   if (supportsRecreate && identityChanged) {
     // Sequential adapter recreate: apply the whole section in place (incl. identity) so the
     // factory reads the new token/mode, and signal a recreate. stop-old-before-start-new
-    // avoids the concurrent-instance hazards (Telegram 409, Matrix crypto store contention).
+    // avoids concurrent-instance hazards.
     replaceContents(cur, nxt);
     recreate.push(`channels.${name}`);
     return;
@@ -213,12 +192,8 @@ export function applyHotReload(current: MyClawConfig, next: MyClawConfig): Reloa
     changed.push(key);
   }
 
-  // Telegram supports a live identity recreate (grammy bot.stop() is clean; a sequential swap
-  // avoids the 409). Matrix stays reboot-only until its live-homeserver Megolm test passes.
   // Devices/tokens/streaming are read live per connection; only the socket (port) is
   // reboot-bound.
-  applyChannelReload("telegram", current, next, TELEGRAM_REBOOT_FIELDS, changed, rebootRequired, recreate, true);
-  applyChannelReload("matrix", current, next, MATRIX_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
   applyChannelReload("my-claw-app", current, next, MY_CLAW_APP_REBOOT_FIELDS, changed, rebootRequired, recreate, false);
 
   for (const key of REBOOT_SECTIONS) {
@@ -239,8 +214,6 @@ export function runReloadAppliers(
   ctx: ConfigReloadContext,
   recreate: string[] = [],
 ): void {
-  // Identity recreate: stop the old adapter and start a fresh one with the new config.
-  if (recreate.includes("channels.telegram")) ctx.recreateTelegram?.();
   if (changed.includes("llm") || changed.includes("tags")) {
     // The resolver reads tags off the llm view; a section reload drops the attached reference
     // (replaceContents deletes keys absent from the file), so it is re-attached here.
@@ -251,13 +224,6 @@ export function runReloadAppliers(
       ctx.modelPicker.syncFromConfig(config.llm, config.tags);
     }
   }
-  if (changed.includes("whitelist")) {
-    ctx.getTelegram?.()?.setWhitelist(new Set(config.whitelist));
-    const norm = ctx.normalizeMatrixUserId ?? ((x: string) => x);
-    ctx.getMatrix?.()?.setWhitelist(new Set(config.whitelist.map(norm)));
-  }
-  if (changed.includes("channels.telegram")) ctx.getTelegram?.()?.applyConfigReload();
-  if (changed.includes("channels.matrix")) ctx.getMatrix?.()?.applyConfigReload();
   if (changed.includes("webSearch")) ctx.registerWebSearch?.();
   // mcp is applied in place for live reads, but connections must be (re)opened/closed too.
   if (changed.includes("mcp")) ctx.syncMcp?.(config.mcp);

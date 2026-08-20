@@ -234,7 +234,7 @@ test("a message parked behind a compaction is announced once, before the wait", 
   };
   hooks.on("message:queued", collect);
 
-  const sessionId = "telegram/dm/u-queued";
+  const sessionId = "my-claw-app/dm/u-queued";
   const config: MyClawConfig = {
     whitelist: ["u-queued"], blacklist: [], channels: {},
     llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
@@ -252,7 +252,7 @@ test("a message parked behind a compaction is announced once, before the wait", 
   assert.notEqual(held, null);
 
   const message: UnifiedMessage = {
-    id: "m-queued", platform: "telegram", userId: "u-queued", chatId: "c1", chatType: "dm",
+    id: "m-queued", platform: "my-claw-app", userId: "u-queued", chatId: "c1", chatType: "dm",
     text: "hello", attachments: [], isForwarded: false, raw: {},
   };
   const routed = router.route(message);
@@ -300,7 +300,7 @@ test("a message on a free session is not announced as parked", async () => {
   } as never, config);
 
   const answered = await router.route({
-    id: "m-free", platform: "telegram", userId: "u-free", chatId: "c2", chatType: "dm",
+    id: "m-free", platform: "my-claw-app", userId: "u-free", chatId: "c2", chatType: "dm",
     text: "hello", attachments: [], isForwarded: false, raw: {},
   });
   assert.equal(answered?.text, "answered");

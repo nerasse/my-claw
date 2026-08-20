@@ -4,9 +4,7 @@
 
 | Component | Status |
 |---|---|
-| Telegram adapter (Phase 1) | Complete — see `docs/platform-features.md` |
-| Telegram UX (Phase 2) | Complete — see `docs/plan/telegram-phase2.md` |
-| Matrix adapter | Complete — see `docs/matrix.md` |
+| my-claw-app channel | Complete — see `docs/my-claw-app-channel.md` |
 | Router + auth | Complete |
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
@@ -29,33 +27,17 @@
 
 ## Channel Structure
 
-- `src/index.ts` wires channel adapters into the router/session stack
-- `src/channels/telegram/adapter.ts` — Grammy bot, handler wiring, lifecycle, inbound processing, attachments
-- `src/channels/matrix/adapter.ts` — Matrix timeline ingress, lifecycle, inbound buffering, attachments
+- `src/index.ts` wires the channel adapter into the router/session stack
 - `src/channels/my-claw-app/adapter.ts` — WSS server for the my-claw client apps (device auth, media, tool cards) -- docs/my-claw-app-channel.md
-- Both channel folders contain split modules: `send.ts`, `context.ts`, `commands.ts`, `errors.ts`, `format.ts`, `policy.ts`, `reactions.ts`, `stream.ts`, `session-handlers.ts`
-- Matrix-specific: `client.ts` (SDK runtime, crypto), `decrypt-bridge.ts`, `ingress.ts`, `inbound-buffer.ts`, `inbound-dedupe.ts`, `sync-lifecycle.ts`
+- The channel folder contains split modules: `sessions.ts`, `files.ts`, `stream.ts`, `commands.ts`, `devices.ts`, `pairing.ts`
+- The chat-platform channels (Telegram, Matrix) were removed: the app/web surface is the only one.
 
 ## Decisions
 
 ### Channels
 
-- Telegram: classic bot (Bot API), grammy, long polling + webhook -- priority
-- Matrix: classic bot -- priority
-- Discord: classic bot (bot token) -- on hold until further notice
+- my-claw-app: WSS server, paired devices, app + web client -- the only channel
 - Startup toggle: `channels.<name>.enabled: false`
-
-#### Telegram specifics
-
-- Library: grammy + @grammyjs/runner + @grammyjs/transformer-throttler
-- Connection: long polling (dev) and webhook (prod), configurable
-- Format: HTML parse mode with plain text fallback
-- Message split: 4000 chars, HTML-tag-aware
-- Text batching: 1s debounce for split messages
-- Commands (unified both platforms): /new, /model, /models, /compact, /reload, /verbose, /status, /stop, /clear, /archive, /help, /commands
-- Inline buttons: accept/deny for blacklisted actions
-- Media: photo, voice, audio, video, document (in/out)
-- No dependency injection, no plugin SDK, no multi-account
 
 ### Scope & permissions
 
@@ -69,8 +51,7 @@
 
 ### Sessions & isolation
 
-- One session per DM (per authorized user)
-- One session per group (each Matrix/Telegram group has its own isolated session)
+- One session per conversation thread (devices sharing an owner share the thread list)
 - One file per actual session
 - Sessions persist across restarts
 - Sessions stored in `~/.my-claw/sessions/`
@@ -124,16 +105,6 @@
 │   ├── jobs.json            # scheduled jobs (atomic writes)
 │   └── output/<jobId>/<timestamp>.md   # per-run execution history
 ├── sessions/
-│   ├── telegram/
-│   │   ├── dm/
-│   │   │   └── <user_id>.json
-│   │   └── group/
-│   │       └── <group_id>.json
-│   ├── matrix/
-│   │   ├── dm/
-│   │   │   └── <user_id>.json
-│   │   └── room/
-│   │       └── <room_id>.json
 │   ├── my-claw-app/
 │   │   └── thread/
 │   │       └── <owner>/     # devices sharing an owner share these threads
@@ -150,11 +121,10 @@
 
 Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
-- Runtime logs are split by scope: `orchestrator`, `telegram`, `matrix`, `matrix-sdk`, `my-claw-app`
+- Runtime logs are split by scope: `orchestrator`, `my-claw-app`
 - Every command is recorded (`command received`, with the resolved `sessionId`, plus
   `command not recognized`), because a session whose history changed could not otherwise be tied to
-  the command that changed it. Menu interactions are recorded too: `telegram button action` and
-  `matrix menu action`.
+  the command that changed it.
 - Command arguments are masked by `src/channels/command-log.ts` before they are logged or emitted
   on the `command:received` hook. `/claude set-token <token>` carries a live credential and used to
   be written to disk in clear.
@@ -233,7 +203,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 | 3 | User context | USER.md (workspace) | User profile |
 | 4 | Skills | Dynamic | Available skills index + `read_skill()` injonction |
 | 5 | Tools | Dynamic | Available tools with rich descriptions |
-| 6 | Platform hints | Dynamic | Telegram/Matrix formatting |
+| 6 | Platform hints | Dynamic | App rendering + media conventions |
 | 7 | Runtime | Dynamic | Date, model, channel, session ID |
 
 Long-term memory is no longer a prompt layer. Relevant entries are recalled per turn and injected into the user message (see `docs/memory.md`).

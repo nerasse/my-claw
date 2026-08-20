@@ -352,7 +352,7 @@ export async function restore(
 /**
  * The files worth protecting: owner-authored, small, and not regenerable. Everything else under
  * MY_CLAW_DIR is either data (sessions, memory.db), a cache (model-catalog.json), protocol state
- * (Matrix/Telegram offsets, whose old copies would desynchronise a channel) or resynced from the
+ * (channel offsets, whose old copies would desynchronise a channel) or resynced from the
  * repo at boot (skills/.builtin).
  */
 export async function protectedPaths(workspaceDir: string): Promise<string[]> {

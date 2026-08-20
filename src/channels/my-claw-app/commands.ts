@@ -27,7 +27,7 @@ import { log } from "../../utils/logger.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
 
 /**
- * Text slash commands for the my-claw-app channel, mirroring the telegram and matrix handlers:
+ * Text slash commands for the my-claw-app channel:
  * the command runs on the server, and only its output travels back. The interactive model menu
  * is not reachable from here -- the app has real `model.*` frames for that -- so every branch
  * returns plain text.

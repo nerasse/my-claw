@@ -1,5 +1,10 @@
 # Compaction
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 `/compact` shrinks a conversation's context. Two engines answer it, one shared command
 (`src/channels/compact-command.ts`) drives both for every channel.
 

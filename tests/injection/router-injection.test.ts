@@ -15,9 +15,9 @@ const config: MyClawConfig = {
   agents: {},
 };
 
-const SESSION_ID = "telegram/dm/u1";
+const SESSION_ID = "my-claw-app/dm/u1";
 function message(id: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: id, attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: id, attachments: [], isForwarded: false, raw: {} };
 }
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

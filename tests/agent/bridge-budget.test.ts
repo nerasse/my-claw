@@ -30,7 +30,7 @@ function configWithBudget(maxIterations: number): MyClawConfig {
 function createMessage(): UnifiedMessage {
   return {
     id: "msg-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user1",
     chatId: "chat1",
     chatType: "dm",
@@ -44,7 +44,7 @@ function createMessage(): UnifiedMessage {
 function createSession(): SessionData {
   return {
     id: "session-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),

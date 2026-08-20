@@ -18,6 +18,8 @@ import type { SessionData } from "../../src/sessions/store.ts";
 
 const FILLER = "z".repeat(6_000);
 const SUMMARY = `Prior work: the agent ran the filler tool several times and gathered its output. ${"detail ".repeat(20)}`;
+/** Messages a run of this shape keeps when no summary ever lands: the hard trim alone. */
+const UNCOMPACTED_MESSAGES = 26;
 
 function config(): MyClawConfig {
   return {
@@ -41,12 +43,12 @@ function config(): MyClawConfig {
 }
 
 function message(): UnifiedMessage {
-  return { id: "m1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "go", attachments: [], isForwarded: false, raw: {} };
+  return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "go", attachments: [], isForwarded: false, raw: {} };
 }
 
 function session(): SessionData {
   const now = new Date().toISOString();
-  return { id: "telegram/dm/u1", platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id: "my-claw-app/dm/u1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 
 function registry(): ToolRegistry {
@@ -134,8 +136,10 @@ test("a run that fills the window mid-flight is compacted, not trimmed", async (
   const fillersAfter = after.split(FILLER).length - 1;
   assert.ok(fillersAfter <= fillersBefore - 2, `tool results summarized away: ${fillersBefore} -> ${fillersAfter}`);
 
-  // The history itself was rewritten, so the next run starts from the summary too.
-  assert.ok(sess.messages.length < 15, `history compacted, got ${sess.messages.length} messages`);
+  // The history itself was rewritten, so the next run starts from the summary too. Compared
+  // against the untouched run below rather than a fixed count: the threshold is a share of the
+  // window, so a longer system prompt shifts the absolute number without changing the behaviour.
+  assert.ok(sess.messages.length < UNCOMPACTED_MESSAGES, `history compacted, got ${sess.messages.length} messages`);
   assert.ok(sess.messages.some((m) => m.content.includes("Prior context summarized")));
 });
 
@@ -167,7 +171,7 @@ test("a summarization that produced nothing is not retried on the next iteration
   assert.ok(attempts >= 1);
   assert.ok(attempts <= Math.ceil((sess.messages.length + 1) / 10), `backed off, got ${attempts} attempts over ${rounds} rounds`);
   // Nothing was rewritten, so the run kept its history and the hard trim stayed in charge.
-  assert.ok(sess.messages.length >= 15, `history untouched, got ${sess.messages.length} messages`);
+  assert.equal(sess.messages.length, UNCOMPACTED_MESSAGES, `history untouched, got ${sess.messages.length} messages`);
 });
 
 /**
@@ -180,7 +184,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
   const now = new Date().toISOString();
   const sess: SessionData = {
     id: "subagent/general-a1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: now,
     lastActiveAt: now,

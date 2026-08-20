@@ -19,7 +19,7 @@ const config: MyClawConfig = {
 function createMessage(): UnifiedMessage {
   return {
     id: `m-${Date.now()}-${Math.random()}`,
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",
@@ -33,7 +33,7 @@ function createMessage(): UnifiedMessage {
 function createSession(): SessionData {
   return {
     id: "telegram/dm/u1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),

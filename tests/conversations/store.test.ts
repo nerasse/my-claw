@@ -20,7 +20,7 @@ let sequence = 0;
 function message(overrides: Partial<UnifiedMessage>): UnifiedMessage {
   return {
     id: "msg-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user-1",
     chatId: "chat-1",
     chatType: "dm",
@@ -35,7 +35,7 @@ function message(overrides: Partial<UnifiedMessage>): UnifiedMessage {
 function session(overrides: Partial<SessionData>): SessionData {
   return {
     id: "subagent/research-1",
-    platform: "matrix",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: "2026-08-04T10:00:00.000Z",
     lastActiveAt: "2026-08-04T10:00:02.000Z",
@@ -67,22 +67,22 @@ afterEach(() => {
   delete process.env["MY_CLAW_CONVERSATIONS_DB"];
 });
 
-test("searches one global corpus across channels and sub-agents", () => {
-  const telegram = message({ text: "We decided to keep the archive global", timestamp: "2026-08-04T10:00:00.000Z" });
-  const matrix = message({
-    id: "$matrix-1",
-    platform: "matrix",
-    chatId: "!room:example.org",
-    text: "The global archive must search every channel",
+test("searches one global corpus across sources and sub-agents", () => {
+  const chat = message({ text: "We decided to keep the archive global", timestamp: "2026-08-04T10:00:00.000Z" });
+  const scheduled = message({
+    id: "cron-1",
+    platform: "cron",
+    chatId: "job-42",
+    text: "The global archive must search every source",
     timestamp: "2026-08-04T10:01:00.000Z",
   });
-  archiveChannelMessage(telegram);
-  archiveChannelMessage(matrix);
+  archiveChannelMessage(chat);
+  archiveChannelMessage(scheduled);
   indexSessionArchive(session({}));
 
   const hits = searchConversationArchive({ query: "archive", limit: 20 });
   expect(hits.length).toBe(3);
-  expect(hits.map((hit) => hit.platform).sort()).toEqual(["matrix", "subagent", "telegram"]);
+  expect(hits.map((hit) => hit.platform).sort()).toEqual(["cron", "my-claw-app", "subagent"]);
 });
 
 test("deduplicates repeated channel ingestion by source id", () => {

@@ -33,12 +33,12 @@ function mixedConfig(): MyClawConfig {
 }
 
 function msg(id: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
 }
 
 function session(id: string, modelOverride?: string): SessionData {
   const now = new Date().toISOString();
-  return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
 }
 
 test("resolveUtilityLlmConfig falls back off a claude-sdk default model", () => {

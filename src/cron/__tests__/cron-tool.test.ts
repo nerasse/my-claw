@@ -39,7 +39,7 @@ describe("cron tool", () => {
   describe("create", () => {
     test("creates job with valid params", async () => {
       const msg: UnifiedMessage = {
-        id: "1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm",
+        id: "1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm",
         text: "", attachments: [], isForwarded: false, raw: null,
       };
       const result = await tool.execute({
@@ -55,12 +55,12 @@ describe("cron tool", () => {
       const jobs = await loadJobs();
       expect(jobs).toHaveLength(1);
       expect(jobs[0]!.name).toBe("Test job");
-      expect(jobs[0]!.origin).toEqual({ platform: "telegram", chatId: "c1" });
+      expect(jobs[0]!.origin).toEqual({ platform: "my-claw-app", chatId: "c1" });
     });
 
     test("stores the prompt normalised", async () => {
       const msg: UnifiedMessage = {
-        id: "1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm",
+        id: "1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm",
         text: "", attachments: [], isForwarded: false, raw: null,
       };
       const result = await tool.execute({

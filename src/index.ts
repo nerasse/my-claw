@@ -9,8 +9,6 @@ import {
   resolveAgentLlm,
   resolveAgentMcp,
   resolveAgentSkills,
-  isMatrixChannelEnabled,
-  isTelegramChannelEnabled,
   isMyClawAppChannelEnabled,
   findUnknownScopeEntries,
   findUnknownAgentWorkspaces,
@@ -42,10 +40,8 @@ import {
 import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-health.ts";
 import { writeJsonFileAtomically, writeFileAtomically } from "./utils/atomic-write.ts";
 import { briefError } from "./utils/errors.ts";
-import { TelegramAdapter } from "./channels/telegram/adapter.ts";
-import { escapeHtml } from "./channels/telegram/format.ts";
-import { MatrixAdapter } from "./channels/matrix/adapter.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
+import { defaultOwner } from "./channels/my-claw-app/devices.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
@@ -73,17 +69,8 @@ import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, appl
 import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
-import {
-  createTelegramCommandHandler,
-  createTelegramCallbackHandler,
-} from "./channels/telegram/session-handlers.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { effectiveEffort, EFFORT_LEVELS } from "./llm/resolver.ts";
-import {
-  createMatrixApprovalHandler,
-  createMatrixActionHandler,
-  createMatrixCommandHandler,
-} from "./channels/matrix/session-handlers.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
@@ -117,7 +104,6 @@ import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
-import { normalizeMatrixUserId } from "./channels/matrix/helpers.ts";
 import { SubAgentRunner } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
@@ -260,7 +246,7 @@ async function main() {
 
   const confirmHealthyConfig = async (): Promise<void> => {
     const healthy = isHealthy({
-      expectsChannel: isTelegramChannelEnabled(config) || isMatrixChannelEnabled(config) || isMyClawAppChannelEnabled(config),
+      expectsChannel: isMyClawAppChannelEnabled(config),
       liveChannels: liveChannels.size,
     });
     const raw = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
@@ -666,282 +652,16 @@ async function main() {
   }));
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
-  let telegramRef: TelegramAdapter | undefined;
-  let matrixRef: MatrixAdapter | undefined;
   let myClawAppRef: MyClawAppAdapter | undefined;
 
-  // Factory so the channel can be recreated on an identity/token change (A6b) without a
-  // restart: reads config.channels.telegram live, wires all handlers, starts, sets telegramRef.
-  const startTelegramChannel = async (): Promise<void> => {
-    if (!isTelegramChannelEnabled(config)) return;
-    const whitelist = new Set(config.whitelist);
-    const telegram = new TelegramAdapter(config.channels.telegram!, whitelist);
-    telegramRef = telegram;
-    noticeSenders.set("telegram", (chatId, text, threadId) => telegram.send(chatId, { text, notice: true, threadId }));
-    const commandHandler = createTelegramCommandHandler({
-      config,
-      sessionManager,
-      modelPicker,
-      skillRegistry,
-      agentRegistry,
-      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
-      builtinDir,
-      customDir,
-      workspaceSkillsDir,
-      listCronJobs: () => loadJobs(),
-      sdkCompact: (session, stopSignal) => agent.compactSdkSession(session, stopSignal),
-      postMessage: (chatId, text, threadId) => telegram.send(chatId, { text, threadId }),
-      onAuthChanged,
-      reloadConfigNow,
-      toolRegistry,
-      mcpStatus: () => mcpManager.status(),
-      listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
-      pricing,
-    });
-    const callbackHandler = createTelegramCallbackHandler({
-      config,
-      sessionManager,
-      modelPicker,
-      // An agent menu writes config.json, and the confirmation must describe the running config.
-      reloadConfigNow,
-    });
-
-    telegram.onMessage(async (msg) => withRunContext({ platform: "telegram" }, async () => {
-      let response: RouteResult | undefined;
-      try {
-        // Pre-process audio (STT + echo) before routing so echoes arrive first
-        await agent.preprocessMessage(msg);
-        const echoes = agent.getEchoMessages(msg.id);
-        for (const echo of echoes) {
-          await telegram.send(msg.chatId, { ...echo, replyToId: msg.id });
-        }
-
-        if (telegram.streamingEnabled()) {
-          // `active` is the current output bubble; onTurnSwitch finalizes it and opens a fresh
-          // reply to a mid-run injected message so each message gets its own threaded answer.
-          let active = telegram.createStreamer(msg);
-          hooks.emit("stream:start", { platform: "telegram", chatId: msg.chatId });
-          try {
-            response = await routeWithReroute(router, msg, {
-              onToken: (token) => active.push(token),
-              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
-              onTurnSwitch: async (injMsg) => {
-                await active.finish();
-                active = telegram.createStreamer(injMsg);
-              },
-            });
-            await active.finish();
-            hooks.emit("stream:finish", { platform: "telegram", chatId: msg.chatId });
-          } catch (err) {
-            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-            await active.abort(brief);
-            hooks.emit("stream:abort", { platform: "telegram", chatId: msg.chatId, error: err });
-            throw err;
-          }
-        } else {
-          response = await routeWithReroute(router, msg, {});
-        }
-
-        if (response) {
-          const outGate = await hooks.check("gate:message:outgoing", { platform: "telegram", chatId: msg.chatId, text: response.text });
-          if (outGate.allowed) {
-            const refs = extractMediaRefs(response.text);
-            const textHasMediaRefs = refs.length > 0;
-            if (!telegram.streamingEnabled()) {
-              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "telegram", chatId: msg.chatId })).text;
-              await telegram.send(msg.chatId, { text: deliveryText, attachments: textHasMediaRefs ? undefined : response.attachments, replyToId: msg.id });
-              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
-            } else if (!textHasMediaRefs && response.attachments?.length) {
-              await telegram.send(msg.chatId, { text: "", attachments: response.attachments, replyToId: msg.id });
-              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: response.attachments.length });
-            } else if (textHasMediaRefs) {
-              const mediaAttachments = refs.map((ref) => ({ type: mediaTypeForPath(ref.path), path: ref.path }));
-              await telegram.send(msg.chatId, { text: "", attachments: mediaAttachments, replyToId: msg.id });
-              hooks.emit("message:delivered", { platform: "telegram", chatId: msg.chatId, text: "", attachments: mediaAttachments.length });
-            }
-          }
-        }
-      } finally {
-        await cleanupAttachments(msg.attachments);
-        await cleanupGeneratedTempFiles(response?.attachments);
-      }
-    }));
-
-    telegram.onCommand(commandHandler);
-    telegram.onCallbackQuery(callbackHandler);
-
-    if (!isMatrixChannelEnabled(config)) {
-      router.setApprovalHandler(async (request) => {
-        if (request.platform === "telegram") {
-          const args = escapeHtml(JSON.stringify(request.args, null, 2).slice(0, 500));
-          const text = `Approval required for tool <b>${escapeHtml(request.toolName)}</b>\n\n<pre>${args}</pre>`;
-          const accepted = await telegram.confirm(request.chatId, text, request.messageId);
-          return accepted ? "allow-session" : "deny";
-        }
-        if (request.platform === "my-claw-app" && myClawAppRef) {
-          return await myClawAppRef.confirmTool(request);
-        }
-        return "deny";
-      });
-    }
-
-    try {
-      await telegram.start();
-      adapters.push(telegram);
-      hooks.emit("channel:started", { platform: "telegram" });
-    } catch (err) {
-      log("error", "telegram adapter failed to start", { error: String(err) });
-      hooks.emit("channel:error", { platform: "telegram", error: err });
-    }
+  // Boot-time alerts are addressed to a person, and the app names one through its paired devices.
+  // Ambiguous (several owners) resolves to nothing rather than picking someone's conversation.
+  const appOwner = (): string | undefined => {
+    const appConfig = config.channels["my-claw-app"];
+    if (!appConfig) return undefined;
+    const resolved = defaultOwner(appConfig);
+    return resolved.ok ? resolved.owner : undefined;
   };
-  await startTelegramChannel();
-
-  if (isMatrixChannelEnabled(config)) {
-    const whitelist = new Set(config.whitelist.map(normalizeMatrixUserId));
-    const matrix = new MatrixAdapter(config.channels.matrix!, whitelist);
-    matrixRef = matrix;
-    noticeSenders.set("matrix", (chatId, text, threadId) => matrix.send(chatId, { text, notice: true, threadId }));
-    const matrixStoragePaths = matrix.runtimeStoragePaths();
-    const commandHandler = createMatrixCommandHandler({
-      config,
-      sessionManager,
-      modelPicker,
-      skillRegistry,
-      agentRegistry,
-      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
-      builtinDir,
-      customDir,
-      workspaceSkillsDir,
-      listCronJobs: () => loadJobs(),
-      sdkCompact: (session, stopSignal) => agent.compactSdkSession(session, stopSignal),
-      postMessage: (roomId, text, threadId) => matrix.send(roomId, { text, threadId }),
-      onAuthChanged,
-      reloadConfigNow,
-      toolRegistry,
-      mcpStatus: () => mcpManager.status(),
-      listSubAgents: (sessionId: string) => subAgentRunner.list(subAgentRegistry, sessionId),
-      pricing,
-    });
-    const approvalHandler = createMatrixApprovalHandler(matrixStoragePaths.pendingApprovalsPath);
-    const actionHandler = createMatrixActionHandler({
-      config,
-      sessionManager,
-      modelPicker,
-      // An agent menu writes config.json, and the confirmation must describe the running config.
-      reloadConfigNow,
-      approvalHandler,
-      skillRegistry,
-      agentRegistry,
-      reloadAgents: () => reloadAgents(agentsDirs(), agentRegistry),
-      builtinDir,
-      customDir,
-      workspaceSkillsDir,
-    });
-
-    matrix.onMessage(async (msg) => withRunContext({ platform: "matrix" }, async () => {
-      let response: RouteResult | undefined;
-      try {
-        // Pre-process audio (STT + echo) before routing so echoes arrive first
-        await agent.preprocessMessage(msg);
-        const echoes = agent.getEchoMessages(msg.id);
-        for (const echo of echoes) {
-          await matrix.send(msg.chatId, { ...echo, replyToId: msg.id, threadId: msg.threadId });
-        }
-
-        if (matrix.streamingEnabled()) {
-          // `active` is the current output bubble; onTurnSwitch finalizes it and opens a fresh
-          // reply to a mid-run injected message so each message gets its own threaded answer.
-          let active = matrix.createStreamer(msg);
-          hooks.emit("stream:start", { platform: "matrix", chatId: msg.chatId });
-          try {
-            response = await routeWithReroute(router, msg, {
-              onToken: (token) => active.push(token),
-              onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
-              onTurnSwitch: async (injMsg) => {
-                await active.finish();
-                active = matrix.createStreamer(injMsg);
-              },
-            });
-            await active.finish();
-            hooks.emit("stream:finish", { platform: "matrix", chatId: msg.chatId });
-          } catch (err) {
-            const brief = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
-            await active.abort(brief);
-            hooks.emit("stream:abort", { platform: "matrix", chatId: msg.chatId, error: err });
-            throw err;
-          }
-        } else {
-          response = await routeWithReroute(router, msg, {});
-        }
-
-        if (response) {
-          const outGate = await hooks.check("gate:message:outgoing", { platform: "matrix", chatId: msg.chatId, text: response.text });
-          if (outGate.allowed) {
-            const refs = extractMediaRefs(response.text);
-            const textHasMediaRefs = refs.length > 0;
-            if (!matrix.streamingEnabled()) {
-              const deliveryText = (await hooks.transform("transform:outgoing:message", { text: response.text, platform: "matrix", chatId: msg.chatId })).text;
-              await matrix.send(msg.chatId, {
-                text: deliveryText,
-                attachments: textHasMediaRefs ? undefined : response.attachments,
-                replyToId: msg.id,
-                threadId: msg.threadId,
-              });
-              hooks.emit("message:delivered", { platform: "matrix", chatId: msg.chatId, text: deliveryText, attachments: (response.attachments?.length ?? 0) });
-            } else if (!textHasMediaRefs && response.attachments?.length) {
-              await matrix.send(msg.chatId, {
-                text: "",
-                attachments: response.attachments,
-                replyToId: msg.id,
-                threadId: msg.threadId,
-              });
-            } else if (textHasMediaRefs) {
-              const mediaAttachments = refs.map((ref) => ({ type: mediaTypeForPath(ref.path), path: ref.path }));
-              await matrix.send(msg.chatId, {
-                text: "",
-                attachments: mediaAttachments,
-                replyToId: msg.id,
-                threadId: msg.threadId,
-              });
-            }
-          }
-        }
-      } finally {
-        await cleanupAttachments(msg.attachments);
-        await cleanupGeneratedTempFiles(response?.attachments);
-      }
-    }));
-
-    matrix.onCommand(commandHandler);
-    matrix.onAction(actionHandler);
-    router.setApprovalHandler(async (request) => {
-      if (request.platform === "matrix") {
-        return await matrix.confirmTool(request, approvalHandler);
-      }
-      if (request.platform === "telegram" && telegramRef) {
-        const args = escapeHtml(JSON.stringify(request.args, null, 2).slice(0, 500));
-        const text = `Approval required for tool <b>${escapeHtml(request.toolName)}</b>\n\n<pre>${args}</pre>`;
-        const accepted = await telegramRef.confirm(request.chatId, text, request.messageId);
-        return accepted ? "allow-session" : "deny";
-      }
-      if (request.platform === "my-claw-app" && myClawAppRef) {
-        return await myClawAppRef.confirmTool(request);
-      }
-      return "deny";
-    });
-    await approvalHandler.restorePendingApprovals();
-    try {
-      await matrix.start();
-      adapters.push(matrix);
-      hooks.emit("channel:started", { platform: "matrix" });
-    } catch (err) {
-      log("error", "matrix adapter failed to start", { error: String(err) });
-      hooks.emit("channel:error", { platform: "matrix", error: err });
-    }
-  }
-
-  if (telegramRef) cronScheduler.adapters.set("telegram", telegramRef);
-  if (matrixRef) cronScheduler.adapters.set("matrix", matrixRef);
 
   const startMyClawAppChannel = async (): Promise<void> => {
     // Channel keys are never validated, so a config still on the old name would start the
@@ -2272,7 +1992,7 @@ async function main() {
               response = await routeWithReroute(router, msg, {
                 onToken: (token) => active.push(token),
                 onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
-                // Only this channel builds a sink: Matrix and Telegram pass none, which is what
+                // Only this channel builds a sink, which is what
                 // keeps them free of reasoning -- docs/reasoning-visibility.md.
                 reasoning: {
                   onText: (delta) => active.pushReasoning(delta),
@@ -2336,6 +2056,15 @@ async function main() {
       }
     }));
 
+    // The only surface left that can answer an approval prompt. Without this the gate has no
+    // handler at all and every approval-required tool is denied on sight.
+    router.setApprovalHandler(async (request) => {
+      if (request.platform === "my-claw-app") {
+        return await myClawApp.confirmTool(request);
+      }
+      return "deny";
+    });
+
     try {
       await myClawApp.start();
       adapters.push(myClawApp);
@@ -2358,9 +2087,6 @@ async function main() {
       applyModelCatalog();
       void modelCatalog.refresh();
     },
-    getTelegram: () => telegramRef,
-    getMatrix: () => matrixRef,
-    normalizeMatrixUserId,
     registerWebSearch,
     syncMcp: (mcp) => void mcpManager.sync(mcp),
     reloadCron: () => cronScheduler.restart(),
@@ -2377,25 +2103,7 @@ async function main() {
       // unhandledRejection handler and shuts the daemon down over an unreadable skill directory.
       void log("error", "skills/agents reload from config change failed", { error: String(err) });
     }),
-    recreateTelegram: () => void recreateTelegramChannel(),
   });
-
-  // Sequential recreate (stop old before start new) via the shared orchestration helper, then
-  // re-point the cron adapters map that captured the concrete instance.
-  async function recreateTelegramChannel(): Promise<void> {
-    await recreateChannelAdapter({
-      current: telegramRef,
-      adapters,
-      build: async () => {
-        telegramRef = undefined;
-        await startTelegramChannel();
-        return telegramRef;
-      },
-      repoint: (next) => { if (next) cronScheduler.adapters.set("telegram", next); },
-      label: "telegram",
-    });
-    log("info", "telegram channel recreated after identity change");
-  }
 
   const stopSkillsWatcher = startSkillsWatcher(
     skillsDirs(),
@@ -2427,12 +2135,11 @@ async function main() {
   hooks.emit("app:ready", { channels: Object.keys(config.channels) });
 
   // The whole point of reverting is that the owner can reach the agent again, so the reason has to
-  // arrive in the chat. Best-effort and unaddressed elsewhere: whitelist ids are Telegram user ids,
-  // and a Matrix send needs a room, so this reaches Telegram only.
+  // arrive in the chat. Addressed to the app owner, the only surface left.
   if (fallback) {
-    const owner = config.whitelist?.[0];
-    if (owner && telegramRef) {
-      void telegramRef
+    const owner = appOwner();
+    if (owner && myClawAppRef) {
+      void myClawAppRef
         .send(owner, {
           text: [
             "Attention : j'ai démarré sur une sauvegarde de config.",
@@ -2446,16 +2153,15 @@ async function main() {
     }
   }
 
-  // Same best-effort channel and same caveat as the fallback alert above: whitelist ids are
-  // Telegram user ids, so this reaches Telegram only. A silently reduced scope is worth a message
-  // because the symptom is an agent that just stops using a skill.
+  // Same best-effort delivery as the fallback alert above. A silently reduced scope is worth a
+  // message because the symptom is an agent that just stops using a skill.
   if (unknownScopes.length > 0) {
-    const owner = config.whitelist?.[0];
-    if (owner && telegramRef) {
+    const owner = appOwner();
+    if (owner && myClawAppRef) {
       const lines = unknownScopes.map(
         (e) => `- \`${e.path}\`: "${e.name}" (${e.kind === "skill" ? "aucune skill de ce nom" : "aucun serveur declare"})`,
       );
-      void telegramRef
+      void myClawAppRef
         .send(owner, {
           text: [
             "Attention : des noms de scope ne correspondent a rien.",
@@ -2475,8 +2181,6 @@ async function main() {
   confirmTimer.unref?.();
 
   const activeChannels: string[] = [];
-  if (telegramRef) activeChannels.push("telegram");
-  if (matrixRef) activeChannels.push("matrix");
   if (myClawAppRef) activeChannels.push("my-claw-app");
 
   const shutdown = async (signal = "SIGINT") => {

@@ -1,5 +1,10 @@
 # Draft sync
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 What is typed and not sent yet follows the owner across their devices, and survives a reboot.
 
 Scope: the `my-claw-app` channel only. It is the only channel with a composer of its own; Telegram

@@ -1,5 +1,10 @@
 # Model resolution
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 Which model a run uses, who may change it, and what every surface is allowed to claim about it.
 
 This document exists because the answer was computed in two incompatible ways: the pickers and

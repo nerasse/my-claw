@@ -37,13 +37,13 @@ function sdkConfig(agents: MyClawConfig["agents"] = {}): MyClawConfig {
   };
 }
 
-function msg(text: string, platform: UnifiedMessage["platform"] = "telegram"): UnifiedMessage {
+function msg(text: string, platform: UnifiedMessage["platform"] = "my-claw-app"): UnifiedMessage {
   return { id: `m-${Math.random()}`, platform, userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 
 function session(id: string): SessionData {
   const now = new Date().toISOString();
-  return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 
 function skill(name: string): Skill {
@@ -116,7 +116,7 @@ async function runHome(
   });
 
   try {
-    await bridge.handleMessage(msg("go", opts.platform ?? "telegram"), sess, signal);
+    await bridge.handleMessage(msg("go", opts.platform ?? "my-claw-app"), sess, signal);
     const first = bodies[0];
     const system = first?.messages.find((m) => m.role === "system");
     return {

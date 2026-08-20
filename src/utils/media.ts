@@ -34,7 +34,7 @@ export async function cleanupGeneratedTempFiles(attachments?: Array<{ path?: str
 }
 
 /**
- * Deletes the per-run temporaries a channel downloaded (Telegram and Matrix drop theirs in the
+ * Deletes the per-run temporaries a channel downloaded (dropped in the
  * temp root). Files under the attachment root are the my-claw-app channel's persistent per-session
  * store: they outlive the run by design (docs/my-claw-app-channel.md), back files.list and
  * GET /media, and are re-read on later turns to keep an image in the conversation.

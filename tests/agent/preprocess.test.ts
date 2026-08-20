@@ -5,7 +5,7 @@ import type { UnifiedMessage, Attachment } from "../../src/channels/types.ts";
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
   return {
     id: crypto.randomUUID(),
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user1",
     chatId: "chat1",
     chatType: "dm",

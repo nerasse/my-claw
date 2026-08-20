@@ -20,7 +20,7 @@ const config: MyClawConfig = {
 };
 
 function parentMessage(): UnifiedMessage {
-  return { id: "msg-1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "task", attachments: [], isForwarded: false, raw: null };
+  return { id: "msg-1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "task", attachments: [], isForwarded: false, raw: null };
 }
 
 test("runner: aborting the shared signal stops a running sub-agent (AbortedError + subagent:aborted)", async () => {

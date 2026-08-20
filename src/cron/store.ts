@@ -144,7 +144,7 @@ export function markJobRun(job: CronJob, success: boolean, error?: string): void
 export function parseDeliver(input: string, origin: CronOrigin | null): CronDeliver {
   const trimmed = input.trim().toLowerCase();
   if (trimmed === "origin") {
-    if (!origin) throw new Error("Cannot use 'origin' delivery without an origin chat. Specify a target: 'telegram:chatId' or 'matrix:roomId'.");
+    if (!origin) throw new Error("Cannot use 'origin' delivery without an origin chat. Specify a target: 'my-claw-app:owner'.");
     return "origin";
   }
   if (trimmed === "local") return "local";
@@ -152,14 +152,9 @@ export function parseDeliver(input: string, origin: CronOrigin | null): CronDeli
   const parts = trimmed.split(":");
   if (parts.length < 2) throw new Error(`Invalid deliver target: "${input}". Use 'origin', 'local', or 'platform:chatId'.`);
 
-  const platform = parts[0] as "telegram" | "matrix";
-  if (platform !== "telegram" && platform !== "matrix") {
-    throw new Error(`Unknown platform: "${platform}". Use 'telegram' or 'matrix'.`);
-  }
-
-  if (platform === "matrix") {
-    const chatId = parts.slice(1).join(":");
-    return { platform, chatId };
+  const platform = parts[0];
+  if (platform !== "my-claw-app") {
+    throw new Error(`Unknown platform: "${platform}". Use 'my-claw-app'.`);
   }
 
   const chatId = parts[1]!;

@@ -14,7 +14,7 @@ function makeSession(messagesCount: number): SessionData {
 
   return {
     id: "test-session",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
@@ -26,62 +26,7 @@ function makeConfig(): MyClawConfig {
   return {
     whitelist: [],
     blacklist: [],
-    channels: {
-      telegram: {
-        enabled: true,
-        token: "",
-        mode: "polling",
-        dm: { enabled: true, policy: "allowlist", allowFrom: [], sessionScope: "per-user" },
-        groupPolicy: "allowlist",
-        groupAllowFrom: [],
-        allowBots: false,
-        groups: { "*": { enabled: true, autoReply: true } },
-        contextVisibility: "allowlist_quote",
-        streaming: { enabled: true, minChars: 30, throttleMs: 1000 },
-        reactions: {
-          enabled: true,
-          received: "r",
-          thinking: "t",
-          toolUse: "u",
-          done: "d",
-          error: "e",
-        },
-        errorPolicy: "always",
-      },
-      matrix: {
-        enabled: false,
-        homeserver: "",
-        accessToken: "",
-        encryption: false,
-        userId: "",
-        password: "",
-        deviceId: "",
-        displayName: "",
-        autoJoin: "allowlist",
-        dm: { enabled: true, policy: "allowlist", allowFrom: [], sessionScope: "per-user", threadReplies: "inbound", historyLimit: 10 },
-        groupPolicy: "allowlist",
-        groupAllowFrom: [],
-        allowBots: false,
-        groups: { "*": { enabled: true, autoReply: true } },
-        threadReplies: "inbound",
-        replyToMode: "first",
-        historyLimit: 10,
-        textChunkLimit: 4000,
-        chunkMode: "newline",
-        contextVisibility: "allowlist_quote",
-        streaming: { enabled: true, mode: "partial", minChars: 30, throttleMs: 1000 },
-        reactions: {
-          enabled: true,
-          received: "r",
-          thinking: "t",
-          toolUse: "u",
-          done: "d",
-          error: "e",
-        },
-        errorPolicy: "always",
-        mediaMaxMb: 25,
-      },
-    },
+    channels: { "my-claw-app": { enabled: true, port: 8080 } },
     llm: {
       defaultProvider: "test",
       defaultModel: "test-model",
@@ -266,7 +211,7 @@ function longSession(over: Partial<SessionData>): SessionData {
   const now = new Date().toISOString();
   return {
     id: "s",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: now,
     lastActiveAt: now,
@@ -313,5 +258,5 @@ test("a cron session is summarized by the cron agent's model", async () => {
 });
 
 test("a chat session still follows the orchestrator", async () => {
-  assert.deepEqual(await summarizerHost(longSession({ id: "telegram/dm/u1" })), ["main.example.com"]);
+  assert.deepEqual(await summarizerHost(longSession({ id: "my-claw-app/dm/u1" })), ["main.example.com"]);
 });

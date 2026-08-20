@@ -13,20 +13,9 @@ function baseConfig(): MyClawConfig {
     whitelist: ["u1"],
     blacklist: ["spawn"],
     channels: {
-      telegram: {
-        token: "tok-123",
-        mode: "polling",
-        historyLimit: 10,
-        errorPolicy: "always",
-        reactions: { enabled: true, received: "👀" },
-      },
-      matrix: {
-        homeserver: "https://m.example.com",
-        accessToken: "secret",
-        deviceId: "DEV1",
-        encryption: true,
-        historyLimit: 10,
-        errorPolicy: "always",
+      "my-claw-app": {
+        port: 8080,
+        streaming: { enabled: true, minChars: 20 },
       },
     },
     llm: {
@@ -156,103 +145,54 @@ test("whitelist and blacklist are mutated in place, preserving array identity", 
 
 // ── applyHotReload: channels behavioral vs reboot ────────────────────────────
 
-test("telegram behavioral change is applied in place", () => {
+test("an app behavioral change is applied in place", () => {
   const current = baseConfig();
-  const ref = current.channels.telegram;
+  const ref = current.channels["my-claw-app"];
   const next = clone(current);
-  next.channels.telegram!.historyLimit = 50;
-  next.channels.telegram!.errorPolicy = "once";
+  next.channels["my-claw-app"]!.streaming = { enabled: false, minChars: 5 };
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.changed.includes("channels.telegram"));
-  assert.equal(current.channels.telegram, ref, "telegram sub-config identity must be preserved");
-  assert.equal(current.channels.telegram?.historyLimit, 50);
-  assert.equal(current.channels.telegram?.errorPolicy, "once");
+  assert.ok(result.changed.includes("channels.my-claw-app"));
+  assert.equal(current.channels["my-claw-app"], ref, "sub-config identity must be preserved");
+  assert.equal(current.channels["my-claw-app"]?.streaming?.enabled, false);
   assert.deepEqual(result.rebootRequired, []);
 });
 
-test("telegram token change triggers a live recreate (applied in place, not reboot)", () => {
+test("the listen port is reboot-required and NOT applied", () => {
   const current = baseConfig();
   const next = clone(current);
-  next.channels.telegram!.token = "new-token";
+  next.channels["my-claw-app"]!.port = 9090;
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.recreate.includes("channels.telegram"));
-  assert.ok(!result.rebootRequired.includes("channels.telegram.token"));
-  assert.equal(current.channels.telegram?.token, "new-token", "token applied so the factory reads it");
+  assert.ok(result.rebootRequired.includes("channels.my-claw-app.port"));
+  assert.equal(current.channels["my-claw-app"]?.port, 8080, "socket is bound at start");
 });
 
-test("telegram mode change also triggers a recreate, carrying behavioral fields along", () => {
+test("a behavioral change applies even when a reboot field also changed", () => {
   const current = baseConfig();
   const next = clone(current);
-  next.channels.telegram!.mode = "webhook";
-  next.channels.telegram!.historyLimit = 77;
+  next.channels["my-claw-app"]!.streaming = { enabled: false }; // behavioral -> apply
+  next.channels["my-claw-app"]!.port = 9090; // reboot -> skip
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.recreate.includes("channels.telegram"));
-  assert.equal(current.channels.telegram?.mode, "webhook");
-  assert.equal(current.channels.telegram?.historyLimit, 77);
-});
-
-test("recreate list drives the recreateTelegram applier", () => {
-  const config = baseConfig();
-  let recreated = 0;
-  runReloadAppliers([], config, { recreateTelegram: () => { recreated += 1; } }, ["channels.telegram"]);
-  assert.equal(recreated, 1);
-});
-
-test("telegram behavioral-only change stays a hot apply, not a recreate", () => {
-  const current = baseConfig();
-  const next = clone(current);
-  next.channels.telegram!.historyLimit = 42;
-
-  const result = applyHotReload(current, next);
-
-  assert.ok(result.changed.includes("channels.telegram"));
-  assert.ok(!result.recreate.includes("channels.telegram"));
-  assert.equal(current.channels.telegram?.historyLimit, 42);
-});
-
-test("matrix crypto/identity changes are reboot-required and NOT applied", () => {
-  const current = baseConfig();
-  const next = clone(current);
-  next.channels.matrix!.accessToken = "rotated";
-  next.channels.matrix!.deviceId = "DEV2";
-
-  const result = applyHotReload(current, next);
-
-  assert.ok(result.rebootRequired.includes("channels.matrix.accessToken"));
-  assert.ok(result.rebootRequired.includes("channels.matrix.deviceId"));
-  assert.equal(current.channels.matrix?.accessToken, "secret");
-  assert.equal(current.channels.matrix?.deviceId, "DEV1");
-});
-
-test("matrix behavioral change applies even when an identity field also changed", () => {
-  const current = baseConfig();
-  const next = clone(current);
-  next.channels.matrix!.historyLimit = 99; // behavioral -> apply
-  next.channels.matrix!.accessToken = "rotated"; // reboot -> skip
-
-  const result = applyHotReload(current, next);
-
-  assert.ok(result.changed.includes("channels.matrix"));
-  assert.ok(result.rebootRequired.includes("channels.matrix.accessToken"));
-  assert.equal(current.channels.matrix?.historyLimit, 99);
-  assert.equal(current.channels.matrix?.accessToken, "secret");
+  assert.ok(result.changed.includes("channels.my-claw-app"));
+  assert.ok(result.rebootRequired.includes("channels.my-claw-app.port"));
+  assert.equal(current.channels["my-claw-app"]?.streaming?.enabled, false);
+  assert.equal(current.channels["my-claw-app"]?.port, 8080);
 });
 
 test("removing a channel entirely is reboot-required", () => {
   const current = baseConfig();
   const next = clone(current);
-  delete next.channels.telegram;
+  delete next.channels["my-claw-app"];
 
   const result = applyHotReload(current, next);
 
-  assert.ok(result.rebootRequired.includes("channels.telegram"));
-  assert.ok(current.channels.telegram, "channel must not be removed live");
+  assert.ok(result.rebootRequired.includes("channels.my-claw-app"));
+  assert.ok(current.channels["my-claw-app"], "channel must not be removed live");
 });
 
 // ── applyHotReload: reboot-only top-level sections ───────────────────────────
@@ -296,43 +236,6 @@ test("llm applier refreshes the ModelPicker", () => {
 
   assert.equal(picker.hasModels(), true);
   assert.equal(picker.find("model-b")?.id, "model-b");
-});
-
-test("whitelist applier rebuilds adapter whitelists with matrix normalization", () => {
-  const config = baseConfig();
-  config.whitelist = ["@User:HS", "u2"];
-
-  let tgSet: Set<string> | undefined;
-  let mxSet: Set<string> | undefined;
-  const tg = { setWhitelist: (s: Set<string>) => { tgSet = s; }, applyConfigReload: () => {} };
-  const mx = { setWhitelist: (s: Set<string>) => { mxSet = s; }, applyConfigReload: () => {} };
-
-  const ctx: ConfigReloadContext = {
-    getTelegram: () => tg,
-    getMatrix: () => mx,
-    normalizeMatrixUserId: (id) => id.toLowerCase(),
-  };
-
-  runReloadAppliers(["whitelist"], config, ctx);
-
-  assert.deepEqual([...tgSet!].sort(), ["@User:HS", "u2"].sort());
-  assert.ok(mxSet!.has("@user:hs"), "matrix whitelist should be normalized to lowercase");
-});
-
-test("channel appliers call applyConfigReload only for changed channels", () => {
-  const config = baseConfig();
-  let tgCalls = 0;
-  let mxCalls = 0;
-  const tg = { setWhitelist: () => {}, applyConfigReload: () => { tgCalls += 1; } };
-  const mx = { setWhitelist: () => {}, applyConfigReload: () => { mxCalls += 1; } };
-  const ctx: ConfigReloadContext = { getTelegram: () => tg, getMatrix: () => mx };
-
-  runReloadAppliers(["channels.telegram"], config, ctx);
-  assert.equal(tgCalls, 1);
-  assert.equal(mxCalls, 0);
-
-  runReloadAppliers(["channels.matrix"], config, ctx);
-  assert.equal(mxCalls, 1);
 });
 
 test("webSearch applier invokes registerWebSearch", () => {

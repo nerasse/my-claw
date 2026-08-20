@@ -20,11 +20,11 @@ const config: MyClawConfig = {
 };
 
 function msg(id: string, text: string): UnifiedMessage {
-  return { id, platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
+  return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 function session(id: string): SessionData {
   const now = new Date().toISOString();
-  return { id, platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 function llm(message: object): never {
   return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { status: 200, headers: { "Content-Type": "application/json" } }) as never;
@@ -46,7 +46,7 @@ test("a message arriving during a tool round is injected at the next LLM turn", 
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(config, reg, new SkillRegistry());
-  const sess = session("telegram/dm/u1");
+  const sess = session("my-claw-app/dm/u1");
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -75,7 +75,7 @@ test("a message arriving during a tool round is injected at the next LLM turn", 
 test("a message arriving during the final answer keeps the run going (onTurnSwitch + new turn)", async () => {
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
-  const sess = session("telegram/dm/u1");
+  const sess = session("my-claw-app/dm/u1");
   const { signal, end } = runRegistry.startRoot(sess.id);
   const switched: string[] = [];
 
@@ -146,7 +146,7 @@ test("an injected image message adds vision content to the next LLM call", async
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(visionConfig, reg, new SkillRegistry());
-  const sess = session("telegram/dm/u1");
+  const sess = session("my-claw-app/dm/u1");
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];

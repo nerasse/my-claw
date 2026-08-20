@@ -7,7 +7,7 @@ import type { ApprovalDecision, ToolApprovalRequest } from "../../src/channels/t
 function createSession(): SessionData {
   return {
     id: "test",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
@@ -18,7 +18,7 @@ function createSession(): SessionData {
 function createRequest(toolName: string): ToolApprovalRequest {
   return {
     id: "req-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatId: "chat-1",
     userId: "user-1",
     chatType: "dm",

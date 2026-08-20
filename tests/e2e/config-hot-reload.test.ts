@@ -13,7 +13,7 @@ function initialConfig(): MyClawConfig {
     whitelist: ["u1"],
     blacklist: ["spawn"],
     channels: {
-      telegram: { token: "tok-123", mode: "polling", historyLimit: 10, errorPolicy: "always" },
+      "my-claw-app": { port: 8080, streaming: { enabled: true, minChars: 20 } },
     },
     llm: {
       defaultProvider: "p",
@@ -64,7 +64,7 @@ function signalGate(label: string, timeoutMs = 10_000): { fired: () => void; don
 }
 
 describe("E2E config hot-reload", () => {
-  test("editing config.json on disk hot-reloads LLM + whitelist + memory, recreates telegram on token change", async () => {
+  test("editing config.json on disk hot-reloads LLM + whitelist + memory, and holds the listen port for a reboot", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
     const file = join(dir, "config.json");
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -73,23 +73,14 @@ describe("E2E config hot-reload", () => {
     const config = parseConfig(await Bun.file(file).text());
 
     const picker = new ModelPicker(config.llm.models!.map((m) => ({ id: m.id, label: m.label })));
-    let tgWhitelist: Set<string> | undefined;
-    let recreatedTg = 0;
-    const telegram = {
-      setWhitelist: (s: Set<string>) => { tgWhitelist = s; },
-      applyConfigReload: () => { /* behavioral-only reload path, unused here */ },
-    };
 
     const llmRef = config.llm;
-    const tgRef = config.channels.telegram;
+    const appRef = config.channels["my-claw-app"];
 
     const watcher = startConfigWatcher(
       config,
       {
         modelPicker: picker,
-        getTelegram: () => telegram,
-        normalizeMatrixUserId: (id) => id.toLowerCase(),
-        recreateTelegram: () => { recreatedTg += 1; },
       },
       {
         path: file,
@@ -101,7 +92,7 @@ describe("E2E config hot-reload", () => {
 
     const reloaded = waitForReload();
 
-    // Mutate the file: hot fields + a recreate field (telegram.token) + a now-hot section (memory).
+    // Mutate the file: hot fields + a reboot-only field (the listen port) + a now-hot section.
     const next = initialConfig();
     next.llm.defaultModel = "model-b";
     next.llm.models = [
@@ -109,8 +100,8 @@ describe("E2E config hot-reload", () => {
       { id: "model-b", label: "Model B", provider: "p" },
     ];
     next.whitelist = ["u1", "@Bob:HS"];
-    next.channels.telegram!.historyLimit = 42;
-    next.channels.telegram!.token = "ROTATED";
+    next.channels["my-claw-app"]!.streaming = { enabled: false, minChars: 5 };
+    next.channels["my-claw-app"]!.port = 9090;
     next.memory!.recallMaxEntries = 99;
     await writeFile(file, JSON.stringify(next, null, 2));
 
@@ -120,23 +111,22 @@ describe("E2E config hot-reload", () => {
     expect(payload.changed).toContain("llm");
     expect(payload.changed).toContain("whitelist");
     expect(payload.changed).toContain("memory");
-    // A telegram identity change is a recreate, not a plain "changed" apply.
-    expect(payload.changed).not.toContain("channels.telegram");
+    // The behavioral half of the channel section still applies in place.
+    expect(payload.changed).toContain("channels.my-claw-app");
+    expect(payload.rebootRequired).toContain("channels.my-claw-app.port");
 
     // In-place mutation preserved object identity.
     expect(config.llm).toBe(llmRef);
-    expect(config.channels.telegram).toBe(tgRef);
+    expect(config.channels["my-claw-app"]).toBe(appRef);
 
     // Hot fields applied.
     expect(config.llm.defaultModel).toBe("model-b");
     expect(picker.find("model-b")?.id).toBe("model-b");
-    expect(tgWhitelist?.has("u1")).toBe(true);
-    expect(tgWhitelist?.has("@Bob:HS")).toBe(true);
+    expect(config.whitelist).toContain("@Bob:HS");
 
-    // Telegram identity recreate: applied in place (token + behavioral) and the applier fired.
-    expect(config.channels.telegram!.token).toBe("ROTATED");
-    expect(config.channels.telegram!.historyLimit).toBe(42);
-    expect(recreatedTg).toBe(1);
+    // The socket is bound at start, so the port must NOT move under a live server.
+    expect(config.channels["my-claw-app"]!.streaming?.enabled).toBe(false);
+    expect(config.channels["my-claw-app"]!.port).toBe(8080);
     // memory is now hot: recall knobs apply in place.
     expect(config.memory!.recallMaxEntries).toBe(99);
   });

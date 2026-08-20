@@ -22,7 +22,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
   return {
     id: "test-msg-1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user1",
     chatId: "chat1",
     chatType: "dm",

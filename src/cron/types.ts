@@ -6,14 +6,16 @@ export interface CronSchedule {
   display: string;
 }
 
+export type CronPlatform = "my-claw-app";
+
 export interface CronOrigin {
-  platform: "telegram" | "matrix";
+  platform: CronPlatform;
   chatId: string;
   threadId?: string;
 }
 
 export interface CronDeliveryTarget {
-  platform: "telegram" | "matrix";
+  platform: CronPlatform;
   chatId: string;
   threadId?: string;
 }

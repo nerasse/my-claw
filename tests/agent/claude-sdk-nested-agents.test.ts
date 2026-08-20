@@ -15,11 +15,11 @@ import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
 
 function msg(): UnifiedMessage {
-  return { id: "m1", platform: "telegram", userId: "u1", chatId: "c1", chatType: "dm", text: "read that file", attachments: [], isForwarded: false, raw: {} };
+  return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "read that file", attachments: [], isForwarded: false, raw: {} };
 }
 function session(): SessionData {
   const now = new Date().toISOString();
-  return { id: "telegram/dm/u1", platform: "telegram", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id: "telegram/dm/u1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 function readTool(): Tool {
   return { name: "read", description: "read", parameters: {}, async execute() { return { success: true, output: "file body" }; } };

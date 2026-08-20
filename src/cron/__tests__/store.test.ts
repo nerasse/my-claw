@@ -163,7 +163,7 @@ describe("cron store", () => {
     });
 
     test("captures origin", () => {
-      const origin: CronOrigin = { platform: "telegram", chatId: "123" };
+      const origin: CronOrigin = { platform: "my-claw-app", chatId: "neras" };
       const job = createJob({
         prompt: "Check logs",
         schedule: "every 30m",
@@ -300,7 +300,7 @@ describe("cron store", () => {
 
   describe("parseDeliver", () => {
     test("origin", () => {
-      const origin: CronOrigin = { platform: "telegram", chatId: "123" };
+      const origin: CronOrigin = { platform: "my-claw-app", chatId: "neras" };
       expect(parseDeliver("origin", origin)).toBe("origin");
     });
 
@@ -308,19 +308,19 @@ describe("cron store", () => {
       expect(parseDeliver("local", null)).toBe("local");
     });
 
-    test("telegram chatId", () => {
-      const result = parseDeliver("telegram:123", null);
-      expect(result).toEqual({ platform: "telegram", chatId: "123" });
+    test("app owner", () => {
+      const result = parseDeliver("my-claw-app:neras", null);
+      expect(result).toEqual({ platform: "my-claw-app", chatId: "neras", threadId: undefined });
     });
 
-    test("matrix room", () => {
-      const result = parseDeliver("matrix:!room:server.com", null);
-      expect(result).toEqual({ platform: "matrix", chatId: "!room:server.com" });
+    test("app owner with threadId", () => {
+      const result = parseDeliver("my-claw-app:neras:t42", null);
+      expect(result).toEqual({ platform: "my-claw-app", chatId: "neras", threadId: "t42" });
     });
 
-    test("telegram with threadId", () => {
-      const result = parseDeliver("telegram:123:456", null);
-      expect(result).toEqual({ platform: "telegram", chatId: "123", threadId: "456" });
+    test("a removed platform is rejected, not silently accepted", () => {
+      expect(() => parseDeliver("telegram:123", null)).toThrow();
+      expect(() => parseDeliver("matrix:!room:server.com", null)).toThrow();
     });
 
     test("origin without origin throws", () => {

@@ -17,8 +17,7 @@ export function parseLogLevel(value: string | undefined): LogLevel | undefined {
 }
 
 /**
- * Floor for what reaches the files. Default `info`: `debug` and the matrix SDK's `trace` are
- * opt-in, because the SDK alone can fill a 5 MB file in minutes. Env wins over config so a
+ * Floor for what reaches the files. Default `info`: `debug` is opt-in. Env wins over config so a
  * debug session never depends on editing (and reloading) config.json.
  */
 const envLevel = parseLogLevel(process.env["MY_CLAW_LOG_LEVEL"]);
@@ -36,27 +35,8 @@ export function getLogLevel(): LogLevel {
 function shouldWrite(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[getLogLevel()];
 }
-type LogScope = "orchestrator" | "matrix" | "matrix-sdk" | "telegram" | "my-claw-app";
+type LogScope = "orchestrator" | "my-claw-app";
 type ConsoleMode = "all" | "errors" | "none";
-
-type ScopedSdkLogger = {
-  trace(...msg: unknown[]): void;
-  debug(...msg: unknown[]): void;
-  info(...msg: unknown[]): void;
-  warn(...msg: unknown[]): void;
-  error(...msg: unknown[]): void;
-  log(...msg: unknown[]): void;
-  getChild(namespace: string): ScopedSdkLogger;
-};
-
-type MatrixSdkRootLogger = {
-  methodFactory?: (
-    methodName: string,
-    logLevel: number,
-    loggerName: string,
-  ) => (this: { prefix?: string }, ...args: unknown[]) => void;
-  rebuild?: () => void;
-};
 
 type ScopeState = {
   queue: Promise<void>;
@@ -68,7 +48,6 @@ type ScopeState = {
 
 const scopeStates = new Map<LogScope, ScopeState>();
 let logsDirReady: Promise<void> | null = null;
-let matrixSdkRootInstalled = false;
 
 function ensureLogsDir(): Promise<void> {
   if (!logsDirReady) {
@@ -208,112 +187,9 @@ function createScopedLogger(scope: LogScope, options: { console?: ConsoleMode } 
   };
 }
 
-class FileSdkLogger implements ScopedSdkLogger {
-  constructor(
-    private readonly scope: Extract<LogScope, "matrix-sdk">,
-    private readonly namespace: string,
-    private readonly consoleMode: ConsoleMode,
-  ) {}
-
-  trace(...msg: unknown[]): void {
-    this.write("trace", msg);
-  }
-
-  debug(...msg: unknown[]): void {
-    this.write("debug", msg);
-  }
-
-  info(...msg: unknown[]): void {
-    this.write("info", msg);
-  }
-
-  warn(...msg: unknown[]): void {
-    this.write("warn", msg);
-  }
-
-  error(...msg: unknown[]): void {
-    this.write("error", msg);
-  }
-
-  log(...msg: unknown[]): void {
-    this.write("debug", msg);
-  }
-
-  getChild(namespace: string): ScopedSdkLogger {
-    return new FileSdkLogger(this.scope, `${this.namespace}${namespace}`, this.consoleMode);
-  }
-
-  private write(level: LogLevel, parts: unknown[]): void {
-    if (!shouldWrite(level)) return;
-    const timestamp = new Date().toISOString();
-    const message = parts.map((part) => stringifyLogPart(part)).join(" ");
-    const payload = JSON.stringify({
-      timestamp,
-      scope: this.scope,
-      namespace: this.namespace,
-      level,
-      message,
-      ...(parts.length === 0 ? {} : { data: parts.map((part) => normalizeLogData(part)) }),
-    }) + "\n";
-
-    printScopedConsole(this.scope, level, message, this.consoleMode);
-    void enqueueScopedWrite(this.scope, payload, timestamp);
-  }
-}
-
 const orchestratorLogger = createScopedLogger("orchestrator");
 
-export const matrixLog = createScopedLogger("matrix", { console: "errors" });
-export const telegramLog = createScopedLogger("telegram", { console: "errors" });
 export const myClawAppLog = createScopedLogger("my-claw-app", { console: "errors" });
-
-export function createSdkLogger(
-  scope: Extract<LogScope, "matrix-sdk">,
-  options: { console?: ConsoleMode; namespace?: string } = {},
-): ScopedSdkLogger {
-  return new FileSdkLogger(scope, options.namespace ?? scope, options.console ?? "none");
-}
-
-export function installMatrixSdkRootLogger(rootLogger: unknown): void {
-  if (matrixSdkRootInstalled) {
-    return;
-  }
-
-  const logger = rootLogger as MatrixSdkRootLogger;
-  if (typeof logger.rebuild !== "function") {
-    return;
-  }
-
-  const sink = createSdkLogger("matrix-sdk");
-  logger.methodFactory = function (methodName: string, _logLevel: number, loggerName: string) {
-    return function (this: { prefix?: string }, ...args: unknown[]): void {
-      const prefix = typeof this?.prefix === "string" && this.prefix ? this.prefix : loggerName;
-      const parts = prefix ? [prefix, ...args] : args;
-      switch (methodName) {
-        case "trace":
-          sink.trace(...parts);
-          break;
-        case "debug":
-          sink.debug(...parts);
-          break;
-        case "warn":
-          sink.warn(...parts);
-          break;
-        case "error":
-          sink.error(...parts);
-          break;
-        case "info":
-          sink.info(...parts);
-          break;
-        default:
-          sink.log(...parts);
-          break;
-      }
-    };
-  };
-  logger.rebuild();
-  matrixSdkRootInstalled = true;
-}
 
 export async function log(level: AppLogLevel, message: string, data?: unknown): Promise<void> {
   await orchestratorLogger(level, message, data);

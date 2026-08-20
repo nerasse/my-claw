@@ -32,7 +32,7 @@ function baseConfig(memory: MyClawConfig["memory"]): MyClawConfig {
 function createMessage(text: string): UnifiedMessage {
   return {
     id: "m1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",
@@ -46,7 +46,7 @@ function createMessage(text: string): UnifiedMessage {
 function createSession(): SessionData {
   return {
     id: "telegram/dm/u1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),

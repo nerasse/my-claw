@@ -62,20 +62,14 @@ test("skills appear in output with read_skill instruction", async () => {
   assert.match(result, /read_skill/);
 });
 
-test("platform telegram includes telegram hint", async () => {
-  const result = await buildSystemPrompt(makeCtx({ platform: "telegram" }));
-  assert.match(result, /You are on Telegram/);
-});
-
-test("platform matrix includes matrix hint", async () => {
-  const result = await buildSystemPrompt(makeCtx({ platform: "matrix" }));
-  assert.match(result, /You are in a Matrix room/);
+test("platform my-claw-app includes the app hint", async () => {
+  const result = await buildSystemPrompt(makeCtx({ platform: "my-claw-app" }));
+  assert.match(result, /You are in the my-claw app/);
 });
 
 test("unknown platform has no platform hint section", async () => {
   const result = await buildSystemPrompt(makeCtx({ platform: "unknown" }));
-  assert.ok(!result.includes("You are on Telegram"));
-  assert.ok(!result.includes("You are in a Matrix room"));
+  assert.ok(!result.includes("You are in the my-claw app"));
 });
 
 test("workspace files are loaded into prompt", async () => {

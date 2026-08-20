@@ -4,18 +4,18 @@ Personal AI agent orchestrator built on top of pi-mono.
 
 ## What It Does
 
-my-claw is a single-tenant personal agent that connects to Telegram and Matrix, handles messages, runs tools, manages sessions, and understands multimodal input (voice, images, video).
+my-claw is a single-tenant personal agent reached from the my-claw app and its web client. It handles messages, runs tools, manages sessions, and understands multimodal input (voice, images, video).
 
 **Core capabilities:**
-- Multi-channel: Telegram (grammy) + Matrix (matrix-js-sdk)
-- Session memory: per-user/per-room persistent sessions
+- App/web channel: WSS server with paired devices (`my-claw-app`)
+- Session memory: per-thread persistent sessions
 - Tool system: 8 base (bash, read, write, fetch, find, grep, ls, memory) + voice, browser, skill, subagent, search tools
 - Sub-agents: general and research agents with persistent sessions
 - Voice: STT auto (inbound audio transcribed), TTS manual (tool call only)
 - Vision: images and video converted to LLM-compatible format
 - Skills: built-in/custom/workspace skill system (SKILL.md format)
-- Blacklist + approval UI for sensitive actions
-- Streaming responses on both channels
+- Blacklist + approval UI for sensitive actions (answered from the device)
+- Streaming responses
 
 ## Architecture
 
@@ -23,7 +23,7 @@ my-claw is a single-tenant personal agent that connects to Telegram and Matrix, 
 - OpenAI-compatible LLM provider (Fireworks AI default)
 - Router + session manager orchestrate inbound messages
 - Agent bridge handles tool call loops (configurable: 90 orchestrator, 50 subagent), parallel execution
-- Channel adapters are self-contained (telegram/, matrix/, my-claw-app/)
+- The channel adapter is self-contained (my-claw-app/)
 
 See `docs/architecture.md` for full details.
 
@@ -85,7 +85,7 @@ Config lives in `~/.my-claw/config.json`. Key sections:
 
 ```json
 {
-  "whitelist": ["@your_telegram_handle"],
+  "whitelist": ["neras"],
   "blacklist": ["bash", "write"],
   "llm": {
     "defaultProvider": "fireworks",
@@ -100,9 +100,10 @@ Config lives in `~/.my-claw/config.json`. Key sections:
     "limit": { "context": 128000, "output": 8192 }
   },
   "channels": {
-    "telegram": {
+    "my-claw-app": {
       "enabled": true,
-      "token": "YOUR_BOT_TOKEN",
+      "port": 8080,
+      "devices": { "phone": { "token": "SHARED_SECRET", "owner": "neras" } },
       "streaming": { "enabled": true }
     }
   },
@@ -132,7 +133,7 @@ behavior.
 src/
   core/           # Config, router
   agent/          # Bridge, approvals, prompt builder
-  channels/       # Telegram + Matrix adapters
+  channels/       # my-claw-app adapter (app + web)
   llm/            # OpenAI-compatible provider
   sessions/       # Session manager + store
   tools/          # Tool registry + all tools (base, voice, browser, skill, subagent, search)

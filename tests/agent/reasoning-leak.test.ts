@@ -41,7 +41,7 @@ const TWO_PHASES = [
 function createMessage(): UnifiedMessage {
   return {
     id: "m1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",
@@ -67,7 +67,7 @@ function sessionWithReasoning(): SessionData {
   ];
   return {
     id: "telegram/dm/u1",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),

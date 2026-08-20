@@ -33,7 +33,7 @@ function configWith(agents: MyClawConfig["agents"]): MyClawConfig {
 
 function message(text: string): UnifiedMessage {
   return {
-    id: `m-${Math.random()}`, platform: "telegram", userId: "u1", chatId: "c1",
+    id: `m-${Math.random()}`, platform: "my-claw-app", userId: "u1", chatId: "c1",
     chatType: "dm", text, attachments: [], isForwarded: false, raw: {},
   };
 }

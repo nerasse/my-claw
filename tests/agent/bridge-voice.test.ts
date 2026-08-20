@@ -23,7 +23,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
   return {
     id: "1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "user1",
     chatId: "chat1",
     chatType: "dm",
@@ -38,7 +38,7 @@ function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
 function createSession(): SessionData {
   return {
     id: "test-session",
-    platform: "telegram",
+    platform: "my-claw-app",
     chatType: "dm",
     messages: [],
     createdAt: new Date().toISOString(),

@@ -303,7 +303,7 @@ plain-text `chat.send` (the M1 console sends raw text).
 Each owner can hold several independent conversations. Every chat frame carries a
 `threadId` (safe charset `[A-Za-z0-9._-]`, max 64 chars). A `chat.send` without
 `threadId` lands in the default thread. Sessions resolve to
-`my-claw-app/thread/<owner>/<threadId>` (per-thread sessions, like Telegram forum
+`my-claw-app/thread/<owner>/<threadId>` (per-thread sessions, like forum
 threads), so each conversation has its own context and runs in parallel.
 
 Two thread ids do not name a conversation but a session of another kind, and are recognised
@@ -778,7 +778,7 @@ runs fresh like any other message.
   conversation would otherwise keep naming the previous model until it reloaded. `model.get` stays a
   private answer, since it changes nothing.
 - `commands.list.result` carries the shared command catalog (same source as the
-  telegram bot menu), so the app's slash-menu can never drift from the server:
+  single source of truth), so the app's slash-menu can never drift from the server:
   the device asks for it again whenever the menu opens.
 
 
@@ -797,12 +797,12 @@ The flag is not decoration: it selects the language policy of the existing STT p
 (`src/voice/stt.ts`). Dictation gets `voice.stt.language`; an audio file the owner merely picked
 gets auto-detection, because forcing a language on unknown speech makes Whisper invent plausible
 words instead of failing. Nothing else in the pipeline is channel-specific -- the transcript, the
-echo, and the `[Audio]: "..."` rewrite are the same code that serves Telegram and Matrix.
+echo, and the `[Audio]: "..."` rewrite are shared channel-agnostic code.
 
 The transcript comes back as `chat.transcript`, addressed to the `chat.send` id the device
 generated, with one entry per recording keyed by attachment id, so each note renders its own
 words. A message can carry several: the mic stays available while there is no text, and the
-`[Audio 1]`, `[Audio 2]` labels in the stored turn keep them apart in the prompt too. Telegram and Matrix get the
+`[Audio 1]`, `[Audio 2]` labels in the stored turn keep them apart in the prompt too. Other channels would get the
 same text as an echo message (`voice.stt.echoFormat`); here that echo is dropped, because a
 standalone turn quoting the bubble above it says the same thing twice and pushes the conversation
 apart. A take that failed has no transcript, so its warning still arrives as a message.
@@ -963,7 +963,7 @@ its own**, before any answer text, because the thinking phase is the silence the
 owner is waiting through. Reasoning belongs to the segment it arrived in, so a
 tool card resets it just as it resets the text.
 
-This is the only channel that receives them: Matrix and Telegram never provide a
+This is the only channel that receives them: no other surface provides a
 reasoning sink to the run. Full rules, per-engine capability and the reason the
 reasoning is never replayed to a model: `docs/reasoning-visibility.md`.
 

@@ -44,7 +44,7 @@ const sttPipeline = new SttPipeline(voiceManager);
 function createMessage(): UnifiedMessage {
   return {
     id: "m1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",

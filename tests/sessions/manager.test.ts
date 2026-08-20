@@ -7,7 +7,7 @@ import type { UnifiedMessage } from "../../src/channels/types.ts";
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
   return {
     id: "m1",
-    platform: "telegram",
+    platform: "my-claw-app",
     userId: "u1",
     chatId: "c1",
     chatType: "dm",
@@ -35,56 +35,16 @@ test("resolveSessionId: a normal app thread stays under the owner", () => {
   assert.equal(id, "my-claw-app/thread/owner1/projet");
 });
 
-test("resolveSessionId: telegram DM -> telegram/dm/{userId}", () => {
-  const id = SessionManager.resolveSessionId("telegram", "dm", "c100", "u200");
-  assert.equal(id, "telegram/dm/u200");
+test("resolveSessionId: my-claw-app DM -> my-claw-app/dm/{userId}", () => {
+  const id = SessionManager.resolveSessionId("my-claw-app", "dm", "c100", "u200");
+  assert.equal(id, "my-claw-app/dm/u200");
 });
 
-test("resolveSessionId: telegram DM with per-chat scope -> telegram/dm-chat/{chatId}", () => {
-  const id = SessionManager.resolveSessionId("telegram", "dm", "c100", "u200", {
-    sessionScope: "per-chat",
-  });
-  assert.equal(id, "telegram/dm-chat/c100");
-});
-
-test("resolveSessionId: telegram group -> telegram/group/{chatId}", () => {
-  const id = SessionManager.resolveSessionId("telegram", "group", "g500", "u200");
-  assert.equal(id, "telegram/group/g500");
-});
-
-test("resolveSessionId: telegram thread -> telegram/thread/{chatId}/{threadId}", () => {
-  const id = SessionManager.resolveSessionId("telegram", "dm", "c100", "u200", {
+test("resolveSessionId: my-claw-app thread -> my-claw-app/thread/{chatId}/{threadId}", () => {
+  const id = SessionManager.resolveSessionId("my-claw-app", "dm", "c100", "u200", {
     threadId: "t999",
   });
-  assert.equal(id, "telegram/thread/c100/t999");
-});
-
-test("resolveSessionId: matrix DM -> matrix/dm/{userId}", () => {
-  const id = SessionManager.resolveSessionId("matrix", "dm", "c1", "u300");
-  assert.equal(id, "matrix/dm/u300");
-});
-
-test("resolveSessionId: matrix DM with per-room scope -> matrix/dm-room/{roomId}", () => {
-  const id = SessionManager.resolveSessionId("matrix", "dm", "c1", "u300", {
-    roomId: "!room:example.org",
-    sessionScope: "per-room",
-  });
-  assert.equal(id, "matrix/dm-room/!room:example.org");
-});
-
-test("resolveSessionId: matrix group -> matrix/room/{roomId}", () => {
-  const id = SessionManager.resolveSessionId("matrix", "group", "c1", "u300", {
-    roomId: "!grp:example.org",
-  });
-  assert.equal(id, "matrix/room/!grp:example.org");
-});
-
-test("resolveSessionId: matrix thread -> matrix/thread/{roomId}/{threadId}", () => {
-  const id = SessionManager.resolveSessionId("matrix", "dm", "c1", "u300", {
-    roomId: "!r:example.org",
-    threadId: "evt123",
-  });
-  assert.equal(id, "matrix/thread/!r:example.org/evt123");
+  assert.equal(id, "my-claw-app/thread/c100/t999");
 });
 
 test("resolveSessionId: unknown platform DM -> {platform}/dm/{userId}", () => {
@@ -105,7 +65,7 @@ test("getOrCreate: creates new session if none exists", async () => {
   try {
     const session = await manager.getOrCreate(sid, createMessage());
     assert.equal(session.id, sid);
-    assert.equal(session.platform, "telegram");
+    assert.equal(session.platform, "my-claw-app");
     assert.equal(session.chatType, "dm");
     assert.equal(session.messages.length, 0);
   } finally {

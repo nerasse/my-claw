@@ -1,5 +1,10 @@
 # Hot-reload extensions
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 ## Why
 
 `config.json` and `.env` already hot-reload (`docs/config-hot-reload.md`). The

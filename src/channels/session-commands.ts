@@ -19,7 +19,7 @@ import { runRegistry } from "../core/run-registry.ts";
 import { hooks } from "../hooks/index.ts";
 
 /**
- * Slash commands whose body is the same on Telegram and on Matrix, down to the platform string.
+ * Slash commands whose body is identical on every channel, down to the platform string.
  * A command that renders a menu, buttons or any channel-specific layout is deliberately absent:
  * it stays in its channel file. The point of this module is that a fix applied here lands on both
  * channels at once, which a duplicated `case` could not guarantee.

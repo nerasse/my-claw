@@ -129,7 +129,7 @@ SDK subprocess per run (survives restarts; wins over any `CLAUDE_CODE_OAUTH_TOKE
 - Token rotation is hot: edit `CLAUDE_CODE_OAUTH_TOKEN` in `~/.my-claw/.env` and the
   next run uses it — no restart. The config watcher watches `.env` and a hot reload
   makes the file authoritative for `process.env` (at boot the shell/systemd env still
-  wins). Channel tokens (Telegram/Matrix) also refresh in `process.env` but the live
+  wins). Channel secrets also refresh in `process.env` but the live
   client keeps its connection until reboot.
 
 ### Codex provider (ChatGPT subscription)
@@ -316,9 +316,9 @@ Runtime switch via channel commands:
 
 | Command | Works on |
 |---|---|
-| `/model` | Telegram, Matrix |
-| `/model <name>` | Telegram, Matrix |
-| `/models` | Telegram, Matrix |
+| `/model` | my-claw-app |
+| `/model <name>` | my-claw-app |
+| `/models` | my-claw-app |
 
 Search works on `id`, `label`, and the tail segment after the last `/`.
 
@@ -346,7 +346,7 @@ Give models an optional `group` label to collapse them behind a single submenu e
 ```
 
 The root menu shows `MiMo v2.5 Pro` and a `Claude SDK (abo) >` entry; tapping it opens the group
-(with a `< Back` entry). On Matrix the same levels work via reactions and number/name replies.
+(with a `< Back` entry).
 The Claude Agent SDK accepts both aliases (`sonnet`, `opus`, `haiku`, `fable`) and full ids
 (`claude-sonnet-5`, `claude-opus-4-8`); availability depends on your subscription.
 
@@ -625,12 +625,12 @@ sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM 
 
 ```json
 {
-  "whitelist": ["123456789", "@user:matrix.org"],
+  "whitelist": ["neras"],
   "blacklist": ["bash", "write"]
 }
 ```
 
-- `whitelist` — User IDs allowed to interact. Telegram: numeric IDs. Matrix: `@user:server` format (auto-normalized at boot).
+- `whitelist` — User IDs allowed to interact. On the app channel the owner is resolved from the paired device, so this list is only consulted by surfaces that carry a raw user id.
 - `blacklist` — Tool names requiring approval before execution. Approval is **strictly opt-in**:
   an empty blacklist means full autonomy (no tool ever asks, by design — the app runs in its own
   encapsulated VM). When blacklisted, `bash` and `memory` are re-confirmed on every call
@@ -638,67 +638,34 @@ sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM 
 
 ## Channels
 
-### Telegram
+### my-claw-app
 
 ```json
 "channels": {
-  "telegram": {
+  "my-claw-app": {
     "enabled": true,
-    "token": "BOT_TOKEN",
-    "mode": "polling",
-    "dm": { "enabled": true, "policy": "allowlist", "allowFrom": ["123"] },
-    "groupPolicy": "allowlist",
-    "groupAllowFrom": ["123"],
-    "groups": { "-100123": { "enabled": true, "requireMention": true } },
+    "port": 8080,
+    "devices": { "phone": { "token": "SHARED_SECRET", "owner": "neras" } },
     "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
-    "reactions": { "enabled": true },
-    "threadReplies": "inbound",
-    "replyToMode": "first",
-    "historyLimit": 10,
-    "errorPolicy": "once"
+    "approvals": true,
+    "pairing": { "enabled": true },
+    "files": { "warnSizeBytes": 52428800 }
   }
 }
 ```
 
 Key fields:
-- `mode` — `"polling"` or `"webhook"`. Webhook requires `webhook.url`, `webhook.secret`, `webhook.port`.
-- `dm.policy` — `"open"` (anyone), `"allowlist"` (only `dm.allowFrom`), `"disabled"`.
-- `groupPolicy` — same as dm.policy but for groups.
-- `groups` — per-group config keyed by chat ID. `"*"` matches all groups.
-- `requireMention` — group messages only routed when bot is mentioned.
-- `streaming` — live token streaming via message edits.
-- `reactions` — emoji feedback on messages (received/thinking/tool_use/done/error).
-- `threadReplies` — `"off"`, `"inbound"` (reply in thread if user is in thread), `"always"`.
-- `replyToMode` — `"off"`, `"first"` (reply to first chunk only), `"all"`.
-- `errorPolicy` — `"always"` (report every error), `"once"` (one per session), `"silent"`.
+- `port` — the WSS listen port. Reboot-only: the socket is bound at start.
+- `devices` — paired devices keyed by device id. `token` is the shared secret the device presents;
+  `owner` decides whose conversations it opens (defaults to the device id, so an unset owner keeps
+  the device on its own threads).
+- `streaming` — live token streaming to the device.
+- `approvals` — answer tool-approval prompts from the device. **Off by default, and the only
+  surface that can answer one**: with it off, every blacklisted tool is denied outright.
+- `pairing` — the unauthenticated `/pair` route. Off by default: it does not exist until opened.
+- `files.warnSizeBytes` — attachments above this size are logged with a warning and stored anyway.
 
-### Matrix
-
-```json
-"channels": {
-  "matrix": {
-    "enabled": true,
-    "homeserver": "https://matrix.org",
-    "accessToken": "syt_...",
-    "userId": "@bot:matrix.org",
-    "deviceId": "ABCDEF",
-    "encryption": true,
-    "dm": { "enabled": true, "policy": "allowlist", "allowFrom": ["@user:matrix.org"] },
-    "groupPolicy": "allowlist",
-    "groups": { "!room:matrix.org": { "enabled": true, "requireMention": true } },
-    "streaming": { "enabled": true, "minChars": 30, "throttleMs": 1000 },
-    "reactions": { "enabled": true },
-    "contextVisibility": "all",
-    "errorPolicy": "once"
-  }
-}
-```
-
-Additional Matrix fields:
-- `encryption` — enable E2EE (requires `userId` + `deviceId`).
-- `contextVisibility` — `"all"` (include all room context), `"allowlist"` (only allowed senders), `"allowlist_quote"` (allowlist + quoted replies from anyone).
-- `displayName` — override bot display name for mention detection.
-- `autoJoin` — `"off"`, `"always"`, or use `autoJoinAllowlist`.
+See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md` for pairing.
 
 ## Voice
 

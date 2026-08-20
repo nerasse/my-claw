@@ -8,7 +8,7 @@ Scheduled tasks run without a user present. The agent executes on a timer and de
 
 ### Origin is nullable
 
-Jobs created via chat capture `origin` automatically. Jobs created manually (editing `~/.my-claw/cron/jobs.json`) have `origin: null`. This avoids inventing a fake `platform: "cli"` type and keeps the type system clean. When `origin` is null, `deliver` must be an explicit target (`telegram:chatId` or `matrix:roomId`).
+Jobs created via chat capture `origin` automatically. Jobs created manually (editing `~/.my-claw/cron/jobs.json`) have `origin: null`. This avoids inventing a fake `platform: "cli"` type and keeps the type system clean. When `origin` is null, `deliver` must be an explicit target (`my-claw-app:<owner>`, optionally `my-claw-app:<owner>:<threadId>`).
 
 ### `deliver` is independent from `origin`
 

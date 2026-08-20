@@ -1,5 +1,10 @@
 # Hooks / Event System
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 > WHY: Single-tenant project, single dev. One unified event bus covers 100% of needs without the complexity of Hermes' 3 systems or OpenClaw's 2 systems.
 > Three execution patterns: void (fire-and-forget parallel), gate (sequential, can block), waterfall (sequential, transforms data).
 > 96 hooks (84 void + 7 gate + 5 waterfall) instrument the entire lifecycle from app boot to message delivery.

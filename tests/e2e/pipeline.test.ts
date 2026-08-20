@@ -19,7 +19,7 @@ const config: MyClawConfig = {
 function createMessage(text = "hello", userId = "u1"): UnifiedMessage {
   return {
     id: `m-${Date.now()}-${Math.random()}`,
-    platform: "telegram",
+    platform: "my-claw-app",
     userId,
     chatId: "c1",
     chatType: "dm",

@@ -87,8 +87,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
       const jobs = await loadJobs();
 
       const msg = (args.__message as UnifiedMessage | undefined) ?? null;
-      const origin: CronOrigin | null = msg
-        ? { platform: msg.platform as "telegram" | "matrix", chatId: msg.chatId, threadId: msg.threadId }
+      const origin: CronOrigin | null = msg && msg.platform === "my-claw-app"
+        ? { platform: msg.platform, chatId: msg.chatId, threadId: msg.threadId }
         : null;
 
       switch (action) {
@@ -103,7 +103,7 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
 
           const deliverInput = strOpt(args, "deliver") ?? "origin";
           if (deliverInput.toLowerCase() === "origin" && !origin) {
-            return { success: false, output: "Cannot use 'origin' delivery without an origin chat. Specify a target: 'telegram:chatId' or 'matrix:roomId'." };
+            return { success: false, output: "Cannot use 'origin' delivery without an origin chat. Specify a target: 'my-claw-app:owner'." };
           }
 
           const job = createJob({

@@ -12,7 +12,7 @@ export type TurnSwitchCallback = (message: UnifiedMessage) => Promise<void>;
  * Where a run reports what the model is thinking -- docs/reasoning-visibility.md. Two shapes
  * because the engines differ in kind, not in degree: an OpenAI-compatible transport streams the
  * text, while the Claude Code bridge redacts it and only counts tokens. A channel that provides
- * neither callback gets nothing, which is how Matrix and Telegram stay untouched.
+ * neither callback gets nothing, which is how a channel without a sink stays untouched.
  */
 export interface ReasoningSink {
   /** Reasoning text, incremental. */

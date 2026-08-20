@@ -117,47 +117,6 @@ src/
 │   ├── compact-command.ts # /compact for every channel: engine choice + session hold -- docs/compaction.md
 │   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
-│   ├── telegram/
-│   │   ├── adapter.ts     # Grammy boot, handler wiring, lifecycle
-│   │   ├── send.ts        # All outgoing send/edit/delete methods
-│   │   ├── context.ts     # History, thread roots, reply context
-│   │   ├── commands.ts
-│   │   ├── errors.ts
-│   │   ├── format.ts
-│   │   ├── offset-store.ts
-│   │   ├── policy.ts
-│   │   ├── reactions.ts
-│   │   ├── session-handlers.ts
-│   │   ├── split.ts
-│   │   └── stream.ts
-│   ├── matrix/
-│   │   ├── adapter.ts     # Timeline ingress, handler wiring, lifecycle
-│   │   ├── send.ts        # All outgoing send/edit/upload methods
-│   │   ├── context.ts     # Room history, thread context, reply context
-│   │   ├── actions.ts
-│   │   ├── approval-store.ts
-│   │   ├── client.ts
-│   │   ├── commands.ts
-│   │   ├── crypto-idb.ts
-│   │   ├── decrypt-bridge.ts
-│   │   ├── errors.ts
-│   │   ├── file-sync-store.ts
-│   │   ├── format.ts
-│   │   ├── helpers.ts
-│   │   ├── history.ts
-│   │   ├── inbound-buffer.ts
-│   │   ├── inbound-dedupe.ts
-│   │   ├── ingress.ts
-│   │   ├── policy.ts
-│   │   ├── polls.ts
-│   │   ├── reactions.ts
-│   │   ├── retry.ts
-│   │   ├── session-handlers.ts
-│   │   ├── storage.ts
-│   │   ├── stream.ts
-│   │   ├── sync-lifecycle.ts
-│   │   ├── text.ts
-│   │   └── types.ts
 │   └── my-claw-app/
 │       ├── adapter.ts     # WSS server, device auth, media serving, frame handling
 │       ├── sessions.ts    # Thread list/history/archive, keyed by owner
@@ -247,7 +206,7 @@ src/
 │   ├── image.ts           # Image resize + base64 conversion
 │   └── video.ts           # Video frame extraction (ffmpeg)
 ├── utils/
-│   ├── logger.ts          # Scoped file logger (orchestrator, telegram, matrix, my-claw-app)
+│   ├── logger.ts          # Scoped file logger (orchestrator, my-claw-app)
 │   ├── media.ts           # Media ref extraction/dedup
 │   ├── errors.ts          # Error formatting
 │   ├── atomic-write.ts   # Atomic JSON file writes (temp + rename)
@@ -260,10 +219,10 @@ src/
 
 ### Splitting rules
 
-- A channel folder (`channels/telegram/`, `channels/matrix/`, `channels/my-claw-app/`) contains:
-  - `adapter.ts` : Grammy/SDK boot, handler wiring, lifecycle only
-  - `send.ts` : All outgoing methods (send, edit, delete, upload)
-  - `context.ts` : Room/thread history, reply context, sender resolution
+- A channel folder (`channels/my-claw-app/`) contains:
+  - `adapter.ts` : server boot, handler wiring, lifecycle only
+  - `sessions.ts` / `files.ts` / `stream.ts` : thread state, uploads, outgoing stream
+  - Telegram and Matrix were removed: the app/web surface is the only channel.
 - Any file over **500 lines** is a candidate for extraction. Not automatic, but a signal.
 - `core/` avoids dependencies on `channels/`, `agent/`, `tools/` where possible. `router.ts` bridges `channels/` and `agent/` by design.
 - `skills/` contains the 3-tier skill system (registry, loader, sync). `subagents/` contains the sub-agent runner and registry.

@@ -1,9 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { createTelegramCommandHandler } from "../../src/channels/telegram/session-handlers.ts";
-import { createMatrixCommandHandler } from "../../src/channels/matrix/session-handlers.ts";
+import { createMyClawAppCommandHandler } from "../../src/channels/my-claw-app/commands.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
-import { ModelPicker } from "../../src/channels/model-picker.ts";
+import type { ModelPicker } from "../../src/channels/model-picker.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { isMetaCommand } from "../../src/channels/meta-commands.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -16,47 +15,45 @@ const config: MyClawConfig = {
   agents: {},
 };
 
+function handler() {
+  return createMyClawAppCommandHandler({
+    config,
+    sessionManager: new SessionManager(),
+    modelPicker: {} as ModelPicker,
+  });
+}
+
 test("/stop is recognized as a meta-command (not routed to the agent)", () => {
   assert.equal(isMetaCommand("/stop"), true);
   assert.equal(isMetaCommand("/stop@mybot"), true);
 });
 
-test("telegram /stop stops the current session and distinguishes idle", async () => {
+test("/stop stops the current session and distinguishes idle", async () => {
   runRegistry.clear();
-  const handler = createTelegramCommandHandler({ config, sessionManager: new SessionManager(), modelPicker: new ModelPicker([]) });
-  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  const run = handler();
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "u1", "u1", { threadId: "t1" });
   const { end } = runRegistry.startRoot(sessionId);
 
-  assert.equal(await handler("c1", "u1", "dm", "stop", ""), "Stopped.");
+  assert.equal(await run("u1", "t1", "stop", ""), "Stopped.");
 
-  // a session with no active run
-  assert.equal(await handler("c1", "u2", "dm", "stop", ""), "Nothing running.");
+  // a thread with no active run
+  assert.equal(await run("u1", "t2", "stop", ""), "Nothing running.");
 
-  end();
-  runRegistry.clear();
-});
-
-test("matrix /stop stops the current session", async () => {
-  runRegistry.clear();
-  const handler = createMatrixCommandHandler({ config, sessionManager: new SessionManager(), modelPicker: new ModelPicker([]) });
-  const sessionId = SessionManager.resolveSessionId("matrix", "dm", "!room:test", "@u1:test", { roomId: "!room:test" });
-  const { end } = runRegistry.startRoot(sessionId);
-
-  assert.equal(await handler("!room:test", "@u1:test", "dm", "stop", "", { roomId: "!room:test" }), "Stopped.");
   end();
   runRegistry.clear();
 });
 
 test("/status shows the live run tree (main + sub-agents)", async () => {
   runRegistry.clear();
-  const handler = createTelegramCommandHandler({ config, sessionManager: new SessionManager(), modelPicker: new ModelPicker([]) });
-  const sessionId = SessionManager.resolveSessionId("telegram", "dm", "c1", "u1");
+  const run = handler();
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "u1", "u1", { threadId: "t1" });
   const { signal, end } = runRegistry.startRoot(sessionId);
   runRegistry.enter(signal, "main", 0);
   runRegistry.enter(signal, "researcher", 1);
 
-  const status = String(await handler("c1", "u1", "dm", "status", ""));
-  assert.match(status, /Active run: main, researcher\[1\]/);
+  const output = await run("u1", "t1", "status", "");
+  const text = typeof output === "string" ? output : String((output as { text: string }).text);
+  assert.match(text, /Active run: main, researcher\[1\]/);
 
   end();
   runRegistry.clear();

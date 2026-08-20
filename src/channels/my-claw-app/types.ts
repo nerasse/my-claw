@@ -1896,7 +1896,7 @@ export interface MyClawAppJobEntry {
   /** 1 for "once" jobs, null for recurring ones. Not editable: fixed by the schedule kind. */
   repeat: number | null;
   completedRuns: number;
-  /** Display form of the delivery target: "local", "origin", or "telegram:chatId". */
+  /** Display form of the delivery target: "local", "origin", or "my-claw-app:owner". */
   deliver: string;
   model?: string;
   /** The job's own effort pin, the sibling of `model`. */

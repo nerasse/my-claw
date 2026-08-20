@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  isMatrixChannelEnabled,
-  isTelegramChannelEnabled,
+  isMyClawAppChannelEnabled,
   resolveMaxIterations,
   resolveAgentSkills,
   resolveAgentMcp,
@@ -33,36 +32,24 @@ function createConfig(): MyClawConfig {
   };
 }
 
-test("channel helpers default to enabled when channel config exists", () => {
+test("the channel helper defaults to enabled when the channel config exists", () => {
   const config = createConfig();
-  config.channels.telegram = { token: "telegram-token" };
-  config.channels.matrix = {
-    homeserver: "https://matrix.example.com",
-    accessToken: "matrix-token",
-  };
+  config.channels["my-claw-app"] = { port: 8080 };
 
-  assert.equal(isTelegramChannelEnabled(config), true);
-  assert.equal(isMatrixChannelEnabled(config), true);
+  assert.equal(isMyClawAppChannelEnabled(config), true);
 });
 
-test("channel helpers disable channels when enabled is false", () => {
+test("the channel helper disables the channel when enabled is false", () => {
   const config = createConfig();
-  config.channels.telegram = { enabled: false, token: "telegram-token" };
-  config.channels.matrix = {
-    enabled: false,
-    homeserver: "https://matrix.example.com",
-    accessToken: "matrix-token",
-  };
+  config.channels["my-claw-app"] = { enabled: false, port: 8080 };
 
-  assert.equal(isTelegramChannelEnabled(config), false);
-  assert.equal(isMatrixChannelEnabled(config), false);
+  assert.equal(isMyClawAppChannelEnabled(config), false);
 });
 
-test("channel helpers disable missing channels", () => {
+test("the channel helper disables a missing channel", () => {
   const config = createConfig();
 
-  assert.equal(isTelegramChannelEnabled(config), false);
-  assert.equal(isMatrixChannelEnabled(config), false);
+  assert.equal(isMyClawAppChannelEnabled(config), false);
 });
 
 test("resolveMaxIterations returns orchestrator default", () => {

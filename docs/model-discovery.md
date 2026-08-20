@@ -1,5 +1,10 @@
 # Model discovery
 
+> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
+> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
+> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
+> de la décision : ils ne décrivent plus le code.
+
 ## Why
 
 Hand-maintaining the Claude model ids in `config.llm.models` drifts: the subscription's
