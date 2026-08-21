@@ -2,7 +2,8 @@ import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProvide
 import { tagNameOf } from "../core/config.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { parseModelRef } from "./model-ref.ts";
-import { cachedOpenRouterEndpointLimits } from "./openrouter-endpoints.ts";
+import { cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
+export { isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
 import { CODEX_BASE_URL } from "./codex-auth.ts";
 
 /** Native Messages endpoint of the Claude subscription backend. */
@@ -76,19 +77,6 @@ export function findModel(config: LlmConfig, modelId: string): LlmModelConfig | 
     return models.find((m) => m.provider === ref.provider && (m.apiId ?? m.id) === ref.apiId);
   }
   return models.find((m) => (m.apiId ?? m.id) === ref.apiId);
-}
-
-/**
- * OpenRouter is recognised by its host, never by the key it was given in the config: the endpoint
- * pin becomes a `provider` object in the request body, and no other API understands that field.
- */
-export function isOpenRouterBaseUrl(baseUrl?: string): boolean {
-  if (!baseUrl) return false;
-  try {
-    return new URL(baseUrl).host.endsWith("openrouter.ai");
-  } catch {
-    return false;
-  }
 }
 
 /**

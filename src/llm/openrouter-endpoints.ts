@@ -12,7 +12,22 @@
 import { log } from "../utils/logger.ts";
 
 const ENDPOINTS_TTL_MS = 15 * 60_000;
+const MODELS_TTL_MS = 15 * 60_000;
 const PROVIDERS_TTL_MS = 24 * 60 * 60_000;
+/**
+ * OpenRouter is recognised by its registered domain, including official subdomains such as
+ * `gateway.openrouter.ai`. The host is parsed rather than searched as text, so an unrelated URL
+ * cannot opt into OpenRouter-only request fields by mentioning the domain in its path or query.
+ */
+export function isOpenRouterBaseUrl(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+  } catch {
+    return false;
+  }
+}
 const FETCH_TIMEOUT_MS = 10_000;
 const API_BASE = "https://openrouter.ai/api/v1";
 
@@ -42,6 +57,38 @@ export interface OpenRouterEndpoint {
   uptime30m?: number;
 }
 
+/**
+ * One row of the model-level catalogue (`/api/v1/models`): what OpenRouter publishes about a model
+ * before any endpoint is picked. Prices here are the *best* offer and the window/output ceiling is
+ * the best endpoint's, so this is catalogue metadata, not what a pinned run pays
+ * (docs/model-identity.md).
+ */
+export interface OpenRouterModel {
+  /** Exact catalogue id, suffix included ("google/gemini-3.7-flash:batch"). Never normalised. */
+  id: string;
+  /** The dated slug behind the moving id, when the catalogue exposes one. */
+  canonicalSlug?: string;
+  /** Display name as OpenRouter spells it ("DeepSeek: DeepSeek V4 Flash"). */
+  name: string;
+  contextLength?: number;
+  /** Ceiling of the best endpoint, per `top_provider.max_completion_tokens`. */
+  maxOutput?: number;
+  moderated?: boolean;
+  /** USD per million tokens, undefined when the model publishes no such rate. */
+  promptUsd?: number;
+  completionUsd?: number;
+  cacheReadUsd?: number;
+  cacheWriteUsd?: number;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  supportedParameters?: string[];
+  /** True when the model refuses to run with reasoning off. */
+  reasoningMandatory?: boolean;
+  reasoningEfforts?: string[];
+  /** ISO date after which the catalogue drops the model, when announced. */
+  expirationDate?: string;
+}
+
 interface Cached<T> {
   at: number;
   value: T;
@@ -49,6 +96,8 @@ interface Cached<T> {
 
 const endpointsCache = new Map<string, Cached<OpenRouterEndpoint[]>>();
 let providersCache: Cached<Map<string, string>> | undefined;
+let modelsCache: Cached<Map<string, OpenRouterModel>> | undefined;
+let modelsInFlight: Promise<Map<string, OpenRouterModel>> | undefined;
 
 /** Per million tokens, from OpenRouter's per-token strings. */
 function perMillion(raw: unknown): number | undefined {
@@ -137,6 +186,107 @@ export async function openRouterProviderNames(): Promise<Map<string, string>> {
   }
 }
 
+interface RawModel {
+  id?: string;
+  canonical_slug?: string | null;
+  name?: string;
+  context_length?: number | null;
+  expiration_date?: string | null;
+  architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
+  top_provider?: { context_length?: number | null; max_completion_tokens?: number | null; is_moderated?: boolean };
+  supported_parameters?: string[];
+  reasoning?: { mandatory?: boolean; supported_efforts?: string[] } | null;
+}
+
+function toModel(raw: RawModel): OpenRouterModel | undefined {
+  if (!raw.id) return undefined;
+  // top_provider is the endpoint serving by default, so its window wins when both are published.
+  const context =
+    typeof raw.top_provider?.context_length === "number"
+      ? raw.top_provider.context_length
+      : typeof raw.context_length === "number"
+        ? raw.context_length
+        : undefined;
+  const prompt = perMillion(raw.pricing?.prompt);
+  const completion = perMillion(raw.pricing?.completion);
+  const cacheRead = perMillion(raw.pricing?.input_cache_read);
+  const cacheWrite = perMillion(raw.pricing?.input_cache_write);
+  return {
+    id: raw.id,
+    name: raw.name ?? raw.id,
+    ...(raw.canonical_slug ? { canonicalSlug: raw.canonical_slug } : {}),
+    ...(context === undefined ? {} : { contextLength: context }),
+    ...(typeof raw.top_provider?.max_completion_tokens === "number"
+      ? { maxOutput: raw.top_provider.max_completion_tokens }
+      : {}),
+    ...(typeof raw.top_provider?.is_moderated === "boolean" ? { moderated: raw.top_provider.is_moderated } : {}),
+    ...(prompt === undefined ? {} : { promptUsd: prompt }),
+    ...(completion === undefined ? {} : { completionUsd: completion }),
+    ...(cacheRead === undefined ? {} : { cacheReadUsd: cacheRead }),
+    ...(cacheWrite === undefined ? {} : { cacheWriteUsd: cacheWrite }),
+    ...(raw.architecture?.input_modalities ? { inputModalities: raw.architecture.input_modalities } : {}),
+    ...(raw.architecture?.output_modalities ? { outputModalities: raw.architecture.output_modalities } : {}),
+    ...(raw.supported_parameters ? { supportedParameters: raw.supported_parameters } : {}),
+    ...(typeof raw.reasoning?.mandatory === "boolean" ? { reasoningMandatory: raw.reasoning.mandatory } : {}),
+    ...(raw.reasoning?.supported_efforts ? { reasoningEfforts: raw.reasoning.supported_efforts } : {}),
+    ...(raw.expiration_date ? { expirationDate: raw.expiration_date } : {}),
+  };
+}
+
+/**
+ * The whole model-level catalogue, keyed by exact id. Suffix variants (`:free`, `:batch`) are
+ * distinct models with their own prices and stay distinct keys: collapsing them would price a batch
+ * run at the interactive rate.
+ *
+ * One call for 400 models, so unlike the per-model endpoint listing this is cheap enough to fetch
+ * whole. A failed fetch caches an empty map for the TTL rather than throwing: callers treat a miss
+ * as "no evidence" and leave their own values untouched.
+ */
+export async function openRouterModels(): Promise<Map<string, OpenRouterModel>> {
+  if (modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.value;
+  // Several callers can ask at once; one flight serves them all.
+  if (modelsInFlight) return modelsInFlight;
+  modelsInFlight = (async () => {
+    try {
+      const body = (await getJson("/models")) as { data?: RawModel[] };
+      const map = new Map<string, OpenRouterModel>();
+      for (const raw of body.data ?? []) {
+        const model = toModel(raw);
+        if (model) map.set(model.id, model);
+      }
+      modelsCache = { at: Date.now(), value: map };
+      return map;
+    } catch (err) {
+      void log("warn", "openrouter models lookup failed", { error: String(err) });
+      modelsCache = { at: Date.now(), value: new Map() };
+      return modelsCache.value;
+    } finally {
+      modelsInFlight = undefined;
+    }
+  })();
+  return modelsInFlight;
+}
+
+/** One catalogue row by exact id, fetching the catalogue if it is cold. */
+export async function openRouterModel(apiId: string): Promise<OpenRouterModel | undefined> {
+  return (await openRouterModels()).get(apiId);
+}
+
+/**
+ * The catalogue as it stands in memory, never reaching the network. Same rule as the endpoint
+ * accessors: pricing and window resolution sit on synchronous hot paths and cannot await.
+ */
+export function cachedOpenRouterModels(): Map<string, OpenRouterModel> | undefined {
+  if (!modelsCache || Date.now() - modelsCache.at >= MODELS_TTL_MS) return undefined;
+  return modelsCache.value;
+}
+
+/** One cached catalogue row by exact id, or undefined when the catalogue is cold or stale. */
+export function cachedOpenRouterModel(apiId: string): OpenRouterModel | undefined {
+  return cachedOpenRouterModels()?.get(apiId);
+}
+
 /**
  * The limits of one pinned endpoint, or undefined when it is not listed (or the API is down).
  * Undefined means "no evidence", never "no limit": the caller must leave the request untouched
@@ -199,8 +349,10 @@ export function cachedOpenRouterEndpointLimits(
   };
 }
 
-/** Test seam: both caches are module state, and module state leaks across test files. */
+/** Test seam: every cache here is module state, and module state leaks across test files. */
 export function clearOpenRouterCache(): void {
   endpointsCache.clear();
   providersCache = undefined;
+  modelsCache = undefined;
+  modelsInFlight = undefined;
 }

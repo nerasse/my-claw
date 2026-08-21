@@ -201,7 +201,7 @@ export interface LlmModelConfig {
     // Set when the context window was filled in from the models.dev table instead of being
     // declared or discovered, so /status can attribute a surprising number. See
     // docs/context-window.md.
-    contextFrom?: "models.dev";
+    contextFrom?: "models.dev" | "openrouter" | "openrouter-endpoint";
   }
 
   export interface LlmConfig {

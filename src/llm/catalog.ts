@@ -6,6 +6,7 @@ import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { fetchAnthropicModels } from "./anthropic-models.ts";
 import { providerBaseUrl } from "./resolver.ts";
+import { cachedOpenRouterModel, cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
 import type { ModelMetadata } from "./pricing.ts";
 
 export interface DiscoveredSdkModel {
@@ -101,11 +102,37 @@ export function applyModelWindows(
   providers: Record<string, LlmProviderConfig>,
   table: WindowTable | undefined,
 ): LlmModelConfig[] {
-  if (!table) return models;
   return models.map((m) => {
+    // Config and provider discovery are authoritative. A third-party table only fills a gap.
     if (m.limit?.context) return m;
+    const provider = m.provider ? providers[m.provider] : undefined;
+    const apiId = m.apiId ?? m.id;
+
+    // OpenRouter's model row is exact, including :batch and :free. Never strip a suffix here.
+    if (isOpenRouterProvider(provider)) {
+      const pinned = pinnedEndpointOf(apiId);
+      const openRouterApiId = pinned ? apiId.slice(0, apiId.lastIndexOf("@")) : apiId;
+      const endpoint = pinned ? cachedOpenRouterEndpointLimits(openRouterApiId, pinned) : undefined;
+      if (endpoint?.context !== undefined) {
+        return {
+          ...m,
+          limit: { ...m.limit, context: endpoint.context },
+          contextFrom: "openrouter-endpoint",
+        };
+      }
+      const model = cachedOpenRouterModel(openRouterApiId);
+      if (model?.contextLength !== undefined) {
+        return {
+          ...m,
+          limit: { ...m.limit, context: model.contextLength },
+          contextFrom: "openrouter",
+        };
+      }
+    }
+
+    if (!table) return m;
     // The table is keyed by the id the provider publishes, never by our qualified reference.
-    const hit = table.contextWindowOf(m.apiId ?? m.id, m.provider ? providers[m.provider]?.baseUrl : undefined);
+    const hit = table.contextWindowOf(apiId, provider?.baseUrl);
     if (!hit) return m;
     return { ...m, limit: { ...m.limit, context: hit.tokens }, contextFrom: "models.dev" };
   });
@@ -132,29 +159,98 @@ export function applyModelMetadata(
   providers: Record<string, LlmProviderConfig>,
   table: MetadataTable | undefined,
 ): LlmModelConfig[] {
-  if (!table) return models;
   return models.map((m) => {
+    const provider = m.provider ? providers[m.provider] : undefined;
+    const apiId = m.apiId ?? m.id;
+    // An endpoint pin decorates a model reference, it is not part of the OpenRouter model id.
+    // Keep the raw id everywhere else, but only the catalogue lookup removes this separator.
+    const openRouterApiId = pinnedEndpointOf(apiId) ? apiId.slice(0, apiId.lastIndexOf("@")) : apiId;
+    const openrouter = isOpenRouterProvider(provider) ? cachedOpenRouterModel(openRouterApiId) : undefined;
     const needsLabel = m.label === m.id || m.label === m.apiId;
     const needsEffort = m.supportsEffort === undefined;
     const needsVision = m.vision === undefined;
     const needsOutput = m.limit?.output === undefined;
-    if (!needsLabel && !needsEffort && !needsVision && !needsOutput) return m;
-    const meta = table.metadataOf(m.apiId ?? m.id, m.provider ? providerBaseUrl(providers[m.provider]) : undefined);
-    if (!meta) return m;
+    const hasOpenRouter = openrouter !== undefined;
+    const needsFallback = !hasOpenRouter && (needsLabel || needsEffort || needsVision || needsOutput);
+    if (!hasOpenRouter && !needsFallback) return m;
+
     const next: LlmModelConfig = { ...m };
-    if (needsLabel && meta.label !== undefined) next.label = meta.label;
-    if (needsEffort && meta.effortLevels !== undefined) {
-      next.supportsEffort = true;
-      next.supportedEffortLevels = meta.effortLevels;
+    // OpenRouter is authoritative for its own discovered model rows. Apply each field separately,
+    // so a missing field still falls through to models.dev without replacing exact API metadata.
+    if (openrouter) {
+      if (needsLabel && openrouter.name) next.label = openrouter.name;
+      if (needsVision && openrouter.inputModalities) next.vision = openrouter.inputModalities.includes("image");
+      if (needsOutput && openrouter.maxOutput !== undefined) next.limit = { ...next.limit, output: openrouter.maxOutput };
+      if (needsEffort) {
+        const efforts = openRouterEffortLevels(openrouter);
+        if (efforts !== undefined) {
+          next.supportsEffort = true;
+          next.supportedEffortLevels = efforts;
+        } else if (openrouter.reasoningMandatory === false) {
+          next.supportsEffort = false;
+        }
+      }
     }
-    if (needsVision && meta.vision !== undefined) next.vision = meta.vision;
-    if (needsOutput && meta.outputLimit !== undefined) next.limit = { ...next.limit, output: meta.outputLimit };
+
+    // Do not let a generic table fill a field OpenRouter explicitly answered, including false or
+    // an empty capability list. Fallback is field-by-field, not entry-by-entry.
+    if (table && (next.label === m.label || next.supportsEffort === undefined || next.vision === undefined || next.limit?.output === undefined)) {
+      const meta = table.metadataOf(apiId, provider ? providerBaseUrl(provider) : undefined);
+      if (meta) {
+        if (next.label === m.label && meta.label !== undefined) next.label = meta.label;
+        if (next.supportsEffort === undefined && meta.effortLevels !== undefined) {
+          next.supportsEffort = true;
+          next.supportedEffortLevels = meta.effortLevels;
+        }
+        if (next.vision === undefined && meta.vision !== undefined) next.vision = meta.vision;
+        if (next.limit?.output === undefined && meta.outputLimit !== undefined) {
+          next.limit = { ...next.limit, output: meta.outputLimit };
+        }
+      }
+    }
     return next;
   });
 }
 
 interface MetadataTable {
   metadataOf(model: string, baseUrl?: string): ModelMetadata | undefined;
+}
+
+function isOpenRouterProvider(provider: LlmProviderConfig | undefined): boolean {
+  return isOpenRouterBaseUrl(provider?.baseUrl);
+}
+
+function pinnedEndpointOf(apiId: string): string | undefined {
+  const at = apiId.lastIndexOf("@");
+  return at > 0 ? apiId.slice(at + 1) : undefined;
+}
+
+const OPENROUTER_EFFORTS: Record<string, EffortLevel> = {
+  none: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+  ultra: "ultra",
+};
+
+function openRouterEffortLevels(model: {
+  reasoningMandatory?: boolean;
+  reasoningEfforts?: string[];
+  supportedParameters?: string[];
+}): EffortLevel[] | undefined {
+  const levels = (model.reasoningEfforts ?? [])
+    .map((level) => OPENROUTER_EFFORTS[level.toLowerCase()])
+    .filter((level): level is EffortLevel => level !== undefined);
+  if (levels.length > 0) {
+    const unique = [...new Set(levels)];
+    if (model.reasoningMandatory !== true && !unique.includes("none")) unique.unshift("none");
+    return unique;
+  }
+  if (model.reasoningMandatory === true || model.supportedParameters?.includes("reasoning")) return ["none", "high"];
+  return undefined;
 }
 
 async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {

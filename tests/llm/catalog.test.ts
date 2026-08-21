@@ -1,7 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows } from "../../src/llm/catalog.ts";
-import type { LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "../../src/llm/catalog.ts";
+import { openRouterModels, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
+import type { EffortLevel, LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 // The catalog is fully dynamic (no disk cache): each ModelCatalog starts empty and is populated
@@ -442,6 +443,43 @@ test("claude-sdk provider: an alias is marked (auto) only when its family is kno
  * See docs/context-window.md.
  */
 const windowTable = { contextWindowOf: (id: string) => (id === "known" ? { tokens: 400_000 } : undefined) };
+
+test("an OpenRouter model's exact metadata fills gaps before models.dev, including a pinned endpoint", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({ data: [{
+    id: "vendor/model:batch",
+    name: "OpenRouter Model",
+    context_length: 999_999,
+    architecture: { input_modalities: ["text", "image"] },
+    pricing: {},
+    top_provider: { context_length: 222_222, max_completion_tokens: 12_345 },
+    supported_parameters: ["reasoning"],
+    reasoning: { mandatory: false, supported_efforts: ["low", "high"] },
+  }] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  try {
+    await openRouterModels();
+    const providers = { openrouter: { baseUrl: "https://gateway.openrouter.ai/api/v1" } };
+    const source = [{ id: "vendor/model:batch", apiId: "vendor/model:batch", label: "vendor/model:batch", provider: "openrouter" }];
+    const fallback = {
+      contextWindowOf: () => ({ tokens: 111_111 }),
+      metadataOf: () => ({ source: "models.dev" as const, label: "models.dev label", effortLevels: ["max"] as EffortLevel[], vision: false, outputLimit: 1 }),
+    };
+    const [windowed] = applyModelWindows(source, providers, fallback);
+    assert.equal(windowed?.limit?.context, 222_222);
+    assert.equal(windowed?.contextFrom, "openrouter");
+    // A selected endpoint is decoration on the reference, never a different model id.
+    const [pinned] = applyModelWindows([{ ...source[0]!, id: "vendor/model:batch@azure/eu", apiId: "vendor/model:batch@azure/eu" }], providers, fallback);
+    assert.equal(pinned?.limit?.context, 222_222);
+    const [enriched] = applyModelMetadata(windowed ? [windowed] : [], providers, fallback);
+    assert.equal(enriched?.label, "OpenRouter Model");
+    assert.equal(enriched?.limit?.output, 12_345);
+    assert.equal(enriched?.vision, true);
+    assert.deepEqual(enriched?.supportedEffortLevels, ["none", "low", "high"]);
+  } finally {
+    mock.restore();
+    clearOpenRouterCache();
+  }
+});
 
 test("a model with no declared window gets one from the table, tagged with its provenance", () => {
   const out = applyModelWindows([{ id: "known", label: "Known", provider: "p" }], {}, windowTable);

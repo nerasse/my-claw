@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { ModelPricing, modelKeyCandidates, CACHE_VERSION, isSelfHosted } from "../../src/llm/pricing.ts";
-import { openRouterEndpoints, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
+import { openRouterEndpoints, openRouterModels, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 
 /**
  * The price table is written to disk rather than fetched, so these tests exercise the resolution
@@ -37,7 +37,11 @@ function withTable(): ModelPricing {
       // A flat token plan: real tariff of zero, which must never be reported as a cost.
       "xiaomi-token-plan-ams": { "mimo-v25-pro": { cost: { input: 0, output: 0, cacheRead: 0 }, id: "mimo-v2.5-pro" } },
       xiaomi: { "mimo-v25-pro": { cost: { input: 0.435, output: 0.87, cacheRead: 0.0036 }, id: "mimo-v2.5-pro" } },
-      openrouter: { "mimo-v25-pro": { cost: { input: 0.5, output: 1 }, id: "mimo-v2.5-pro" } },
+      openrouter: {
+        "mimo-v25-pro": { cost: { input: 0.5, output: 1 }, id: "mimo-v2.5-pro" },
+        // The flat discovery group is what makes the alias guard below load-bearing.
+        "mistralai/mistral-small-2603": { cost: { input: 0.3, output: 0.6 }, id: "mistralai/mistral-small-2603", output: 128_000, name: "Mistral Small 4" },
+      },
       somereseller: { "mimo-v25-pro": { cost: { input: 0.4, output: 0.8 }, id: "mimo-v2.5-pro" } },
       // Sold once for money and twice as a prepaid plan. Counting the plans would drag the median
       // to zero, which is the failure the median rule exists to avoid.
@@ -113,6 +117,61 @@ test("a flat plan climbs to its vendor instead of reporting zero", () => {
   expect(r?.source).toContain("xiaomi");
 });
 
+test("the exact OpenRouter catalogue tariff outranks models.dev, while a pinned endpoint outranks it", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async (url?: string | URL | Request) => {
+    const href = String(url);
+    if (href.endsWith("/models")) {
+      return new Response(JSON.stringify({ data: [{
+        id: "deepseek/deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        pricing: { prompt: "0.00000022", completion: "0.00000066", input_cache_read: "0.000000007" },
+      }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (href.endsWith("/endpoints")) {
+      return new Response(JSON.stringify({ data: { endpoints: [{
+        tag: "azure/eu", provider_name: "Azure", pricing: { prompt: "0.00000044", completion: "0.00000132" },
+      }] } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`unexpected URL ${href}`);
+  });
+  try {
+    const p = withTable();
+    await openRouterModels();
+    const catalogue = p.costOf({ ...base, model: "deepseek/deepseek-v4-flash", baseUrl: "https://openrouter.ai/api/v1" });
+    expect(catalogue?.usd).toBeCloseTo(0.22, 6);
+    expect(catalogue?.source).toBe("openrouter catalogue");
+
+    await openRouterEndpoints("deepseek/deepseek-v4-flash");
+    const pinned = p.costOf({ ...base, model: "deepseek/deepseek-v4-flash@azure/eu", baseUrl: "https://openrouter.ai/api/v1" });
+    expect(pinned?.usd).toBeCloseTo(0.44, 6);
+    expect(pinned?.source).toBe("endpoint azure/eu");
+  } finally {
+    mock.restore();
+    clearOpenRouterCache();
+  }
+});
+
+test("an OpenRouter suffix never inherits the tariff of its base variant", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({ data: [
+    { id: "deepseek/deepseek-v4-flash", name: "paid", pricing: { prompt: "0.00000022", completion: "0.00000066" } },
+    { id: "deepseek/deepseek-v4-flash:free", name: "free", pricing: { prompt: "0", completion: "0" } },
+  ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  try {
+    const p = withTable();
+    await openRouterModels();
+    const free = p.costOf({ ...base, model: "deepseek/deepseek-v4-flash:free", baseUrl: "https://openrouter.ai/api/v1" });
+    expect(free?.usd).toBe(0);
+    expect(free?.source).toBe("openrouter catalogue");
+    const unknownVariant = p.costOf({ ...base, model: "deepseek/deepseek-v4-flash:FREE", baseUrl: "https://openrouter.ai/api/v1" });
+    expect(unknownVariant?.source).not.toBe("openrouter catalogue");
+  } finally {
+    mock.restore();
+    clearOpenRouterCache();
+  }
+});
+
 test("the proxy's own figure wins, and a zero from it is not trusted", () => {
   const p = withTable();
   const withCost = p.costOf({ ...base, model: "mimo-v2.5-pro", baseUrl: "https://litellm.internal/v1", proxyCostUsd: 0.42 });
@@ -158,6 +217,31 @@ test("an alias prices as the newest concrete model in its group", () => {
   // Picking the oldest sibling instead would give 15 rather than 5.
   expect(alias?.usd).toBeCloseTo(5, 6);
   expect(alias?.approximate).toBe(true);
+});
+
+test("an alias never resolves to a sibling that shares nothing but its group", () => {
+  // The flat OpenRouter discovery gives every model one provider-wide group. A windowless id
+  // there (a stealth model, a batch variant) must not inherit the name and price of whichever
+  // sibling sorts highest by version: `mistral-small-2603` beats `glm-5.3` on `[2603] > [5, 3]`,
+  // which is how ox-alpha ended up labelled and billed as Mistral Small 4 (2026-08-21).
+  const p = withTable();
+  const catalog = [
+    { id: "stealth/ox-alpha", group: "OpenRouter" },
+    { id: "google/gemini-3.7-flash:batch", group: "OpenRouter" },
+    { id: "mistralai/mistral-small-2603", group: "OpenRouter", limit: { context: 128_000 } },
+    { id: "z-ai/glm-5.3", group: "OpenRouter", limit: { context: 200_000 } },
+    // A genuine short form still resolves: it carries a token of its family's name.
+    { id: "mistral-small", group: "OpenRouter" },
+  ];
+  (p as unknown as { catalogModels: () => typeof catalog }).catalogModels = () => catalog;
+  // A provider whose declared base_url maps into the pricing table, the way the real config does.
+  (p as unknown as { declaredProviders: () => unknown }).declaredProviders = () => ({
+    openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
+  });
+  expect(p.metadataOf("stealth/ox-alpha", "https://openrouter.ai/api/v1")).toBeUndefined();
+  expect(p.metadataOf("google/gemini-3.7-flash:batch", "https://openrouter.ai/api/v1")).toBeUndefined();
+  const kin = p.metadataOf("mistral-small", "https://openrouter.ai/api/v1");
+  expect(kin?.label).toBe("Mistral Small 4");
 });
 
 test("version separators converge: 4-8, 4.8, 4p8 and 48 reach the same price", () => {

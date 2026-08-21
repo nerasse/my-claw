@@ -66,6 +66,7 @@ import { PROMPT_FILES } from "./agent/prompt/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
+import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
@@ -364,15 +365,21 @@ async function main() {
   hooks.on("config:reloaded", () => void sampleSubscriptionAuth());
 
   modelCatalog.onUpdate(applyModelCatalog);
-  applyModelCatalog(); // apply any disk-cached discovery immediately (offline-safe)
-  if (modelCatalog.enabled()) void modelCatalog.refresh();
-  const modelCatalogTimer = setInterval(() => void modelCatalog.refresh(), 6 * 60 * 60 * 1000);
+  // Load the OpenRouter catalogue before the first projection. It fails closed to an empty cache,
+  // so a cold cache or network failure remains non-blocking and cannot replace explicit config.
+  await openRouterModels();
+  applyModelCatalog();
+  // models.dev discovery may complete later than the OpenRouter request. Its update callback
+  // re-projects the same config, preserving the explicit > endpoint > OpenRouter > models.dev order.
+  if (modelCatalog.enabled()) void modelCatalog.refresh().then(applyModelCatalog);
+  const modelCatalogTimer = setInterval(() => void modelCatalog.refresh().then(applyModelCatalog), 6 * 60 * 60 * 1000);
   modelCatalogTimer.unref?.();
 
-  // The window enrichment above is a no-op until the price table is on disk, so a first-ever
-  // fetch has to replay it; otherwise every model keeps the fallback window until a restart.
-  void pricing.refreshIfStale().then(applyModelCatalog);
-  const pricingTimer = setInterval(() => void pricing.refreshIfStale().then(applyModelCatalog), 6 * 60 * 60 * 1000);
+  // A first-ever metadata fetch has to replay the projection, otherwise models retain fallbacks
+  // until restart. Both refreshers are cache-aware and failures leave the current projection intact.
+  const refreshModelMetadata = () => Promise.all([pricing.refreshIfStale(), openRouterModels()]).then(applyModelCatalog);
+  void refreshModelMetadata();
+  const pricingTimer = setInterval(() => void refreshModelMetadata(), 6 * 60 * 60 * 1000);
   pricingTimer.unref?.();
 
 

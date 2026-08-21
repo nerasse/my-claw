@@ -75,7 +75,7 @@ export function resolveModelContextWindow(
  * how much is already occupied (measure). See docs/context-window.md.
  */
 
-export type ContextSource = "declared" | "models.dev" | "default";
+export type ContextSource = "declared" | "models.dev" | "openrouter" | "openrouter-endpoint" | "default";
 
 export interface ResolvedContextWindow {
   /** What the model can hold, before any policy is applied. */

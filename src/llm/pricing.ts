@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { MY_CLAW_DIR, type EffortLevel } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
-import { cachedOpenRouterEndpointPricing } from "./openrouter-endpoints.ts";
+import { cachedOpenRouterEndpointPricing, cachedOpenRouterModel } from "./openrouter-endpoints.ts";
 import { log } from "../utils/logger.ts";
 
 /**
@@ -258,6 +258,11 @@ export class ModelPricing {
    * The newest sibling is the right answer because that is what "auto" means, and it matters:
    * `claude-opus-4-1` costs three times `claude-opus-5`, so picking an arbitrary group member
    * would be off by 3x rather than merely imprecise.
+   *
+   * A sibling only counts when it actually carries the alias's name: a shared group is a menu
+   * choice, not evidence of kinship. Without this, every windowless id in a flat provider group
+   * (a stealth model, a batch variant) inherits whatever sibling sorts highest by version --
+   * `mistral-small-2603` beats `glm-5.3` on `[2603] > [5, 3]` -- and wears its name and price.
    */
   private resolveAlias(model: string): string | undefined {
     const models = this.catalogModels();
@@ -266,7 +271,17 @@ export class ModelPricing {
     const wireId = (m: { id: string; apiId?: string }): string => m.apiId ?? m.id;
     const self = models.find((m) => wireId(m) === model);
     if (!self || !self.group || self.limit?.context) return undefined;
-    const siblings = models.filter((m) => m.group === self.group && wireId(m) !== model && m.limit?.context);
+    // Name tokens of the alias (`opus` -> {opus}, `ox-alpha` -> {ox, alpha}). One shared token
+    // is kinship enough: the alias is a short form of the family, never an unrelated name.
+    const tokensOf = (id: string): Set<string> => new Set(id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    const selfTokens = tokensOf(model);
+    const siblings = models.filter(
+      (m) =>
+        m.group === self.group &&
+        wireId(m) !== model &&
+        m.limit?.context &&
+        [...tokensOf(wireId(m))].some((token) => selfTokens.has(token)),
+    );
     if (siblings.length === 0) return undefined;
     return siblings.map(wireId).sort((a, b) => compareVersions(versionKey(b), versionKey(a)))[0];
   }
@@ -319,6 +334,11 @@ export class ModelPricing {
     //     every table below because it is the tariff of the exact endpoint that served the call.
     const pinned = this.pinnedEndpointCost(usage.model);
     if (pinned) return this.priced(usage, pinned.cost, true, false, `endpoint ${pinned.tag}`);
+
+    // 1c. Exact OpenRouter catalogue pricing precedes models.dev. Suffix variants such as `:batch`
+    // and `:free` remain distinct ids, so no sibling can donate an interactive tariff.
+    const openRouter = this.openRouterModelCost(usage.model);
+    if (openRouter) return this.priced(usage, openRouter, true, false, "openrouter catalogue");
 
     if (!this.cache) return undefined;
 
@@ -378,6 +398,20 @@ export class ModelPricing {
         output: priced.output,
         ...(priced.cacheRead === undefined ? {} : { cacheRead: priced.cacheRead }),
       },
+    };
+  }
+
+  /** Exact-id pricing from the cached OpenRouter catalogue, never an alias or sibling. */
+  private openRouterModelCost(model: string): ModelCost | undefined {
+    const at = model.lastIndexOf("@");
+    const id = at > 0 ? model.slice(0, at) : model;
+    const priced = cachedOpenRouterModel(id);
+    if (priced?.promptUsd === undefined || priced.completionUsd === undefined) return undefined;
+    return {
+      input: priced.promptUsd,
+      output: priced.completionUsd,
+      ...(priced.cacheReadUsd === undefined ? {} : { cacheRead: priced.cacheReadUsd }),
+      ...(priced.cacheWriteUsd === undefined ? {} : { cacheWrite: priced.cacheWriteUsd }),
     };
   }
 
