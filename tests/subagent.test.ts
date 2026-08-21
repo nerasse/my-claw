@@ -535,8 +535,8 @@ test("one-shot spawn emits subagent:spawn and subagent:complete with the parent 
   const reg = new SubAgentRegistry();
 
   const events: Array<{ type: string; id: string; parentSessionId: string }> = [];
-  const onSpawn = (ev: { id: string; parentSessionId: string }) => events.push({ type: "spawn", id: ev.id, parentSessionId: ev.parentSessionId });
-  const onComplete = (ev: { id: string; parentSessionId: string }) => events.push({ type: "complete", id: ev.id, parentSessionId: ev.parentSessionId });
+  const onSpawn = (ev: { id: string; parentSessionId: string }): void => { events.push({ type: "spawn", id: ev.id, parentSessionId: ev.parentSessionId }); };
+  const onComplete = (ev: { id: string; parentSessionId: string }): void => { events.push({ type: "complete", id: ev.id, parentSessionId: ev.parentSessionId }); };
   hooks.on("subagent:spawn", onSpawn);
   hooks.on("subagent:complete", onComplete);
 
