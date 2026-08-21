@@ -2,7 +2,7 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "./config.ts";
 import { injectionEnabled, resolveAgentWorkspace } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
@@ -20,6 +20,7 @@ export interface RouteResult {
 interface RouteOptions {
   onToken?: TokenCallback;
   onToolUse?: ToolUseCallback;
+  onToolStart?: ToolStartCallback;
   /** Called when the run switches to address a mid-run injected message, so the output layer
    *  can finalize the current bubble and open a fresh reply to that message. */
   onTurnSwitch?: TurnSwitchCallback;
@@ -56,7 +57,7 @@ const RATE_LIMIT_MAX = 30;
 export type SubAgentSend = (
   sessionId: string,
   message: UnifiedMessage,
-  options: { onToken?: TokenCallback; onToolUse?: ToolUseCallback; onTurnSwitch?: TurnSwitchCallback; reasoning?: ReasoningSink; signal?: AbortSignal },
+  options: { onToken?: TokenCallback; onToolUse?: ToolUseCallback; onToolStart?: ToolStartCallback; onTurnSwitch?: TurnSwitchCallback; reasoning?: ReasoningSink; signal?: AbortSignal },
 ) => Promise<string>;
 
 export class MessageRouter {
@@ -270,6 +271,7 @@ export class MessageRouter {
             options.onTurnSwitch,
             undefined,
             options.reasoning,
+            options.onToolStart,
           )
         : await this.agent.handleMessage(message, session, signal);
       const attachments = this.agent.getResponseAttachments(message.id);

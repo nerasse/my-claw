@@ -1903,6 +1903,7 @@ async function main() {
           ? {
               onToken: options.onToken,
               onToolUse: options.onToolUse,
+              onToolStart: options.onToolStart,
               onTurnSwitch: options.onTurnSwitch,
               reasoning: options.reasoning,
             }
@@ -2004,6 +2005,7 @@ async function main() {
               response = await routeWithReroute(router, msg, {
                 onToken: (token) => active.push(token),
                 onToolUse: (tools, verbose) => active.appendToolUse(tools, verbose),
+                onToolStart: (call) => active.appendToolStart([call]),
                 // Only this channel builds a sink, which is what
                 // keeps them free of reasoning -- docs/reasoning-visibility.md.
                 reasoning: {

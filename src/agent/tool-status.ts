@@ -4,6 +4,9 @@ export interface ToolCallInfo {
 }
 
 export interface ToolCallResult {
+  /** The tool_use id the model assigned, or `${turnId}:tool:${n}` for a replayed result
+   *  whose session file predates ids. Stable across the start/end pair so the app can upsert. */
+  id?: string;
   name: string;
   arguments: Record<string, unknown>;
   /** Absent when the call is replayed from a session file written before timings were persisted. */

@@ -1,6 +1,6 @@
 import { currentRunId } from "../../utils/run-context.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
-import type { ToolCallResult } from "../../agent/tool-status.ts";
+import type { ToolCallInfo, ToolCallResult } from "../../agent/tool-status.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
 
 /** Tool output is a debugging view, not context: cap it so a 2 MB result never hits the socket. */
@@ -27,6 +27,8 @@ export class MyClawAppStreamer {
   private emittedText = "";
   private segment = 0;
   private toolCount = 0;
+  /** Ids of started-but-not-yet-ended tool calls, so the end frame reuses the start's id. */
+  private pendingToolIds: string[] = [];
   private started = false;
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
@@ -65,6 +67,11 @@ export class MyClawAppStreamer {
   async appendToolUse(toolCalls: ToolCallResult[], verbose: boolean): Promise<void> {
     if (!verbose || toolCalls.length === 0) return;
     return this.enqueue(() => this.toolInternal(toolCalls));
+  }
+
+  async appendToolStart(toolCalls: ToolCallInfo[]): Promise<void> {
+    if (toolCalls.length === 0) return;
+    return this.enqueue(() => this.toolStartInternal(toolCalls));
   }
 
   private currentId(): string {
@@ -174,12 +181,16 @@ export class MyClawAppStreamer {
     if (this.finished) return;
     await this.sealSegment();
     for (const tool of toolCalls) {
-      this.toolCount += 1;
+      // Reuse the id the start frame sent so the app upserts the card with the result instead of
+      // stacking a second one. When no start was sent (a replayed session written before starts,
+      // or a non-verbose channel), fall back to the turn-scoped counter.
+      const startId = this.pendingToolIds.shift();
+      const id = tool.id ?? startId ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
       const output = tool.output ?? "";
       const truncated = output.length > TOOL_OUTPUT_LIMIT;
       await this.opts.send({
         type: "chat.tool",
-        id: `${this.opts.id}:tool:${this.toolCount}`,
+        id,
         threadId: this.opts.threadId,
         turnId: this.opts.id,
         name: tool.name,
@@ -192,6 +203,26 @@ export class MyClawAppStreamer {
       });
     }
   }
+
+  private async toolStartInternal(toolCalls: ToolCallInfo[]): Promise<void> {
+    if (this.finished) return;
+    await this.sealSegment();
+    for (const tool of toolCalls) {
+      this.toolCount += 1;
+      const id = `${this.opts.id}:tool:${this.toolCount}`;
+      this.pendingToolIds.push(id);
+      await this.opts.send({
+        type: "chat.tool.start",
+        id,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        name: tool.name,
+        args: tool.arguments,
+        ts: new Date().toISOString(),
+      });
+    }
+  }
+
 
   private async finishInternal(finalText?: string): Promise<void> {
     if (this.finished) return;

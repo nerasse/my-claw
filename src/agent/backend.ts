@@ -6,6 +6,11 @@ export type TokenCallback = (token: string) => Promise<void>;
 
 export type ToolUseCallback = (tools: ToolCallResult[], verbose: boolean) => Promise<void>;
 
+/** A tool the model requested started executing. Fires before ToolUseCallback, which carries
+ *  the finished result. The id is the tool_use id from the model and stays stable across both
+ *  callbacks so the output layer can upsert one card. */
+export type ToolStartCallback = (tool: { id: string; name: string; arguments: Record<string, unknown> }) => Promise<void> | void;
+
 export type TurnSwitchCallback = (message: UnifiedMessage) => Promise<void>;
 
 /**
@@ -62,5 +67,6 @@ export interface AgentBackend {
     // Appended last on purpose: inserting a parameter ahead of an existing one has already bitten
     // this codebase.
     reasoning?: ReasoningSink,
+    onToolStart?: ToolStartCallback,
   ): Promise<string>;
 }

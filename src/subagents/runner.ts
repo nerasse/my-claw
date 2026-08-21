@@ -9,7 +9,7 @@ import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
@@ -31,6 +31,9 @@ import { formatLocationForModel } from "../agent/preprocess.ts";
 export interface SubAgentStream {
   onToken: TokenCallback;
   onToolUse?: ToolUseCallback;
+  /** Called at the start of each tool execution so the card can render a spinner before the
+   *  result lands. Same shape as the root path's onToolStart. */
+  onToolStart?: ToolStartCallback;
   /** Called when the run absorbs a mid-run injection, so the output layer can seal the current
    *  bubble and open a fresh reply to the injected message -- same contract as the root path. */
   onTurnSwitch?: TurnSwitchCallback;

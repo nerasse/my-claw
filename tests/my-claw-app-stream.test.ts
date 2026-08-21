@@ -76,4 +76,17 @@ describe("MyClawAppStreamer media refs", () => {
     expect(text).toBe("intro voilà");
     expect(text.includes("MEDIA")).toBe(false);
   });
+
+  test("a tool start frame reuses the same id as the end frame so the app can upsert", async () => {
+    const { streamer, frames } = collect();
+    await streamer.appendToolStart([{ name: "bash", arguments: { command: "ls" } }]);
+    await streamer.appendToolUse([{ id: undefined, name: "bash", arguments: { command: "ls" }, durationMs: 12, output: "file.txt", ok: true }], true);
+    await streamer.finish();
+    const starts = frames.filter((f) => f.type === "chat.tool.start") as { type: "chat.tool.start"; id: string; name: string }[];
+    const ends = frames.filter((f) => f.type === "chat.tool") as { type: "chat.tool"; id: string; name: string; output: string }[];
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(starts[0].id).toBe(ends[0].id);
+    expect(ends[0].output).toBe("file.txt");
+  });
 });

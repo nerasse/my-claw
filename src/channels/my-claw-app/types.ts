@@ -850,6 +850,19 @@ export interface MyClawAppToolCallEntry {
   truncated: boolean;
 }
 
+/** Tool call started: sent the moment execution begins so the card can show a spinner. The
+ *  matching `chat.tool` frame reuses the same `id` to upsert the result into this card. */
+export interface MyClawAppToolStart {
+  type: "chat.tool.start";
+  /** Same id as the `chat.tool` that follows. */
+  id: string;
+  threadId: string;
+  turnId: string;
+  name: string;
+  args: Record<string, unknown>;
+  ts: string;
+}
+
 /** Tool card, sent between two text bubbles of the same turn. Suppressed when verbose is off. */
 export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
   type: "chat.tool";
@@ -2226,6 +2239,7 @@ export type MyClawAppServerFrame =
   | MyClawAppStreamDone
   | MyClawAppStreamAbort
   | MyClawAppToolCall
+  | MyClawAppToolStart
   | MyClawAppApprovalRequest
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult

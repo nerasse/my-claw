@@ -45,7 +45,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
@@ -220,7 +220,7 @@ export class AgentBridge implements AgentBackend {
     signal?: AbortSignal,
     modelId?: string,
   ): Promise<string> {
-    return this.handle(message, session, undefined, undefined, signal, undefined, modelId);
+    return this.handle(message, session, undefined, undefined, signal, undefined, modelId, undefined, undefined);
   }
 
   async handleMessageStreaming(
@@ -232,8 +232,9 @@ export class AgentBridge implements AgentBackend {
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
     reasoning?: ReasoningSink,
+    onToolStart?: ToolStartCallback,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning, onToolStart);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -249,6 +250,7 @@ export class AgentBridge implements AgentBackend {
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
     modelId?: string,
     reasoningSink?: ReasoningSink,
+    onToolStart?: ToolStartCallback,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -662,6 +664,13 @@ export class AgentBridge implements AgentBackend {
             iteration,
             args: tc.arguments,
           });
+          // Surface the tool to the output layer the instant it starts running, before the
+          // result is in: a long-running bash can show a spinner and a live output card while
+          // it works instead of a silent gap. The id is stable, so appendToolUse upserts.
+          if (onToolStart) {
+            try { await onToolStart({ id: tc.id, name: tc.name, arguments: tc.arguments }); }
+            catch { /* a tool-start frame must never abort the run */ }
+          }
           void log("info", "tool execution started", {
             ...runLogData(message, session),
             model: llmConfig.model,
@@ -739,7 +748,7 @@ export class AgentBridge implements AgentBackend {
           }
           // Captured before the nested AGENTS.md injection: that text is prompt plumbing, not
           // something a tool card should show.
-          toolResults.push({ name: tc.name, arguments: tc.arguments, durationMs, output: transformedResult, ok: result.success });
+          toolResults.push({ id: tc.id, name: tc.name, arguments: tc.arguments, durationMs, output: transformedResult, ok: result.success });
           if (nestedAgents) {
             transformedResult += nestedAgents.collect(tc.name, tc.arguments);
           }
