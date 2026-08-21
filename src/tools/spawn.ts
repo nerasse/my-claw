@@ -96,6 +96,7 @@ export function createSpawnTool(
 
         const signal = args["__signal"] as AbortSignal | undefined;
         const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+        const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
         // Global unless asked otherwise, so a sub-agent stays a shared worker by default. A
         // one-shot is forced private inside the runner regardless of what is passed here. The
         // scope of `workspace` is resolved there too, from the calling session: a value passed
@@ -121,6 +122,7 @@ export function createSpawnTool(
           signal,
           model,
           enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
+          ...(toolCallId ? { toolCallId } : {}),
         });
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {

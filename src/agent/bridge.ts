@@ -1045,6 +1045,9 @@ export class AgentBridge implements AgentBackend {
         // who owns the work. Derived from the session, never from the message: the message alone
         // cannot tell a thread session from its room.
         __sessionId: params.session.id,
+        // Identity of this tool call, so a tool that spawns a sub-agent can link the live card
+        // back to the tool-start card the streamer already opened.
+        __toolCallId: params.toolCallId,
       };
       const result = await tool.execute(enrichedArgs, (chunk) => {
         hooks.emit("tool:execute:progress", { toolCallId: params.toolCallId, sessionId: params.session.id, chunk });

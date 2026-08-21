@@ -630,6 +630,29 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * A sub-agent lifecycle event (spawn/complete/kill/reset) changed a conversation's roster. The
+   * roster is pull-only by default; this rebuilds it from the caller session and pushes the same
+   * `subagents.list.result` frame the app already knows, so every window of the owner updates
+   * live instead of waiting for the next `subagents.list` request.
+   *
+   * Best-effort and never throws: a roster push that failed must not break the run that triggered
+   * it. The caller session is the parent chat session the hook carries.
+   */
+  async notifyRoster(parentSessionId: string): Promise<void> {
+    if (!this.subagents) return;
+    const match = APP_THREAD_SESSION.exec(parentSessionId);
+    if (!match) return;
+    const owner = match[1]!;
+    const threadId = match[2]!;
+    try {
+      const agents = await this.subagents.list(parentSessionId);
+      this.broadcast(owner, { type: "subagents.list.result", threadId, agents });
+    } catch (err) {
+      await myClawAppLog("debug", "roster push failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
    * Journals a run that died, so the error outlives the stream frame that showed it. Swallows its
    * own failure: this is called from a path that is already handling an error, and losing the
    * record of it must not replace the error the owner is being told about.
@@ -1644,7 +1667,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         return;
       }
       const agents = await this.subagents.list(caller);
-      this.sendFrame(ws, { type: "subagents.list.result", threadId: parentThreadId, agents });
+      this.broadcast(ws.data.owner, { type: "subagents.list.result", threadId: parentThreadId, agents });
     } catch (err) {
       await this.refuse(ws, "subagents", `${frame.type} failed`, { threadId, error: String(err) });
     }

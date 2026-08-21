@@ -876,6 +876,35 @@ export interface MyClawAppToolDelta {
   ts: string;
 }
 
+/** A sub-agent spawned mid-run. Annotates the `spawn` tool card (by toolCallId) with its
+ *  sub-agent identity and a running state, or opens a standalone card for a programmatic spawn. */
+export interface MyClawAppSpawnStart {
+  type: "chat.spawn.start";
+  /** The tool-start card id when spawned from a tool, else the sub-agent id. */
+  id: string;
+  subagentId: string;
+  threadId: string;
+  turnId: string;
+  displayName: string;
+  agentType: string;
+  mode: string;
+  ts: string;
+}
+
+/** Settles a spawn card: the sub-agent finished (complete), errored, or was aborted. */
+export interface MyClawAppSpawnEnd {
+  type: "chat.spawn.end";
+  /** Same id as the start. */
+  id: string;
+  subagentId: string;
+  threadId: string;
+  turnId: string;
+  status: "complete" | "error" | "aborted";
+  resultLength?: number;
+  error?: string;
+  ts: string;
+}
+
 /** Tool card, sent between two text bubbles of the same turn. Suppressed when verbose is off. */
 export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
   type: "chat.tool";
@@ -2254,6 +2283,8 @@ export type MyClawAppServerFrame =
   | MyClawAppToolCall
   | MyClawAppToolStart
   | MyClawAppToolDelta
+  | MyClawAppSpawnStart
+  | MyClawAppSpawnEnd
   | MyClawAppApprovalRequest
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult

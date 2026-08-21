@@ -132,8 +132,10 @@ export class SubAgentRunner {
     // Same per-agent queue as send(): without it, a send() issued while the spawn's first
     // run is still going races it on the session file (and the SDK session resume).
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
+    /** The `spawn` tool call that produced this, if any. Lets a live card target the tool-start card. */
+    toolCallId?: string;
   }): Promise<{ id: string; result: string }> {
-    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue } = opts;
+    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue, toolCallId } = opts;
     // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
     // a callback, so this is the one place every caller passes through, and it keeps the stored
     // displayName equal to the name inside the id.
@@ -146,7 +148,7 @@ export class SubAgentRunner {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model);
+      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId);
     }
 
     const id = generateId(displayName, existingIds);
@@ -170,10 +172,10 @@ export class SubAgentRunner {
     await saveSession(id, session);
     indexSessionArchive(session);
 
-    hooks.emit("subagent:spawn", { id, displayName, type, mode });
+    hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
     const run = () => this.executeRun(id, type, resolved.dir, parentMessage, signal, model);
     const result = await (enqueue ? enqueue(id, run) : run());
-    hooks.emit("subagent:complete", { id, resultLength: result.length });
+    hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
     return { id, result };
   }
 
@@ -259,7 +261,7 @@ export class SubAgentRunner {
       return `Error: sub-agent ${id} not found.`;
     }
     await deleteSession(id);
-    hooks.emit("subagent:killed", { id });
+    hooks.emit("subagent:killed", { id, parentSessionId: callerSessionId });
     return `Sub-agent ${id} deleted.`;
   }
 
@@ -273,7 +275,7 @@ export class SubAgentRunner {
     // project must not silently come back in the default one.
     const fresh = this.createSession(id, session.platform, session.chatType, session.meta, session.workspace);
     await saveSession(id, fresh);
-    hooks.emit("subagent:reset", { id });
+    hooks.emit("subagent:reset", { id, parentSessionId: callerSessionId });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
   }
 
@@ -348,6 +350,7 @@ export class SubAgentRunner {
     parentSessionId: string,
     signal?: AbortSignal,
     model?: string,
+    toolCallId?: string,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
@@ -364,10 +367,14 @@ export class SubAgentRunner {
     }, workspaceKey);
     session.invokedBy = parentSessionId;
     session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
+    await saveSession(id, session);
+    indexSessionArchive(session);
 
+    hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
     this.activeCount += 1;
     try {
       const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
+      hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result };
     } finally {
       this.activeCount -= 1;
@@ -503,10 +510,10 @@ export class SubAgentRunner {
     } catch (err) {
       failure = err;
       if (isAbort(err, signal)) {
-        hooks.emit("subagent:aborted", { id: session.id });
+        hooks.emit("subagent:aborted", { id: session.id, parentSessionId: session.meta?.parentSessionId ?? "" });
         throw err;
       }
-      hooks.emit("subagent:error", { id: session.id, error: err });
+      hooks.emit("subagent:error", { id: session.id, error: err, parentSessionId: session.meta?.parentSessionId ?? "" });
       throw err;
     } finally {
       // Settle whatever the run did not absorb: an injection the engine never drained is rerouted

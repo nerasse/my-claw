@@ -1975,6 +1975,17 @@ async function main() {
     hooks.on("session:cleared", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
     hooks.on("session:reset", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
 
+    // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`
+    // so every window of the parent conversation gains/updates/loses the row live instead of
+    // waiting for the next request (or the run-end refetch). spawn/complete also feed the per-run
+    // spawn-card subscription above; this one is the always-on safety net that never blocks.
+    for (const ev of ["subagent:spawn", "subagent:complete", "subagent:killed", "subagent:reset"] as const) {
+      hooks.on(ev, (payload: { parentSessionId: string }) => {
+        if (!payload.parentSessionId) return;
+        void myClawApp.notifyRoster(payload.parentSessionId);
+      });
+    }
+
     myClawApp.onMessage(async (msg) => withRunContext({ platform: "my-claw-app" }, async () => {
       let response: RouteResult | undefined;
       try {
@@ -2007,6 +2018,30 @@ async function main() {
               void active.appendToolProgress(toolCallId, chunk);
             };
             hooks.on("tool:execute:progress", onProgress);
+
+            // Sub-agent lifecycle is also a global hook; route this run's spawns to its streamer so
+            // the spawn card lives where the parent run paints. rosterEverywhere runs one shared
+            // subscription registered once at boot (see below), so nothing here broadcasts twice.
+            const onSubagentSpawn = (ev: { id: string; displayName: string; type: string; mode: string; parentSessionId: string; toolCallId?: string }): void => {
+              if (ev.parentSessionId !== runSessionId) return;
+              void active.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
+            };
+            const onSubagentComplete = (ev: { id: string; resultLength: number; parentSessionId: string; toolCallId?: string }): void => {
+              if (ev.parentSessionId !== runSessionId) return;
+              void active.appendSpawnEnd({ subagentId: ev.id, status: "complete", resultLength: ev.resultLength });
+            };
+            const onSubagentError = (ev: { id: string; error: unknown; parentSessionId: string; toolCallId?: string }): void => {
+              if (ev.parentSessionId !== runSessionId) return;
+              void active.appendSpawnEnd({ subagentId: ev.id, status: "error", error: String(ev.error) });
+            };
+            const onSubagentAborted = (ev: { id: string; parentSessionId: string; toolCallId?: string }): void => {
+              if (ev.parentSessionId !== runSessionId) return;
+              void active.appendSpawnEnd({ subagentId: ev.id, status: "aborted" });
+            };
+            hooks.on("subagent:spawn", onSubagentSpawn);
+            hooks.on("subagent:complete", onSubagentComplete);
+            hooks.on("subagent:error", onSubagentError);
+            hooks.on("subagent:aborted", onSubagentAborted);
             hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
             try {
               response = await routeWithReroute(router, msg, {
@@ -2038,6 +2073,10 @@ async function main() {
               throw err;
             } finally {
               hooks.off("tool:execute:progress", onProgress);
+              hooks.off("subagent:spawn", onSubagentSpawn);
+              hooks.off("subagent:complete", onSubagentComplete);
+              hooks.off("subagent:error", onSubagentError);
+              hooks.off("subagent:aborted", onSubagentAborted);
             }
           } else {
             response = await routeWithReroute(router, msg, {});

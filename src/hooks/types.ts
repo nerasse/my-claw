@@ -287,12 +287,16 @@ export interface HookEventMap {
     displayName: string;
     type: string;
     mode: string;
+    /** The parent run that asked for this spawn; routes the event to its streamer/roster. */
+    parentSessionId: string;
+    /** The `spawn` tool call that produced this, if any. Lets a live card target the tool-start card. */
+    toolCallId?: string;
   };
-  "subagent:complete": { id: string; resultLength: number };
-  "subagent:error": { id: string; error: unknown };
-  "subagent:aborted": { id: string };
-  "subagent:killed": { id: string };
-  "subagent:reset": { id: string };
+  "subagent:complete": { id: string; resultLength: number; parentSessionId: string };
+  "subagent:error": { id: string; error: unknown; parentSessionId: string };
+  "subagent:aborted": { id: string; parentSessionId: string };
+  "subagent:killed": { id: string; parentSessionId: string };
+  "subagent:reset": { id: string; parentSessionId: string };
 
   // === CRON LIFECYCLE ===
   "cron:tick": { dueCount: number; totalJobs: number };

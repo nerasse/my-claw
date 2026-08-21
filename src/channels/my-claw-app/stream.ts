@@ -31,6 +31,8 @@ export class MyClawAppStreamer {
   private pendingToolIds: string[] = [];
   /** Model tool_use id -> card id (set at start), so live-progress frames find the card. */
   private toolIdsByModelId = new Map<string, string>();
+  /** subagentId -> the spawn card id (tool-start card for tool spawns, else the subagent id). */
+  private spawnCardIds = new Map<string, string>();
   private started = false;
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
@@ -95,6 +97,64 @@ export class MyClawAppStreamer {
         turnId: this.opts.id,
         stdout,
         stderr,
+        ts: new Date().toISOString(),
+      });
+    });
+  }
+
+  /**
+   * A sub-agent spawned mid-run. Annotates the `spawn` tool card the start frame already opened
+   * (linked by toolCallId) with its sub-agent identity and running state, or opens a standalone
+   * spawn card for a programmatic spawn (`send()`) that has no tool call.
+   */
+  async appendSpawnStart(info: {
+    subagentId: string;
+    displayName: string;
+    type: string;
+    mode: string;
+    toolCallId?: string;
+  }): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.finished) return;
+      // Link to the tool-start card when the spawn came from a tool call; else the sub-agent id is
+      // the card id so a later end frame settles the same card.
+      const cardId = (info.toolCallId && this.toolIdsByModelId.get(info.toolCallId)) || info.subagentId;
+      this.spawnCardIds.set(info.subagentId, cardId);
+      await this.opts.send({
+        type: "chat.spawn.start",
+        id: cardId,
+        subagentId: info.subagentId,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        displayName: info.displayName,
+        agentType: info.type,
+        mode: info.mode,
+        ts: new Date().toISOString(),
+      });
+    });
+  }
+
+  /** Settles a spawn card: complete, error, or aborted. */
+  async appendSpawnEnd(info: {
+    subagentId: string;
+    status: "complete" | "error" | "aborted";
+    toolCallId?: string;
+    resultLength?: number;
+    error?: string;
+  }): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.finished) return;
+      const cardId = this.spawnCardIds.get(info.subagentId) ?? ((info.toolCallId && this.toolIdsByModelId.get(info.toolCallId)) || info.subagentId);
+      this.spawnCardIds.delete(info.subagentId);
+      await this.opts.send({
+        type: "chat.spawn.end",
+        id: cardId,
+        subagentId: info.subagentId,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        status: info.status,
+        ...(info.resultLength !== undefined ? { resultLength: info.resultLength } : {}),
+        ...(info.error ? { error: info.error } : {}),
         ts: new Date().toISOString(),
       });
     });
