@@ -1046,7 +1046,9 @@ export class AgentBridge implements AgentBackend {
         // cannot tell a thread session from its room.
         __sessionId: params.session.id,
       };
-      const result = await tool.execute(enrichedArgs);
+      const result = await tool.execute(enrichedArgs, (chunk) => {
+        hooks.emit("tool:execute:progress", { toolCallId: params.toolCallId, sessionId: params.session.id, chunk });
+      });
       if (params.signal?.aborted) throw new AbortedError();
       if (result.attachments?.length) {
         for (const att of result.attachments) {

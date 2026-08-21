@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { statSync } from "node:fs";
-import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
+import { type Tool, type ToolResult, type ToolProgress, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
@@ -27,7 +27,7 @@ export const bashTool: Tool = {
     },
     required: ["command"],
   },
-  async execute(args): Promise<ToolResult> {
+  async execute(args, onProgress?: (chunk: ToolProgress) => void): Promise<ToolResult> {
     const command = str(args, "command");
     if (!command.trim()) {
       return { success: false, output: "command is required and cannot be empty." };
@@ -74,16 +74,57 @@ export const bashTool: Tool = {
       signal?.addEventListener("abort", onAbort, { once: true });
 
       // Drain stdout and stderr concurrently: reading stdout to EOF first can deadlock a child
-      // that floods stderr past the pipe buffer.
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
+      // that floods stderr past the pipe buffer. With onProgress, each stream is read chunk by
+      // chunk and forwarded to the caller (throttled) so a long command shows output as it lands;
+      // the accumulator still holds the full text for the final result.
+      const stdoutBuf: string[] = [];
+      const stderrBuf: string[] = [];
+      let stdoutFlush = "";
+      let stderrFlush = "";
+      let lastFlush = 0;
+      const FLUSH_MS = 200;
+      const maybeFlush = (force: boolean): void => {
+        if (!onProgress) return;
+        const now = Date.now();
+        if (!force && now - lastFlush < FLUSH_MS) return;
+        if (stdoutFlush || stderrFlush) {
+          onProgress({ ...(stdoutFlush ? { stdout: stdoutFlush } : {}), ...(stderrFlush ? { stderr: stderrFlush } : {}) });
+          stdoutFlush = "";
+          stderrFlush = "";
+          lastFlush = now;
+        }
+      };
+      const drain = async (stream: ReadableStream<Uint8Array> | null, buf: string[], which: "stdout" | "stderr"): Promise<void> => {
+        if (!stream) return;
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = decoder.decode(value, { stream: true });
+            buf.push(text);
+            if (onProgress) {
+              if (which === "stdout") stdoutFlush += text;
+              else stderrFlush += text;
+              maybeFlush(false);
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      };
+      const stdoutP = drain(proc.stdout, stdoutBuf, "stdout");
+      const stderrP = drain(proc.stderr, stderrBuf, "stderr");
+      const exitCode = await proc.exited;
+      await Promise.all([stdoutP, stderrP]);
+      maybeFlush(true);
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       rethrowIfAborted(undefined, signal);
 
+      const stdout = stdoutBuf.join("");
+      const stderr = stderrBuf.join("");
       let output = stdout + (stderr ? `\nSTDERR: ${stderr}` : "");
       if (output.length > MAX_OUTPUT_BYTES) {
         output = output.slice(0, MAX_OUTPUT_BYTES) + `\n[output truncated at ${MAX_OUTPUT_BYTES} bytes]`;

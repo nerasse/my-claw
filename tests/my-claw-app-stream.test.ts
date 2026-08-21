@@ -79,7 +79,7 @@ describe("MyClawAppStreamer media refs", () => {
 
   test("a tool start frame reuses the same id as the end frame so the app can upsert", async () => {
     const { streamer, frames } = collect();
-    await streamer.appendToolStart([{ name: "bash", arguments: { command: "ls" } }]);
+    await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "ls" } }]);
     await streamer.appendToolUse([{ id: undefined, name: "bash", arguments: { command: "ls" }, durationMs: 12, output: "file.txt", ok: true }], true);
     await streamer.finish();
     const starts = frames.filter((f) => f.type === "chat.tool.start") as { type: "chat.tool.start"; id: string; name: string }[];
@@ -88,5 +88,22 @@ describe("MyClawAppStreamer media refs", () => {
     expect(ends).toHaveLength(1);
     expect(starts[0].id).toBe(ends[0].id);
     expect(ends[0].output).toBe("file.txt");
+  });
+
+  test("live progress is routed to the card the start frame opened, by the model tool id", async () => {
+    const { streamer, frames } = collect();
+    await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep 1" } }]);
+    await streamer.appendToolProgress("tu_1", { stdout: "line 1\n" });
+    await streamer.appendToolProgress("tu_1", { stderr: "warn" });
+    await streamer.appendToolUse([{ id: "tu_1", name: "bash", arguments: { command: "sleep 1" }, durationMs: 1000, output: "line 1\n", ok: true }], true);
+    await streamer.finish();
+    const start = frames.find((f) => f.type === "chat.tool.start") as { id: string } | undefined;
+    const deltas = frames.filter((f) => f.type === "chat.tool.delta") as { id: string; stdout: string; stderr: string }[];
+    expect(deltas).toHaveLength(2);
+    expect(deltas[0].stdout).toBe("line 1\n");
+    expect(deltas[1].stderr).toBe("warn");
+    // The delta carries the card's id (mapped from the model id), not the model id itself.
+    expect(start).toBeDefined();
+    expect(deltas[0].id).toBe(start!.id);
   });
 });

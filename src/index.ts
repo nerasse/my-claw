@@ -2000,6 +2000,13 @@ async function main() {
             // The streamer owns the output bubble for the whole run; a mid-run injected message
             // finalizes it and opens a fresh bubble replying to that message.
             let active = myClawApp.createStreamer(msg);
+            const runSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", msg.chatId, msg.userId, { threadId: msg.threadId, sessionScope: "per-user" });
+            // Live tool output (bash) is a global hook; route only this run's chunks to its streamer.
+            const onProgress = ({ toolCallId, sessionId, chunk }: { toolCallId: string; sessionId: string; chunk: { stdout?: string; stderr?: string } }): void => {
+              if (sessionId !== runSessionId) return;
+              void active.appendToolProgress(toolCallId, chunk);
+            };
+            hooks.on("tool:execute:progress", onProgress);
             hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
             try {
               response = await routeWithReroute(router, msg, {
@@ -2029,6 +2036,8 @@ async function main() {
               await active.abort(brief);
               hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
               throw err;
+            } finally {
+              hooks.off("tool:execute:progress", onProgress);
             }
           } else {
             response = await routeWithReroute(router, msg, {});

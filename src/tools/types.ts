@@ -11,7 +11,15 @@ export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: Record<string, unknown>): Promise<ToolResult>;
+  /** `onProgress` lets a long-running tool stream output as it is produced rather than only at
+   *  EOF (bash today; the others ignore it). The callback fires with stdout/stderr chunks; the
+   *  caller is responsible for throttling and appending to the final ToolResult.output. */
+  execute(args: Record<string, unknown>, onProgress?: (chunk: ToolProgress) => void): Promise<ToolResult>;
+}
+
+export interface ToolProgress {
+  stdout?: string;
+  stderr?: string;
 }
 
 /** Runtime-safe argument extraction from LLM-provided tool args. */

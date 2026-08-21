@@ -155,6 +155,13 @@ export interface HookEventMap {
     outputChars: number;
     durationMs: number;
   };
+  /** Live output from a long-running tool (bash today). Fired in throttled chunks while the
+   *  tool runs, before `tool:execute:end`. */
+  "tool:execute:progress": {
+    toolCallId: string;
+    sessionId: string;
+    chunk: { stdout?: string; stderr?: string };
+  };
   "tool:execute:error": {
     toolName: string;
     toolCallId: string;

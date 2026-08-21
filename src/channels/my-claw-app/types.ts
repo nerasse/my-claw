@@ -863,6 +863,19 @@ export interface MyClawAppToolStart {
   ts: string;
 }
 
+/** Live output from a running tool (bash), appended to the card the start frame opened. The
+ *  `chat.tool` frame that follows settles it. Streamed in throttled chunks. */
+export interface MyClawAppToolDelta {
+  type: "chat.tool.delta";
+  /** Same id as the start/end pair. */
+  id: string;
+  threadId: string;
+  turnId: string;
+  stdout: string;
+  stderr: string;
+  ts: string;
+}
+
 /** Tool card, sent between two text bubbles of the same turn. Suppressed when verbose is off. */
 export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
   type: "chat.tool";
@@ -2240,6 +2253,7 @@ export type MyClawAppServerFrame =
   | MyClawAppStreamAbort
   | MyClawAppToolCall
   | MyClawAppToolStart
+  | MyClawAppToolDelta
   | MyClawAppApprovalRequest
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult

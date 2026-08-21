@@ -29,6 +29,8 @@ export class MyClawAppStreamer {
   private toolCount = 0;
   /** Ids of started-but-not-yet-ended tool calls, so the end frame reuses the start's id. */
   private pendingToolIds: string[] = [];
+  /** Model tool_use id -> card id (set at start), so live-progress frames find the card. */
+  private toolIdsByModelId = new Map<string, string>();
   private started = false;
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
@@ -73,6 +75,31 @@ export class MyClawAppStreamer {
     if (toolCalls.length === 0) return;
     return this.enqueue(() => this.toolStartInternal(toolCalls));
   }
+
+  /** Live output from a running tool (bash). Appends to the card the start frame opened; the
+   *  matching `chat.tool` frame settles it. Throttled upstream (the tool batches), so this does
+   *  not coalesce. */
+  async appendToolProgress(toolCallId: string, chunk: { stdout?: string; stderr?: string }): Promise<void> {
+    const stdout = chunk.stdout ?? "";
+    const stderr = chunk.stderr ?? "";
+    if (!stdout && !stderr) return;
+    return this.enqueue(async () => {
+      if (this.finished) return;
+      // The hook carries the model's tool_use id; the card's id is the start's. Look it up so the
+      // app appends to the right card.
+      const id = this.toolIdsByModelId.get(toolCallId) ?? toolCallId;
+      await this.opts.send({
+        type: "chat.tool.delta",
+        id,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        stdout,
+        stderr,
+        ts: new Date().toISOString(),
+      });
+    });
+  }
+
 
   private currentId(): string {
     return this.segment === 0 ? this.opts.id : `${this.opts.id}#${this.segment}`;
@@ -211,6 +238,9 @@ export class MyClawAppStreamer {
       this.toolCount += 1;
       const id = `${this.opts.id}:tool:${this.toolCount}`;
       this.pendingToolIds.push(id);
+      // Map the model's tool_use id to this card's id so live-progress frames (which carry the
+      // model id) can find the card the start opened.
+      if (tool.id) this.toolIdsByModelId.set(tool.id, id);
       await this.opts.send({
         type: "chat.tool.start",
         id,

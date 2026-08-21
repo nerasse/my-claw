@@ -1,4 +1,7 @@
 export interface ToolCallInfo {
+  /** The tool_use id the model assigned. Lets a streaming callback route live output to the
+   *  right card. */
+  id: string;
   name: string;
   arguments: Record<string, unknown>;
 }
