@@ -102,6 +102,19 @@ export function applyModelWindows(
   providers: Record<string, LlmProviderConfig>,
   table: WindowTable | undefined,
 ): LlmModelConfig[] {
+  // Before the first OpenRouter refresh there is no cache, and an absent models.dev table has
+  // nothing to contribute either. Preserve identity on that cold, offline boot path.
+  const hasCachedOpenRouter = models.some((m) => {
+    const provider = m.provider ? providers[m.provider] : undefined;
+    if (!isOpenRouterProvider(provider)) return false;
+    const apiId = m.apiId ?? m.id;
+    const pinned = pinnedEndpointOf(apiId);
+    const openRouterApiId = pinned ? apiId.slice(0, apiId.lastIndexOf("@")) : apiId;
+    return (pinned !== undefined && cachedOpenRouterEndpointLimits(openRouterApiId, pinned) !== undefined)
+      || cachedOpenRouterModel(openRouterApiId) !== undefined;
+  });
+  if (!table && !hasCachedOpenRouter) return models;
+
   return models.map((m) => {
     // Config and provider discovery are authoritative. A third-party table only fills a gap.
     if (m.limit?.context) return m;
@@ -159,6 +172,17 @@ export function applyModelMetadata(
   providers: Record<string, LlmProviderConfig>,
   table: MetadataTable | undefined,
 ): LlmModelConfig[] {
+  // As with context windows, do not allocate a lookalike list before either source has data.
+  // This keeps the offline bootstrap path a genuine no-op.
+  const hasCachedOpenRouter = models.some((m) => {
+    const provider = m.provider ? providers[m.provider] : undefined;
+    if (!isOpenRouterProvider(provider)) return false;
+    const apiId = m.apiId ?? m.id;
+    const openRouterApiId = pinnedEndpointOf(apiId) ? apiId.slice(0, apiId.lastIndexOf("@")) : apiId;
+    return cachedOpenRouterModel(openRouterApiId) !== undefined;
+  });
+  if (!table && !hasCachedOpenRouter) return models;
+
   return models.map((m) => {
     const provider = m.provider ? providers[m.provider] : undefined;
     const apiId = m.apiId ?? m.id;
