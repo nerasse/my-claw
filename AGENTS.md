@@ -143,6 +143,8 @@ src/
 │   └── compaction.ts      # Session context compaction (LLM summarization)
 ├── analytics/
 │   └── usage-db.ts        # SQLite analytics (per-API-call token tracking)
+├── approvals/
+│   └── store.ts           # SQLite journal of every tool-approval outcome -- docs/my-claw-app-channel.md
 ├── memory/                # Active memory: SQLite store, hybrid recall, dedup, consolidation
 │   ├── db.ts              # SQLite (entries + FTS5), CRUD, soft-delete, purge
 │   ├── embedding.ts       # embed() local (transformers.js) / http, warm-up, cosine

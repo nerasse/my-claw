@@ -14,6 +14,8 @@ import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { readAppVersion } from "../../core/diagnostics.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
+import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
+import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
@@ -39,6 +41,7 @@ const APP_COMMANDS = commandsFor("my-claw-app");
 import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
+  MyClawAppApprovalHistory,
   MyClawAppAttachmentMeta,
   MyClawAppChatHistory,
   MyClawAppChatMessage,
@@ -197,6 +200,15 @@ const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Everything the journal needs once the answer lands, captured when the prompt was sent. */
+  audit: {
+    owner: string;
+    threadId: string;
+    sessionId: string;
+    toolName: string;
+    args: string;
+    requestedAt: number;
+  };
 }
 
 export class MyClawAppAdapter implements ChannelAdapter {
@@ -292,8 +304,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.sockets.clear();
     this.media.clear();
     this.mediaOrder = [];
-    for (const [, pending] of this.pendingApprovals) {
+    for (const [id, pending] of this.pendingApprovals) {
       clearTimeout(pending.timer);
+      // A shutdown is not a refusal by the owner: journal it as such, or a restart during a
+      // prompt reads afterwards as "he said no".
+      this.journalApproval(id, pending, "cancelled");
       pending.resolve("deny");
     }
     this.pendingApprovals.clear();
@@ -391,25 +406,64 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (this.socketsFor(request.chatId).length === 0) return "deny";
 
     const id = crypto.randomUUID();
+    const threadId = request.threadId ?? DEFAULT_THREAD;
     const frame: MyClawAppApprovalRequest = {
       type: "approval.request",
       id,
-      threadId: request.threadId ?? DEFAULT_THREAD,
+      threadId,
       toolName: request.toolName,
       args: request.args,
       replyToId: request.messageId,
       expiresAt: Date.now() + CONFIRM_TIMEOUT_MS,
+      allowSessionOffered: !ALWAYS_PER_INVOCATION.has(request.toolName),
+    };
+    const audit = {
+      owner: request.chatId,
+      threadId,
+      sessionId: request.sessionId,
+      toolName: request.toolName,
+      args: serializeArgs(request.args),
+      requestedAt: Date.now(),
     };
     // Asked on every window of the owner; the first answer wins and clears the pending entry.
     this.broadcast(request.chatId, frame);
 
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
+        const pending = this.pendingApprovals.get(id);
         this.pendingApprovals.delete(id);
+        if (pending) this.journalApproval(id, pending, "expired");
+        // The other windows are still showing a sheet nobody can answer any more.
+        this.broadcast(audit.owner, { type: "approval.resolved", id, threadId, reason: "expired" });
         resolve("deny");
       }, CONFIRM_TIMEOUT_MS);
-      this.pendingApprovals.set(id, { resolve, timer });
+      this.pendingApprovals.set(id, { resolve, timer, audit });
     });
+  }
+
+  /**
+   * Writes one decision to the journal. Never throws into the approval path: losing the audit
+   * line is bad, refusing a tool the owner just allowed because SQLite hiccuped is worse.
+   */
+  private journalApproval(id: string, pending: PendingApproval, outcome: ApprovalOutcome): void {
+    const { audit } = pending;
+    try {
+      recordApproval({
+        id,
+        owner: audit.owner,
+        threadId: audit.threadId,
+        sessionId: audit.sessionId,
+        toolName: audit.toolName,
+        args: audit.args,
+        outcome,
+        requestedAt: new Date(audit.requestedAt).toISOString(),
+        decidedAt: new Date().toISOString(),
+        durationMs: Date.now() - audit.requestedAt,
+        auto: false,
+      });
+    } catch (err) {
+      void myClawAppLog("error", "approval journal write failed", { id, outcome, error: String(err) });
+    }
   }
 
   createStreamer(message: UnifiedMessage): MyClawAppStreamer {
@@ -960,6 +1014,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "approval.response":
         this.resolveApproval(frame);
+        break;
+      case "approval.history":
+        this.handleApprovalHistory(ws, frame);
         break;
       case "ping":
         // Transport-level pings are answered by the server; nothing to reply to.
@@ -1886,7 +1943,67 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingApprovals.delete(frame.id);
-    pending.resolve(frame.accepted ? "allow-session" : "deny");
+
+    // The wire is not a place to trust. Anything that is not one of the three grants is a deny:
+    // an old client that still sends `accepted` lands here, and a tool must never run because a
+    // frame was unreadable.
+    const claimed: ApprovalDecision =
+      frame.decision === "allow-once" || frame.decision === "allow-session" || frame.decision === "deny"
+        ? frame.decision
+        : "deny";
+
+    // A session grant is refused for the per-invocation tools even if a device asks for one:
+    // the offer is not made for them.
+    const decision: ApprovalDecision =
+      claimed === "allow-session" && ALWAYS_PER_INVOCATION.has(pending.audit.toolName)
+        ? "allow-once"
+        : claimed;
+
+    this.journalApproval(frame.id, pending, decision);
+    // The owner's other windows are showing the same sheet: close it there too.
+    this.broadcast(pending.audit.owner, {
+      type: "approval.resolved",
+      id: frame.id,
+      threadId: pending.audit.threadId,
+      reason: "answered-elsewhere",
+    });
+    pending.resolve(decision);
+  }
+
+  private handleApprovalHistory(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppApprovalHistory): void {
+    const owner = ws.data.owner;
+    try {
+      const entries = listApprovals({
+        owner,
+        threadId: frame.threadId,
+        limit: frame.limit,
+        before: frame.before,
+      });
+      this.sendFrame(ws, {
+        type: "approval.history.result",
+        threadId: frame.threadId,
+        entries: entries.map((entry) => ({
+          id: entry.id,
+          threadId: entry.threadId,
+          toolName: entry.toolName,
+          args: entry.args,
+          outcome: entry.outcome,
+          requestedAt: entry.requestedAt,
+          decidedAt: entry.decidedAt,
+          durationMs: entry.durationMs,
+          auto: entry.auto,
+        })),
+        stats: approvalStats(owner),
+      });
+    } catch (err) {
+      void myClawAppLog("error", "approval history read failed", { owner, error: String(err) });
+      this.sendFrame(ws, {
+        type: "approval.history.result",
+        threadId: frame.threadId,
+        entries: [],
+        stats: { total: 0, allowed: 0, denied: 0, expired: 0 },
+      });
+    }
   }
 
   private sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void {

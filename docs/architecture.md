@@ -114,6 +114,7 @@
 ├── sessions-archive/        # archived sessions (reset, clear)
 ├── files/                   # my-claw-app uploads: <owner>/<thread_id>/<id>.<ext>
 ├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
+├── approvals.db             # SQLite — every tool-approval outcome, incl. the automatic ones (WAL mode)
 ├── memory.db                # SQLite — long-term memory: entries + FTS5 (WAL mode)
 ├── tmp/                     # transient media/temp files (cleaned on boot)
 └── logs/
@@ -152,6 +153,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 - Error responses read and included in thrown error messages
 - **Context window**: auto-trims old messages before each LLM call when `limit.context` is set (4 chars/token heuristic, 15% safety margin, respects tool-call/result pairs)
 - **Usage tracking**: captures `prompt_tokens`/`completion_tokens` from every API response (including streaming via `stream_options.include_usage`), accumulates per session in `tokenUsage`, persisted to disk, shown in `/status`
+- **Approvals DB**: SQLite at `~/.my-claw/approvals.db` — one row per approval outcome (grant kind, tool, arguments, how long it took, whether it was asked at all). WAL mode, 0600. Read from the app under Settings > Tool approvals
 - **Analytics DB**: SQLite at `~/.my-claw/analytics.db` — one row per API call with session, model, tokens, duration, caller type. WAL mode. Queryable via `sqlite3` or any SQL tool
 
 ### Sub-agents

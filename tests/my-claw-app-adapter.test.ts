@@ -1329,20 +1329,126 @@ describe("MyClawAppAdapter", () => {
     assert.deepEqual(store.removed, ["a"]);
   });
 
-  test("confirmTool sends approval.request and accepts a response", async () => {
+  test("confirmTool sends approval.request and honours the grant the device chose", async () => {
     const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
     approvalsAdapter.onMessage(() => Promise.resolve());
     await approvalsAdapter.start();
     const approvalClient = await connectClient(approvalsAdapter.port);
 
     const decisionPromise = approvalsAdapter.confirmTool(approvalRequest());
-    const request = (await nextFrame(approvalClient)) as { type: string; id: string; toolName: string; args: Record<string, unknown> };
+    const request = (await nextFrame(approvalClient)) as { type: string; id: string; toolName: string; args: Record<string, unknown>; allowSessionOffered: boolean };
     assert.equal(request.type, "approval.request");
     assert.equal(request.toolName, "bash");
     assert.deepEqual(request.args, { command: "ls" });
+    // bash is per-invocation: a session grant is never offered for it.
+    assert.equal(request.allowSessionOffered, false);
 
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "allow-once" }));
+    assert.equal(await decisionPromise, "allow-once");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  // Approving one call used to whitelist the tool for the whole conversation, because the device
+  // only sent `accepted: true` and the server read it as a session grant.
+  test("a one-shot approval does not silently become a session grant", async () => {
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool({ ...approvalRequest(), toolName: "write" });
+    const request = (await nextFrame(approvalClient)) as { id: string; allowSessionOffered: boolean };
+    assert.equal(request.allowSessionOffered, true);
+
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "allow-once" }));
+    assert.equal(await decisionPromise, "allow-once");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  // The offer is not made for bash, so a device claiming one is not to be trusted.
+  test("a session grant asked for a per-invocation tool is downgraded, not obeyed", async () => {
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool(approvalRequest());
+    const request = (await nextFrame(approvalClient)) as { id: string };
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "allow-session" }));
+    assert.equal(await decisionPromise, "allow-once");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  test("a decision reaches the journal, and the history frame reads it back", async () => {
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool({ ...approvalRequest(), toolName: "write" });
+    const request = (await nextFrame(approvalClient)) as { id: string };
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "allow-session" }));
+    await decisionPromise;
+    // The resolved frame closes the sheet on the owner other windows.
+    const resolved = (await nextFrame(approvalClient)) as { type: string; id: string };
+    assert.equal(resolved.type, "approval.resolved");
+
+    approvalClient.ws.send(JSON.stringify({ type: "approval.history" }));
+    const history = (await nextFrame(approvalClient)) as {
+      type: string;
+      entries: Array<{ toolName: string; outcome: string; args: string }>;
+      stats: { total: number; allowed: number; denied: number };
+    };
+    assert.equal(history.type, "approval.history.result");
+    // Newest first, and earlier tests of this file share the journal: assert on this decision.
+    assert.equal(history.entries[0]!.toolName, "write");
+    assert.equal(history.entries[0]!.outcome, "allow-session");
+    assert.equal(history.entries[0]!.args, JSON.stringify({ command: "ls" }));
+    assert.ok(history.stats.allowed >= 1);
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  // An older app sends `accepted: true` and no decision. Reading that as a grant would run the
+  // tool on an unreadable frame, so it is refused rather than guessed.
+  test("an unreadable decision denies instead of guessing a grant", async () => {
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool({ ...approvalRequest(), toolName: "write" });
+    const request = (await nextFrame(approvalClient)) as { id: string };
     approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, accepted: true }));
-    assert.equal(await decisionPromise, "allow-session");
+    assert.equal(await decisionPromise, "deny");
+
+    approvalClient.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  test("a refusal is journalled as a refusal", async () => {
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const approvalClient = await connectClient(approvalsAdapter.port);
+
+    const decisionPromise = approvalsAdapter.confirmTool(approvalRequest());
+    const request = (await nextFrame(approvalClient)) as { id: string };
+    approvalClient.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "deny" }));
+    assert.equal(await decisionPromise, "deny");
+    await nextFrame(approvalClient);
+
+    approvalClient.ws.send(JSON.stringify({ type: "approval.history" }));
+    const history = (await nextFrame(approvalClient)) as { entries: Array<{ outcome: string }>; stats: { denied: number } };
+    assert.equal(history.entries[0]!.outcome, "deny");
+    assert.ok(history.stats.denied >= 1);
 
     approvalClient.ws.close();
     await approvalsAdapter.stop();

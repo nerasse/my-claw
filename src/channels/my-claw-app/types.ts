@@ -154,7 +154,21 @@ export interface MyClawAppSessionPinOrder {
 export interface MyClawAppApprovalResponse {
   type: "approval.response";
   id: string;
-  accepted: boolean;
+  /**
+   * The grant the owner actually chose. `accepted: true` alone used to mean `allow-session`,
+   * so approving one call silently whitelisted the tool for the rest of the conversation.
+   * The device now says which of the two it means.
+   */
+  decision: "allow-once" | "allow-session" | "deny";
+}
+
+export interface MyClawAppApprovalHistory {
+  type: "approval.history";
+  /** Absent = every conversation of this owner. */
+  threadId?: string;
+  limit?: number;
+  /** ISO cursor for paging: only decisions older than this. */
+  before?: string;
 }
 
 export interface MyClawAppCapabilitiesFrame {
@@ -746,6 +760,7 @@ export type MyClawAppClientFrame =
   | MyClawAppDraftSet
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
+  | MyClawAppApprovalHistory
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
   | MyClawAppDiagReport
@@ -1039,6 +1054,42 @@ export interface MyClawAppApprovalRequest {
   args: Record<string, unknown>;
   replyToId?: string;
   expiresAt: number;
+  /**
+   * Whether "always allow in this conversation" is on offer. False for the per-invocation
+   * tools (bash, memory), where every call is a distinct decision and a session grant would
+   * hand over the shell for good.
+   */
+  allowSessionOffered: boolean;
+}
+
+/**
+ * Closes a prompt the owner never answered, so the sheet does not sit there waiting on a run
+ * that is already gone. `reason` is what the journal recorded.
+ */
+export interface MyClawAppApprovalResolved {
+  type: "approval.resolved";
+  id: string;
+  threadId: string;
+  reason: "expired" | "cancelled" | "answered-elsewhere";
+}
+
+export interface MyClawAppApprovalHistoryEntry {
+  id: string;
+  threadId: string;
+  toolName: string;
+  args: string;
+  outcome: "allow-once" | "allow-session" | "deny" | "expired" | "cancelled";
+  requestedAt: string;
+  decidedAt: string;
+  durationMs: number;
+  auto: boolean;
+}
+
+export interface MyClawAppApprovalHistoryResult {
+  type: "approval.history.result";
+  threadId?: string;
+  entries: MyClawAppApprovalHistoryEntry[];
+  stats: { total: number; allowed: number; denied: number; expired: number };
 }
 
 export interface MyClawAppSessionListResult {
@@ -2169,6 +2220,8 @@ export type MyClawAppServerFrame =
   | MyClawAppStreamAbort
   | MyClawAppToolCall
   | MyClawAppApprovalRequest
+  | MyClawAppApprovalResolved
+  | MyClawAppApprovalHistoryResult
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult
   | MyClawAppDraftChanged

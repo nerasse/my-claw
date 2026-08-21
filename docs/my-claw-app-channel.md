@@ -59,7 +59,8 @@ src/channels/my-claw-app/
   the Android Keystore), and the owner copies them into `devices`. A QR/token flow
   is planned with the chat UI.
 - `approvals: true` turns on tool-approval round trips (`approval.request` /
-  `approval.response`). Off by default: approval-required tools are denied.
+  `approval.response`). Off by default: approval-required tools are denied. This is the only
+  surface that can answer a prompt, so with it off a blacklisted tool never runs.
 - `owner` groups devices onto one conversation namespace. Omit it and the device stands
   alone under its own id. Changing it moves the device to another namespace: the threads and
   files of the previous owner stay where they are.
@@ -336,7 +337,8 @@ the first answer wins.
 { "type": "draft.set", "threadId": "projet", "text": "ce qui est tape et pas envoye" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "session.workspace.set", "threadId": "projet", "workspace": "default|sofa" }
-{ "type": "approval.response", "id": "uuid", "accepted": true }
+{ "type": "approval.response", "id": "uuid", "decision": "allow-once|allow-session|deny" }
+{ "type": "approval.history", "threadId": "projet", "limit": 50, "before": "iso" }
 { "type": "device.capabilities", "accessibility": true }
 { "type": "voice.mode.get" }
 { "type": "voice.mode.set", "mode": "cloud|local|auto" }
@@ -661,7 +663,9 @@ runs fresh like any other message.
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
-{ "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123 }
+{ "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }
+{ "type": "approval.resolved", "id": "uuid", "threadId": "projet", "reason": "expired|cancelled|answered-elsewhere" }
+{ "type": "approval.history.result", "threadId": "projet", "entries": [{ "id": "uuid", "toolName": "write", "args": "{...}", "outcome": "allow-session", "requestedAt": "iso", "decidedAt": "iso", "durationMs": 1200, "auto": false }], "stats": { "total": 1, "allowed": 1, "denied": 0, "expired": 0 } }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
@@ -953,6 +957,31 @@ The newest page of `chat.history` carries the draft of the thread it replays, an
 reports `hasDraft` so the drawer can mark a conversation without shipping every draft in the
 listing. A `draft.changed` is applied only into a composer that is empty or unfocused. Full rules,
 lifecycle and caps: docs/draft-sync.md.
+
+### Tool approvals
+
+A blacklisted tool is not run until the owner says so, and this channel is the only place that
+can answer. With `approvals: false` (the default) the prompt is never shown and the call is
+denied outright, so the setting is what decides between "asks" and "never runs".
+
+The response carries the **grant**, not a boolean. `accepted: true` used to be read as
+`allow-session`, so approving a single call silently whitelisted the tool for the rest of the
+conversation; the device now names one of `allow-once`, `allow-session` or `deny`. Anything else
+on the wire, including an older client's `accepted`, is treated as a deny: a tool must never run
+because a frame was unreadable.
+
+`allowSessionOffered` says whether the session grant is on offer at all. It is false for the
+per-invocation tools (`bash`, `memory`), where every call is a distinct decision, and the server
+downgrades a session grant to `allow-once` for them even if a device asks for one.
+
+A prompt that is answered, times out, or is cut short by a shutdown emits `approval.resolved` to
+every window of the owner, so a sheet is never left asking about a call that is already decided.
+
+Every outcome is written to `approvals.db` (`src/approvals/store.ts`), including the ones nobody
+saw: a call covered by an earlier `allow-session` runs with nothing on screen and is journalled
+with `auto: true`. `expired` and `cancelled` are kept apart from `deny` on purpose -- neither is
+a decision the owner made, and reading them as a refusal would blame him for a machine event.
+`approval.history` reads it back, scoped to the asking device's owner and capped at 200 rows.
 
 ### Reasoning
 

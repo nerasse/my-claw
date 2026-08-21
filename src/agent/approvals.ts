@@ -1,12 +1,22 @@
 import type { SessionData } from "../sessions/store.ts";
 import type { ApprovalDecision, ToolApprovalHandler, ToolApprovalRequest } from "../channels/types.ts";
 import { ActionBlacklist } from "./blacklist.ts";
+import { recordApproval, serializeArgs } from "../approvals/store.ts";
 
 // Approval is strictly opt-in via config.blacklist — full autonomy by design (the app
 // runs in its own encapsulated VM). These two are only special IF the user blacklists
 // them: they are then re-confirmed on every call (never session-cached), because each
 // bash command / memory write is a distinct decision.
-const ALWAYS_PER_INVOCATION = new Set(["bash", "memory"]);
+export const ALWAYS_PER_INVOCATION: ReadonlySet<string> = new Set(["bash", "memory"]);
+
+/** Never lets an audit failure break a tool call: the journal is a record, not a gate. */
+function journal(record: Parameters<typeof recordApproval>[0]): void {
+  try {
+    recordApproval(record);
+  } catch {
+    // Logged by the channel on the interactive path; here the run must simply carry on.
+  }
+}
 
 export class ToolApprovalManager {
   private blacklist: ActionBlacklist;
@@ -25,6 +35,23 @@ export class ToolApprovalManager {
     this.approvalHandler = handler;
   }
 
+  private journalAuto(request: ToolApprovalRequest): void {
+    const at = new Date().toISOString();
+    journal({
+      id: `auto:${crypto.randomUUID()}`,
+      owner: request.chatId,
+      threadId: request.threadId ?? "default",
+      sessionId: request.sessionId,
+      toolName: request.toolName,
+      args: serializeArgs(request.args),
+      outcome: "allow-session",
+      requestedAt: at,
+      decidedAt: at,
+      durationMs: 0,
+      auto: true,
+    });
+  }
+
   async decide(params: {
     session: SessionData;
     request: ToolApprovalRequest;
@@ -36,6 +63,9 @@ export class ToolApprovalManager {
     if (!ALWAYS_PER_INVOCATION.has(params.request.toolName)) {
       const approvedTools = params.session.approvedTools ?? [];
       if (approvedTools.includes(params.request.toolName)) {
+        // Journalled too, and flagged `auto`: a session grant means later calls run with nothing
+        // on screen, so this branch is precisely the one an audit needs to see.
+        this.journalAuto(params.request);
         return "allow-session";
       }
     }

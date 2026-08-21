@@ -20,6 +20,7 @@ import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
 import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
 import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
+import { closeApprovalStore } from "../src/approvals/store.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -73,4 +74,7 @@ beforeEach(() => {
   // Endpoint lists are keyed by model id and cached for fifteen minutes, including the empty list
   // a failed lookup leaves: a later file would read another file's mock, or no call at all.
   clearOpenRouterCache();
+  // The approvals DB handle is module-level and MY_CLAW_DIR moves per run: a retained handle
+  // would keep writing into the previous file's temp dir, or read its rows back.
+  closeApprovalStore();
 });
