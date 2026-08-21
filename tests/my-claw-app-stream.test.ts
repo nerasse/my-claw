@@ -90,6 +90,22 @@ describe("MyClawAppStreamer media refs", () => {
     expect(ends[0]!.output).toBe("file.txt");
   });
 
+  test("a tool end with the model id present still reuses the start card id (no duplicate cards)", async () => {
+    // Regression: when both a start (card id turn:tool:N) and an end carrying the model tool_use
+    // id reach the streamer, the end must settle the SAME card the start opened. Using the model
+    // id as the card id made the app stack a second card (double bash cards on screen).
+    const { streamer, frames } = collect();
+    await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "ls" } }]);
+    await streamer.appendToolUse([{ id: "tu_1", name: "bash", arguments: { command: "ls" }, durationMs: 12, output: "file.txt", ok: true }], true);
+    await streamer.finish();
+    const starts = frames.filter((f) => f.type === "chat.tool.start") as { type: "chat.tool.start"; id: string }[];
+    const ends = frames.filter((f) => f.type === "chat.tool") as { type: "chat.tool"; id: string; output: string }[];
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.id).toBe(starts[0]!.id);
+    expect(ends[0]!.output).toBe("file.txt");
+  });
+
   test("live progress is routed to the card the start frame opened, by the model tool id", async () => {
     const { streamer, frames } = collect();
     await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep 1" } }]);

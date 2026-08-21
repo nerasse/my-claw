@@ -269,10 +269,11 @@ export class MyClawAppStreamer {
     await this.sealSegment();
     for (const tool of toolCalls) {
       // Reuse the id the start frame sent so the app upserts the card with the result instead of
-      // stacking a second one. When no start was sent (a replayed session written before starts,
-      // or a non-verbose channel), fall back to the turn-scoped counter.
-      const startId = this.pendingToolIds.shift();
-      const id = tool.id ?? startId ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
+      // stacking a second one. The model's tool_use id is only a fallback: when no start was sent
+      // (a replayed session written before starts), it is absent anyway and we fall back to the
+      // turn-scoped counter.
+      const startId = this.pendingToolIds.shift() ?? tool.id ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
+      const id = startId;
       const output = tool.output ?? "";
       const truncated = output.length > TOOL_OUTPUT_LIMIT;
       await this.opts.send({
