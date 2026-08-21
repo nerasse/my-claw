@@ -290,6 +290,16 @@ export interface MyClawAppVoiceModeSet {
   mode: "cloud" | "local" | "auto";
 }
 
+export interface MyClawAppUiPrefsGet {
+  type: "uiPrefs.get";
+}
+
+export interface MyClawAppUiPrefsSet {
+  type: "uiPrefs.set";
+  /** Only the fields present are touched; the rest stay as they are. */
+  prefs: { expandTools?: boolean; expandReasoning?: boolean };
+}
+
 export interface MyClawAppSkillsList {
   type: "skills.list";
 }
@@ -769,6 +779,8 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionWorkspaceSet
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
+  | MyClawAppUiPrefsGet
+  | MyClawAppUiPrefsSet
   | MyClawAppUpdateRun
   | MyClawAppSkillsList
   | MyClawAppSkillsTransfer
@@ -1232,6 +1244,7 @@ export type MyClawAppErrorScope =
   | "diag"
   | "logs"
   | "voice"
+  | "uiPrefs"
   | "model"
   | "skills"
   | "agents"
@@ -1289,6 +1302,14 @@ export interface MyClawAppVoiceModeResult {
   resolved: "cloud" | "local";
   /** False when no GROQ_API_KEY is set: "cloud" would fail, and the app must say so. */
   cloudAvailable: boolean;
+}
+
+export interface MyClawAppUiPrefsResult {
+  type: "uiPrefs.result";
+  /** Keep tool cards expanded after their run settles (default false). */
+  expandTools: boolean;
+  /** Keep the reasoning block expanded after the turn settles (default false). */
+  expandReasoning: boolean;
 }
 
 export interface MyClawAppModelOption {
@@ -2297,6 +2318,7 @@ export type MyClawAppServerFrame =
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
   | MyClawAppVoiceModeResult
+  | MyClawAppUiPrefsResult
   | MyClawAppUpdateResult
   | MyClawAppModelListResult
   | MyClawAppModelRefreshResult

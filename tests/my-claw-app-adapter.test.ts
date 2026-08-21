@@ -954,6 +954,42 @@ describe("MyClawAppAdapter", () => {
     assert.equal(stored, "local");
   });
 
+  test("ui prefs can be read and switched from the device", async () => {
+    let stored = { expandTools: false, expandReasoning: false };
+    adapter.onUiPrefsController({
+      status: () => stored,
+      set: async (prefs) => {
+        stored = { ...stored, ...prefs };
+        return stored;
+      },
+    });
+
+    client.ws.send(JSON.stringify({ type: "uiPrefs.get" }));
+    const initial = (await nextFrame(client)) as { type: string; expandTools: boolean; expandReasoning: boolean };
+    assert.equal(initial.type, "uiPrefs.result");
+    assert.equal(initial.expandTools, false);
+
+    // A set answers with the resulting state, so the app never renders a stale switch.
+    client.ws.send(JSON.stringify({ type: "uiPrefs.set", prefs: { expandTools: true } }));
+    const after = (await nextFrame(client)) as { type: string; expandTools: boolean; expandReasoning: boolean };
+    assert.equal(after.type, "uiPrefs.result");
+    assert.equal(after.expandTools, true);
+    assert.equal(after.expandReasoning, false);
+    assert.equal(stored.expandTools, true);
+  });
+
+  test("ui prefs with an invalid value are refused on the uiPrefs scope", async () => {
+    adapter.onUiPrefsController({
+      status: () => ({ expandTools: false, expandReasoning: false }),
+      set: async () => ({ expandTools: false, expandReasoning: false }),
+    });
+
+    client.ws.send(JSON.stringify({ type: "uiPrefs.set", prefs: { expandTools: "yes" } }));
+    const frame = (await nextFrame(client)) as { type: string; message: string; scope: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "uiPrefs");
+  });
+
   test("an unusable voice mode is refused on the voice scope, not silently ignored", async () => {
     adapter.onVoiceController({
       status: () => ({ mode: "auto", resolved: "cloud", cloudAvailable: true }),

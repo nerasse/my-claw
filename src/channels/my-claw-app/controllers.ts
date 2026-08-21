@@ -58,6 +58,17 @@ export interface MyClawAppVoiceController {
   setMode(mode: "cloud" | "local" | "auto"): Promise<void>;
 }
 
+/**
+ * App display preferences (auto-expand of tool cards and reasoning blocks), injected for the same
+ * reason as the voice controller: the adapter must not reach into the global config itself.
+ */
+export interface MyClawAppUiPrefsController {
+  /** What the server currently owns, with defaults filled in for anything absent. */
+  status(): { expandTools: boolean; expandReasoning: boolean };
+  /** Persisted, not just applied: a toggle flipped in the app must survive a restart. */
+  set(prefs: { expandTools?: boolean; expandReasoning?: boolean }): Promise<{ expandTools: boolean; expandReasoning: boolean }>;
+}
+
 /** Supplied by the entry point: the adapter must not reach into the global config itself. */
 export interface MyClawAppDiagnosticsProvider {
   snapshot(owner: string, threadId: string): Promise<string>;

@@ -471,6 +471,19 @@ export interface MyClawConfig {
   skills?: SkillsConfig;
   logging?: LoggingConfig;
   mcp?: Record<string, McpServerConfig>;
+  /**
+   * UI preferences shared by every device the app runs on, flipped from the app's Settings. The
+   * server owns the persistence so a reinstall or a second device starts with the same layout.
+   */
+  uiPrefs?: UiPrefsConfig;
+}
+
+/** App-side display preferences, persisted on the server and broadcast to every device. */
+export interface UiPrefsConfig {
+  /** Keep tool cards expanded after their run settles (default: folded). */
+  expandTools?: boolean;
+  /** Keep the reasoning/thinking block expanded after the turn settles (default: folded). */
+  expandReasoning?: boolean;
 }
 
 /** Log verbosity. `MY_CLAW_LOG_LEVEL` overrides this, so a debug session needs no config edit. */
@@ -963,7 +976,7 @@ export const CONFIG_PATH = join(MY_CLAW_DIR, "config.json");
  * so the structural guard below can share the exact same lists instead of drifting from them.
  */
 export const HOT_OBJECT_SECTIONS = [
-  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces", "workspacePrompts", "tags",
+  "llm", "agents", "injection", "browser", "webSearch", "context", "tools", "skills", "mcp", "voice", "cron", "memory", "workspaces", "workspacePrompts", "tags", "uiPrefs",
 ] as const;
 /** Array sections whose identity must be preserved (consumers hold the same array reference). */
 export const HOT_ARRAY_SECTIONS = ["whitelist", "blacklist"] as const;

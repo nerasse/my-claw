@@ -150,6 +150,7 @@ import {
 } from "./memory/index.ts";
 import {
   setVoiceSttMode,
+  setUiPrefs,
   setDefaultModel,
   clearAgentModel,
   setAgentModel,
@@ -724,6 +725,21 @@ async function main() {
         // The file is the source of truth, but the watcher lands a beat later and the reply is
         // built now: apply it in memory too so the app is not told the old engine.
         voiceManager.setFeatureMode("stt", mode);
+      },
+    });
+
+    // App display preferences, persisted server-side so every device and every reinstall starts
+    // from the same layout choices. Same read-through/config-edit pattern as the voice mode.
+    const uiPrefsStatus = () => ({
+      expandTools: config.uiPrefs?.expandTools ?? false,
+      expandReasoning: config.uiPrefs?.expandReasoning ?? false,
+    });
+    myClawApp.onUiPrefsController({
+      status: uiPrefsStatus,
+      set: async (prefs) => {
+        const result = await setUiPrefs(prefs);
+        if (!result.ok) throw new Error(result.error);
+        return uiPrefsStatus();
       },
     });
 

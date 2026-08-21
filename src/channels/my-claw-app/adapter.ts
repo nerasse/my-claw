@@ -99,6 +99,7 @@ import type {
   MyClawAppSubAgentsController,
   MyClawAppTagsController,
   MyClawAppToolsController,
+  MyClawAppUiPrefsController,
   MyClawAppVoiceController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
@@ -153,6 +154,7 @@ import {
   handleToolsList,
   handleToolsToggle,
   handleUpdateRun,
+  handleUiPrefs,
   handleVoiceMode,
   handleWorkspacesAdd,
   handleWorkspacesList,
@@ -233,6 +235,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private mcp?: MyClawAppMcpController;
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
+  private uiPrefs?: MyClawAppUiPrefsController;
   private sessionInstructions?: MyClawAppSessionInstructionsProvider;
   private jobs?: MyClawAppJobsController;
   private notifications?: MyClawAppNotificationsController;
@@ -489,6 +492,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onVoiceController(controller: MyClawAppVoiceController): void {
     this.voice = controller;
+  }
+
+  onUiPrefsController(controller: MyClawAppUiPrefsController): void {
+    this.uiPrefs = controller;
   }
 
   onModelController(controller: MyClawAppModelController): void {
@@ -998,6 +1005,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       tools: this.tools,
       instructions: this.instructions,
       jobs: this.jobs,
+      uiPrefs: this.uiPrefs,
       configEditor: this.configEditor,
       workspacesCtrl: this.workspacesCtrl,
       commandHandler: this.commandHandler,
@@ -1085,6 +1093,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "voice.mode.set":
         this.detach(handleVoiceMode(this.settingsDeps(), ws, frame.mode), "handleVoiceMode");
+        break;
+      case "uiPrefs.get":
+        this.detach(handleUiPrefs(this.settingsDeps(), ws, undefined), "handleUiPrefs");
+        break;
+      case "uiPrefs.set":
+        this.detach(handleUiPrefs(this.settingsDeps(), ws, frame.prefs), "handleUiPrefs");
         break;
       case "update.run":
         this.detach(handleUpdateRun(this.settingsDeps(), ws), "handleUpdateRun");

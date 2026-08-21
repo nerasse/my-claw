@@ -198,6 +198,27 @@ export async function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise
   return { ok: true, previous: {} };
 }
 
+/**
+ * Persists the app UI preferences (tool/reasoning auto-expand). Same philosophy as
+ * `setVoiceSttMode`: a toggle in the app is a durable choice, so it goes to the file and is
+ * hot-reloaded. `uiPrefs` is read per frame, so the next render of a card honours the new value
+ * without a restart.
+ */
+export async function setUiPrefs(prefs: { expandTools?: boolean; expandReasoning?: boolean }): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const uiPrefs = objectAt(read.data, "uiPrefs");
+  const patch: Record<string, unknown> = {};
+  if (typeof prefs.expandTools === "boolean") { uiPrefs["expandTools"] = prefs.expandTools; patch.expandTools = prefs.expandTools; }
+  if (typeof prefs.expandReasoning === "boolean") { uiPrefs["expandReasoning"] = prefs.expandReasoning; patch.expandReasoning = prefs.expandReasoning; }
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant uiPrefs ${JSON.stringify(patch)}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { uiPrefs: patch });
+  return { ok: true, previous: {} };
+}
+
 export async function setAgentModel(
   /** Any agent name, not just a reserved role: config is the override layer for file agents too. */
   agent: string,

@@ -17,6 +17,7 @@ import type {
   MyClawAppSkillsController,
   MyClawAppTagsController,
   MyClawAppToolsController,
+  MyClawAppUiPrefsController,
   MyClawAppVoiceController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
@@ -82,6 +83,7 @@ export interface MyClawAppSettingsDeps {
   readonly tools?: MyClawAppToolsController;
   readonly instructions?: MyClawAppInstructionsController;
   readonly jobs?: MyClawAppJobsController;
+  readonly uiPrefs?: MyClawAppUiPrefsController;
   readonly configEditor?: MyClawAppConfigController;
   readonly workspacesCtrl?: MyClawAppWorkspacesController;
   readonly commandHandler?: MyClawAppCommandHandler;
@@ -155,6 +157,37 @@ export async function handleVoiceMode(
     else d.sendFrame(ws, state);
   } catch (err) {
     await d.refuse(ws, "voice", "voice.mode failed", { mode, error: String(err) });
+  }
+}
+
+export async function handleUiPrefs(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  prefs: { expandTools?: boolean; expandReasoning?: boolean } | undefined,
+): Promise<void> {
+  if (!d.uiPrefs) {
+    await d.refuse(ws, "uiPrefs", "ui preferences unavailable");
+    return;
+  }
+  try {
+    if (prefs) {
+      if (typeof prefs.expandTools !== "undefined" && typeof prefs.expandTools !== "boolean") {
+        await d.refuse(ws, "uiPrefs", "invalid expandTools", { expandTools: prefs.expandTools });
+        return;
+      }
+      if (typeof prefs.expandReasoning !== "undefined" && typeof prefs.expandReasoning !== "boolean") {
+        await d.refuse(ws, "uiPrefs", "invalid expandReasoning", { expandReasoning: prefs.expandReasoning });
+        return;
+      }
+      await d.uiPrefs.set(prefs);
+    }
+    // A set moves a machine-wide setting, and a get asks about it: the first is news for every
+    // window of the owner, the second only for the asker.
+    const state: MyClawAppServerFrame = { type: "uiPrefs.result", ...d.uiPrefs.status() };
+    if (prefs) d.broadcastFrame(ws.data.owner, state);
+    else d.sendFrame(ws, state);
+  } catch (err) {
+    await d.refuse(ws, "uiPrefs", "uiPrefs failed", { prefs, error: String(err) });
   }
 }
 
