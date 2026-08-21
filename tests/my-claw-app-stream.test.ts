@@ -86,8 +86,8 @@ describe("MyClawAppStreamer media refs", () => {
     const ends = frames.filter((f) => f.type === "chat.tool") as { type: "chat.tool"; id: string; name: string; output: string }[];
     expect(starts).toHaveLength(1);
     expect(ends).toHaveLength(1);
-    expect(starts[0].id).toBe(ends[0].id);
-    expect(ends[0].output).toBe("file.txt");
+    expect(starts[0]!.id).toBe(ends[0]!.id);
+    expect(ends[0]!.output).toBe("file.txt");
   });
 
   test("live progress is routed to the card the start frame opened, by the model tool id", async () => {
@@ -100,10 +100,10 @@ describe("MyClawAppStreamer media refs", () => {
     const start = frames.find((f) => f.type === "chat.tool.start") as { id: string } | undefined;
     const deltas = frames.filter((f) => f.type === "chat.tool.delta") as { id: string; stdout: string; stderr: string }[];
     expect(deltas).toHaveLength(2);
-    expect(deltas[0].stdout).toBe("line 1\n");
-    expect(deltas[1].stderr).toBe("warn");
+    expect(deltas[0]!.stdout).toBe("line 1\n");
+    expect(deltas[1]!.stderr).toBe("warn");
     // The delta carries the card's id (mapped from the model id), not the model id itself.
     expect(start).toBeDefined();
-    expect(deltas[0].id).toBe(start!.id);
+    expect(deltas[0]!.id).toBe(start!.id);
   });
 });

@@ -18,7 +18,7 @@ import type { OutgoingMessage } from "../../src/channels/types.ts";
 const LLM = {
   defaultProvider: "litellm",
   defaultModel: "mimo",
-  providers: { litellm: { baseUrl: "https://litellm.test/v1" }, anthropic: { type: "claude-sdk" as const } },
+  providers: { litellm: { baseUrl: "https://litellm.test/v1" }, anthropic: { type: "anthropic" as const } },
   models: [
     { id: "mimo", label: "Mimo", provider: "litellm" },
     { id: "opus", label: "Opus", provider: "anthropic" },

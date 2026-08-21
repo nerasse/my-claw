@@ -149,7 +149,6 @@ test("resetSession clears history while preserving the selected model", async ()
     const session = await firstManager.getOrCreateWithMeta(sid, "telegram", "dm");
     session.messages.push({ role: "user", content: "before reset", timestamp: new Date().toISOString() });
     session.modelOverride = "alt-model";
-    session.sdkSessionId = "sdk-history";
     await firstManager.persist(sid);
 
     const resetManager = new SessionManager();
@@ -159,7 +158,6 @@ test("resetSession clears history while preserving the selected model", async ()
     assert.ok(reset);
     assert.equal(reset.messages.length, 0);
     assert.equal(reset.modelOverride, "alt-model");
-    assert.equal(reset.sdkSessionId, undefined);
 
     const reloadedManager = new SessionManager();
     const reloaded = await reloadedManager.peek(sid);

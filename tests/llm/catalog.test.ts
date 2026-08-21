@@ -184,7 +184,7 @@ test("two refreshes at once are one pass: the second joins the first", async () 
 
   try {
 
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
     const first = catalog.refresh();
     const second = catalog.refresh();
     assert.equal(first, second, "the second call must be handed the run already in flight");
