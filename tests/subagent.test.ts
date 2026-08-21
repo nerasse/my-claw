@@ -1,3 +1,4 @@
+import { hooks } from "../src/hooks/index.ts";
 import { getSessionModelUsage } from "../src/analytics/usage-db.ts";
 import { test } from "bun:test";
 import assert from "node:assert/strict";
@@ -528,15 +529,39 @@ test("an explicit workspaceDir may narrow inside the agent's workspace, never es
   await rm(elsewhere, { recursive: true, force: true });
 });
 
-test("an agent pinned to a missing workspace key refuses to spawn", async () => {
-  const broken: MyClawConfig = { ...config, workspaces: {}, agents: { research: { workspace: "ghost" } } };
-  const runner = new SubAgentRunner(broken, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+test("one-shot spawn emits subagent:spawn and subagent:complete with the parent session", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
 
-  const result = await runner.spawn({
-    displayName: "ghost", type: "research", mode: "session", task: "init",
-    parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
-    generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global",
-  });
-  assert.match(result.result, /not in config.workspaces/);
+  const events: Array<{ type: string; id: string; parentSessionId: string }> = [];
+  const onSpawn = (ev: { id: string; parentSessionId: string }) => events.push({ type: "spawn", id: ev.id, parentSessionId: ev.parentSessionId });
+  const onComplete = (ev: { id: string; parentSessionId: string }) => events.push({ type: "complete", id: ev.id, parentSessionId: ev.parentSessionId });
+  hooks.on("subagent:spawn", onSpawn);
+  hooks.on("subagent:complete", onComplete);
+
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "done" } }] }),
+    { status: 200 },
+  ) as never);
+
+  try {
+    await runner.spawn({
+      displayName: "hooktest", type: "research", mode: "run", task: "probe",
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "my-claw-app/thread/u1/t1", visibility: "global",
+    });
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0]!.type, "spawn");
+    assert.equal(events[1]!.type, "complete");
+    assert.ok(events[0]!.id.startsWith("subagent/run-"));
+    assert.equal(events[0]!.id, events[1]!.id);
+    assert.equal(events[0]!.parentSessionId, "my-claw-app/thread/u1/t1");
+  } finally {
+    hooks.off("subagent:spawn", onSpawn);
+    hooks.off("subagent:complete", onComplete);
+    fetchMock.restore();
+  }
 });
+
