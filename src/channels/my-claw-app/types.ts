@@ -1745,16 +1745,31 @@ export interface MyClawAppCommandPending {
 
 /**
  * The send is parked: a compaction is rewriting the history its run would resume, so the router
- * holds it until that finishes (a minute or two on a full session). Without this the message sits
- * in the chat with nothing behind it and the app looks frozen. Lifted by the stream that follows,
- * or by the run's end.
+ * holds it until that finishes (a minute or two on a full session); or a run is already active and
+ * the message was queued in its mailbox for the next turn boundary. Without this the message sits
+ * in the chat with nothing behind it and the app looks frozen. Lifted by `chat.send.acked` (an
+ * injection drained) or by the stream that follows (a compaction released).
+ */
+export interface MyClawAppChatAcked {
+  type: "chat.send.acked";
+  threadId: string;
+  /** The chat.send id that was queued and is now drained into the run. */
+  replyToId: string;
+}
+
+/**
+ * The send is parked: a compaction is rewriting the history its run would resume, so the router
+ * holds it until that finishes (a minute or two on a full session); or a run is already active and
+ * the message was queued in its mailbox for the next turn boundary. Without this the message sits
+ * in the chat with nothing behind it and the app looks frozen. Lifted by `chat.send.acked` (an
+ * injection drained) or by the stream that follows (a compaction released).
  */
 export interface MyClawAppChatQueued {
   type: "chat.send.queued";
   threadId: string;
   /** The chat.send id being held: the app marks that bubble, not the thread. */
   replyToId: string;
-  reason: "compaction";
+  reason: "compaction" | "injection";
 }
 
 /**
@@ -2238,6 +2253,7 @@ export type MyClawAppServerFrame =
   | MyClawAppCommandPending
   | MyClawAppCommandResult
   | MyClawAppChatQueued
+  | MyClawAppChatAcked
   | MyClawAppStatusResult
   | MyClawAppSessionInstructionsResult
   | MyClawAppChatCleared

@@ -184,8 +184,8 @@ export class MessageRouter {
       if (!options.noInject && runRegistry.canInject(sessionId)) {
         const injected = runRegistry.enqueueInjection(sessionId, message);
         if (injected) {
-          void log("info", "message injected into active sub-agent run", { ...messageLogData(message), sessionId });
-          hooks.emit("message:injected", { message, sessionId });
+          void log("info", "message queued for injection into active sub-agent run", { ...messageLogData(message), sessionId });
+          hooks.emit("message:injection:queued", { message, sessionId });
           await injected;
           return undefined;
         }
@@ -212,8 +212,8 @@ export class MessageRouter {
     if (this.config && injectionEnabled(this.config) && !options.noInject && runRegistry.isRunning(sessionId)) {
       const injected = runRegistry.enqueueInjection(sessionId, message);
       if (injected) {
-        void log("info", "message injected into active run", { ...messageLogData(message), sessionId });
-        hooks.emit("message:injected", { message, sessionId });
+        void log("info", "message queued for injection into active run", { ...messageLogData(message), sessionId });
+        hooks.emit("message:injection:queued", { message, sessionId });
         await injected;
         return undefined;
       }

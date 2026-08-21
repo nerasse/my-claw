@@ -34,12 +34,12 @@ async function waitUntil(cond: () => boolean, what: string, timeoutMs = 10_000):
   }
 }
 
-/** Resolves when the router reports a message joined an in-flight run. */
+/** Resolves when the router parks a message in an in-flight run's mailbox. */
 function injectionSignal(): { seen: () => boolean; dispose: () => void } {
   let fired = false;
   const handler = (): void => { fired = true; };
-  hooks.on("message:injected", handler);
-  return { seen: () => fired, dispose: () => hooks.off("message:injected", handler) };
+  hooks.on("message:injection:queued", handler);
+  return { seen: () => fired, dispose: () => hooks.off("message:injection:queued", handler) };
 }
 
 test("a message during an active run is injected, not run separately", async () => {

@@ -21,6 +21,16 @@ export interface HookEventMap {
   "message:preprocessed": { message: UnifiedMessage; transcription?: string };
   "message:route:start": { message: UnifiedMessage; sessionId: string };
   /** Mid-run steering: the message joined an in-flight run instead of starting its own. */
+  /** A message arrived while a run was active, so it was parked in the run's mailbox.
+   *  Emitted at enqueue time — the drain moment is `message:injected` below. This split exists
+   *  because the two events drive different UI states ("queued for the next turn" vs
+   *  "drained into the run").
+   */
+  "message:injection:queued": { message: UnifiedMessage; sessionId: string };
+  /** A queued injection was actually drained into the run at a turn boundary. Emitted from the
+   *  `onTurnSwitch` callback, which is the single point where the home loop hands a new turn
+   *  the message it will answer.
+   */
   "message:injected": { message: UnifiedMessage; sessionId: string };
   /**
    * The message is parked before its run: a compaction is rewriting the history it would resume.

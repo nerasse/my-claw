@@ -698,6 +698,18 @@ async function main() {
       myClawApp.notifyQueued(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id, "compaction");
     });
 
+    // A send that lands while a run is active is parked in the run's mailbox and drained at the
+    // next turn boundary (onTurnSwitch). The device marks the bubble "queued for the next turn";
+    // `message:injected` (fired at the drain) lifts it via chat.send.acked.
+    hooks.on("message:injection:queued", ({ message }) => {
+      if (message.platform !== "my-claw-app") return;
+      myClawApp.notifyQueued(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id, "injection");
+    });
+    hooks.on("message:injected", ({ message }) => {
+      if (message.platform !== "my-claw-app") return;
+      myClawApp.notifyAcked(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id);
+    });
+
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
     // both redacted here rather than in the adapter, which has no view of the global config.
     myClawApp.onVoiceController({
@@ -1999,6 +2011,11 @@ async function main() {
                   onTokens: (tokens) => active.pushReasoningTokens(tokens),
                 },
                 onTurnSwitch: async (injMsg) => {
+                  // The run drained a queued injection at this turn boundary: this is the real
+                  // "injected" moment, not the enqueue. Emit before the new streamer opens so
+                  // the app lifts the "queued for the next turn" mark in lockstep with the run.
+                  const injSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", injMsg.chatId, injMsg.userId, { threadId: injMsg.threadId, sessionScope: "per-user" });
+                  hooks.emit("message:injected", { message: injMsg, sessionId: injSessionId });
                   await active.finish();
                   active = myClawApp.createStreamer(injMsg);
                 },

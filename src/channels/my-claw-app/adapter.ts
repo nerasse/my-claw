@@ -561,6 +561,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.locationResolver = resolver;
   }
 
+  /** The run drained a queued injection at a turn boundary: lift the "queued" mark on the
+   *  bubble that carried it, so the owner sees the message enter the run. */
+  notifyAcked(owner: string, threadId: string, replyToId: string): void {
+    this.broadcast(owner, { type: "chat.send.acked", threadId, replyToId });
+  }
+
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
   onStop(stop: (sessionId: string) => boolean): void {
     this.stopRun = stop;
@@ -641,7 +647,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * frame rather than as a notice bubble: it belongs to the message the owner already sees, and
    * the app lifts it when the stream finally arrives.
    */
-  notifyQueued(owner: string, threadId: string, replyToId: string, reason: "compaction"): void {
+  notifyQueued(owner: string, threadId: string, replyToId: string, reason: "compaction" | "injection"): void {
     this.broadcast(owner, { type: "chat.send.queued", threadId, replyToId, reason });
   }
 
