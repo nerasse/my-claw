@@ -9,18 +9,20 @@ afterEach(() => {
   resetAvailabilityWorld();
 });
 
-/** A house with both halves of the Claude subscription declared, which is the shipped shape. */
-const bothHalves: LlmConfig = {
-  defaultProvider: "claude-sdk",
-  defaultModel: "claude-sdk/claude-opus-5",
+/**
+ * Every engine runs on the home loop now, so a utility call never has to borrow another model: the
+ * session's own model answers, whatever its backend. These tests pin that down, because the old
+ * borrow ladder existed only to route around the SDK's session-owning subprocess.
+ */
+const house: LlmConfig = {
+  defaultProvider: "anthropic",
+  defaultModel: "anthropic/claude-opus-5",
   providers: {
-    "claude-sdk": { type: "claude-sdk" },
     anthropic: { type: "anthropic" },
     litellm: { baseUrl: "https://litellm.example/v1", apiKeyEnv: "LITELLM_API_KEY" },
   },
   models: [
     { id: "litellm/tiny-local", label: "Tiny", provider: "litellm", apiId: "tiny-local" },
-    { id: "claude-sdk/claude-opus-5", label: "Opus 5", provider: "claude-sdk", apiId: "claude-opus-5" },
     { id: "anthropic/claude-opus-5", label: "Opus 5", provider: "anthropic", apiId: "claude-opus-5" },
   ],
 };
@@ -37,117 +39,35 @@ function world(overrides: Partial<AvailabilityWorld> = {}): AvailabilityWorld {
   };
 }
 
-test("an SDK session borrows its own model on the native transport, not the first in the list", () => {
+test("an anthropic session summarizes itself on the native transport", () => {
   setAvailabilityWorld(() => world());
-  const resolved = resolveUtilityLlmConfig(bothHalves);
-  // Same model, same subscription, an HTTP transport: Opus summarizes Opus. The local 35B at the
+  const resolved = resolveUtilityLlmConfig(house);
+  // Same model, same subscription, an HTTP transport: Opus summarizes Opus. The local model at the
   // top of the list is what used to answer, and it is what made a compacted Opus session read
   // like a different assistant had written the summary.
   assert.equal(resolved.backend, "anthropic");
   assert.equal(resolved.model, "anthropic/claude-opus-5");
 });
 
-test("an alias pin has no twin of its own, so it inherits the default's", () => {
+test("an explicit pin is kept, never traded for the default or the first in the list", () => {
   setAvailabilityWorld(() => world());
-  const aliased: LlmConfig = {
-    ...bothHalves,
-    models: [...(bothHalves.models ?? []), { id: "claude-sdk/opus", label: "Opus", provider: "claude-sdk", apiId: "opus" }],
-  };
-  // `opus` is resolved server-side by the SDK and no /v1/models lists it, so there is nothing to
-  // match on and the twin rule must not guess a version. The default is versioned, so its twin is.
-  assert.equal(resolveUtilityLlmConfig(aliased, "claude-sdk/opus").model, "anthropic/claude-opus-5");
+  const resolved = resolveUtilityLlmConfig(house, "litellm/tiny-local");
+  assert.equal(resolved.model, "litellm/tiny-local");
+  assert.equal(resolved.backend, undefined);
 });
 
-test("when neither the pin nor the default has a twin, the list answers", () => {
+test("the default answers when nothing is pinned, whatever declaration order says", () => {
   setAvailabilityWorld(() => world());
-  const aliasedDefault: LlmConfig = {
-    ...bothHalves,
-    defaultModel: "claude-sdk/opus",
-    models: [...(bothHalves.models ?? []), { id: "claude-sdk/opus", label: "Opus", provider: "claude-sdk", apiId: "opus" }],
-  };
-  assert.equal(resolveUtilityLlmConfig(aliasedDefault).model, "litellm/tiny-local");
+  const preferred: LlmConfig = { ...house, defaultModel: "litellm/tiny-local" };
+  assert.equal(resolveUtilityLlmConfig(preferred).model, "litellm/tiny-local");
 });
 
-test("the default model wins over declaration order", () => {
+test("an agent's own model is honoured over the global default", () => {
   setAvailabilityWorld(() => world());
-  const httpDefault: LlmConfig = {
-    ...bothHalves,
-    providers: { "claude-sdk": { type: "claude-sdk" }, litellm: { baseUrl: "https://litellm.example/v1" } },
-    defaultModel: "claude-sdk/claude-opus-5",
-    models: [
-      { id: "litellm/tiny-local", label: "Tiny", provider: "litellm" },
-      { id: "litellm/the-one-i-chose", label: "Chosen", provider: "litellm" },
-      { id: "claude-sdk/claude-opus-5", label: "Opus 5", provider: "claude-sdk", apiId: "claude-opus-5" },
-    ],
-  };
-  // No anthropic provider here, so no twin; the default is SDK-backed and cannot serve, but the
-  // owner's second choice is not "whatever is first".
-  const preferred: LlmConfig = { ...httpDefault, defaultModel: "litellm/the-one-i-chose" };
-  assert.equal(resolveUtilityLlmConfig(preferred).model, "litellm/the-one-i-chose");
-});
-
-test("a model the provider no longer lists is skipped, not called", () => {
-  // litellm answered and lists only the renamed model: the declared id is gone, and calling it
-  // would be an HTTP 400 on every compaction.
-  setAvailabilityWorld(() =>
-    world({
-      answered: (provider) => provider === "litellm",
-      listedBy: (provider) => (provider === "litellm" ? new Set(["tiny-local-v2"]) : new Set()),
-    }),
-  );
-  const stale: LlmConfig = {
-    defaultProvider: "claude-sdk",
-    defaultModel: "claude-sdk/claude-opus-5",
-    providers: {
-      "claude-sdk": { type: "claude-sdk" },
-      litellm: { baseUrl: "https://litellm.example/v1" },
-    },
-    models: [
-      { id: "litellm/tiny-local", label: "Gone", provider: "litellm", apiId: "tiny-local" },
-      { id: "litellm/tiny-local-v2", label: "Renamed", provider: "litellm", apiId: "tiny-local-v2" },
-      { id: "claude-sdk/claude-opus-5", label: "Opus 5", provider: "claude-sdk", apiId: "claude-opus-5" },
-    ],
-  };
-  assert.equal(resolveUtilityLlmConfig(stale).model, "litellm/tiny-local-v2");
-});
-
-test("a default pointing at nothing is skipped like any other unusable candidate", () => {
-  setAvailabilityWorld(() => world());
-  const danglingDefault: LlmConfig = {
-    defaultProvider: "claude-sdk",
-    defaultModel: "claude-sdk/claude-opus-5",
-    providers: { "claude-sdk": { type: "claude-sdk" }, litellm: { baseUrl: "https://litellm.example/v1" } },
-    models: [
-      { id: "litellm/tiny-local", label: "Tiny", provider: "litellm" },
-      { id: "claude-sdk/claude-opus-5", label: "Opus 5", provider: "claude-sdk", apiId: "claude-opus-5" },
-    ],
-  };
-  const broken: LlmConfig = { ...danglingDefault, defaultModel: "typed-this-by-hand" };
-  assert.equal(resolveUtilityLlmConfig(broken).model, "litellm/tiny-local");
-});
-
-test("nothing runnable is an error, not a silent call to a dead model", () => {
-  setAvailabilityWorld(() =>
-    world({
-      answered: (provider) => provider === "litellm",
-      listedBy: () => new Set(["something-else"]),
-    }),
-  );
-  const allGone: LlmConfig = {
-    defaultProvider: "claude-sdk",
-    defaultModel: "claude-sdk/claude-opus-5",
-    providers: { "claude-sdk": { type: "claude-sdk" }, litellm: { baseUrl: "https://litellm.example/v1" } },
-    models: [
-      { id: "litellm/tiny-local", label: "Gone", provider: "litellm", apiId: "tiny-local" },
-      { id: "claude-sdk/claude-opus-5", label: "Opus 5", provider: "claude-sdk", apiId: "claude-opus-5" },
-    ],
-  };
-  assert.throws(() => resolveUtilityLlmConfig(allGone), /HTTP transport/);
-});
-
-test("an agent pinned to an SDK model gets the twin too", () => {
-  setAvailabilityWorld(() => world());
-  const resolved = resolveUtilityAgentLlmConfig({ defaultModel: "claude-sdk/claude-opus-5" }, bothHalves);
-  assert.equal(resolved.backend, "anthropic");
-  assert.equal(resolved.model, "anthropic/claude-opus-5");
+  const resolved = resolveUtilityAgentLlmConfig({ defaultModel: "litellm/tiny-local" }, house);
+  assert.equal(resolved.model, "litellm/tiny-local");
+  // And an agent pinned to the subscription model keeps the native transport.
+  const native = resolveUtilityAgentLlmConfig({ defaultModel: "anthropic/claude-opus-5" }, house);
+  assert.equal(native.backend, "anthropic");
+  assert.equal(native.model, "anthropic/claude-opus-5");
 });

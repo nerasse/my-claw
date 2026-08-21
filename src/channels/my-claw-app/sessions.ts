@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { recordSessionCommand, recordSessionFailure } from "../../sessions/store.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
-import { toolDisplayName } from "../../agent/claude-sdk/tools.ts";
+import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { DraftStore, type DraftWrite } from "./drafts.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";

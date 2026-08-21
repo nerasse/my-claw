@@ -603,8 +603,6 @@ export function formatEffort(effort: EffectiveEffort): string {
       return `${effort.level} (job or agent pin)`;
     case "config":
       return `${effort.level} (config)`;
-    case "sdk-default":
-      return `${effort.level} (SDK default)`;
     case "api-default":
       // The Messages API documents `high` as the value it applies when the field is absent, so
       // naming it is not a guess: it is what the server does either way.

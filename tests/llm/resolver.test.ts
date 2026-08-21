@@ -231,7 +231,7 @@ const effortConfig: LlmConfig = {
   effort: "high",
   providers: {
     litellm: { baseUrl: "https://x/v1" },
-    anthropic: { type: "claude-sdk" },
+    anthropic: { type: "anthropic" },
   },
   models: [
     { id: "mimo", label: "MiMo", provider: "litellm" },
@@ -240,7 +240,7 @@ const effortConfig: LlmConfig = {
   ],
 };
 
-test("effort: SDK model always carries effort", () => {
+test("effort: a native Anthropic model always carries effort", () => {
   assert.equal(resolveLlmConfig(effortConfig, "claude-sonnet-5").effort, "high");
 });
 
@@ -296,9 +296,9 @@ test("effectiveEffort: a scope pin is reported, not skipped", () => {
   assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5", undefined, "low"), { level: "low", source: "scope" });
 });
 
-test("effectiveEffort: an unset SDK model names the documented SDK fallback", () => {
+test("effectiveEffort: an unset native Anthropic model names the documented fallback", () => {
   const cfg: LlmConfig = { ...effortConfig, effort: undefined };
-  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5"), { level: "high", source: "sdk-default" });
+  assert.deepEqual(effectiveEffort(cfg, "claude-sonnet-5"), { level: "high", source: "api-default" });
 });
 
 test("effectiveEffort: an unset opt-in home model stays unnamed", () => {
@@ -353,8 +353,6 @@ test("providerBaseUrl: the three subscription backends default their endpoint, t
   assert.equal(providerBaseUrl({ type: "anthropic" }), ANTHROPIC_BASE_URL);
   assert.equal(providerBaseUrl({ type: "anthropic", baseUrl: "http://127.0.0.1:8787" }), "http://127.0.0.1:8787");
   assert.equal(providerBaseUrl({ type: "codex" }), "https://chatgpt.com/backend-api");
-  // No HTTP endpoint exists on this path, so the marker is the effective identity.
-  assert.equal(providerBaseUrl({ type: "claude-sdk" }), "claude-sdk");
   // An openai-shaped provider without a baseUrl is a broken config, not a default to invent.
   assert.equal(providerBaseUrl({ type: "openai" }), "");
   assert.equal(providerBaseUrl(undefined), "");
@@ -388,7 +386,6 @@ test("effectiveEffort: the native Anthropic backend names the default the API ap
 });
 
 test("isEffortNativeBackend covers every engine that steers effort itself", () => {
-  assert.equal(isEffortNativeBackend("claude-sdk"), true);
   assert.equal(isEffortNativeBackend("codex"), true);
   assert.equal(isEffortNativeBackend("anthropic"), true);
   assert.equal(isEffortNativeBackend("openai"), false);

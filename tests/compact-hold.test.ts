@@ -15,6 +15,7 @@ import type { SessionData } from "../src/sessions/store.ts";
 import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
+import { mockFetch } from "./helpers/mock-fetch.ts";
 
 function makeConfig(): MyClawConfig {
   return {
@@ -27,9 +28,7 @@ function makeConfig(): MyClawConfig {
       apiKey: "k",
       vision: false,
       limit: { context: 128000, output: 4096 },
-      // A claude-sdk provider: /compact then goes to the SDK engine, the one that runs for
-      // minutes and drives a CLI process on the session file.
-      providers: { test: { type: "claude-sdk", baseUrl: "https://test.example.com", apiKeyEnv: "TEST_KEY" } },
+      providers: { test: { baseUrl: "https://test.example.com", apiKeyEnv: "TEST_KEY" } },
       models: [{ id: "test-model", label: "Test", provider: "test" }],
     },
     agents: {},
@@ -37,16 +36,35 @@ function makeConfig(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
+/**
+ * Long enough for the summarizer to have something to compact: below
+ * `MIN_MESSAGES_TO_COMPACT` it refuses before ever reaching the wire.
+ */
 function makeSession(id: string): SessionData {
+  const messages = Array.from({ length: 14 }, (_, i) => ({
+    role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+    content: `turn ${i} ${"filler ".repeat(20)}`,
+    timestamp: new Date().toISOString(),
+  }));
   return {
     id,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
-    messages: [],
+    messages,
     modelOverride: "test-model",
   };
+}
+
+/** A summary long enough to clear the summarizer's own floor. */
+const SUMMARY = `The conversation covered ${"a lot of ground ".repeat(8)}and ended there.`;
+
+function summaryResponse(content: string): Response {
+  return new Response(
+    JSON.stringify({ choices: [{ message: { role: "assistant", content } }], usage: {} }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
 }
 
 afterEach(() => {
@@ -64,43 +82,47 @@ test("a compaction in flight refuses a second one, and the hold is released afte
   const config = makeConfig();
   const session = makeSession("s2");
   let release!: () => void;
-  const inflight = new Promise<{ text: string }>((resolve) => {
-    release = () => resolve({ text: "Context compacted (SDK session summarized)." });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mock = mockFetch(async () => {
+    await gate;
+    return summaryResponse(SUMMARY);
   });
 
-  const first = handleCompactCommand({
-    config,
-    session,
-    sdkCompact: () => inflight,
-    persist: async () => {},
-  });
+  try {
+    const first = handleCompactCommand({ config, session, persist: async () => {} });
 
-  // The engine is still working: the session is taken, and a second /compact says so instead of
-  // driving a second CLI process onto the same session file.
-  while (!runRegistry.isCompacting("s2")) await Promise.resolve();
-  const second = await handleCompactCommand({
-    config,
-    session,
-    sdkCompact: () => inflight,
-    persist: async () => {},
-  });
-  assert.equal(second.text, "A compaction is already running on this session.");
+    // The summarizer is still working: the session is taken, and a second /compact says so
+    // instead of rewriting the same history twice.
+    while (!runRegistry.isCompacting("s2")) await Promise.resolve();
+    const second = await handleCompactCommand({ config, session, persist: async () => {} });
+    assert.equal(second.text, "A compaction is already running on this session.");
 
-  release();
-  assert.deepEqual(await first, { text: "Context compacted (SDK session summarized)." });
-  assert.equal(runRegistry.isCompacting("s2"), false);
+    release();
+    const outcome = await first;
+    assert.equal(outcome.ok, true);
+    assert.match(outcome.text, /Context compacted/);
+    assert.equal(runRegistry.isCompacting("s2"), false);
+  } finally {
+    mock.restore();
+  }
 });
 
-test("the hold is released when the engine throws", async () => {
-  await assert.rejects(
-    handleCompactCommand({
+test("the hold is released when the summarizer fails", async () => {
+  // A failed summary is an outcome, not a throw: what matters here is that the session is free
+  // again, because a hold left standing parks every later message forever.
+  const mock = mockFetch(async () => summaryResponse(""));
+  try {
+    const outcome = await handleCompactCommand({
       config: makeConfig(),
       session: makeSession("s3"),
-      sdkCompact: () => Promise.reject(new Error("cli died")),
       persist: async () => {},
-    }),
-    /cli died/,
-  );
+    });
+    assert.equal(outcome.ok, false);
+  } finally {
+    mock.restore();
+  }
   assert.equal(runRegistry.isCompacting("s3"), false);
 });
 
@@ -121,31 +143,17 @@ test("a message waits for the compaction instead of resuming the history it is r
   assert.equal(routed, true);
 });
 
-test("/stop reaches a compaction, and the engine is handed the signal that carries it", async () => {
-  const session = makeSession("s5");
-  let seen: AbortSignal | undefined;
-  let aborted = false;
+test("/stop reaches a compaction and aborts the signal its hold carries", async () => {
+  // /stop must find the compaction, not report "nothing to stop" because only runs are indexed.
+  const held = runRegistry.beginCompaction("s5");
+  assert.notEqual(held, null);
+  assert.equal(held!.signal.aborted, false);
 
-  const outcome = handleCompactCommand({
-    config: makeConfig(),
-    session,
-    sdkCompact: (_s, stopSignal) => {
-      seen = stopSignal;
-      return new Promise<{ text: string }>((resolve) => {
-        stopSignal?.addEventListener("abort", () => {
-          aborted = true;
-          resolve({ text: "Compaction stopped." });
-        });
-      });
-    },
-    persist: async () => {},
-  });
-
-  while (!runRegistry.isCompacting("s5")) await Promise.resolve();
   assert.equal(runRegistry.stop("s5"), true, "/stop must report that it stopped something");
-  assert.equal((await outcome).text, "Compaction stopped.");
-  assert.equal(aborted, true);
-  assert.equal(seen?.aborted, true);
+  assert.equal(held!.signal.aborted, true);
+
+  held!.release();
+  assert.equal(runRegistry.isCompacting("s5"), false);
 });
 
 test("a compaction counts as work in flight for the app's activity probe", () => {
@@ -161,64 +169,61 @@ test("a compaction counts as work in flight for the app's activity probe", () =>
  * every end of the command: the notification exists precisely for the case where nobody is
  * looking at the thread, so an end that stays silent is an end nobody hears about.
  */
-test("the end of a /compact is announced once, whatever the engine answered", async () => {
+test("the end of a /compact is announced once, whatever the summarizer answered", async () => {
   const seen: HookEventMap["session:compact:finished"][] = [];
   const collect = (payload: HookEventMap["session:compact:finished"]): void => {
     seen.push(payload);
   };
   hooks.on("session:compact:finished", collect);
 
-  await handleCompactCommand({
-    config: makeConfig(),
-    session: makeSession("s7"),
-    sdkCompact: async () => ({ text: "Context compacted (SDK session summarized).", summary: "kept", ok: true }),
-    persist: async () => {},
-    threadId: "thread-7",
-  });
-  assert.equal(seen.length, 1);
-  assert.equal(seen[0]?.engine, "sdk");
-  assert.equal(seen[0]?.ok, true);
-  assert.equal(seen[0]?.threadId, "thread-7");
-  assert.equal(seen[0]?.sessionId, "s7");
-  assert.equal(typeof seen[0]?.durationMs, "number");
-
-  // An engine that ran and rewrote nothing is not a compaction: the notification must say so
-  // rather than announce a context that was never freed.
-  await handleCompactCommand({
-    config: makeConfig(),
-    session: makeSession("s8"),
-    sdkCompact: async () => ({ text: "Nothing to compact yet on this session.", ok: false }),
-    persist: async () => {},
-  });
-  assert.equal(seen.length, 2);
-  assert.equal(seen[1]?.ok, false);
-  assert.equal(seen[1]?.threadId, undefined);
-
-  await assert.rejects(
-    handleCompactCommand({
+  let mock = mockFetch(async () => summaryResponse(SUMMARY));
+  try {
+    await handleCompactCommand({
       config: makeConfig(),
-      session: makeSession("s9"),
-      sdkCompact: () => Promise.reject(new Error("cli died")),
+      session: makeSession("s7"),
       persist: async () => {},
-    }),
-    /cli died/,
-  );
-  assert.equal(seen.length, 3);
-  assert.equal(seen[2]?.ok, false);
-  assert.equal(seen[2]?.text, "cli died");
+      threadId: "thread-7",
+    });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.engine, "local");
+    assert.equal(seen[0]?.ok, true);
+    assert.equal(seen[0]?.threadId, "thread-7");
+    assert.equal(seen[0]?.sessionId, "s7");
+    assert.equal(typeof seen[0]?.durationMs, "number");
 
-  // A session already busy never starts an engine, so it must not announce a compaction that
-  // did not happen.
-  const held = runRegistry.beginCompaction("s10");
-  await handleCompactCommand({
-    config: makeConfig(),
-    session: makeSession("s10"),
-    sdkCompact: async () => ({ text: "unreachable", ok: true }),
-    persist: async () => {},
-  });
-  assert.equal(seen.length, 3);
-  held!.release();
-  hooks.off("session:compact:finished", collect);
+    // A summarizer that ran and rewrote nothing is not a compaction: the notification must say so
+    // rather than announce a context that was never freed.
+    mock.restore();
+    mock = mockFetch(async () => summaryResponse("too short"));
+    await handleCompactCommand({
+      config: makeConfig(),
+      session: makeSession("s8"),
+      persist: async () => {},
+    });
+    assert.equal(seen.length, 2);
+    assert.equal(seen[1]?.ok, false);
+    assert.equal(seen[1]?.threadId, undefined);
+
+    // A session too short to compact never reaches the wire, and still announces its end.
+    const short = { ...makeSession("s9"), messages: [] };
+    await handleCompactCommand({ config: makeConfig(), session: short, persist: async () => {} });
+    assert.equal(seen.length, 3);
+    assert.equal(seen[2]?.ok, false);
+
+    // A session already busy never starts a summarizer, so it must not announce a compaction that
+    // did not happen.
+    const held = runRegistry.beginCompaction("s10");
+    await handleCompactCommand({
+      config: makeConfig(),
+      session: makeSession("s10"),
+      persist: async () => {},
+    });
+    assert.equal(seen.length, 3);
+    held!.release();
+  } finally {
+    mock.restore();
+    hooks.off("session:compact:finished", collect);
+  }
 });
 
 /**

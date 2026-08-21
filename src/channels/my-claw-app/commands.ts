@@ -45,7 +45,6 @@ export interface MyClawAppCommandDeps {
   customDir?: string;
   workspaceSkillsDir?: string;
   listCronJobs?: () => ReturnType<typeof loadJobs>;
-  sdkCompact?: (session: SessionData, stopSignal?: AbortSignal) => Promise<import("../../agent/backend.ts").CompactOutcome>;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
@@ -174,7 +173,6 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           config: deps.config,
           session,
           instructions: args.trim() || undefined,
-          sdkCompact: deps.sdkCompact,
           persist: () => deps.sessionManager.persist(sessionId),
           threadId,
         });

@@ -17,7 +17,7 @@ const FILE = {
     defaultProvider: "litellm",
     providers: {
       litellm: { baseUrl: "https://litellm.test/v1", apiKeyEnv: "LITELLM_API_KEY", discover: true },
-      anthropic: { type: "claude-sdk", group: "Claude (abo)" },
+      anthropic: { type: "anthropic", group: "Claude (abo)" },
     },
     models: [
       { id: "mimo", label: "MiMo", provider: "litellm" },
@@ -85,12 +85,12 @@ describe("upsertProvider", () => {
     expect((await upsertProvider("ok", { type: "gemini" as never })).ok).toBe(false);
   });
 
-  test("openai needs a baseUrl, sdk types reject one and a key env", async () => {
+  test("openai needs a baseUrl, subscription types reject one and a key env", async () => {
     await writeConfigFile();
     expect((await upsertProvider("naked", { type: "openai" })).ok).toBe(false);
-    expect((await upsertProvider("sdk", { type: "claude-sdk", baseUrl: "https://x" })).ok).toBe(false);
-    expect((await upsertProvider("sdk", { type: "codex", apiKeyEnv: "CODEX_KEY" })).ok).toBe(false);
-    const ok = await upsertProvider("sdk", { type: "claude-sdk", group: "Claude (abo)" });
+    expect((await upsertProvider("abo", { type: "anthropic", baseUrl: "https://x" })).ok).toBe(false);
+    expect((await upsertProvider("abo", { type: "codex", apiKeyEnv: "CODEX_KEY" })).ok).toBe(false);
+    const ok = await upsertProvider("abo", { type: "anthropic", group: "Claude (abo)" });
     expect(ok.ok).toBe(true);
   });
 });

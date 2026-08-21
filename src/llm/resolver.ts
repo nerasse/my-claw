@@ -10,9 +10,8 @@ import { CODEX_BASE_URL } from "./codex-auth.ts";
 export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
 /**
- * The endpoint a provider actually talks to, which is not always the one it declares: the three
- * subscription backends default theirs, and `claude-sdk` has no HTTP endpoint at all so it carries
- * a marker instead.
+ * The endpoint a provider actually talks to, which is not always the one it declares: the two
+ * subscription backends (codex, anthropic) default theirs.
  *
  * Exported because the resolver is not the only consumer. Anything that has to recognise the
  * vendor behind a provider (pricing, the models.dev capability gap-fill) needs the effective
@@ -22,8 +21,6 @@ export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 export function providerBaseUrl(provider: LlmProviderConfig | undefined): string {
   if (provider?.baseUrl) return provider.baseUrl;
   switch (provider?.type) {
-    case "claude-sdk":
-      return "claude-sdk";
     case "anthropic":
       return ANTHROPIC_BASE_URL;
     case "codex":
@@ -127,7 +124,7 @@ export function leafModelId(config: LlmConfig, modelId: string): string {
  * Effective effort for a run: session override > the tag's own pin > the scope's pin (a cron
  * job first, then the agent) > the global default. The tag is indivisible: referencing it
  * accepts the effort it carries, and only the session sits above it. Only emitted when it
- * should actually be sent — claude-sdk and codex accept it natively; other openai-compatible
+ * should actually be sent — anthropic and codex accept it natively; other openai-compatible
  * providers get it only when the model opts in via `supportsEffort`.
  */
 function computeEffort(
@@ -200,21 +197,6 @@ function resolveFromMerged(
   const providerRoute = ref.endpoint && isOpenRouterBaseUrl(provider.baseUrl) ? { providerRoute: ref.endpoint } : {};
 
   // The tag's own pin rides above every scope: referencing a tag accepts both halves of it.
-  if (provider.type === "claude-sdk") {
-    return {
-      backend: "claude-sdk",
-      // No HTTP endpoint on this path; the marker keeps analytics rows self-describing.
-      baseUrl: providerBaseUrl(provider),
-      model: rawModelId,
-      ...apiModel,
-      provider: providerName,
-      vision: model?.vision ?? merged.vision,
-      limit: model?.limit ?? merged.limit,
-      fallbackModel: provider.fallbackModel,
-      effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
-    };
-  }
-
   if (provider.type === "anthropic") {
     return {
       backend: "anthropic",
@@ -397,8 +379,8 @@ export const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "
 
 /**
  * Whether the effort UI should be offered, and the levels to show. Enabled when any model can
- * actually honor effort (claude-sdk backend or an opt-in `supportsEffort`) or a global default
- * is set — otherwise the menu entry would be a no-op.
+ * actually honor effort (anthropic/codex backend or an opt-in `supportsEffort`) or a global
+ * default is set — otherwise the menu entry would be a no-op.
  */
 export function effortOptionsFor(config: LlmConfig): { enabled: boolean; levels: EffortLevel[] } {
   const models = config.models ?? [];
@@ -425,10 +407,10 @@ const DOCUMENTED_DEFAULT_EFFORT: EffortLevel = "high";
  * list out, and each new engine had to be remembered in all of them.
  */
 export function isEffortNativeBackend(backend: ResolvedLlmConfig["backend"]): boolean {
-  return backend === "claude-sdk" || backend === "codex" || backend === "anthropic";
+  return backend === "codex" || backend === "anthropic";
 }
 
-export type EffortSource = "session" | "tag" | "scope" | "config" | "sdk-default" | "api-default" | "provider-default" | "unsupported";
+export type EffortSource = "session" | "tag" | "scope" | "config" | "api-default" | "provider-default" | "unsupported";
 
 export interface EffectiveEffort {
   // Absent when nothing sets a level and the provider documents no default of its own.
@@ -472,20 +454,6 @@ export function effectiveEffort(
   if (tag?.effort) return { level: shown(tag.effort), source: "tag" };
   if (scopeEffort) return { level: shown(scopeEffort), source: "scope" };
   if (config.effort) return { level: shown(config.effort), source: "config" };
-  if (backend === "claude-sdk") return { level: DOCUMENTED_DEFAULT_EFFORT, source: "sdk-default" };
   if (backend === "anthropic") return { level: DOCUMENTED_DEFAULT_EFFORT, source: "api-default" };
   return { source: "provider-default" };
-}
-
-/**
- * True when this model id (or the default) resolves to the claude-sdk backend. Resolution
- * failures (stale override after a config edit) count as "not SDK" so callers fall back to
- * paths that surface a proper error.
- */
-export function isSdkBackedModel(config: LlmConfig, modelId?: string): boolean {
-  try {
-    return resolveLlmConfig(config, modelId).backend === "claude-sdk";
-  } catch {
-    return false;
-  }
 }

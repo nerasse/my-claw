@@ -1,72 +1,127 @@
 /**
- * Reading a compaction summary back out of the SDK transcript. Verified against a real
- * transcript (16 kB summary, preamble and trailing instructions stripped) before being frozen
- * into these fixtures.
+ * The summary a compaction produces. There is one engine now, so the summary is the local
+ * summarizer's own output rather than something read back out of an engine-owned transcript: it is
+ * returned to the caller *and* left in the history as the message the next run resumes from.
  */
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { extractCompactSummary, readCompactSummary } from "../../src/agent/claude-sdk/transcript.ts";
-import { MY_CLAW_DIR } from "../../src/core/config.ts";
+import { compactSession } from "../../src/sessions/compaction.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
+import type { MyClawConfig } from "../../src/core/config.ts";
+import type { SessionData } from "../../src/sessions/store.ts";
 
-const BOUNDARY = JSON.stringify({
-  type: "system",
-  subtype: "compact_boundary",
-  compactMetadata: { trigger: "manual", preTokens: 250869 },
-});
-
-function continuation(summary: string): string {
-  return JSON.stringify({
-    type: "user",
-    message: {
-      role: "user",
-      content:
-        "This session is being continued from a previous conversation that ran out of context. " +
-        "The summary below covers the earlier portion of the conversation.\n\nSummary:\n" +
-        summary +
-        "\n\nIf you need specific details from before compaction (like exact code snippets), " +
-        "read the full transcript at: /tmp/whatever.jsonl\nContinue the conversation.",
+function config(): MyClawConfig {
+  return {
+    whitelist: [], blacklist: [], channels: {},
+    llm: {
+      defaultProvider: "test",
+      defaultModel: "test-model",
+      providers: { test: { baseUrl: "https://test.example.com", apiKeyEnv: "TEST_KEY" } },
+      models: [{ id: "test-model", label: "Test", provider: "test" }],
     },
-  });
+    agents: {},
+  } as unknown as MyClawConfig;
 }
 
-test("the summary is taken from the continuation message, without the wrapper the CLI adds", () => {
-  const lines = [
-    JSON.stringify({ type: "user", message: { role: "user", content: "before the compaction" } }),
-    BOUNDARY,
-    continuation("1. What the owner asked\n2. What was built"),
-    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "after" }] } }),
-  ];
-  assert.equal(extractCompactSummary(lines), "1. What the owner asked\n2. What was built");
+/** Long enough for the summarizer to have a middle to replace between head and tail. */
+function session(): SessionData {
+  const now = new Date().toISOString();
+  return {
+    id: "my-claw-app/thread/neras/compact",
+    platform: "my-claw-app",
+    chatType: "dm",
+    createdAt: now,
+    lastActiveAt: now,
+    modelOverride: "test-model",
+    messages: Array.from({ length: 14 }, (_, i) => ({
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: `turn ${i} ${"filler ".repeat(20)}`,
+      timestamp: now,
+    })),
+  };
+}
+
+function reply(content: string): Response {
+  return new Response(
+    JSON.stringify({ choices: [{ message: { role: "assistant", content } }], usage: {} }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+const SUMMARY = `1. What the owner asked 2. What was built ${"and the rest of it ".repeat(5)}`;
+
+test("the summary is returned and left in the history as the message the next run resumes from", async () => {
+  const mock = mockFetch(async () => reply(SUMMARY));
+  try {
+    const s = session();
+    const before = s.messages.length;
+    const result = await compactSession(config(), s);
+    assert.equal(result.ok, true);
+    assert.equal(result.summary, SUMMARY.trim());
+    assert.equal(result.beforeCount, before);
+    assert.ok(result.afterCount < before);
+    // The summary is in the history, wrapped so the model reads it as prior context.
+    const kept = s.messages.find((m) => m.content.includes(SUMMARY.trim()));
+    assert.ok(kept, "the summary must survive in the session it compacted");
+    assert.match(kept!.content, /Prior context summarized/);
+  } finally {
+    mock.restore();
+  }
 });
 
-test("only the last compaction is quoted: an older summary is not the current context", () => {
-  const lines = [BOUNDARY, continuation("the old one"), BOUNDARY, continuation("the current one")];
-  assert.equal(extractCompactSummary(lines), "the current one");
+test("extra instructions ride along in the summarizer's prompt", async () => {
+  let sent = "";
+  const mock = mockFetch(async (_url, init) => {
+    sent = String((init as RequestInit | undefined)?.body ?? "");
+    return reply(SUMMARY);
+  });
+  try {
+    await compactSession(config(), session(), "keep every file path");
+    assert.match(sent, /keep every file path/);
+  } finally {
+    mock.restore();
+  }
 });
 
-test("a transcript with no compaction yields nothing", () => {
-  const lines = [JSON.stringify({ type: "user", message: { role: "user", content: "hello" } })];
-  assert.equal(extractCompactSummary(lines), undefined);
+test("an empty or too-short summary is refused rather than written over the history", async () => {
+  for (const content of ["", "too short"]) {
+    const mock = mockFetch(async () => reply(content));
+    try {
+      const s = session();
+      const before = [...s.messages];
+      const result = await compactSession(config(), s);
+      assert.equal(result.ok, false);
+      assert.equal(result.afterCount, before.length);
+      assert.deepEqual(s.messages, before, "a refused compaction must leave the history untouched");
+    } finally {
+      mock.restore();
+    }
+  }
 });
 
-test("a boundary followed by an ordinary message yields nothing rather than quoting it", () => {
-  const lines = [BOUNDARY, JSON.stringify({ type: "user", message: { role: "user", content: "carry on" } })];
-  assert.equal(extractCompactSummary(lines), undefined);
+test("a refusal is detected as one instead of being stored as the context", async () => {
+  const mock = mockFetch(async () => reply(`I cannot summarize this conversation ${"for you ".repeat(10)}`));
+  try {
+    const s = session();
+    const result = await compactSession(config(), s);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /refused/);
+  } finally {
+    mock.restore();
+  }
 });
 
-test("a truncated line is skipped instead of throwing on the whole transcript", () => {
-  const lines = [BOUNDARY, '{"type":"user","message":{"role":"user","conte', continuation("survived")];
-  assert.equal(extractCompactSummary(lines), "survived");
-});
-
-test("the transcript is found by session id, whichever project directory holds it", async () => {
-  const dir = join(MY_CLAW_DIR, "claude-sdk", "projects", "-home-someone-elsewhere");
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "sess-42.jsonl"), [BOUNDARY, continuation("found by id")].join("\n"));
-
-  assert.equal(await readCompactSummary("sess-42"), "found by id");
-  assert.equal(await readCompactSummary("no-such-session"), undefined);
+test("a session too short to compact says so before reaching the wire", async () => {
+  const mock = mockFetch(async () => {
+    throw new Error("the summarizer must not be called");
+  });
+  try {
+    const s = { ...session(), messages: [] };
+    const result = await compactSession(config(), s);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /too short/);
+  } finally {
+    mock.restore();
+  }
 });

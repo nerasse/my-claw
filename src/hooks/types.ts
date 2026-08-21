@@ -217,15 +217,6 @@ export interface HookEventMap {
    * different figures.
    */
   "session:context:measured": { sessionId: string };
-  /** Local history was replayed into a fresh SDK session (home backend -> claude-sdk). */
-  "session:context:transferred": {
-    sessionId: string;
-    at: string;
-    model: string;
-    messages: number;
-    dropped: number;
-    tokens: number;
-  };
 
   // === MEMORY LIFECYCLE ===
   "memory:store": { id: number; category: string; decision: string };

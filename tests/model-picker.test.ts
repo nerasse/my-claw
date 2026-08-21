@@ -268,10 +268,10 @@ test("effort: root menu has no effort entry when disabled", () => {
 });
 
 test("effort: header suffix names the level and where it comes from", () => {
-  // "high because you asked" and "high because the SDK falls back to it" are different answers,
+  // "high because you asked" and "high because the API falls back to it" are different answers,
   // and the old bare "default" gave neither.
   assert.equal(effortPicker().effortHeaderSuffix(at("high")), " — Effort: high (session)");
-  assert.equal(effortPicker().effortHeaderSuffix(at("high", "sdk-default")), " — Effort: high (SDK default)");
+  assert.equal(effortPicker().effortHeaderSuffix(at("high", "api-default")), " — Effort: high (API default)");
   assert.equal(effortPicker().effortHeaderSuffix(at("medium", "config")), " — Effort: medium (config)");
   assert.equal(effortPicker().effortHeaderSuffix(at("low", "tag")), " — Effort: low (tag pin)");
   assert.equal(effortPicker().effortHeaderSuffix(at("low", "scope")), " — Effort: low (job or agent pin)");
@@ -411,7 +411,7 @@ test("syncFromConfig hides effort for a model the parameter never reaches", () =
   picker.syncFromConfig({
     defaultProvider: "litellm",
     defaultModel: "mimo",
-    providers: { litellm: { baseUrl: "https://x/v1" }, anthropic: { type: "claude-sdk" } },
+    providers: { litellm: { baseUrl: "https://x/v1" }, anthropic: { type: "anthropic" } },
     models: [
       { id: "mimo", label: "MiMo", provider: "litellm" },
       { id: "grok", label: "Grok", provider: "litellm", supportsEffort: true },

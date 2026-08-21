@@ -707,7 +707,7 @@ export const PROVIDER_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
  * headers stay owner-only, and the env key has its own page (providers.env.*).
  */
 export interface ProviderPatch {
-  type?: "openai" | "claude-sdk" | "codex" | "anthropic";
+  type?: "openai" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
   group?: string;
@@ -717,7 +717,7 @@ export interface ProviderPatch {
   fallbackModel?: string;
 }
 
-const PROVIDER_TYPES = ["openai", "claude-sdk", "codex", "anthropic"] as const;
+const PROVIDER_TYPES = ["openai", "codex", "anthropic"] as const;
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**

@@ -11,10 +11,6 @@ import { anthropicResponse, anthropicResponseStream } from "./anthropic.ts";
  * compaction summarizer and memory consolidation. The last two used to call `chatCompletion`
  * directly and force their model onto an OpenAI-compatible one, which meant a 1M-context Opus
  * session was summarized by whichever chat-completions model happened to be listed first.
- *
- * `claude-sdk` is absent on purpose: it is not an HTTP transport but a subprocess with its own
- * session, so a caller that needs a single completion cannot reach it. `homeLoopOrFallback` in the
- * resolver is what keeps that case out of here.
  */
 export function llmComplete(
   config: ResolvedLlmConfig,

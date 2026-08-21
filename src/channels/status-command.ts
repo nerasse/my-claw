@@ -116,9 +116,6 @@ interface StatusData {
   measured?: number;
   estimated: number;
   occupied: number;
-  /** The engine owns the history and `messages` is only a log of it, so the estimate over the
-   *  mirror describes a transcript the model no longer holds. */
-  mirrorIsTranscript: boolean;
   autoCompactOn: boolean;
   autoCompactThresholdPct: number;
   autoCompactThresholdTokens: number;
@@ -183,7 +180,6 @@ function collectStatusData(p: StatusParams): StatusData {
     ...(measured ? { measured } : {}),
     estimated,
     occupied,
-    mirrorIsTranscript: mirror.kind === "transcript",
     autoCompactOn,
     autoCompactThresholdPct: Math.round(threshold * 100),
     autoCompactThresholdTokens: autoCompactOn ? Math.round(window.effective * threshold) : 0,
@@ -232,16 +228,12 @@ function formatStatusText(d: StatusData): string {
   } else {
     lines.push("  measured      no call recorded yet");
   }
-  lines.push(`  estimated     ${short(d.estimated)} (chars/4${d.mirrorIsTranscript ? ", whole mirror: the SDK compacts its own transcript" : ", under-counts"})`);
+  lines.push(`  estimated     ${short(d.estimated)} (chars/4, under-counts)`);
   lines.push(`  occupied      ${short(d.occupied)} (measured prompt plus the turns since, drives auto-compaction)`);
   if (d.autoCompactOn) {
     lines.push(`  auto-compact  on, threshold ${d.autoCompactThresholdPct}% = ${short(d.autoCompactThresholdTokens)}`);
   } else {
     lines.push("  auto-compact  off");
-  }
-  if (session.contextTransfer) {
-    const t = session.contextTransfer;
-    lines.push(`  carried to ${t.model}: ${t.messages} messages (~${short(t.tokens)} tokens)${t.dropped > 0 ? `, ${t.dropped} oldest dropped` : ""}`);
   }
 
   // Same id, two very different numbers: /new resets the session counter while analytics keeps
@@ -286,7 +278,6 @@ function formatStatusText(d: StatusData): string {
   lines.push(`  active run    ${d.live}`);
   lines.push(`  verbose       ${d.verboseOff ? "off" : "on"}`);
   if (session.approvedTools?.length) lines.push(`  approved      ${session.approvedTools.join(", ")}`);
-  if (session.sdkSessionId) lines.push(`  sdk session   \`${session.sdkSessionId}\``);
 
   return lines.join("\n");
 }
@@ -328,20 +319,9 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
       ...(d.measured ? { measured: { tokens: d.measured, pctOfLimit: (d.measured / limit) * 100 } } : {}),
       estimated: d.estimated,
       occupied: d.occupied,
-      ...(d.mirrorIsTranscript ? { mirrorIsTranscript: true } : {}),
       autoCompactOn: d.autoCompactOn,
       autoCompactThresholdPct: d.autoCompactThresholdPct,
       autoCompactThresholdTokens: d.autoCompactThresholdTokens,
-      ...(session?.contextTransfer
-        ? {
-            carried: {
-              model: session.contextTransfer.model,
-              messages: session.contextTransfer.messages,
-              tokens: session.contextTransfer.tokens,
-              dropped: session.contextTransfer.dropped,
-            },
-          }
-        : {}),
     },
     conversation: session?.tokenUsage
       ? {
@@ -383,7 +363,6 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
       activeRun: d.live,
       verbose: !d.verboseOff,
       approvedTools: session?.approvedTools ?? [],
-      ...(session?.sdkSessionId ? { sdkSessionId: session.sdkSessionId } : {}),
     },
   };
 }

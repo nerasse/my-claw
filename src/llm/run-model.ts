@@ -126,11 +126,11 @@ export function availabilityOf(
   // An id declared without a provider, in a config that names none: same single-provider case.
   if (!provider) return config.providers === undefined ? { state: "ready" } : undefined;
 
-  if (provider.type === "claude-sdk") {
-    return world.claudeAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
-  }
   if (provider.type === "codex") {
     return world.codexAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
+  }
+  if (provider.type === "anthropic") {
+    return world.claudeAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
   }
   // An openai-compatible provider needs its key. The resolver's own last-resort env names count:
   // a run would find them, so the picker must not pretend otherwise.

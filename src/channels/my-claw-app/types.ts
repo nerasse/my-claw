@@ -611,14 +611,14 @@ export interface MyClawAppWorkspacesSetPath {
 /**
  * Creates or edits a provider under `llm.providers`. `key` names the entry, so upsert is both
  * the create form and the edit form. Empty strings delete the field, an absent one leaves it
- * alone. `providerType` is the engine ("openai", "claude-sdk", "codex", "anthropic"); the frame's own `type`
+ * alone. `providerType` is the engine ("openai", "codex", "anthropic"); the frame's own `type`
  * discriminates the message, so the two cannot share a name. The env key is never carried here:
  * it has its own pages (providers.env.*).
  */
 export interface MyClawAppProviderUpsert {
   type: "providers.upsert";
   key: string;
-  providerType?: "openai" | "claude-sdk" | "codex" | "anthropic";
+  providerType?: "openai" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
   group?: string;
@@ -1796,16 +1796,9 @@ export interface MyClawAppStatusPayload {
     estimated: number;
     /** What actually drives auto-compaction. */
     occupied: number;
-    /**
-     * The engine owns the history and `messages` is only a log of it (claude-sdk), so `estimated`
-     * covers turns the model already summarised away. Absent means the mirror is the prompt.
-     */
-    mirrorIsTranscript?: boolean;
     autoCompactOn: boolean;
     autoCompactThresholdPct: number;
     autoCompactThresholdTokens: number;
-    /** A context handed to another model (engine switch) is reported here. */
-    carried?: { model: string; messages: number; tokens: number; dropped: number };
   };
   /** Session-counter figures since /new; null when no call has been made. */
   conversation: {
@@ -1845,7 +1838,6 @@ export interface MyClawAppStatusPayload {
     activeRun: string;
     verbose: boolean;
     approvedTools: string[];
-    sdkSessionId?: string;
   };
 }
 

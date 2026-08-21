@@ -308,25 +308,6 @@ export interface SessionData {
   // in `meta` is only a fallback: attribution follows whoever asked for this run.
   invokedBy?: string;
   tokenUsage?: TokenUsage;
-  // Claude Agent SDK session to resume on the claude-sdk backend. The SDK owns that
-  // history; `messages` is only a mirror for UI/commands/archives on that path.
-  sdkSessionId?: string;
-  // Timestamp of the newest transcript entry the SDK session already knows about, so turns
-  // taken on the home backend in between can be replayed instead of silently vanishing.
-  sdkSyncedAt?: string;
-  // Index in `messages` where the SDK's live transcript starts: the mirror position of the last
-  // compaction boundary the engine reported. Everything before it is summarised inside the SDK and
-  // is no longer in the prompt, so occupancy must not count it. See docs/context-window.md.
-  sdkTranscriptBase?: number;
-  // Last time local history was replayed into a fresh SDK session (crossing from the home
-  // backend). Kept so /status can report it, since the transfer is otherwise invisible.
-  contextTransfer?: {
-    at: string;
-    model: string;
-    messages: number;
-    dropped: number;
-    tokens: number;
-  };
   /**
    * Nested AGENTS.md this conversation's runs actually injected, in discovery order. The collector
    * is run-local by design (docs/nested-agents.md), so this is the only lasting trace of the

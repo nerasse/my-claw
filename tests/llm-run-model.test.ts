@@ -30,7 +30,7 @@ function config(over: Partial<MyClawConfig> = {}): MyClawConfig {
       defaultProvider: "anthropic",
       defaultModel: "claude-sonnet-5",
       providers: {
-        anthropic: { type: "claude-sdk", discover: true },
+        anthropic: { type: "anthropic", discover: true },
         chatgpt: { type: "codex", discover: true },
         litellm: { baseUrl: "https://litellm.example/v1", apiKeyEnv: "LITELLM_API_KEY", discover: true },
       },
@@ -139,7 +139,7 @@ describe("writing a pick", () => {
 describe("the backend follows the resolved model", () => {
   test("each provider type routes to its own engine, never the default provider's", () => {
     const c = config();
-    expect(resolveRunModel(c, { agent: "main", sessionModel: "claude-sonnet-5" }, world()).backend).toBe("claude-sdk");
+    expect(resolveRunModel(c, { agent: "main", sessionModel: "claude-sonnet-5" }, world()).backend).toBe("anthropic");
     expect(resolveRunModel(c, { agent: "main", sessionModel: "gpt-5.6-sol" }, world()).backend).toBe("codex");
     expect(resolveRunModel(c, { agent: "main", sessionModel: "qwen" }, world()).backend).toBeUndefined();
   });

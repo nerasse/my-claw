@@ -66,7 +66,7 @@ test("mergeModels: an entry with no window and no discovered window declares non
 test("applyProviderGroups: ungrouped models inherit their provider's group, or its key", () => {
   const providers = {
     litellm: { baseUrl: "x", group: "LiteLLM" },
-    anthropic: { type: "claude-sdk" as const, group: "Claude" },
+    anthropic: { type: "anthropic" as const, group: "Claude" },
     groq: { baseUrl: "y" },
   };
   const models: LlmModelConfig[] = [
@@ -91,52 +91,38 @@ function makeConfig(): LlmConfig {
     defaultModel: "mimo",
     providers: {
       litellm: { baseUrl: "https://litellm.example/v1", apiKeyEnv: "TEST_LLM_KEY", discover: true, group: "LiteLLM" },
-      anthropic: { type: "claude-sdk", discover: true, group: "Claude (abo)" },
+      anthropic: { type: "anthropic", discover: true, group: "Claude (abo)" },
       groq: { baseUrl: "https://groq.example/v1" },
     },
     models: [{ id: "mimo", label: "MiMo", provider: "litellm" }],
   };
 }
 
-test("refresh discovers SDK + OpenAI models, groups them, skips default alias", async () => {
-  const mock = mockFetch(async (url?: string | URL | Request) => {
-    assert.match(String(url), /litellm\.example\/v1\/models$/);
-    return new Response(JSON.stringify({ data: [{ id: "mimo" }, { id: "qwen-72b" }] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
+test("refresh discovers anthropic + OpenAI models, groups them, qualifies every reference", async () => {
+  const token = withClaudeToken();
+  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: ["mimo", "qwen-72b"] }));
 
   try {
-
     const config = makeConfig();
-    const catalog = new ModelCatalog(
-      () => config,
-      async () => [
-        { value: "default", displayName: "Default", resolvedModel: "claude-sonnet-5" },
-        { value: "sonnet", displayName: "Sonnet", supportsEffort: true, supportedEffortLevels: ["low", "high"] },
-        { value: "haiku", displayName: "Haiku" },
-      ],
-    );
+    const catalog = new ModelCatalog(() => config);
     let notified = 0;
     catalog.onUpdate(() => notified++);
     await catalog.refresh();
 
     const ids = catalog.discovered().map((m) => m.id);
-    // "default" skipped; sonnet/haiku from SDK; qwen from openai. Every reference is qualified by
-    // its provider, and carries the id that provider knows as `apiId`.
-    assert.ok(ids.includes("anthropic/sonnet"));
-    assert.ok(ids.includes("anthropic/haiku"));
+    // Versioned Claude ids from the anthropic provider, plain ids from the openai one. Every
+    // reference is qualified by its provider and carries the id that provider knows as `apiId`.
+    assert.ok(ids.includes("anthropic/claude-opus-4-8"));
+    assert.ok(ids.includes("anthropic/claude-sonnet-4-6"));
     assert.ok(ids.includes("litellm/qwen-72b"));
-    assert.ok(!ids.some((id) => id.endsWith("/default")));
 
-    const sonnet = catalog.discovered().find((m) => m.id === "anthropic/sonnet");
-    assert.equal(sonnet?.apiId, "sonnet");
-    assert.equal(sonnet?.provider, "anthropic");
-    assert.equal(sonnet?.group, "Claude (abo)");
-    assert.equal(sonnet?.vision, true);
-    assert.equal(sonnet?.supportsEffort, true);
-    assert.deepEqual(sonnet?.supportedEffortLevels, ["low", "high"]);
+    const opus = catalog.discovered().find((m) => m.id === "anthropic/claude-opus-4-8");
+    assert.equal(opus?.apiId, "claude-opus-4-8");
+    assert.equal(opus?.provider, "anthropic");
+    assert.equal(opus?.group, "Claude (abo)");
+    assert.equal(opus?.vision, true);
+    assert.equal(opus?.supportsEffort, true);
+    assert.deepEqual(opus?.supportedEffortLevels, ["low", "high"]);
 
     const qwen = catalog.discovered().find((m) => m.id === "litellm/qwen-72b");
     assert.equal(qwen?.apiId, "qwen-72b");
@@ -146,33 +132,35 @@ test("refresh discovers SDK + OpenAI models, groups them, skips default alias", 
     assert.equal(notified, 1);
   } finally {
     mock.restore();
+    token.restore();
   }
 });
 
 test("refresh is resilient: a failing provider keeps its previous models", async () => {
   const config = makeConfig();
-  // First refresh: openai fails, SDK ok.
+  const token = withClaudeToken();
+  // First refresh: openai fails, anthropic ok.
   let failFetch = true;
-  const mock = mockFetch(async () => {
-    if (failFetch) throw new Error("network down");
-    return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
+  let mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openaiFail: true }));
 
   try {
-
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet"]);
+    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6"]);
 
-    // Second refresh: openai now works, adds qwen; sonnet still there.
+    // Second refresh: openai now works, adds qwen; the Claude models are still there.
     failFetch = false;
+    void failFetch;
+    mock.restore();
+    mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: ["qwen-72b"] }));
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet", "litellm/qwen-72b"]);
+    assert.deepEqual(
+      catalog.discovered().map((m) => m.id).sort(),
+      ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6", "litellm/qwen-72b"],
+    );
   } finally {
     mock.restore();
+    token.restore();
   }
 });
 
@@ -216,8 +204,16 @@ test("answered(): only a provider that listed in full is evidence about its own 
   // The distinction the model picker rests on: "answered and did not list X" means X is gone,
   // "did not answer" means nothing. Reading the second as the first empties the menu on a hiccup.
   const config = makeConfig();
+  const token = withClaudeToken();
   let failFetch = true;
-  const mock = mockFetch(async () => {
+  const mock = mockFetch(async (url?: string | URL | Request) => {
+    const href = String(url);
+    if (href.includes("api.anthropic.com")) {
+      return new Response(JSON.stringify({ data: VERSIONED_FIXTURE }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (failFetch) throw new Error("network down");
     return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
       status: 200,
@@ -226,8 +222,7 @@ test("answered(): only a provider that listed in full is evidence about its own 
   });
 
   try {
-
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
     // Before any refresh: nothing has testified, so nothing is missing.
     assert.equal(catalog.answered("litellm"), false);
     assert.equal(catalog.listedBy("litellm").size, 0);
@@ -235,7 +230,7 @@ test("answered(): only a provider that listed in full is evidence about its own 
     await catalog.refresh();
     assert.equal(catalog.answered("litellm"), false);
     assert.equal(catalog.answered("anthropic"), true);
-    assert.deepEqual([...catalog.listedBy("anthropic")], ["sonnet"]);
+    assert.deepEqual([...catalog.listedBy("anthropic")].sort(), ["claude-opus-4-8", "claude-sonnet-4-6"]);
 
     failFetch = false;
     await catalog.refresh();
@@ -246,33 +241,38 @@ test("answered(): only a provider that listed in full is evidence about its own 
     failFetch = true;
     await catalog.refresh();
     assert.equal(catalog.answered("litellm"), false);
-    assert.deepEqual(catalog.discovered().map((m) => m.id).sort(), ["anthropic/sonnet", "litellm/qwen-72b"]);
+    assert.deepEqual(
+      catalog.discovered().map((m) => m.id).sort(),
+      ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6", "litellm/qwen-72b"],
+    );
   } finally {
     mock.restore();
+    token.restore();
   }
 });
 
 test("answered(): half an answer from the anthropic provider is not an answer", async () => {
   const config = makeConfig();
-  // The versioned endpoint is only called when a token exists; without one it returns nothing at
-  // all and there is no partial failure to observe.
-  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
-  const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
+  const token = withClaudeToken();
+  // First pass fills the versioned set, so the second has something to fall back on.
+  let mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: [] }));
   try {
-
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
     await catalog.refresh();
-    // The aliases arrived, the versioned list did not: the models kept are partly the previous
-    // set, so this listing cannot prove a versioned model disappeared.
-    assert.ok(catalog.discovered().some((m) => m.id === "anthropic/sonnet"));
+    assert.equal(catalog.answered("anthropic"), true);
+
+    // The versioned endpoint goes down: the models kept are the previous set, so this listing
+    // cannot prove a versioned model disappeared.
+    mock.restore();
+    mock = mockFetch(anthropicAwareFetch({ versionsFail: true, openai: [] }));
+    await catalog.refresh();
+    assert.ok(catalog.discovered().some((m) => m.id === "anthropic/claude-opus-4-8"));
     assert.equal(catalog.answered("anthropic"), false);
     // The provider that did answer is unaffected by its neighbour's half-failure.
     assert.equal(catalog.answered("litellm"), true);
   } finally {
     mock.restore();
-    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
+    token.restore();
   }
 });
 
@@ -286,7 +286,7 @@ test("enabled() false when no provider opts into discovery", () => {
 });
 
 /** Routes the two discovery endpoints used by the anthropic provider tests below. */
-function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolean }) {
+function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolean; openai?: string[]; openaiFail?: boolean }) {
   return async (url?: string | URL | Request) => {
     const href = String(url);
     if (href.includes("api.anthropic.com")) {
@@ -296,10 +296,23 @@ function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolea
         headers: { "Content-Type": "application/json" },
       });
     }
-    return new Response(JSON.stringify({ data: [] }), {
+    if (opts.openaiFail) throw new Error("network down");
+    return new Response(JSON.stringify({ data: (opts.openai ?? []).map((id) => ({ id })) }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+  };
+}
+
+/** The anthropic provider only lists when a subscription token is present. */
+function withClaudeToken(): { restore(): void } {
+  const original = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+  return {
+    restore() {
+      if (original === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+      else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = original;
+    },
   };
 }
 
@@ -321,32 +334,21 @@ const VERSIONED_FIXTURE = [
   },
 ];
 
-test("claude-sdk provider: aliases and pinned versions list flat, like every other provider", async () => {
-  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
-  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
+test("anthropic provider: versioned models list flat in the provider group", async () => {
+  const token = withClaudeToken();
+  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: [] }));
 
   try {
-
     const config = makeConfig();
-    const catalog = new ModelCatalog(() => config, async () => [
-      { value: "sonnet", displayName: "Sonnet", supportsEffort: true, supportedEffortLevels: ["low", "max"] },
-    ]);
+    const catalog = new ModelCatalog(() => config);
     await catalog.refresh();
 
-    // One group per provider, no submenu: the label is what tells the moving alias from the
-    // pinned versions.
-    const alias = catalog.discovered().find((m) => m.id === "anthropic/sonnet");
-    assert.equal(alias?.group, "Claude (abo)");
-    assert.equal(alias?.label, "Sonnet (auto)");
-    // The aliases still come first, so the list opens on the auto-tracking entries.
-    const ids = catalog.discovered().map((m) => m.id);
-    assert.ok(ids.indexOf("anthropic/sonnet") < ids.indexOf("anthropic/claude-sonnet-4-6"));
-
+    // One group per provider, no submenu: the label is what tells the versions apart.
     const opus = catalog.discovered().find((m) => m.id === "anthropic/claude-opus-4-8");
     assert.equal(opus?.group, "Claude (abo)");
     assert.equal(opus?.label, "Opus 4.8");
     assert.equal(opus?.provider, "anthropic");
+    assert.equal(opus?.family, "Opus");
     assert.equal(opus?.supportsEffort, true);
     assert.deepEqual(opus?.supportedEffortLevels, ["low", "high"]);
     assert.deepEqual(opus?.limit, { context: 1000000, output: 128000 });
@@ -358,82 +360,47 @@ test("claude-sdk provider: aliases and pinned versions list flat, like every oth
     assert.equal(sonnet46?.supportedEffortLevels, undefined);
   } finally {
     mock.restore();
-    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
+    token.restore();
   }
 });
 
-test("claude-sdk provider: losing the version endpoint keeps the aliases and the cached versions", async () => {
-  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+test("anthropic provider: losing the version endpoint keeps the cached versions", async () => {
+  const token = withClaudeToken();
   let mock: { restore(): void } | undefined;
 
   try {
-
     const config = makeConfig();
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
 
-    mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
+    mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: [] }));
     await catalog.refresh();
     assert.ok(catalog.discovered().some((m) => m.id === "anthropic/claude-opus-4-8"));
 
-    // The aliases are what make the provider usable, so they must survive on their own; the
-    // previously discovered versions are kept too rather than vanishing from the menu.
+    // The previously discovered versions are kept rather than vanishing from the menu.
     mock.restore();
-    mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
+    mock = mockFetch(anthropicAwareFetch({ versionsFail: true, openai: [] }));
     await catalog.refresh();
     const ids = catalog.discovered().map((m) => m.id).sort();
-    assert.deepEqual(ids, ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6", "anthropic/sonnet"]);
+    assert.deepEqual(ids, ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6"]);
     assert.equal(catalog.discovered().find((m) => m.id === "anthropic/claude-opus-4-8")?.group, "Claude (abo)");
   } finally {
     mock?.restore();
-    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
+    token.restore();
   }
 });
 
-test("claude-sdk provider: no token means aliases only, not a failed refresh", async () => {
-  const mock = mockFetch(anthropicAwareFetch({ versionsFail: true }));
+test("anthropic provider: no token means no models, not a failed refresh", async () => {
+  // Without a subscription token the versioned endpoint is never called, so the provider lists
+  // nothing at all and that empty answer is a complete one.
+  const mock = mockFetch(anthropicAwareFetch({ versionsFail: true, openai: [] }));
   try {
-
     const config = makeConfig();
-    const catalog = new ModelCatalog(() => config, async () => [{ value: "sonnet", displayName: "Sonnet" }]);
+    const catalog = new ModelCatalog(() => config);
     await catalog.refresh();
-    assert.deepEqual(catalog.discovered().map((m) => m.id), ["anthropic/sonnet"]);
+    assert.deepEqual(catalog.discovered().filter((m) => m.provider === "anthropic"), []);
+    assert.equal(catalog.answered("anthropic"), true);
   } finally {
     mock.restore();
-  }
-});
-
-test("claude-sdk provider: an alias is marked (auto) only when its family is known", async () => {
-  const originalToken = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
-  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE }));
-
-  try {
-
-    const config = makeConfig();
-    const catalog = new ModelCatalog(() => config, async () => [
-      { value: "default", displayName: "Default" },
-      { value: "opus[1m]", displayName: "Opus (1M context)" },
-      { value: "mystery", displayName: "Mystery" },
-    ]);
-    await catalog.refresh();
-
-    // A variant marker names the same family as the plain alias, so it tracks a family too.
-    const variant = catalog.discovered().find((m) => m.id === "anthropic/opus[1m]");
-    assert.equal(variant?.group, "Claude (abo)");
-    assert.equal(variant?.label, "Opus (1M context) (auto)");
-    // An alias the versioned list knows nothing about tracks nothing: no "(auto)" on it.
-    const mystery = catalog.discovered().find((m) => m.id === "anthropic/mystery");
-    assert.equal(mystery?.group, "Claude (abo)");
-    assert.equal(mystery?.label, "Mystery");
-    // "default" resolves to another listed model, so it stays out of the menu.
-    assert.ok(!catalog.discovered().some((m) => m.apiId === "default"));
-  } finally {
-    mock.restore();
-    if (originalToken === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = originalToken;
   }
 });
 

@@ -10,9 +10,9 @@ import { CLAUDE_USER_AGENT } from "./anthropic-release.ts";
 // The Claude subscription credentials. Two kinds live here, in one 0600 file:
 //   - `oauth`: access + refresh from the PKCE flow below, access valid ~8 h, refreshed in place;
 //   - `token`: the long-lived token `claude setup-token` prints (~1 year, no refresh).
-// Stored in a my-claw-owned file so it survives restarts and the SDK backend can inject it per
-// run, independent of the systemd EnvironmentFile / ~/.my-claw/.env split. See
-// docs/claude-sdk-backend.md and docs/anthropic-backend.md.
+// Stored in a my-claw-owned file so it survives restarts and the native Anthropic transport can
+// inject it per run, independent of the systemd EnvironmentFile / ~/.my-claw/.env split. See
+// docs/anthropic-backend.md.
 const AUTH_PATH = join(MY_CLAW_DIR, "claude", "auth.json");
 const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 // setup-token prints an "sk-ant-oat..." token; capture it defensively from mixed output.

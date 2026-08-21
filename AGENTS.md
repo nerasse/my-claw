@@ -79,14 +79,7 @@ src/
 │   └── aborted.ts         # rethrowIfAborted + shared abort helpers
 ├── agent/
 │   ├── backend.ts         # AgentBackend interface (router/channels depend on this, not on a concrete engine)
-│   ├── dispatcher.ts      # BackendDispatcher: routes each run to the engine of its resolved model
-│   ├── claude-sdk/        # Claude Agent SDK backend (subscription auth) — docs/claude-sdk-backend.md
-│   │   ├── backend.ts     # ClaudeSdkBackend: run lifecycle, streaming, injections, usage
-│   │   ├── tools.ts       # Per-run in-process MCP server factory (closures = run context)
-│   │   ├── schema.ts      # JSON Schema -> Zod conversion for tool()
-│   │   ├── models.ts      # discoverSdkModels: supportedModels() over the SDK control channel
-│   │   ├── transcript.ts  # Reads a compaction summary back out of the SDK transcript -- docs/compaction.md
-│   │   └── history.ts     # Replays local history into a fresh SDK session (engine switch)
+│   ├── dispatcher.ts      # BackendDispatcher: routes each run to the home loop for its resolved model
 │   ├── bridge.ts          # LLM agent orchestration (home OpenAI-compatible loop)
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
 │   ├── context-pruning.ts # Prunes old tool results from the prompt (home loop)

@@ -9,17 +9,6 @@ import { providerBaseUrl } from "./resolver.ts";
 import { cachedOpenRouterModel, cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
 import type { ModelMetadata } from "./pricing.ts";
 
-export interface DiscoveredSdkModel {
-  value: string;
-  resolvedModel?: string;
-  displayName: string;
-  supportsEffort?: boolean;
-  supportedEffortLevels?: EffortLevel[];
-}
-
-/** Injected so the llm layer never imports the agent/claude-sdk backend. */
-export type SdkDiscoverer = () => Promise<DiscoveredSdkModel[]>;
-
 // The model catalog is fully dynamic: no disk cache. See the ModelCatalog constructor.
 const DISCOVER_TIMEOUT_MS = 15_000;
 
@@ -75,7 +64,7 @@ function discoveredModel(model: Omit<LlmModelConfig, "id"> & { id: string; provi
  * A provider that declares no `group` groups under its own key rather than spilling its models
  * at the root: a discovering provider is not a handful of models (OpenRouter alone returns 400+),
  * and the root is the one screen every picker opens on. `group` stays the exception, for the
- * providers whose key is not what the owner wants to read ("claude-sdk" -> "Claude SDK (abo)").
+ * providers whose key is not what the owner wants to read ("anthropic" -> "Claude (abo)").
  */
 export function applyProviderGroups(
   models: LlmModelConfig[],
@@ -160,7 +149,7 @@ interface WindowTable {
  * from the same models.dev download as the prices. See docs/model-metadata.md.
  *
  * Gap-filling only (R7): a field already set is either a statement by the owner or by a provider
- * answering for its own models (claude-sdk, codex, Anthropic's versioned endpoint), and a community
+ * answering for its own models (codex, Anthropic's versioned endpoint), and a community
  * database outranks neither. A label equal to the id is not a name, it is the placeholder discovery
  * leaves when it had nothing to record, so that counts as a gap.
  *
@@ -357,48 +346,6 @@ async function fetchCodexModels(baseUrl: string): Promise<CodexDiscoveredModel[]
   }
 }
 
-/** Family submenu names keyed by their lowercase form, e.g. "opus" -> "Opus". */
-function familyIndex(versioned: LlmModelConfig[]): Map<string, string> {
-  const families = new Map<string, string>();
-  for (const model of versioned) {
-    if (model.family) families.set(model.family.toLowerCase(), model.family);
-  }
-  return families;
-}
-
-/**
- * The moving aliases, listed in the provider group next to the pinned versions. The "(auto)"
- * suffix is what tells them apart: "Opus (auto)" tracks the latest, "Opus 5" stays put. Every
- * provider lists flat, so this one does too.
- */
-function aliasModels(
-  aliases: DiscoveredSdkModel[],
-  provider: string,
-  config: LlmProviderConfig,
-  families: Map<string, string>,
-): LlmModelConfig[] {
-  const out: LlmModelConfig[] = [];
-  for (const alias of aliases) {
-    // "default" is a redundant alias (resolves to another listed model).
-    if (alias.value === "default") continue;
-    // Variant markers like "opus[1m]" name the same family as the plain alias.
-    const family = families.get(alias.value.replace(/\[.*\]$/, "").toLowerCase());
-    const displayName = alias.displayName || alias.value;
-    out.push(discoveredModel({
-      id: alias.value,
-      label: family ? `${displayName} (auto)` : displayName,
-      provider,
-      group: config.group,
-      // The SDK omits the flag entirely for models without reasoning, so normalize to a
-      // definite false: "unknown" would make the picker offer the whole global list.
-      supportsEffort: alias.supportsEffort === true,
-      supportedEffortLevels: alias.supportedEffortLevels,
-      vision: true,
-    }));
-  }
-  return out;
-}
-
 /**
  * Runtime model catalog: augments config.models with models discovered from providers marked
  * `discover`. Resilient by design — a failed provider keeps the last known set (persisted to
@@ -418,7 +365,6 @@ export class ModelCatalog {
 
   constructor(
     private getConfig: () => LlmConfig,
-    private sdkDiscoverer?: SdkDiscoverer,
   ) {
     // No disk cache: the catalog is rebuilt from live provider answers on every boot and refresh.
     // The trade is deliberate — a provider down at boot shows no models until it answers again,
@@ -514,14 +460,8 @@ export class ModelCatalog {
       let complete = true;
       try {
         if (provider.type === "anthropic") {
-          // No aliases on this path: the moving opus/sonnet/haiku names are an SDK control-channel
+          // No aliases on this path: the moving opus/sonnet/haiku names are a transport control-channel
           // feature, and /v1/models answers with versioned ids the transport can send as-is.
-          next.push(...(await this.claudeVersionedModels(name, provider)));
-        } else if (provider.type === "claude-sdk") {
-          if (!this.sdkDiscoverer) continue;
-          const aliases = await this.sdkDiscoverer();
-          // Versioned models come from a separate endpoint: losing it must not drop the aliases,
-          // which are what makes the provider usable at all.
           let versioned: LlmModelConfig[] = [];
           try {
             versioned = await this.claudeVersionedModels(name, provider);
@@ -531,10 +471,8 @@ export class ModelCatalog {
             // known, so this listing cannot be used as evidence that a model disappeared.
             complete = false;
             void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
-            const aliasIds = new Set(aliases.map((m) => m.value));
-            versioned = this.discoveredModels.filter((m) => m.provider === name && !aliasIds.has(m.apiId ?? m.id));
+            versioned = this.discoveredModels.filter((m) => m.provider === name);
           }
-          next.push(...aliasModels(aliases, name, provider, familyIndex(versioned)));
           next.push(...versioned);
         } else if (provider.type === "codex") {
           const models = await fetchCodexModels(provider.baseUrl ?? "");

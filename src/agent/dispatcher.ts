@@ -1,27 +1,25 @@
 import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import type { AgentBackend, CompactOutcome, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
-import { ClaudeSdkBackend } from "./claude-sdk/backend.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel, type RunModel } from "../llm/run-model.ts";
 import { withoutEndpoint } from "../llm/model-ref.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
-import { runRegistry } from "../core/run-registry.ts";
 import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 
-// A failure of the *provider itself* — outage-class statuses (server errors, quota/credit
-// exhausted) and network/transient errors — is reroutable. 4xx that are not quota/credit are
-// request-specific (a malformed request, a bad key): rerouting would mask a config mistake,
+// A failure of the *provider itself* — outage-class statuses (server errors, payment required,
+// rate limited) and network/transient errors — is reroutable. Other 4xx are request-specific
+// (a malformed request, a bad key, a policy refusal): rerouting would mask a config mistake,
 // exactly like the retry loop refuses to count them toward the circuit breaker.
-const OUTAGE_STATUSES = new Set([402, 403, 429]);
+const OUTAGE_STATUSES = new Set([402, 429]);
 const OUTAGE_TEXT = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|UND_ERR_|fetch failed|overloaded|rate limit|quota|credit|balance|subscription/i;
 
 function isOutageClass(err: unknown): boolean {
@@ -39,16 +37,14 @@ function isOutageClass(err: unknown): boolean {
 }
 
 /**
- * Routes each run to the engine of its resolved model: the home OpenAI-compatible loop
- * or the Claude Agent SDK (docs/claude-sdk-backend.md). The choice is per run, driven by
- * `providers[].type` and the session's `modelOverride`, so `/model` flips a chat between
- * engines with zero process state. Both backends share one preprocessor: echoes and
- * response attachments stay retrievable regardless of which engine handled the message.
+ * Routes each run to the home OpenAI-compatible loop. The engine is picked per run,
+ * driven by `providers[].type` and the session's `modelOverride`, so `/model` flips a
+ * chat between engines with zero process state. A single preprocessor keeps echoes and
+ * response attachments retrievable.
  */
 export class BackendDispatcher implements AgentBackend {
   private preprocessor: MessagePreprocessor;
   private home: AgentBridge;
-  private sdk: ClaudeSdkBackend;
 
   constructor(
     private config: MyClawConfig,
@@ -56,18 +52,14 @@ export class BackendDispatcher implements AgentBackend {
     skillRegistry: SkillRegistry,
     voiceManager?: VoiceManager,
     sttPipeline?: SttPipeline,
-    // Test seam: routing behavior is observable without spinning real engines.
-    overrides?: { home?: AgentBridge; sdk?: ClaudeSdkBackend },
+    // Test seam: routing behavior is observable without spinning a real engine.
+    overrides?: { home?: AgentBridge },
     agentRegistry?: AgentRegistry,
   ) {
     this.preprocessor = new MessagePreprocessor(voiceManager, sttPipeline);
     this.home = overrides?.home ?? new AgentBridge(
       config, toolRegistry, skillRegistry, voiceManager, sttPipeline,
       0, undefined, undefined, undefined, this.preprocessor, agentRegistry,
-    );
-    this.sdk = overrides?.sdk ?? new ClaudeSdkBackend(
-      config, toolRegistry, skillRegistry, voiceManager, sttPipeline,
-      0, undefined, undefined, undefined, this.preprocessor, undefined, agentRegistry,
     );
   }
 
@@ -133,10 +125,9 @@ export class BackendDispatcher implements AgentBackend {
   }
 
   // The engine is picked from the model that will actually run, so the agent's configured
-  // default has to be merged in here too: resolving without it would route a claude-sdk model
-  // configured for cron into the home loop, which then quietly ran a different model.
-  private engineFor(resolved: ResolvedLlmConfig): AgentBackend {
-    return resolved.backend === "claude-sdk" ? this.sdk : this.home;
+  // default has to be merged in here too.
+  private engineFor(_resolved: ResolvedLlmConfig): AgentBackend {
+    return this.home;
   }
 
   preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -161,19 +152,6 @@ export class BackendDispatcher implements AgentBackend {
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.home.setApprovalHandler(handler);
-    this.sdk.setApprovalHandler(handler);
-  }
-
-  /** /compact for a session whose history is owned by the SDK (see ClaudeSdkBackend.compact).
-   *  The caller holds the session for the whole operation (handleCompactCommand); this second
-   *  check only guards a caller that would reach the engine without taking that hold. */
-  async compactSdkSession(session: SessionData, stopSignal?: AbortSignal): Promise<CompactOutcome> {
-    // Meta-commands bypass the router's session lock; two CLI processes resuming the same
-    // SDK session would race on its file.
-    if (runRegistry.isRunning(session.id)) {
-      return { text: "A run is active on this session — try again once it finishes (or /stop first)." };
-    }
-    return this.sdk.compact(session, stopSignal);
   }
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {

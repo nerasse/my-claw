@@ -6,7 +6,7 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 import { ModelPricing, CACHE_VERSION, effortLadderOf } from "../../src/llm/pricing.ts";
 import { applyModelMetadata } from "../../src/llm/catalog.ts";
 import { EFFORT_LEVELS } from "../../src/llm/resolver.ts";
-import { toSdkEffort } from "../../src/agent/claude-sdk/backend.ts";
+import { clampEffortToLadder } from "../../src/llm/effort-ladder.ts";
 
 /**
  * Capabilities for providers that answer with ids and nothing else -- docs/model-metadata.md.
@@ -161,12 +161,9 @@ test("a subscription provider is described even though it declares no endpoint",
   // ones whose own discovery says the least. The effective endpoint is what names the vendor.
   const providers: Record<string, LlmProviderConfig> = {
     anthropic: { type: "anthropic", discover: true },
-    "claude-sdk": { type: "claude-sdk", discover: true },
+    chatgpt: { type: "codex", discover: true },
   };
-  const models = [
-    { id: "claude-opus-5", label: "claude-opus-5", provider: "anthropic" },
-    { id: "claude-opus-5", label: "claude-opus-5", provider: "claude-sdk" },
-  ];
+  const models = [{ id: "claude-opus-5", label: "claude-opus-5", provider: "anthropic" }];
   for (const enriched of applyModelMetadata(models, providers, pricing)) {
     expect(enriched.label).toBe("Claude Opus 5");
     expect(enriched.limit?.output).toBe(128_000);
@@ -192,14 +189,15 @@ test("the fallback list stays narrow: no rung is offered on no evidence", () => 
   expect(EFFORT_LEVELS).not.toContain("minimal");
 });
 
-test("the SDK ladder has no bottom, so the rungs below it clamp instead of being dropped", () => {
-  // Criterion 6: dropping the parameter would land on the SDK's own default of "high", the
+test("the Anthropic ladder has no bottom, so the rungs below it clamp instead of being dropped", () => {
+  // Criterion 6: dropping the parameter would land on the API's own default of "high", the
   // opposite of what "none" asked for.
-  expect(toSdkEffort("none")).toBe("low");
-  expect(toSdkEffort("minimal")).toBe("low");
-  expect(toSdkEffort("ultra")).toBe("max");
-  expect(toSdkEffort("high")).toBe("high");
-  expect(toSdkEffort(undefined)).toBeUndefined();
+  const ladder = ["low", "medium", "high", "xhigh", "max"] as const;
+  const clamp = (level: Parameters<typeof clampEffortToLadder>[0]) => clampEffortToLadder(level, [...ladder], "claude-opus-5");
+  expect(clamp("none")).toBe("low");
+  expect(clamp("minimal")).toBe("low");
+  expect(clamp("ultra")).toBe("max");
+  expect(clamp("high")).toBe("high");
 });
 
 test("a provider is matched by name, whatever separators the key uses", async () => {

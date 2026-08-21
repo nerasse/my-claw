@@ -57,7 +57,7 @@ test("both totals appear, labelled, because the same id carries two answers", ()
       parentSessionId: sessionId,
       platform: "matrix",
       model: "claude-opus-5",
-      baseUrl: "claude-sdk",
+      baseUrl: "https://api.anthropic.com",
       streaming: true,
       caller: "orchestrator",
       promptTokens: 1_000_000,
@@ -95,7 +95,7 @@ test("a billed endpoint and a subscription are totalled separately", () => {
   });
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5",
-    baseUrl: "claude-sdk", streaming: true, caller: "orchestrator",
+    baseUrl: "https://api.anthropic.com", streaming: true, caller: "orchestrator",
     promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1000000, toolCalls: 0, iteration: 1, durationMs: 10,
   });
   const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
@@ -107,12 +107,12 @@ test("work delegated to a sub-agent is reported under the session that drove it"
   const parent = "matrix/room/!parent:test";
   recordApiCall({
     sessionId: "subagent/digger-aaaa", parentSessionId: parent, platform: "matrix", model: "claude-opus-5",
-    baseUrl: "claude-sdk", streaming: true, caller: "subagent",
+    baseUrl: "https://api.anthropic.com", streaming: true, caller: "subagent",
     promptTokens: 200_000, completionTokens: 100, totalTokens: 200100, toolCalls: 0, iteration: 1, durationMs: 10,
   });
   recordApiCall({
     sessionId: "browser-subagent", parentSessionId: parent, platform: "internal", model: "claude-opus-5",
-    baseUrl: "claude-sdk", streaming: false, caller: "browser",
+    baseUrl: "https://api.anthropic.com", streaming: false, caller: "browser",
     promptTokens: 50_000, completionTokens: 50, totalTokens: 50050, toolCalls: 0, iteration: 1, durationMs: 10,
   });
   const out = handleStatusCommand({ config, sessionId: parent, session: session(parent), liveRuns: [], pricing: pricing() });
@@ -125,7 +125,7 @@ test("work delegated to a sub-agent is reported under the session that drove it"
 test("measured, estimated and occupied are reported apart, because the estimate under-counts", () => {
   const sessionId = "matrix/room/!ctx:test";
   recordApiCall({
-    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "claude-sdk",
+    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 12_345, completionTokens: 1, totalTokens: 12346, toolCalls: 0, iteration: 1, durationMs: 5,
   });
   // No session.lastPrompt here, so this also covers the analytics fallback for older sessions.
@@ -191,7 +191,7 @@ test("an active run is named", () => {
 test("without a price table the tokens are still reported", () => {
   const sessionId = "matrix/room/!noprice:test";
   recordApiCall({
-    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "claude-sdk",
+    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 1000, completionTokens: 10, totalTokens: 1010, toolCalls: 0, iteration: 1, durationMs: 5,
   });
   const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [] });
@@ -202,7 +202,7 @@ test("without a price table the tokens are still reported", () => {
 test("after a reset the previous call is not reported as filling the window", () => {
   const sessionId = "matrix/room/!reset:test";
   recordApiCall({
-    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "claude-sdk",
+    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 10_000, completionTokens: 1, totalTokens: 10001, toolCalls: 0, iteration: 1, durationMs: 5,
   });
   // Analytics keeps the call; the session history does not. Showing it as a share of the window
@@ -283,21 +283,6 @@ test("/status names the model the run would use, pin included, exactly like chat
   expect(picked).toContain(chatModel(pinned, "claude-opus-5"));
 });
 
-/**
- * The SDK owns its transcript and compacts it behind our back, while `messages` keeps every turn
- * and every tool result: read as a prompt, that mirror put a freshly compacted conversation at 98
- * percent of its window while the gate, which reads the measurement, saw 15.
- */
-const sdkConfig = {
-  llm: {
-    providers: { anthropic: { type: "claude-sdk" } },
-    defaultProvider: "anthropic",
-    defaultModel: "claude-sonnet-5",
-    models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic", limit: { context: 1_000_000 } }],
-  },
-  context: { cap: 512_000 },
-} as unknown as MyClawConfig;
-
 function bulky(count: number): SessionData["messages"] {
   return Array.from({ length: count }, () => ({
     role: "user" as const,
@@ -305,20 +290,6 @@ function bulky(count: number): SessionData["messages"] {
     timestamp: new Date().toISOString(),
   }));
 }
-
-test("an SDK session reports the measured prompt, not the mirror it no longer sends", () => {
-  const sess = session("my-claw-app/thread/neras/sdk", {
-    messages: bulky(400),
-    sdkSessionId: "sdk-1",
-    lastPrompt: { tokens: 79_552, messageCount: 400 },
-  });
-  const { status } = statusReport({ config: sdkConfig, sessionId: sess.id, session: sess, liveRuns: [] });
-
-  expect(status.context.occupied).toBe(79_552);
-  // The mirror is still reported, labelled for what it is, because it is what an archive holds.
-  expect(status.context.estimated).toBeGreaterThan(300_000);
-  expect(status.context.occupied).toBeLessThan(status.context.autoCompactThresholdTokens);
-});
 
 test("the same history on the home loop keeps the estimate as a floor", () => {
   const homeConfig = {
@@ -335,14 +306,3 @@ test("the same history on the home loop keeps the estimate as a floor", () => {
   expect(status.context.occupied).toBe(status.context.estimated);
 });
 
-test("a boundary reported by the SDK is where occupancy starts counting", () => {
-  const sess = session("my-claw-app/thread/neras/sdk-base", {
-    messages: bulky(400),
-    sdkSessionId: "sdk-2",
-    sdkTranscriptBase: 399,
-  });
-  const { status } = statusReport({ config: sdkConfig, sessionId: sess.id, session: sess, liveRuns: [] });
-
-  // No measurement yet: only the single turn taken since the compaction is in the prompt.
-  expect(status.context.occupied).toBeLessThan(2_000);
-});

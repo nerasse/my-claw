@@ -262,19 +262,19 @@ describe("/instructions", () => {
     expect(text).toContain("Couche platform hint : absente");
   });
 
-  test("an SDK-backed agent carries the steering note the backend appends", async () => {
+  test("a subscription-backed agent carries the steering note the backend appends", async () => {
     const sdk = params({}, "");
     sdk.config = {
       ...sdk.config,
       llm: {
-        providers: { anthropic: { type: "claude-sdk" } },
+        providers: { anthropic: { type: "anthropic" } },
         models: [{ id: "claude-sonnet-5", label: "S", provider: "anthropic" }],
         defaultProvider: "anthropic",
         defaultModel: "claude-sonnet-5",
       },
     };
     const { text, body } = await dump(sdk);
-    expect(text).toContain("backend : claude-sdk");
+    expect(text).toContain("backend : anthropic");
     expect(body).toContain("# Mid-run steering");
     expect(text).toContain("note de pilotage SDK");
   });

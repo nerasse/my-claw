@@ -23,9 +23,8 @@ using it. Measured on the live install:
 | `gpt-5.6-luna` | 128 000 | 1 050 000 | 8.2x |
 | `claude-opus-5` | 128 000 | 1 000 000 | 7.8x |
 
-The number is not cosmetic. It drives auto-compaction (both engines: `bridge.ts` and
-`claude-sdk/backend.ts`), the `maxTokens` request (`claude-sdk/backend.ts`), and
-`trimToContextWindow` (`llm/tokens.ts`).
+The number is not cosmetic. It drives auto-compaction (`bridge.ts`), the `maxTokens`
+request, and `trimToContextWindow` (`llm/tokens.ts`).
 
 An honest caveat on severity: **zero compactions had ever fired** across 569 recorded calls.
 The two errors partly cancelled — the estimator under-counts, the limit under-counts — so the

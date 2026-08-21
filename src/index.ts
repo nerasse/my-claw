@@ -68,7 +68,6 @@ import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
 import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing } from "./llm/pricing.ts";
-import { discoverSdkModels } from "./agent/claude-sdk/models.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { effectiveEffort, EFFORT_LEVELS } from "./llm/resolver.ts";
@@ -311,7 +310,7 @@ async function main() {
       });
     }
   }
-  const modelCatalog = new ModelCatalog(() => config.llm, discoverSdkModels);
+  const modelCatalog = new ModelCatalog(() => config.llm);
   const applyModelCatalog = () => {
     const merged = mergeModels(baseModels, modelCatalog.discovered());
     // Provider-first: models with no explicit group nest under their provider's group label.
@@ -387,12 +386,9 @@ async function main() {
   // discovery is a no-op and the subscription's models never reach /model. After an auth change
   // we ensure the provider exists (added to config, persisted for restarts) and re-run discovery
   // now that a token is available. Provider spec per auth kind:
-  // The claude entry is keyed after the engine, not the vendor: the key becomes the prefix of
-  // every discovered model id, and "anthropic" is left free for a provider that would talk to
-  // the Anthropic API directly rather than through the SDK.
-  const AUTH_PROVIDER: Record<"codex" | "claude", { type: "codex" | "claude-sdk"; key: string; group: string }> = {
+  const AUTH_PROVIDER: Record<"codex" | "claude", { type: "codex" | "anthropic"; key: string; group: string }> = {
     codex: { type: "codex", key: "chatgpt", group: "ChatGPT (abo)" },
-    claude: { type: "claude-sdk", key: "claude-sdk", group: "Claude SDK (abo)" },
+    claude: { type: "anthropic", key: "claude", group: "Claude (abo)" },
   };
   const hasProviderType = (providers: Record<string, { type?: string }> | undefined, type: string): boolean =>
     Object.values(providers ?? {}).some((p) => p.type === type);
@@ -1056,13 +1052,11 @@ async function main() {
             // the opposite of the truth on a box that was perfectly authenticated. Its credential
             // is the stored token, so that is what the flag has to answer for.
             keyPresent:
-              provider.type === "claude-sdk"
-                ? subscriptionAuth.claude
-                : provider.type === "codex"
-                  ? subscriptionAuth.codex
-                  : provider.apiKeyEnv
-                    ? Boolean(process.env[provider.apiKeyEnv])
-                    : false,
+              provider.type === "codex"
+                ? subscriptionAuth.codex
+                : provider.apiKeyEnv
+                  ? Boolean(process.env[provider.apiKeyEnv])
+                  : false,
           })),
         ],
         // The two reserved roles, then every file-defined agent. The page is a browse surface, so
@@ -1856,7 +1850,6 @@ async function main() {
       customDir,
       workspaceSkillsDir,
       listCronJobs: () => loadJobs(),
-      sdkCompact: (session, stopSignal) => agent.compactSdkSession(session, stopSignal),
       postMessage: (owner, text, threadId) => myClawApp.send(owner, { text, threadId }),
       onAuthChanged,
       reloadConfigNow,

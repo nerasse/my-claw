@@ -37,11 +37,11 @@ export interface CompactOutcome {
   ok?: boolean;
 }
 
-// The contract between the message router/channels and an agent execution engine.
-// Two implementations are planned: the home OpenAI-compatible loop (AgentBridge)
-// and the Claude Agent SDK backend (docs/claude-sdk-backend.md). Everything
-// outside the engine (router, channels, cron, /stop, /status) depends on this
-// interface only, so backends can be selected per resolved model.
+// The contract between the message router/channels and an agent execution engine. The home
+// loop is the only implementation: the OpenAI-compatible path, the Codex subscription transport,
+// and the native Anthropic Messages transport. Everything outside the engine (router, channels,
+// cron, /stop, /status) depends on this interface only, so engines can be swapped without
+// touching them.
 export interface AgentBackend {
   preprocessMessage(message: UnifiedMessage): Promise<void>;
   getEchoMessages(messageId: string): OutgoingMessage[];
@@ -60,7 +60,7 @@ export interface AgentBackend {
     onTurnSwitch?: TurnSwitchCallback,
     modelId?: string,
     // Appended last on purpose: inserting a parameter ahead of an existing one has already bitten
-    // this codebase (the `queryFn` test seam on ClaudeSdkBackend).
+    // this codebase.
     reasoning?: ReasoningSink,
   ): Promise<string>;
 }

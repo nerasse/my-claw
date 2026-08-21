@@ -11,7 +11,7 @@ function llmConfig(tags: Record<string, { model: string; effort?: EffortLevel; c
     defaultProvider: "anthropic",
     defaultModel: "claude-sonnet-4-5",
     providers: {
-      anthropic: { type: "claude-sdk", baseUrl: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY" },
+      anthropic: { type: "anthropic", baseUrl: "https://api.anthropic.com", apiKeyEnv: "ANTHROPIC_API_KEY" },
     },
     models: [
       { id: "claude-sonnet-4-5", label: "Sonnet 4.5", provider: "anthropic", vision: true, limit: { context: 200000 } },

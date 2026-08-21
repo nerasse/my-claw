@@ -6,24 +6,21 @@ import { availabilityWorld } from "./world.ts";
 /**
  * Whether a single completion can be issued against this model from the home loop.
  *
- * Everything with an HTTP transport qualifies, which is every backend but one: `claude-sdk` is a
- * subprocess owning its own session, so there is no request to send. Allowlisting the exception
- * rather than the members is what keeps a new engine from being excluded by omission, which is how
- * the native Anthropic transport spent its first days barred from compaction.
+ * Every backend runs on the home loop now, so any resolved config qualifies. Allowlisting the
+ * exception rather than the members is what keeps a new engine from being excluded by omission.
  */
-function hasHomeLoopTransport(resolved: ResolvedLlmConfig): boolean {
-  return resolved.backend !== "claude-sdk";
+function hasHomeLoopTransport(_resolved: ResolvedLlmConfig): boolean {
+  return true;
 }
 
 /**
  * The same model on a transport the home loop can reach: an `anthropic` provider serving the exact
- * id the SDK was asked for.
+ * id the session was asked for.
  *
- * A claude-sdk pin is the only one that has to borrow, and since the native Messages transport
- * exists it no longer has to borrow from a stranger. The twin is the same model on the same
- * subscription, so an Opus session is summarized by Opus. Matching is by wire id only: the `opus`
- * and `sonnet` aliases are resolved server-side by the SDK and no `/v1/models` lists them, so they
- * have no twin and fall through to the default like anything else.
+ * Subscription pins keep their model rather than borrow from a stranger. The twin is the same
+ * model on the same subscription, so an Opus session is summarized by Opus. Matching is by wire id
+ * only: the `opus` and `sonnet` aliases are resolved server-side and no `/v1/models` lists them,
+ * so they have no twin and fall through to the default like anything else.
  */
 function nativeTwin(config: LlmConfig, wireId: string | undefined): string | undefined {
   if (!wireId) return undefined;
@@ -51,9 +48,9 @@ function twinOfModel(config: LlmConfig, modelId: string | undefined): string | u
  * the default itself, then whatever is declared.
  *
  * Declaration order used to be the whole policy, which made the answer an accident of the config
- * file: the first entry summarized every SDK session, whatever it was and whether or not it still
- * existed. The default comes first now because it is the one model the owner actually picked, and
- * its twin comes before it because an alias pin (`claude-sdk/opus`) has no twin of its own while
+ * file: the first entry summarized every subscription session, whatever it was and whether or not
+ * it still existed. The default comes first now because it is the one model the owner actually picked,
+ * and its twin comes before it because an alias pin (`claude/opus`) has no twin of its own while
  * the default it inherits from usually does.
  */
 function borrowOrder(config: LlmConfig, resolved: ResolvedLlmConfig): string[] {
@@ -84,13 +81,13 @@ function homeLoopOrFallback(config: LlmConfig, resolved: ResolvedLlmConfig): Res
     const candidate = resolveLlmConfig(config, id);
     if (hasHomeLoopTransport(candidate)) return candidate;
   }
-  throw new Error("No runnable model with an HTTP transport configured (every candidate is claude-sdk backed or gone)");
+  throw new Error("No runnable model with an HTTP transport configured (every candidate is subscription-only or gone)");
 }
 
 /**
  * Resolve a config the utility LLM callers can issue one completion against (compaction summarizer,
  * memory consolidation). They dispatch through `llmComplete`, so any wire protocol will do and the
- * session's own model is kept: only a claude-sdk pin has to borrow another one.
+ * session's own model is kept: only a subscription-only pin has to borrow another one.
  */
 export function resolveUtilityLlmConfig(config: LlmConfig, modelId?: string): ResolvedLlmConfig {
   return homeLoopOrFallback(config, resolveLlmConfig(config, modelId));
@@ -99,7 +96,7 @@ export function resolveUtilityLlmConfig(config: LlmConfig, modelId?: string): Re
 /**
  * The same guarantee, for an agent that has a model of its own.
  *
- * The browser sub-agent runs on the home loop, so it cannot use a claude-sdk default; it was
+ * The browser sub-agent runs on the home loop, so it cannot use a subscription-only default; it was
  * therefore skipping agent resolution entirely and taking the first OpenAI-compatible model in the
  * catalogue, which meant `config.agents.browser` was quietly ignored and the model was whatever
  * happened to be listed first. The pin is honoured here, and the fallback only runs when the pin

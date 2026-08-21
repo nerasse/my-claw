@@ -2,7 +2,6 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
-import { ClaudeSdkBackend, type SdkQueryFn } from "../../src/agent/claude-sdk/backend.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
@@ -20,19 +19,6 @@ function baseConfig(agents: MyClawConfig["agents"] = {}): MyClawConfig {
   return {
     whitelist: ["u1"], blacklist: [], channels: {},
     llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
-    agents, memory: { enabled: false },
-  };
-}
-
-function sdkConfig(agents: MyClawConfig["agents"] = {}): MyClawConfig {
-  return {
-    whitelist: ["u1"], blacklist: [], channels: {},
-    llm: {
-      providers: { anthropic: { type: "claude-sdk" } },
-      models: [{ id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" }],
-      defaultProvider: "anthropic",
-      defaultModel: "claude-sonnet-5",
-    },
     agents, memory: { enabled: false },
   };
 }
@@ -247,64 +233,6 @@ test("scope: a research sub-agent gets no MCP tool without an explicit grant", a
   const granted = await runHome(baseConfig({ research: { mcp: ["srv_b"] } }), skills, { depth: 1, agentKind: "research", dynamic: mcp });
   assert.ok(granted.toolNames.includes("mcp__srv_b__ping"));
   assert.ok(!granted.toolNames.includes("mcp__srv_a__ping"));
-});
-
-// --- The SDK backend must behave identically ---
-
-async function runSdk(
-  config: MyClawConfig,
-  skills: SkillRegistry,
-  opts: { depth?: number; agentKind?: "general" | "research"; dynamic?: Tool[] } = {},
-): Promise<{ systemPrompt: string }> {
-  runRegistry.clear();
-  const registry = new ToolRegistry();
-  registry.register({ name: "probe", description: "probe", parameters: { type: "object", properties: {} }, execute: async () => ({ success: true, output: "ok" }) });
-  if (opts.dynamic) registry.setDynamicProvider(() => opts.dynamic ?? []);
-
-  let options: Record<string, unknown> = {};
-  const queryFn: SdkQueryFn = ({ prompt, options: opts2 }) => {
-    options = opts2;
-    return (async function* () {
-      await prompt.next();
-      yield { type: "assistant", message: { id: "a1", content: [{ type: "text", text: "done" }], usage: { input_tokens: 1, output_tokens: 1 } } };
-      yield { type: "result", subtype: "success", result: "done" };
-      void prompt.next().catch(() => {});
-    })() as AsyncIterable<never>;
-  };
-
-  const backend = new ClaudeSdkBackend(
-    config, registry, skills, undefined, undefined,
-    opts.depth ?? 0, undefined, opts.agentKind, undefined, undefined, queryFn,
-  );
-  const sess = session(`telegram/dm/sdk-${Math.random()}`);
-  const { signal, end } = runRegistry.startRoot(sess.id);
-  try {
-    await backend.handleMessage(msg("go"), sess, signal);
-    // The SDK stores its tools in a private field of the server instance, so the assertion goes
-    // through prompt layer 6 instead: it renders the very same array the tool server was built from,
-    // and it is what the model actually reads.
-    return { systemPrompt: String(options["systemPrompt"] ?? "") };
-  } finally {
-    end(); runRegistry.clear();
-  }
-}
-
-test("scope: the SDK backend scopes the catalog like the home loop", async () => {
-  // The two backends compose the prompt through the same builder but from separate call sites, so a
-  // scope applied in one and not the other would be invisible to every other test.
-  const { skills } = fixtures();
-  const run = await runSdk(sdkConfig({ general: { skills: ["alpha"] } }), skills, { depth: 1, agentKind: "general" });
-  assert.match(run.systemPrompt, /- alpha: alpha description/);
-  assert.doesNotMatch(run.systemPrompt, /beta/);
-});
-
-test("scope: the SDK backend filters MCP tools out of the set it exposes", async () => {
-  const { skills, mcp } = fixtures();
-  const run = await runSdk(sdkConfig({ orchestrator: { mcp: ["srv_a"] } }), skills, { dynamic: mcp });
-  const toolsLayer = run.systemPrompt.slice(run.systemPrompt.indexOf("# Available tools"));
-  assert.match(toolsLayer, /- mcp__srv_a__ping:/);
-  assert.doesNotMatch(toolsLayer, /mcp__srv_b__ping/);
-  assert.match(toolsLayer, /- probe:/);
 });
 
 test("scope: the home loop keeps the prompt tool layer and the API payload in step", async () => {

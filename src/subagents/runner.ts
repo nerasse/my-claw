@@ -9,7 +9,6 @@ import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { AgentBridge } from "../agent/bridge.ts";
-import { ClaudeSdkBackend } from "../agent/claude-sdk/backend.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
@@ -444,36 +443,20 @@ export class SubAgentRunner {
     // not just the model id round-tripped through modelOverride.
     session.modelOverride = resolved.model;
 
-    // The engine follows the model: a claude-sdk model runs its own SDK loop, anything
-    // else runs the home loop. Same contract either way (AgentBackend).
-    const bridge: AgentBackend = resolved.backend === "claude-sdk"
-      ? new ClaudeSdkBackend(
-          this.config,
-          this.toolRegistry,
-          this.skillRegistry,
-          this.voiceManager,
-          this.sttPipeline,
-          depth,
-          workspaceDir,
-          type,
-          resolved,
-          undefined,
-          undefined,
-          this.agentRegistry,
-        )
-      : new AgentBridge(
-          this.config,
-          this.toolRegistry,
-          this.skillRegistry,
-          this.voiceManager,
-          this.sttPipeline,
-          depth,
-          workspaceDir,
-          type,
-          resolved,
-          undefined,
-          this.agentRegistry,
-        );
+    // The engine is always the home OpenAI-compatible loop now. Same AgentBackend contract.
+    const bridge: AgentBackend = new AgentBridge(
+      this.config,
+      this.toolRegistry,
+      this.skillRegistry,
+      this.voiceManager,
+      this.sttPipeline,
+      depth,
+      workspaceDir,
+      type,
+      resolved,
+      undefined,
+      this.agentRegistry,
+    );
 
     const subMessage: UnifiedMessage = {
       id: `subagent-${session.id}`,

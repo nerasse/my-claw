@@ -44,20 +44,9 @@ test("resolveUtilityLlmConfig keeps a codex model: the utility callers dispatch 
   assert.equal(resolved.model, "gpt-5-codex");
 });
 
-test("resolveUtilityLlmConfig throws only when every model is claude-sdk backed", () => {
-  const sdkOnly: LlmConfig = {
-    defaultProvider: "anthropic",
-    defaultModel: "claude-sonnet",
-    providers: { anthropic: { type: "claude-sdk" } },
-    models: [{ id: "claude-sonnet", label: "Sonnet", provider: "anthropic" }],
-  };
-  // The one backend with no request to send: a subprocess owning its own session.
-  assert.throws(() => resolveUtilityLlmConfig(sdkOnly), /HTTP transport/);
-});
-
 /**
- * The browser sub-agent's resolution. It runs on the home loop, so it cannot run the claude-sdk
- * default of this house; what it must still honour is its own pin, which it was skipping altogether
+ * The browser sub-agent's resolution. Every engine has an HTTP transport now, so there is no
+ * borrow ladder left to test: what it must honour is its own pin, which it was skipping altogether
  * in favour of "the first model in the catalogue".
  */
 const twoChatModels: LlmConfig = {
@@ -73,50 +62,13 @@ test("an agent's own model wins over the first usable model in the list", () => 
   assert.equal(resolved.model, "kimi");
 });
 
-test("a claude-sdk default still falls back, and the agent pin is what it falls back from", () => {
-  const sdkDefault: LlmConfig = {
+test("an agent pinned to the subscription model keeps it: every engine runs on the home loop", () => {
+  const nativePin: LlmConfig = {
     ...twoChatModels,
-    defaultProvider: "anthropic",
-    defaultModel: "claude-sonnet",
-    providers: { ...twoChatModels.providers, anthropic: { type: "claude-sdk" } },
+    providers: { ...twoChatModels.providers, anthropic: { type: "anthropic" } },
     models: [...(twoChatModels.models ?? []), { id: "claude-sonnet", label: "Sonnet", provider: "anthropic" }],
   };
-  // No pin: the global default is unusable here, so the first usable model is taken.
-  assert.equal(resolveUtilityAgentLlmConfig(undefined, sdkDefault).model, "blocked-by-the-gateway");
-  // Pinned: the pin is used as it stands.
-  assert.equal(resolveUtilityAgentLlmConfig({ defaultModel: "kimi" }, sdkDefault).model, "kimi");
-});
-
-test("an agent pinned to a claude-sdk model falls back rather than breaking the loop", () => {
-  const sdkPin: LlmConfig = {
-    ...twoChatModels,
-    providers: { ...twoChatModels.providers, anthropic: { type: "claude-sdk" } },
-    models: [...(twoChatModels.models ?? []), { id: "claude-sonnet", label: "Sonnet", provider: "anthropic" }],
-  };
-  const resolved = resolveUtilityAgentLlmConfig({ defaultModel: "claude-sonnet" }, sdkPin);
-  assert.equal(resolved.backend, undefined);
-  assert.equal(resolved.model, "blocked-by-the-gateway");
-});
-
-test("declaration order decides only once the preferred candidates are out", () => {
-  // The default is claude-sdk and there is no anthropic provider to twin with, so nothing is
-  // preferred and the list order is all that is left. It is still stated, because it is still what
-  // answers in that case.
-  const sdkDefault: LlmConfig = {
-    defaultProvider: "anthropic",
-    defaultModel: "claude-sonnet",
-    providers: {
-      anthropic: { type: "claude-sdk" },
-      fireworks: { baseUrl: "https://api.fireworks.ai/inference/v1" },
-    },
-    models: [
-      { id: "tiny-local", label: "Tiny", provider: "fireworks" },
-      { id: "the-big-one", label: "Big", provider: "fireworks" },
-      { id: "claude-sonnet", label: "Sonnet", provider: "anthropic" },
-    ],
-  };
-  assert.equal(resolveUtilityLlmConfig(sdkDefault).model, "tiny-local");
-  const reordered: LlmConfig = { ...sdkDefault, models: [...(sdkDefault.models ?? [])].reverse() };
-  // Same models, same providers: only the order moved, and the answer moved with it.
-  assert.equal(resolveUtilityLlmConfig(reordered).model, "the-big-one");
+  const resolved = resolveUtilityAgentLlmConfig({ defaultModel: "claude-sonnet" }, nativePin);
+  assert.equal(resolved.backend, "anthropic");
+  assert.equal(resolved.model, "claude-sonnet");
 });

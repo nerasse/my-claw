@@ -66,7 +66,7 @@ const base = { promptTokens: 1_000_000, completionTokens: 0 };
 
 test("the engine names the vendor, and a subscription is never reported as a charge", () => {
   const p = withTable();
-  const opus = p.costOf({ ...base, model: "claude-opus-5", baseUrl: "claude-sdk" });
+  const opus = p.costOf({ ...base, model: "claude-opus-5", baseUrl: "https://api.anthropic.com" });
   expect(opus?.usd).toBeCloseTo(5, 6);
   expect(opus?.billed).toBe(false);
   expect(opus?.source).toContain("anthropic");
@@ -211,8 +211,8 @@ test("the median ignores prepaid plans, which would otherwise drag it to zero", 
 
 test("an alias prices as the newest concrete model in its group", () => {
   const p = withTable();
-  const alias = p.costOf({ ...base, model: "opus", baseUrl: "claude-sdk" });
-  const concrete = p.costOf({ ...base, model: "claude-opus-5", baseUrl: "claude-sdk" });
+  const alias = p.costOf({ ...base, model: "opus", baseUrl: "https://api.anthropic.com" });
+  const concrete = p.costOf({ ...base, model: "claude-opus-5", baseUrl: "https://api.anthropic.com" });
   expect(alias?.usd).toBeCloseTo(concrete!.usd, 6);
   // Picking the oldest sibling instead would give 15 rather than 5.
   expect(alias?.usd).toBeCloseTo(5, 6);
@@ -247,17 +247,17 @@ test("an alias never resolves to a sibling that shares nothing but its group", (
 test("version separators converge: 4-8, 4.8, 4p8 and 48 reach the same price", () => {
   const p = withTable();
   const prices = ["claude-opus-4-8", "claude-opus-4.8", "claude-opus-4p8", "claude-opus-48"].map(
-    (m) => p.costOf({ ...base, model: m, baseUrl: "claude-sdk" })?.usd,
+    (m) => p.costOf({ ...base, model: m, baseUrl: "https://api.anthropic.com" })?.usd,
   );
   for (const price of prices) expect(price).toBeCloseTo(5, 6);
 });
 
 test("cache reads are billed at the cache rate, which dominates the total", () => {
   const p = withTable();
-  const fresh = p.costOf({ model: "claude-opus-5", baseUrl: "claude-sdk", promptTokens: 1_000_000, completionTokens: 0 });
+  const fresh = p.costOf({ model: "claude-opus-5", baseUrl: "https://api.anthropic.com", promptTokens: 1_000_000, completionTokens: 0 });
   const cached = p.costOf({
     model: "claude-opus-5",
-    baseUrl: "claude-sdk",
+    baseUrl: "https://api.anthropic.com",
     promptTokens: 1_000_000,
     completionTokens: 0,
     cacheReadTokens: 1_000_000,
@@ -272,7 +272,7 @@ test("inconsistent cache buckets cannot produce a negative cost", () => {
   const p = withTable();
   const r = p.costOf({
     model: "claude-opus-5",
-    baseUrl: "claude-sdk",
+    baseUrl: "https://api.anthropic.com",
     promptTokens: 100,
     completionTokens: 0,
     cacheReadTokens: 1_000_000,

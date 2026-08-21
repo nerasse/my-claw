@@ -113,29 +113,26 @@ export interface BrowserConfig {
 
 export interface LlmProviderConfig {
   // "openai" (default) = OpenAI-compatible HTTP endpoint driven by the home agent loop.
-  // "claude-sdk" = runs delegated to the Claude Agent SDK (subscription auth, own loop).
   // "codex" = OpenAI ChatGPT subscription via the Responses backend (device-code OAuth,
   // home loop with the Codex transport).
-  // "anthropic" = Claude subscription on the home loop with the native Messages transport,
-  // the engine-less successor to "claude-sdk". See docs/anthropic-backend.md,
-  // docs/claude-sdk-backend.md and docs/codex-backend.md.
-  type?: "openai" | "claude-sdk" | "codex" | "anthropic";
+  // "anthropic" = Claude subscription on the home loop with the native Messages transport.
+  // See docs/anthropic-backend.md and docs/codex-backend.md.
+  type?: "openai" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
-  // claude-sdk only: automatic failover model if the primary errors out.
+  // Automatic failover model if the primary errors out.
   fallbackModel?: string;
-  // Auto-discover this provider's models at runtime (claude-sdk: query.supportedModels();
-  // openai-compatible: GET {baseUrl}/models). Discovered models merge with config.models
-  // (config wins on id collision). See docs/model-discovery.md.
+  // Auto-discover this provider's models at runtime (openai-compatible:
+  // GET {baseUrl}/models). Discovered models merge with config.models (config wins on id
+  // collision). See docs/model-discovery.md.
   discover?: boolean;
   // Submenu group label applied to this provider's discovered models in the picker.
   group?: string;
   // OpenAI-compatible providers only: send Anthropic-style `cache_control` breakpoints so
   // proxies that support it (LiteLLM, OpenRouter) cache the stable system+tools prefix.
   // Opt-in per provider: some strict endpoints reject unknown fields in message content.
-  // Ignored on the claude-sdk (SDK caches itself) and codex (subscription) backends.
-  // See docs/prompt-caching.md.
+  // Ignored on the codex (subscription) backend. See docs/prompt-caching.md.
   promptCache?: boolean;
   // Optional escape hatch for /status cost reporting: the models.dev provider id whose prices
   // apply to this endpoint. Only needed for a proxy that reveals neither its cost nor its upstream
@@ -183,10 +180,10 @@ export interface LlmModelConfig {
   // alias can tell which family it tracks. Carried on the model rather than read back out of
   // `group`, which is a display choice and says nothing once the provider lists flat.
   family?: string;
-  // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Ignored for
-  // claude-sdk models (they always accept effort natively).
+  // OpenAI-compatible models only: opt in to forwarding `reasoning_effort`. Anthropic and
+  // codex backends accept effort natively, so this only matters on the openai path.
   supportsEffort?: boolean;
-  // Per-model supported effort levels (SDK discovery provides these). When set, the effort
+  // Per-model supported effort levels (discovery provides these). When set, the effort
   // submenu only shows these levels instead of the full global list.
   supportedEffortLevels?: EffortLevel[];
   // Which `thinking.type` values the Anthropic Messages API accepts for this model, straight from
@@ -256,7 +253,7 @@ export interface ResolvedLlmConfig {
   // routes on this before any HTTP/SDK specifics come into play. "codex" and "anthropic" run on
   // the home loop too, but the loop swaps in their own transport (docs/codex-backend.md,
   // docs/anthropic-backend.md).
-  backend?: "openai" | "claude-sdk" | "codex" | "anthropic";
+  backend?: "openai" | "codex" | "anthropic";
   // Carried from discovery so the Anthropic transport can name a thinking type the model accepts.
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
   /**
@@ -289,7 +286,7 @@ export interface ResolvedLlmConfig {
   };
   fallbackModel?: string;
   // Resolved effort to apply for this run. Only set when it should actually be sent
-  // (claude-sdk always; openai-compatible only when the model opts in via supportsEffort).
+  // (anthropic and codex always; openai-compatible only when the model opts in via supportsEffort).
   effort?: EffortLevel;
   // Send Anthropic-style `cache_control` breakpoints on the OpenAI-compatible request
   // (propagated from the provider's `promptCache`). See docs/prompt-caching.md.

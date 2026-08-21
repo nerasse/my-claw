@@ -113,7 +113,7 @@ describe("resolver promptCache propagation", () => {
     defaultModel: "m",
     providers: {
       proxy: { baseUrl: "https://proxy/v1", promptCache: true },
-      anthropic: { type: "claude-sdk", promptCache: true },
+      anthropic: { type: "anthropic", promptCache: true },
     },
     models: [
       { id: "m", label: "M", provider: "proxy" },
@@ -125,9 +125,11 @@ describe("resolver promptCache propagation", () => {
     expect(resolveLlmConfig(cfg, "m").promptCache).toBe(true);
   });
 
-  test("claude-sdk backend ignores promptCache (no HTTP request body)", () => {
+  test("the native anthropic backend caches on its own, so the flag is not propagated", () => {
+    // The Messages transport marks its own cache breakpoints; an OpenAI-shaped `promptCache` flag
+    // has nothing to translate into on that path.
     const resolved = resolveLlmConfig(cfg, "claude");
-    expect(resolved.backend).toBe("claude-sdk");
+    expect(resolved.backend).toBe("anthropic");
     expect(resolved.promptCache).toBeUndefined();
   });
 });

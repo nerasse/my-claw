@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { hooks } from "../../src/hooks/index.ts";
-import { renderPriorConversation } from "../../src/agent/claude-sdk/history.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -76,9 +75,9 @@ function sessionWithReasoning(): SessionData {
 }
 
 /**
- * These two tests are the whole guarantee that a display feature cannot contaminate the context.
- * Both replay paths build their messages field by field, so a leak would be a deliberate edit --
- * which is exactly what must fail loudly. See docs/reasoning-visibility.md.
+ * This is the whole guarantee that a display feature cannot contaminate the context. The replay
+ * path builds its messages field by field, so a leak would be a deliberate edit -- which is
+ * exactly what must fail loudly. See docs/reasoning-visibility.md.
  */
 describe("stored reasoning never reaches a model", () => {
   test("the home loop's prompt carries no reasoning, on the wire", async () => {
@@ -113,12 +112,6 @@ describe("stored reasoning never reaches a model", () => {
     }
   });
 
-  test("the engine-switch transcript carries no reasoning", () => {
-    const rendered = renderPriorConversation(sessionWithReasoning().messages, { maxTokens: 10_000 });
-    expect(rendered).not.toBeNull();
-    expect(rendered!.text).not.toContain(SECRET);
-    expect(rendered!.text).toContain("first answer");
-  });
 });
 
 describe("the source id of a turn is display-only too", () => {
@@ -150,16 +143,6 @@ describe("the source id of a turn is display-only too", () => {
     }
   });
 
-  test("the engine-switch transcript carries no source id", () => {
-    const messages: SessionMessage[] = [
-      { role: "user", content: "first question", timestamp: "2026-01-01T00:00:00.000Z", sourceId: "send-42" },
-      { role: "assistant", content: "first answer", timestamp: "2026-01-01T00:00:01.000Z" },
-    ];
-    const rendered = renderPriorConversation(messages, { maxTokens: 10_000 });
-    expect(rendered).not.toBeNull();
-    expect(rendered!.text).toContain("first question");
-    expect(rendered!.text).not.toContain("send-42");
-  });
 });
 
 describe("the home loop persists what the model thought", () => {

@@ -150,8 +150,7 @@ export async function compactSession(
   // which is absent on every chat that inherits a pin and made the summarizer resolve the global
   // default while the conversation ran something else. The agent comes from the session, so a
   // sub-agent or a cron job is summarized by its own model rather than the orchestrator's. The
-  // dispatch in `llmComplete` accepts any wire protocol, so the session's own model summarizes it;
-  // only a claude-sdk pin has to borrow another one.
+  // dispatch in `llmComplete` accepts any wire protocol, so the session's own model summarizes it.
   const runModel = tryResolveRunModel(
     config,
     { agent: agentTypeOf(session), ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
@@ -225,9 +224,6 @@ export async function compactSession(
     };
 
     session.messages = [...head, summaryMessage, ...tail];
-    // The mirror was rewritten under whatever the SDK reported: an index into the old array points
-    // at unrelated turns now, and the local summarizer can run on an SDK session (docs/compaction.md).
-    delete session.sdkTranscriptBase;
     session.lastActiveAt = new Date().toISOString();
     hooks.emit("session:compact:end", {
       sessionId: session.id,

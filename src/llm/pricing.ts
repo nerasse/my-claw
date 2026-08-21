@@ -113,7 +113,6 @@ export interface UsageForCost {
  * and no api key, by construction. See docs/anthropic-backend.md.
  */
 const ENGINE_PROVIDER: Record<string, string> = {
-  "claude-sdk": "anthropic",
   "api.anthropic.com": "anthropic",
   "chatgpt.com": "openai",
 };

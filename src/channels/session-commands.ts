@@ -60,8 +60,6 @@ export interface SharedSessionCommandContext {
   // Apply a config restore through the normal reload path (a restored dotfile fires no fs.watch
   // event, so /config rollback cannot rely on the watcher noticing).
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
-  // SDK-owned sessions must compact through the SDK, not the mirror summarizer.
-  sdkCompact?: (session: SessionData, stopSignal?: AbortSignal) => Promise<CompactOutcome>;
 }
 
 /**
@@ -117,7 +115,6 @@ export async function handleSharedSessionCommand(
         config,
         session,
         instructions: args.trim() || undefined,
-        sdkCompact: ctx.sdkCompact,
         persist: () => sessionManager.persist(sessionId),
       });
       return outcome.text;
