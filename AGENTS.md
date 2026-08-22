@@ -64,6 +64,20 @@
 - The user controls the release cadence — even if the code is ready and CI is green, wait for the green light
 - This rule takes precedence over any automation or script that might suggest tagging
 
+Flow (mechanics in the `forgejo` skill, read it before running anything):
+1. Quick checks: `export PATH="$HOME/.bun/bin:$PATH"` (without it the stdio MCP tests false-fail), then `bun run check:test` and `bun test`.
+2. Commit → bump `package.json` → commit → tag `vN` → push main + tag. CI (`release.yml` on v*) builds and publishes the tarball to the generic package registry.
+3. Verify: HEAD `.../api/packages/claw/generic/my-claw/<v>/my-claw-<v>-linux-x64.tar.gz` returns 200, CI runs green.
+4. Never touch prod by hand (no restart, no copy into `/opt/my-claw`): `my-claw-auto-update.timer` (every 15 min) swaps the install and web bundle, skips while a run is in flight, and refuses an unverifiable version. The user runs the update on his side.
+
+Quick log check:
+```sh
+journalctl -u my-claw.service --since "5 min ago" --no-pager | tail -30   # boot errors
+ss -tlnp | grep 8080                                                      # up?
+tail -f ~/.my-claw/logs/my-claw-app-$(date +%F).log | jq -c '{t:.timestamp,m:.message,d:.data}'
+```
+CI state: `GET /repos/claw/my-claw/actions/runs?limit=5` (jq status/conclusion); job logs via `/actions/jobs/{id}/logs` — run id and job id differ, a 404 on the run id is not a failure.
+
 ## Project Structure
 
 ```
