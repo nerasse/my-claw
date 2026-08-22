@@ -1,4 +1,5 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
+import type { SessionManager } from "../sessions/manager.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import { mkdir, readFile, access, rm } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
@@ -58,7 +59,20 @@ function validateSkillDescription(desc: string): string | null {
   return null;
 }
 
-export function createListSkillsTool(registry: SkillRegistry, config: MyClawConfig): Tool {
+/** The session id the backends attach to every tool call, when the call came from an agent run. */
+function sessionIdFromArgs(args: Record<string, unknown>): string | undefined {
+  const raw = args["__sessionId"];
+  return typeof raw === "string" && raw ? raw : undefined;
+}
+
+/** Skills this session turned off: they disappear from the catalog AND from list/read. */
+async function skillsOffFor(sessionManager: SessionManager | undefined, sessionId: string | undefined): Promise<Set<string>> {
+  if (!sessionManager || !sessionId) return new Set();
+  const session = await sessionManager.peek(sessionId);
+  return new Set(session?.skillsOff ?? []);
+}
+
+export function createListSkillsTool(registry: SkillRegistry, config: MyClawConfig, sessionManager?: SessionManager): Tool {
   return {
     name: "list_skills",
     description: "List all available skills with their name, description, and source.",
@@ -69,8 +83,11 @@ export function createListSkillsTool(registry: SkillRegistry, config: MyClawConf
     execute: async (args: Record<string, unknown>) => {
       // Must match the prompt catalog: listing more than the scope would advertise skills that
       // read_skill then refuses. Same for the run's workspace: a secondary workspace must not
-      // be told about another project's skills.
-      const skills = registry.list(scopeFromArgs(config, args), workspaceKeyFromArgs(config, args));
+      // be told about another project's skills. A session-filtered skill is gone for this
+      // session too: the catalog and the list agree by construction.
+      const off = await skillsOffFor(sessionManager, sessionIdFromArgs(args));
+      const skills = registry.list(scopeFromArgs(config, args), workspaceKeyFromArgs(config, args))
+        .filter((s) => !off.has(s.name));
       if (skills.length === 0) {
         return { success: true, output: "No skills available." };
       }
@@ -82,7 +99,7 @@ export function createListSkillsTool(registry: SkillRegistry, config: MyClawConf
   };
 }
 
-export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfig): Tool {
+export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfig, sessionManager?: SessionManager): Tool {
   return {
     name: "read_skill",
     description: "Read the full content of a skill by name. If file_path is provided, reads a specific file within the skill directory (e.g., 'references/format.md'). Call this when a skill matches your task or when the skill references a file you need.",
@@ -97,6 +114,10 @@ export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfi
     execute: async (args: Record<string, unknown>) => {
       const name = String(args["name"] ?? "");
       const filePath = args["file_path"] ? String(args["file_path"]) : undefined;
+      const off = await skillsOffFor(sessionManager, sessionIdFromArgs(args));
+      if (off.has(name)) {
+        return { success: false, output: `Skill "${name}" is not in this session's scope. Use list_skills() to see the skills available to you.` };
+      }
       const skill = registry.get(name, workspaceKeyFromArgs(config, args));
       if (!skill) {
         return { success: false, output: `Skill "${name}" not found. Use list_skills() to see available skills.` };

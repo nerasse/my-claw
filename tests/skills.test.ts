@@ -305,6 +305,30 @@ test("read_skill tool", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("a session-filtered skill disappears from list and read", async () => {
+  const dir = await setupDir();
+  await writeSkill(dir, "s3", "---\nname: s3\ndescription: Third\n---\n\nHidden by session.");
+
+  const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
+  const registry = new SkillRegistry(skills);
+
+  // A SessionManager whose session carries skillsOff: the reply is "filtered" the same way.
+  // Tools get the session id via __sessionId; build the same observable here with a fake manager.
+  const fakeSession = { peek: async () => ({ skillsOff: ["s3"] }) };
+  const listTool = createListSkillsTool(registry, noScope, fakeSession as never);
+  const readTool = createReadSkillTool(registry, noScope, fakeSession as never);
+
+  const listed = await listTool.execute({ __sessionId: "sess-1" });
+  assert.equal(listed.success, true);
+  assert.equal(listed.output.includes("s3"), false);
+
+  const read = await readTool.execute({ name: "s3", __sessionId: "sess-1" });
+  assert.equal(read.success, false);
+  assert.ok(read.output.includes("not in this session's scope"));
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("manage_skills create action", async () => {
   const ws = await setupDir();
   const custom = await setupDir();

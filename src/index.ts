@@ -545,10 +545,10 @@ async function main() {
   const subAgentRegistry = new SubAgentRegistry();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, agentRegistry);
   registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry);
-  registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir);
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();
+  registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir, sessionManager);
   toolRegistry.register(createWorkspacesTool({ sessionManager, config, reload: reloadConfigNow }));
   const backfilledConversations = await backfillConversationArchive();
   if (backfilledConversations > 0) {
@@ -2415,11 +2415,12 @@ function registerSubAgentTools(
 function registerSkillTools(
   registry: ToolRegistry, skillRegistry: SkillRegistry, config: MyClawConfig,
   builtinDir: string, customDir: string, workspaceSkillsDir: string,
+  sessionManager: SessionManager,
 ): void {
   // config is the live object mutated in place by the hot-reload appliers, so a scope edit takes
   // effect on the next tool call without re-registering anything.
-  registry.register(createListSkillsTool(skillRegistry, config));
-  registry.register(createReadSkillTool(skillRegistry, config));
+  registry.register(createListSkillsTool(skillRegistry, config, sessionManager));
+  registry.register(createReadSkillTool(skillRegistry, config, sessionManager));
   registry.register(createManageSkillsTool(skillRegistry, config, builtinDir, customDir, workspaceSkillsDir));
 }
 

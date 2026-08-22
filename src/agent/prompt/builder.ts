@@ -31,6 +31,13 @@ export interface PromptContext {
    * agent got before agents could have a prompt of their own.
    */
   instructions?: readonly PromptLayerName[];
+  /**
+   * Derived layers this session turned off ("agent", "skills", "tools", "platform", "runtime",
+   * "suggested"). The four workspace files are gated by `instructions`/`wants` instead. An off
+   * layer is simply skipped during composition, so the run and the instructions page can never
+   * drift: both go through this one function.
+   */
+  layersOff?: readonly string[];
 }
 
 /** A layer of the composed prompt, kept apart so a reader can be shown what each one contributed. */
@@ -55,6 +62,7 @@ export interface PromptPart {
 export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPart[]> {
   const parts: PromptPart[] = [];
   const wants = (layer: PromptLayerName): boolean => ctx.instructions === undefined || ctx.instructions.includes(layer);
+  const layerOff = (id: string): boolean => ctx.layersOff !== undefined && ctx.layersOff.includes(id);
 
   const promptOpts: PromptResolveOptions = {
     workspaceDir: ctx.workspaceDir,
@@ -89,12 +97,12 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
   // catalogs, which stay adjacent to the runtime line at the end for prompt-cache stability.
   // Normalised like the workspace files: a workspace `agents/` file is no more trusted than
   // a workspace AGENTS.md.
-  if (ctx.agentPrompt) {
+  if (ctx.agentPrompt && !layerOff("agent")) {
     parts.push({ id: "agent", label: "Agent mandate", text: normalizeUntrusted(ctx.agentPrompt, "agent") });
   }
 
   // Layer 5: Available skills
-  if (ctx.skills.length > 0) {
+  if (ctx.skills.length > 0 && !layerOff("skills")) {
     const skillList = ctx.skills
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
@@ -110,7 +118,7 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
   }
 
   // Layer 6: Available tools
-  if (ctx.tools.length > 0) {
+  if (ctx.tools.length > 0 && !layerOff("tools")) {
     const toolList = ctx.tools
       .map((t) => `- ${t.name}: ${t.description}`)
       .join("\n");
@@ -119,21 +127,23 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
 
   // Layer 7: Platform hints
   const hint = getPlatformHint(ctx.platform);
-  if (hint) {
+  if (hint && !layerOff("platform")) {
     parts.push({ id: "platform", label: "Platform hints", text: hint });
   }
 
   // Layer 8: Runtime
-  const now = new Date().toISOString();
-  parts.push({
-    id: "runtime",
-    label: "Runtime",
-    text: `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
-  });
+  if (!layerOff("runtime")) {
+    const now = new Date().toISOString();
+    parts.push({
+      id: "runtime",
+      label: "Runtime",
+      text: `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
+    });
+  }
 
   // Layer 9: Soft skill reminder. Placed last (after the already-dynamic runtime line) so it
   // never busts the cacheable prefix. Complements, not overrides, the "MUST read_skill" catalog.
-  if (ctx.suggestedSkills && ctx.suggestedSkills.length > 0) {
+  if (ctx.suggestedSkills && ctx.suggestedSkills.length > 0 && !layerOff("suggested")) {
     const hints = ctx.suggestedSkills
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");

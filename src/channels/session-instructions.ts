@@ -47,6 +47,17 @@ export interface SessionInstructionNested {
   lastAt: string;
   /** The file no longer exists: it stays listed, because it did shape this conversation. */
   missing: boolean;
+  /** This session turned the file off: it is never injected now, and the page greys it. */
+  disabled?: boolean;
+  /** This session unloaded the record: shown as such until a tool touches the directory again. */
+  unloaded?: boolean;
+}
+
+export interface SessionSkillState {
+  name: string;
+  description: string;
+  /** True when this session filtered the skill out of its catalog. */
+  off: boolean;
 }
 
 export interface SessionInstructionsReport {
@@ -61,6 +72,14 @@ export interface SessionInstructionsReport {
   totalBytes: number;
   layers: SessionInstructionLayer[];
   nested: SessionInstructionNested[];
+  /** Layer ids the session turned off (agent, skills, tools, platform, runtime, suggested). */
+  layersOff: string[];
+  /** Skill names the session filtered out of the catalog. */
+  skillsOff: string[];
+  /** Every skill in scope, with the ones the session turned off flagged. Lets the page toggle more. */
+  skills: SessionSkillState[];
+  /** Long-term memory recall off for this session: the run skips memory injection entirely. */
+  memoryRecallOff: boolean;
   /** What this page cannot show, stated rather than left to be guessed. */
   notes: string[];
 }
@@ -111,7 +130,10 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
   const model = run?.model ?? p.config.llm.defaultModel ?? p.config.llm.model ?? "";
   const backend = run?.backend ?? "openai";
 
-  const skills = p.skillRegistry.list(definition.skills, definition.workspace);
+  const skillsAll = p.skillRegistry.list(definition.skills, definition.workspace);
+  const skillsOff = p.session?.skillsOff ?? [];
+  const skillStates = skillsAll.map((s) => ({ name: s.name, description: s.description, off: skillsOff.includes(s.name) }));
+  const promptSkills = skillsOff.length > 0 ? skillsAll.filter((s) => !skillsOff.includes(s.name)) : skillsAll;
   const tools = p.toolRegistry.getForAgent(definition.base, p.config.tools?.disabled, definition.mcp, definition.allow);
 
   const parts = await composeSystemPrompt({
@@ -119,9 +141,10 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
     model,
     sessionId: p.sessionId,
     tools,
-    skills,
+    skills: promptSkills,
     ...(definition.prompt ? { agentPrompt: definition.prompt } : {}),
     instructions: definition.instructions,
+    layersOff: p.session?.promptLayersOff,
     workspaceDir,
     defaultWorkspaceDir: resolveWorkspaceDir(p.config.workspace),
     workspaceKey,
@@ -153,6 +176,8 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
   }
 
   const root = resolve(workspaceDir);
+  const disabledPaths = p.session?.nestedDisabled ?? [];
+  const unloadedPaths = p.session?.nestedUnloaded ?? [];
   const nested: SessionInstructionNested[] = [];
   for (const record of p.session?.nestedAgents ?? []) {
     const size = await stat(record.path).then((s) => s.size, () => -1);
@@ -164,6 +189,25 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
       firstAt: record.firstAt,
       lastAt: record.lastAt,
       missing: size < 0,
+      ...(disabledPaths.includes(record.path) ? { disabled: true } : {}),
+    });
+  }
+  // The unloaded ones were purged from `nestedAgents`, so they no longer have a record: they are
+  // listed as a fact until a tool touches their directory and the lazy reload brings them back.
+  const known = new Set(nested.map((n) => n.path));
+  for (const path of unloadedPaths) {
+    if (known.has(path)) continue;
+    const size = await stat(path).then((s) => s.size, () => -1);
+    nested.push({
+      path,
+      label: path.startsWith(root + sep) ? relative(root, path) : path,
+      bytes: size < 0 ? 0 : size,
+      count: 0,
+      firstAt: "",
+      lastAt: "",
+      missing: size < 0,
+      unloaded: true,
+      ...(disabledPaths.includes(path) ? { disabled: true } : {}),
     });
   }
   nested.sort((a, b) => a.label.localeCompare(b.label));
@@ -194,6 +238,10 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
     totalBytes: layers.reduce((sum, l) => sum + l.bytes, 0),
     layers,
     nested,
+    layersOff: p.session?.promptLayersOff ?? [],
+    skillsOff,
+    skills: skillStates,
+    memoryRecallOff: p.session?.memoryRecallOff ?? false,
     notes,
   };
 }

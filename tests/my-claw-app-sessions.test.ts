@@ -785,6 +785,56 @@ describe("MyClawAppSessionStoreImpl.setWorkspace", () => {
   });
 });
 
+describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
+  let manager: SessionManager;
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+
+  beforeEach(async () => {
+    manager = new SessionManager();
+    store = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    sessionId = `my-claw-app/thread/${DEVICE}/${THREAD}`;
+    await deleteSession(sessionId);
+    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "hi", timestamp: "2026-01-01T00:00:01.000Z" }]));
+  });
+
+  test("nested.toggle disables and re-enables, persisted on the session", async () => {
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.toggle", path: "/repo/AGENTS.md" });
+    assert.deepEqual((await manager.peek(sessionId))?.nestedDisabled, ["/repo/AGENTS.md"]);
+    assert.deepEqual((await loadSession(sessionId))?.nestedDisabled, ["/repo/AGENTS.md"], "persisted");
+
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.toggle", path: "/repo/AGENTS.md", on: false });
+    assert.equal((await manager.peek(sessionId))?.nestedDisabled, undefined);
+    assert.equal((await loadSession(sessionId))?.nestedDisabled, undefined);
+  });
+
+  test("nested.unload purges the record and remembers the unload", async () => {
+    const s = await manager.peek(sessionId);
+    s!.nestedAgents = [{ path: "/repo/AGENTS.md", bytes: 10, firstAt: "2026-01-01T00:00:01.000Z", lastAt: "2026-01-01T00:00:01.000Z", count: 1 }];
+    await manager.persist(sessionId);
+
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.unload", path: "/repo/AGENTS.md" });
+    const after = await manager.peek(sessionId);
+    assert.deepEqual(after?.nestedAgents, []);
+    assert.deepEqual(after?.nestedUnloaded, ["/repo/AGENTS.md"]);
+  });
+
+  test("layer.toggle, skill.toggle and memory.toggle flip and persist", async () => {
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "layer.toggle", layer: "tools" });
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "skill.toggle", skill: "voice" });
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "memory.toggle" });
+    const s = await manager.peek(sessionId);
+    assert.deepEqual(s?.promptLayersOff, ["tools"]);
+    assert.deepEqual(s?.skillsOff, ["voice"]);
+    assert.equal(s?.memoryRecallOff, true);
+    assert.deepEqual((await loadSession(sessionId))?.promptLayersOff, ["tools"]);
+  });
+
+  test("refuses an unknown conversation", async () => {
+    await assert.rejects(() => store.setInstructionPatch(DEVICE, "jamais", { kind: "memory.toggle" }), /no session/);
+  });
+});
+
 describe("MyClawAppSessionStoreImpl command journal", () => {
   let manager: SessionManager;
   let store: MyClawAppSessionStoreImpl;

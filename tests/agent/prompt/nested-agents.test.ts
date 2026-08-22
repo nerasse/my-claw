@@ -324,3 +324,24 @@ test("nested: disabled path returns nothing when collector not used", () => {
   assert.equal(c.collect("web_search", { query: "x" }), "");
   rmSync(base, { recursive: true, force: true });
 });
+
+test("nested: disabled file is skipped before dedup, so re-enabling mid-run collects it again", () => {
+  const base = scratch();
+  const repo = join(base, "repo");
+  mkdirSync(join(repo, ".git"), { recursive: true });
+  write(join(repo, "AGENTS.md"), "REPO RULES");
+  writeFileSync(join(repo, "a.ts"), "x", "utf-8");
+
+  const disabledPaths = new Set<string>();
+  const c = new NestedAgentsCollector(join(base, "ws"), 32768, undefined, (p) => disabledPaths.has(p));
+
+  // Off: nothing injected, and (the point) the path is NOT marked seen.
+  disabledPaths.add(join(repo, "AGENTS.md"));
+  assert.equal(c.collect("read", { path: join(repo, "a.ts") }), "");
+
+  // Re-enabled mid-run: the very next call on the same tree gets the file back.
+  disabledPaths.delete(join(repo, "AGENTS.md"));
+  assert.ok(c.collect("read", { path: join(repo, "a.ts") }).includes("REPO RULES"));
+
+  rmSync(base, { recursive: true, force: true });
+});

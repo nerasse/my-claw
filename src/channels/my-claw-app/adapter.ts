@@ -69,6 +69,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionRename,
   MyClawAppSessionWorkspaceSet,
   MyClawAppSessionInstructionsGet,
+  MyClawAppSessionInstructionsSet,
   MyClawAppSubAgentsList,
   MyClawAppSubAgentsKill,
   MyClawAppSubAgentsReset,
@@ -1263,6 +1264,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.instructions.get":
         this.detach(this.handleSessionInstructionsGet(ws, frame), "handleSessionInstructionsGet");
         break;
+      case "session.instructions.set":
+        this.detach(this.handleSessionInstructionsSet(ws, frame), "handleSessionInstructionsSet");
+        break;
       case "jobs.list":
         this.detach(handleJobsList(this.settingsDeps(), ws), "handleJobsList");
         break;
@@ -1769,6 +1773,28 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, { type: "session.instructions.result", threadId, instructions });
     } catch (err) {
       await this.refuse(ws, "instructions", "session.instructions.get failed", { error: String(err) });
+    }
+  }
+
+  private async handleSessionInstructionsSet(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSessionInstructionsSet,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "instructions", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    try {
+      if (!this.sessionInstructions) {
+        await this.refuse(ws, "instructions", "session instructions unavailable");
+        return;
+      }
+      await this.store.setInstructionPatch(ws.data.owner, threadId, frame.patch);
+      const instructions = await this.sessionInstructions(this.store.resolveSessionId(ws.data.owner, threadId));
+      this.sendFrame(ws, { type: "session.instructions.result", threadId, instructions });
+    } catch (err) {
+      await this.refuse(ws, "instructions", "session.instructions.set failed", { error: String(err) });
     }
   }
 

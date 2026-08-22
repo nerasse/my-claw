@@ -7,7 +7,7 @@ import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/
 import { DraftStore, type DraftWrite } from "./drafts.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -47,6 +47,12 @@ export interface MyClawAppSessionStore {
    * session if it does not exist yet. Throws on an unknown key.
    */
   setWorkspace(owner: string, threadId: string, workspace: string): Promise<void>;
+  /**
+   * Applies one per-session instruction control: nested AGENTS.md toggle/unload, prompt layer
+   * toggle, skill toggle, memory recall toggle. The session is peeked, mutated, persisted. Throws
+   * when the conversation does not exist: the adapter turns that into a refused frame.
+   */
+  setInstructionPatch(owner: string, threadId: string, patch: MyClawAppSessionInstructionPatch): Promise<void>;
 }
 
 /** Long enough for a real name, short enough to stay one line in the drawer. */
@@ -560,6 +566,63 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const session = await this.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm", key);
     if (key) session.workspace = key;
     else delete session.workspace;
+    await this.sessionManager.persist(sessionId);
+  }
+
+  async setInstructionPatch(owner: string, threadId: string, patch: MyClawAppSessionInstructionPatch): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) throw new Error(`no session: ${sessionId}`);
+    switch (patch.kind) {
+      case "nested.toggle": {
+        if (!patch.path) throw new Error("nested.toggle needs a path");
+        const disabled = new Set(session.nestedDisabled ?? []);
+        if (patch.on === true) disabled.add(patch.path);
+        else if (patch.on === false) disabled.delete(patch.path);
+        else if (disabled.has(patch.path)) disabled.delete(patch.path);
+        else disabled.add(patch.path);
+        if (disabled.size > 0) session.nestedDisabled = [...disabled];
+        else delete session.nestedDisabled;
+        break;
+      }
+      case "nested.unload": {
+        if (!patch.path) throw new Error("nested.unload needs a path");
+        session.nestedAgents = (session.nestedAgents ?? []).filter((r) => r.path !== patch.path);
+        const unloaded = new Set(session.nestedUnloaded ?? []);
+        unloaded.add(patch.path);
+        session.nestedUnloaded = [...unloaded];
+        break;
+      }
+      case "layer.toggle": {
+        if (!patch.layer) throw new Error("layer.toggle needs a layer");
+        const off = new Set(session.promptLayersOff ?? []);
+        if (patch.on === true) off.add(patch.layer);
+        else if (patch.on === false) off.delete(patch.layer);
+        else if (off.has(patch.layer)) off.delete(patch.layer);
+        else off.add(patch.layer);
+        if (off.size > 0) session.promptLayersOff = [...off];
+        else delete session.promptLayersOff;
+        break;
+      }
+      case "skill.toggle": {
+        if (!patch.skill) throw new Error("skill.toggle needs a skill");
+        const off = new Set(session.skillsOff ?? []);
+        if (patch.on === true) off.add(patch.skill);
+        else if (patch.on === false) off.delete(patch.skill);
+        else if (off.has(patch.skill)) off.delete(patch.skill);
+        else off.add(patch.skill);
+        if (off.size > 0) session.skillsOff = [...off];
+        else delete session.skillsOff;
+        break;
+      }
+      case "memory.toggle": {
+        if (patch.on === true) session.memoryRecallOff = true;
+        else if (patch.on === false) delete session.memoryRecallOff;
+        else if (session.memoryRecallOff) delete session.memoryRecallOff;
+        else session.memoryRecallOff = true;
+        break;
+      }
+    }
     await this.sessionManager.persist(sessionId);
   }
 }

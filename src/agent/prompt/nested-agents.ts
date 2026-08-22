@@ -227,6 +227,7 @@ export class NestedAgentsCollector {
     workspaceDir: string,
     private readonly maxBytes: number,
     private readonly onInject?: (file: { path: string; bytes: number }) => void,
+    private readonly isDisabled?: (realPath: string) => boolean,
   ) {
     this.workspaceRoot = resolve(workspaceDir);
   }
@@ -255,6 +256,9 @@ export class NestedAgentsCollector {
       // Keyed on the real file: the same instructions reached through a symlink, or through two
       // spellings of one path, are one file and must not be paid for twice.
       const key = realPath(file);
+      // Checked BEFORE seen.add: a file turned off mid-run (via the app page) must not poison
+      // the dedup set, so re-enabling it mid-run lets the next tool call collect it again.
+      if (this.isDisabled?.(key)) continue;
       if (this.seen.has(key)) continue;
       this.seen.add(key);
 

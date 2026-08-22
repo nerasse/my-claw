@@ -137,3 +137,31 @@ test("a thread that has never run still reports what it would load", async () =>
   assert.ok(report.layers.some((l) => l.id === "CORE"));
   assert.deepEqual(report.nested, []);
 });
+
+test("the report reflects layers, skills and memory recall the session turned off", async () => {
+  const report = await sessionInstructionsReport(
+    params(sessionFor({ promptLayersOff: ["tools", "suggested"], skillsOff: ["voice"], memoryRecallOff: true })),
+  );
+  assert.deepEqual(report.layersOff, ["tools", "suggested"]);
+  assert.deepEqual(report.skillsOff, ["voice"]);
+  assert.equal(report.memoryRecallOff, true);
+  // The off layers are gone from the composed prompt: tools and suggested are not layers.
+  const ids = report.layers.map((l) => l.id);
+  assert.equal(ids.includes("tools"), false);
+  assert.equal(ids.includes("suggested"), false);
+});
+
+test("the report marks disabled and unloaded nested files", async () => {
+  const repoPath = join(base, "repo", "AGENTS.md");
+  const report = await sessionInstructionsReport(
+    params(
+      sessionFor({
+        nestedAgents: [{ path: repoPath, bytes: 40, firstAt: "2026-08-15T10:00:00.000Z", lastAt: "2026-08-15T10:00:00.000Z", count: 1 }],
+        nestedDisabled: [repoPath],
+        nestedUnloaded: [join(base, "gone", "AGENTS.md")],
+      }),
+    ),
+  );
+  assert.equal(report.nested.find((n) => n.path === repoPath)?.disabled, true);
+  assert.equal(report.nested.find((n) => n.path === join(base, "gone", "AGENTS.md"))?.unloaded, true);
+});

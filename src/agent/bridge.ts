@@ -184,6 +184,7 @@ export class AgentBridge implements AgentBackend {
    *  injected this run and the byte budget spent, so each file lands at most once. */
   private nestedAgentsCollectorFor(session: SessionData): NestedAgentsCollector | undefined {
     if (!nestedAgentsEnabled(this.config)) return undefined;
+    const disabled = session.nestedDisabled ?? [];
     return new NestedAgentsCollector(
       this.workspaceFor(session).workspaceDir,
       resolveNestedAgentsMaxBytes(this.config),
@@ -191,6 +192,7 @@ export class AgentBridge implements AgentBackend {
         session.nestedAgents ??= [];
         recordNestedInjection(session.nestedAgents, file);
       },
+      (realPath) => disabled.includes(realPath),
     );
   }
 
@@ -336,13 +338,15 @@ export class AgentBridge implements AgentBackend {
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
       // catalog wider than the scope would advertise skills read_skill then refuses.
       const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
+      const skillsOff = session.skillsOff ?? [];
+      const skills = skillsOff.length > 0 ? allSkills.filter((s) => !skillsOff.includes(s.name)) : allSkills;
       const runWorkspace = this.workspaceFor(session);
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
         sessionId: session.id,
         tools,
-        skills: allSkills,
+        skills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
         workspaceKey: session.workspace,
@@ -350,8 +354,9 @@ export class AgentBridge implements AgentBackend {
         workspacePrompts: this.config.workspacePrompts,
         ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
         instructions: agent.instructions,
+        layersOff: session.promptLayersOff,
         suggestedSkills: await selectRelevantSkills(
-          allSkills,
+          skills,
           message.text,
           this.config.memory?.embedding,
           this.config.skills?.suggest,
@@ -390,7 +395,7 @@ export class AgentBridge implements AgentBackend {
         void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
       }
 
-      await this.injectMemory(message, chatMessages);
+      await this.injectMemory(message, chatMessages, session);
 
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
 
@@ -954,9 +959,10 @@ export class AgentBridge implements AgentBackend {
    * Inject relevant long-term memory into the current turn only (not session history),
    * so it never accumulates and stays out of cached prefixes. Main agent only.
    */
-  private async injectMemory(message: UnifiedMessage, chatMessages: ChatMessage[]): Promise<void> {
+  private async injectMemory(message: UnifiedMessage, chatMessages: ChatMessage[], session: SessionData): Promise<void> {
     if (this.depth !== 0) return;
     if (this.config.memory?.enabled === false) return;
+    if (session.memoryRecallOff) return;
     try {
       const mem = await recall(message.text, this.config.memory);
       if (!mem.text) return;

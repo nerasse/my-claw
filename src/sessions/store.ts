@@ -314,6 +314,39 @@ export interface SessionData {
    * instructions a session picked up along the way, and what the app's instructions page lists.
    */
   nestedAgents?: import("../agent/prompt/nested-agents.ts").NestedAgentsRecord[];
+  /**
+   * Nested AGENTS.md paths this session turned off, by their absolute resolved identity. A
+   * disabled file is never injected by the collector (even if a tool touches its directory) and
+   * the item stays greyed out on the app's instructions page. Persisted on the session so the
+   * choice survives restarts; the collector is run-local, so this list is the only memory of it.
+   */
+  nestedDisabled?: string[];
+  /**
+   * Nested AGENTS.md paths the session unloaded: the record was removed from `nestedAgents` (so
+   * the page stops showing it) but the file stays on disk and is re-collected the next time a
+   * tool touches its directory. Persisted so an unload is not undone by a restart. An unloaded
+   * path that is also in `nestedDisabled` stays unloaded: the lazy reload is what re-enables it.
+   */
+  nestedUnloaded?: string[];
+  /**
+   * Prompt layers this session turned off, by layer id (`agent` mandate, `skills`, `tools`,
+   * `platform`, `runtime`, `suggested`). The four workspace files go through `instructions` with
+   * their own `wants` gates. An off layer is simply skipped during composition, and the app page
+   * shows it as off. Persisted on the session. See docs/session-instructions.md.
+   */
+  promptLayersOff?: string[];
+  /**
+   * Skills this session filtered out, by skill name: they do not appear in the prompt catalog,
+   * and list_skills/read_skill with `__agentType` in scope keep responding as if they were not
+   * scoped to this session (they stay visible to other sessions and to the global run).
+   * Persisted on the session.
+   */
+  skillsOff?: string[];
+  /**
+   * Long-term memory recall off for this session: turn-level memory injection is skipped, the
+   * model never sees a memory block even if the store has matches. Persisted on the session.
+   */
+  memoryRecallOff?: boolean;
 }
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");

@@ -831,6 +831,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelRemove
   | MyClawAppStatusGet
   | MyClawAppSessionInstructionsGet
+  | MyClawAppSessionInstructionsSet
   | MyClawAppJobsList
   | MyClawAppJobsRuns
   | MyClawAppSubAgentsList
@@ -1947,6 +1948,32 @@ export interface MyClawAppSessionInstructionsGet {
   threadId: string;
 }
 
+/**
+ * The app applies one per-session instruction control. The server answers with a fresh report
+ * (session.instructions.result), so the page reflects the state it just set.
+ */
+export interface MyClawAppSessionInstructionsSet {
+  type: "session.instructions.set";
+  threadId: string;
+  patch: MyClawAppSessionInstructionPatch;
+}
+
+/**
+ * Applies one per-session instruction control: nested AGENTS.md toggle/unload, prompt layer
+ * toggle, skill toggle, memory recall toggle.
+ */
+export interface MyClawAppSessionInstructionPatch {
+  kind: "nested.toggle" | "nested.unload" | "layer.toggle" | "skill.toggle" | "memory.toggle";
+  /** For nested.*: the absolute resolved path as returned by the report. */
+  path?: string;
+  /** For layer.toggle: the layer id (agent, skills, tools, platform, runtime, suggested). */
+  layer?: string;
+  /** For skill.toggle: the skill name. */
+  skill?: string;
+  /** For toggles that need it: the new state, absent means flip. */
+  on?: boolean;
+}
+
 export interface MyClawAppSessionInstructionsResult {
   type: "session.instructions.result";
   threadId: string;
@@ -1977,6 +2004,10 @@ export interface MyClawAppInstructionNested {
   firstAt: string;
   lastAt: string;
   missing: boolean;
+  /** True when this session turned the file off: it is never injected, and the page greys it. */
+  disabled?: boolean;
+  /** True when this session unloaded the record: it is not shown until the next lazy reload. */
+  unloaded?: boolean;
 }
 
 export interface MyClawAppSessionInstructions {
@@ -1989,6 +2020,14 @@ export interface MyClawAppSessionInstructions {
   totalBytes: number;
   layers: MyClawAppInstructionLayer[];
   nested: MyClawAppInstructionNested[];
+  /** Layer ids the session turned off (agent, skills, tools, platform, runtime, suggested). */
+  layersOff: string[];
+  /** Skill names the session filtered out of the catalog. */
+  skillsOff: string[];
+  /** Every skill in scope, with the ones the session turned off flagged. Lets the page toggle more. */
+  skills: Array<{ name: string; description: string; off: boolean }>;
+  /** Long-term memory recall off for this session. */
+  memoryRecallOff: boolean;
   /** What the page cannot show, stated rather than left to be guessed. */
   notes: string[];
 }

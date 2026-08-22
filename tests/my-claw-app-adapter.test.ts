@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppSessionInstructionPatch, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
@@ -186,6 +186,12 @@ class FakeSessionStore {
 
   async recordFailure(deviceId: string, threadId: string, error: string): Promise<void> {
     this.failures.push({ threadId, error });
+  }
+
+  patches: Array<{ threadId: string; patch: MyClawAppSessionInstructionPatch }> = [];
+
+  async setInstructionPatch(deviceId: string, threadId: string, patch: MyClawAppSessionInstructionPatch): Promise<void> {
+    this.patches.push({ threadId, patch });
   }
 
   async archive(deviceId: string, threadId: string): Promise<void> {
@@ -3187,6 +3193,34 @@ describe("command frames", () => {
     const frame = await nextFrame(client2);
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "instructions");
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("session.instructions.set applies the control and answers the fresh report", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    agent.onSessionInstructions(async () => ({
+      agent: "orchestrator",
+      workspace: "default",
+      workspaceDir: "/ws",
+      model: "m",
+      backend: "openai",
+      platform: "my-claw-app",
+      totalBytes: 3,
+      layers: [{ id: "CORE", label: "Core directives", bytes: 3, text: "abc" }],
+      nested: [],
+      layersOff: [],
+      skillsOff: [],
+      memoryRecallOff: false,
+      notes: [],
+    }));
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "session.instructions.set", threadId: "t9", patch: { kind: "nested.toggle", path: "/repo/AGENTS.md" } }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "session.instructions.result");
+    assert.equal(frame["threadId"], "t9");
+    assert.deepEqual(store.patches, [{ threadId: "t9", patch: { kind: "nested.toggle", path: "/repo/AGENTS.md" } }]);
     client2.ws.close();
     await agent.stop();
   });
