@@ -28,7 +28,9 @@ export class MyClawAppStreamer {
   private segment = 0;
   private toolCount = 0;
   /** Ids of started-but-not-yet-ended tool calls, so the end frame reuses the start's id. */
-  private pendingToolIds: string[] = [];
+  /** Tool cards opened by `chat.tool.start` and not yet settled, with what the start sent so an
+   *  abort can settle them with their real name/args instead of blanking the card. */
+  private pendingToolIds: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
   /** Model tool_use id -> card id (set at start), so live-progress frames find the card. */
   private toolIdsByModelId = new Map<string, string>();
   /** subagentId -> the spawn card id (tool-start card for tool spawns, else the subagent id). */
@@ -272,7 +274,7 @@ export class MyClawAppStreamer {
       // stacking a second one. The model's tool_use id is only a fallback: when no start was sent
       // (a replayed session written before starts), it is absent anyway and we fall back to the
       // turn-scoped counter.
-      const startId = this.pendingToolIds.shift() ?? tool.id ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
+      const startId = this.pendingToolIds.shift()?.id ?? tool.id ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
       const id = startId;
       const output = tool.output ?? "";
       const truncated = output.length > TOOL_OUTPUT_LIMIT;
@@ -298,7 +300,7 @@ export class MyClawAppStreamer {
     for (const tool of toolCalls) {
       this.toolCount += 1;
       const id = `${this.opts.id}:tool:${this.toolCount}`;
-      this.pendingToolIds.push(id);
+      this.pendingToolIds.push({ id, name: tool.name, args: tool.arguments });
       // Map the model's tool_use id to this card's id so live-progress frames (which carry the
       // model id) can find the card the start opened.
       if (tool.id) this.toolIdsByModelId.set(tool.id, id);
@@ -332,6 +334,41 @@ export class MyClawAppStreamer {
     if (this.finished) return;
     this.finished = true;
     const err = errorText?.trim();
+    // A run can die with tool cards still open (the model asked, the stop cut it before the tool
+    // answered, or a spawn was cut mid-run). The start frames opened those cards with `running:
+    // true`; without a settle they would spin forever. Settle every pending tool card as a failed
+    // call, then every live spawn card as aborted, in the same format the natural end uses so the
+    // app upserts rather than stacks.
+    for (const pending of this.pendingToolIds) {
+      await this.opts.send({
+        type: "chat.tool",
+        id: pending.id,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        name: pending.name,
+        args: pending.args,
+        ok: false,
+        output: err ? `aborted: ${err}` : "aborted",
+        truncated: false,
+        ts: new Date().toISOString(),
+      });
+    }
+    this.pendingToolIds = [];
+    // A spawn annotated via appendSpawnStart may or may not have a tool card; settle the annotated
+    // card (or the standalone one, which uses the subagent id as its card id).
+    for (const [subagentId, cardId] of this.spawnCardIds) {
+      await this.opts.send({
+        type: "chat.spawn.end",
+        id: cardId,
+        subagentId,
+        threadId: this.opts.threadId,
+        turnId: this.opts.id,
+        status: "aborted",
+        ...(err ? { error: err } : {}),
+        ts: new Date().toISOString(),
+      });
+    }
+    this.spawnCardIds = new Map();
     await this.opts.send({ type: "chat.stream.abort", id: this.currentId(), threadId: this.opts.threadId, error: err || undefined });
   }
 }

@@ -122,4 +122,29 @@ describe("MyClawAppStreamer media refs", () => {
     expect(start).toBeDefined();
     expect(deltas[0]!.id).toBe(start!.id);
   });
+  test("abort settles open tool cards and spawn cards instead of leaving them spinning", async () => {
+    const { streamer, frames } = collect();
+    await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep 30" } }]);
+    await streamer.appendSpawnStart({ subagentId: "subagent/sleep-probe", displayName: "sleep-probe", type: "general", mode: "run", toolCallId: "tu_1" });
+    await streamer.abort("stopped by owner");
+
+    const toolEnds = frames.filter((f) => f.type === "chat.tool") as { id: string; name: string; ok: boolean; output: string }[];
+    const spawnEnds = frames.filter((f) => f.type === "chat.spawn.end") as { id: string; status: string; error?: string }[];
+    const aborts = frames.filter((f) => f.type === "chat.stream.abort");
+
+    expect(toolEnds).toHaveLength(1);
+    expect(toolEnds[0]!.name).toBe("bash");
+    expect(toolEnds[0]!.ok).toBe(false);
+    expect(toolEnds[0]!.output).toContain("stopped by owner");
+    expect(spawnEnds).toHaveLength(1);
+    expect(spawnEnds[0]!.status).toBe("aborted");
+    expect(aborts).toHaveLength(1);
+  });
+
+  test("abort without open tools still sends the stream abort", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("some text");
+    await streamer.abort();
+    expect(frames.filter((f) => f.type === "chat.stream.abort")).toHaveLength(1);
+  });
 });
