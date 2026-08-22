@@ -322,13 +322,6 @@ export interface SessionData {
    */
   nestedDisabled?: string[];
   /**
-   * Nested AGENTS.md paths the session unloaded: the record was removed from `nestedAgents` (so
-   * the page stops showing it) and the collector skips it until the session puts it back. The
-   * files stay on disk; the unload is per-session and only the app's "put back" action clears
-   * it. Persisted on the session so an unload is not undone by a restart.
-   */
-  nestedUnloaded?: string[];
-  /**
    * Prompt layers this session turned off, by layer id (`agent` mandate, `skills`, `tools`,
    * `platform`, `runtime`, `suggested`). The four workspace files go through `instructions` with
    * their own `wants` gates. An off layer is simply skipped during composition, and the app page

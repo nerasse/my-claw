@@ -185,7 +185,6 @@ export class AgentBridge implements AgentBackend {
   private nestedAgentsCollectorFor(session: SessionData): NestedAgentsCollector | undefined {
     if (!nestedAgentsEnabled(this.config)) return undefined;
     const disabled = session.nestedDisabled ?? [];
-    const unloaded = new Set(session.nestedUnloaded ?? []);
     return new NestedAgentsCollector(
       this.workspaceFor(session).workspaceDir,
       resolveNestedAgentsMaxBytes(this.config),
@@ -193,7 +192,7 @@ export class AgentBridge implements AgentBackend {
         session.nestedAgents ??= [];
         recordNestedInjection(session.nestedAgents, file);
       },
-      (realPath) => disabled.includes(realPath) || unloaded.has(realPath),
+      (realPath) => disabled.includes(realPath),
     );
   }
 

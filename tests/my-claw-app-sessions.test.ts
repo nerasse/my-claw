@@ -808,7 +808,7 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
     assert.equal((await loadSession(sessionId))?.nestedDisabled, undefined);
   });
 
-  test("nested.unload purges the record and remembers the unload", async () => {
+  test("nested.unload purges the record without remembering the unload", async () => {
     const s = await manager.peek(sessionId);
     s!.nestedAgents = [{ path: "/repo/AGENTS.md", bytes: 10, firstAt: "2026-01-01T00:00:01.000Z", lastAt: "2026-01-01T00:00:01.000Z", count: 1 }];
     await manager.persist(sessionId);
@@ -816,18 +816,9 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
     await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.unload", path: "/repo/AGENTS.md" });
     const after = await manager.peek(sessionId);
     assert.deepEqual(after?.nestedAgents, []);
-    assert.deepEqual(after?.nestedUnloaded, ["/repo/AGENTS.md"]);
-  });
-
-  test("nested.restore clears the unload so the file can be picked up again", async () => {
-    const s = await manager.peek(sessionId);
-    s!.nestedUnloaded = ["/repo/AGENTS.md"];
-    await manager.persist(sessionId);
-
-    await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.restore", path: "/repo/AGENTS.md" });
-    const after = await manager.peek(sessionId);
-    assert.equal(after?.nestedUnloaded, undefined);
-    assert.deepEqual((await loadSession(sessionId))?.nestedUnloaded, undefined, "persisted");
+    // An unload only purges the record: no flag is left behind, so the file can be
+    // picked up again the next time a tool touches its directory.
+    assert.equal((after as unknown as Record<string, unknown>)?.nestedUnloaded, undefined);
   });
 
   test("layer.toggle, skill.toggle and memory.toggle flip and persist", async () => {
