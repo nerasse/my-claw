@@ -141,10 +141,23 @@ describe("MyClawAppStreamer media refs", () => {
     expect(aborts).toHaveLength(1);
   });
 
-  test("abort without open tools still sends the stream abort", async () => {
+  test("finish settles cards left open by a silent stop instead of leaving the spinner", async () => {
     const { streamer, frames } = collect();
-    await streamer.push("some text");
-    await streamer.abort();
-    expect(frames.filter((f) => f.type === "chat.stream.abort")).toHaveLength(1);
+    await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep" } }]);
+    await streamer.finish();
+
+    const toolEnds = frames.filter((f) => f.type === "chat.tool") as { id: string; name: string; ok: boolean; output: string }[];
+    expect(toolEnds).toHaveLength(1);
+    expect(toolEnds[0]!.name).toBe("bash");
+    expect(toolEnds[0]!.ok).toBe(false);
+    expect(toolEnds[0]!.output).toBe("interrupted");
+  });
+
+  test("finish with no open cards still sends stream.done only", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("hello");
+    await streamer.finish();
+    expect(frames.filter((f) => f.type === "chat.tool")).toHaveLength(0);
+    expect(frames.filter((f) => f.type === "chat.stream.done")).toHaveLength(1);
   });
 });

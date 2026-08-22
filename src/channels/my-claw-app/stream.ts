@@ -320,6 +320,41 @@ export class MyClawAppStreamer {
   private async finishInternal(finalText?: string): Promise<void> {
     if (this.finished) return;
     this.finished = true;
+    // A run can exit through `finish` after a silent stop (the router swallows the abort and
+    // returns undefined instead of throwing, so the caller never reaches abort()). Tool cards
+    // left open by the stop would spin forever: settle them as interrupted here, exactly like
+    // abortInternal does, so both exit paths leave the same clean state.
+    if (this.pendingToolIds.length > 0) {
+      for (const pending of this.pendingToolIds) {
+        await this.opts.send({
+          type: "chat.tool",
+          id: pending.id,
+          threadId: this.opts.threadId,
+          turnId: this.opts.id,
+          name: pending.name,
+          args: pending.args,
+          ok: false,
+          output: "interrupted",
+          truncated: false,
+          ts: new Date().toISOString(),
+        });
+      }
+      this.pendingToolIds = [];
+    }
+    if (this.spawnCardIds.size > 0) {
+      for (const [subagentId, cardId] of this.spawnCardIds) {
+        await this.opts.send({
+          type: "chat.spawn.end",
+          id: cardId,
+          subagentId,
+          threadId: this.opts.threadId,
+          turnId: this.opts.id,
+          status: "aborted",
+          ts: new Date().toISOString(),
+        });
+      }
+      this.spawnCardIds = new Map();
+    }
     const pending = finalText ?? this.segmentText;
     const text = stripMediaRefsStreaming(pending);
 
