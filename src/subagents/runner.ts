@@ -134,8 +134,15 @@ export class SubAgentRunner {
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
     /** The `spawn` tool call that produced this, if any. Lets a live card target the tool-start card. */
     toolCallId?: string;
+    /**
+     * Called once the sub-agent session exists (id known) and before its run starts.
+     * Lets the app channel open a stream on the sub-agent's own thread so a human
+     * opening it mid-run sees tokens, not just the prompt. Absent for channels that
+     * have no live view (cron, CLI).
+     */
+    streamProvider?: (id: string) => SubAgentStream | undefined;
   }): Promise<{ id: string; result: string }> {
-    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue, toolCallId } = opts;
+    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue, toolCallId, streamProvider } = opts;
     // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
     // a callback, so this is the one place every caller passes through, and it keeps the stored
     // displayName equal to the name inside the id.
@@ -148,7 +155,7 @@ export class SubAgentRunner {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId);
+      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider);
     }
 
     const id = generateId(displayName, existingIds);
@@ -173,7 +180,8 @@ export class SubAgentRunner {
     indexSessionArchive(session);
 
     hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
-    const run = () => this.executeRun(id, type, resolved.dir, parentMessage, signal, model);
+    const stream = streamProvider?.(id);
+    const run = () => this.executeRun(id, type, resolved.dir, parentMessage, signal, model, stream);
     const result = await (enqueue ? enqueue(id, run) : run());
     hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
     return { id, result };
@@ -351,6 +359,7 @@ export class SubAgentRunner {
     signal?: AbortSignal,
     model?: string,
     toolCallId?: string,
+    streamProvider?: (id: string) => SubAgentStream | undefined,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
@@ -371,9 +380,10 @@ export class SubAgentRunner {
     indexSessionArchive(session);
 
     hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
+    const stream = streamProvider?.(id);
     this.activeCount += 1;
     try {
-      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
+      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result };
     } finally {
@@ -391,6 +401,7 @@ export class SubAgentRunner {
     parentMessage: UnifiedMessage,
     signal?: AbortSignal,
     model?: string,
+    stream?: SubAgentStream,
   ): Promise<string> {
     // `loadSession` also returns null on a truncated file, and the non-null assertion turned that
     // into a TypeError the model received as an opaque tool error.
@@ -400,7 +411,7 @@ export class SubAgentRunner {
       return `Error: sub-agent ${id} not found.`;
     }
     try {
-      return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model);
+      return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
     } finally {
       // Persist the first run so a session-mode sub-agent remembers its own answer; without this
       // the next send() reloads a history containing the task but not the reply.

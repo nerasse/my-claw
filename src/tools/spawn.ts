@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
-import { SubAgentRunner } from "../subagents/runner.ts";
+import { SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
@@ -11,6 +11,7 @@ export function createSpawnTool(
   registry: SubAgentRegistry,
   listModelIds?: () => string[],
   listAgents?: () => AgentInfo[],
+  streamProvider?: (subagentId: string) => SubAgentStream | undefined,
 ): Tool {
   const agents = (): AgentInfo[] => listAgents?.() ?? [];
   return {
@@ -123,6 +124,7 @@ export function createSpawnTool(
           model,
           enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
           ...(toolCallId ? { toolCallId } : {}),
+          ...(streamProvider ? { streamProvider } : {}),
         });
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {

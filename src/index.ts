@@ -41,6 +41,7 @@ import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-hea
 import { writeJsonFileAtomically, writeFileAtomically } from "./utils/atomic-write.ts";
 import { briefError } from "./utils/errors.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
+import type { MyClawAppStreamer } from "./channels/my-claw-app/stream.ts";
 import { defaultOwner } from "./channels/my-claw-app/devices.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
@@ -104,7 +105,7 @@ import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
-import { SubAgentRunner } from "./subagents/runner.ts";
+import { SubAgentRunner, type SubAgentStream } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
@@ -544,7 +545,22 @@ async function main() {
 
   const subAgentRegistry = new SubAgentRegistry();
   const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, agentRegistry);
-  registerSubAgentTools(toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry);
+  // Live streams of sub-agent runs for the app channel, keyed by sub-agent session id.
+  // Filled when `subagent:spawn` fires inside an app run, read by the spawn tool's
+  // streamProvider to attach tokens to the sub-agent's own thread.
+  const subAgentStreamers = new Map<string, MyClawAppStreamer>();
+  registerSubAgentTools(
+    toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry,
+    (subagentId) => {
+      const streamer = subAgentStreamers.get(subagentId);
+      if (!streamer) return undefined;
+      return {
+        onToken: (token) => streamer.push(token),
+        onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
+        onToolStart: (call) => streamer.appendToolStart([call]),
+      };
+    },
+  );
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();
@@ -2038,21 +2054,43 @@ async function main() {
             // Sub-agent lifecycle is also a global hook; route this run's spawns to its streamer so
             // the spawn card lives where the parent run paints. rosterEverywhere runs one shared
             // subscription registered once at boot (see below), so nothing here broadcasts twice.
+            const streamSubAgent = (ev: { id: string; parentSessionId: string }): void => {
+              const threadId = subagentSessionToThread(ev.id);
+              if (!threadId) return;
+              const streamer = myClawApp.createStreamer({
+                ...msg,
+                id: `subagent-${ev.id}`,
+                threadId,
+                text: "",
+              });
+              subAgentStreamers.set(ev.id, streamer);
+            };
+            const settleSubAgentStream = (ev: { id: string; status: "complete" | "error" | "aborted"; error?: string; resultLength?: number }): void => {
+              const streamer = subAgentStreamers.get(ev.id);
+              if (!streamer) return;
+              subAgentStreamers.delete(ev.id);
+              if (ev.status === "complete") void streamer.finish();
+              else void streamer.abort(ev.error);
+            };
             const onSubagentSpawn = (ev: { id: string; displayName: string; type: string; mode: string; parentSessionId: string; toolCallId?: string }): void => {
               if (ev.parentSessionId !== runSessionId) return;
               void active.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
+              streamSubAgent(ev);
             };
             const onSubagentComplete = (ev: { id: string; resultLength: number; parentSessionId: string; toolCallId?: string }): void => {
               if (ev.parentSessionId !== runSessionId) return;
               void active.appendSpawnEnd({ subagentId: ev.id, status: "complete", resultLength: ev.resultLength });
+              settleSubAgentStream({ id: ev.id, status: "complete", resultLength: ev.resultLength });
             };
             const onSubagentError = (ev: { id: string; error: unknown; parentSessionId: string; toolCallId?: string }): void => {
               if (ev.parentSessionId !== runSessionId) return;
               void active.appendSpawnEnd({ subagentId: ev.id, status: "error", error: String(ev.error) });
+              settleSubAgentStream({ id: ev.id, status: "error", error: String(ev.error) });
             };
             const onSubagentAborted = (ev: { id: string; parentSessionId: string; toolCallId?: string }): void => {
               if (ev.parentSessionId !== runSessionId) return;
               void active.appendSpawnEnd({ subagentId: ev.id, status: "aborted" });
+              settleSubAgentStream({ id: ev.id, status: "aborted" });
             };
             hooks.on("subagent:spawn", onSubagentSpawn);
             hooks.on("subagent:complete", onSubagentComplete);
@@ -2397,6 +2435,7 @@ function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPi
 function registerSubAgentTools(
   registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry, config: MyClawConfig,
   agentRegistry: AgentRegistry,
+  streamProvider?: (subagentId: string) => SubAgentStream | undefined,
 ): void {
   // Both lists are read live: the spawn schema is rebuilt per run, so an agent file dropped in
   // `agents/` is spawnable on the next message without a restart.
@@ -2405,6 +2444,7 @@ function registerSubAgentTools(
     subRegistry,
     () => (config.llm.models ?? []).map((m) => m.id),
     () => agentRegistry.list(),
+    streamProvider,
   ));
   registry.register(createSendTool(runner, subRegistry));
   registry.register(createListAgentsTool(runner, subRegistry));
