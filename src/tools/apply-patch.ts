@@ -4,6 +4,7 @@ import { isTracked, snapshot } from "../core/config-store.ts";
 import { type Tool, type ToolResult, str, strOpt, bool } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
+import { buildUnifiedDiff } from "../utils/unified-diff.ts";
 import { hooks } from "../hooks/index.ts";
 
 /** One anchored replacement. `old` is matched literally, never as a pattern. */
@@ -159,11 +160,16 @@ export const applyPatchTool: Tool = {
     const before = original.split("\n").length;
     const after = next.split("\n").length;
     const delta = after - before;
+    // The result of a patch is its diff: the app renders it red/green, and the model sees exactly
+    // what changed rather than a re-echo of the whole file. Cosmetic only -- the file on disk is
+    // the source of truth.
+    const diff = buildUnifiedDiff(resolved, original, next);
     return {
       success: true,
       output:
         `Patched ${resolved} (${parsed.edits.length} edit${parsed.edits.length > 1 ? "s" : ""}, ` +
         `${before} -> ${after} lines${delta === 0 ? "" : `, ${delta > 0 ? "+" : ""}${delta}`}).\n` +
+        (diff.length > 0 ? `${diff}\n` : "") +
         applied.join("\n"),
     };
   },
