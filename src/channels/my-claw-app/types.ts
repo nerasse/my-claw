@@ -1963,7 +1963,7 @@ export interface MyClawAppSessionInstructionsSet {
  * toggle, skill toggle, memory recall toggle.
  */
 export interface MyClawAppSessionInstructionPatch {
-  kind: "nested.toggle" | "nested.unload" | "layer.toggle" | "skill.toggle" | "memory.toggle";
+  kind: "nested.toggle" | "nested.unload" | "nested.restore" | "layer.toggle" | "skill.toggle" | "memory.toggle";
   /** For nested.*: the absolute resolved path as returned by the report. */
   path?: string;
   /** For layer.toggle: the layer id (agent, skills, tools, platform, runtime, suggested). */
@@ -2020,6 +2020,8 @@ export interface MyClawAppSessionInstructions {
   totalBytes: number;
   layers: MyClawAppInstructionLayer[];
   nested: MyClawAppInstructionNested[];
+  /** Files this session unloaded: not part of `nested`, the page offers to put them back. */
+  nestedUnloaded: MyClawAppInstructionNested[];
   /** Layer ids the session turned off (agent, skills, tools, platform, runtime, suggested). */
   layersOff: string[];
   /** Skill names the session filtered out of the catalog. */

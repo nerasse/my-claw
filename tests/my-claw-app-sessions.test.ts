@@ -819,6 +819,17 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
     assert.deepEqual(after?.nestedUnloaded, ["/repo/AGENTS.md"]);
   });
 
+  test("nested.restore clears the unload so the file can be picked up again", async () => {
+    const s = await manager.peek(sessionId);
+    s!.nestedUnloaded = ["/repo/AGENTS.md"];
+    await manager.persist(sessionId);
+
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "nested.restore", path: "/repo/AGENTS.md" });
+    const after = await manager.peek(sessionId);
+    assert.equal(after?.nestedUnloaded, undefined);
+    assert.deepEqual((await loadSession(sessionId))?.nestedUnloaded, undefined, "persisted");
+  });
+
   test("layer.toggle, skill.toggle and memory.toggle flip and persist", async () => {
     await store.setInstructionPatch(DEVICE, THREAD, { kind: "layer.toggle", layer: "tools" });
     await store.setInstructionPatch(DEVICE, THREAD, { kind: "skill.toggle", skill: "voice" });

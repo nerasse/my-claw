@@ -151,17 +151,23 @@ test("the report reflects layers, skills and memory recall the session turned of
   assert.equal(ids.includes("suggested"), false);
 });
 
-test("the report marks disabled and unloaded nested files", async () => {
+test("the report marks disabled nested files and moves unloaded ones to their own section", async () => {
   const repoPath = join(base, "repo", "AGENTS.md");
+  const gone = join(base, "gone", "AGENTS.md");
   const report = await sessionInstructionsReport(
     params(
       sessionFor({
         nestedAgents: [{ path: repoPath, bytes: 40, firstAt: "2026-08-15T10:00:00.000Z", lastAt: "2026-08-15T10:00:00.000Z", count: 1 }],
         nestedDisabled: [repoPath],
-        nestedUnloaded: [join(base, "gone", "AGENTS.md")],
+        nestedUnloaded: [gone],
       }),
     ),
   );
+  // A disabled file stays in the main list, greyed out.
   assert.equal(report.nested.find((n) => n.path === repoPath)?.disabled, true);
-  assert.equal(report.nested.find((n) => n.path === join(base, "gone", "AGENTS.md"))?.unloaded, true);
+  // An unloaded file is out of the main list: it no longer shapes the prompt, but stays
+  // reachable from the dedicated section so the page can offer to put it back.
+  assert.equal(report.nested.find((n) => n.path === gone), undefined);
+  assert.equal(report.nestedUnloaded.find((n) => n.path === gone)?.unloaded, true);
+  assert.equal(report.nestedUnloaded.find((n) => n.path === repoPath), undefined);
 });

@@ -593,6 +593,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         session.nestedUnloaded = [...unloaded];
         break;
       }
+      case "nested.restore": {
+        if (!patch.path) throw new Error("nested.restore needs a path");
+        const unloaded = new Set(session.nestedUnloaded ?? []);
+        unloaded.delete(patch.path);
+        if (unloaded.size > 0) session.nestedUnloaded = [...unloaded];
+        else delete session.nestedUnloaded;
+        break;
+      }
       case "layer.toggle": {
         if (!patch.layer) throw new Error("layer.toggle needs a layer");
         const off = new Set(session.promptLayersOff ?? []);

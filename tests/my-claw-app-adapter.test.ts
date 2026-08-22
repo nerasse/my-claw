@@ -3169,6 +3169,11 @@ describe("command frames", () => {
         totalBytes: 3,
         layers: [{ id: "CORE", label: "Core directives", bytes: 3, text: "abc" }],
         nested: [],
+        nestedUnloaded: [],
+        layersOff: [],
+        skillsOff: [],
+        skills: [],
+        memoryRecallOff: false,
         notes: [],
       };
     });
@@ -3209,8 +3214,10 @@ describe("command frames", () => {
       totalBytes: 3,
       layers: [{ id: "CORE", label: "Core directives", bytes: 3, text: "abc" }],
       nested: [],
+      nestedUnloaded: [],
       layersOff: [],
       skillsOff: [],
+      skills: [],
       memoryRecallOff: false,
       notes: [],
     }));

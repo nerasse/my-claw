@@ -323,9 +323,9 @@ export interface SessionData {
   nestedDisabled?: string[];
   /**
    * Nested AGENTS.md paths the session unloaded: the record was removed from `nestedAgents` (so
-   * the page stops showing it) but the file stays on disk and is re-collected the next time a
-   * tool touches its directory. Persisted so an unload is not undone by a restart. An unloaded
-   * path that is also in `nestedDisabled` stays unloaded: the lazy reload is what re-enables it.
+   * the page stops showing it) and the collector skips it until the session puts it back. The
+   * files stay on disk; the unload is per-session and only the app's "put back" action clears
+   * it. Persisted on the session so an unload is not undone by a restart.
    */
   nestedUnloaded?: string[];
   /**

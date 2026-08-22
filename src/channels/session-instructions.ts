@@ -72,6 +72,8 @@ export interface SessionInstructionsReport {
   totalBytes: number;
   layers: SessionInstructionLayer[];
   nested: SessionInstructionNested[];
+  /** Files this session unloaded (purged from `nested`): the page offers to put them back. */
+  nestedUnloaded: SessionInstructionNested[];
   /** Layer ids the session turned off (agent, skills, tools, platform, runtime, suggested). */
   layersOff: string[];
   /** Skill names the session filtered out of the catalog. */
@@ -192,13 +194,16 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
       ...(disabledPaths.includes(record.path) ? { disabled: true } : {}),
     });
   }
-  // The unloaded ones were purged from `nestedAgents`, so they no longer have a record: they are
-  // listed as a fact until a tool touches their directory and the lazy reload brings them back.
+  // The unloaded ones were purged from `nestedAgents`, so they no longer have a record: exposing
+  // them in the main list would look like they still shape this conversation. They are reported in
+  // a dedicated section instead, so the page can offer to put them back; the collector skips them
+  // (their paths are in `nestedUnloaded`) until the session puts them back.
   const known = new Set(nested.map((n) => n.path));
+  const unloaded: SessionInstructionNested[] = [];
   for (const path of unloadedPaths) {
     if (known.has(path)) continue;
     const size = await stat(path).then((s) => s.size, () => -1);
-    nested.push({
+    unloaded.push({
       path,
       label: path.startsWith(root + sep) ? relative(root, path) : path,
       bytes: size < 0 ? 0 : size,
@@ -207,9 +212,9 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
       lastAt: "",
       missing: size < 0,
       unloaded: true,
-      ...(disabledPaths.includes(path) ? { disabled: true } : {}),
     });
   }
+  unloaded.sort((a, b) => a.label.localeCompare(b.label));
   nested.sort((a, b) => a.label.localeCompare(b.label));
 
   // A plugin may rewrite the whole prompt after composition. Rendering the result as a layer would
@@ -238,6 +243,7 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
     totalBytes: layers.reduce((sum, l) => sum + l.bytes, 0),
     layers,
     nested,
+    nestedUnloaded: unloaded,
     layersOff: p.session?.promptLayersOff ?? [],
     skillsOff,
     skills: skillStates,
