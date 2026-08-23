@@ -53,6 +53,15 @@ is why this only ever applies inside the loop.
 - `redacted_thinking` blocks are captured too. They carry an opaque `data` payload and no readable
   text, so replay is the only thing they are good for.
 - On replay the blocks lead the assistant turn, ahead of `text` and `tool_use`.
+- **A block with no signature is never sent as thinking.** Anthropic verifies the signature against
+  the block and rejects an unsigned one, so a block whose `signature_delta` never arrived (an
+  aborted stream) degrades to a plain text block instead. pi-mono carries the same note: "real
+  Anthropic rejects empty thinking signatures".
+- **Merging two assistant turns drops the incoming thinking.** Consecutive same-role messages are
+  merged for the tool_result grouping, and appending a second signed sequence behind the first
+  one's text gives `thinking, text, thinking, text` -- rejected, because a message's consecutive
+  thinking blocks must be the ones it generated and must lead it. Claude Code merges the same way
+  in `ensureToolResultPairing` and ships a documented 400 with it.
 - It is **not** tied to `ANTHROPIC_HIDE_THINKING`. An earlier version gated it on summarized
   display, on the assumption that the signature covered the raw thinking rather than the summary.
   That was wrong: "The `signature` field is identical whether `display` is `"summarized"` or
@@ -139,6 +148,32 @@ test asserts the two produce the same fields.
 
 Because it never reaches the session store, it never crosses a compaction boundary and there is
 nothing to invalidate at `promptBase`: the state simply does not outlive the run that made it.
+
+## What the neighbours do
+
+**Claude Code** replays thinking blocks with their signatures, and has a whole cluster of
+open bugs from doing so. The mechanism, as one field report puts it:
+
+> the server signs the block over its exact serialized bytes, so the client has to replay it
+> verbatim. the moment a harness round-trips it through its own typed message model (parse to a
+> struct, drop a null field, reorder keys on re-serialize) the bytes drift and the signature stops
+> validating, even though the visible content is identical.
+
+Its session transcripts store the thinking text emptied to `""` with the signature kept, its
+message-repair pass reorders and merges blocks, and the resulting 400 has no in-session recovery --
+the community fix is a tool that strips every thinking block from the transcript so the session can
+resume. Both of the failure shapes above were found by reading those reports against our own code.
+
+**pi-mono** (`badlogic/pi-mono`) is the most careful implementation of the three. Worth copying, and
+copied: the unsigned-block degradation, and a per-model `allowEmptySignature` compat flag for
+Anthropic-compatible providers that emit empty signatures and expect them back — real Anthropic does
+not. It also converts thinking to plain text on a model switch rather than dropping it, which keeps
+information we currently discard.
+
+**opencode v2** replays unconditionally with no configuration, sends `reasoning_content` to every
+OpenAI-compatible provider including the OpenRouter models that publish `reasoning_details`, never
+sends the OpenAI Responses `include` on its v2 runner path (so that transport replays nothing at
+all), and has no `redacted_thinking` handling anywhere.
 
 ## Rejected alternatives
 

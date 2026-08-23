@@ -56,6 +56,51 @@ describe("Anthropic thinking replay", () => {
     expect(assistantBlocks(turn(meta))[0]).toEqual({ type: "redacted_thinking", data: "OPAQUE" });
   });
 
+  /**
+   * Anthropic verifies the signature against the block and rejects an unsigned one, so a block
+   * whose `signature_delta` never arrived (aborted stream) cannot go back as thinking. pi-mono
+   * learned the same thing: "real Anthropic rejects empty thinking signatures".
+   */
+  test("a block with no signature degrades to text, it is not sent as thinking", () => {
+    const meta: ProviderMeta = { backend: SELF.backend, model: SELF.model, thinking: [{ type: "thinking", thinking: "unsigned thought" }] };
+    const blocks = assistantBlocks(turn(meta));
+    expect(blocks.map((b) => b["type"])).toEqual(["text", "text", "tool_use"]);
+    expect(blocks[0]).toEqual({ type: "text", text: "unsigned thought" });
+  });
+
+  test("an unsigned block with no text at all is dropped", () => {
+    const meta: ProviderMeta = { backend: SELF.backend, model: SELF.model, thinking: [{ type: "thinking", thinking: "" }] };
+    expect(assistantBlocks(turn(meta)).map((b) => b["type"])).toEqual(["text", "tool_use"]);
+  });
+
+  test("a redacted block with no payload is dropped: there is nothing to degrade to", () => {
+    const meta: ProviderMeta = { backend: SELF.backend, model: SELF.model, thinking: [{ type: "redacted_thinking" }] };
+    expect(assistantBlocks(turn(meta)).map((b) => b["type"])).toEqual(["text", "tool_use"]);
+  });
+
+  /**
+   * Two assistant turns merge into one message, and appending the second signed sequence behind
+   * the first one's text gives `thinking, text, thinking, text` -- rejected, because a message's
+   * consecutive thinking blocks must be the ones it generated and must lead it. Claude Code ships
+   * a 400 with this exact bug (its `ensureToolResultPairing` merges the same way).
+   */
+  test("merging two assistant turns never produces a second thinking sequence", () => {
+    const meta = (n: string): ProviderMeta => ({
+      backend: SELF.backend,
+      model: SELF.model,
+      thinking: [{ type: "thinking", thinking: `t${n}`, signature: `SIG${n}` }],
+    });
+    const merged: ChatMessage[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "one", providerMeta: meta("1") },
+      { role: "assistant", content: "two", providerMeta: meta("2") },
+    ];
+    const blocks = assistantBlocks(merged);
+    expect(blocks.map((b) => b["type"])).toEqual(["thinking", "text", "text"]);
+    expect(blocks.filter((b) => b["type"] === "thinking")).toHaveLength(1);
+    expect(JSON.stringify(blocks)).not.toContain("SIG2");
+  });
+
   test("a turn with no metadata is unchanged", () => {
     expect(assistantBlocks(turn()).map((b) => b["type"])).toEqual(["text", "tool_use"]);
   });

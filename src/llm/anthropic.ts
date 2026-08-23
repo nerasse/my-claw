@@ -205,6 +205,21 @@ function safeJson(raw: string): Record<string, unknown> {
 }
 
 /**
+ * One stored thinking block, as the wire wants it -- or as text, or not at all.
+ *
+ * A signature is not optional on the way back in. Anthropic verifies it against the block and
+ * rejects an unsigned one, so a block whose signature never arrived (an aborted stream, a provider
+ * that streams the text and not the `signature_delta`) cannot be replayed as thinking. Its text is
+ * still worth something to the model, so it degrades to a plain text block rather than vanishing.
+ * A `redacted_thinking` block with no payload has nothing to degrade to and is dropped.
+ */
+function thinkingBlock(t: ThinkingBlock): AnthropicBlock[] {
+  if (t.type === "redacted_thinking") return t.data ? [{ type: "redacted_thinking", data: t.data }] : [];
+  if (!t.signature) return t.thinking ? [{ type: "text", text: t.thinking }] : [];
+  return [{ type: "thinking", thinking: t.thinking ?? "", signature: t.signature }];
+}
+
+/**
  * Who this request is, and whether it may hand reasoning back.
  *
  * Anthropic documents the replay as mandatory rather than optional: "within a tool-use turn, pass
@@ -241,8 +256,19 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
   const push = (role: "user" | "assistant", blocks: AnthropicBlock[]) => {
     if (blocks.length === 0) return;
     const last = turns[turns.length - 1];
-    if (last && last.role === role) last.content.push(...blocks);
-    else turns.push({ role, content: blocks });
+    if (!last || last.role !== role) {
+      turns.push({ role, content: blocks });
+      return;
+    }
+    /**
+     * Merging two assistant turns would append a second signed thinking sequence behind the first
+     * one's text, giving `thinking, text, thinking, text` -- a shape the API rejects, because the
+     * consecutive thinking blocks of a message must be the ones that message generated and must
+     * lead it. Claude Code has this exact bug and ships a 400 with it, so the incoming thinking is
+     * dropped instead: the turn keeps one valid leading sequence and loses only continuity it
+     * could not legally have carried. See docs/reasoning-replay.md.
+     */
+    last.content.push(...blocks.filter((b) => b.type !== "thinking" && b.type !== "redacted_thinking"));
   };
 
   for (const msg of messages) {
@@ -269,7 +295,7 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
         // accepts. Same-model check as on the Codex transport: a signature is not portable.
         const meta = msg.providerMeta;
         if (self?.replay && meta && meta.backend === self.backend && meta.model === self.model) {
-          for (const t of meta.thinking ?? []) blocks.push({ ...t });
+          for (const t of meta.thinking ?? []) blocks.push(...thinkingBlock(t));
         }
         if (msg.content) blocks.push({ type: "text", text: msg.content });
         for (const tc of msg.tool_calls ?? []) {
