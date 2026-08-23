@@ -64,19 +64,34 @@
 - The user controls the release cadence — even if the code is ready and CI is green, wait for the green light
 - This rule takes precedence over any automation or script that might suggest tagging
 
-Flow (mechanics in the `forgejo` skill, read it before running anything):
-1. Quick checks: `export PATH="$HOME/.bun/bin:$PATH"` (without it the stdio MCP tests false-fail), then `bun run check:test` and `bun test`.
-2. Commit → bump `package.json` → commit → tag `vN` → push main + tag. CI (`release.yml` on v*) builds and publishes the tarball to the generic package registry.
-3. Verify: HEAD `.../api/packages/claw/generic/my-claw/<v>/my-claw-<v>-linux-x64.tar.gz` returns 200, CI runs green.
-4. Never touch prod by hand (no restart, no copy into `/opt/my-claw`): `my-claw-auto-update.timer` (every 15 min) swaps the install and web bundle, skips while a run is in flight, and refuses an unverifiable version. The user runs the update on his side.
+Flow (mechanics in the `forgejo` skill):
+```sh
+export PATH="$HOME/.bun/bin:$PATH"      # else stdio MCP tests false-fail
+bun run check && bun run check:test && bun test
+git add <files> && git commit           # never -A
+jq '.version="X.Y.Z"' package.json > /tmp/p && mv /tmp/p package.json
+git add package.json && git commit -m "chore: bump X.Y.Z"
+git push origin main                    # main FIRST: the tag is what CI builds
+git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+fj actions tasks | grep <sha>           # wait for "Build & Release" = success
+```
+
+Traps:
+- Two runs per release (`ci.yml` on main, `release.yml` on the tag). Only the tag run has `Build & Release`.
+- Package registry answers **405 to HEAD**. Verify with `curl --range 0-0` → `206`.
+- `fj release view v<v>` fails here: `release.yml` names it `my-claw <version>` and `fj` looks up by name. Use `fj release list`.
+- REST reads need auth (private repo); unauth 404 reads as `target couldn't be found`. Prefer `fj`, it carries its own token.
+- `release.yml` fails on tag ≠ `package.json`. Keep that step.
+- Prod is never touched by hand. `my-claw-auto-update.timer` (15 min) skips while a run is in flight — an agent releasing from a my-claw session *is* that run, so the first tick skips. The user runs the update.
 
 Quick log check:
 ```sh
 journalctl -u my-claw.service --since "5 min ago" --no-pager | tail -30   # boot errors
 ss -tlnp | grep 8080                                                      # up?
+grep -m1 '"version"' /opt/my-claw/package.json                            # deployed version
 tail -f ~/.my-claw/logs/my-claw-app-$(date +%F).log | jq -c '{t:.timestamp,m:.message,d:.data}'
 ```
-CI state: `GET /repos/claw/my-claw/actions/runs?limit=5` (jq status/conclusion); job logs via `/actions/jobs/{id}/logs` — run id and job id differ, a 404 on the run id is not a failure.
+CI state: `GET /repos/claw/my-claw/actions/runs?limit=5`. Forgejo 14.x exposes no job logs over the API; the run's `html_url` is the only way in.
 
 ## Project Structure
 
