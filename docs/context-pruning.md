@@ -104,6 +104,62 @@ Both stages default to enabled. `context` is hot-reloadable (read live per run).
   (prefer `-hide_banner -loglevel error`, `pip -q` for known-noisy commands) — the
   agent stays free to go verbose when debugging.
 
+## Stagnation: measured, not yet acted on
+
+After the reasoning-replay work (docs/reasoning-replay.md) the remaining question was whether the
+loop should detect a run that has stopped making progress and intervene. 141 runs of real history
+from `sessions/` and `sessions-archive/` say: not on this evidence.
+
+Duplicate tool *calls* were already known to be near zero on the models that wander. Duplicate tool
+*results* looked much better:
+
+| tool results in the run | median duplicate rate |
+| --- | --- |
+| <= 120 | 0 - 4.7 % |
+| > 120 | 47.6 % |
+
+But a detector does not see a whole run, it sees a sliding window. Scored that way the populations
+overlap, and in places invert:
+
+```
+LONG  (129 results)  max barren in 10 = 7     SHORT (67 results) = 10
+LONG  (163 results)  max barren in 10 = 4     SHORT (16 results) =  9
+LONG  (198 results)  max barren in 10 = 8     SHORT ( 8 results) =  8
+```
+
+A healthy 8-result run saturates the count and finishes fine; the second-longest run in the corpus
+peaks at 4. Any threshold fires hardest on the shortest runs and misses one pathological run in
+four. With four long runs in the whole corpus, the sample cannot settle it either.
+
+So `src/agent/stagnation.ts` measures and reports, and nothing reads it but the log. Every run
+finishes with a `stagnation` block in `agent run finished`: total results, distinct results, the
+worst repeat and the worst barren count inside a ten-result window. When there are enough long runs
+to separate the populations, the threshold comes from the data.
+
+What the corpus *did* settle is a different bug, since fixed: the top two repeated results in the
+worst run were `No matches found` (x40) and `grep failed (exit 2): Unmatched ( or \(` (x13), and
+both were the `search` tool running BRE while the model wrote ERE. See below.
+
+## Tool output that lies
+
+`search` shelled out to plain `grep`, which is POSIX **basic** regex: `(`, `|`, `+` and `?` are
+literal characters there. A model writing `(alpha|beta)` -- ERE, as every model does -- was having
+that exact eleven-character string searched for. On a file containing both words the tool answered
+exit 1, "No matches found".
+
+That is worse than an error. An error gets retried differently; a confident wrong answer gets
+believed, and the model goes and looks somewhere else. Forty of them in one run.
+
+Three changes, all in `src/tools/search.ts`:
+
+- `grep -E`. The dialect is now the one the callers were already writing, and the tool description
+  and the `pattern` schema both say so.
+- A regex error names the dialect. grep says which character is unbalanced but never which flavour
+  it speaks, which is the one thing the caller needs to fix it. Thirteen identical failures in one
+  run is what that omission costs.
+- A miss names what was searched: `No matches for "foo" in /path` instead of `No matches found`.
+  The bare string gave the model no way to see it had already run that exact query.
+
 ## Scope and limits
 
 - The budget is measured with the same chars/4 heuristic as trimming, so it is approximate.

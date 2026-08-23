@@ -23,17 +23,35 @@ function capped(output: string): string {
   return output.length > OUTPUT_LIMIT ? `${output.slice(0, OUTPUT_LIMIT)}\n[output truncated at 100KB]` : output;
 }
 
+/**
+ * grep's regex complaints name the character and not the dialect, which leaves a model to guess
+ * which flavour it should have written. Since the answer is always the same, say it.
+ */
+function patternError(stderr: string, pattern: string): string {
+  const detail = stderr.trim() || "invalid pattern or unreadable path";
+  if (/unmatched|unterminated|repetition|invalid|trailing backslash|brace/i.test(detail)) {
+    return `${detail}\nPattern was ${JSON.stringify(pattern)}. This tool uses POSIX extended regex (ERE): parentheses, | and + are operators and must not be backslash-escaped, and PCRE classes like \\d or \\s are not supported -- use [0-9] and [[:space:]].`;
+  }
+  return detail;
+}
+
 export const searchTool: Tool = {
   name: "search",
   description:
-    "Search the filesystem: `pattern` matches file contents (regex, results as path:line:text), " +
+    "Search the filesystem: `pattern` matches file contents (POSIX extended regex, results as " +
+    "path:line:text), " +
     "`glob` filters or, alone, lists files by name. Add `context` for surrounding lines and " +
     "`filesOnly` for just the paths.",
   parameters: {
     type: "object",
     properties: {
       path: { type: "string", description: "Directory or file to search in" },
-      pattern: { type: "string", description: "Regex matched against file contents. Omit to list files by name." },
+      pattern: {
+        type: "string",
+        description:
+          "POSIX extended regex (ERE) matched against file contents: (a|b), +, ? and {n,m} work unescaped. " +
+          "No PCRE classes -- write [0-9] and [[:space:]] rather than \\d and \\s. Omit to list files by name.",
+      },
       glob: { type: "string", description: "File name pattern (e.g. *.ts): filters a content search, or lists files when alone" },
       context: { type: "number", description: "Lines of context around each match (max 40)" },
       filesOnly: { type: "boolean", description: "Report only the files that match, not the matching lines" },
@@ -72,13 +90,23 @@ export const searchTool: Tool = {
         if (exitCode !== 0 && !stdout.trim()) {
           return { success: false, output: "", error: `find failed (exit ${exitCode}): ${stderr.trim() || "unreadable path or bad pattern"}` };
         }
-        return { success: true, output: capped(stdout) || "No files found" };
+        return { success: true, output: capped(stdout) || `No files matching ${JSON.stringify(glob)} under ${resolved}` };
       } catch (e) {
         return { success: false, output: "", error: formatError(`Failed to list files in "${resolved}"`, e) };
       }
     }
 
-    const flags: string[] = ["-n"];
+    /**
+     * `-E`, and not grep's default.
+     *
+     * Plain grep is BRE, where `(`, `|`, `+` and `?` are literal characters. Models write ERE or
+     * PCRE, so `(alpha|beta)` was being searched for as that exact eleven-character string: exit 1,
+     * "No matches found", on a file containing both words. A wrong answer reported as a clean one,
+     * which is the worst shape a tool failure can take -- the model believes it and searches
+     * somewhere else. Measured on one run: forty "No matches found" and thirteen `Unmatched \(`
+     * errors, all of them this.
+     */
+    const flags: string[] = ["-n", "-E"];
     if (bool(args, "recursive", true)) flags.push("-r");
     if (bool(args, "ignoreCase", false)) flags.push("-i");
     if (bool(args, "filesOnly", false)) flags.push("-l");
@@ -94,9 +122,12 @@ export const searchTool: Tool = {
       const { stdout, stderr, exitCode } = await run(argv, cwd);
       // grep exit codes: 0 = matches, 1 = no matches (not an error), >=2 = real error.
       if (exitCode >= 2) {
-        return { success: false, output: "", error: `grep failed (exit ${exitCode}): ${stderr.trim() || "invalid pattern or unreadable path"}` };
+        return { success: false, output: "", error: patternError(stderr, pattern) };
       }
-      return { success: true, output: capped(stdout) || "No matches found" };
+      // Naming what was actually searched, because the bare string was not actionable: the model
+      // could not see from it whether it had already tried this exact query, and forty of them in
+      // one run is what that looks like.
+      return { success: true, output: capped(stdout) || `No matches for ${JSON.stringify(pattern)} in ${resolved}` };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to search in "${resolved}"`, e) };
     }

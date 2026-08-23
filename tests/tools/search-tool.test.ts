@@ -84,18 +84,20 @@ test("search: a name search with no hit says so instead of failing", async () =>
   try {
     const result = await searchTool.execute({ path: dir, glob: "nonexistent-xyz.log" });
     assert.equal(result.success, true);
-    assert.ok(result.output.includes("No files found"));
+    assert.ok(result.output.includes("No files matching"));
   } finally {
     await rm(TMP, { recursive: true, force: true });
   }
 });
 
-test("search: no matches returns 'No matches found'", async () => {
+test("search: a miss names what was searched, so a repeat is visible as a repeat", async () => {
   const dir = await fixture();
   try {
     const result = await searchTool.execute({ pattern: "zzzzz", path: dir });
     assert.equal(result.success, true);
-    assert.ok(result.output.includes("No matches found"));
+    assert.ok(result.output.includes("No matches"));
+    assert.ok(result.output.includes("zzzzz"), "the pattern is in the message");
+    assert.ok(result.output.includes(dir), "and so is the path");
   } finally {
     await rm(TMP, { recursive: true, force: true });
   }
@@ -118,14 +120,41 @@ test("search: non-existent path returns not found", async () => {
   assert.ok(result.output.includes("not found"));
 });
 
-test("search: invalid regex reports failure instead of 'No matches found'", async () => {
+test("search: an invalid regex fails loudly and names the dialect", async () => {
   await mkdir(TMP, { recursive: true });
   const file = join(TMP, "d2.txt");
   await writeFile(file, "hello\n");
-  // Unbalanced parenthesis is an invalid BRE/ERE -> grep exits >=2.
-  const result = await searchTool.execute({ pattern: "a\\(b", path: file, __workspaceDir: TMP });
+  // Unbalanced parenthesis: invalid in ERE, so grep exits >= 2.
+  const result = await searchTool.execute({ pattern: "a(b", path: file, __workspaceDir: TMP });
   assert.equal(result.success, false);
-  assert.match(result.error ?? "", /grep failed/i);
+  assert.match(result.error ?? "", /Unmatched/i);
+  // The measured loop was thirteen identical failures in one run: the message said which
+  // character was wrong but never which flavour of regex the tool speaks.
+  assert.match(result.error ?? "", /extended regex|ERE/i);
+  assert.match(result.error ?? "", /a\(b/, "and it quotes the pattern back");
+  await rm(TMP, { recursive: true, force: true });
+});
+
+test("search: alternation works, because this tool is ERE and not BRE", async () => {
+  const dir = await fixture();
+  try {
+    // Under plain grep this returned exit 1 -- "no matches" on a file containing both words.
+    const result = await searchTool.execute({ pattern: "(alpha|gamma)", path: join(dir, "data.txt") });
+    assert.equal(result.success, true);
+    assert.match(result.output, /alpha/);
+    assert.match(result.output, /gamma/);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("search: +, ? and {n,m} are operators, not literal characters", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "d4.txt");
+  await writeFile(file, "aaa\nbc\n");
+  const result = await searchTool.execute({ pattern: "a{2,3}", path: file, __workspaceDir: TMP });
+  assert.equal(result.success, true);
+  assert.match(result.output, /aaa/);
   await rm(TMP, { recursive: true, force: true });
 });
 

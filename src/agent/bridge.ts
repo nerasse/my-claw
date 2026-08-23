@@ -40,6 +40,7 @@ import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { MessagePreprocessor, imageContentFrom } from "./preprocess.ts";
 import { IterationBudget } from "./iteration-budget.ts";
+import { StagnationMeter } from "./stagnation.ts";
 import { NestedAgentsCollector, recordNestedInjection } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
@@ -295,6 +296,8 @@ export class AgentBridge implements AgentBackend {
       ? cronMaxIter
       : agent.maxIterations;
     const budget = new IterationBudget(maxIterations);
+    // Observation only: it reports at run end and never steers the loop -- see src/agent/stagnation.ts.
+    const stagnation = new StagnationMeter();
     const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
@@ -624,6 +627,7 @@ export class AgentBridge implements AgentBackend {
             durationMs,
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
+            stagnation: stagnation.report(),
           });
           return transformedResponse;
         }
@@ -781,6 +785,7 @@ export class AgentBridge implements AgentBackend {
           if (nestedAgents) {
             transformedResult += nestedAgents.collect(tc.name, tc.arguments);
           }
+          stagnation.observe(transformedResult);
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: transformedResult });
           session.messages.push({ role: "tool", toolCallId: tc.id, content: transformedResult, timestamp: new Date().toISOString() });
         }
