@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, type SessionMessage } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages } from "./sessions/store.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -125,9 +125,9 @@ import { backfillConversationArchive } from "./conversations/store.ts";
 import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
-import type { ChatMessage } from "./llm/provider.ts";
 import { llmComplete } from "./llm/transport.ts";
 import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
+import { promptSideChat } from "./agent/context-pruning.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
@@ -769,10 +769,14 @@ async function main() {
         threadId,
         sessionScope: "per-user",
       });
-    // A tool result is a user turn as far as token counting goes: the same mapping /status uses,
-    // so the header and the report cannot read a different occupancy for one conversation.
-    const sessionToChat = (messages: readonly SessionMessage[]): ChatMessage[] =>
-      messages.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
+    /** The engine a model resolves to; undefined when it left the catalogue. Only decides pruning. */
+    const backendOfModel = (modelId: string): string | undefined => {
+      try {
+        return resolveLlmConfig(config.llm, modelId).backend;
+      } catch {
+        return undefined;
+      }
+    };
     /** A model's own full window, for the app's ceiling list (never offered above it). */
     const contextWindowOf = (modelId: string): number | undefined => {
       try {
@@ -815,8 +819,19 @@ async function main() {
           ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
           // The occupancy the compaction gate reads, not a second estimate of it: the chat header
           // shows a share of the window, and two numbers for one thing would disagree by a turn.
+          // Both halves matter. `promptMessages` because `session.messages` is append-only since
+          // compaction became a boundary, so reading it whole would pin the gauge at full and never
+          // let it come back down. `promptSideChat` because the loop prunes old tool results out of
+          // the prompt, and counting them is what read 8.7x over the billed number.
           ...(session
-            ? { used: occupiedContextTokens(session.messages, sessionToChat, session.lastPrompt, sessionMirrorRole(config, session)) }
+            ? {
+                used: occupiedContextTokens(
+                  promptMessages(session),
+                  (msgs) => promptSideChat(msgs, config, backendOfModel(model)),
+                  session.lastPrompt,
+                  sessionMirrorRole(config, session),
+                ),
+              }
             : {}),
         },
       };
@@ -2004,11 +2019,10 @@ async function main() {
     // their measurement lands, so the share follows the run instead of freezing at what it was when
     // the run started. Includes the turns that call no tool, which is most of the short ones.
     hooks.on("session:context:measured", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
-    // A compaction or a /new rewrites the history with no turn behind it, so nothing would move the
-    // figure until the next run: a thread the owner just emptied would keep showing it full.
+    // A compaction moves the boundary with no turn behind it, so nothing would move the figure
+    // until the next run: a thread the owner just compacted would keep showing it full.
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
     hooks.on("session:cleared", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
-    hooks.on("session:reset", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
 
     // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`
     // so every window of the parent conversation gains/updates/loses the row live instead of

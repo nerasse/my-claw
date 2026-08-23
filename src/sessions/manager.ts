@@ -4,8 +4,6 @@ import {
   saveSession,
   deleteSession as deleteSessionFile,
   deleteSessionArchives,
-  archiveSession,
-  purgeSessionArchives,
   listSessionIdsByPrefix,
   cronThreadToSession,
   subagentThreadToSession,
@@ -196,33 +194,6 @@ export class SessionManager {
     return session;
   }
 
-  async resetSession(sessionId: string, platform: string, chatType: string): Promise<void> {
-    const gate = await hooks.check("gate:session:reset", { sessionId });
-    if (!gate.allowed) return;
-    const previous = this.sessions.get(sessionId) ?? await this.loadSettled(sessionId);
-    this.sessions.delete(sessionId);
-    const archived = await archiveSession(sessionId);
-    if (!archived) {
-      await deleteSessionFile(sessionId);
-    }
-    const session = this.createSession(sessionId, platform, chatType);
-    if (previous?.modelOverride !== undefined) {
-      session.modelOverride = previous.modelOverride;
-    }
-    // Archiving starts a fresh conversation on the same thread, and the owner named the thread,
-    // not the turns inside it: dropping the name here would rename it back to its first sentence.
-    if (previous?.title !== undefined) {
-      session.title = previous.title;
-    }
-    await saveSession(sessionId, session);
-    this.cache(sessionId, session);
-    hooks.emit("session:reset", { sessionId, platform, archived: Boolean(archived) });
-  }
-
-  async purgeArchives(options: { before?: Date; all?: boolean }): Promise<number> {
-    return purgeSessionArchives(options);
-  }
-
   /** Persisted session ids under a prefix, most recently active first. */
   async listSessions(prefix: string, limit = 50): Promise<string[]> {
     return listSessionIdsByPrefix(prefix, limit);
@@ -242,6 +213,9 @@ export class SessionManager {
     if (session) {
       const previousMessageCount = session.messages.length;
       session.messages = [];
+      // The boundary indexes an array that no longer exists. Kept, it would describe a prompt
+      // window inside an empty history.
+      delete session.promptBase;
       session.lastActiveAt = new Date().toISOString();
       hooks.emit("session:cleared", { sessionId, previousMessageCount });
     }

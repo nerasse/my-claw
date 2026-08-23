@@ -7,6 +7,9 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
+import { promptMessages } from "../../src/sessions/store.ts";
+import { promptSideChat, sessionChatMessages } from "../../src/agent/context-pruning.ts";
+import { estimateMessagesTokens } from "../../src/llm/tokens.ts";
 import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
 
 function baseConfig(): MyClawConfig {
@@ -78,7 +81,7 @@ test("bridge: context.pruning.enabled=false sends full history", async () => {
   assert.ok(sent.every((m) => m.content === BIG), "nothing stubbed when disabled");
 });
 
-test("bridge: auto-compaction triggers above the threshold and shrinks the session", async () => {
+test("bridge: auto-compaction triggers above the threshold and shrinks the prompt, not the history", async () => {
   const config = baseConfig();
   config.llm.limit = { context: 2000 };
   const sess = session("telegram/dm/u1", history(10));
@@ -102,8 +105,57 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the sessi
     mock.restore(); end(); runRegistry.clear();
   }
   assert.ok(sawCompactionCall, "compaction LLM call happened");
-  assert.ok(sess.messages.length < before, `session shrank (${before} -> ${sess.messages.length})`);
-  assert.ok(sess.messages.some((m) => m.role === "user" && m.content.includes("[Prior context summarized]")), "summary message present");
+  // The prompt window is what a compaction shrinks. `messages` only grows: the turns the summary
+  // stands for stay in the thread, which is the whole point of the boundary.
+  const prompt = promptMessages(sess);
+  assert.ok(prompt.length < before, `prompt shrank (${before} -> ${prompt.length})`);
+  assert.ok(sess.messages.length > before, `history kept every turn (${before} -> ${sess.messages.length})`);
+  assert.ok(prompt.some((m) => m.role === "user" && m.content.includes("[Prior context summarized]")), "summary message present");
+  assert.ok(prompt.some((m) => m.role === "user" && m.summaryOf !== undefined), "summary marked as a boundary");
+});
+
+/**
+ * The thirty-compaction bug, as a gate reading. The loop prunes old tool results out of the prompt
+ * before every call, but the gate estimated the untouched history: 410k against 47k actually
+ * billed, an 8.7x over-read that fired thirty summarizations on a session using nine percent of its
+ * window -- and each one deleted history, back when compaction cut instead of marking a boundary.
+ *
+ * The window here is picked so the two readings straddle the threshold: the raw history is over it
+ * and the pruned prompt is well under. A compaction firing means the gate is measuring the wrong
+ * array again.
+ */
+test("bridge: the gate measures the pruned prompt, not the history behind it", async () => {
+  const config = baseConfig();
+  config.llm.limit = { context: 10_000 };
+  const sess = session("my-claw-app/thread/u1/t1", history(10));
+
+  runRegistry.clear();
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(sess.id);
+  let compactionCalls = 0;
+  const mock = mockFetch(async (_u, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ content: string }> };
+    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("compaction agent")) {
+      compactionCalls += 1;
+      return llm({ content: "Summary that should never have been asked for on this conversation." });
+    }
+    return llm({ content: "final answer" });
+  });
+  try {
+    await bridge.handleMessage(msg("m1", "continue"), sess, signal);
+  } finally {
+    mock.restore(); end(); runRegistry.clear();
+  }
+  assert.equal(compactionCalls, 0, "the pruned prompt is under the threshold, nothing to summarize");
+});
+
+/** Anthropic never prunes -- its cache is a prefix -- so measuring it as pruned would under-read. */
+test("bridge: the anthropic backend is measured whole, since its prompt is sent whole", () => {
+  const raw = estimateMessagesTokens(sessionChatMessages(history(10)));
+  const pruned = estimateMessagesTokens(promptSideChat(history(10), baseConfig()));
+  const anthropic = estimateMessagesTokens(promptSideChat(history(10), baseConfig(), "anthropic"));
+  assert.ok(pruned < raw / 2, `pruning is what the prompt does: ${raw} -> ${pruned}`);
+  assert.equal(anthropic, raw, "nothing is pruned for a backend that sends the whole prompt");
 });
 
 test("bridge: no auto-compaction below the threshold", async () => {

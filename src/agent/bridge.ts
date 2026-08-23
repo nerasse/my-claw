@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, promptMessages } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
@@ -25,7 +25,7 @@ import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
-import { pruneOldToolResults } from "./context-pruning.ts";
+import { pruneOldToolResults, promptSideChat, sessionChatMessages } from "./context-pruning.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -397,13 +397,13 @@ export class AgentBridge implements AgentBackend {
 
       const chatMessages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
-        ...this.toChatMessages(session.messages),
+        ...this.toChatMessages(promptMessages(session)),
       ];
 
       // Vision is resolved per model (resolver merges the model entry over the global flag):
       // the global default may be a text-only model while another configured model has vision.
       if (llmConfig.vision) {
-        const attached = await this.attachImages(chatMessages, session.messages);
+        const attached = await this.attachImages(chatMessages, promptMessages(session));
         if (attached > 0) void log("debug", "images attached to the prompt", { sessionId: session.id, model: llmConfig.model, images: attached });
       } else if (imageAttachmentsOf(message).length > 0) {
         void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
@@ -420,8 +420,8 @@ export class AgentBridge implements AgentBackend {
       // history the summary was made from.
       const rebuildPrompt = async (): Promise<void> => {
         chatMessages.length = 0;
-        chatMessages.push({ role: "system", content: systemPrompt }, ...this.toChatMessages(session.messages));
-        if (llmConfig.vision) await this.attachImages(chatMessages, session.messages);
+        chatMessages.push({ role: "system", content: systemPrompt }, ...this.toChatMessages(promptMessages(session)));
+        if (llmConfig.vision) await this.attachImages(chatMessages, promptMessages(session));
       };
 
       let iteration = 0;
@@ -515,7 +515,10 @@ export class AgentBridge implements AgentBackend {
           toolCallCount: response.toolCalls?.length ?? 0,
         });
 
-          accumulateUsage(session, response.usage, session.messages.length);
+          // Prompt-side length, the same units `occupiedContextTokens` pairs it with: measuring the
+          // whole history against a billed number that only covered the window after the boundary
+          // would read as a measurement of turns the model never saw.
+          accumulateUsage(session, response.usage, promptMessages(session).length);
           // The measurement for this turn has landed. On this transport it is the earliest it can
           // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
           if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
@@ -807,6 +810,11 @@ export class AgentBridge implements AgentBackend {
         throw new AbortedError();
       }
       session.messages.length = messageCountBeforeLoop;
+      // A mid-run compaction moves the boundary forward; a failed run rolls the history back past
+      // it. Left alone the boundary would point beyond the end and, on the next turn, hide turns
+      // no summary ever described. `promptMessages` treats an out-of-range base as none, so this is
+      // belt and braces -- but a stored index that lies about its own array is worth not keeping.
+      if ((session.promptBase ?? 0) > session.messages.length) delete session.promptBase;
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -1126,7 +1134,8 @@ export class AgentBridge implements AgentBackend {
   ): { over: boolean; data: Record<string, unknown> } {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
-    const occupied = occupiedContextTokens(session.messages, (msgs) => this.toChatMessages([...msgs]), session.lastPrompt);
+    const prompt = promptMessages(session);
+    const occupied = occupiedContextTokens(prompt, (msgs) => promptSideChat(msgs, this.config, llmConfig.backend), session.lastPrompt);
     return {
       over: occupied > window.effective * threshold,
       data: {
@@ -1137,7 +1146,7 @@ export class AgentBridge implements AgentBackend {
         rawContextLimit: window.raw,
         windowSource: window.rawSource,
         threshold,
-        messageCount: session.messages.length,
+        messageCount: prompt.length,
       },
     };
   }
@@ -1246,32 +1255,6 @@ export class AgentBridge implements AgentBackend {
   }
 
   private toChatMessages(messages: SessionMessage[]): ChatMessage[] {
-    const out: ChatMessage[] = [];
-
-    // Defense in depth: a session loaded from disk (or compacted elsewhere) may start with
-    // orphan tool messages; emitting them verbatim makes the LLM API reject the whole request.
-    for (const msg of dropLeadingOrphanToolMessages(messages)) {
-      switch (msg.role) {
-        case "user":
-          out.push({ role: "user", content: msg.content });
-          break;
-        case "assistant":
-          if (msg.toolCalls?.length) {
-            out.push({
-              role: "assistant",
-              content: msg.content,
-              tool_calls: toOpenAiToolCalls(msg.toolCalls),
-            });
-          } else {
-            out.push({ role: "assistant", content: msg.content });
-          }
-          break;
-        case "tool":
-          out.push({ role: "tool", tool_call_id: msg.toolCallId, content: msg.content });
-          break;
-      }
-    }
-
-    return out;
+    return sessionChatMessages(messages);
   }
 }

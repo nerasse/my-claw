@@ -8,6 +8,7 @@ import { runRegistry } from "../../src/core/run-registry.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
+import { promptMessages } from "../../src/sessions/store.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
 
 /**
@@ -136,10 +137,12 @@ test("a run that fills the window mid-flight is compacted, not trimmed", async (
   const fillersAfter = after.split(FILLER).length - 1;
   assert.ok(fillersAfter <= fillersBefore - 2, `tool results summarized away: ${fillersBefore} -> ${fillersAfter}`);
 
-  // The history itself was rewritten, so the next run starts from the summary too. Compared
-  // against the untouched run below rather than a fixed count: the threshold is a share of the
-  // window, so a longer system prompt shifts the absolute number without changing the behaviour.
-  assert.ok(sess.messages.length < UNCOMPACTED_MESSAGES, `history compacted, got ${sess.messages.length} messages`);
+  // The prompt window moved, so the next run starts from the summary too. Compared against the
+  // untouched run below rather than a fixed count: the threshold is a share of the window, so a
+  // longer system prompt shifts the absolute number without changing the behaviour. The history
+  // behind the boundary is untouched -- a mid-run compaction is not allowed to eat the thread.
+  assert.ok(promptMessages(sess).length < UNCOMPACTED_MESSAGES, `prompt compacted, got ${promptMessages(sess).length} messages`);
+  assert.ok(sess.messages.length >= UNCOMPACTED_MESSAGES, `history kept, got ${sess.messages.length} messages`);
   assert.ok(sess.messages.some((m) => m.content.includes("Prior context summarized")));
 });
 

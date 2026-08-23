@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { compactSession } from "../src/sessions/compaction.ts";
+import { promptMessages } from "../src/sessions/store.ts";
 import type { SessionData } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
@@ -58,7 +59,7 @@ test("compactSession refuses sessions with fewer than 10 messages", async () => 
   assert.equal(session.messages.length, 5);
 });
 
-test("compactSession summarizes middle and keeps head + tail", async () => {
+test("compactSession moves the prompt boundary and deletes nothing", async () => {
   const session = makeSession(12);
   const fetchMock = mockFetch(async () =>
     new Response(
@@ -70,25 +71,70 @@ test("compactSession summarizes middle and keeps head + tail", async () => {
   try {
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, true);
+    // Both counts are prompt-window sizes: 12 turns in, summary + 4-turn tail out.
     assert.equal(result.beforeCount, 12);
-    assert.equal(result.afterCount, 8); // 3 head + 1 summary + 4 tail
-    assert.equal(session.messages.length, 8);
+    assert.equal(result.afterCount, 5);
 
-    // Head preserved
+    // Nothing the owner wrote is gone: the 12 turns are still there, the summary spliced between
+    // the ones it describes and the tail it hands over to.
+    assert.equal(session.messages.length, 13);
+    assert.deepEqual(
+      session.messages.filter((_, i) => i !== 8).map((m) => m.content),
+      Array.from({ length: 12 }, (_, i) => `Message ${i + 1}`),
+    );
+
+    // The boundary lands on the summary, so the prompt is summary + tail.
+    assert.equal(session.promptBase, 8);
+    const prompt = promptMessages(session);
+    assert.equal(prompt.length, 5);
+    assert.equal(prompt[0]!.role, "user");
+    assert.ok(prompt[0]!.content.includes("Prior context summarized"));
+    assert.ok(prompt[0]!.content.includes("Summary of earlier context."));
+    // Marked as a boundary so the app draws it as one instead of as something the owner typed.
+    assert.equal(prompt[0]!.role === "user" ? prompt[0]!.summaryOf : undefined, 8);
+    assert.deepEqual(
+      prompt.slice(1).map((m) => m.content),
+      ["Message 9", "Message 10", "Message 11", "Message 12"],
+    );
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+/**
+ * The second compaction is the one the boundary can get wrong: re-reading from index 0 would
+ * summarise the previous summary and re-bill turns no model can see any more.
+ */
+test("a second compaction summarizes only what is past the previous boundary", async () => {
+  const session = makeSession(12);
+  const seen: string[] = [];
+  const fetchMock = mockFetch(async (_url, init) => {
+    const body = init?.body;
+    seen.push(typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array));
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: `Summary number ${seen.length}, long enough to clear the fifty character floor.` } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    await compactSession(makeConfig(), session);
+    // Back over the floor so the second pass is allowed to run at all.
+    for (let i = 13; i <= 20; i++) {
+      session.messages.push({ role: i % 2 === 0 ? "user" : "assistant", content: `Message ${i}`, timestamp: new Date().toISOString() });
+    }
+
+    const second = await compactSession(makeConfig(), session);
+    assert.equal(second.ok, true);
+
+    // The first eight turns are behind the first boundary: the second prompt must not contain them.
+    const secondPrompt = seen[1]!;
+    assert.ok(!secondPrompt.includes("Message 1\\n"));
+    assert.ok(secondPrompt.includes("Summary number 1"));
+    // And they are still on disk, untouched, under the new boundary.
     assert.equal(session.messages[0]!.content, "Message 1");
-    assert.equal(session.messages[1]!.content, "Message 2");
-    assert.equal(session.messages[2]!.content, "Message 3");
-
-    // Summary inserted
-    assert.ok(session.messages[3]!.content.includes("Summary of earlier context."));
-    assert.ok(session.messages[3]!.content.includes("Prior context summarized"));
-    assert.equal(session.messages[3]!.role, "user");
-
-    // Tail preserved
-    assert.equal(session.messages[4]!.content, "Message 9");
-    assert.equal(session.messages[5]!.content, "Message 10");
-    assert.equal(session.messages[6]!.content, "Message 11");
-    assert.equal(session.messages[7]!.content, "Message 12");
+    assert.ok(session.promptBase! > 8);
+    assert.ok(promptMessages(session).length < session.messages.length);
   } finally {
     fetchMock.restore();
   }

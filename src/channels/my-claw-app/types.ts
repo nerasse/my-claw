@@ -949,6 +949,16 @@ export type MyClawAppHistoryEntry =
        * only ever a stream frame: the thread reopened showing a question with nothing under it.
        */
       error?: string;
+      /**
+       * This bubble is a compaction boundary, and how many turns above it the summary stands for.
+       * The summary is stored as a `user` turn because that is the role the prompt needs it in, so
+       * without this marker the app draws it as something the owner typed -- a wall of
+       * `[Prior context summarized]` in his own voice, which is exactly how it looked.
+       *
+       * On a boundary entry `text` is the summary alone: the instructions wrapped around it are
+       * addressed to the model, and the turns it stands for are replayed above it in full.
+       */
+      summaryOf?: number;
     }
   | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
 
@@ -1892,7 +1902,7 @@ export interface MyClawAppStatusPayload {
     autoCompactThresholdPct: number;
     autoCompactThresholdTokens: number;
   };
-  /** Session-counter figures since /new; null when no call has been made. */
+  /** Session-counter figures for this conversation; null when no call has been made. */
   conversation: {
     calls: number;
     promptTokens: number;

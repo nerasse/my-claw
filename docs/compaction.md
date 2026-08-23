@@ -8,6 +8,75 @@
 `/compact` shrinks a conversation's context. Two engines answer it, one shared command
 (`src/channels/compact-command.ts`) drives both for every channel.
 
+## A boundary, not a deletion
+
+The local summarizer used to *replace* `session.messages` with `head + summary + tail`. That served
+the loop and destroyed everything else: one conversation on this install went from ten days of
+history to nine messages, and the summaries were the only trace left of the turns they stood for.
+
+`session.messages` is read by two things that want opposite answers — the loop, which wants what the
+model must see, and the app's history, which wants what the owner wrote. Cutting answered the first
+by destroying the second. A boundary answers both:
+
+| | before | now |
+|---|---|---|
+| `session.messages` | rewritten, the middle deleted | append-only, every turn kept |
+| what the prompt carries | the whole array | `promptMessages(session)`: the array from `session.promptBase` on |
+| what the app replays | whatever survived | the whole array, the boundary drawn as a rule |
+
+`promptBase` is the index the prompt starts at, and the summary sits exactly on it: the model reads
+summary + tail, the thread still scrolls back through everything. Absent means the whole array is
+the prompt. An index past the end reads as no boundary rather than as an empty prompt, so a session
+rewritten under a stale index degrades to "send everything" instead of "send nothing".
+
+**`promptMessages` is the only way to read a session for a prompt.** The gate, the prompt build, the
+vision pass, `/status` and the summarizer itself all go through it. That is what makes the rule hold:
+keeping the history can never widen what a model reads, because no caller touches `messages` directly.
+
+A second compaction summarises only what is past the previous boundary. Reading from index 0 would
+summarise a summary and re-bill turns the model cannot see.
+
+Three places have to clear or clamp the index, and all three are bugs if they are missed: `/clear`
+(the array it indexes is gone), a failed run rolling `messages` back past the boundary, and `/status`
+reporting occupancy (a share of the window has to count what is in the window).
+
+### The gate measures the prompt, and so does everything that reports it
+
+The boundary alone would not have stopped what happened: thirty of the thirty-five compactions on
+that thread were fired on a number that was wrong by 8.7x. The loop runs `pruneOldToolResults` over
+the prompt before every call, stubbing old tool results to 200 chars, but the gate estimated the
+untouched history — 410k tokens against 47k the provider actually billed, on a session sitting at
+nine percent of its window. `occupiedContextTokens` floors on the estimate (`Math.max`), so the real
+measurement could never talk the gate down.
+
+`promptSideChat` (`agent/context-pruning.ts`) is the one answer to "what does the prompt carry":
+`promptMessages` for the boundary, then the same pruning the loop applies, skipped for the Anthropic
+backend whose cache is a prefix and whose prompt is therefore sent whole.
+
+Three places read occupancy and all three go through it, because a private copy in each is how they
+came to disagree by a factor of eight about one conversation:
+
+| reader | where |
+|---|---|
+| the compaction gate, run-start and mid-run | `bridge.ts` `contextGate` |
+| `/status` | `status-command.ts` |
+| the app's chat header (`context.used`) | `index.ts` |
+
+The header was the worst of the three once the boundary landed: it read `session.messages` whole, and
+that array is append-only now, so the gauge would have climbed to full and stayed there forever.
+
+### What the owner sees
+
+The summary is stored in a `user` turn because that is the role the prompt needs it in. Replayed as
+one it was a wall of `[Prior context summarized]` in the owner's own voice — the thread read as a
+transcript he had typed of himself. The entry therefore carries `summaryOf`, the number of turns it
+stands for, and the app draws it as a rule across the thread (`CompactionBoundary`) with the summary
+folded under it. `text` on such an entry is the summary alone: the instructions wrapped around it
+("respond to the message below") are addressed to the model and have no reader in a thread.
+
+Both counts in the `/compact` answer are prompt-window sizes. `session.messages` only grows now, so
+reporting its length would announce a compaction as `12 → 13 messages`.
+
 ## The two engines
 
 | Session | Engine | What it rewrites |

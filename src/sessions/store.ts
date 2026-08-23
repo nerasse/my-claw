@@ -31,6 +31,13 @@ export type SessionMessage =
        * dropped -- docs/my-claw-app-channel.md.
        */
       sourceId?: string;
+      /**
+       * How many turns this one summarises, set only on a compaction summary. The turns themselves
+       * are still in `messages` right before it, so a channel can mark the boundary in the replayed
+       * history instead of showing the summary as something the owner typed -- which is exactly how
+       * it read before, a `[Prior context summarized]` block in the composer's own voice.
+       */
+      summaryOf?: number;
     }
   | {
       role: "assistant";
@@ -61,6 +68,21 @@ export type SessionMessage =
       segments?: Array<{ reasoning?: string; content: string }>;
     }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
+
+/**
+ * The turns a model is allowed to see: `messages` from the compaction boundary onward.
+ *
+ * The one way to read a session for a prompt. `messages` is the whole conversation, boundary
+ * included, because the app replays it and the owner's words are not the model's to discard; every
+ * caller that builds a prompt goes through here instead, so restoring history can never widen what
+ * a model reads. A boundary past the end (a session rewritten under a stale index) reads as no
+ * boundary at all rather than an empty prompt. See docs/compaction.md.
+ */
+export function promptMessages(session: Pick<SessionData, "messages" | "promptBase">): SessionMessage[] {
+  const base = session.promptBase ?? 0;
+  if (base <= 0 || base >= session.messages.length) return session.messages;
+  return session.messages.slice(base);
+}
 
 /**
  * Slicing history to a fixed tail (keep the last N) can cut inside a tool block, leaving the
@@ -298,6 +320,20 @@ export interface SessionData {
   // Prompt size the provider actually billed on the last call, with the message count it covered.
   // The compaction gate needs a real number: chars/4 under-counts by ~2.3x on live traffic.
   lastPrompt?: import("../llm/context-window.ts").MeasuredPrompt;
+  /**
+   * Where the prompt starts inside `messages`: everything before it is summarised by the turn at
+   * this index and is not sent to any model again.
+   *
+   * Compaction used to answer this by replacing the array outright. But `messages` is read by two
+   * things that want opposite answers -- the loop, which wants what the model must see, and the
+   * app's history, which wants what the owner wrote. Cutting served the first by destroying the
+   * second: one conversation on this install went from ten days of history to nine messages, and
+   * the summaries were the only trace left of the turns they replaced. A boundary answers both,
+   * so nothing a human said is ever deleted to make room for a model.
+   *
+   * Absent means the whole array is the prompt. See docs/compaction.md.
+   */
+  promptBase?: number;
   roomId?: string;
   threadId?: string;
   verbose?: boolean;
@@ -451,48 +487,6 @@ export async function archiveSession(sessionId: string): Promise<string | null> 
     }
     throw err;
   }
-}
-
-async function purgeArchiveDir(dir: string, beforeMs: number | null, all: boolean): Promise<number> {
-  let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const entry of entries) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      removed += await purgeArchiveDir(path, beforeMs, all);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    if (!all && beforeMs === null) continue;
-    const stats = await stat(path).catch(() => null);
-    if (!stats) continue;
-    if (all || (beforeMs !== null && stats.mtimeMs <= beforeMs)) {
-      await rm(path, { force: true });
-      removed += 1;
-    }
-  }
-
-  const remaining = await readdir(dir).catch(() => []);
-  if (remaining.length === 0) {
-    await rm(dir, { recursive: true, force: true });
-  }
-  return removed;
-}
-
-export async function purgeSessionArchives(options: {
-  before?: Date;
-  all?: boolean;
-}): Promise<number> {
-  const all = options.all === true;
-  const beforeMs = options.before ? options.before.getTime() : null;
-  if (!all && beforeMs === null) return 0;
-  return purgeArchiveDir(ARCHIVES_DIR, beforeMs, all);
 }
 
 const SESSION_STALE_DAYS = 30;

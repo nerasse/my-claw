@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
 import { recordSessionCommand, recordSessionFailure } from "../../sessions/store.ts";
+import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -349,6 +350,20 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     for (const message of window) {
       flushCommandsUpTo(message.timestamp);
       if (message.role === "user") {
+        // A compaction summary rides in a user turn because that is the role the prompt needs it
+        // in. Replayed as one it reads as a wall of `[Prior context summarized]` the owner never
+        // typed, which is exactly how it looked. It is a boundary: the turns above it are still
+        // there in full, and the summary itself folds away under the marker.
+        if (message.summaryOf) {
+          entries.push({
+            id: `h-${message.timestamp}-${entries.length}`,
+            role: "user",
+            text: summaryBodyOf(message.content),
+            ts: message.timestamp,
+            summaryOf: message.summaryOf,
+          });
+          continue;
+        }
         const block = splitAttachmentBlock(message.content);
         const { text, spoken } = splitTranscript(block.text);
         const resolved = historyAttachments(block.attachments, stored);

@@ -1,9 +1,10 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
-import { leafModelId } from "../llm/resolver.ts";
+import { leafModelId, resolveLlmConfig } from "../llm/resolver.ts";
+import { promptSideChat } from "../agent/context-pruning.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { agentTypeOf } from "../sessions/store.ts";
+import { agentTypeOf, promptMessages } from "../sessions/store.ts";
 import {
   getSessionModelUsage,
   getLastContextTokens,
@@ -20,6 +21,19 @@ import { resolveModelContextWindow, occupiedContextTokens, sessionMirrorRole } f
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
+
+/**
+ * The engine a model resolves to, or undefined when the model is gone from the catalogue. Only
+ * used to answer "does this prompt get pruned": a model whose provider vanished must not take a
+ * read-only diagnostic down with it.
+ */
+function backendOf(config: MyClawConfig, modelId: string): string | undefined {
+  try {
+    return resolveLlmConfig(config.llm, modelId).backend;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * `/status` -- one screen, always the whole thing. See docs/status-command.md.
@@ -150,17 +164,25 @@ function collectStatusData(p: StatusParams): StatusData {
   // actually decides when compaction fires. A wide gap means the trigger is mis-tuned.
   // The session's own figure first: it is the one the compaction gate uses, so showing anything
   // else here would let the two lines below contradict each other. Analytics is the fallback for
-  // sessions that predate the field, but only while there is a history for it to describe: after a
-  // /new the last recorded call is not in this context any more, and reporting it as a share of the
-  // window would be a straight falsehood.
-  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] =>
-    msgs.map((m) => (m.role === "tool" ? { role: "user" as const, content: m.content } : { role: m.role, content: m.content }));
+  // sessions that predate the field, but only while there is a history for it to describe: on an
+  // empty one the last recorded call is not in this context any more, and reporting it as a share
+  // of the window would be a straight falsehood.
+  //
+  // The estimate goes through the same helper the gate uses, and for the same reason: the loop
+  // prunes old tool results out of the prompt before every call, so measuring the unpruned history
+  // counts tokens that are never sent. That gap read 8.7x here and fired thirty compactions on a
+  // session at nine percent of its window. Two numbers for one thing must not disagree.
+  const backend = backendOf(p.config, currentModel);
+  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] => promptSideChat(msgs, p.config, backend);
   const measured = p.session
     ? p.session.lastPrompt?.tokens ?? (p.session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
-  const estimated = p.session ? estimateMessagesTokens(toChat(p.session.messages)) : 0;
+  // The prompt window, not the whole conversation: since compaction moved to a boundary the two
+  // differ by everything a summary replaced, and a share of the window has to count what is in it.
+  const prompt = p.session ? promptMessages(p.session) : [];
+  const estimated = p.session ? estimateMessagesTokens(toChat(prompt)) : 0;
   const mirror = p.session ? sessionMirrorRole(p.config, p.session, contextAgent) : { kind: "prompt" as const };
-  const occupied = p.session ? occupiedContextTokens(p.session.messages, toChat, p.session.lastPrompt, mirror) : 0;
+  const occupied = p.session ? occupiedContextTokens(prompt, toChat, p.session.lastPrompt, mirror) : 0;
   const autoCompactOn = autoCompactEnabled(p.config);
   const threshold = resolveAutoCompactThreshold(p.config);
   const own = p.session ? priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing) : [];
@@ -236,11 +258,11 @@ function formatStatusText(d: StatusData): string {
     lines.push("  auto-compact  off");
   }
 
-  // Same id, two very different numbers: /new resets the session counter while analytics keeps
-  // accumulating under the room-derived id. Both are correct, so both are labelled.
+  // Same id, two very different numbers: the session counter covers this conversation while
+  // analytics keeps accumulating under the room-derived id. Both are correct, so both are labelled.
   const u = session.tokenUsage;
   lines.push("");
-  lines.push("**This conversation** (since /new)");
+  lines.push("**This conversation**");
   if (u) {
     const cached = u.cacheReadTokens ? ` - cached ${short(u.cacheReadTokens)}` : "";
     lines.push(`  ${u.apiCalls} calls - in ${short(u.promptTokens)}${cached} - out ${short(u.completionTokens)}`);

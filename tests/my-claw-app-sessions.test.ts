@@ -33,6 +33,41 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     await deleteSession(sessionId);
   });
 
+  /**
+   * Reported from the app: a thread that had been compacted came back as a wall of
+   * `[Prior context summarized]` in the owner's own voice, because a summary is stored in a `user`
+   * turn -- the role the prompt needs it in. It is a boundary, and the turns it covers are still
+   * above it.
+   */
+  test("a compaction summary is replayed as a boundary, not as something the owner typed", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "premiere question", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "premiere reponse", timestamp: "2026-01-01T00:00:02.000Z" },
+      {
+        role: "user",
+        content: "[Prior context summarized]\nPrior work: the two turns above.\n\n[End of summary — respond to the message below]",
+        timestamp: "2026-01-01T00:00:03.000Z",
+        summaryOf: 2,
+      },
+      { role: "user", content: "la suite", timestamp: "2026-01-01T00:00:04.000Z" },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    // Nothing is hidden: the turns the summary stands for are replayed in full above it.
+    assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "user"]);
+
+    const boundary = entries[2]!;
+    if (boundary.role === "tool") throw new Error("expected a text entry");
+    assert.equal(boundary.summaryOf, 2);
+    // The scaffolding is addressed to the model: "respond to the message below" has no reader here.
+    assert.equal(boundary.text, "Prior work: the two turns above.");
+
+    const ordinary = entries[3]!;
+    if (ordinary.role === "tool") throw new Error("expected a text entry");
+    assert.equal(ordinary.summaryOf, undefined);
+    assert.equal(ordinary.text, "la suite");
+  });
+
   test("replays tool calls as structured cards with output and duration", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "check le site", timestamp: "2026-01-01T00:00:01.000Z" },

@@ -5,15 +5,35 @@ import { llmComplete } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData, SessionMessage } from "./store.ts";
-import { agentTypeOf, attributionParent } from "./store.ts";
+import { agentTypeOf, attributionParent, promptMessages } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
-const HEAD_KEEP = 3;
 const TAIL_KEEP = 4;
 const MAX_SUMMARY_CHARS = 8000;
+
+/**
+ * The scaffolding around a stored summary. It is addressed to the model -- it tells it what the
+ * block is and that the turn under it is the one to answer -- so it is written once, here, and
+ * stripped once, by `summaryBodyOf`, rather than matched by hand wherever a channel replays it.
+ */
+const SUMMARY_OPEN = "[Prior context summarized]";
+const SUMMARY_CLOSE = "[End of summary — respond to the message below]";
+
+/**
+ * The summary a boundary turn carries, without the instructions wrapped around it for the model.
+ * A channel showing the raw content puts "respond to the message below" in the owner's thread,
+ * addressed to nobody.
+ */
+export function summaryBodyOf(content: string): string {
+  let body = content;
+  if (body.startsWith(SUMMARY_OPEN)) body = body.slice(SUMMARY_OPEN.length);
+  const close = body.lastIndexOf(SUMMARY_CLOSE);
+  if (close !== -1) body = body.slice(0, close);
+  return body.trim();
+}
 
 export interface CompactionResult {
   ok: boolean;
@@ -21,10 +41,6 @@ export interface CompactionResult {
   beforeCount: number;
   afterCount: number;
   summary?: string;
-}
-
-function isToolPairStart(msg: SessionMessage, next: SessionMessage | undefined): boolean {
-  return msg.role === "assistant" && (msg.toolCalls?.length ?? 0) > 0 && next !== undefined;
 }
 
 function alignTailBoundary(messages: SessionMessage[], tailStart: number): number {
@@ -36,28 +52,6 @@ function alignTailBoundary(messages: SessionMessage[], tailStart: number): numbe
   // all contiguous tool results lands on their owning assistant, keeping the whole block together.
   while (idx > 0 && messages[idx]?.role === "tool") {
     idx -= 1;
-  }
-  return idx;
-}
-
-function alignHeadBoundary(messages: SessionMessage[], headEnd: number): number {
-  let idx = headEnd;
-  if (idx >= messages.length) return messages.length;
-
-  // Walk forward to avoid splitting a tool pair
-  while (idx < messages.length) {
-    const prev = messages[idx - 1];
-    const curr = messages[idx];
-    if (prev && isToolPairStart(prev, curr)) {
-      // prev is assistant with tool_calls, need to include tool results
-      idx += 1;
-      // Continue to include all tool results for this call
-      while (idx < messages.length && messages[idx]?.role === "tool") {
-        idx += 1;
-      }
-      continue;
-    }
-    break;
   }
   return idx;
 }
@@ -113,7 +107,10 @@ export async function compactSession(
   session: SessionData,
   instructions?: string,
 ): Promise<CompactionResult> {
-  const messages = session.messages;
+  // The prompt side alone. Everything before the previous boundary is already inside an earlier
+  // summary: re-reading it would summarise a summary and re-bill turns the model cannot see.
+  const base = session.promptBase ?? 0;
+  const messages = promptMessages(session);
   hooks.emit("session:compact:start", { sessionId: session.id, messageCount: messages.length });
 
   if (messages.length < MIN_MESSAGES_TO_COMPACT) {
@@ -125,22 +122,23 @@ export async function compactSession(
     };
   }
 
-  const headEndRaw = Math.min(HEAD_KEEP, messages.length);
-  const headEnd = alignHeadBoundary(messages, headEndRaw);
-  const tailStartRaw = Math.max(headEnd, messages.length - TAIL_KEEP);
+  // Everything but the last few turns is summarised. The old shape also kept the first turns
+  // verbatim, which a boundary cannot express: the prompt is one contiguous window, and a head
+  // held out of it would sit before the boundary and vanish from the prompt unsummarised. The
+  // summariser is told to preserve the main task, which is what the head was there for.
+  const tailStartRaw = Math.max(0, messages.length - TAIL_KEEP);
   const tailStart = alignTailBoundary(messages, tailStartRaw);
 
-  if (tailStart <= headEnd) {
+  if (tailStart <= 0) {
     return {
       ok: false,
-      reason: "Not enough messages between head and tail to compact.",
+      reason: "Not enough messages before the tail to compact.",
       beforeCount: messages.length,
       afterCount: messages.length,
     };
   }
 
-  const head = messages.slice(0, headEnd);
-  const middle = messages.slice(headEnd, tailStart);
+  const middle = messages.slice(0, tailStart);
   const tail = messages.slice(tailStart);
 
   const serialized = serializeForCompaction(middle);
@@ -219,22 +217,33 @@ export async function compactSession(
 
     const summaryMessage: SessionMessage = {
       role: "user",
-      content: `[Prior context summarized]\n${summary}\n\n[End of summary — respond to the message below]`,
+      content: `${SUMMARY_OPEN}\n${summary}\n\n${SUMMARY_CLOSE}`,
       timestamp: new Date().toISOString(),
+      summaryOf: middle.length,
     };
 
-    session.messages = [...head, summaryMessage, ...tail];
+    // The summarised turns stay in `messages`; only the prompt window moves. The summary is spliced
+    // in where they end, so the boundary lands on it and the model reads summary + tail, while the
+    // app still replays every turn the owner wrote. `middle` is re-listed rather than left in place
+    // because `alignTailBoundary` may have moved the cut, and the splice must rebuild exactly the
+    // window the summary describes.
+    session.messages = [...session.messages.slice(0, base), ...middle, summaryMessage, ...tail];
+    session.promptBase = base + middle.length;
     session.lastActiveAt = new Date().toISOString();
+    // Both counts are prompt-window sizes. `session.messages` only ever grows now, so reporting its
+    // length against a `beforeCount` taken from the window would announce a compaction as
+    // "12 -> 13 messages" -- the one number the command exists to make go down, going up.
+    const afterCount = promptMessages(session).length;
     hooks.emit("session:compact:end", {
       sessionId: session.id,
       beforeCount: messages.length,
-      afterCount: session.messages.length,
+      afterCount,
       summaryLength: summary.length,
     });
     return {
       ok: true,
       beforeCount: messages.length,
-      afterCount: session.messages.length,
+      afterCount,
       summary,
     };
   } catch (err) {
