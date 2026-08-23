@@ -640,10 +640,14 @@ export class AgentBridge implements AgentBackend {
 
         const assistantToolCalls = toOpenAiToolCalls(response.toolCalls);
 
+        // `providerMeta` rides on the in-memory prompt only, never on `persistedAssistant` below:
+        // it is opaque, model-bound and large, and its whole value is spanning the tool iterations
+        // of the run in progress. See docs/reasoning-replay.md.
         chatMessages.push({
           role: "assistant",
           content: response.content,
           tool_calls: assistantToolCalls,
+          ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
         });
 
         // Kept as a reference so the tool durations measured below can be written back into the

@@ -115,10 +115,67 @@ export type ChatMessageContent =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
 
+/**
+ * A reasoning item as the provider wants it handed back, opaque to us.
+ *
+ * The Responses API keeps the model's chain of thought server-side between calls only when
+ * `store: true`. We send `store: false`, so unless the encrypted state is asked for and replayed,
+ * every tool iteration arrives with the tool outputs and no memory of why the calls were made --
+ * the model re-derives its plan from scratch on each of them. That is the shape of the wandering
+ * measured here: a 142-iteration median against 19 for a model on a transport that does replay.
+ * See docs/reasoning-replay.md.
+ */
+export interface ReasoningItem {
+  id: string;
+  /** Provider-encrypted thinking state. Never inspected, never logged, replayed verbatim. */
+  encrypted?: string;
+}
+
+/**
+ * Provider-scoped state attached to an assistant turn so the next call can hand it back.
+ *
+ * Tagged with the transport and model that produced it because these blobs are neither portable
+ * nor forgeable: a `rs_` item from one model replayed to another is a 400. Prompt-side only --
+ * this never reaches a session file, see docs/reasoning-replay.md.
+ */
+/**
+ * An Anthropic thinking block, kept exactly as it arrived.
+ *
+ * The signature covers the model's full original thinking, not the summarized text shown here, so
+ * the block is only valid replayed verbatim: Anthropic answers 400 to one that has been edited,
+ * reordered or partially filtered.
+ */
+export interface ThinkingBlock {
+  type: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  /** The opaque payload of a `redacted_thinking` block, which carries no readable text. */
+  data?: string;
+}
+
+export interface ProviderMeta {
+  backend: string;
+  model: string;
+  /** OpenAI Responses reasoning items. */
+  reasoning?: ReasoningItem[];
+  /** Anthropic thinking blocks, in the order the model emitted them. */
+  thinking?: ThinkingBlock[];
+}
+
 export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string | ChatMessageContent[] }
-  | { role: "assistant"; content: string; tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> }
+  | {
+      role: "assistant";
+      content: string;
+      tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>;
+      /**
+       * Opaque provider state for the next call on the same transport. `toWireMessage` builds the
+       * chat-completions payload field by field and does not copy it, so it cannot leak to a
+       * protocol that has no slot for it.
+       */
+      providerMeta?: ProviderMeta;
+    }
   | { role: "tool"; tool_call_id: string; content: string };
 
 export interface LlmUsage {
@@ -153,6 +210,8 @@ export interface LlmResponse {
   proxyCostUsd?: number;
   // The endpoint the proxy actually forwarded to, which is what determines the real tariff.
   upstreamApiBase?: string;
+  /** Opaque state to hand back on the next call of the same run -- docs/reasoning-replay.md. */
+  providerMeta?: ProviderMeta;
 }
 
 export interface ToolCall {

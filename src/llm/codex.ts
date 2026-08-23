@@ -4,7 +4,7 @@ import { AbortedError } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
-import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
+import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from "./provider.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 
 const CODEX_TIMEOUT_MS = 300_000;
@@ -34,6 +34,7 @@ type ResponsesUserPart = ResponsesTextPart | ResponsesImagePart;
 
 type ResponsesInputItem =
   | { role: "user" | "assistant"; content: string | ResponsesUserPart[] }
+  | { type: "reasoning"; id: string; encrypted_content?: string; summary: [] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string };
 
@@ -66,7 +67,10 @@ function convertTools(tools?: unknown[]): ResponsesTool[] {
  * list. Later system messages (e.g. the iteration-limit summary prompt) become user turns since
  * the Responses API has a single instructions slot.
  */
-function buildInput(messages: ChatMessage[]): { instructions: string; input: ResponsesInputItem[] } {
+function buildInput(
+  messages: ChatMessage[],
+  self?: { backend: string; model: string },
+): { instructions: string; input: ResponsesInputItem[] } {
   let instructions = "";
   const input: ResponsesInputItem[] = [];
 
@@ -88,7 +92,21 @@ function buildInput(messages: ChatMessage[]): { instructions: string; input: Res
           input.push({ role: "user", content: parts });
         }
         break;
-      case "assistant":
+      case "assistant": {
+        /**
+         * Ahead of the calls, because that is the order the model emitted them in and the API
+         * rejects a `reasoning` item that does not precede the `function_call` it produced.
+         *
+         * Only replayed to the transport and model that produced it: these blobs are signed for
+         * one model and a mismatch is a 400, so a run that switched engines drops them rather
+         * than failing the call.
+         */
+        const meta = msg.providerMeta;
+        if (meta && self && meta.backend === self.backend && meta.model === self.model) {
+          for (const item of meta.reasoning ?? []) {
+            input.push({ type: "reasoning", id: item.id, summary: [], ...(item.encrypted ? { encrypted_content: item.encrypted } : {}) });
+          }
+        }
         if (msg.content) input.push({ role: "assistant", content: msg.content });
         for (const tc of msg.tool_calls ?? []) {
           input.push({
@@ -99,6 +117,7 @@ function buildInput(messages: ChatMessage[]): { instructions: string; input: Res
           });
         }
         break;
+      }
       case "tool":
         input.push({ type: "function_call_output", call_id: msg.tool_call_id, output: msg.content });
         break;
@@ -171,7 +190,8 @@ async function* readLines(body: ReadableStream<Uint8Array>): AsyncIterable<strin
 async function processStream(
   body: ReadableStream<Uint8Array>,
   onToken: ((token: string) => Promise<void> | void) | undefined,
-  reasoningSink?: ReasoningSink,
+  reasoningSink: ReasoningSink | undefined,
+  self: { backend: string; model: string },
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -190,6 +210,12 @@ async function processStream(
   let summaryIndex: number | undefined;
   let usage: LlmUsage | undefined;
   let finishReason: string | undefined;
+  /**
+   * The reasoning items this turn produced, in wire order, to hand straight back on the next call.
+   * `encrypted_content` only arrives because the request asks for it in `include`; without that
+   * the item is still announced but empty, and replaying an empty one buys nothing.
+   */
+  const reasoningItems: ReasoningItem[] = [];
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
 
@@ -275,7 +301,11 @@ async function processStream(
         break;
       }
       case "response.output_item.done": {
-        const item = event["item"] as { type?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+        const item = event["item"] as { type?: string; id?: string; encrypted_content?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+        // `done` and not `added`: the encrypted state is only complete once the item closes.
+        if (item?.type === "reasoning" && item.id) {
+          reasoningItems.push({ id: item.id, ...(item.encrypted_content ? { encrypted: item.encrypted_content } : {}) });
+        }
         if (item?.type === "function_call") {
           const slot = ensureSlot(Number(event["output_index"] ?? 0));
           if (item.call_id) slot.callId = item.call_id;
@@ -314,6 +344,7 @@ async function processStream(
   const segments = segmenter.list();
   return {
     content,
+    ...(reasoningItems.length > 0 ? { providerMeta: { ...self, reasoning: reasoningItems } } : {}),
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason,
     incomplete: !content && toolCalls.length === 0 && finishReason !== "completed",
@@ -339,10 +370,11 @@ async function runCodex(
   signal?: AbortSignal,
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
-  const { instructions, input } = buildInput(messages);
+  const model = config.apiModel ?? config.model;
+  const { instructions, input } = buildInput(messages, { backend: "codex", model });
   const responsesTools = convertTools(tools);
   const body: Record<string, unknown> = {
-    model: config.apiModel ?? config.model,
+    model,
     store: false,
     stream: true,
     instructions,
@@ -352,6 +384,9 @@ async function runCodex(
   };
   if (responsesTools.length > 0) body["tools"] = responsesTools;
   if (config.effort) body["reasoning"] = { effort: config.effort, summary: "auto" };
+  // The counterpart of `store: false`: nothing is kept server-side, so the encrypted thinking
+  // state has to come back to us or it is lost between two tool iterations.
+  body["include"] = ["reasoning.encrypted_content"];
 
   const base = config.baseUrl || CODEX_BASE_URL;
   const url = `${base.replace(/\/+$/, "")}/codex/responses`;
@@ -410,7 +445,7 @@ async function runCodex(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink);
+      return await processStream(response.body, wrappedOnToken, reasoningSink, { backend: "codex", model });
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;

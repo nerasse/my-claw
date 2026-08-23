@@ -9,7 +9,7 @@ import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, counts
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
-import type { ChatMessage, LlmResponse, LlmUsage, ToolCall } from "./provider.ts";
+import type { ChatMessage, LlmResponse, LlmUsage, ThinkingBlock, ToolCall } from "./provider.ts";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_TIMEOUT_MS = 600_000;
@@ -51,6 +51,20 @@ const IDENTITY_BLOCK = "You are a Claude agent, built on Anthropic's Claude Agen
  * text. `ANTHROPIC_HIDE_THINKING=1` restores the captured shape without a rebuild.
  */
 const STREAM_THINKING = process.env["ANTHROPIC_HIDE_THINKING"] !== "1";
+
+/**
+ * Whether to hand the model's thinking blocks back on the next call of the same run.
+ *
+ * Off by default, and deliberately so. Replaying them is what Anthropic documents for tool use
+ * with extended thinking, and it is the same fix as the Codex one -- the model stops re-deriving
+ * its plan from the tool outputs at every iteration. But the blocks are signed, the signature
+ * covers the original thinking, and the API answers 400 to any sequence it considers modified.
+ * Anything that rewrites the prompt around them is a way to trip that: this transport is also the
+ * one where pruning is skipped and where a compaction boundary can cut a signed chain in half.
+ * The upside is real and the failure mode is a hard 400 on a live run, so it is opt-in until it
+ * has been exercised against the real endpoint -- docs/reasoning-replay.md.
+ */
+const THINKING_REPLAY = process.env["ANTHROPIC_THINKING_REPLAY"] === "1" && STREAM_THINKING;
 
 // One id per process, exactly like the CLI: it is a client-side correlation handle, and a fresh
 // one per request would be the anomaly.
@@ -152,7 +166,14 @@ interface AnthropicToolResultBlock {
   content: string;
   cache_control?: typeof CACHE_1H;
 }
-type AnthropicBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock;
+interface AnthropicThinkingBlock {
+  type: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  data?: string;
+}
+
+type AnthropicBlock = AnthropicTextBlock | AnthropicImageBlock | AnthropicToolUseBlock | AnthropicToolResultBlock | AnthropicThinkingBlock;
 
 interface AnthropicMessage {
   role: "user" | "assistant";
@@ -203,7 +224,7 @@ function safeJson(raw: string): Record<string, unknown> {
  * assistant turn belong in a single user message. The home loop emits one `tool` message per call,
  * so consecutive same-role messages are merged rather than sent as-is.
  */
-function buildRequest(messages: ChatMessage[]): { system: string; turns: AnthropicMessage[] } {
+function buildRequest(messages: ChatMessage[], self?: { backend: string; model: string }): { system: string; turns: AnthropicMessage[] } {
   let system = "";
   const turns: AnthropicMessage[] = [];
 
@@ -234,6 +255,12 @@ function buildRequest(messages: ChatMessage[]): { system: string; turns: Anthrop
         break;
       case "assistant": {
         const blocks: AnthropicBlock[] = [];
+        // First in the turn, which is where the model put them and the only position the API
+        // accepts. Same-model check as on the Codex transport: a signature is not portable.
+        const meta = msg.providerMeta;
+        if (THINKING_REPLAY && meta && self && meta.backend === self.backend && meta.model === self.model) {
+          for (const t of meta.thinking ?? []) blocks.push({ ...t });
+        }
         if (msg.content) blocks.push({ type: "text", text: msg.content });
         for (const tc of msg.tool_calls ?? []) {
           blocks.push({
@@ -346,6 +373,7 @@ async function processStream(
   body: ReadableStream<Uint8Array>,
   onToken: ((token: string) => Promise<void> | void) | undefined,
   reasoningSink?: ReasoningSink,
+  self?: { backend: string; model: string },
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -355,6 +383,12 @@ async function processStream(
   let finishReason: string | undefined;
   const slots = new Map<number, ToolUseSlot>();
   const order: number[] = [];
+  /**
+   * Thinking blocks under construction, by block index. Text arrives as `thinking_delta` and the
+   * signature separately as `signature_delta`, so a block is only complete once the stream moves
+   * on. Kept in index order, because Anthropic validates the sequence and not just each block.
+   */
+  const thinkingBlocks = new Map<number, ThinkingBlock>();
 
   for await (const line of readLines(body)) {
     if (!line.startsWith("data:")) continue;
@@ -373,21 +407,37 @@ async function processStream(
         break;
       }
       case "content_block_start": {
-        const block = event["content_block"] as { type?: string; id?: string; name?: string } | undefined;
+        const block = event["content_block"] as { type?: string; id?: string; name?: string; thinking?: string; signature?: string; data?: string } | undefined;
         if (block?.type === "tool_use") {
           const index = Number(event["index"] ?? 0);
           slots.set(index, { id: block.id ?? "", name: block.name ?? "", json: "" });
           order.push(index);
+        } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+          // `redacted_thinking` carries `data` and never any text: it is opaque even to the sink,
+          // and replaying it is the only thing it is good for.
+          thinkingBlocks.set(Number(event["index"] ?? 0), {
+            type: block.type,
+            thinking: block.thinking ?? "",
+            ...(block.signature ? { signature: block.signature } : {}),
+            ...(block.data ? { data: block.data } : {}),
+          });
         }
         break;
       }
       case "content_block_delta": {
-        const delta = event["delta"] as { type?: string; text?: string; thinking?: string; partial_json?: string } | undefined;
+        const delta = event["delta"] as { type?: string; text?: string; thinking?: string; partial_json?: string; signature?: string } | undefined;
+        if (delta?.type === "signature_delta" && delta.signature) {
+          const block = thinkingBlocks.get(Number(event["index"] ?? 0));
+          if (block) block.signature = (block.signature ?? "") + delta.signature;
+          break;
+        }
         if (delta?.type === "text_delta" && delta.text) {
           content += delta.text;
           segmenter.text(delta.text);
           if (onToken) await onToken(delta.text);
         } else if (delta?.type === "thinking_delta" && delta.thinking) {
+          const block = thinkingBlocks.get(Number(event["index"] ?? 0));
+          if (block) block.thinking = (block.thinking ?? "") + delta.thinking;
           reasoning += delta.thinking;
           segmenter.reasoning(delta.thinking);
           if (reasoningSink?.onText) await reasoningSink.onText(delta.thinking);
@@ -423,11 +473,13 @@ async function processStream(
     .filter((s) => s.id && s.name)
     .map((s) => ({ id: s.id, name: localToolName(s.name), arguments: safeJson(s.json || "{}") }));
 
+  const thinking = [...thinkingBlocks.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
   const segments = segmenter.list();
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason,
+    ...(self && thinking.length > 0 ? { providerMeta: { ...self, thinking } } : {}),
     // A normal end_turn is still incomplete when Anthropic emitted only thinking. The user needs
     // an answer or a tool call; reasoning alone must not look like a successful final turn.
     incomplete: !content && toolCalls.length === 0,
@@ -558,7 +610,7 @@ function warnThinkingOffWithTools(model: string, toolCount: number): void {
 
 /** The whole request body, pure so P2 can diff it against the capture without a network call. */
 function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] = [], tools?: unknown[]): Record<string, unknown> {
-  const { system, turns } = buildRequest(messages);
+  const { system, turns } = buildRequest(messages, { backend: "anthropic", model: config.model ?? "" });
   const anthropicTools = convertTools(tools);
 
   // Appended here rather than by the prompt builder, for the same reason the SDK appends it after
@@ -698,7 +750,7 @@ async function runAnthropic(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink);
+      return await processStream(response.body, wrappedOnToken, reasoningSink, { backend: "anthropic", model: config.model ?? "" });
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
