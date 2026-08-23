@@ -265,10 +265,6 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return instructionsText(await handleInstructionsCommand(params));
       }
 
-      case "new":
-        await deps.sessionManager.resetSession(sessionId, "my-claw-app", "dm");
-        return "New session started.";
-
       default:
         return undefined;
     }

@@ -109,8 +109,7 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `session:created` -- new session on disk
 - `session:loaded` -- existing session loaded from disk
 - `session:persisted` -- session saved to disk
-- `session:reset` -- /new command executed
-- `session:cleared` -- /clear command executed
+- `session:cleared` -- history emptied in place
 - `session:archived` -- session file moved to archive
 - `session:evicted` -- LRU cache eviction
 - `session:compact:start/end/error` -- context compaction (local summarizer only)
@@ -159,7 +158,6 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `gate:tool:before` -- deny tool execution
 - `gate:agent:before:reply` -- short-circuit agent run
 - `gate:message:outgoing` -- suppress delivery
-- `gate:session:reset` -- prevent /new
 - `gate:cron:job:before` -- skip scheduled job
 - `gate:memory:write` -- block a memory write (remember/update)
 
@@ -186,7 +184,7 @@ Single-dev writes all handlers. Registration order is sufficient. OpenClaw needs
 The cost of `hooks.emit("foo", payload)` is a Map lookup + early return when no handlers registered. Effectively free. Instrumenting everything enables adding behavior (logging, analytics, rate limiting) without touching core code.
 
 ### Cron bypass incoming gate
-Cron jobs are synthetic, not user-originated. They skip `gate:message:incoming` and `gate:session:reset` by design. Blocking a scheduled job through an incoming-message gate would silently break scheduling.
+Cron jobs are synthetic, not user-originated. They skip `gate:message:incoming` by design. Blocking a scheduled job through an incoming-message gate would silently break scheduling.
 
 ### Gate deny is not an error
 When `gate:tool:before` blocks a tool, `tool:execute:end` is emitted with `success: false`, not `tool:execute:error`. A policy deny is a deliberate decision, not a runtime failure. Monitoring needs to distinguish "blocked by policy" from "crashed".

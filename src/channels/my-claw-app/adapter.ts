@@ -195,8 +195,6 @@ const MAX_DIAG_REPORTS = 20;
 /** How long a command may take before the app is told it is still running. */
 const COMMAND_PENDING_NOTICE_MS = 400;
 
-/** Commands that end the conversation they run in: their journal goes with the history they cut. */
-const CLEARING_COMMANDS = new Set(["new"]);
 const SWEEP_INTERVAL_MS = 30_000;
 /** The id `SessionManager` builds for a conversation of this channel, read back the other way. */
 const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
@@ -1384,9 +1382,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
-   * Writes a command and its bubble into the conversation's journal. Three things are left out
-   * on purpose: a command that emptied the conversation (`/new` starts a history, it is not part
-   * of one), an answer the app draws as a page instead of a bubble (a structured `/status`, which
+   * Writes a command and its bubble into the conversation's journal. Two things are left out on
+   * purpose: an answer the app draws as a page instead of a bubble (a structured `/status`, which
    * is a live snapshot), and the credentials `redactCommandArgs` masks.
    */
   private async journalCommand(
@@ -1399,7 +1396,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     details: string | undefined,
     sourceId: string,
   ): Promise<void> {
-    if (renderedAsPage || CLEARING_COMMANDS.has(command)) return;
+    if (renderedAsPage) return;
     const redacted = redactCommandArgs(command, args);
     const input = redacted ? `/${command} ${redacted}` : `/${command}`;
     try {
@@ -1452,11 +1449,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
         try {
           const output = await this.commandHandler(owner, threadId, command, args);
           clearTimeout(pending);
-          // /new emptied the conversation server-side; the device must drop its screen copy
-          // too, or it shows a chat that no longer exists on disk.
-          if (command === "new") {
-            this.broadcast(owner, { type: "chat.cleared", threadId });
-          }
           if (output) {
             const text = typeof output === "string" ? output : output.text;
             const status = typeof output === "string" ? undefined : output.status;

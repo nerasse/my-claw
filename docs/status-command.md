@@ -21,8 +21,8 @@ A session id is derived from the room or chat, never from the conversation:
 matrix/room/!6ZM4zLHzS2lLy6NqjT:kssimi.fr
 ```
 
-It is stable for the lifetime of the room. `/new` archives the transcript and resets
-`session.tokenUsage`, but `analytics.db` keeps writing under the same `session_id`. Measured on the
+It is stable for the lifetime of the room, and `analytics.db` keeps writing under the same
+`session_id` for as long as it lives. Measured on the
 live database for that exact id:
 
 | Source | Calls | Tokens |
@@ -505,7 +505,7 @@ Context
   estimated     9 400 tokens (chars/4, this is what drives auto-compaction)
   auto-compact  on, threshold 80% = 102 400
 
-This conversation (since /new)
+This conversation
   6 calls - in 51 000 - out 1 242 - total 52 242
 
 This session, 90 d (analytics)

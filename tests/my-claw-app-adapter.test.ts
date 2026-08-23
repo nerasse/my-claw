@@ -3037,9 +3037,9 @@ describe("command frames", () => {
     assert.deepEqual(store.journal.map((e) => e.output), ["error: boom"]);
   });
 
-  test("/new is not journaled: it ends the history a journal belongs to", async () => {
+  test("/new is not a command any more, so it journals nothing", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "j4", text: "/new", threadId: "t1" }));
-    await nextFrame(client);
+    await new Promise((r) => setTimeout(r, 150));
     assert.deepEqual(store.journal, []);
   });
 
@@ -3279,13 +3279,25 @@ describe("command frames", () => {
     assert.equal(frame["type"], "session.list.result");
   });
 
-  test("a typed /new also empties the device's screen copy", async () => {
-    client.ws.send(JSON.stringify({ type: "chat.send", id: "c4", text: "/new", threadId: "t8" }));
-    const cleared = await nextFrame(client);
-    assert.equal(cleared["type"], "chat.cleared");
-    assert.equal(cleared["threadId"], "t8");
-    const reply = await nextFrame(client);
-    assert.equal(reply["type"], "chat.command.result");
+  /**
+   * The message below is the one that was actually sent on 2026-08-23. It opens with the name of
+   * the command because it is *about* the command, and `/new` archived 178 turns mid-task. There
+   * is no confirmation on a slash command and there cannot be one on every message that starts
+   * with a word: the command is gone instead, and this is the sentence that proves it.
+   */
+  test("a sentence opening with /new is a question now, not an order to wipe the thread", async () => {
+    client.ws.send(JSON.stringify({
+      type: "chat.send",
+      id: "c4",
+      text: "/new doit etre supprime, on a plus matrix et telegram",
+      threadId: "t8",
+    }));
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepEqual(handled, [], "the command handler was never consulted");
+    assert.ok(
+      client.frames.every((f) => (f as Record<string, unknown>)["type"] !== "chat.cleared"),
+      "nothing told the device to drop its copy of the thread",
+    );
   });
 
   test("/model with an agent name keeps the whole argument", async () => {

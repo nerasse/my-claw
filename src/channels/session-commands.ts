@@ -74,31 +74,6 @@ export async function handleSharedSessionCommand(
   const { command, args, platform, chatType, sessionId, config, sessionManager } = ctx;
 
   switch (command) {
-    case "new":
-      await sessionManager.resetSession(sessionId, platform, chatType);
-      return "New session started.";
-
-    case "archive": {
-      const trimmed = args.trim();
-      if (!trimmed) {
-        return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-      }
-      if (trimmed === "all") {
-        const removed = await sessionManager.purgeArchives({ all: true });
-        return `Archived sessions deleted: ${removed}`;
-      }
-      if (trimmed.startsWith("before ")) {
-        const rawDate = trimmed.slice("before ".length).trim();
-        const date = new Date(rawDate);
-        if (Number.isNaN(date.getTime())) {
-          return "Invalid date. Example: /archive before 2026-05-01";
-        }
-        const removed = await sessionManager.purgeArchives({ before: date });
-        return `Archived sessions deleted: ${removed}`;
-      }
-      return "Usage: /archive all | /archive before <ISO date>\nDeletes archives previously created automatically by /new.";
-    }
-
     case "verbose": {
       const session = await sessionManager.getOrCreateWithMeta(sessionId, platform, chatType);
       session.verbose = session.verbose === false ? undefined : false;

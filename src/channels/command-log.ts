@@ -1,6 +1,6 @@
 /**
  * Commands are logged so a session incident can be reconstructed afterwards (a history that
- * vanished could not be attributed to `/new` because nothing recorded the commands). Arguments are
+ * vanished could not be attributed to a command because nothing recorded them). Arguments are
  * part of that record, but some of them are live credentials, so they are masked here rather than
  * at each call site — one place to audit, and no way to forget it in a new one.
  */

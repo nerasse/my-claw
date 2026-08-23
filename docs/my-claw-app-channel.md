@@ -765,8 +765,8 @@ runs fresh like any other message.
   counter instead of leaving it silent for the length of the compaction, which read as a dropped
   message. It is lifted by `chat.stream.start`, by a `chat.message`, or by `chat.run.end`, so a
   single lost frame cannot strand the mark.
-- `chat.cleared` says the server dropped the thread's history (a typed `/new`); the app drops
-  its copy on this frame rather than guessing from an empty history.
+- `chat.cleared` says the server dropped the thread's history (a conversation deleted from
+  another window); the app drops its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread
   indicator. `effort.level` is `""` when the model discards effort. `context.used` is how full
   the window is (docs/context-window.md): the chat header shows it as a percentage. The app asks
@@ -774,7 +774,7 @@ runs fresh like any other message.
   unasked on every `session:context:measured`, so the share follows a run instead of reporting
   where the run started. One push per turn, tool calls or not, at the earliest moment the engine
   knows the count: for the SDK that is `message_start`, before a token of the answer. A compaction,
-  a `/new` and the SDK's own mid-run boundary push it as well, since each moves the figure with no
+  and the SDK's own mid-run boundary push it as well, since each moves the figure with no
   turn behind it. A push is a `model.result` like any other, matched only by `threadId`: there is no
   correlation id, and the app applies it through the path it already had.
 - `model.set`, `model.effort.set` and `model.context.set` answer **every device of the owner**, not
@@ -1047,14 +1047,13 @@ inside the session file:
   `/status` table stored there would be fed back to the model and then summarized by the next
   compaction. The journal is read by `history()` only.
 - **Deleted with the conversation, by construction.** It is a field of the session, so `remove`,
-  the archive purge and `/new` (which builds a fresh session object) take it along. There is no
-  side file to orphan.
+  takes it along. There is no side file to orphan.
 - **Uncapped.** A conversation keeps everything it was told, and the owner asked for the caps to
   go: the file is rewritten in full on every turn, so a long journal costs disk and nothing else.
 - **Masked.** `input` goes through `redactCommandArgs`, so `/claude set-token` is journaled as
   `set-token [redacted]`.
 
-Three cases are left out on purpose: `/new` (it ends the history a journal belongs to), a
+Two cases are left out on purpose: a
 `/status` answered with a structured payload (the app draws a page rather than a bubble, so
 replaying one would show something that never existed on screen), and a command on a thread with
 no session yet (there is no history to attach it to). Failures are journaled: the owner saw that

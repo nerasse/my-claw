@@ -56,25 +56,6 @@ describe("integration: session lifecycle", () => {
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid }));
   });
 
-  test("session:reset fires on reset", async () => {
-    const spy = mock(() => {});
-    hooks.on("session:reset", spy);
-    const manager = new SessionManager();
-    const sid = uniqId("s");
-    await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
-    await manager.resetSession(sid, "my-claw-app", "dm");
-    expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: sid, platform: "my-claw-app" }));
-  });
-
-  test("gate:session:reset blocks reset", async () => {
-    const spy = mock(() => {});
-    hooks.on("session:reset", spy);
-    hooks.gate("gate:session:reset", () => ({ allow: false, reason: "no" }));
-    const manager = new SessionManager();
-    await manager.resetSession("telegram/dm/u1", "my-claw-app", "dm");
-    expect(spy).not.toHaveBeenCalled();
-  });
 });
 
 describe("integration: message routing lifecycle", () => {

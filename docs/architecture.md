@@ -55,7 +55,6 @@
 - One file per actual session
 - Sessions persist across restarts
 - Sessions stored in `~/.my-claw/sessions/`
-- `/new` archives and clears conversation state while preserving an explicitly selected model
 
 ### Auth & access
 
@@ -111,7 +110,7 @@
 │   │           └── <thread_id>.json
 │   └── subagent/            # persistent sub-agent sessions
 │       └── <name>-<hex4>.json
-├── sessions-archive/        # archived sessions (reset, clear)
+├── sessions-archive/        # transcripts a sub-agent reset put aside
 ├── files/                   # my-claw-app uploads: <owner>/<thread_id>/<id>.<ext>
 ├── analytics.db             # SQLite — per-API-call token usage (WAL mode)
 ├── approvals.db             # SQLite — every tool-approval outcome, incl. the automatic ones (WAL mode)

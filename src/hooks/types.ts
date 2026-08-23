@@ -192,7 +192,6 @@ export interface HookEventMap {
   "session:loaded": { sessionId: string; messageCount: number };
   "session:workspace": { sessionId: string; workspace?: string };
   "session:persisted": { sessionId: string; messageCount: number };
-  "session:reset": { sessionId: string; platform: string; archived: boolean };
   "session:cleared": { sessionId: string; previousMessageCount: number };
   "session:archived": { sessionId: string; archivePath: string };
   "session:deleted": { sessionId: string };
@@ -368,7 +367,6 @@ export interface GateEventMap {
     chatId: string;
     text: string;
   };
-  "gate:session:reset": { sessionId: string };
   "gate:cron:job:before": { jobId: string; jobName: string };
   "gate:memory:write": { content: string; category: string };
 }
