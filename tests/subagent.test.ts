@@ -367,6 +367,39 @@ test("SubAgentRegistry isRunning reflects queue state", async () => {
   assert.equal(reg.isRunning("subagent/test"), false);
 });
 
+/**
+ * A one-shot bypassed `registry.enqueue`, and `isRunning` reads exactly that map. So the roster
+ * showed a one-shot as "idle" for its entire life -- observed on a run that was 187 iterations deep
+ * at the time -- and `send()`, which serialises on the same queue, could race it on the session
+ * file. The session path had always enqueued; only the one-shot path did not.
+ */
+test("a one-shot sub-agent registers as running while it runs", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  let runningDuringExecution: boolean | undefined;
+  let spawnedId = "";
+  hooks.on("subagent:spawn", (e: { id: string }) => {
+    spawnedId = e.id;
+  });
+  const fetchMock = mockFetch(async () => {
+    if (spawnedId) runningDuringExecution = reg.isRunning(spawnedId);
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never;
+  });
+  try {
+    const { id } = await runner.spawn({
+      displayName: "oneshot", type: "research", mode: "run", task: "t",
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test",
+      visibility: "private",
+      enqueue: <T,>(i: string, task: () => Promise<T>) => reg.enqueue(i, task),
+    });
+    assert.equal(runningDuringExecution, true, "seen as running from inside its own run");
+    assert.equal(reg.isRunning(id), false, "and released once finished");
+  } finally {
+    fetchMock.restore();
+  }
+});
+
 test("a global sub-agent is reachable from another conversation, a private one is not", async () => {
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();

@@ -1,5 +1,5 @@
 import { appendFile, mkdir, stat, readdir as fsReaddir, unlink as fsUnlink } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { currentRunId } from "./run-context.ts";
 
@@ -96,8 +96,19 @@ async function prepareScopeFile(scope: LogScope, day: string, state: ScopeState,
   }
 
   while (state.size > 0 && state.size + incomingBytes > MAX_LOG_FILE_BYTES) {
+    const full = logFilePath(scope, day, state.index);
     state.index += 1;
     state.size = await fileSize(logFilePath(scope, day, state.index));
+    /**
+     * A forwarding line on the file being closed. Rotation is otherwise invisible: the file simply
+     * stops mid-run, and anyone tailing it -- human or agent -- reads that as the process having
+     * died. That misreading cost a real debugging session here, complete with a confident wrong
+     * diagnosis, and one line of pointer prevents it.
+     */
+    await appendFile(
+      full,
+      `${JSON.stringify({ timestamp: new Date().toISOString(), scope, level: "info", message: "log rotated", data: { continues: basename(logFilePath(scope, day, state.index)) } })}\n`,
+    ).catch(() => undefined);
   }
 
   return logFilePath(scope, day, state.index);

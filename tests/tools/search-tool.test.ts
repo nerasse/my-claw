@@ -20,7 +20,7 @@ async function fixture(): Promise<string> {
 test("search: finds a pattern in a file", async () => {
   const dir = await fixture();
   try {
-    const result = await searchTool.execute({ pattern: "beta", path: join(dir, "data.txt") });
+    const result = await searchTool.execute({ pattern: "beta", path: join(dir, "data.txt"), mode: "content" });
     assert.equal(result.success, true);
     assert.ok(result.output.includes("beta"));
   } finally {
@@ -31,7 +31,7 @@ test("search: finds a pattern in a file", async () => {
 test("search: context lines come back around the hit", async () => {
   const dir = await fixture();
   try {
-    const result = await searchTool.execute({ pattern: "beta", path: join(dir, "sub", "notes.md"), context: 1 });
+    const result = await searchTool.execute({ pattern: "beta", path: join(dir, "sub", "notes.md"), context: 1, mode: "content" });
     assert.equal(result.success, true);
     // The reason this tool exists next to bash: a hit without its surroundings sends the model
     // back for a second read of the same file.
@@ -139,7 +139,7 @@ test("search: alternation works, because this tool is ERE and not BRE", async ()
   const dir = await fixture();
   try {
     // Under plain grep this returned exit 1 -- "no matches" on a file containing both words.
-    const result = await searchTool.execute({ pattern: "(alpha|gamma)", path: join(dir, "data.txt") });
+    const result = await searchTool.execute({ pattern: "(alpha|gamma)", path: join(dir, "data.txt"), mode: "content" });
     assert.equal(result.success, true);
     assert.match(result.output, /alpha/);
     assert.match(result.output, /gamma/);
@@ -152,7 +152,7 @@ test("search: +, ? and {n,m} are operators, not literal characters", async () =>
   await mkdir(TMP, { recursive: true });
   const file = join(TMP, "d4.txt");
   await writeFile(file, "aaa\nbc\n");
-  const result = await searchTool.execute({ pattern: "a{2,3}", path: file, __workspaceDir: TMP });
+  const result = await searchTool.execute({ pattern: "a{2,3}", path: file, __workspaceDir: TMP, mode: "content" });
   assert.equal(result.success, true);
   assert.match(result.output, /aaa/);
   await rm(TMP, { recursive: true, force: true });
@@ -162,8 +162,74 @@ test("search: a pattern starting with a dash is not parsed as a flag", async () 
   await mkdir(TMP, { recursive: true });
   const file = join(TMP, "d3.txt");
   await writeFile(file, "-v is here\nother\n");
-  const result = await searchTool.execute({ pattern: "-v", path: file, __workspaceDir: TMP });
+  const result = await searchTool.execute({ pattern: "-v", path: file, __workspaceDir: TMP, mode: "content" });
   assert.equal(result.success, true);
   assert.match(result.output, /-v is here/);
   await rm(TMP, { recursive: true, force: true });
+});
+
+/**
+ * The default was `content`, and it is the reason one measured sub-agent run made 304 tool calls
+ * for 3.4M characters of output: `filesOnly` existed but was opt-in and went unused 256 times out
+ * of 256. Claude Code defaults its Grep to `files_with_matches` for exactly this reason.
+ */
+test("search: the default mode is files, not the matching lines", async () => {
+  const dir = await fixture();
+  try {
+    const result = await searchTool.execute({ pattern: "beta", path: dir });
+    assert.equal(result.success, true);
+    assert.match(result.output, /file\(s\) contain/, "counts files");
+    assert.ok(result.output.includes("data.txt"), "names the file");
+    assert.doesNotMatch(result.output, /Line 2|:2:/, "and does not carry the line itself");
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("search: every mode leads with a count, so a partial answer is visible as partial", async () => {
+  const dir = await fixture();
+  try {
+    const files = await searchTool.execute({ pattern: "beta", path: dir });
+    const count = await searchTool.execute({ pattern: "beta", path: dir, mode: "count" });
+    const content = await searchTool.execute({ pattern: "beta", path: dir, mode: "content" });
+    assert.match(files.output, /^2 file\(s\) contain/);
+    assert.match(count.output, /^2 match\(es\) in 2 file\(s\)/);
+    assert.match(content.output, /^2 matching line\(s\)/);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("search: past the limit the result says so and says what to do", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "many.txt");
+  await writeFile(file, Array.from({ length: 40 }, (_, i) => `hit ${i}`).join("\n"));
+  const result = await searchTool.execute({ pattern: "hit", path: file, __workspaceDir: TMP, mode: "content", limit: 5 });
+  assert.match(result.output, /^40 matching line\(s\)/, "the true total, not the shown count");
+  assert.match(result.output, /showing the first 5 of 40/);
+  assert.match(result.output, /narrow the pattern/, "and how to recover");
+  await rm(TMP, { recursive: true, force: true });
+});
+
+test("search: a minified line cannot become the whole result", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "bundle.js");
+  await writeFile(file, `var x="${"z".repeat(5000)}";\n`);
+  const result = await searchTool.execute({ pattern: "var x", path: file, __workspaceDir: TMP, mode: "content" });
+  assert.ok(result.output.length < 1000, `line clipped (${result.output.length} chars)`);
+  assert.match(result.output, /line truncated/);
+  await rm(TMP, { recursive: true, force: true });
+});
+
+test("search: context is ignored outside content mode rather than silently dropped by grep", async () => {
+  const dir = await fixture();
+  try {
+    // grep drops -C beside -l; a model that believes it asked for context would read a partial
+    // answer as a complete one. The files mode simply never claims to carry lines.
+    const result = await searchTool.execute({ pattern: "beta", path: dir, context: 3 });
+    assert.match(result.output, /file\(s\) contain/);
+    assert.doesNotMatch(result.output, /one|three/, "no surrounding lines leaked in");
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
 });

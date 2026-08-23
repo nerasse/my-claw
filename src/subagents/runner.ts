@@ -167,7 +167,7 @@ export class SubAgentRunner {
       if (!this.canSpawn(0)) {
         return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
       }
-      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider);
+      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue);
     }
 
     const id = generateId(displayName, existingIds);
@@ -393,6 +393,13 @@ export class SubAgentRunner {
     model?: string,
     toolCallId?: string,
     streamProvider?: (id: string) => SubAgentStream | undefined,
+    /**
+     * The same per-agent queue the session path uses. A one-shot skipped it, which cost two
+     * things: `registry.isRunning` reads exactly this map, so a one-shot showed as "idle" in the
+     * roster for its whole life; and `send()` serialises on it, so a send arriving mid-run raced
+     * the one-shot on the session file.
+     */
+    enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
   ): Promise<{ id: string; result: string }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
@@ -423,7 +430,8 @@ export class SubAgentRunner {
     const stream = streamProvider?.(id);
     this.activeCount += 1;
     try {
-      const result = await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
+      const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
+      const result = await (enqueue ? enqueue(id, execute) : execute());
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result };
     } finally {

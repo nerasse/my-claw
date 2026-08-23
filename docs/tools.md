@@ -44,6 +44,51 @@ MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp
 backends build from `getForAgent`, so the denylist and MCP tools apply uniformly to the home loop and the
 Claude SDK. See `docs/config.md` and `docs/hot-reload-extensions.md`.
 
+## search: the default is paths, not lines
+
+Measured on 2026-08-23, over one sub-agent asked to inspect two repositories: **304 tool calls,
+3.4 M characters of tool output, roughly 864 000 tokens**. It was not looping -- 300 of 304 results
+were distinct, and 95 % of its searches returned something. It was simply being answered too
+loudly.
+
+Three numbers explain it, and each is a design fault rather than a model fault:
+
+| observed | cause |
+| --- | --- |
+| `filesOnly` used **0 times out of 256** | it was opt-in, so it was never discovered |
+| `context` requested **214 times out of 256** | it was free, and nothing said it was expensive |
+| 53 results at exactly **60 053 chars** | the agent-loop ceiling, hit repeatedly and silently |
+
+A single broad `content` search cost about 15 000 tokens. The agent then had to narrow and search
+again, which is the correct strategy and which it paid for twice.
+
+**What the field does.** Claude Code's `Grep` exposes `output_mode: content | files_with_matches |
+count` and defaults to **`files_with_matches`** -- paths only, content on request -- with a
+`head_limit` defaulting to 250 and an explicit `[Showing results with pagination = ...]` footer when
+it cuts. opencode's V1 grep caps at 100 matches, leads with `Found N matches`, and closes a
+truncated result with `(Results truncated. Consider using a more specific path or pattern.)`;
+neither of its engines offers context lines at all. Both agree on the shape: **cheap by default,
+counted, and loud about being cut.**
+
+So:
+
+- **`mode` replaces `filesOnly`**, with `files` as the default. `count` gives matches per file,
+  `content` gives the lines. The description says outright that a broad `content` search is the most
+  expensive call the agent can make.
+- **Every mode leads with a count** (`1 284 match(es) in 63 file(s)`). Without it a model handed 250
+  lines cannot tell whether it saw everything or a fifth, so it either trusts a partial answer or
+  re-runs wider -- both of which were observed.
+- **`limit` defaults to 250**, and being cut is stated with the true total and a way out: narrow the
+  glob, deepen the path, or go back to `files` first.
+- **`context` is honoured in `content` mode only.** grep drops `-C` beside `-l` and `-c` silently,
+  and a model that believes it asked for context reads a truncated answer as a complete one.
+- **Each line is clipped at 500 chars.** One hit inside a minified bundle was otherwise the whole
+  result.
+
+The prior fix in this area is the same story: `search` shelled out to plain `grep`, which is BRE, so
+`(alpha|beta)` was matched as an eleven-character literal and answered "No matches found" on a file
+containing both words. See `docs/context-pruning.md`.
+
 ## The file surface: write creates, apply_patch edits, search finds
 
 Measured on 2026-08-15, over a session that shipped three releases: nearly every file operation went
@@ -55,7 +100,8 @@ through `bash`, and the file tools were barely touched. Not a preference, a cons
   a hand-written `assert s.count(anchor) == 1` before each replacement. That is an edit tool,
   reinvented per call, untested, with no atomic write and no config snapshot.
 - **`grep` and `find` were strict subsets of their shell equivalents.** No context lines, no name
-  filter, no files-only mode, so any real search fell back to `bash grep -A 20`.
+  filter, no files-only mode, so any real search fell back to `bash grep -A 20`. (Both were folded
+  into `search`; its output discipline is the section above.)
 
 What the field does. Anthropic's Claude Code keeps `Read`, `Write`, `Edit`, `Grep` and `Glob` as
 first-class tools next to `Bash`, precisely so edits are anchored replacements and searches are

@@ -146,3 +146,14 @@ LLM → kill_agent("subagent/code-explorer-a7b3")
 | `src/tools/reset-agent.ts` | `reset_agent` tool |
 | `src/tools/workspace.ts` | `resolveWorkspacePath(input, workspaceDir?)` |
 | `src/agent/bridge.ts` | Injects `__workspaceDir` into tool args |
+
+## One-shots queue like everyone else
+
+A `mode: "run"` sub-agent used to call its executor directly while the `mode: "session"` path went
+through `registry.enqueue`. `registry.isRunning` reads exactly that queue map, so a one-shot
+reported **`idle` in the roster for its entire life** -- caught on a run that was 187 iterations
+deep at the time. The same queue is what `send()` serialises on, so a send arriving mid-run could
+also race the one-shot on its session file, which is the thing the session path's comment already
+said it was there to prevent.
+
+Both paths enqueue now. See `tests/subagent.test.ts`.
