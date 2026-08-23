@@ -91,7 +91,15 @@ ss -tlnp | grep 8080                                                      # up?
 grep -m1 '"version"' /opt/my-claw/package.json                            # deployed version
 tail -f ~/.my-claw/logs/my-claw-app-$(date +%F).log | jq -c '{t:.timestamp,m:.message,d:.data}'
 ```
-CI state: `GET /repos/claw/my-claw/actions/runs?limit=5`. Forgejo 14.x exposes no job logs over the API; the run's `html_url` is the only way in.
+Reading a red CI (job logs *are* reachable, contrary to the `forgejo` skill):
+```sh
+T=$(jq -r '.hosts["git.kssimi.fr"].token' ~/.local/share/forgejo-cli/keys.json)
+A="https://git.kssimi.fr/api/v1/repos/claw/my-claw/actions"
+curl -sS -H "Authorization: token $T" "$A/runs?limit=5"        | jq -r '.[]|"\(.id) \(.conclusion)"'
+curl -sS -H "Authorization: token $T" "$A/runs/<run_id>/jobs"  | jq -r '.[]|"\(.id) \(.name) \(.status)"'
+curl -sS -H "Authorization: token $T" "$A/jobs/<job_id>/logs"
+```
+The `#180` in `fj actions tasks` is the run **number**, not the API `run_id` — look the id up in `/runs`.
 
 ## Project Structure
 
