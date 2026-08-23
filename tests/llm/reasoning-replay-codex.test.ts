@@ -127,6 +127,24 @@ describe("Codex reasoning replay", () => {
     ]);
   });
 
+  test("encrypted state arriving only on the terminal response is backfilled", async () => {
+    // Azure's deployments omit it from the item and supply it only in the completed response; an
+    // item replayed without it is dropped as unusable.
+    const { meta } = await send([{ role: "user", content: "hi" }], [
+      { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_1" } },
+      { type: "response.completed", response: { output: [{ type: "reasoning", id: "rs_1", encrypted_content: "LATE" }] } },
+    ]);
+    expect(meta?.reasoning).toEqual([{ id: "rs_1", encrypted: "LATE" }]);
+  });
+
+  test("the item's own encrypted state wins over the terminal copy", async () => {
+    const { meta } = await send([{ role: "user", content: "hi" }], [
+      { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_1", encrypted_content: "EARLY" } },
+      { type: "response.completed", response: { output: [{ type: "reasoning", id: "rs_1", encrypted_content: "LATE" }] } },
+    ]);
+    expect(meta?.reasoning).toEqual([{ id: "rs_1", encrypted: "EARLY" }]);
+  });
+
   test("several reasoning items keep their wire order", async () => {
     const { meta } = await send([{ role: "user", content: "hi" }], [
       { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_a", encrypted_content: "A" } },

@@ -219,6 +219,12 @@ function thinkingBlock(t: ThinkingBlock): AnthropicBlock[] {
   return [{ type: "thinking", thinking: t.thinking ?? "", signature: t.signature }];
 }
 
+/** A thinking block from another model: readable text survives, the opaque parts do not. */
+function demotedThinking(t: ThinkingBlock): AnthropicBlock[] {
+  if (t.type === "redacted_thinking" || !t.thinking) return [];
+  return [{ type: "text", text: t.thinking }];
+}
+
 /**
  * Who this request is, and whether it may hand reasoning back.
  *
@@ -294,8 +300,13 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
         // First in the turn, which is where the model put them and the only position the API
         // accepts. Same-model check as on the Codex transport: a signature is not portable.
         const meta = msg.providerMeta;
-        if (self?.replay && meta && meta.backend === self.backend && meta.model === self.model) {
-          for (const t of meta.thinking ?? []) blocks.push(...thinkingBlock(t));
+        if (self?.replay && meta?.thinking?.length) {
+          const mine = meta.backend === self.backend && meta.model === self.model;
+          // After a model switch the signature is worthless -- Anthropic: "thinking blocks are tied
+          // to the model that produced them... strip them when you switch". The reasoning itself is
+          // not worthless, though, so it stays as plain text rather than being thrown away. Same
+          // call pi-mono makes.
+          for (const t of meta.thinking) blocks.push(...(mine ? thinkingBlock(t) : demotedThinking(t)));
         }
         if (msg.content) blocks.push({ type: "text", text: msg.content });
         for (const tc of msg.tool_calls ?? []) {

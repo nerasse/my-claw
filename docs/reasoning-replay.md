@@ -32,6 +32,9 @@ The Responses API only keeps the chain of thought server-side when `store: true`
   still announced on the stream but carry no state, and replaying an empty one buys nothing.
 - `response.output_item.done` with `item.type === "reasoning"` yields `{ id, encrypted_content }`.
   `done` and not `added`: the encrypted state is only complete once the item closes.
+- The terminal `response.completed` is read as well, and backfills any item whose encrypted state
+  was missing. It is not guaranteed on the item: Azure's OpenAI deployments omit it there and supply
+  it only in the completed response, and an item replayed without it is dropped as unusable.
 - `buildInput` emits `{ type: "reasoning", id, summary: [], encrypted_content }` **ahead of** the
   `function_call` items of the same assistant turn. The order is load-bearing — the API rejects a
   reasoning item that does not precede the call it produced.
@@ -133,10 +136,11 @@ request field behind with nothing to serve.
 2. **It never crosses protocols.** All three transports build their payload field by field —
    `toWireMessage` for chat completions, `buildInput` for Responses, `buildRequest` for Anthropic —
    so a field none of them names cannot leak into a protocol with no slot for it.
-3. **It is tagged and checked.** Every blob carries the `backend` and `model` that produced it, and
-   is dropped rather than replayed on a mismatch. A `rs_` item handed to another model is a 400,
-   and Anthropic documents the same rule ("Thinking blocks are tied to the model that produced
-   them... strip them when you switch").
+3. **It is tagged and checked, on all three transports.** Every blob carries the `backend` and
+   `model` that produced it. A `rs_` item handed to another model is a 400, and Anthropic documents
+   the same rule ("Thinking blocks are tied to the model that produced them... strip them when you
+   switch"). On Anthropic the readable thinking survives a switch as plain text, because only the
+   signature went stale; encrypted and redacted state has nothing to degrade to and is dropped.
 4. **An incomplete turn contributes nothing.** A truncated response can carry a half-formed
    reasoning item, and handing that back is how a signed chain is refused for the rest of the run.
    The visible text is kept either way.

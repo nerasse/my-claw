@@ -94,6 +94,14 @@ describe("chat-completions reasoning replay", () => {
     expect(assistant["reasoning_content"]).toBeUndefined();
   });
 
+  test("state from another model is not replayed, cache on or off", async () => {
+    const foreign: ProviderMeta = { backend: "openai", model: "some-other-model", chat: { field: "reasoning_content", text: "weighing it" } };
+    for (const promptCache of [false, true]) {
+      const { body } = await call({ reasoningField: "reasoning_content", promptCache }, assistantWith(foreign));
+      expect(body.messages.find((m) => m["role"] === "assistant")!["reasoning_content"]).toBeUndefined();
+    }
+  });
+
   test("prompt caching on or off, the same fields go out", async () => {
     const off = await call({ reasoningField: "reasoning_content" }, assistantWith(META));
     const on = await call({ reasoningField: "reasoning_content", promptCache: true }, assistantWith(META));

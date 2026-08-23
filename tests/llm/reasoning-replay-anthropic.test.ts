@@ -45,9 +45,21 @@ describe("Anthropic thinking replay", () => {
     expect(body).not.toContain("weighing it");
   });
 
-  test("a block from another model is dropped, since the signature is not portable", () => {
+  test("a block from another model keeps its text and loses its signature", () => {
+    // "Thinking blocks are tied to the model that produced them" -- the signature is worthless
+    // after a switch, the reasoning is not.
     const foreign: ProviderMeta = { backend: "anthropic", model: "claude-something-else", thinking: META.thinking! };
-    expect(JSON.stringify(anthropic.buildRequest(turn(foreign), SELF))).not.toContain("SIG-1");
+    const blocks = assistantBlocks(turn(foreign));
+    expect(JSON.stringify(blocks)).not.toContain("SIG-1");
+    expect(blocks.map((b) => b["type"])).toEqual(["text", "text", "tool_use"]);
+    expect(blocks[0]).toEqual({ type: "text", text: "weighing it" });
+  });
+
+  test("a redacted block from another model is dropped: nothing readable to keep", () => {
+    const foreign: ProviderMeta = { backend: "anthropic", model: "other", thinking: [{ type: "redacted_thinking", data: "OPAQUE" }] };
+    const blocks = assistantBlocks(turn(foreign));
+    expect(JSON.stringify(blocks)).not.toContain("OPAQUE");
+    expect(blocks.map((b) => b["type"])).toEqual(["text", "tool_use"]);
   });
 
   test("a redacted block is replayed as-is, opaque payload and all", () => {

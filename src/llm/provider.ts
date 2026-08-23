@@ -332,6 +332,10 @@ function chatProviderMeta(
   return text.length > 0 ? { backend: "openai", model, chat: { field, text } } : undefined;
 }
 
+function chatIdentity(config: ResolvedLlmConfig): { backend: string; model: string } {
+  return { backend: "openai", model: config.apiModel ?? config.model };
+}
+
 const EPHEMERAL_CACHE = { type: "ephemeral" as const };
 
 type WireMessage = Record<string, unknown>;
@@ -342,14 +346,17 @@ type WireMessage = Record<string, unknown>;
  * Field by field, never a spread: `ChatMessage` carries `providerMeta`, which is internal state and
  * must not reach any endpoint except through the one branch below that knows the shape it wants.
  */
-function toWireMessage(msg: ChatMessage): WireMessage {
+function toWireMessage(msg: ChatMessage, self?: { backend: string; model: string }): WireMessage {
   const w: WireMessage = { role: msg.role, content: msg.content };
   if (msg.role === "tool") w["tool_call_id"] = msg.tool_call_id;
   if (msg.role === "assistant" && msg.tool_calls) w["tool_calls"] = msg.tool_calls;
   if (msg.role === "assistant") {
-    const chat = msg.providerMeta?.chat;
-    // DeepSeek answers 400 without this when tools are present; GLM and Kimi degrade quietly.
-    // Self-gating: nothing was captured for a model that publishes no field, so nothing is sent.
+    const meta = msg.providerMeta;
+    // Same model, same transport, as on the other two: reasoning state belongs to the model that
+    // produced it. DeepSeek answers 400 without the field when tools are present; GLM and Kimi
+    // degrade quietly. Self-gating beyond that -- nothing is captured for a model that publishes
+    // no field, so nothing is sent.
+    const chat = meta && self && meta.backend === self.backend && meta.model === self.model ? meta.chat : undefined;
     if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
     else if (chat?.field === "reasoning_content" && chat.text !== undefined) w["reasoning_content"] = chat.text;
   }
@@ -381,8 +388,8 @@ function markCacheBreakpoint(w: WireMessage): void {
  * that don't support caching ignore the extra `cache_control` field; gate it per provider because
  * some strict ones reject unknown fields in content.
  */
-export function applyPromptCache(messages: ChatMessage[]): WireMessage[] {
-  const wire = messages.map(toWireMessage);
+export function applyPromptCache(messages: ChatMessage[], self?: { backend: string; model: string }): WireMessage[] {
+  const wire = messages.map((m) => toWireMessage(m, self));
   const sysIdx = wire.findIndex((m) => m["role"] === "system");
   if (sysIdx >= 0) markCacheBreakpoint(wire[sysIdx]!);
   const lastIdx = wire.length - 1;
@@ -400,7 +407,9 @@ const body: Record<string, unknown> = {
   model: config.apiModel ?? config.model,
     // Always through `toWireMessage`, cache or no cache. Handing the raw `ChatMessage[]` to
     // JSON.stringify was putting `providerMeta` on the wire whenever prompt caching was off.
-    messages: config.promptCache ? applyPromptCache(messages) : messages.map(toWireMessage),
+    messages: config.promptCache
+      ? applyPromptCache(messages, chatIdentity(config))
+      : messages.map((m) => toWireMessage(m, chatIdentity(config))),
   };
 
   if (tools && tools.length > 0) {

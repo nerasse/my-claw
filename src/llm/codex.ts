@@ -323,7 +323,26 @@ async function processStream(
       case "response.completed":
       case "response.incomplete": {
         finishReason = type === "response.incomplete" ? "incomplete" : "completed";
-        const response = event["response"] as { usage?: ResponsesUsage; status?: string; incomplete_details?: unknown } | undefined;
+        const response = event["response"] as {
+          usage?: ResponsesUsage;
+          status?: string;
+          incomplete_details?: unknown;
+          output?: Array<{ type?: string; id?: string; encrypted_content?: string }>;
+        } | undefined;
+        /**
+         * Backfill the encrypted state from the terminal response.
+         *
+         * `output_item.done` is where it normally arrives, but it is not guaranteed there: Azure's
+         * OpenAI deployments omit it from the item and supply it only in the completed response,
+         * and an item replayed without it is dropped as unusable. Reading both costs one pass over
+         * a short array and makes the capture independent of which of the two the endpoint fills.
+         */
+        for (const item of response?.output ?? []) {
+          if (item.type !== "reasoning" || !item.id || !item.encrypted_content) continue;
+          const known = reasoningItems.find((r) => r.id === item.id);
+          if (known) known.encrypted ??= item.encrypted_content;
+          else reasoningItems.push({ id: item.id, encrypted: item.encrypted_content });
+        }
         // Preserve the provider's more specific status when it supplies one. `incomplete` is
         // intentionally retained for the event form: a completed response with no text/tool is
         // still abnormal and the agent loop must not silently accept it.
