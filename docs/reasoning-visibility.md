@@ -60,6 +60,28 @@ Responses API event names, from the same source
 
 - `response.reasoning_summary_text.delta` — the summary `summary: "auto"` already asks for
 - `response.reasoning_text.delta` — raw reasoning, when a model exposes it
+- `response.reasoning_summary_part.added` — a **new part** of that summary begins
+
+### A summary comes in parts, and the parts need a separator
+
+The summary is not one string. GPT sends it as parts, each a `**Heading**` run of its own, and the
+API puts nothing between them. Appended raw they weld at the seam:
+
+```
+**Locating user workspace directory****Inspecting git status and recent changes**
+```
+
+Those four asterisks are a closing `**` meeting an opening `**`. Marked resolves it by matching the
+outermost pair and leaving the rest as literal text, so it renders as one bold run with `****`
+printed in the middle of it. Forty of those accumulated on this install before anyone traced the
+cause to the transport, and it was mistaken for a Markdown-rendering bug: `****` alone on a line
+*is* an `hr` in Marked, which sends the investigation to the renderer instead of here.
+
+A part boundary is therefore a paragraph break, taken from `summary_index` on the delta and from
+`part.added`, whichever the stream provides. The break is written to the stored reasoning, to the
+segment cuts and to the live sink alike, or a replayed turn would read differently from the one the
+owner watched. It is held until the new part actually produces text, so a boundary announced at the
+end of a response leaves no trailing blank line.
 
 ## The protocol constraint, and why we still do not replay
 

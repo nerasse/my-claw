@@ -176,6 +176,18 @@ async function processStream(
   let content = "";
   let reasoning = "";
   const segmenter = new ReasoningSegmenter();
+  /**
+   * The Responses API sends its reasoning summary in parts, each one its own `**Heading**` run,
+   * and it never puts a separator between them. Appended raw they weld at the seam:
+   * `**Locating user workspace directory****Inspecting git status**` -- four asterisks in the
+   * middle of a line, which is neither two headings nor a rule, just broken. Measured on this
+   * install: forty of them across the stored reasoning.
+   *
+   * A part boundary is therefore a paragraph break, held until the part actually produces text
+   * so a boundary announced at the very end cannot leave a trailing blank line.
+   */
+  let pendingPartBreak = false;
+  let summaryIndex: number | undefined;
   let usage: LlmUsage | undefined;
   let finishReason: string | undefined;
   const slots = new Map<number, FunctionCallSlot>();
@@ -220,16 +232,34 @@ async function processStream(
         }
         break;
       }
+      // A new part of the summary begins. Read from the event itself as well as from
+      // `part.added` below: the index rides on every delta, so it still separates the parts on a
+      // stream that announces no part at all.
       // The request already asks for `summary: "auto"`, so the summary was arriving and being
       // dropped. `reasoning_text` is the raw variant, sent by the models that expose it.
       case "response.reasoning_summary_text.delta":
       case "response.reasoning_text.delta": {
+        const index = event["summary_index"];
+        if (typeof index === "number" && index !== summaryIndex) {
+          if (summaryIndex !== undefined) pendingPartBreak = true;
+          summaryIndex = index;
+        }
         const delta = event["delta"];
         if (typeof delta === "string" && delta.length > 0) {
-          reasoning += delta;
-          segmenter.reasoning(delta);
-          if (reasoningSink?.onText) await reasoningSink.onText(delta);
+          // The break goes through the same three sinks as the text: the stored reasoning, the
+          // segment cuts and the live stream. Sent to fewer, the replay would read differently
+          // from what the owner watched being written.
+          const text = pendingPartBreak && reasoning.length > 0 ? `\n\n${delta}` : delta;
+          pendingPartBreak = false;
+          reasoning += text;
+          segmenter.reasoning(text);
+          if (reasoningSink?.onText) await reasoningSink.onText(text);
         }
+        break;
+      }
+
+      case "response.reasoning_summary_part.added": {
+        if (reasoning.length > 0) pendingPartBreak = true;
         break;
       }
       case "response.function_call_arguments.delta": {

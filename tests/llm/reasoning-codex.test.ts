@@ -92,6 +92,57 @@ describe("Codex Responses reasoning", () => {
     expect(returned).toBe("abc");
   });
 
+  /**
+   * The seam. Both strings below are verbatim from this install's stored reasoning, where forty
+   * of these welds accumulated: GPT ends a summary part on `**` and opens the next on `**`, and
+   * appended raw they meet as `****` mid-line -- not two headings, not a rule, just broken.
+   */
+  test("two summary parts are separated instead of welded into ****", async () => {
+    const { reasoning, returned } = await run([
+      { type: "response.reasoning_summary_text.delta", delta: "**Locating user workspace directory**" },
+      { type: "response.reasoning_summary_part.added", part: { type: "summary_text" } },
+      { type: "response.reasoning_summary_text.delta", delta: "**Inspecting git status and recent changes**" },
+      { type: "response.output_text.delta", output_index: 0, delta: "ok" },
+      { type: "response.completed", response: {} },
+    ]);
+    const expected = "**Locating user workspace directory**\n\n**Inspecting git status and recent changes**";
+    expect(returned).toBe(expected);
+    expect(returned).not.toContain("****");
+    // The live stream carries the break too, or the replay reads differently from what was watched.
+    expect(reasoning.join("")).toBe(expected);
+  });
+
+  test("the part index separates them even when no part event is sent", async () => {
+    const { returned } = await run([
+      { type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "**First**" },
+      { type: "response.reasoning_summary_text.delta", summary_index: 1, delta: "**Second**" },
+      { type: "response.output_text.delta", output_index: 0, delta: "ok" },
+      { type: "response.completed", response: {} },
+    ]);
+    expect(returned).toBe("**First**\n\n**Second**");
+  });
+
+  test("deltas inside one part are still concatenated untouched", async () => {
+    const { returned } = await run([
+      { type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "**Weigh" },
+      { type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "ing it**" },
+      { type: "response.output_text.delta", output_index: 0, delta: "ok" },
+      { type: "response.completed", response: {} },
+    ]);
+    expect(returned).toBe("**Weighing it**");
+  });
+
+  test("a part boundary before any text opens no blank line", async () => {
+    const { returned } = await run([
+      { type: "response.reasoning_summary_part.added", part: { type: "summary_text" } },
+      { type: "response.reasoning_summary_text.delta", delta: "**Only part**" },
+      { type: "response.reasoning_summary_part.added", part: { type: "summary_text" } },
+      { type: "response.output_text.delta", output_index: 0, delta: "ok" },
+      { type: "response.completed", response: {} },
+    ]);
+    expect(returned).toBe("**Only part**");
+  });
+
   test("an unrelated reasoning event is ignored rather than throwing", async () => {
     const { reasoning, text } = await run([
       { type: "response.reasoning_summary_part.added", part: { type: "summary_text" } },
