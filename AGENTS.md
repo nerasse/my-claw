@@ -79,6 +79,8 @@ fj actions tasks | grep <sha>           # wait for "Build & Release" = success
 Traps:
 - Two runs per release (`ci.yml` on main, `release.yml` on the tag). Only the tag run has `Build & Release`.
 - Package registry answers **405 to HEAD**. Verify with `curl --range 0-0` → `206`.
+  The asset is `my-claw-<v>-linux-x64.tar.gz`, not `my-claw-<v>.tar.gz` — the short name 404s and
+  reads as a failed release. `fj release view "my-claw <v>"` prints the real URL.
 - `fj release view v<v>` fails here: `release.yml` names it `my-claw <version>` and `fj` looks up by name. Use `fj release list`.
 - REST reads need auth (private repo); unauth 404 reads as `target couldn't be found`. Prefer `fj`, it carries its own token.
 - `release.yml` fails on tag ≠ `package.json`. Keep that step.
