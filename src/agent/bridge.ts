@@ -369,14 +369,28 @@ export class AgentBridge implements AgentBackend {
       const now = new Date().toISOString();
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
       const images = imageAttachmentsOf(message);
-      session.messages.push({
-        role: "user",
-        content: transformedContent,
-        timestamp: now,
-        ...(message.id ? { sourceId: message.id } : {}),
-        ...(images.length > 0 ? { attachments: images } : {}),
-        ...(message.location ? { location: message.location } : {}),
-      });
+      // The sub-agent runner pre-pushes the task with the same sourceId before the run starts
+      // (so a crash or a mid-run page load still shows the prompt). Rather than pushing a second
+      // copy, complete the pre-pushed bubble: transformed content, attachments, location.
+      const prePushed =
+        message.id != null
+          ? session.messages.find((m) => m.role === "user" && m.sourceId === message.id)
+          : undefined;
+      if (prePushed && prePushed.role === "user") {
+        prePushed.content = transformedContent;
+        prePushed.timestamp = now;
+        if (images.length > 0) prePushed.attachments = images;
+        if (message.location) prePushed.location = message.location;
+      } else {
+        session.messages.push({
+          role: "user",
+          content: transformedContent,
+          timestamp: now,
+          ...(message.id ? { sourceId: message.id } : {}),
+          ...(images.length > 0 ? { attachments: images } : {}),
+          ...(message.location ? { location: message.location } : {}),
+        });
+      }
       messageCountBeforeLoop = session.messages.length;
 
       const openaiTools = toOpenAiToolDefinitions(tools);

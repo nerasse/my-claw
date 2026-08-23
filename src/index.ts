@@ -564,6 +564,9 @@ async function main() {
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();
+  // The runner pre-dates the manager; adopt() lets live sub-agent runs surface in the app
+  // channel (history/peek) instead of only the frozen pre-pushed task on disk.
+  subAgentRunner.setSessionManager(sessionManager);
   registerSkillTools(toolRegistry, skillRegistry, config, builtinDir, customDir, workspaceSkillsDir, sessionManager);
   toolRegistry.register(createWorkspacesTool({ sessionManager, config, reload: reloadConfigNow }));
   const backfilledConversations = await backfillConversationArchive();

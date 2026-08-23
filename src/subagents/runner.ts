@@ -15,6 +15,7 @@ import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
+import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
@@ -79,6 +80,8 @@ function isReachableFrom(meta: SubAgentMeta, caller: SubAgentCaller): boolean {
 export class SubAgentRunner {
   private activeCount = 0;
 
+  private sessionManager?: SessionManager;
+
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
@@ -88,6 +91,15 @@ export class SubAgentRunner {
     /** File-defined agents, handed to whichever backend runs the sub-agent. */
     private agentRegistry?: AgentRegistry,
   ) {}
+
+  /**
+   * Wires the shared cache so live sub-agent runs are reachable from the app channel
+   * (history/peek) while in flight. Constructed before the SessionManager in index.ts,
+   * hence the setter instead of a constructor argument.
+   */
+  setSessionManager(manager: SessionManager): void {
+    this.sessionManager = manager;
+  }
 
   canSpawn(depth: number): boolean {
     return this.activeCount < MAX_CONCURRENT_RUNS && depth < MAX_DEPTH;
@@ -175,7 +187,14 @@ export class SubAgentRunner {
 
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
     session.invokedBy = parentSessionId;
-    session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
+    session.messages.push({
+      role: "user",
+      content: task,
+      timestamp: new Date().toISOString(),
+      // Stable id, the same the bridge uses (subMessage.id) so a page can dedupe the
+      // pre-pushed bubble against the one the run re-pushes with its sourceId.
+      sourceId: `subagent-${id}`,
+    });
     await saveSession(id, session);
     indexSessionArchive(session);
 
@@ -240,18 +259,23 @@ export class SubAgentRunner {
       }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
+      // One id per send: the bridge pushes its own copy with `message.id` as sourceId, so the
+      // pre-push must be the same value or a page sees two bubbles. A constant id would also
+      // make the second send of a session collapse into the first.
+      const messageId = `subagent-${id}-${crypto.randomUUID().slice(0, 8)}`;
       session.messages.push({
         role: "user",
         content: userContent,
         timestamp: new Date().toISOString(),
         ...(parentMessage.location ? { location: parentMessage.location } : {}),
+        sourceId: messageId,
       });
 
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
       try {
-        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream);
+        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream, messageId);
       } finally {
         // In the finally, not after: a failed run used to lose the question too, and the thread
         // came back from disk with no trace that anything had been sent.
@@ -269,6 +293,9 @@ export class SubAgentRunner {
       return `Error: sub-agent ${id} not found.`;
     }
     await deleteSession(id);
+    // Cache parity: the adopted session must not survive the kill. The file is already gone
+    // (deleteSession above), so only the cache entry is purged.
+    this.sessionManager?.drop(id);
     hooks.emit("subagent:killed", { id, parentSessionId: callerSessionId });
     return `Sub-agent ${id} deleted.`;
   }
@@ -283,6 +310,10 @@ export class SubAgentRunner {
     // project must not silently come back in the default one.
     const fresh = this.createSession(id, session.platform, session.chatType, session.meta, session.workspace);
     await saveSession(id, fresh);
+    // The cache must hold the fresh session, not the archived one.
+    if (this.sessionManager) {
+      this.sessionManager.adopt(fresh);
+    }
     hooks.emit("subagent:reset", { id, parentSessionId: callerSessionId });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
   }
@@ -340,6 +371,8 @@ export class SubAgentRunner {
         if (session.meta.parentSessionId !== parentSessionId) continue;
         if (registry.isRunning(id)) continue;
         await deleteSession(id);
+        // Cache parity: adopted sessions must not outlive their file.
+        this.sessionManager?.drop(id);
         removed += 1;
       }
     } catch {
@@ -375,7 +408,14 @@ export class SubAgentRunner {
       createdAt: new Date().toISOString(),
     }, workspaceKey);
     session.invokedBy = parentSessionId;
-    session.messages.push({ role: "user", content: task, timestamp: new Date().toISOString() });
+    session.messages.push({
+      role: "user",
+      content: task,
+      timestamp: new Date().toISOString(),
+      // Stable id, the same the bridge uses (subMessage.id) so a page can dedupe the
+      // pre-pushed bubble against the one the run re-pushes with its sourceId.
+      sourceId: `subagent-${id}`,
+    });
     await saveSession(id, session);
     indexSessionArchive(session);
 
@@ -428,8 +468,13 @@ export class SubAgentRunner {
     signal?: AbortSignal,
     model?: string,
     stream?: SubAgentStream,
+    messageId?: string,
   ): Promise<string> {
     const depth = 1;
+    // Adopt the session into the shared cache before the run: the app channel's history/peek
+    // then sees the live object (pre-pushed task, streaming tokens in memory) instead of the
+    // file that only contains the pre-pushed task. The manager persists it on its own ticks.
+    this.sessionManager?.adopt(session);
     // The same chain every other run resolves, and only once: the engine below is picked from it
     // and the backend receives it as its override, so nothing resolves a second time. Reading the
     // config entry alone was the bug: an agent file's `model:` never reached a spawn, and a model
@@ -480,7 +525,7 @@ export class SubAgentRunner {
     );
 
     const subMessage: UnifiedMessage = {
-      id: `subagent-${session.id}`,
+      id: messageId ?? `subagent-${session.id}`,
       platform: parentMessage.platform,
       chatType: parentMessage.chatType,
       chatId: parentMessage.chatId,

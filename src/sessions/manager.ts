@@ -137,6 +137,27 @@ export class SessionManager {
     this.savedCounts.set(sessionId, session.messages.length);
   }
 
+  /**
+   * Registers a session already written by someone else (the sub-agent runner) into this
+   * manager's cache, so the app channel's history/peek sees the live object while it runs
+   * instead of the frozen file. Subsequent persist() calls then keep the cache in place.
+   */
+  adopt(session: SessionData): void {
+    this.sessions.set(session.id, session);
+    this.savedCounts.set(session.id, session.messages.length);
+  }
+
+  /**
+   * Removes a session from the cache only, without touching its file or archives. Used when
+   * someone else (the sub-agent runner) deletes the file: the cache must not keep a ghost
+   * that the autosave would rewrite, nor resurrect a killed session.
+   */
+  drop(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.savedCounts.delete(sessionId);
+    this.pendingWrites.delete(sessionId);
+  }
+
   async peek(sessionId: string): Promise<SessionData | null> {
     const existing = this.sessions.get(sessionId);
     if (existing) return existing;
