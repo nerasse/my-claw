@@ -1,6 +1,7 @@
 import { currentRunId } from "../../utils/run-context.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallInfo, ToolCallResult } from "../../agent/tool-status.ts";
+import { toolCardId } from "./types.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
 
 /** Tool output is a debugging view, not context: cap it so a 2 MB result never hits the socket. */
@@ -274,7 +275,9 @@ export class MyClawAppStreamer {
       // stacking a second one. The model's tool_use id is only a fallback: when no start was sent
       // (a replayed session written before starts), it is absent anyway and we fall back to the
       // turn-scoped counter.
-      const startId = this.pendingToolIds.shift()?.id ?? tool.id ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
+      // `toolCardId`, not the raw `tool.id`: the fallback has to mint the id the start frame and
+      // the history builder would have, or the card it lands on is a third one again.
+      const startId = this.pendingToolIds.shift()?.id ?? toolCardId(tool.id) ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
       const id = startId;
       const output = tool.output ?? "";
       const truncated = output.length > TOOL_OUTPUT_LIMIT;
@@ -299,7 +302,9 @@ export class MyClawAppStreamer {
     await this.sealSegment();
     for (const tool of toolCalls) {
       this.toolCount += 1;
-      const id = `${this.opts.id}:tool:${this.toolCount}`;
+      // The model's own call id when it gave one, so history rebuilds the same card rather than a
+      // second one beside it. The counter stays as the fallback for a provider that sends none.
+      const id = toolCardId(tool.id) ?? `${this.opts.id}:tool:${this.toolCount}`;
       this.pendingToolIds.push({ id, name: tool.name, args: tool.arguments });
       // Map the model's tool_use id to this card's id so live-progress frames (which carry the
       // model id) can find the card the start opened.

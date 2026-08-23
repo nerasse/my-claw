@@ -50,8 +50,18 @@ describe("MyClawAppStreamer live spawn cards", () => {
     const frame = frames.find((f) => f.type === "chat.spawn.start") as
       | Extract<MyClawAppServerFrame, { type: "chat.spawn.start" }>
       | undefined;
-    expect(frame?.id).toBe("turn-1:tool:1");
+    // The card is keyed on the model's call id so history rebuilds this same card after a reload.
+    expect(frame?.id).toBe("t-model-tool-1");
     expect(frame?.subagentId).toBe("subagent/run-456");
+  });
+
+  test("a tool call with no model id falls back to the turn counter", async () => {
+    const { streamer, frames } = makeStreamer();
+    await streamer["toolStartInternal"]([{ id: "", name: "bash", arguments: {} }]);
+    const frame = frames.find((f) => f.type === "chat.tool.start") as
+      | Extract<MyClawAppServerFrame, { type: "chat.tool.start" }>
+      | undefined;
+    expect(frame?.id).toBe("turn-1:tool:1");
   });
 
   test("appendSpawnEnd settles the card started by appendSpawnStart", async () => {

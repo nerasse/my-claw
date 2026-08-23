@@ -8,6 +8,7 @@ import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/
 import { DraftStore, type DraftWrite } from "./drafts.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
+import { toolCardId } from "./types.ts";
 import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
@@ -423,10 +424,16 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       }
       // Same shape as the live chat.tool frames so a reopened thread renders identical cards.
       for (const call of message.toolCalls ?? []) {
+        // `has`, not `?? ""`: a call with no result yet is still running, and collapsing the two
+        // is what made a reload render an in-flight tool as a finished one with empty output.
+        const settled = outputs.has(call.id);
         const output = outputs.get(call.id) ?? "";
         const truncated = output.length > TOOL_OUTPUT_LIMIT;
         entries.push({
-          id: `h-${message.timestamp}-${entries.length}`,
+          // Keyed on the model's own call id so this card and the live one are the same card. They
+          // used to differ, so a tool finishing after a reload appended a second card beside the
+          // one history had just drawn.
+          id: toolCardId(call.id) ?? `h-${message.timestamp}-${entries.length}`,
           role: "tool",
           // Sessions written before the mirror was cleaned still hold `mcp__myclaw__bash`, the
           // name the SDK gives our own tools; the card must show the tool, not the plumbing.
@@ -436,6 +443,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           ok: true,
           output: truncated ? output.slice(0, TOOL_OUTPUT_LIMIT) : output,
           truncated,
+          ...(settled ? {} : { running: true }),
           ts: message.timestamp,
         });
       }

@@ -862,6 +862,16 @@ export interface MyClawAppToolCallEntry {
   ok: boolean;
   output: string;
   truncated: boolean;
+  /**
+   * The call was still executing when this snapshot was taken, so the card keeps its spinner.
+   *
+   * Only history sets it. The live path opens a card with `chat.tool.start` and closes it with
+   * `chat.tool`, but neither frame is replayed to a window that was offline -- so a reload during
+   * a tool call used to rebuild it as a finished, successful, empty-output call. The assistant
+   * turn is persisted before its tools run, which is why the half-finished call is in the session
+   * at all. See docs/my-claw-app-channel.md.
+   */
+  running?: boolean;
 }
 
 /** Tool call started: sent the moment execution begins so the card can show a spinner. The
@@ -2424,4 +2434,16 @@ export interface MyClawAppProviderEnvResult {
   present: string[];
   /** provider key -> the env name it reads (apiKeyEnv). */
   usedBy: Record<string, string>;
+}
+
+/**
+ * The chat card id for a tool call, derived from the id the model gave the call.
+ *
+ * One helper for both paths on purpose. The live stream and the history builder each used to mint
+ * their own -- `<turnId>:tool:<n>` and `h-<ts>-<n>` -- so the two never matched, and a tool that
+ * finished after a page reload appended a second card next to the one history had drawn. Returns
+ * undefined when the provider supplied no call id, leaving each caller its own fallback.
+ */
+export function toolCardId(modelCallId: string | undefined): string | undefined {
+  return modelCallId ? `t-${modelCallId}` : undefined;
 }

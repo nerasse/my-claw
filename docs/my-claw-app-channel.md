@@ -933,6 +933,33 @@ A tool card seals the text bubble it interrupts: the streamer sends
 `chat.stream.start` with id `<turnId>#<n>` for the text that follows. Bubbles
 therefore stay in chronological order without the client reordering anything.
 
+A card is keyed on the id the model gave the call, `t-<call id>`, and both the live stream and
+the history builder mint it through the same helper (`toolCardId`). They used to mint their own
+-- `<turnId>:tool:<n>` live, `h-<timestamp>-<n>` in history -- which was invisible until a page
+reloaded mid-call: the two cards for one call had different ids, so the `chat.tool` that closed
+the call could not find the card history had drawn and appended a second one below it. A
+provider that sends no call id still falls back to the turn counter.
+
+A call with no result yet is reported as `running: true`. The assistant turn is written to the
+session before its tools run, so a reload during a long call finds a `toolCalls` entry with no
+matching `role:"tool"` message. History used to read the missing result as an empty one and
+rebuild the card as finished, successful and empty: the spinner never came back and the run
+looked done while it was still going -- the sub-agent panel, which asks for status
+(`subagents.list`) instead of replaying frames, kept saying `running` and contradicted it. The
+distinction is a `has` rather than a `?? ""`, and the flag is only ever set by the history path;
+live cards get their spinner from `chat.tool.start` as before.
+
+`chat.spawn.start` annotates a spawn card with its sub-agent identity, and it is sent once, when
+the sub-agent starts -- it is never replayed. History carries no spawn state either, so a reloaded
+page has an empty status map and the card loses its "running sub-agent" line while the sub-agent
+behind it is plainly still going. Rather than persist the tool-call-to-sub-agent mapping, the app
+falls back to the roster, which is *asked for* (`subagents.list`) and therefore does come back on
+reconnect: `spawnLiveOf` resolves the card's `name` argument against the roster and reports
+`running` when that agent is busy. The fallback applies only to a card whose own call has not
+returned, because a session sub-agent is reusable and an old card naming a busy agent is not a
+card whose call is running. Only `running` is inferred; the roster never says whether this
+particular call completed or errored, and the card shows its own outcome once the result lands.
+
 ### Several surfaces per device
 
 A device may hold **as many sockets as it opens**, and every broadcast reaches all of them

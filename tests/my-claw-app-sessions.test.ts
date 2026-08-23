@@ -214,6 +214,41 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(summary?.messageCount, 4, "the drawer counts the turn being produced");
   });
 
+  test("a tool call with no result yet rebuilds as still running, on the live card's own id", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      { role: "user", content: "cherche", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        role: "assistant",
+        content: "",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        // The assistant turn is persisted before its tools run, so a reload mid-call sees this.
+        toolCalls: [
+          { id: "call-done", name: "search", arguments: "{}", durationMs: 20 },
+          { id: "call-inflight", name: "bash", arguments: '{"command":"sleep 600"}' },
+        ],
+      },
+      { role: "tool", toolCallId: "call-done", content: "3 matches", timestamp: "2026-01-01T00:00:03.000Z" },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const cards = entries.filter((e) => e.role === "tool");
+    assert.equal(cards.length, 2);
+
+    const [done, inflight] = cards;
+    assert.equal(done?.role === "tool" ? done.running : "absent", undefined, "a settled call is not running");
+    assert.equal(done?.role === "tool" ? done.output : "", "3 matches");
+
+    // Without this the card rebuilt as a finished, successful, empty-output call: the spinner was
+    // gone and the run looked done while it was still going.
+    assert.equal(inflight?.role === "tool" ? inflight.running : false, true);
+    assert.equal(inflight?.role === "tool" ? inflight.output : "x", "");
+
+    // Same id the live stream mints, so the finishing tool patches this card instead of appending
+    // a second one beside it.
+    assert.equal(inflight?.id, "t-call-inflight");
+    assert.equal(done?.id, "t-call-done");
+  });
+
   test("a cursor past the start of the session is an empty page, not an error", async () => {
     await saveSession(sessionId, session(sessionId, [
       { role: "user", content: "seul message", timestamp: "2026-01-01T00:00:01.000Z" },
