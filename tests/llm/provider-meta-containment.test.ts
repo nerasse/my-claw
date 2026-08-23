@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { __testing as anthropic } from "../../src/llm/anthropic.ts";
 import { sessionChatMessages } from "../../src/agent/context-pruning.ts";
 import type { ChatMessage, ProviderMeta } from "../../src/llm/provider.ts";
+import { estimateMessagesTokens } from "../../src/llm/tokens.ts";
 import type { SessionMessage } from "../../src/sessions/store.ts";
 
 const META: ProviderMeta = { backend: "codex", model: "gpt-5-codex", reasoning: [{ id: "rs_1", encrypted: "SECRET-BLOB" }] };
@@ -41,5 +42,46 @@ describe("provider metadata containment", () => {
     const body = JSON.stringify(anthropic.buildRequest(TURN));
     expect(body).not.toContain("SECRET-BLOB");
     expect(body).not.toContain("providerMeta");
+  });
+});
+
+describe("provider metadata is weighed, not just carried", () => {
+  /**
+   * It is prompt content the model is billed for. Uncounted, every occupancy reader sees a prompt
+   * smaller than the one being sent -- the 0.4.42 over-read inverted, and the inverted form walks
+   * into a hard context rejection instead of an unnecessary compaction.
+   */
+  test("an encrypted reasoning item adds to the estimate", () => {
+    const bare: ChatMessage[] = [{ role: "assistant", content: "hi" }];
+    const withMeta: ChatMessage[] = [
+      { role: "assistant", content: "hi", providerMeta: { backend: "codex", model: "m", reasoning: [{ id: "rs_1", encrypted: "x".repeat(4000) }] } },
+    ];
+    const delta = estimateMessagesTokens(withMeta) - estimateMessagesTokens(bare);
+    expect(delta).toBeGreaterThan(900);
+  });
+
+  test("a thinking block and its signature both count", () => {
+    const bare: ChatMessage[] = [{ role: "assistant", content: "hi" }];
+    const withMeta: ChatMessage[] = [
+      { role: "assistant", content: "hi", providerMeta: { backend: "anthropic", model: "m", thinking: [{ type: "thinking", thinking: "t".repeat(2000), signature: "s".repeat(2000) }] } },
+    ];
+    expect(estimateMessagesTokens(withMeta) - estimateMessagesTokens(bare)).toBeGreaterThan(900);
+  });
+
+  test("replayed chat reasoning counts in both shapes", () => {
+    const bare: ChatMessage[] = [{ role: "assistant", content: "hi" }];
+    const text: ChatMessage[] = [
+      { role: "assistant", content: "hi", providerMeta: { backend: "openai", model: "m", chat: { field: "reasoning_content", text: "y".repeat(4000) } } },
+    ];
+    const details: ChatMessage[] = [
+      { role: "assistant", content: "hi", providerMeta: { backend: "openai", model: "m", chat: { field: "reasoning_details", details: [{ blob: "z".repeat(4000) }] } } },
+    ];
+    expect(estimateMessagesTokens(text) - estimateMessagesTokens(bare)).toBeGreaterThan(900);
+    expect(estimateMessagesTokens(details) - estimateMessagesTokens(bare)).toBeGreaterThan(900);
+  });
+
+  test("no metadata weighs nothing extra", () => {
+    const bare: ChatMessage[] = [{ role: "assistant", content: "hi" }];
+    expect(estimateMessagesTokens(bare)).toBe(estimateMessagesTokens([{ role: "assistant", content: "hi" }]));
   });
 });

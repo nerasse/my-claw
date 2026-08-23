@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./provider.ts";
+import type { ChatMessage, ProviderMeta } from "./provider.ts";
 import { log } from "../utils/logger.ts";
 
 const CHARS_PER_TOKEN = 4;
@@ -13,6 +13,35 @@ const HEAD_KEEP = 3;
 export function estimateTokens(text: string): number {
   if (!text) return 0;
   return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * What the replayed reasoning weighs on the wire.
+ *
+ * It is prompt content that the model is billed for, and it was invisible here: an encrypted
+ * reasoning item is a base64 blob that can run to kilobytes, and a long tool loop replays one per
+ * assistant turn. Left uncounted, every reader of occupancy -- the compaction gate,
+ * `trimToContextWindow`, `/status`, the app header -- reads a prompt smaller than the one being
+ * sent. That is the 0.4.42 bug inverted, and the inverted form is the worse one: over-reading fires
+ * a compaction that was not needed, under-reading walks into a hard context rejection with no
+ * trimming having happened.
+ *
+ * Counted at the same chars-per-token as everything else. Dense base64 almost certainly tokenizes
+ * worse than prose, so this is a floor rather than a estimate -- but a floor is what the previous
+ * behaviour was missing entirely, and inventing a multiplier nobody measured would be the same
+ * mistake in the other direction. See docs/reasoning-replay.md.
+ */
+function providerMetaChars(meta: ProviderMeta | undefined): number {
+  if (!meta) return 0;
+  let chars = 0;
+  for (const item of meta.reasoning ?? []) chars += item.id.length + (item.encrypted?.length ?? 0);
+  for (const block of meta.thinking ?? []) {
+    chars += (block.thinking?.length ?? 0) + (block.signature?.length ?? 0) + (block.data?.length ?? 0);
+  }
+  const chat = meta.chat;
+  if (chat?.text) chars += chat.text.length;
+  if (chat?.details) chars += JSON.stringify(chat.details).length;
+  return chars;
 }
 
 function messageTokens(msg: ChatMessage): number {
@@ -32,6 +61,8 @@ function messageTokens(msg: ChatMessage): number {
       chars += tc.function.name.length + tc.function.arguments.length;
     }
   }
+
+  if (msg.role === "assistant") chars += providerMetaChars(msg.providerMeta);
 
   return Math.ceil(chars / CHARS_PER_TOKEN) + MESSAGE_OVERHEAD_TOKENS;
 }

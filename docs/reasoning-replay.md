@@ -123,6 +123,35 @@ The switch covers all three transports, including the `include: ["reasoning.encr
 request field on Codex: turning it off takes the whole feature off the wire rather than leaving the
 request field behind with nothing to serve.
 
+## Weight
+
+Replayed reasoning is prompt content the model is billed for, and `estimateMessagesTokens` counts
+it: an encrypted reasoning item is a base64 blob that can run to kilobytes, and a long tool loop
+replays one per assistant turn.
+
+Leaving it uncounted would have been the 0.4.42 over-read inverted, and the inverted form is worse.
+Over-reading fires a compaction that was not needed; under-reading walks into a hard context
+rejection having trimmed nothing, because every reader of occupancy -- the compaction gate,
+`trimToContextWindow`, `/status`, the app header -- believed the prompt was smaller than it was.
+
+It is counted at the same chars-per-token as everything else. Dense base64 almost certainly
+tokenizes worse than prose, so the figure is a floor rather than an estimate; inventing a multiplier
+nobody measured would be the same mistake pointing the other way. Whether the replay should also be
+*bounded* (OpenRouter exposes `reasoning.context: current_turn` for exactly this) is left open until
+there is a measurement to bound it against.
+
+## Known gaps
+
+- **`allowEmptySignature`.** pi-mono carries a per-model flag for Anthropic-*compatible* endpoints
+  that emit thinking blocks with empty signatures and expect them back; real Anthropic rejects
+  those. `config.baseUrl` can point an `anthropic`-type provider at such an endpoint, so the case is
+  reachable, but nothing here is configured that way. Until something is, the current behaviour is
+  safe everywhere -- an unsigned block degrades to text, which never fails -- and the symptom on
+  such a proxy would be visible reasoning that stops being replayed, not an error. Deliberately not
+  configured rather than guessed at.
+- **Surrogate sanitising.** pi-mono scrubs lone UTF-16 surrogates out of thinking text before
+  sending it. Not reproduced here, and not observed.
+
 ## Containment
 
 `ProviderMeta` is opaque, signed for one model, and often large. Three rules, each with a test in
