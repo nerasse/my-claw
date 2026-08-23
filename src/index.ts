@@ -1106,6 +1106,7 @@ async function main() {
             ...(provider.group ? { group: provider.group } : {}),
             ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
             ...(provider.promptCache !== undefined ? { promptCache: provider.promptCache } : {}),
+            ...(provider.reasoningReplay !== undefined ? { reasoningReplay: provider.reasoningReplay } : {}),
             ...(provider.pricingProvider ? { pricingProvider: provider.pricingProvider } : {}),
             ...(provider.fallbackModel ? { fallbackModel: provider.fallbackModel } : {}),
             discover: provider.discover === true,
@@ -1379,8 +1380,8 @@ async function main() {
     };
     myClawApp.onProvidersController({
       upsert: async (patch) => {
-        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, pricingProvider, fallbackModel } = patch;
-        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, pricingProvider, fallbackModel });
+        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel } = patch;
+        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel });
         if (!result.ok) throw new Error(result.error);
         return writeProvidersConfig(`provider ${patch.key}`);
       },

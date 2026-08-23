@@ -183,8 +183,9 @@ export function applyModelMetadata(
     const needsEffort = m.supportsEffort === undefined;
     const needsVision = m.vision === undefined;
     const needsOutput = m.limit?.output === undefined;
+    const needsReasoningField = m.reasoningField === undefined;
     const hasOpenRouter = openrouter !== undefined;
-    const needsFallback = !hasOpenRouter && (needsLabel || needsEffort || needsVision || needsOutput);
+    const needsFallback = !hasOpenRouter && (needsLabel || needsEffort || needsVision || needsOutput || needsReasoningField);
     if (!hasOpenRouter && !needsFallback) return m;
 
     const next: LlmModelConfig = { ...m };
@@ -207,10 +208,20 @@ export function applyModelMetadata(
 
     // Do not let a generic table fill a field OpenRouter explicitly answered, including false or
     // an empty capability list. Fallback is field-by-field, not entry-by-entry.
-    if (table && (next.label === m.label || next.supportsEffort === undefined || next.vision === undefined || next.limit?.output === undefined)) {
+    if (
+      table &&
+      (next.label === m.label ||
+        next.supportsEffort === undefined ||
+        next.vision === undefined ||
+        next.limit?.output === undefined ||
+        next.reasoningField === undefined)
+    ) {
       const meta = table.metadataOf(apiId, provider ? providerBaseUrl(provider) : undefined);
       if (meta) {
-        if (next.label === m.label && meta.label !== undefined) next.label = meta.label;
+        // `needsLabel` as well as the OpenRouter check: an owner-declared label used to be
+        // protected only by the early return above, which a model reaching this branch for some
+        // other missing field walks straight past.
+        if (needsLabel && next.label === m.label && meta.label !== undefined) next.label = meta.label;
         if (next.supportsEffort === undefined && meta.effortLevels !== undefined) {
           next.supportsEffort = true;
           next.supportedEffortLevels = meta.effortLevels;
@@ -219,6 +230,7 @@ export function applyModelMetadata(
         if (next.limit?.output === undefined && meta.outputLimit !== undefined) {
           next.limit = { ...next.limit, output: meta.outputLimit };
         }
+        if (next.reasoningField === undefined && meta.reasoningField !== undefined) next.reasoningField = meta.reasoningField;
       }
     }
     return next;

@@ -647,11 +647,17 @@ export class AgentBridge implements AgentBackend {
         // `providerMeta` rides on the in-memory prompt only, never on `persistedAssistant` below:
         // it is opaque, model-bound and large, and its whole value is spanning the tool iterations
         // of the run in progress. See docs/reasoning-replay.md.
+        //
+        // Dropped when the turn came back incomplete. A truncated turn can carry a half-formed
+        // reasoning item, and handing that back is how a signed or encrypted chain is refused for
+        // the rest of the run; the visible text is kept either way. opencode v2 draws the same line
+        // ("failed turns and incompatible models omit opaque metadata").
+        const replayable = response.providerMeta && !response.incomplete;
         chatMessages.push({
           role: "assistant",
           content: response.content,
           tool_calls: assistantToolCalls,
-          ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
+          ...(replayable ? { providerMeta: response.providerMeta } : {}),
         });
 
         // Kept as a reference so the tool durations measured below can be written back into the

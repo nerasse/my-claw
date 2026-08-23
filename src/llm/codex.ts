@@ -67,9 +67,15 @@ function convertTools(tools?: unknown[]): ResponsesTool[] {
  * list. Later system messages (e.g. the iteration-limit summary prompt) become user turns since
  * the Responses API has a single instructions slot.
  */
+interface ReplayIdentity {
+  backend: string;
+  model: string;
+  replay: boolean;
+}
+
 function buildInput(
   messages: ChatMessage[],
-  self?: { backend: string; model: string },
+  self?: ReplayIdentity,
 ): { instructions: string; input: ResponsesInputItem[] } {
   let instructions = "";
   const input: ResponsesInputItem[] = [];
@@ -102,7 +108,7 @@ function buildInput(
          * than failing the call.
          */
         const meta = msg.providerMeta;
-        if (meta && self && meta.backend === self.backend && meta.model === self.model) {
+        if (self?.replay && meta && meta.backend === self.backend && meta.model === self.model) {
           for (const item of meta.reasoning ?? []) {
             input.push({ type: "reasoning", id: item.id, summary: [], ...(item.encrypted ? { encrypted_content: item.encrypted } : {}) });
           }
@@ -191,7 +197,7 @@ async function processStream(
   body: ReadableStream<Uint8Array>,
   onToken: ((token: string) => Promise<void> | void) | undefined,
   reasoningSink: ReasoningSink | undefined,
-  self: { backend: string; model: string },
+  self: ReplayIdentity,
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -344,7 +350,7 @@ async function processStream(
   const segments = segmenter.list();
   return {
     content,
-    ...(reasoningItems.length > 0 ? { providerMeta: { ...self, reasoning: reasoningItems } } : {}),
+    ...(reasoningItems.length > 0 ? { providerMeta: { backend: self.backend, model: self.model, reasoning: reasoningItems } } : {}),
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason,
     incomplete: !content && toolCalls.length === 0 && finishReason !== "completed",
@@ -371,7 +377,8 @@ async function runCodex(
   reasoningSink?: ReasoningSink,
 ): Promise<LlmResponse> {
   const model = config.apiModel ?? config.model;
-  const { instructions, input } = buildInput(messages, { backend: "codex", model });
+  const self: ReplayIdentity = { backend: "codex", model, replay: config.reasoningReplay !== false };
+  const { instructions, input } = buildInput(messages, self);
   const responsesTools = convertTools(tools);
   const body: Record<string, unknown> = {
     model,
@@ -385,8 +392,10 @@ async function runCodex(
   if (responsesTools.length > 0) body["tools"] = responsesTools;
   if (config.effort) body["reasoning"] = { effort: config.effort, summary: "auto" };
   // The counterpart of `store: false`: nothing is kept server-side, so the encrypted thinking
-  // state has to come back to us or it is lost between two tool iterations.
-  body["include"] = ["reasoning.encrypted_content"];
+  // state has to come back to us or it is lost between two tool iterations. Conditioned on the
+  // same switch as the replay itself, so turning the provider's `reasoningReplay` off really does
+  // take the whole feature off the wire rather than leaving the request field behind.
+  if (self.replay) body["include"] = ["reasoning.encrypted_content"];
 
   const base = config.baseUrl || CODEX_BASE_URL;
   const url = `${base.replace(/\/+$/, "")}/codex/responses`;
@@ -445,7 +454,7 @@ async function runCodex(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, { backend: "codex", model });
+      return await processStream(response.body, wrappedOnToken, reasoningSink, self);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;

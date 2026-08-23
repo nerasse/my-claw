@@ -734,6 +734,7 @@ export interface ProviderPatch {
   group?: string;
   discover?: boolean;
   promptCache?: boolean;
+  reasoningReplay?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;
 }
@@ -800,6 +801,7 @@ export async function upsertProvider(key: string, patch: ProviderPatch): Promise
   }
   if (patch.discover !== undefined) spec["discover"] = patch.discover;
   if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
+  if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
   const shapeError = providerShapeError(spec);
   if (shapeError) return { ok: false, error: shapeError };
   providers[key] = spec;

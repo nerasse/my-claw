@@ -244,6 +244,8 @@ function resolveFromMerged(
     limit: pinnedLimit(model?.limit ?? merged.limit, wireModel, providerRoute.providerRoute),
     effort: computeEffort(merged, model, false, effortOverride, scopeEffort, tagEffort),
     promptCache: provider.promptCache,
+    reasoningReplay: provider.reasoningReplay,
+    reasoningField: model?.reasoningField,
   };
 }
 

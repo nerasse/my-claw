@@ -1,4 +1,4 @@
-import type { ResolvedLlmConfig } from "../core/config.ts";
+import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError } from "../core/aborted.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
@@ -160,6 +160,13 @@ export interface ProviderMeta {
   reasoning?: ReasoningItem[];
   /** Anthropic thinking blocks, in the order the model emitted them. */
   thinking?: ThinkingBlock[];
+  /**
+   * OpenAI-compatible chat: the prior reasoning in the shape this model declared it wants back.
+   * `reasoning_content` takes the text; `reasoning_details` takes the structured array verbatim,
+   * because that form exists precisely to carry encrypted and summarized blocks a string cannot.
+   * Only ever one of the two, and only when the model published a field.
+   */
+  chat?: { field: ReasoningField; text?: string; details?: unknown[] };
 }
 
 export type ChatMessage =
@@ -294,15 +301,58 @@ export function readReasoning(source: Record<string, unknown> | undefined): stri
   return "";
 }
 
+/**
+ * The reasoning this turn produced, packaged for the next call, or nothing.
+ *
+ * Three conditions, all required: the provider's replay switch is on, the model published which
+ * field it wants (`interleaved.field` on models.dev -- guessing one is how you send a body a strict
+ * endpoint rejects), and the turn actually produced reasoning. See docs/reasoning-replay.md.
+ */
+function chatProviderMeta(
+  config: ResolvedLlmConfig,
+  message: Record<string, unknown> | undefined,
+  text: string,
+): ProviderMeta | undefined {
+  if (config.reasoningReplay === false) return undefined;
+  const field = config.reasoningField;
+  if (!field) return undefined;
+  const model = config.apiModel ?? config.model;
+  if (field === "reasoning_details") {
+    const details = message?.["reasoning_details"];
+    // No string fallback: `reasoning` and `reasoning_content` are aliases of each other, but a
+    // model asking for `reasoning_details` wants the structured array, which is the only form that
+    // survives an encrypted or summarized block.
+    return Array.isArray(details) && details.length > 0
+      ? { backend: "openai", model, chat: { field, details } }
+      : undefined;
+  }
+  // DeepSeek returns an empty `reasoning_content` on turns it did not think through, and that
+  // empty string still has to go back, so the test is "did the turn reason at all", not "is it
+  // non-empty".
+  return text.length > 0 ? { backend: "openai", model, chat: { field, text } } : undefined;
+}
+
 const EPHEMERAL_CACHE = { type: "ephemeral" as const };
 
 type WireMessage = Record<string, unknown>;
 
-// Flatten a ChatMessage to the wire object, preserving role-specific fields.
+/**
+ * Flatten a ChatMessage to the wire object, preserving role-specific fields.
+ *
+ * Field by field, never a spread: `ChatMessage` carries `providerMeta`, which is internal state and
+ * must not reach any endpoint except through the one branch below that knows the shape it wants.
+ */
 function toWireMessage(msg: ChatMessage): WireMessage {
   const w: WireMessage = { role: msg.role, content: msg.content };
   if (msg.role === "tool") w["tool_call_id"] = msg.tool_call_id;
   if (msg.role === "assistant" && msg.tool_calls) w["tool_calls"] = msg.tool_calls;
+  if (msg.role === "assistant") {
+    const chat = msg.providerMeta?.chat;
+    // DeepSeek answers 400 without this when tools are present; GLM and Kimi degrade quietly.
+    // Self-gating: nothing was captured for a model that publishes no field, so nothing is sent.
+    if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
+    else if (chat?.field === "reasoning_content" && chat.text !== undefined) w["reasoning_content"] = chat.text;
+  }
   return w;
 }
 
@@ -348,7 +398,9 @@ function buildRequestBody(
 ): Record<string, unknown> {
 const body: Record<string, unknown> = {
   model: config.apiModel ?? config.model,
-    messages: config.promptCache ? applyPromptCache(messages) : messages,
+    // Always through `toWireMessage`, cache or no cache. Handing the raw `ChatMessage[]` to
+    // JSON.stringify was putting `providerMeta` on the wire whenever prompt caching was off.
+    messages: config.promptCache ? applyPromptCache(messages) : messages.map(toWireMessage),
   };
 
   if (tools && tools.length > 0) {
@@ -601,6 +653,7 @@ export async function chatCompletion(
 
       recordCircuitSuccess(config.baseUrl);
       const reasoning = readReasoning(choice.message as Record<string, unknown>);
+      const providerMeta = chatProviderMeta(config, choice.message as Record<string, unknown>, reasoning);
       return {
         content: choice.message.content ?? "",
         toolCalls: parseToolCalls(choice.message.tool_calls),
@@ -608,6 +661,7 @@ export async function chatCompletion(
         incomplete: !choice.message.content && !choice.message.tool_calls?.length && choice.finish_reason !== "stop",
         usage: normalizeUsage(data.usage),
         ...(reasoning ? { reasoning } : {}),
+        ...(providerMeta ? { providerMeta } : {}),
         ...readProxyHeaders(response),
       };
     } catch (err) {
@@ -704,6 +758,12 @@ export async function chatCompletionStream(
       let buffer = "";
       let content = "";
       let reasoning = "";
+      /**
+       * `reasoning_details` accumulated off the stream. Streamed as whole blocks on a delta rather
+       * than as text fragments, so they are concatenated, not stitched -- the array is opaque and
+       * has to go back exactly as it came.
+       */
+      let streamedReasoningDetails: Record<string, unknown> | undefined;
       const segmenter = new ReasoningSegmenter();
       let streamUsage: LlmUsage | undefined;
       let finishReason: string | undefined;
@@ -718,6 +778,12 @@ export async function chatCompletionStream(
         if (choice?.finish_reason) finishReason = choice.finish_reason;
         const delta = choice?.delta;
         if (!delta) return;
+
+        const details = (delta as Record<string, unknown>)["reasoning_details"];
+        if (Array.isArray(details) && details.length > 0) {
+          const previous = (streamedReasoningDetails?.["reasoning_details"] as unknown[] | undefined) ?? [];
+          streamedReasoningDetails = { reasoning_details: [...previous, ...details] };
+        }
 
         const reasoningDelta = readReasoning(delta as Record<string, unknown>);
         if (reasoningDelta) {
@@ -796,6 +862,7 @@ export async function chatCompletionStream(
 
       recordCircuitSuccess(config.baseUrl);
       const segments = segmenter.list();
+      const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning);
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
@@ -803,6 +870,7 @@ export async function chatCompletionStream(
         incomplete: !content && streamedToolCalls.length === 0 && finishReason !== "stop",
         usage: streamUsage,
         ...(reasoning ? { reasoning } : {}),
+        ...(providerMeta ? { providerMeta } : {}),
         ...(segments ? { segments } : {}),
         ...readProxyHeaders(response),
       };

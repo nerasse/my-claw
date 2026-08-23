@@ -28,6 +28,7 @@ Fields the app can write (`providers.upsert`, one payload for create and edit):
 | `group` | picker group label (docs/model-discovery.md). |
 | `discover` | auto-discover this provider's models. |
 | `promptCache` | openai only (docs/prompt-caching.md). |
+| `reasoningReplay` | all engines. Hand the model its own reasoning back across tool iterations. Absent means **on**; set it false only for an endpoint that emits reasoning and rejects it on input (docs/reasoning-replay.md). |
 | `pricingProvider` | openai only (docs/status-command.md). |
 | `fallbackModel` | claude-sdk only. |
 

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { MY_CLAW_DIR, type EffortLevel } from "../core/config.ts";
+import { MY_CLAW_DIR, type EffortLevel, type ReasoningField } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { cachedOpenRouterEndpointPricing, cachedOpenRouterModel } from "./openrouter-endpoints.ts";
 import { log } from "../utils/logger.ts";
@@ -23,7 +23,7 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 // Bumped whenever the compacted shape changes. A mismatch is treated as no cache at all, because
 // silently serving an older shape means missing fields for a full refresh period.
-export const CACHE_VERSION = 3;
+export const CACHE_VERSION = 4;
 
 interface TableEntry {
   // Absent for the ~400 models models.dev describes without publishing a price.
@@ -41,6 +41,10 @@ interface TableEntry {
   effortToggle?: boolean;
   vision?: boolean;
   output?: number;
+  // Which message field this model wants its own reasoning handed back in, from models.dev's
+  // `interleaved`. Published for 881 models: 819 say `reasoning_content`, 14 `reasoning_details`.
+  // Per model and not per provider -- OpenRouter alone publishes both. See docs/reasoning-replay.md.
+  reasoningField?: ReasoningField;
 }
 
 /** USD per million tokens. */
@@ -89,6 +93,7 @@ export interface ModelMetadata {
   effortLevels?: EffortLevel[];
   vision?: boolean;
   outputLimit?: number;
+  reasoningField?: ReasoningField;
   source: string;
 }
 
@@ -214,7 +219,8 @@ function describesModel(entry: TableEntry): boolean {
     entry.effort !== undefined ||
     entry.effortToggle === true ||
     entry.vision !== undefined ||
-    entry.output !== undefined
+    entry.output !== undefined ||
+    entry.reasoningField !== undefined
   );
 }
 
@@ -225,6 +231,7 @@ function entryMetadata(entry: TableEntry, source: string): ModelMetadata {
   else if (entry.effortToggle === true) meta.effortLevels = TOGGLE_LADDER;
   if (entry.vision !== undefined) meta.vision = entry.vision;
   if (entry.output !== undefined) meta.outputLimit = entry.output;
+  if (entry.reasoningField !== undefined) meta.reasoningField = entry.reasoningField;
   return meta;
 }
 
@@ -629,6 +636,20 @@ interface RawModel {
   reasoning?: boolean;
   reasoning_options?: Array<{ type?: string; values?: unknown }>;
   modalities?: { input?: string[] };
+  // `true` (the field exists but names nothing) or `{ field: "reasoning_content" }`. Only the
+  // object form is usable: the bare boolean says a model interleaves without saying how to feed
+  // it, and guessing a field name is how you send a body a strict endpoint rejects.
+  interleaved?: boolean | { field?: string };
+}
+
+/**
+ * The replay field this model publishes, validated rather than trusted: the same file carries a
+ * bare `true` on 48 models, which names no field and so cannot drive a request body.
+ */
+function reasoningFieldOf(model: RawModel): ReasoningField | undefined {
+  const value = model.interleaved;
+  if (typeof value !== "object" || value === null) return undefined;
+  return value.field === "reasoning_content" || value.field === "reasoning_details" ? value.field : undefined;
 }
 
 /**
@@ -689,7 +710,9 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
       const output = typeof model.limit?.output === "number" && model.limit.output > 0 ? model.limit.output : undefined;
       const vision = Array.isArray(model.modalities?.input) ? model.modalities.input.includes("image") : undefined;
       const name = typeof model.name === "string" && model.name.length > 0 ? model.name : undefined;
-      const describes = ladder.levels !== undefined || ladder.toggle || output !== undefined || vision !== undefined || name !== undefined;
+      const reasoningField = reasoningFieldOf(model);
+      const describes =
+        ladder.levels !== undefined || ladder.toggle || output !== undefined || vision !== undefined || name !== undefined || reasoningField !== undefined;
       // A model with a window but no published price is worth keeping now that the table answers
       // both questions; one with neither carries nothing.
       if (!cost && context === undefined && !describes) continue;
@@ -701,6 +724,7 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
       else if (ladder.toggle) value.effortToggle = true;
       if (vision !== undefined) value.vision = vision;
       if (output !== undefined) value.output = output;
+      if (reasoningField !== undefined) value.reasoningField = reasoningField;
       for (const key of modelKeyCandidates(id)) {
         if (!(key in table)) table[key] = value;
       }

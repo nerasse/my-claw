@@ -52,19 +52,6 @@ const IDENTITY_BLOCK = "You are a Claude agent, built on Anthropic's Claude Agen
  */
 const STREAM_THINKING = process.env["ANTHROPIC_HIDE_THINKING"] !== "1";
 
-/**
- * Whether to hand the model's thinking blocks back on the next call of the same run.
- *
- * Off by default, and deliberately so. Replaying them is what Anthropic documents for tool use
- * with extended thinking, and it is the same fix as the Codex one -- the model stops re-deriving
- * its plan from the tool outputs at every iteration. But the blocks are signed, the signature
- * covers the original thinking, and the API answers 400 to any sequence it considers modified.
- * Anything that rewrites the prompt around them is a way to trip that: this transport is also the
- * one where pruning is skipped and where a compaction boundary can cut a signed chain in half.
- * The upside is real and the failure mode is a hard 400 on a live run, so it is opt-in until it
- * has been exercised against the real endpoint -- docs/reasoning-replay.md.
- */
-const THINKING_REPLAY = process.env["ANTHROPIC_THINKING_REPLAY"] === "1" && STREAM_THINKING;
 
 // One id per process, exactly like the CLI: it is a client-side correlation handle, and a fresh
 // one per request would be the anomaly.
@@ -218,13 +205,36 @@ function safeJson(raw: string): Record<string, unknown> {
 }
 
 /**
+ * Who this request is, and whether it may hand reasoning back.
+ *
+ * Anthropic documents the replay as mandatory rather than optional: "within a tool-use turn, pass
+ * thinking blocks back... complete and unmodified", and omitting them fails the request with
+ * `thinking or redacted_thinking blocks in the latest assistant message cannot be modified`. So it
+ * is on unless the owner turns the provider's `reasoningReplay` off, which is the escape hatch for
+ * an endpoint that misbehaves -- and unlike the env var it replaces, that switch is hot-reloadable
+ * and sits in the app. See docs/reasoning-replay.md.
+ *
+ * Note it is deliberately *not* tied to `STREAM_THINKING`: the signature is identical whether the
+ * display is summarized or omitted, so an omitted block round-trips exactly as well.
+ */
+interface ReplayIdentity {
+  backend: string;
+  model: string;
+  replay: boolean;
+}
+
+function replayIdentity(config: Partial<ResolvedLlmConfig>): ReplayIdentity {
+  return { backend: "anthropic", model: config.model ?? "", replay: config.reasoningReplay !== false };
+}
+
+/**
  * Split the prompt into the `system` blocks and the `messages` array.
  *
  * Two Anthropic rules shape this: roles must alternate, and the tool_result blocks answering one
  * assistant turn belong in a single user message. The home loop emits one `tool` message per call,
  * so consecutive same-role messages are merged rather than sent as-is.
  */
-function buildRequest(messages: ChatMessage[], self?: { backend: string; model: string }): { system: string; turns: AnthropicMessage[] } {
+function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system: string; turns: AnthropicMessage[] } {
   let system = "";
   const turns: AnthropicMessage[] = [];
 
@@ -258,7 +268,7 @@ function buildRequest(messages: ChatMessage[], self?: { backend: string; model: 
         // First in the turn, which is where the model put them and the only position the API
         // accepts. Same-model check as on the Codex transport: a signature is not portable.
         const meta = msg.providerMeta;
-        if (THINKING_REPLAY && meta && self && meta.backend === self.backend && meta.model === self.model) {
+        if (self?.replay && meta && meta.backend === self.backend && meta.model === self.model) {
           for (const t of meta.thinking ?? []) blocks.push({ ...t });
         }
         if (msg.content) blocks.push({ type: "text", text: msg.content });
@@ -373,7 +383,7 @@ async function processStream(
   body: ReadableStream<Uint8Array>,
   onToken: ((token: string) => Promise<void> | void) | undefined,
   reasoningSink?: ReasoningSink,
-  self?: { backend: string; model: string },
+  self?: ReplayIdentity,
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -479,7 +489,7 @@ async function processStream(
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason,
-    ...(self && thinking.length > 0 ? { providerMeta: { ...self, thinking } } : {}),
+    ...(self && thinking.length > 0 ? { providerMeta: { backend: self.backend, model: self.model, thinking } } : {}),
     // A normal end_turn is still incomplete when Anthropic emitted only thinking. The user needs
     // an answer or a tool call; reasoning alone must not look like a successful final turn.
     incomplete: !content && toolCalls.length === 0,
@@ -610,7 +620,7 @@ function warnThinkingOffWithTools(model: string, toolCount: number): void {
 
 /** The whole request body, pure so P2 can diff it against the capture without a network call. */
 function buildBody(config: Partial<ResolvedLlmConfig>, messages: ChatMessage[] = [], tools?: unknown[]): Record<string, unknown> {
-  const { system, turns } = buildRequest(messages, { backend: "anthropic", model: config.model ?? "" });
+  const { system, turns } = buildRequest(messages, replayIdentity(config));
   const anthropicTools = convertTools(tools);
 
   // Appended here rather than by the prompt builder, for the same reason the SDK appends it after
@@ -750,7 +760,7 @@ async function runAnthropic(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, { backend: "anthropic", model: config.model ?? "" });
+      return await processStream(response.body, wrappedOnToken, reasoningSink, replayIdentity(config));
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;

@@ -134,6 +134,12 @@ export interface LlmProviderConfig {
   // Opt-in per provider: some strict endpoints reject unknown fields in message content.
   // Ignored on the codex (subscription) backend. See docs/prompt-caching.md.
   promptCache?: boolean;
+  // Hand the model's own reasoning back to it on the next call of a tool loop. Default on: the
+  // providers that document the behaviour require it (DeepSeek answers 400 without it when tools
+  // are present, GLM and Kimi degrade), and it is self-gating -- an endpoint that returns no
+  // reasoning gets none back. Set false for an endpoint that emits reasoning but rejects it on
+  // input. See docs/reasoning-replay.md.
+  reasoningReplay?: boolean;
   // Optional escape hatch for /status cost reporting: the models.dev provider id whose prices
   // apply to this endpoint. Only needed for a proxy that reveals neither its cost nor its upstream
   // in response headers -- LiteLLM reports both, so this normally stays unset.
@@ -150,6 +156,13 @@ export interface LlmProviderConfig {
 // reasoning rather than clearing the pin -- see EFFORT_LEVELS for the list offered when nothing
 // describes a model, which stays deliberately narrower than this.
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
+/**
+ * The message field an OpenAI-compatible endpoint reads a model's own prior reasoning back from.
+ * Declared here rather than in pricing.ts because that module imports from this one.
+ * See docs/reasoning-replay.md.
+ */
+export type ReasoningField = "reasoning_content" | "reasoning_details";
 
 /**
  * The vocabulary as a ladder, bottom to top. One ordered copy: the clamps, the discovery filter
@@ -190,6 +203,11 @@ export interface LlmModelConfig {
   // `/v1/models`. Naming an unsupported type is a 400: Opus 5 reports `enabled: false` and takes
   // `adaptive` only, so this cannot be inferred from the family or the version.
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
+  // OpenAI-compatible models only: the message field this model reads its own prior reasoning back
+  // from, published by models.dev as `interleaved.field`. Absent means the model declares nothing
+  // and nothing is replayed -- guessing a field name is how you send a body a strict endpoint
+  // rejects. See docs/reasoning-replay.md.
+  reasoningField?: ReasoningField;
     vision?: boolean;
     limit?: {
       context?: number;
@@ -291,6 +309,11 @@ export interface ResolvedLlmConfig {
   // Send Anthropic-style `cache_control` breakpoints on the OpenAI-compatible request
   // (propagated from the provider's `promptCache`). See docs/prompt-caching.md.
   promptCache?: boolean;
+  // Replay reasoning state across tool iterations (propagated from the provider's
+  // `reasoningReplay`). Absent means on. See docs/reasoning-replay.md.
+  reasoningReplay?: boolean;
+  // The message field this model wants its reasoning handed back in, from the model row.
+  reasoningField?: ReasoningField;
 }
 
 export interface AgentLlmConfig {
