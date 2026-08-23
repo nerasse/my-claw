@@ -26,16 +26,45 @@ re-running a tool, and the session file on disk keeps everything.
 
 - Applied at prompt-build time, on the in-flight `ChatMessage[]` only. The persisted
   session (`session.messages`) is never mutated: audit and `/compact` still see full data.
-- Tool results older than the last `keepLastAssistantTurns` assistant turns (default 5)
-  are replaced by their first `headChars` chars (default 200) plus an explicit marker
-  telling the model the output was pruned and can be re-fetched by re-running the tool.
+- The protected window is a **token budget**, not a turn count: walking backwards from the
+  newest result, `protectTokens` (default 40000) worth of tool output is kept whole and
+  everything older is stubbed. Turns were the wrong unit — five turns is a paragraph on one
+  run and half a megabyte on the next, while the thing that has to fit is a budget.
+- A stub keeps `headChars` (default 400) of the original, **split between head and tail**.
+  Head alone was a measured mistake: a command's verdict is on its last line, so keeping only
+  the opening threw away the answer and kept the preamble.
 - Small results are exempt: pruning only pays when it saves at least 256 chars over
   the kept head — stubbing a 180-char result would *add* tokens.
 - Never touched: the system prompt, user messages, assistant messages, and every tool
-  result inside the protected recent-turns window. Runs shorter than the window are
-  untouched.
-- Applied on every loop iteration, so it also follows long single runs (90-iteration
-  budgets): the window slides as the run grows.
+  result inside the budget. A run whose tool output fits in the budget is untouched.
+- Applied on every loop iteration, so it also follows long single runs: the budget slides
+  as the run grows.
+
+#### The spill file
+
+What leaves the stub is written to `~/.my-claw/tool-output/<sha256>.txt`, and the marker
+names that path.
+
+This replaces the old marker, which ended with *"re-run the tool if you need the full
+output"*. On a measured 142-iteration run that instruction was present about 137 times: the
+component whose job is to shrink the context was writing an invitation to redo completed work
+into every prompt, once per pruned result. Small models took it. The marker now ends with
+`read that file, do not re-run the tool` — recovering the detail is a read, which is cheap and
+idempotent, instead of an execution, which is neither.
+
+Mechanics:
+
+- **Content-addressed.** The path is a hash of the output, so the same result stubbed on
+  twenty consecutive prompt builds is written once and skipped nineteen times.
+- **Only the sending path writes.** `pruneOldToolResults` takes an optional `spill` callback.
+  The bridge passes one; `/status` and the app header, which run the same function purely to
+  measure occupancy, pass none. Because the path is derived from the content rather than
+  allocated at write time, the measured string is byte-identical to the sent string — the
+  three occupancy readers stay in agreement.
+- **Failures are swallowed.** An unwritable disk leaves a dead path in a marker; the prompt is
+  still correct and the run still completes. It must not take a run down.
+- **Swept at boot.** `sweepSpilledToolOutput()` drops spills older than seven days. They exist
+  to be re-read during a run, not archived.
 
 ### Stage 2 — Auto-compaction (rare, threshold-gated)
 
@@ -54,7 +83,7 @@ re-running a tool, and the session file on disk keeps everything.
 
 ```json
 "context": {
-  "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
+  "pruning": { "enabled": true, "protectTokens": 40000, "headChars": 400 },
   "autoCompact": { "enabled": true, "thresholdRatio": 0.8 }
 }
 ```
@@ -65,6 +94,11 @@ Both stages default to enabled. `context` is hot-reloadable (read live per run).
 
 - Truncating at tool-execution time: the current turn *needs* the full output
   (debugging ffmpeg stderr is the point of running it).
+- Spilling at tool-execution time rather than at prune time: most results are never pruned
+  (short, or still inside the budget), so it would put a disk write on the hot path of every
+  tool call to serve the minority that outlive their usefulness.
+- A turn-counted window (the original design): see above. It cannot express a budget, which
+  is the actual constraint.
 - LLM summarization per tool result: cost, latency, non-determinism at every call.
 - Hard instructions forcing quiet commands: replaced by a soft core-prompt guidance
   (prefer `-hide_banner -loglevel error`, `pip -q` for known-noisy commands) — the
@@ -72,10 +106,11 @@ Both stages default to enabled. `context` is hot-reloadable (read live per run).
 
 ## Scope and limits
 
-- Pruning counts *assistant messages* as turns; parallel tool calls within a turn are
-  protected or pruned together with their turn.
-- The head kept by the stub is informational, not guaranteed to contain the useful
-  part of the output.
+- The budget is measured with the same chars/4 heuristic as trimming, so it is approximate.
+- The head and tail kept by the stub are informational; the useful part of a long output can
+  sit in the elided middle. That is what the spill file is for.
+- A spill file is readable by the agent's own `read` tool because it lives under
+  `~/.my-claw/`, outside the workspace but on a path the marker states explicitly.
 - Auto-compaction estimates tokens with the same chars/4 heuristic as trimming; it is
   a soft gate, `trimToContextWindow` remains the hard fallback at the limit.
 - Sub-agents inherit pruning (same bridge loop) but not auto-compaction (their
@@ -83,10 +118,11 @@ Both stages default to enabled. `context` is hot-reloadable (read live per run).
 
 ## Where
 
-- `src/agent/context-pruning.ts` — pure pruning function
+- `src/agent/context-pruning.ts` — pruning, spill write/sweep, `promptSideChat`
 - `src/agent/bridge.ts` — pruning applied each iteration; auto-compact check at run start
 - `src/sessions/compaction.ts` — unchanged, reused by the auto trigger
 - `src/core/config.ts` — `ContextConfig` types, defaults, resolvers
 - `src/core/config-watcher.ts` — `context` registered hot-reloadable
 - `src/agent/prompt/core-prompts.ts` — output-hygiene guidance line
+- `src/index.ts` — `sweepSpilledToolOutput()` at boot, next to the session sweep
 - `tests/agent/context-pruning.test.ts`, `tests/agent/bridge-context.test.ts`

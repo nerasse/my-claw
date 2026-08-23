@@ -127,7 +127,7 @@ import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmComplete } from "./llm/transport.ts";
 import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
-import { promptSideChat } from "./agent/context-pruning.ts";
+import { promptSideChat, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
@@ -222,6 +222,7 @@ async function main() {
   pruneOldRecords();
   void pruneOldLogs();
   void pruneOldSessions();
+  sweepSpilledToolOutput();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   await snapshotProtected(workspacePath, { origin: "boot" });

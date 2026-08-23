@@ -32,6 +32,17 @@ function llm(message: object): never {
 
 const BIG = "y".repeat(5000);
 
+/**
+ * Pruning is budgeted in tokens, and the default budget (40k) is deliberately wider than any
+ * fixture here: ten of these turns are about 12k tokens, which is a conversation the default is
+ * meant to leave alone. A test that wants to see a stub has to say how tight the budget is.
+ */
+function prunedConfig(protectTokens: number): MyClawConfig {
+  const config = baseConfig();
+  config.context = { pruning: { protectTokens } };
+  return config;
+}
+
 // History with `turns` past tool exchanges (assistant tool_call + big tool result + assistant text).
 function history(turns: number): SessionMessage[] {
   const now = new Date().toISOString();
@@ -64,10 +75,10 @@ async function runAndCaptureRequest(config: MyClawConfig, sess: SessionData): Pr
 
 test("bridge: old tool results are pruned from the prompt, session keeps full content", async () => {
   const sess = session("telegram/dm/u1", history(8));
-  const bodies = await runAndCaptureRequest(baseConfig(), sess);
+  const bodies = await runAndCaptureRequest(prunedConfig(3_000), sess);
   const sent = bodies[0]!.messages.filter((m) => m.role === "tool") as Array<{ content: string }>;
   assert.equal(sent.length, 8);
-  assert.ok(sent[0]!.content.includes("pruned"), "oldest tool result stubbed in the prompt");
+  assert.ok(sent[0]!.content.includes("elided"), "oldest tool result stubbed in the prompt");
   assert.ok(sent[7]!.content === BIG, "recent tool result intact in the prompt");
   const persisted = sess.messages.filter((m) => m.role === "tool") as Array<{ content: string }>;
   assert.ok(persisted.every((m) => m.content === BIG), "session on disk never mutated");
@@ -125,7 +136,7 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
  * array again.
  */
 test("bridge: the gate measures the pruned prompt, not the history behind it", async () => {
-  const config = baseConfig();
+  const config = prunedConfig(2_000);
   config.llm.limit = { context: 10_000 };
   const sess = session("my-claw-app/thread/u1/t1", history(10));
 
@@ -151,9 +162,10 @@ test("bridge: the gate measures the pruned prompt, not the history behind it", a
 
 /** Anthropic never prunes -- its cache is a prefix -- so measuring it as pruned would under-read. */
 test("bridge: the anthropic backend is measured whole, since its prompt is sent whole", () => {
+  const config = prunedConfig(2_000);
   const raw = estimateMessagesTokens(sessionChatMessages(history(10)));
-  const pruned = estimateMessagesTokens(promptSideChat(history(10), baseConfig()));
-  const anthropic = estimateMessagesTokens(promptSideChat(history(10), baseConfig(), "anthropic"));
+  const pruned = estimateMessagesTokens(promptSideChat(history(10), config));
+  const anthropic = estimateMessagesTokens(promptSideChat(history(10), config, "anthropic"));
   assert.ok(pruned < raw / 2, `pruning is what the prompt does: ${raw} -> ${pruned}`);
   assert.equal(anthropic, raw, "nothing is pruned for a backend that sends the whole prompt");
 });

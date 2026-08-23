@@ -563,8 +563,11 @@ export interface ContextConfig {
 
 export interface ContextPruningConfig {
   enabled?: boolean; // default true
-  keepLastAssistantTurns?: number; // tool results inside this window are never pruned (default 5)
-  headChars?: number; // chars of the original output kept in the stub (default 200)
+  // Tokens of tool output, newest first, that are never stubbed (default 40000). A window counted
+  // in turns cannot express this: five turns is a paragraph on one run and half a megabyte on the
+  // next, and what has to fit is a token budget.
+  protectTokens?: number;
+  headChars?: number; // chars of the original output kept in the stub, split head/tail (default 400)
 }
 
 export interface AutoCompactConfig {
@@ -572,8 +575,8 @@ export interface AutoCompactConfig {
   thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
 }
 
-export const DEFAULT_PRUNING_KEEP_TURNS = 5;
-export const DEFAULT_PRUNING_HEAD_CHARS = 200;
+export const DEFAULT_PRUNING_PROTECT_TOKENS = 40_000;
+export const DEFAULT_PRUNING_HEAD_CHARS = 400;
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
 export const DEFAULT_CONTEXT_CAP = 512_000;
 
@@ -596,12 +599,12 @@ export function contextPruningEnabled(config: MyClawConfig): boolean {
   return config.context?.pruning?.enabled !== false;
 }
 
-export function resolveContextPruning(config: MyClawConfig): { keepLastAssistantTurns: number; headChars: number } {
+export function resolveContextPruning(config: MyClawConfig): { protectTokens: number; headChars: number } {
   const p = config.context?.pruning;
-  const turns = p?.keepLastAssistantTurns;
+  const turns = p?.protectTokens;
   const head = p?.headChars;
   return {
-    keepLastAssistantTurns: typeof turns === "number" && Number.isFinite(turns) && turns > 0 ? Math.floor(turns) : DEFAULT_PRUNING_KEEP_TURNS,
+    protectTokens: typeof turns === "number" && Number.isFinite(turns) && turns > 0 ? Math.floor(turns) : DEFAULT_PRUNING_PROTECT_TOKENS,
     headChars: typeof head === "number" && Number.isFinite(head) && head >= 0 ? Math.floor(head) : DEFAULT_PRUNING_HEAD_CHARS,
   };
 }

@@ -25,7 +25,7 @@ import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
-import { pruneOldToolResults, promptSideChat, sessionChatMessages } from "./context-pruning.ts";
+import { pruneOldToolResults, promptSideChat, sessionChatMessages, spillToolOutput } from "./context-pruning.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -467,7 +467,10 @@ export class AgentBridge implements AgentBackend {
         // that trades a few thousand pruned tokens for a full prompt re-read, and
         // `context_management.clear_thinking` already prunes server-side there.
         if (llmConfig.backend !== "anthropic" && contextPruningEnabled(this.config)) {
-          const pruned = pruneOldToolResults(chatMessages, resolveContextPruning(this.config));
+          // The sending path, so this is the one that spills: what leaves the stub has to be
+          // somewhere the agent can read it back, or the elision is a loss and the model goes and
+          // re-runs the tool to recover it.
+          const pruned = pruneOldToolResults(chatMessages, { ...resolveContextPruning(this.config), spill: spillToolOutput });
           if (pruned !== chatMessages) {
             chatMessages.length = 0;
             chatMessages.push(...pruned);
