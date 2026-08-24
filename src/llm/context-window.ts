@@ -1,5 +1,5 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
-import { resolveContextCap, tagNameOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
+import { resolveContextCap, tagNameOf, tagRouteOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
 import { findModel, leafModelId } from "./resolver.ts";
 import { chatModel } from "./chat-model.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
@@ -7,15 +7,15 @@ import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
 
 /**
- * The ceiling a tag pins for runs resolved through it (`tag:<name>` in config.tags, docs/tags.md).
- * A tag's cap is deliberate per-model policy, so it outranks the agent/global standing cap; a
- * session's own override still wins over everything.
+ * The ceiling the selected tag-route candidate pins for a run (`tag:<name>` in config.tags,
+ * docs/tags.md). A candidate's cap is deliberate per-model policy, so it outranks the
+ * agent/global standing cap; a session's own override still wins over everything.
  */
 function resolveTagContextCap(config: MyClawConfig, modelId: string): number | undefined {
   const name = tagNameOf(modelId);
   if (name === undefined) return undefined;
   const tag = name === "Default" ? undefined : tagsOf(config)?.[name];
-  const cap = tag?.contextCap;
+  const cap = tagRouteOf(tag)?.[0]?.contextCap;
   return cap !== undefined && Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : undefined;
 }
 
@@ -120,6 +120,8 @@ export interface ResolveWindowOptions {
   sessionOverride?: ContextOverride;
   /** Agent whose own ceiling applies, when the run belongs to one. */
   agent?: AgentToolType | "orchestrator";
+  /** A route candidate's cap, before the standing agent/global cap. */
+  capOverride?: number;
 }
 
 export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContextWindow {
@@ -130,8 +132,8 @@ export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContex
 
   // Precedence: session override, then the tag's own ceiling, then the agent cap, then the
   // global cap. A conversation has said the most recent and most specific thing, so it wins
-  // over both -- in either direction. A tag pins its combo (docs/tags.md), so its cap outranks
-  // the agent's standing ceiling for runs that go through it.
+  // over both -- in either direction. A route candidate pins its cap (docs/tags.md), so that cap
+  // outranks the agent's standing ceiling for this attempt.
   const override = opts.sessionOverride;
   if (typeof override === "number" && override > 0) {
     if (override < raw) {
@@ -142,7 +144,7 @@ export function resolveContextWindow(opts: ResolveWindowOptions): ResolvedContex
     return out;
   }
 
-  const cap = standingContextCap(opts.config, opts.model, opts.agent);
+  const cap = opts.capOverride ?? standingContextCap(opts.config, opts.model, opts.agent);
   const exempt = matchesAnyGlob(opts.model, opts.config.context?.capExempt);
   if (cap === undefined || override === "full" || exempt || raw <= cap) {
     // Only claim an override when it changed something, so /status does not advertise a session

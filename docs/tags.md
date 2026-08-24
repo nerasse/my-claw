@@ -1,15 +1,25 @@
-# Tags: named aliases for a model combo
+# Tags: ordered model routes
 
-A tag pins a provider/model/effort/context combo under a name, and every place that accepts a
-model id accepts the tag's reference instead. When the underlying model changes version, the tag
-is updated once and every config that referenced it follows.
+A tag is a stable name for an ordered route of concrete model candidates. Every place that accepts
+an id accepts the tag reference, while each candidate carries its own effort and context cap.
+Candidates are never tags themselves: routes do not nest and cannot form cycles.
 
 ```
 tags: {
-  "opus":  { "model": "claude-opus-4-8",  "effort": "xhigh",  "contextCap": 100000 },
-  "sonnet": { "model": "claude-sonnet-4-5" }
+  "Cheap": {
+    "route": [
+      { "model": "anthropic/claude-sonnet-5", "effort": "max", "contextCap": 512000 },
+      { "model": "opencode_go/deepseek-v4-flash", "effort": "max", "contextCap": 512000 },
+      { "model": "zai/glm-5.3", "effort": "high", "contextCap": 512000 }
+    ],
+    "fallbackToGlobalDefault": true
+  }
 }
 ```
+
+The route starts at the first candidate for every new run. A provider outage advances to the next
+candidate. The optional `fallbackToGlobalDefault` flag is explicit: when enabled, the global
+`llm.defaultModel` is tried after the route is exhausted. Otherwise the route fails loudly.
 
 A tag is referenced as `tag:<name>` wherever a model id is expected:
 
@@ -23,18 +33,22 @@ A tag is referenced as `tag:<name>` wherever a model id is expected:
 `resolveFromMerged` (`src/llm/resolver.ts`) is the single funnel every run passes through. A
 `tag:` reference is expanded there before the model lookup:
 
-- the resolved config keeps the tag id as the run's identity (`model`): menus, the picker and the
-  context cap all talk about the tag;
-- the API receives the tag's underlying model via `apiModel` (the three call sites:
+- the requested config keeps the tag reference as the run identity, while the selected candidate
+  supplies the concrete API model, effort and context cap;
+- the API receives the selected candidate's model via `apiModel` (the three call sites:
   `src/llm/provider.ts`, `src/llm/codex.ts`, `src/agent/claude-sdk/backend.ts`);
-- effort precedence: session override > tag effort > the job's own pin > the agent's own pin >
-  global (`llm.effort`). The tag is indivisible: referencing it accepts both halves of it, so a
-  scope-level pin (job, agent, global default) is only consulted when the tag pins none of its
-  own. `llm.models[].effort` no longer exists;
-- a tag may point at another tag; the chain is followed to a real model and the outer tag's
-  effort/cap win;
+- effort precedence is session override > candidate effort > the job's own pin > the agent's own
+  pin > global (`llm.effort`). A candidate without an effort pin lets the scope decide;
+  `llm.models[].effort` no longer exists;
+- a tag route contains concrete model ids only; nested `tag:*` candidates are refused;
+- each route candidate owns its effort and context cap;
 - the reserved name `Default` is a virtual tag that always tracks the current default model
-  (`llm.defaultModel`), never stored in the file.
+  (`llm.defaultModel`), never stored in the file;
+- a reference to a deleted tag follows `tag:Default` at run time. The reference is not rewritten,
+  so recreating the same tag name reactivates it. If an agent's own default is the deleted tag,
+  the fallback continues to the global `llm.defaultModel` instead of looping back to itself;
+- tag cycles remain errors, including a cycle that only appears after a missing tag follows
+  `Default`.
 
 ### History records the run-time model
 
@@ -47,30 +61,36 @@ in parentheses when the chain went through one (`claude-opus-5 (tag opus)`).
 
 ## Context cap
 
-The tag's `contextCap` is a per-run ceiling applied in `resolveContextWindow`
-(`src/llm/context-window.ts`): session override > tag cap > agent cap > global cap. It is
-deliberate per-tag policy, so it outranks the agent's standing ceiling for runs that go through
-the tag. `standingContextCap` is the one implementation of that precedence: the menus read it
-too, or they would offer a list built from the agent's cap while the run applied the tag's.
+The selected route candidate's `contextCap` is a per-run ceiling applied in
+`resolveContextWindow` (`src/llm/context-window.ts`): session override > candidate cap > agent cap
+> global cap. It is deliberate per-candidate policy, so it outranks the agent's standing ceiling
+for that attempt. The next route candidate may have a different cap.
 
-Because the tag owns both pins, a config flow that stages a tag (agent default, global default, a
-job) offers **neither** the effort step nor the window step: an effort or a cap set on the scope
-would never be consulted for runs going through the tag. See docs/context-window.md.
+Because each selected candidate may own both pins, a config flow that stages a tag (agent default,
+global default, a job) offers **neither** the effort step nor the window step for that tag: the
+candidate's own values win for the attempt. See docs/context-window.md.
 
 ## Where tags live
 
-`config.json`, top-level `tags` section: a `Record<name, { model, effort?, contextCap? }>`.
-Hot-reloadable like every object section; edits go through `setTag`/`deleteTag`
+`config.json`, top-level `tags` section: a `Record<name, { route, fallbackToGlobalDefault? }>`.
+The server still reads the old `{ model, effort?, contextCap? }` shape for migration, but all new app
+writes use `route`. Hot-reloadable like every object section; edits go through `setTag`/`deleteTag`
 (`src/core/config-edit.ts`), so `/config history|diff|rollback` covers them for free.
+
+Deleting a tag removes only its definition. Existing references in sessions, agent config, cron jobs
+and agent files stay untouched and resolve through `Default` until the name is recreated.
 
 The model picker carries tags as synthetic entries under a single `Tags` group
 (`syncFromConfig` in `src/channels/model-picker.ts`), which is what every consumer reads: the
 app's model list, the chat `/model` menu, and the `unknownModel` flags on jobs/agents. The
-provider list gets a matching virtual `tags` provider row at the top.
+provider list gets a matching virtual `tags` provider row at the top. The app's Tags page lists
+names only; selecting one opens a route editor where candidates can be added, edited, removed and
+reordered. The global-default fallback is an explicit checkbox there.
 
 ## The app
 
-`/tag` is handled natively by the app (it opens the tags page / tag editor); the phone's
-Settings > Agents > Tags page is the CRUD surface. Wire frames: `tags.list`, `tags.upsert`,
-`tags.delete`, answered with `tags.result`. The server validates the pinned model against the
-picker catalog and the effort against the known levels.
+`/tag` is handled natively by the app (it opens the tags page / route editor); the phone's
+Settings > Providers > Tags page is the CRUD surface. Wire frames: `tags.list`, `tags.upsert`,
+`tags.delete`, answered with `tags.result`. A route upsert carries the complete ordered route and
+its `fallbackToGlobalDefault` flag. The server validates every concrete candidate against the
+picker catalog and its effort against that model's known levels.

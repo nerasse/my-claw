@@ -276,6 +276,22 @@ describe("tags", () => {
     const run = resolveRunModel(c, { agent: "main", sessionModel: "tag:Default" }, world());
     expect(run.apiModel).toBe("claude-opus-5");
   });
+
+  test("a deleted session tag runs the current Default model", () => {
+    const c = config();
+    const run = resolveRunModel(c, { agent: "main", sessionModel: "tag:gone" }, world());
+    expect(run.model).toBe("tag:gone");
+    expect(run.apiModel).toBe("claude-sonnet-5");
+    expect(run.source).toBe("session");
+  });
+
+  test("a deleted agent tag falls back to the global model", () => {
+    const c = config({ agents: { orchestrator: { llm: { defaultModel: "tag:gone" } } } });
+    const run = resolveRunModel(c, { agent: "main" }, world());
+    expect(run.model).toBe("tag:gone");
+    expect(run.apiModel).toBe("claude-sonnet-5");
+    expect(run.source).toBe("agent");
+  });
 });
 
 describe("no surface keeps its own chain", () => {

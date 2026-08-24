@@ -1,5 +1,5 @@
 import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig, TagConfig } from "../core/config.ts";
-import { tagNameOf } from "../core/config.ts";
+import { tagNameOf, tagRouteOf } from "../core/config.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { parseModelRef } from "./model-ref.ts";
 import { cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
@@ -77,32 +77,60 @@ export function findModel(config: LlmConfig, modelId: string): LlmModelConfig | 
 }
 
 /**
- * Expand a tag reference (`tag:<name>`, docs/tags.md) into the model id it aliases. The
- * reserved name `Default` is virtual and tracks the current default model. A tag may point at
- * another tag: the chain is followed to a real model, keeping the outer tag's own effort (the
- * most explicit pin wins). An unknown tag name passes through unchanged so it resolves like any
- * other stale id instead of throwing. A chain that loops (`tag:A` -> `tag:B` -> `tag:A`, or a
- * tag pinning itself) has no leaf and is refused loudly, the same way an unknown provider is:
- * the config is broken, and every run through it would silently carry a tag id as its model.
+ * Expand a tag reference (`tag:<name>`, docs/tags.md) into the model id it aliases. A deleted
+ * tag follows the virtual `Default` tag instead. The reserved name `Default` is virtual and tracks
+ * the current default model. New route candidates are concrete model ids only. The legacy single
+ * model shape may still contain a tag reference while old configs migrate.
+ * The resolver must never send a tag id to a provider as if it were a model id.
  */
 function expandTag(
   merged: LlmConfig,
   modelId: string,
   seen: ReadonlySet<string> = new Set(),
+  missingTagFallback?: string,
+  missingTagSeen = false,
 ): { tag?: TagConfig; modelId: string } {
   const name = tagNameOf(modelId);
   if (name === undefined) return { modelId };
+  const tag = name === "Default" ? { model: merged.defaultModel ?? merged.model ?? "" } : merged.tags?.[name];
+  const routeEntry = tag === undefined || name === "Default" ? undefined : tagRouteOf(tag)[0];
+  const routeTag = routeEntry ? { model: routeEntry.model, effort: routeEntry.effort, contextCap: routeEntry.contextCap } : undefined;
+  const fallbackName = missingTagFallback === undefined ? undefined : tagNameOf(missingTagFallback);
   if (seen.has(name)) {
+    if (
+      missingTagSeen &&
+      seen.has("Default") &&
+      missingTagFallback !== undefined &&
+      (fallbackName === undefined || !seen.has(fallbackName))
+    ) {
+      return expandTag(merged, missingTagFallback, seen, missingTagFallback, true);
+    }
     throw new Error(`Tag cycle: ${[...seen, name].join(" -> ")} (fix the tags in config.json)`);
   }
-  const tag = name === "Default" ? { model: merged.defaultModel ?? merged.model ?? "" } : merged.tags?.[name];
-  if (!tag) return { modelId };
-  if (tagNameOf(tag.model) === undefined) return { tag, modelId: tag.model };
-  const leaf = expandTag(merged, tag.model, new Set(seen).add(name));
+  if (!tag) {
+    // A missing tag first follows Default in the current resolution scope. If that scope's
+    // default is itself a missing tag, use the global default once, then let cycle detection do
+    // its job. This keeps an agent pin from making every run fail after its tag is deleted.
+    const useGlobalFallback =
+      seen.has("Default") &&
+      missingTagFallback !== undefined &&
+      (fallbackName === undefined || !seen.has(fallbackName));
+    const fallback = useGlobalFallback ? missingTagFallback : "tag:Default";
+    return expandTag(merged, fallback, new Set(seen).add(name), missingTagFallback, true);
+  }
+  const selected = routeTag ?? tag;
+  if (!selected?.model) return { modelId };
+  if (tagNameOf(selected.model) === undefined) return { tag: selected, modelId: selected.model };
+  const leaf = expandTag(merged, selected.model, new Set(seen).add(name), missingTagFallback, missingTagSeen);
   return {
-    tag: { model: leaf.modelId, effort: tag.effort ?? leaf.tag?.effort, contextCap: tag.contextCap ?? leaf.tag?.contextCap },
+    tag: { model: leaf.modelId, effort: selected.effort ?? leaf.tag?.effort, contextCap: selected.contextCap ?? leaf.tag?.contextCap },
     modelId: leaf.modelId,
   };
+}
+
+/** Resolve a model reference to the concrete model id it sends to a provider. */
+export function resolveTagModelId(config: LlmConfig, modelId: string, missingTagFallback?: string): string {
+  return expandTag(config, modelId, new Set(), missingTagFallback).modelId;
 }
 
 /**
@@ -114,7 +142,7 @@ function expandTag(
  */
 export function leafModelId(config: LlmConfig, modelId: string): string {
   try {
-    return expandTag(config, modelId).modelId;
+    return resolveTagModelId(config, modelId);
   } catch {
     return modelId;
   }
@@ -159,11 +187,12 @@ function resolveFromMerged(
   modelId?: string,
   effortOverride?: EffortLevel,
   scopeEffort?: EffortLevel,
+  missingTagFallback?: string,
 ): ResolvedLlmConfig {
   const rawModelId = modelId ?? merged.defaultModel ?? merged.model ?? "";
   // A tag reference keeps its identity on the resolved config (status, context cap, analytics)
   // while the API receives the tag's underlying model via `apiModel`.
-  const expanded = expandTag(merged, rawModelId);
+  const expanded = expandTag(merged, rawModelId, new Set(), missingTagFallback);
   const effectiveModelId = expanded.modelId;
   const tagEffort = expanded.tag?.effort;
 
@@ -300,8 +329,9 @@ export function resolveLlmConfigForMessage(
   hasImages: boolean,
   effortOverride?: EffortLevel,
   scopeEffort?: EffortLevel,
+  missingTagFallback?: string,
 ): ResolvedLlmConfig {
-  const resolved = resolveLlmConfig(config, modelId, effortOverride, scopeEffort);
+  const resolved = resolveFromMerged(config, modelId, effortOverride, scopeEffort, missingTagFallback);
   if (!hasImages || resolved.vision) return resolved;
 
   const fallbackId = config.visionFallback;
@@ -309,7 +339,7 @@ export function resolveLlmConfigForMessage(
   const fallbackModel = findModel(config, fallbackId);
   if (!fallbackModel?.vision) return resolved;
 
-  return resolveLlmConfig(config, fallbackId, effortOverride, scopeEffort);
+  return resolveFromMerged(config, fallbackId, effortOverride, scopeEffort, missingTagFallback);
 }
 
 /**
@@ -336,6 +366,7 @@ export function resolveAgentLlmConfig(
     modelId,
     undefined,
     scopeEffort ?? agentConfig?.effort,
+    globalConfig.defaultModel ?? globalConfig.model,
   );
 }
 
@@ -362,6 +393,7 @@ export function resolveLlmConfigForAgentMessage(
     hasImages,
     effortOverride,
     scopeEffort ?? agentConfig?.effort,
+    globalConfig.defaultModel ?? globalConfig.model,
   );
 }
 

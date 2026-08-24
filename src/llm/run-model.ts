@@ -3,15 +3,17 @@ import {
   agentConfigOf,
   resolveAgentLlm,
   tagNameOf,
+  tagRouteOf,
   type AgentLlmConfig,
   type AgentToolType,
   type EffortLevel,
   type LlmConfig,
   type LlmModelConfig,
   type MyClawConfig,
+  type TagRouteCandidate,
   type ResolvedLlmConfig,
 } from "../core/config.ts";
-import { findModel, resolveLlmConfigForAgentMessage } from "./resolver.ts";
+import { findModel, mergeAgentLlm, resolveLlmConfigForAgentMessage, resolveTagModelId } from "./resolver.ts";
 
 /**
  * Why a model cannot run, computed and never stored. See docs/model-resolution.md.
@@ -47,6 +49,14 @@ export interface AvailabilityWorld {
 /** Which step of the chain a run's model came from. */
 export type ModelSource = "session" | "agent" | "agent-file" | "global";
 
+export interface RunModelRoute {
+  tag: string;
+  candidates: TagRouteCandidate[];
+  fallbackToGlobalDefault: boolean;
+  selectedIndex: number;
+  unavailableIndices?: number[];
+}
+
 export interface RunModel extends ResolvedLlmConfig {
   /** Which step of the chain won: the only way a screen can explain itself. */
   source: ModelSource;
@@ -58,6 +68,9 @@ export interface RunModel extends ResolvedLlmConfig {
    * requests and a warning on each is a warning that gets ignored.
    */
   skipped: SkippedSource[];
+  /** The tag identity that selected a concrete route candidate, when applicable. */
+  requestedModel?: string;
+  route?: RunModelRoute;
 }
 
 export interface SkippedSource {
@@ -155,33 +168,42 @@ export function runnableModels(config: LlmConfig, world: AvailabilityWorld): Llm
 }
 
 /**
- * A tag is runnable when the model it aliases is. An unknown tag is left to the resolver.
- *
- * The aliases are read from both the top-level section and the llm view: the boot sync copies one
- * into the other, and a caller holding a config that predates the sync would otherwise see every
- * tag as an unknown id.
- */
-function tagTargetOf(config: MyClawConfig, modelId: string): string | undefined {
-  const name = tagNameOf(modelId);
-  if (name === undefined) return undefined;
-  if (name === "Default") return config.llm.defaultModel ?? config.llm.model;
-  return (config.tags ?? config.llm.tags)?.[name]?.model;
-}
-
-/**
- * Availability of what a chain step names, tag references followed. `undefined` when the id is
- * unknown, which the caller turns into UnknownModelError rather than a silent reroute.
+ * Availability of the concrete model a chain step names. Tag expansion is shared with the main
+ * resolver so a deleted tag follows the same Default fallback before availability is judged. The
+ * effective agent view matters here: an agent's own Default is part of the resolution scope, while
+ * the global default is the last fallback if that agent pin is the deleted tag itself.
  */
 function stepAvailability(
-  config: MyClawConfig,
   modelId: string,
   world: AvailabilityWorld,
+  effectiveLlm: LlmConfig,
+  globalDefault: string | undefined,
 ): Availability | undefined {
-  const target = tagTargetOf(config, modelId);
-  if (target === undefined) return availabilityOf(config.llm, modelId, world);
-  // A tag chain ends on a real model; a broken chain is the resolver's business (it throws on a
-  // cycle and passes an unknown name through).
-  return stepAvailability(config, target, world);
+  const leaf = resolveTagModelId(effectiveLlm, modelId, globalDefault);
+  return availabilityOf(effectiveLlm, leaf, world);
+}
+
+function directRouteOf(effectiveLlm: LlmConfig, modelId: string): RunModelRoute | undefined {
+  const name = tagNameOf(modelId);
+  if (name === undefined || name === "Default") return undefined;
+  const tag = effectiveLlm.tags?.[name];
+  if (!Array.isArray(tag?.route)) return undefined;
+  const candidates = tagRouteOf(tag).map((candidate) => ({ ...candidate }));
+  if (candidates.length === 0) return undefined;
+  if (candidates.some((candidate) => tagNameOf(candidate.model) !== undefined)) {
+    throw new UnknownModelError(`${modelId} contains a nested tag route`);
+  }
+  return {
+    tag: name,
+    candidates,
+    fallbackToGlobalDefault: tag?.fallbackToGlobalDefault === true,
+    selectedIndex: 0,
+  };
+}
+
+export interface RunModelOverride {
+  effort?: EffortLevel;
+  contextCap?: number;
 }
 
 export interface RunModelRequest {
@@ -219,7 +241,11 @@ export function resolveRunModel(
   world: AvailabilityWorld,
 ): RunModel {
   const agentLlm: AgentLlmConfig | undefined = resolveAgentLlm(config, request.agent, request.fileModel);
-  const globalDefault = config.llm.defaultModel ?? config.llm.model ?? "";
+  // The boot path mirrors root tags into llm.tags, but tests and hot-reload callers can hand this
+  // resolver a partial config. Keep availability and the actual resolver on the same tag view.
+  const globalLlm = config.tags === undefined ? config.llm : { ...config.llm, tags: config.tags };
+  const effectiveLlm = mergeAgentLlm(agentLlm, globalLlm);
+  const globalDefault = globalLlm.defaultModel ?? globalLlm.model ?? "";
 
   const steps: Step[] = [];
   if (request.forcedModel) {
@@ -242,7 +268,60 @@ export function resolveRunModel(
   const skipped: SkippedSource[] = [];
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i]!;
-    const availability = stepAvailability(config, step.model, world);
+    const route = directRouteOf(effectiveLlm, step.model);
+    if (route) {
+      let lastAvailability: Availability | undefined;
+      const unavailableIndices: number[] = [];
+      const unavailableEntries: Array<{ index: number; model: string; availability: Availability }> = [];
+      let selectedIndex: number | undefined;
+      for (let candidateIndex = 0; candidateIndex < route.candidates.length; candidateIndex++) {
+        const candidate = route.candidates[candidateIndex]!;
+        const availability = availabilityOf(effectiveLlm, candidate.model, world);
+        const judged = availability ?? { state: "stale" as const, provider: "unknown" };
+        if (judged.state !== "ready") {
+          lastAvailability = judged;
+          unavailableIndices.push(candidateIndex);
+          unavailableEntries.push({ index: candidateIndex, model: candidate.model, availability: judged });
+        } else if (selectedIndex === undefined) {
+          selectedIndex = candidateIndex;
+        }
+      }
+      const reportBefore = selectedIndex ?? route.candidates.length;
+      for (const entry of unavailableEntries) {
+        if (entry.index >= reportBefore) continue;
+        skipped.push({
+          source: step.source,
+          model: entry.model,
+          availability: entry.availability,
+          origin: `tags.${route.tag}.route[${entry.index}]`,
+        });
+      }
+      if (selectedIndex !== undefined) {
+        const candidate = route.candidates[selectedIndex]!;
+        return build(
+          request,
+          { ...step, model: candidate.model, origin: `tags.${route.tag}.route[${selectedIndex}]` },
+          agentLlm,
+          skipped,
+          globalLlm,
+          { ...route, selectedIndex, ...(unavailableIndices.length > 0 ? { unavailableIndices } : {}) },
+          step.model,
+        );
+      }
+      if (route.fallbackToGlobalDefault) {
+        // Skip any lower-priority agent/file pin: this flag means the global default, not the
+        // next source in the normal inheritance chain.
+        if (i < steps.length - 1) {
+          i = steps.length - 2;
+          continue;
+        }
+      }
+      if (lastAvailability) {
+        throw new NoRunnableModelError(step.model, lastAvailability, `tags.${route.tag}.route`);
+      }
+      throw new UnknownModelError(step.model);
+    }
+    const availability = stepAvailability(step.model, world, effectiveLlm, globalDefault);
     if (availability === undefined) throw new UnknownModelError(step.model);
     if (availability.state !== "ready") {
       const last = i === steps.length - 1;
@@ -251,7 +330,7 @@ export function resolveRunModel(
       skipped.push({ source: step.source, model: step.model, availability, origin: step.origin });
       continue;
     }
-    return build(config, request, step, agentLlm, skipped);
+    return build(request, step, agentLlm, skipped, globalLlm);
   }
   // No step at all: no session pick, no pin, no global default.
   throw new UnknownModelError("");
@@ -297,18 +376,21 @@ export function tryResolveRunModel(
 }
 
 function build(
-  config: MyClawConfig,
   request: RunModelRequest,
   step: Step,
   agentLlm: AgentLlmConfig | undefined,
   skipped: SkippedSource[],
+  globalLlm: LlmConfig,
+  route?: RunModelRoute,
+  requestedModel?: string,
 ): RunModel {
+  const routeCandidate = route?.candidates[route.selectedIndex];
   const resolved = resolveLlmConfigForAgentMessage(
-    config.llm,
+    globalLlm,
     agentLlm,
     step.model,
     request.hasImages === true,
-    request.sessionEffort,
+    request.sessionEffort ?? routeCandidate?.effort,
     request.sessionScopeEffort,
   );
   // The vision reroute happens inside the resolver, so the displaced model is whatever the step
@@ -316,9 +398,12 @@ function build(
   const rerouted = resolved.model !== step.model ? step.model : undefined;
   return {
     ...resolved,
+    ...(routeCandidate?.contextCap !== undefined ? { contextCapOverride: routeCandidate.contextCap } : {}),
     source: step.source,
     ...(rerouted ? { reroutedFrom: rerouted } : {}),
     skipped,
+    ...(requestedModel ? { requestedModel } : {}),
+    ...(route ? { route } : {}),
   };
 }
 

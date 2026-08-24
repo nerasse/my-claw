@@ -71,7 +71,7 @@ import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
-import { effectiveEffort, EFFORT_LEVELS } from "./llm/resolver.ts";
+import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
@@ -131,6 +131,7 @@ import { promptSideChat, sweepSpilledToolOutput } from "./agent/context-pruning.
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { tagRouteOf } from "./core/config.ts";
 import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
 import { referenceWithRoute, routesFor, sortRoutes } from "./channels/route-menu.ts";
 import { availabilityOf, describe as describeAvailability, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
@@ -797,7 +798,10 @@ async function main() {
         { agent: "main", ...(session?.modelOverride ? { sessionModel: session.modelOverride } : {}) },
         availabilityWorld(),
       );
-      const model = run?.model ?? chatModel(config, session?.modelOverride);
+      const resolvedModel = run?.model ?? chatModel(config, session?.modelOverride);
+      const model = run && tagNameOf(resolvedModel) !== undefined && !modelPicker.knows(resolvedModel)
+        ? run.apiModel ?? resolvedModel
+        : resolvedModel;
       const effort = effectiveEffort(config.llm, model, session?.effortOverride, resolveAgentLlm(config, "main")?.effort);
       const levels = modelPicker.effortLevelsFor(model);
       // The app builds its own ceiling list from these three numbers, the same way the picker
@@ -1024,7 +1028,11 @@ async function main() {
     const agentModelOf = (key: string): string => {
       try {
         const file = agentRegistry.get(key);
-        return resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeFor(key), file?.meta.model), config.llm).model ?? "";
+        const resolved = resolveAgentLlmConfig(resolveAgentLlm(config, toolTypeFor(key), file?.meta.model), config.llm);
+        const model = resolved.model ?? "";
+        // A deleted tag is still the stored identity, but it is no longer a picker entry. Show the
+        // concrete Default model on the settings surface so the row describes what will run.
+        return model && tagNameOf(model) !== undefined && !modelPicker.knows(model) ? resolved.apiModel ?? model : model;
       } catch {
         // A removed provider must not take the whole page down: the row shows an empty model.
         return "";
@@ -1032,6 +1040,10 @@ async function main() {
     };
     const providerCountOf = (providerKey: string): number =>
       modelPicker.options().filter((m) => (m.provider ?? config.llm.defaultProvider) === providerKey).length;
+    // Any tag reference remains a valid model reference even after its definition is deleted:
+    // resolution falls back to Default and recreating the name reactivates it.
+    const isTagReference = (modelId: string): boolean => tagNameOf(modelId) !== undefined;
+    const modelReferenceKnown = (modelId: string): boolean => modelPicker.knows(modelId) || isTagReference(modelId);
 
     /** The two agents that exist without a file. Spawnable agents come from the registry. */
     const AGENT_ROLES = ["orchestrator", "cron"] as const;
@@ -1195,7 +1207,8 @@ async function main() {
      * was refused on the very models that publish it, the fallback list starting at `low`.
      */
     const assertEffortOffered = (modelId: string, level: string): void => {
-      const levels = modelPicker.effortLevelsFor(modelId);
+      const concreteModel = tagNameOf(modelId) === undefined ? modelId : leafModelId(config.llm, modelId);
+      const levels = modelPicker.effortLevelsFor(concreteModel);
       if (levels.length === 0) throw new Error(`effort has no effect on ${modelId}`);
       if (!levels.includes(level as EffortLevel)) {
         throw new Error(`invalid effort level for ${modelId}: ${level} (offered: ${levels.join(", ")})`);
@@ -1204,7 +1217,7 @@ async function main() {
     myClawApp.onAgentsController({
       get: () => agentsConfigSnapshot(),
       setModel: async (agent, modelId, effort) => {
-        if (!modelPicker.knows(modelId)) throw new Error(`unknown model: ${modelId}`);
+        if (!modelReferenceKnown(modelId)) throw new Error(`unknown model: ${modelId}`);
         // A tag id must not pin a provider: the tag resolves through config.tags and its model
         // carries its own provider. The "tags" provider key exists only in the UI (docs/tags.md).
         const provider = tagNameOf(modelId) !== undefined ? undefined : modelPicker.providerFor(modelId);
@@ -1325,12 +1338,22 @@ async function main() {
       type: "tags.result",
       tags: [
         { name: "Default", model: config.llm.defaultModel ?? config.llm.model ?? "" },
-        ...Object.entries(config.tags ?? {}).map(([name, tag]) => ({
-          name,
-          model: tag.model,
-          ...(tag.effort ? { effort: tag.effort } : {}),
-          ...(tag.contextCap !== undefined ? { contextCap: tag.contextCap } : {}),
-        })),
+        ...Object.entries(config.tags ?? {}).map(([name, tag]) => {
+          const route = tagRouteOf(tag);
+          const first = route[0];
+          return {
+            name,
+            model: first?.model ?? "",
+            ...(first?.effort ? { effort: first.effort } : {}),
+            ...(first?.contextCap !== undefined ? { contextCap: first.contextCap } : {}),
+            route: route.map((candidate) => ({
+              model: candidate.model,
+              ...(candidate.effort ? { effort: candidate.effort } : {}),
+              ...(candidate.contextCap !== undefined ? { contextCap: candidate.contextCap } : {}),
+            })),
+            ...(tag.fallbackToGlobalDefault ? { fallbackToGlobalDefault: true } : {}),
+          };
+        }),
       ],
     });
     const writeTagsConfig = async (note: string): Promise<MyClawAppTagsResult> => {
@@ -1342,9 +1365,17 @@ async function main() {
     myClawApp.onTagsController({
       list: () => tagsSnapshot(),
       upsert: async (fields) => {
-        if (!modelPicker.knows(fields.model)) throw new Error(`unknown model: ${fields.model}`);
-        if (fields.effort) assertEffortOffered(fields.model, fields.effort);
-        const result = await setTag(fields.name, fields);
+        const route = (fields.route ?? (fields.model ? [{ model: fields.model, ...(fields.effort ? { effort: fields.effort } : {}), ...(fields.contextCap !== undefined ? { contextCap: fields.contextCap } : {}) }] : [])).map((candidate) => ({
+          model: candidate.model,
+          ...(candidate.effort ? { effort: candidate.effort as EffortLevel } : {}),
+          ...(candidate.contextCap !== undefined ? { contextCap: candidate.contextCap } : {}),
+        }));
+        if (route.length === 0) throw new Error("tag route must contain at least one model");
+        for (const candidate of route) {
+          if (!modelReferenceKnown(candidate.model)) throw new Error(`unknown model: ${candidate.model}`);
+          if (candidate.effort) assertEffortOffered(candidate.model, candidate.effort);
+        }
+        const result = await setTag(fields.name, { ...fields, route });
         if (!result.ok) throw new Error(result.error);
         return writeTagsConfig(`tag ${fields.name}`);
       },
@@ -1805,7 +1836,7 @@ async function main() {
             lastStatus: job.lastStatus,
             lastError: job.lastError,
             createdAt: job.createdAt,
-            unknownModel: job.model !== undefined && !models.has(job.model),
+            unknownModel: job.model !== undefined && !models.has(job.model) && !isTagReference(job.model),
             unknownWorkspace: job.workspace !== undefined && !workspaces.has(job.workspace),
             unknownSkills: (job.skills ?? []).filter((name) => name !== "*" && !skills.has(name)),
             unknownMcp: (job.mcp ?? []).filter((name) => name !== "*" && !mcp.has(name)),

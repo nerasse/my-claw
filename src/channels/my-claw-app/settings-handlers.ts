@@ -331,8 +331,8 @@ export async function handleTagsUpsert(
     await d.refuse(ws, "tags", "tags unavailable");
     return;
   }
-  if (!frame.name || !frame.model) {
-    await d.refuse(ws, "tags", "invalid tag name or model", { name: frame.name, model: frame.model });
+  if (!frame.name || (!frame.model && (!frame.route || frame.route.length === 0))) {
+    await d.refuse(ws, "tags", "invalid tag name or route", { name: frame.name, model: frame.model });
     return;
   }
   try {

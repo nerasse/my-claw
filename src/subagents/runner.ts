@@ -515,7 +515,7 @@ export class SubAgentRunner {
     // Record which model this sub-agent runs on (surfaced by list/status); the engine uses the
     // fully-resolved config below so the agent's provider (baseUrl/apiKey/headers) is honored,
     // not just the model id round-tripped through modelOverride.
-    session.modelOverride = resolved.model;
+    session.modelOverride = resolved.requestedModel ?? resolved.model;
 
     // The engine is always the home OpenAI-compatible loop now. Same AgentBackend contract.
     const bridge: AgentBackend = new AgentBridge(

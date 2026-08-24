@@ -19,5 +19,5 @@ export function chatModel(config: MyClawConfig, sessionModel: string | undefined
     { agent, ...(sessionModel ? { sessionModel } : {}) },
     availabilityWorld(),
   );
-  return run?.model ?? sessionModel ?? config.llm.defaultModel ?? config.llm.model ?? "";
+  return run?.requestedModel ?? run?.model ?? sessionModel ?? config.llm.defaultModel ?? config.llm.model ?? "";
 }

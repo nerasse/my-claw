@@ -245,17 +245,34 @@ export interface LlmModelConfig {
   tags?: Record<string, TagConfig>;
 }
 
-/**
- * A tag aliases a provider/model/effort/context combo under a name. Configs (agent pins, cron
- * jobs, session overrides) reference it as `tag:<name>`; when the underlying model changes
- * version the tag is updated once and every config follows. The name `Default` is reserved for
- * a virtual tag that always points at the current default model (never stored). Resolved in
- * `src/llm/resolver.ts`, applied to the context cap in `src/llm/context-window.ts`.
- */
-export interface TagConfig {
+/** One concrete candidate in a tag route. Nested tag references are deliberately not allowed. */
+export interface TagRouteCandidate {
   model: string;
   effort?: EffortLevel;
   contextCap?: number;
+}
+
+/**
+ * A tag names an ordered route of concrete model candidates. Configs (agent pins, cron jobs,
+ * session overrides) reference it as `tag:<name>`; the first candidate is tried first and later
+ * candidates are used only for eligible provider failures. `Default` is a virtual tag that points
+ * at the current default model and is never stored. The legacy single-model fields remain readable
+ * so an existing config upgrades safely on its next save.
+ */
+export interface TagConfig {
+  route?: TagRouteCandidate[];
+  fallbackToGlobalDefault?: boolean;
+  /** Legacy shape, read-only compatibility for configs written before ordered routes. */
+  model?: string;
+  effort?: EffortLevel;
+  contextCap?: number;
+}
+
+/** Return the route stored by a tag, upgrading the legacy single-model shape in memory. */
+export function tagRouteOf(tag: TagConfig | undefined): TagRouteCandidate[] {
+  if (!tag) return [];
+  if (Array.isArray(tag.route)) return tag.route.filter((entry) => Boolean(entry?.model));
+  return tag.model ? [{ model: tag.model, ...(tag.effort ? { effort: tag.effort } : {}), ...(tag.contextCap !== undefined ? { contextCap: tag.contextCap } : {}) }] : [];
 }
 
 export const TAG_REF_PREFIX = "tag:";
@@ -302,6 +319,8 @@ export interface ResolvedLlmConfig {
     context?: number;
     output?: number;
   };
+  /** Per-run route candidate cap, overridden only by an explicit session context choice. */
+  contextCapOverride?: number;
   fallbackModel?: string;
   // Resolved effort to apply for this run. Only set when it should actually be sent
   // (anthropic and codex always; openai-compatible only when the model opts in via supportsEffort).
@@ -482,8 +501,8 @@ export interface MyClawConfig {
    */
   workspacePrompts?: Record<string, WorkspacePromptPolicy>;
   /**
-   * Named model aliases: each tag pins a provider/model/effort/context combo under a name and
-   * configs reference it as `tag:<name>`. Hot-reloadable; see docs/tags.md.
+   * Named model routes: each tag owns an ordered list of concrete model/effort/context candidates
+   * and configs reference it as `tag:<name>`. Hot-reloadable; see docs/tags.md.
    */
   tags?: Record<string, TagConfig>;
   cron?: CronConfig;

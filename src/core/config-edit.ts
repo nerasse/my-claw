@@ -1,6 +1,6 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, tagNameOf, type EffortLevel } from "./config.ts";
+import { CONFIG_PATH, tagNameOf, type EffortLevel, type TagRouteCandidate } from "./config.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
@@ -116,27 +116,40 @@ export async function setAgentContextCap(agent: string, cap: number | undefined)
 }
 
 /**
- * Creates or replaces a tag: a named alias for a provider/model/effort/context combo that
- * configs reference as `tag:<name>` (docs/tags.md). The reserved name `Default` is virtual and
- * must not be written. An emptied tags section is removed so the file does not carry a
- * deliberate, meaningless setting. A write that would close a tag reference loop (a tag pinning
- * itself, or a chain that circles back to it) is refused: the resolver has no leaf to expand,
- * so every run through the tag would fail.
+ * Creates or replaces a tag route that configs reference as `tag:<name>` (docs/tags.md). The
+ * reserved name `Default` is virtual and must not be written. New routes contain concrete models
+ * only; an emptied tags section is removed so the file does not carry a meaningless setting.
  */
 export async function setTag(
   name: string,
-  value: { model: string; effort?: string; contextCap?: number },
+  value: {
+    model?: string;
+    effort?: string;
+    contextCap?: number;
+    route?: TagRouteCandidate[];
+    fallbackToGlobalDefault?: boolean;
+  },
 ): Promise<ConfigEditResult> {
   if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
   const read = await readConfigFile();
   if (!read.ok) return read;
 
-  if (tagReferenceWouldCycle(read.data, name, value.model)) {
+  const route = value.route ?? (value.model ? [{ model: value.model, ...(value.effort ? { effort: value.effort as EffortLevel } : {}), ...(value.contextCap !== undefined ? { contextCap: value.contextCap } : {}) }] : []);
+  if (
+    route.length === 0 ||
+    (value.route && route.some((candidate) => !candidate.model || tagNameOf(candidate.model) !== undefined)) ||
+    route.some((candidate) => candidate.contextCap !== undefined && (!Number.isFinite(candidate.contextCap) || candidate.contextCap <= 0))
+  ) {
+    return { ok: false, error: "Une route doit contenir au moins un modèle concret, sans tag imbriqué, avec des caps positifs." };
+  }
+  if (!value.route && value.model && tagReferenceWouldCycle(read.data, name, value.model)) {
     return { ok: false, error: `Le modèle « ${value.model} » refermerait une boucle de tags (le résolveur ne peut pas l'étendre).` };
   }
 
   const tags = objectAt(read.data, "tags");
-  tags[name] = { model: value.model, ...(value.effort ? { effort: value.effort } : {}), ...(value.contextCap ? { contextCap: value.contextCap } : {}) };
+  tags[name] = value.route
+    ? { route, ...(value.fallbackToGlobalDefault ? { fallbackToGlobalDefault: true } : {}) }
+    : { model: route[0]!.model, ...(route[0]!.effort ? { effort: route[0]!.effort } : {}), ...(route[0]!.contextCap !== undefined ? { contextCap: route[0]!.contextCap } : {}) };
 
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant tag ${name}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
@@ -155,7 +168,11 @@ function tagReferenceWouldCycle(data: Record<string, unknown>, name: string, mod
     if (ref === undefined) return false;
     if (seen.has(ref)) return true;
     seen.add(ref);
-    const next = ref === "Default" ? ((llm?.defaultModel ?? llm?.model) as string | undefined) : tags[ref]?.model;
+    // Missing references are valid at runtime: they follow the virtual Default tag. The cycle
+    // check must follow the same edge, or deleting a tag could turn an otherwise valid update
+    // into a Default -> missing -> Default loop that only fails on the first run.
+    const defaultModel = (llm?.defaultModel ?? llm?.model) as string | undefined;
+    const next = ref === "Default" ? defaultModel : tags[ref]?.model ?? defaultModel;
     if (!next) return false;
     current = next;
   }

@@ -18,7 +18,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
-import { resolveRunModel } from "../llm/run-model.ts";
+import { resolveRunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
@@ -222,8 +222,9 @@ export class AgentBridge implements AgentBackend {
     session: SessionData,
     signal?: AbortSignal,
     modelId?: string,
+    modelOverride?: RunModelOverride,
   ): Promise<string> {
-    return this.handle(message, session, undefined, undefined, signal, undefined, modelId, undefined, undefined);
+    return this.handle(message, session, undefined, undefined, signal, undefined, modelId, undefined, undefined, modelOverride);
   }
 
   async handleMessageStreaming(
@@ -236,8 +237,9 @@ export class AgentBridge implements AgentBackend {
     modelId?: string,
     reasoning?: ReasoningSink,
     onToolStart?: ToolStartCallback,
+    modelOverride?: RunModelOverride,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning, onToolStart);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning, onToolStart, modelOverride);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -254,6 +256,7 @@ export class AgentBridge implements AgentBackend {
     modelId?: string,
     reasoningSink?: ReasoningSink,
     onToolStart?: ToolStartCallback,
+    modelOverride?: RunModelOverride,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -276,13 +279,15 @@ export class AgentBridge implements AgentBackend {
         ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
         ...(modelId ? { forcedModel: modelId } : {}),
         ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
-        ...(session.effortOverride ? { sessionEffort: session.effortOverride } : {}),
+        ...((session.effortOverride ?? modelOverride?.effort) ? { sessionEffort: session.effortOverride ?? modelOverride?.effort } : {}),
         ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
         hasImages: message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
       },
       availabilityWorld(),
     );
-    const llmConfig = this.llmOverride ?? runModel!;
+    const llmConfig = this.llmOverride ?? (modelOverride?.contextCap !== undefined
+      ? { ...runModel!, contextCapOverride: modelOverride.contextCap }
+      : runModel!);
     // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
     // orchestrator's run to a single notice even though it resolves here as well.
     if (runModel) announceModelFallback(runModel, message, agentToolType);
@@ -1138,6 +1143,7 @@ export class AgentBridge implements AgentBackend {
       baseUrl: llmConfig.baseUrl,
       sessionOverride: session.contextOverride,
       agent,
+      ...(llmConfig.contextCapOverride !== undefined ? { capOverride: llmConfig.contextCapOverride } : {}),
     });
   }
 

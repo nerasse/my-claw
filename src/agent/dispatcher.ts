@@ -5,7 +5,7 @@ import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, Too
 import { AgentBridge } from "./bridge.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
-import { resolveRunModel, type RunModel } from "../llm/run-model.ts";
+import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { withoutEndpoint } from "../llm/model-ref.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -19,21 +19,20 @@ import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 // rate limited) and network/transient errors — is reroutable. Other 4xx are request-specific
 // (a malformed request, a bad key, a policy refusal): rerouting would mask a config mistake,
 // exactly like the retry loop refuses to count them toward the circuit breaker.
-const OUTAGE_STATUSES = new Set([402, 429]);
+const OUTAGE_STATUSES = new Set([402, 408, 425, 429, 500, 502, 503, 504, 529]);
 const OUTAGE_TEXT = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|UND_ERR_|fetch failed|overloaded|rate limit|quota|credit|balance|subscription/i;
 
 function isOutageClass(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;
+  const message = String((err as Error | undefined)?.message ?? err ?? "");
   if (typeof status === "number") {
-    if (OUTAGE_STATUSES.has(status)) return true;
-    if (status >= 500 && status < 600) return true;
+    if (OUTAGE_STATUSES.has(status) || (status >= 500 && status < 600)) return true;
+    if (status === 401) return true;
+    if (status === 403) return /auth|unauthori[sz]ed|credential|api[- ]?key|permission|forbidden/i.test(message);
+    if (status === 404) return /model|endpoint|no endpoints|not found/i.test(message);
     return false;
   }
-  const message = String((err as Error | undefined)?.message ?? err ?? "");
-  // The circuit breaker is global state: when it is open every provider is blocked, so a
-  // reroute to the default would fail with the same message and swallow the real one.
-  if (/\bLLM circuit breaker open\b/.test(message)) return false;
-  return OUTAGE_TEXT.test(message);
+  return /LLM circuit breaker open|circuit breaker is open|timeout|timed out|stalled|stream.*closed|empty (?:response|completion)|no (?:content|output)|auth|unauthori[sz]ed|credential|api[- ]?key|no endpoints|model.*not found/i.test(message) || OUTAGE_TEXT.test(message);
 }
 
 /**
@@ -71,7 +70,7 @@ export class BackendDispatcher implements AgentBackend {
     message: UnifiedMessage,
     session: SessionData,
     forcedModelId?: string,
-  ): { resolved: RunModel; defaultResolved: ResolvedLlmConfig } {
+  ): { resolved: RunModel; defaultResolved: ResolvedLlmConfig; globalDefaultResolved: ResolvedLlmConfig } {
     const hasImages = message.attachments.some((a) => a.type === "image" && Boolean(a.path));
     const agent = message.platform === "cron" ? "cron" : "main";
     const agentLlm = resolveAgentLlm(this.config, agent);
@@ -80,15 +79,16 @@ export class BackendDispatcher implements AgentBackend {
     // *provider* throws on every message. Both self-heal to the default model. A forced
     // reroute id comes from the resolver, so it is always real.
     const models = this.config.llm.models;
-    // A tag reference stays live even though it is absent from `llm.models`: it resolves
-    // through config.tags, which the llm view carries (see docs/tags.md). Only a tag that no
-    // longer exists self-heals like a removed model.
+    // A tag reference stays live even though it is absent from `llm.models`: it resolves through
+    // config.tags, which the llm view carries (see docs/tags.md). A deleted tag is deliberately
+    // kept as a live reference too: the resolver falls it back to the virtual Default tag, and
+    // recreating the same name later reactivates the alias without rewriting the session.
     // The pin is a route on top of a model, not a model: judge the model under it, or every
     // pinned override reads as removed and is wiped on the first message (docs/model-identity.md).
     const pick = withoutEndpoint(session.modelOverride ?? "");
     const tagName = tagNameOf(pick);
-    const liveTag = tagName !== undefined && (tagName === "Default" || this.config.tags?.[tagName] !== undefined);
-    if (!forcedModelId && session.modelOverride && models?.length && !liveTag && !models.some((m) => m.id === pick)) {
+    const tagReference = tagName !== undefined;
+    if (!forcedModelId && session.modelOverride && models?.length && !tagReference && !models.some((m) => m.id === pick)) {
       void log("warn", "session modelOverride no longer in config; falling back to default", {
         sessionId: session.id,
         modelOverride: session.modelOverride,
@@ -118,10 +118,13 @@ export class BackendDispatcher implements AgentBackend {
       delete session.modelOverride;
       resolved = resolveRunModel(this.config, { ...request, sessionModel: undefined }, availabilityWorld());
     }
-    // Once per run: the several resolutions of one run share the announcement.
-    announceModelFallback(resolved, message, agent);
+    // Route preflight notices are emitted by runWithFallback with the route transition. The
+    // legacy source-chain notice remains here, where the run-level dedupe can cover bridge re-resolution.
+    const hasRoutePreflight = Boolean(resolved.route) || resolved.skipped.some((entry) => entry.origin.startsWith("tags.") && entry.origin.includes(".route["));
+    if (!hasRoutePreflight) announceModelFallback(resolved, message, agent);
     const defaultResolved = resolveLlmConfigForAgentMessage(this.config.llm, agentLlm, undefined, hasImages);
-    return { resolved, defaultResolved };
+    const globalDefaultResolved = resolveLlmConfigForAgentMessage(this.config.llm, undefined, undefined, hasImages);
+    return { resolved, defaultResolved, globalDefaultResolved };
   }
 
   // The engine is picked from the model that will actually run, so the agent's configured
@@ -155,7 +158,7 @@ export class BackendDispatcher implements AgentBackend {
   }
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
-    return this.runWithFallback(message, session, (backend, modelId) => backend.handleMessage(message, session, signal, modelId));
+    return this.runWithFallback(message, session, (backend, modelId, modelOverride) => backend.handleMessage(message, session, signal, modelId, modelOverride));
   }
 
   handleMessageStreaming(
@@ -169,20 +172,29 @@ export class BackendDispatcher implements AgentBackend {
     reasoning?: ReasoningSink,
     onToolStart?: ToolStartCallback,
   ): Promise<string> {
-    // A reroute replays the run from scratch, which would duplicate whatever tokens were
-    // already delivered; the fallback only ever fires before the first token.
-    let tokensDelivered = false;
+    // A reroute replays the run from scratch, which would duplicate text, reasoning or a tool
+    // invocation already delivered; the fallback only fires before any of those starts.
+    let outputStarted = false;
     const gate = async (token: string): Promise<void> => {
-      tokensDelivered = true;
+      outputStarted = true;
       await onToken(token);
     };
+    const guardedReasoning = reasoning
+      ? {
+          onText: async (delta: string): Promise<void> => { outputStarted = true; await reasoning.onText?.(delta); },
+          onTokens: async (estimated: number): Promise<void> => { outputStarted = true; await reasoning.onTokens?.(estimated); },
+        }
+      : undefined;
+    const guardedToolStart = onToolStart
+      ? async (tool: Parameters<ToolStartCallback>[0]): Promise<void> => { outputStarted = true; await onToolStart(tool); }
+      : undefined;
     return this.runWithFallback(
       message,
       session,
-      (backend, resolvedModelId) =>
-        backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, reasoning, onToolStart),
+      (backend, resolvedModelId, modelOverride) =>
+        backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, guardedReasoning, guardedToolStart, modelOverride),
       {
-        anyTokensDelivered: () => tokensDelivered,
+        anyOutputStarted: () => outputStarted,
         // The streaming channel shows the note live; the returned text (persisted as the
         // reply) carries it too, so the live bubble and the history stay in agreement.
         onFallbackNote: async (note) => onToken(`${note}\n\n`),
@@ -202,34 +214,142 @@ export class BackendDispatcher implements AgentBackend {
   private async runWithFallback(
     message: UnifiedMessage,
     session: SessionData,
-    run: (backend: AgentBackend, modelId?: string) => Promise<string>,
-    options: { anyTokensDelivered?: () => boolean; onFallbackNote?: (note: string) => Promise<void> } = {},
+    run: (backend: AgentBackend, modelId?: string, modelOverride?: RunModelOverride) => Promise<string>,
+    options: { anyOutputStarted?: () => boolean; onFallbackNote?: (note: string) => Promise<void> } = {},
   ): Promise<string> {
-    const { resolved, defaultResolved } = this.resolvePair(message, session);
-    try {
-      return await run(this.engineFor(resolved), undefined);
-    } catch (err) {
-      // The token check must run here, after the failure: it is only meaningful once the run
-      // has actually streamed. The provider/model guards are run-time constants per message.
-      if (
-        options.anyTokensDelivered?.() ||
-        !isOutageClass(err) ||
-        resolved.provider === defaultResolved.provider ||
-        resolved.model === defaultResolved.model
-      ) {
-        throw err;
+    const { resolved, defaultResolved, globalDefaultResolved } = this.resolvePair(message, session);
+    const notes: string[] = [];
+    const preflightRouteEntries = resolved.skipped.filter(entry => entry.origin.startsWith("tags.") && entry.origin.includes(".route["));
+    if (resolved.route || preflightRouteEntries.length > 0) {
+      const routeName = resolved.route?.tag ?? preflightRouteEntries[0]?.origin.split(".")[1] ?? "route";
+      for (const skipped of resolved.route
+        ? resolved.skipped.filter(entry => entry.origin.startsWith(`tags.${resolved.route!.tag}.route[`))
+        : preflightRouteEntries) {
+        const note = `[fallback] ${routeName}: ${skipped.model} was unavailable before the run (${skipped.availability.state}); using ${resolved.model} instead.`;
+        notes.push(note);
+        void log("warn", "model route preflight fallback", {
+          sessionId: session.id,
+          messageId: message.id,
+          requestedModel: resolved.requestedModel ?? `tag:${routeName}`,
+          failedModel: skipped.model,
+          targetModel: resolved.model,
+          reason: skipped.availability.state,
+        });
+        if (options.onFallbackNote) await options.onFallbackNote(note);
       }
-      void log("warn", "provider outage; rerouting the run to the default provider", {
-        sessionId: session.id,
-        failedModel: resolved.model,
-        failedProvider: resolved.provider,
-        reason: String(err),
-        targetModel: defaultResolved.model,
-      });
-      const note = `[fallback] ${resolved.model} via ${resolved.provider} is unavailable (${String((err as Error | undefined)?.message ?? err).slice(0, 200)}). This run used ${defaultResolved.model} instead; it returns to ${resolved.model} once the provider recovers.`;
-      if (options.onFallbackNote) await options.onFallbackNote(note);
-      const result = await run(this.engineFor(defaultResolved), defaultResolved.model);
-      return `${note}\n\n${result}`;
+    }
+    const attempted = new Set<string>();
+    const route = resolved.route;
+    let nextRouteIndex = route ? route.selectedIndex + 1 : Number.POSITIVE_INFINITY;
+    let currentModel = resolved.model;
+    let currentProvider = resolved.provider;
+
+    const candidateOverride = (candidate: { effort?: RunModelOverride["effort"]; contextCap?: number }): RunModelOverride | undefined => {
+      if (candidate.effort === undefined && candidate.contextCap === undefined) return undefined;
+      return {
+        ...(candidate.effort !== undefined ? { effort: candidate.effort } : {}),
+        ...(candidate.contextCap !== undefined ? { contextCap: candidate.contextCap } : {}),
+      };
+    };
+
+    const runCandidate = async (modelId: string | undefined, override: RunModelOverride | undefined, resolvedConfig: ResolvedLlmConfig): Promise<string> => {
+      if (modelId) attempted.add(modelId);
+      return run(this.engineFor(resolvedConfig), modelId, override);
+    };
+    const fail = (error: unknown): never => {
+      if (route && notes.length > 0 && !options.onFallbackNote) {
+        const message = String((error as Error | undefined)?.message ?? error);
+        const decorated = new Error(`${notes.join("\n\n")}\n\n${message}`);
+        if (typeof error === "object" && error !== null && "status" in error) {
+          (decorated as Error & { status?: unknown }).status = (error as { status?: unknown }).status;
+        }
+        throw decorated;
+      }
+      throw error;
+    };
+
+    let result: string;
+    try {
+      const firstCandidate = route?.candidates[route.selectedIndex];
+      result = await runCandidate(
+        route ? resolved.model : undefined,
+        route ? candidateOverride(firstCandidate ?? {}) : undefined,
+        resolved,
+      );
+      return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
+    } catch (firstError) {
+      let error: unknown = firstError;
+      while (true) {
+        if (options.anyOutputStarted?.() || !isOutageClass(error)) fail(error);
+
+        let nextModel: string | undefined;
+        let nextOverride: RunModelOverride | undefined;
+        let targetConfig: ResolvedLlmConfig = resolved;
+        let transitionLabel = "route candidate";
+
+        if (route) {
+          while (nextRouteIndex < route.candidates.length) {
+            const index = nextRouteIndex++;
+            const candidate = route.candidates[index]!;
+            if (route.unavailableIndices?.includes(index) || attempted.has(candidate.model)) continue;
+            nextModel = candidate.model;
+            nextOverride = candidateOverride(candidate);
+            try {
+              targetConfig = resolveLlmConfigForAgentMessage(
+                this.config.llm,
+                undefined,
+                candidate.model,
+                message.attachments.some((attachment) => attachment.type === "image" && Boolean(attachment.path)),
+                candidate.effort,
+              );
+            } catch {
+              targetConfig = resolved;
+            }
+            transitionLabel = `${route.tag} route candidate ${index + 1}`;
+            break;
+          }
+          if (!nextModel && route.fallbackToGlobalDefault && !attempted.has(globalDefaultResolved.apiModel ?? globalDefaultResolved.model)) {
+            nextModel = globalDefaultResolved.model;
+            targetConfig = globalDefaultResolved;
+            transitionLabel = `${route.tag} global default`;
+          }
+          if (!nextModel) fail(error);
+        } else {
+          if (resolved.provider === defaultResolved.provider || resolved.model === defaultResolved.model || attempted.has(defaultResolved.model)) fail(error);
+          nextModel = defaultResolved.model;
+          targetConfig = defaultResolved;
+          transitionLabel = "configured default";
+        }
+
+        const failedModel = currentModel;
+        const failedProvider = currentProvider;
+        const reason = String((error as Error | undefined)?.message ?? error).slice(0, 200);
+        const note = route
+          ? `[fallback] ${route.tag}: ${failedModel} via ${failedProvider ?? "provider"} failed (${reason}); using ${nextModel} (${transitionLabel}).`
+          : `[fallback] ${failedModel} via ${failedProvider ?? "provider"} is unavailable (${reason}). This run used ${nextModel} instead; it returns to ${failedModel} once the provider recovers.`;
+        notes.push(note);
+        void log("warn", "model route fallback", {
+          sessionId: session.id,
+          messageId: message.id,
+          requestedModel: resolved.requestedModel ?? resolved.model,
+          failedModel,
+          failedProvider,
+          targetModel: nextModel,
+          targetProvider: targetConfig.provider,
+          transition: transitionLabel,
+          reason,
+        });
+        if (options.onFallbackNote) await options.onFallbackNote(note);
+
+        try {
+          currentModel = nextModel!;
+          currentProvider = targetConfig.provider;
+          result = await runCandidate(nextModel, nextOverride, targetConfig);
+          return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
+        } catch (nextError) {
+          error = nextError;
+        }
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
+import type { RunModelOverride } from "../llm/run-model.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 
 export type TokenCallback = (token: string) => Promise<void>;
@@ -55,7 +56,7 @@ export interface AgentBackend {
   /** Speech-to-text output per recording, for channels that render it beside its own bubble. */
   transcriptsOf(messageId: string): Array<{ path: string; text: string }>;
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void;
-  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string): Promise<string>;
+  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string, modelOverride?: RunModelOverride): Promise<string>;
   handleMessageStreaming(
     message: UnifiedMessage,
     session: SessionData,
@@ -68,5 +69,6 @@ export interface AgentBackend {
     // this codebase.
     reasoning?: ReasoningSink,
     onToolStart?: ToolStartCallback,
+    modelOverride?: RunModelOverride,
   ): Promise<string>;
 }

@@ -152,6 +152,79 @@ test("an outage on a non-default provider reroutes the run once and never touche
 
 // A 4xx is not an outage: it is a deterministic refusal (auth, policy, bad request). Rerouting
 // would silently retry on a different model the owner never asked for, so it must surface as-is.
+test("an ordered tag route falls through candidates and preserves the tag reference", async () => {
+  const config = mixedConfig();
+  config.tags = {
+    Cheap: {
+      route: [
+        { model: "claude-sonnet-5", effort: "max", contextCap: 120000 },
+        { model: "mimo", effort: "high", contextCap: 100000 },
+      ],
+    },
+  };
+  const calls: Array<{ modelId?: string; override?: unknown }> = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string, override?: unknown) => {
+      calls.push({ modelId, override });
+      if (modelId === "claude-sonnet-5") throw outageError(503);
+      return `home:${modelId}`;
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+  const sess = session("s-route", "tag:Cheap");
+  const text = await dispatcher.handleMessage(msg("m-route"), sess);
+  assert.match(text, /Cheap: claude-sonnet-5/);
+  assert.match(text, /home:mimo/);
+  assert.deepEqual(calls.map(call => call.modelId), ["claude-sonnet-5", "mimo"]);
+  assert.deepEqual(calls[0]?.override, { effort: "max", contextCap: 120000 });
+  assert.equal(sess.modelOverride, "tag:Cheap");
+});
+
+test("an ordered route can explicitly fall back to the global default", async () => {
+  const config = mixedConfig();
+  config.tags = {
+    Cheap: {
+      route: [{ model: "claude-sonnet-5" }, { model: "claude-opus-5" }],
+      fallbackToGlobalDefault: true,
+    },
+  };
+  config.llm.models!.push({ id: "claude-opus-5", label: "Opus", provider: "anthropic" });
+  const calls: string[] = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push(modelId ?? "default");
+      if (modelId !== "mimo") throw outageError(503);
+      return "global";
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+  const text = await dispatcher.handleMessage(msg("m-global"), session("s-global", "tag:Cheap"));
+  assert.match(text, /claude-sonnet-5/);
+  assert.match(text, /claude-opus-5/);
+  assert.match(text, /using mimo \(Cheap global default\)/);
+  assert.match(text, /global$/);
+  assert.deepEqual(calls, ["claude-sonnet-5", "claude-opus-5", "mimo"]);
+});
+
+test("a route never replays after streaming output has started", async () => {
+  const config = mixedConfig();
+  config.tags = { Cheap: { route: [{ model: "claude-sonnet-5" }, { model: "mimo" }] } };
+  const calls: string[] = [];
+  const home = {
+    handleMessageStreaming: async (
+      _m: UnifiedMessage, _s: SessionData, onToken: (token: string) => Promise<void>,
+      _onTool?: unknown, _signal?: AbortSignal, _switch?: unknown, modelId?: string,
+    ) => {
+      calls.push(modelId ?? "default");
+      await onToken("partial");
+      throw outageError(503);
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+  await assert.rejects(() => dispatcher.handleMessageStreaming(msg("m-partial"), session("s-partial", "tag:Cheap"), async () => {}), /out of credits/);
+  assert.deepEqual(calls, ["claude-sonnet-5"]);
+});
+
 test("a 4xx refuses without rerouting", async () => {
   const config = mixedConfig();
   const calls: RunCall[] = [];
@@ -226,6 +299,15 @@ test("a stale anthropic pin falls back to the default model, and the engine foll
 // The self-heal above judges the reference against the catalogue, and no catalogue id carries a
 // route pin: a pinned override read as a removed model and was deleted on the first message, so
 // the route menus of every channel pinned a route that lasted exactly zero runs.
+test("a deleted tag survives the stale-override check and falls back at resolution time", async () => {
+  const home = { handleMessage: async () => "home" } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(mixedConfig(), new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+  const sess = session("s1", "tag:gone");
+
+  assert.equal(await dispatcher.handleMessage(msg("m1"), sess), "home");
+  assert.equal(sess.modelOverride, "tag:gone");
+});
+
 test("a pinned route survives the stale-override check", async () => {
   const calls: Array<string | undefined> = [];
   const home = {

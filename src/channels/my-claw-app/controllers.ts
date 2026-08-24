@@ -27,6 +27,7 @@ import type {
   MyClawAppStatusPayload,
   MyClawAppSubAgentEntry,
   MyClawAppTagsResult,
+  MyClawAppTagRouteCandidate,
   MyClawAppToolEntry,
   MyClawAppWorkspacesListResult,
 } from "./types.ts";
@@ -141,12 +142,11 @@ export interface MyClawAppAgentsController {
   fileDelete(agent: string): Promise<void>;
 }
 
-/** Tag CRUD (docs/tags.md): named aliases for a model/effort/context combo. The virtual
- *  `Default` tag is synthesized into the listing by the entry point. Every mutation answers
- *  with the fresh listing, never an optimistic echo. */
+/** Tag route CRUD (docs/tags.md). The virtual `Default` tag is synthesized into the listing by
+ * the entry point. Every mutation answers with the fresh listing, never an optimistic echo. */
 export interface MyClawAppTagsController {
   list(): MyClawAppTagsResult;
-  upsert(fields: { name: string; model: string; effort?: string; contextCap?: number }): Promise<MyClawAppTagsResult>;
+  upsert(fields: { name: string; model?: string; effort?: string; contextCap?: number; route?: MyClawAppTagRouteCandidate[]; fallbackToGlobalDefault?: boolean }): Promise<MyClawAppTagsResult>;
   delete(name: string): Promise<MyClawAppTagsResult>;
 }
 

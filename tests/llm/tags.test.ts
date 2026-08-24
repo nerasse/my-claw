@@ -1,12 +1,12 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { resolveLlmConfig, effectiveEffort } from "../../src/llm/resolver.ts";
+import { resolveAgentLlmConfig, resolveLlmConfig, effectiveEffort } from "../../src/llm/resolver.ts";
 import { resolveContextWindow } from "../../src/llm/context-window.ts";
 import { setTag, deleteTag } from "../../src/core/config-edit.ts";
-import { CONFIG_PATH, type EffortLevel, type LlmConfig, type MyClawConfig } from "../../src/core/config.ts";
-import { writeFile } from "node:fs/promises";
+import { CONFIG_PATH, type EffortLevel, type LlmConfig, type MyClawConfig, type TagRouteCandidate } from "../../src/core/config.ts";
+import { readFile, writeFile } from "node:fs/promises";
 
-function llmConfig(tags: Record<string, { model: string; effort?: EffortLevel; contextCap?: number }> = {}): LlmConfig {
+function llmConfig(tags: Record<string, { model?: string; effort?: EffortLevel; contextCap?: number; route?: TagRouteCandidate[]; fallbackToGlobalDefault?: boolean }> = {}): LlmConfig {
   return {
     defaultProvider: "anthropic",
     defaultModel: "claude-sonnet-4-5",
@@ -29,6 +29,36 @@ test("a tag reference resolves to the tag's model, keeping the tag id as the run
   assert.equal(resolved.provider, "anthropic");
   assert.equal(resolved.vision, true);
   assert.deepEqual(resolved.limit, { context: 320000 });
+});
+
+test("a route tag resolves its first concrete candidate with that candidate's pins", () => {
+  const config = llmConfig({ cheap: {
+    route: [
+      { model: "claude-opus-4-8", effort: "max", contextCap: 150000 },
+      { model: "claude-sonnet-4-5", effort: "high", contextCap: 100000 },
+    ],
+  }});
+  const resolved = resolveLlmConfig(config, "tag:cheap");
+  assert.equal(resolved.model, "tag:cheap");
+  assert.equal(resolved.apiModel, "claude-opus-4-8");
+  assert.equal(resolved.effort, "max");
+});
+
+test("a route tag's first candidate owns the context cap", () => {
+  const config = myClawConfig({ cheap: {
+    route: [
+      { model: "claude-opus-4-8", contextCap: 50000 },
+      { model: "claude-sonnet-4-5", contextCap: 100000 },
+    ],
+  }});
+  const window = resolveContextWindow({ model: "tag:cheap", config, declared: 320000, agent: "orchestrator" });
+  assert.equal(window.effective, 50000);
+});
+
+test("a route candidate cannot be a nested tag", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {} }, null, 2) + "\n", "utf-8");
+  const result = await setTag("cheap", { route: [{ model: "tag:other" }] });
+  assert.equal(result.ok, false);
 });
 
 test("the tag's effort pins the run between the session override and the scope", () => {
@@ -63,12 +93,48 @@ test("the virtual Default tag follows the current default model", () => {
   assert.equal(resolved.apiModel, "claude-sonnet-4-5");
 });
 
-test("an unknown tag name passes through like a stale model id instead of throwing", () => {
+test("a deleted tag falls back to the virtual Default tag without rewriting its identity", () => {
   const config = llmConfig({});
   const resolved = resolveLlmConfig(config, "tag:gone");
   assert.equal(resolved.model, "tag:gone");
-  assert.equal(resolved.apiModel, undefined);
+  assert.equal(resolved.apiModel, "claude-sonnet-4-5");
   assert.equal(resolved.provider, "anthropic");
+});
+
+test("a deleted tag follows a tag used as the current Default", () => {
+  const config = llmConfig({ preferred: { model: "claude-opus-4-8", effort: "high" } });
+  config.defaultModel = "tag:preferred";
+  const resolved = resolveLlmConfig(config, "tag:gone");
+  assert.equal(resolved.apiModel, "claude-opus-4-8");
+  assert.equal(resolved.effort, "high");
+});
+
+test("a deleted agent tag falls back to the global default instead of itself", () => {
+  const config = llmConfig({});
+  const resolved = resolveAgentLlmConfig({ defaultModel: "tag:gone" }, config);
+  assert.equal(resolved.model, "tag:gone");
+  assert.equal(resolved.apiModel, "claude-sonnet-4-5");
+});
+
+test("an existing agent tag whose target was deleted also reaches the global default", () => {
+  const config = llmConfig({ outer: { model: "tag:gone" } });
+  const resolved = resolveAgentLlmConfig({ defaultModel: "tag:outer" }, config);
+  assert.equal(resolved.model, "tag:outer");
+  assert.equal(resolved.apiModel, "claude-sonnet-4-5");
+});
+
+test("a missing global Default target still reports a cycle instead of recursing", () => {
+  const config = llmConfig({});
+  config.defaultModel = "tag:gone";
+  assert.throws(() => resolveLlmConfig(config, "tag:gone"), /Tag cycle/);
+});
+
+test("an existing outer tag keeps its pins when its target was deleted", () => {
+  const config = llmConfig({ outer: { model: "tag:gone", effort: "high" } });
+  const resolved = resolveLlmConfig(config, "tag:outer");
+  assert.equal(resolved.model, "tag:outer");
+  assert.equal(resolved.apiModel, "claude-sonnet-4-5");
+  assert.equal(resolved.effort, "high");
 });
 
 test("effectiveEffort reports a tag's pinned level as a tag choice", () => {
@@ -174,4 +240,22 @@ test("setTag still accepts a valid tag reference chain", async () => {
   await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {}, tags: { "opus-pinned": { model: "claude-opus-4-8" } } }, null, 2) + "\n", "utf-8");
   const result = await setTag("opus", { model: "tag:opus-pinned" });
   assert.equal(result.ok, true);
+});
+
+test("setTag stores an ordered route and its explicit global fallback", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "x" }, agents: {}, tags: {} }, null, 2) + "\n", "utf-8");
+  const result = await setTag("cheap", {
+    route: [{ model: "claude-opus-4-8", effort: "high", contextCap: 120000 }, { model: "claude-sonnet-4-5" }],
+    fallbackToGlobalDefault: true,
+  });
+  assert.equal(result.ok, true);
+  const stored = JSON.parse(await readFile(CONFIG_PATH, "utf-8")) as { tags: Record<string, { route: TagRouteCandidate[]; fallbackToGlobalDefault?: boolean }> };
+  assert.deepEqual(stored.tags.cheap?.route, [{ model: "claude-opus-4-8", effort: "high", contextCap: 120000 }, { model: "claude-sonnet-4-5" }]);
+  assert.equal(stored.tags.cheap?.fallbackToGlobalDefault, true);
+});
+
+test("setTag refuses a missing-reference cycle through Default", async () => {
+  await writeFile(CONFIG_PATH, JSON.stringify({ whitelist: [], blacklist: [], channels: {}, llm: { defaultModel: "tag:opus" }, agents: {}, tags: {} }, null, 2) + "\n", "utf-8");
+  const result = await setTag("opus", { model: "tag:gone" });
+  assert.equal(result.ok, false);
 });

@@ -30,9 +30,12 @@ the chat he is sitting in".
 
 Then, in order:
 
-1. **Tag expansion.** A `tag:<name>` id resolves through `config.tags` to a real model, keeping
-   the outermost effort pin. `tag:Default` means *the merged default* -- the agent's pin when it
-   has one, not the global default. A cycle is refused loudly.
+1. **Tag expansion.** A `tag:<name>` id selects the first concrete candidate in its ordered route.
+   That candidate supplies the API model, effort and context cap. `tag:Default` means *the merged
+   default* -- the agent's pin when it has one, not the global default. A missing tag follows
+   `tag:Default`; if an agent's own default is the missing tag, the resolver uses the global default
+   once rather than looping. The reference remains unchanged in config, so recreating the tag name
+   reactivates it. Nested tag candidates and cycles are refused loudly.
 2. **Provider, then backend.** The chosen model's `provider` decides which backend runs it:
    `claude-sdk` (Claude subscription), `codex` (ChatGPT subscription), or an OpenAI-compatible
    HTTP provider. The engine is picked from the *resolved* model, never from the default.
@@ -43,7 +46,9 @@ Three different things are called a fallback; they never mix:
 
 - `config.llm.visionFallback` -- image reroute, above.
 - `providers.<claude-sdk>.fallbackModel` -- handed to the Agent SDK for its own failover.
-- "falling back" in the chain above -- the next source down, which is not a failure path.
+- a tag route's next candidate -- an explicit ordered model failover;
+- a route's optional `fallbackToGlobalDefault` -- one final attempt on the global default;
+- falling back from an unavailable config source -- preflight resolution, not a runtime retry.
 
 ## One function, and the runtime calls it too
 
@@ -53,9 +58,11 @@ resolveRunModel(config, { agent, session, message? }): RunModel
 
 ```ts
 interface RunModel {
-  /** The id the user picked or inherited, tag reference included. Identity for status and analytics. */
+  /** The concrete candidate selected for this attempt. */
   model: string;
-  /** The real id sent to the API when `model` is a tag. */
+  /** The stable tag/session identity that requested the candidate, when a route is active. */
+  requestedModel?: string;
+  /** The real id sent to the API when a transport needs a separate wire id. */
   apiModel?: string;
   provider: string;
   backend: "claude-sdk" | "codex" | "openai";
@@ -64,6 +71,12 @@ interface RunModel {
   source: "session" | "agent" | "agent-file" | "global";
   /** Set when the vision reroute applied, naming the model that was displaced. */
   reroutedFrom?: string;
+  route?: {
+    tag: string;
+    candidates: Array<{ model: string; effort?: EffortLevel; contextCap?: number }>;
+    selectedIndex: number;
+    fallbackToGlobalDefault: boolean;
+  };
   availability: Availability;
 }
 ```
@@ -221,10 +234,29 @@ The self-heal in `src/agent/dispatcher.ts:92` covers only `session.modelOverride
 tag target and a cron job's model have no equivalent -- today's incident was an agent pin, and it
 failed on every message for two days.
 
+## Ordered route failures fall back, and say so in chat and the journal
+
+A route candidate is retried only for provider or transport failures: rate limits, quota/capacity,
+5xx responses, network errors, timeouts, circuit-open errors and model/endpoint availability
+errors. Authentication failures are rerouted when the error identifies credentials or permission
+for that candidate. Invalid requests, policy refusals, user aborts, tool failures and a stream that
+already emitted assistant reasoning/text/tool activity are final for the current run. We never
+replay an executed tool.
+
+When a candidate fails before output starts, the dispatcher advances in route order. A transition
+writes a structured warning to the server journal and posts a short `[fallback]` notice in the chat.
+The requested identity stays `tag:<name>`; only the effective model changes. If the route is
+exhausted, `fallbackToGlobalDefault: true` permits exactly one final global-default attempt.
+
 ## A dead pin falls back, and says so once per run
 
 Any source of the chain that names an unavailable model is skipped, and resolution continues down
 to the global default. The config is never rewritten: the file keeps what its owner wrote.
+
+A missing `tag:<name>` is different from an unavailable model. It resolves through `tag:Default`
+before availability is checked. The stale reference is retained, and the concrete default model is
+what is judged and sent to the provider. This applies to session picks, agent pins, agent files and
+cron models.
 
 The fallback is announced **once per agent run**, not once per LLM request -- a run is dozens of
 requests, and a warning on each would be noise that trains you to ignore it. Concretely:

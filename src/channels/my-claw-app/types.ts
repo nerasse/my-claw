@@ -183,13 +183,21 @@ export interface MyClawAppPing {
   type: "ping";
 }
 
-/** One entry of the tags page: a named alias for a model/effort/context combo (docs/tags.md). */
-export interface MyClawAppTagInfo {
-  name: string;
-  /** The model id the tag pins, or "" for the virtual `Default` tag. */
+/** One entry of the Tags page: a named alias for an ordered concrete model route. */
+export interface MyClawAppTagRouteCandidate {
   model: string;
   effort?: string;
   contextCap?: number;
+}
+
+export interface MyClawAppTagInfo {
+  name: string;
+  /** The first model, kept for old clients. Empty for the virtual `Default` tag. */
+  model?: string;
+  effort?: string;
+  contextCap?: number;
+  route?: MyClawAppTagRouteCandidate[];
+  fallbackToGlobalDefault?: boolean;
 }
 
 export interface MyClawAppTagsList {
@@ -199,9 +207,11 @@ export interface MyClawAppTagsList {
 export interface MyClawAppTagsUpsert {
   type: "tags.upsert";
   name: string;
-  model: string;
+  model?: string;
   effort?: string;
   contextCap?: number;
+  route?: MyClawAppTagRouteCandidate[];
+  fallbackToGlobalDefault?: boolean;
 }
 
 export interface MyClawAppTagsDelete {
@@ -1349,7 +1359,7 @@ export interface MyClawAppModelOption {
   effortLevels?: string[];
   /** The model's own full context window, so the app can offer ceilings under it and no higher. */
   context?: number;
-  /** For a tag entry: the effort the tag pins, so a config flow can name what applies. */
+  /** For a tag entry: the first candidate's effort, so a config flow can name what applies. */
   effort?: string;
   /** Whether the model accepts image input; the fallback picker only offers vision-capable ones. */
   vision?: boolean;
