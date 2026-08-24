@@ -50,12 +50,17 @@ export function contextEntries(entries: readonly Entry[], leafId: string | null)
   const keptFrom = path.findIndex((entry) => entry.id === compaction.firstKeptEntryId);
   // A boundary naming an entry this branch does not hold describes nothing here: sending the whole
   // branch costs tokens, dropping it loses turns, and only the first is recoverable.
-  if (keptFrom < 0 || keptFrom > compactionIndex) return path;
+  if (keptFrom < 0) return path;
 
-  const kept = [...path.slice(keptFrom, compactionIndex), ...path.slice(compactionIndex + 1)];
-  // Any other boundary in the kept range is stale: the newest one already summarises what an older
-  // one stood for, so replaying it would hand the model the same context twice, once condensed.
-  return [compaction, ...kept.filter((entry) => entry.type !== "compaction")];
+  // Everything from the floor on, wherever the boundary itself sits relative to it. A live
+  // compaction appends the boundary after the turns it covers, so it lands past them; an imported
+  // one sat in the middle of the array it summarised, so the floor is after it. Both are the same
+  // statement -- this is the floor, here is what stands for what is below it -- and taking the
+  // union rather than a slice between two indexes is what makes the two geometries one case.
+  // Any other boundary in the kept range is stale: the newest already summarises what an older one
+  // stood for, so replaying it would hand the model the same context twice, once condensed.
+  const kept = path.filter((entry, index) => index >= keptFrom && index !== compactionIndex && entry.type !== "compaction");
+  return [compaction, ...kept];
 }
 
 /**
