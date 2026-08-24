@@ -17,6 +17,8 @@ export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
   history(owner: string, threadId: string, limit?: number, before?: number): Promise<MyClawAppHistoryPage>;
+  /** One tool card's output in full; null when the session no longer holds the call. */
+  toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   /**
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
@@ -457,6 +459,40 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     }
     flushCommandsUpTo();
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
+  }
+
+  /**
+   * One tool card's output, whole, straight out of the session.
+   *
+   * The cards themselves are pushed clipped: a thread's history would otherwise carry every byte
+   * every tool ever printed, on every reconnect, for the sake of the few a reader opens. This is
+   * the other half of that trade, and it is a read of what is already on disk -- nothing is kept
+   * in memory for it.
+   *
+   * Null when the session no longer holds the call: a compaction can drop the turn it belonged
+   * to, and the card outlives it.
+   */
+  async toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) return null;
+    const outputs = new Map<string, string>();
+    for (const message of session.messages) {
+      if (message.role === "tool") outputs.set(message.toolCallId, message.content);
+    }
+    for (const message of session.messages) {
+      if (message.role !== "assistant") continue;
+      for (const call of message.toolCalls ?? []) {
+        if (toolCardId(call.id) !== cardId) continue;
+        const output = outputs.get(call.id);
+        if (output !== undefined) return output;
+        // Settled as an error or an abort before any tool message was written: the lifecycle
+        // carries the only text there is, which is exactly what the card is showing clipped.
+        const spawn = call.spawn;
+        return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
+      }
+    }
+    return null;
   }
 
   async recordFailure(owner: string, threadId: string, error: string): Promise<void> {

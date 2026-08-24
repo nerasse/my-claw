@@ -158,6 +158,12 @@ class FakeSessionStore {
   }
 
   historyCalls: Array<{ limit?: number; before?: number }> = [];
+  /** Card id -> the output the session would hand back in full. Absent means "not found". */
+  toolOutputs = new Map<string, string>();
+
+  async toolOutput(_deviceId: string, _threadId: string, cardId: string): Promise<string | null> {
+    return this.toolOutputs.get(cardId) ?? null;
+  }
 
   async history(
     deviceId: string,
@@ -1236,6 +1242,27 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.threadId, "a");
     assert.equal(frame.messages.length, 2);
     assert.equal(frame.messages[1]!.text, "bonsoir");
+  });
+
+  test("chat.tool.full hands back the output the card was pushed clipped", async () => {
+    store.toolOutputs.set("t-call-1", "x".repeat(9000));
+    client.ws.send(JSON.stringify({ type: "chat.tool.full", threadId: "a", id: "t-call-1" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; id: string; output: string; found: boolean };
+    assert.equal(frame.type, "chat.tool.full.result");
+    assert.equal(frame.threadId, "a");
+    assert.equal(frame.id, "t-call-1");
+    assert.equal(frame.found, true);
+    assert.equal(frame.output.length, 9000);
+  });
+
+  test("chat.tool.full says so when the session no longer holds the call", async () => {
+    // A compaction dropped the turn: the app must keep the clipped text it has rather than
+    // replace it with an empty block.
+    client.ws.send(JSON.stringify({ type: "chat.tool.full", threadId: "a", id: "t-gone" }));
+    const frame = (await nextFrame(client)) as { type: string; found: boolean; output: string };
+    assert.equal(frame.type, "chat.tool.full.result");
+    assert.equal(frame.found, false);
+    assert.equal(frame.output, "");
   });
 
   test("session.history carries the cursor through and echoes it back with hasMore", async () => {

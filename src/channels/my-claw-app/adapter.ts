@@ -64,6 +64,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionPin,
   MyClawAppSessionPinOrder,
   MyClawAppSessionHistory,
+  MyClawAppToolFull,
   MyClawAppSessionList,
   MyClawAppSessionListResult,
   MyClawAppSessionRename,
@@ -1333,6 +1334,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.history":
         this.detach(this.handleSessionHistory(ws, frame), "handleSessionHistory");
         break;
+      case "chat.tool.full":
+        this.detach(this.handleToolFull(ws, frame), "handleToolFull");
+        break;
       case "session.archive":
       case "session.unarchive":
         this.detach(this.handleSessionArchive(ws, frame), "handleSessionArchive");
@@ -2013,6 +2017,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, result);
     } catch (err) {
       await this.refuse(ws, "session", "history failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * Hands back one tool card's output in full, for a reader who opened the block the card only
+   * ever showed clipped. A card the session no longer holds is answered `found: false` rather
+   * than with an empty string: the app then keeps what it already has instead of blanking the
+   * block under the reader's eyes.
+   */
+  private async handleToolFull(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppToolFull): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId || !frame.id) {
+      await this.refuse(ws, "session", "invalid tool card", { threadId: frame.threadId, id: frame.id });
+      return;
+    }
+    try {
+      const output = await this.store.toolOutput(ws.data.owner, threadId, frame.id);
+      this.sendFrame(ws, {
+        type: "chat.tool.full.result",
+        threadId,
+        id: frame.id,
+        output: output ?? "",
+        found: output !== null,
+      });
+    } catch (err) {
+      await this.refuse(ws, "session", "tool output failed", { threadId, id: frame.id, error: String(err) });
     }
   }
 

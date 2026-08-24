@@ -960,6 +960,15 @@ looked done while it was still going -- the sub-agent panel, which asks for stat
 distinction is a `has` rather than a `?? ""`, and the flag is only ever set by the history path;
 live cards get their spinner from `chat.tool.start` as before.
 
+A card carries its output clipped to `TOOL_OUTPUT_LIMIT` (4000 chars), with `truncated: true`
+when anything was cut. Lifting the limit was the obvious fix and the wrong one: every reconnect
+replays a whole page of history, so the bytes of every tool that ever ran would be paid for by
+every device, every time, for the sake of the few outputs a reader actually opens. `truncated` is
+therefore a "there is more, ask for it" rather than a dead end: `chat.tool.full` names a card by
+id and `chat.tool.full.result` answers with the output whole, read straight from the session.
+`found: false` is a card whose call the session no longer holds (a compaction dropped the turn),
+and the app then keeps the clipped text it already has rather than blanking the block.
+
 `chat.spawn.start` annotates a spawn card with its sub-agent identity, and `chat.spawn.end` settles
 it live. The assistant tool call also persists the spawn lifecycle state (`running`, `complete`,
 `error` or `aborted`) with its timestamps and result metadata. A reload during the narrow window

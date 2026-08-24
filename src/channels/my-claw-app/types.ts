@@ -100,6 +100,19 @@ export interface MyClawAppSessionHistory {
   before?: number;
 }
 
+/**
+ * Asks for a tool output in full. Cards are pushed with the output clipped to TOOL_OUTPUT_LIMIT,
+ * because a thread's history would otherwise carry every byte every tool ever printed for the
+ * sake of the few a reader opens. The session keeps the whole thing, so a reader who does open
+ * one asks for it here, by card id.
+ */
+export interface MyClawAppToolFull {
+  type: "chat.tool.full";
+  threadId: string;
+  /** The card id, i.e. `toolCardId(callId)`, not the model's raw call id. */
+  id: string;
+}
+
 export interface MyClawAppSessionArchive {
   type: "session.archive";
   threadId: string;
@@ -773,6 +786,7 @@ export type MyClawAppClientFrame =
   | MyClawAppFilesList
   | MyClawAppFileDelete
   | MyClawAppSessionHistory
+  | MyClawAppToolFull
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
@@ -1276,6 +1290,21 @@ export interface MyClawAppChatHistory {
    * draft is wanted, and a page reaching backwards has no business carrying it -- docs/draft-sync.md.
    */
   draft?: string;
+}
+
+/**
+ * The answer to `chat.tool.full`: one card's output, whole.
+ *
+ * `found` false is a card whose session no longer holds the call (a compaction dropped the turn,
+ * or the thread was rewritten). The app then keeps what it already has rather than blanking a
+ * block the reader was looking at.
+ */
+export interface MyClawAppChatToolFull {
+  type: "chat.tool.full.result";
+  threadId: string;
+  id: string;
+  output: string;
+  found: boolean;
 }
 
 /**
@@ -2462,6 +2491,7 @@ export type MyClawAppServerFrame =
   | MyClawAppToolCall
   | MyClawAppToolStart
   | MyClawAppToolDelta
+  | MyClawAppChatToolFull
   | MyClawAppSpawnStart
   | MyClawAppSpawnEnd
   | MyClawAppApprovalRequest
