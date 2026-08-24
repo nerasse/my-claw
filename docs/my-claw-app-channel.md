@@ -1232,6 +1232,19 @@ That merge needs the two sides to agree on identity, which is what these carry:
   the input replays under the send id, the answer under `cmd-<send id>`, which is the id the app
   gives that bubble live (placeholder included, so a `/compact` that was placeheld is the same
   bubble before and after).
+- **Every persisted user turn carries it, not just the opening one.** Two paths used to break the
+  chain and produced the same visible bug, a question shown twice for up to 30 s: a steered turn
+  (`injectUserTurn`) was pushed with no `sourceId` at all, and `runner.send` substituted an id of
+  its own making. Both deduped correctly *inside* the session -- the bridge matches the pre-push on
+  that id -- while being invisible to the page, which is the only reader that matters here. A
+  human send now gets its own id back; a model-driven send keeps a forged one on purpose, since its
+  bubble lives in the parent thread and two sends in one parent turn would otherwise share a single
+  id and collapse into one turn. The reuse is refused outright if the session already carries that
+  id, so no caller can rewrite an older turn by repeating an id.
+- **The failure rollback stops at the last steered turn.** A run that throws trims what it appended
+  (`messageCountBeforeLoop`), and that mark used to be set before the loop and after a compaction
+  but never after an injection. A run failing after absorbing a steering message therefore answered
+  with an error *and* erased the message, which read as the send having never happened.
 - **The 30 s window** is what keeps a bubble the server will never mirror (a `/status`, drawn as a
   page and journalled as nothing; a message that never left) from sitting at the end of the thread
   for good. Both sides of the subtraction are the device's own clock, so there is no skew to reason

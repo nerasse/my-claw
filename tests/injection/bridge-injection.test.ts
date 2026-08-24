@@ -174,3 +174,68 @@ test("an injected image message adds vision content to the next LLM call", async
     mock.restore(); end(); runRegistry.clear(); await rm(imgPath, { force: true });
   }
 });
+
+// The page draws its bubble the moment the owner sends, and history is matched against it by id.
+// A steered turn used to come back anchorless, so the reopened thread showed the message twice.
+test("an injected turn is persisted with the sender's own id", async () => {
+  runRegistry.clear();
+  const reg = new ToolRegistry();
+  reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
+  const bridge = new AgentBridge(config, reg, new SkillRegistry());
+  const sess = session("my-claw-app/dm/u1");
+  const { signal, end } = runRegistry.startRoot(sess.id);
+
+  let call = 0;
+  const mock = mockFetch(async () => {
+    call++;
+    if (call === 1) {
+      runRegistry.enqueueInjection(sess.id, msg("steer-1", "and also this"));
+      return llm({ content: "", tool_calls: [{ id: "tc1", function: { name: "noop", arguments: "{}" } }] });
+    }
+    return llm({ content: "done" });
+  });
+
+  try {
+    await bridge.handleMessage(msg("orig", "first question"), sess, signal);
+    runRegistry.settleMailbox(sess.id, "resolve");
+    const users = sess.messages.filter((m) => m.role === "user");
+    assert.deepEqual(users.map((m) => (m.role === "user" ? m.sourceId : undefined)), ["orig", "steer-1"]);
+  } finally {
+    mock.restore();
+    end();
+    runRegistry.clear();
+  }
+});
+
+// The failure rollback trims what the run appended. It used to reach past the steered turn too, so
+// the owner got an error AND lost the message they had just sent.
+test("a run that fails after absorbing a steer keeps the steered turn", async () => {
+  runRegistry.clear();
+  const reg = new ToolRegistry();
+  reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
+  const bridge = new AgentBridge(config, reg, new SkillRegistry());
+  const sess = session("my-claw-app/dm/u1");
+  const { signal, end } = runRegistry.startRoot(sess.id);
+
+  let call = 0;
+  const mock = mockFetch(async () => {
+    call++;
+    if (call === 1) {
+      // Nobody awaits it here; the reject below is expected, so it must not surface unhandled.
+      void runRegistry.enqueueInjection(sess.id, msg("steer-2", "keep me"))?.catch(() => {});
+      return llm({ content: "", tool_calls: [{ id: "tc1", function: { name: "noop", arguments: "{}" } }] });
+    }
+    return new Response("upstream exploded", { status: 500 }) as never;
+  });
+
+  try {
+    await assert.rejects(() => bridge.handleMessage(msg("orig", "first question"), sess, signal));
+    runRegistry.settleMailbox(sess.id, "reject", new Error("boom"));
+    const users = sess.messages.filter((m) => m.role === "user");
+    assert.ok(users.some((m) => m.role === "user" && m.sourceId === "steer-2"), "the steered turn survives the rollback");
+  } finally {
+    mock.restore();
+    end();
+    runRegistry.clear();
+  }
+});

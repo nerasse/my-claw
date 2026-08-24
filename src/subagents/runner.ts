@@ -310,10 +310,21 @@ export class SubAgentRunner {
       }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
-      // One id per send: the bridge pushes its own copy with `message.id` as sourceId, so the
-      // pre-push must be the same value or a page sees two bubbles. A constant id would also
-      // make the second send of a session collapse into the first.
-      const messageId = `subagent-${id}-${crypto.randomUUID().slice(0, 8)}`;
+      // A human typing in the sub-agent's own thread gets their own id back, so the bubble the page
+      // already drew is the bubble history replays: a forged id deduped correctly inside the session
+      // (the bridge matches on it) while being invisible to the page, which then showed the message
+      // twice. A model-driven send keeps a forged id on purpose -- its bubble lives in the parent
+      // thread, and two sends in one parent turn would otherwise share one id and collapse into a
+      // single turn here.
+      // Never a value this session already carries: the bridge completes the pre-push by finding
+      // the first turn with that sourceId, so a repeated id would rewrite an older turn instead of
+      // opening a new one -- two sends collapsing into one.
+      const reusable = toolCallId === undefined
+        && parentMessage.id
+        && !session.messages.some((m) => m.role === "user" && m.sourceId === parentMessage.id);
+      const messageId = reusable
+        ? parentMessage.id
+        : `subagent-${id}-${crypto.randomUUID().slice(0, 8)}`;
       session.messages.push({
         role: "user",
         content: userContent,

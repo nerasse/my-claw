@@ -645,3 +645,47 @@ test("a send driven by a tool call runs the same lifecycle as a spawn", async ()
     fetchMock.restore();
   }
 });
+
+// The page draws its bubble with the id it sent, and history is matched against it by id. A forged
+// id deduped correctly inside the session while being invisible to the page, which then showed the
+// same message twice.
+test("a human send keeps its own message id, a model-driven one does not", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const PARENT = "my-claw-app/thread/owner/main";
+
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+    { status: 200 },
+  ) as never);
+
+  const from = (id: string): UnifiedMessage => ({ ...createMessage(), id });
+
+  try {
+    const existing = await reg.listExistingIds();
+    const { id } = await runner.spawn({ displayName: "keeper", type: "research", mode: "session", task: "init", parentMessage: from("spawn-msg"), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: PARENT, visibility: "global" });
+
+    // Human path: no tool call id, so the caller's own id is what lands on the turn.
+    await runner.send(id, "human one", undefined, from("bubble-1"), reg, PARENT);
+    await runner.send(id, "human two", undefined, from("bubble-2"), reg, PARENT);
+    // Model path: the card lives in the parent thread, so the id must not be reused -- two sends in
+    // one parent turn share one message id and would otherwise collapse into a single turn.
+    await runner.send(id, "model one", undefined, from("parent-turn"), reg, PARENT, undefined, undefined, "call-a");
+    await runner.send(id, "model two", undefined, from("parent-turn"), reg, PARENT, undefined, undefined, "call-b");
+
+    const session = await loadSession(id);
+    const ids = (session?.messages ?? []).filter((m) => m.role === "user").map((m) => (m.role === "user" ? m.sourceId : undefined));
+    assert.equal(ids[1], "bubble-1");
+    assert.equal(ids[2], "bubble-2");
+    assert.ok(ids[3]?.startsWith(`subagent-${id}-`), "a model-driven send forges its own id");
+    assert.ok(ids[4]?.startsWith(`subagent-${id}-`));
+    assert.notEqual(ids[3], ids[4]);
+    // Four sends, four distinct turns: none of them overwrote another.
+    assert.equal(new Set(ids).size, ids.length);
+
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+  }
+});

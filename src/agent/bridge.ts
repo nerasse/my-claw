@@ -465,6 +465,10 @@ export class AgentBridge implements AgentBackend {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
             await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
+            // The rollback below must not reach past a turn the owner actually sent. It used to,
+            // and a run that failed after absorbing a steering message erased the message with it:
+            // the answer was an error and the question was gone from the history.
+            messageCountBeforeLoop = session.messages.length;
           }
         }
         iteration++;
@@ -620,6 +624,7 @@ export class AgentBridge implements AgentBackend {
               for (const m of injected) {
                 budget.grant(injectionBonus);
                 await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
+                messageCountBeforeLoop = session.messages.length;
               }
               continue;
             }
@@ -897,6 +902,10 @@ export class AgentBridge implements AgentBackend {
       role: "user",
       content: transformedContent,
       timestamp: new Date().toISOString(),
+      // The same anchor the opening turn carries. Without it a steered turn came back from history
+      // under a derived id, so the page could not match it against the bubble it had already drawn
+      // and showed the message twice -- docs/my-claw-app-channel.md.
+      ...(injected.id ? { sourceId: injected.id } : {}),
       ...(injected.location ? { location: injected.location } : {}),
     });
 
