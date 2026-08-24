@@ -14,6 +14,10 @@ import {
 import { LruMap } from "../utils/lru-map.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { openSessionLog, sessionDir, type SessionLog } from "./log.ts";
+import { metaOf, readMeta, writeMeta } from "./meta.ts";
+import { sweepOrphanToolOutput } from "./tool-output.ts";
+import { rm } from "node:fs/promises";
 
 const MAX_CACHED_SESSIONS = 100;
 /**
@@ -33,11 +37,32 @@ export class SessionManager {
    * followed wrote that truncated history back over the fresh one.
    */
   private pendingWrites = new Map<string, Promise<void>>();
+  /**
+   * The append-only half of each cached session -- docs/session-log.md.
+   *
+   * Held beside the session rather than on it, because a `SessionData` is serialised whole and a
+   * log is a file handle with a write queue: putting one inside the other is how the settings
+   * would end up carrying the history again, which is the split this exists to make.
+   *
+   * Keyed by session id and evicted with it, so the number of open logs is bounded by the same
+   * LRU that bounds the sessions.
+   */
+  private logs = new Map<string, SessionLog>();
+  /** Opens in flight, so two callers asking at once share one read rather than racing it. */
+  private opening = new Map<string, Promise<SessionLog>>();
 
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
       hooks.emit("session:evicted", { sessionId: key });
       this.savedCounts.delete(key);
+      // The queued appends are drained before the handle goes, or the last entries of an evicted
+      // conversation would be dropped on the floor. Nothing waits on this: the writes are already
+      // ordered among themselves, and the next open re-reads the file.
+      const evictedLog = this.logs.get(key);
+      if (evictedLog) {
+        this.logs.delete(key);
+        void evictedLog.flush().catch(() => {});
+      }
       void this.queueWrite(key, async () => {
         await saveSession(key, value);
       }).catch((err) => {
@@ -166,6 +191,7 @@ export class SessionManager {
     this.sessions.delete(sessionId);
     this.savedCounts.delete(sessionId);
     this.pendingWrites.delete(sessionId);
+    this.logs.delete(sessionId);
   }
 
   async peek(sessionId: string): Promise<SessionData | null> {
@@ -206,6 +232,41 @@ export class SessionManager {
     return session;
   }
 
+  /**
+   * A session's log, opened once and kept for as long as the session is cached.
+   *
+   * The leaf comes from `meta.json`, not from the end of the file: those two differ exactly when
+   * the conversation sits on a branch that is not the newest thing written, which is the whole
+   * point of having a cursor. A session with no meta yet is a new conversation, and the log's own
+   * fallback (the last entry) is the right answer for it.
+   */
+  async logOf(sessionId: string): Promise<SessionLog> {
+    const cached = this.logs.get(sessionId);
+    if (cached) return cached;
+    const inFlight = this.opening.get(sessionId);
+    if (inFlight) return inFlight;
+
+    const open = (async () => {
+      const meta = await readMeta(sessionId).catch((err) => {
+        // A storage version from the future. Refusing to read is the point; refusing to *run* is
+        // not, so the conversation opens on an empty log and the settings stay untouched on disk.
+        void log("error", "session log: meta refused, opening without a cursor", { sessionId, error: String(err) });
+        return null;
+      });
+      const opened = await openSessionLog(sessionId, meta?.leafId ?? null);
+      this.logs.set(sessionId, opened);
+      return opened;
+    })().finally(() => this.opening.delete(sessionId));
+
+    this.opening.set(sessionId, open);
+    return open;
+  }
+
+  /** The open log of a session, without opening one. For a caller that must not do I/O. */
+  peekLog(sessionId: string): SessionLog | undefined {
+    return this.logs.get(sessionId);
+  }
+
   /** Persisted session ids under a prefix, most recently active first. */
   async listSessions(prefix: string, limit = 50): Promise<string[]> {
     return listSessionIdsByPrefix(prefix, limit);
@@ -218,9 +279,32 @@ export class SessionManager {
     const pending = this.pendingWrites.get(sessionId);
     if (pending) await pending.catch(() => {});
     this.pendingWrites.delete(sessionId);
+    // Drained before the directory goes, so no append lands after the delete and recreates the
+    // file. The log's own error path deliberately does not recreate a missing directory, but a
+    // write already queued would find one that still exists.
+    const openLog = this.logs.get(sessionId);
+    if (openLog) {
+      this.logs.delete(sessionId);
+      await openLog.flush().catch(() => {});
+    }
     await deleteSessionFile(sessionId);
+    // The entries, the settings and the spilled tool outputs go together: a tool output outlives
+    // nothing, it belongs to the entry that names it -- docs/session-log.md §2.7.
+    await rm(sessionDir(sessionId), { recursive: true, force: true }).catch(() => {});
     await deleteSessionArchives(sessionId);
     hooks.emit("session:deleted", { sessionId });
+  }
+
+  /**
+   * Deletes the spilled tool outputs no entry refers to, for one conversation.
+   *
+   * The residue of a run killed between writing the file and appending the entry that names it.
+   * Called on a session that is already open, so it costs one directory listing.
+   */
+  async sweepToolOutput(sessionId: string): Promise<number> {
+    const openLog = this.logs.get(sessionId);
+    if (!openLog) return 0;
+    return sweepOrphanToolOutput(sessionId, openLog.entries());
   }
 
   clearHistory(sessionId: string): void {
@@ -255,6 +339,15 @@ export class SessionManager {
       // must leave the session dirty for the next tick rather than be marked as saved.
       clearSessionDirty(session);
       await saveSession(sessionId, session);
+      // The settings half, whenever the session has a log to name a cursor in. Small and written
+      // in full, which is affordable precisely because the history is no longer in it: this is the
+      // write that used to serialise 12 MB to record that a title had changed.
+      const openLog = this.logs.get(sessionId);
+      if (openLog) {
+        await writeMeta(sessionId, metaOf(session, openLog.leaf())).catch((err) => {
+          void log("error", "session meta: write failed", { sessionId, error: String(err) });
+        });
+      }
       if (this.sessions.get(sessionId) === session) this.savedCounts.set(sessionId, messageCount);
       hooks.emit("session:persisted", { sessionId, messageCount });
     });
@@ -298,5 +391,9 @@ export class SessionManager {
   async flushAll(): Promise<void> {
     const cached = [...this.sessions.keys()];
     await Promise.allSettled(cached.map((sessionId) => this.persist(sessionId)));
+    // The appends are fire-and-forget so a file write never sits on the path of a token. That is
+    // the one thing an exit has to undo: everything queued must reach the disk before the process
+    // goes, or the last entries of every live conversation die with it.
+    await Promise.allSettled([...this.logs.values()].map((entries) => entries.flush()));
   }
 }

@@ -1,9 +1,13 @@
-import { test } from "bun:test";
+import { test, describe, expect } from "bun:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { deleteSession, loadSession, recordSessionCommand } from "../../src/sessions/store.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
+import { openSessionLog, type UserEntry, type ToolEntry } from "../../src/sessions/log.ts";
+import { readMeta, writeMeta, metaPath, STORAGE_VERSION } from "../../src/sessions/meta.ts";
+import { spillToolOutput, readToolOutput } from "../../src/sessions/tool-output.ts";
 
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
   return {
@@ -291,4 +295,119 @@ test("flushDirty skips a session nothing touched", async () => {
   } finally {
     await deleteSession(sessionId);
   }
+});
+
+describe("SessionManager: the log half", () => {
+  test("a session opens its log once and keeps the same handle", async () => {
+    const manager = new SessionManager();
+    const id = "log-manager/one";
+    await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    const first = await manager.logOf(id);
+    expect(await manager.logOf(id)).toBe(first);
+  });
+
+  test("two callers asking at once share one open", async () => {
+    // Two reads of the same file would each build a log, and the loser's appends would land in a
+    // handle nobody holds.
+    const manager = new SessionManager();
+    const id = "log-manager/race";
+    const [a, b] = await Promise.all([manager.logOf(id), manager.logOf(id)]);
+    expect(a).toBe(b!);
+  });
+
+  test("the cursor comes from meta, not from the end of the file", async () => {
+    // Those differ exactly when the conversation sits on a branch that is not the newest thing
+    // written, which is the entire point of storing a cursor.
+    const id = "log-manager/cursor";
+    const writer = await openSessionLog(id);
+    const first = writer.append<UserEntry>({ type: "user", prompt: true, text: "un" });
+    writer.append<UserEntry>({ type: "user", prompt: true, text: "deux" });
+    await writer.flush();
+    await writeMeta(id, { id, platform: "my-claw-app", chatType: "dm", createdAt: "", lastActiveAt: "", storageVersion: STORAGE_VERSION, leafId: first.id });
+
+    const manager = new SessionManager();
+    const opened = await manager.logOf(id);
+    expect(opened.leaf()).toBe(first.id);
+    expect(opened.head()).not.toBe(first.id);
+  });
+
+  test("persist writes the settings beside the entries, without the history", async () => {
+    const manager = new SessionManager();
+    const id = "log-manager/persist";
+    const session = await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    session.title = "mon fil";
+    const entries = await manager.logOf(id);
+    const entry = entries.append<UserEntry>({ type: "user", prompt: true, text: "bonjour" });
+    await entries.flush();
+    await manager.persist(id);
+
+    const meta = await readMeta(id);
+    expect(meta).toMatchObject({ title: "mon fil", leafId: entry.id });
+    const raw = JSON.parse(await readFile(metaPath(id), "utf-8")) as Record<string, unknown>;
+    expect(raw["messages"]).toBeUndefined();
+  });
+
+  test("a session with no log yet persists without a meta", async () => {
+    // Every session goes through persist, including ones nothing ever opened a log for.
+    const manager = new SessionManager();
+    const id = "log-manager/nolog";
+    await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    await manager.persist(id);
+    expect(await readMeta(id)).toBeNull();
+  });
+
+  test("flushAll drains what the appends left in flight", async () => {
+    // The appends are fire-and-forget so a write never sits on the path of a token; an exit is
+    // the one moment that has to be undone.
+    const manager = new SessionManager();
+    const id = "log-manager/flush";
+    await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    const entries = await manager.logOf(id);
+    entries.append<UserEntry>({ type: "user", prompt: true, text: "en vol" });
+    await manager.flushAll();
+    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+  });
+
+  test("deleting a session takes its entries and its spilled outputs with it", async () => {
+    const manager = new SessionManager();
+    const id = "log-manager/deleted";
+    await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    const entries = await manager.logOf(id);
+    entries.append<UserEntry>({ type: "user", prompt: true, text: "adieu" });
+    await entries.flush();
+    await spillToolOutput(id, "c1", "x".repeat(20), 5);
+
+    await manager.deleteSession(id);
+    expect(await readToolOutput(id, "c1")).toBeNull();
+    expect((await openSessionLog(id)).entries()).toEqual([]);
+  });
+
+  test("dropping a session releases its log without touching the file", async () => {
+    // `drop` exists for a file someone else deleted; it must not become a second delete.
+    const manager = new SessionManager();
+    const id = "log-manager/dropped";
+    const entries = await manager.logOf(id);
+    entries.append<UserEntry>({ type: "user", prompt: true, text: "reste" });
+    await entries.flush();
+    manager.drop(id);
+    expect(manager.peekLog(id)).toBeUndefined();
+    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+  });
+
+  test("the sweep keeps what an entry names", async () => {
+    const manager = new SessionManager();
+    const id = "log-manager/sweep";
+    const entries = await manager.logOf(id);
+    entries.append<ToolEntry>({
+      type: "tool", prompt: true, callId: "kept", name: "bash", args: {},
+      output: "", truncated: true, ok: true, runId: "r1",
+    });
+    await entries.flush();
+    await spillToolOutput(id, "kept", "a".repeat(20), 5);
+    await spillToolOutput(id, "orphan", "b".repeat(20), 5);
+
+    expect(await manager.sweepToolOutput(id)).toBe(1);
+    expect(await readToolOutput(id, "kept")).not.toBeNull();
+    expect(await readToolOutput(id, "orphan")).toBeNull();
+  });
 });
