@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages, recordSessionSubAgentState, loadSession, type SessionSubAgentStatus } from "./sessions/store.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
+import { setSessionLogResolver } from "./sessions/log-access.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -623,6 +624,10 @@ async function main() {
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();
+  // Every run reads and appends through the manager's cached handle rather than opening the file
+  // again: two handles on one conversation would each hold their own leaf and write past each
+  // other -- docs/session-log.md annexe D.
+  setSessionLogResolver((sessionId) => sessionManager.logOf(sessionId));
   // The runner pre-dates the manager; adopt() lets live sub-agent runs surface in the app
   // channel (history/peek) instead of only the frozen pre-pushed task on disk.
   subAgentRunner.setSessionManager(sessionManager);

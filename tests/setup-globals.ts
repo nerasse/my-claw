@@ -14,6 +14,7 @@ import { resetSkillLastGood } from "../src/skills/loader.ts";
 import { resetAgentLastGood } from "../src/agents/loader.ts";
 import { resetPushState } from "../src/notifications/push.ts";
 import { resetAvailabilityWorld } from "../src/llm/world.ts";
+import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
 import { resetFallbackNotices } from "../src/llm/fallback-notice.ts";
 import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
 import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
@@ -59,6 +60,7 @@ beforeEach(() => {
   // A world installed by one file would decide which models are runnable in every later file,
   // and "this model cannot run" is the one verdict that changes what a run resolves to.
   resetAvailabilityWorld();
+  resetSessionLogResolver();
   // Keyed by message id, and ids repeat across files ("m1", "msg-1"): a leftover would swallow
   // the one notice a later test is asserting.
   resetFallbackNotices();
