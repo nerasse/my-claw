@@ -1,0 +1,408 @@
+/**
+ * The conversation as an append-only log of entries -- docs/session-log.md.
+ *
+ * One line of JSON per entry, never rewritten. This is the half of a session that only ever
+ * grows; the settings live in `meta.json` next to it and are the only thing that mutates.
+ *
+ * Two properties matter more than anything else here:
+ *
+ * - An entry is written once. Nothing modifies it, nothing deletes it, so a reader never has to
+ *   wonder whether what it holds is still true. Compaction moves a boundary, a retry moves a
+ *   cursor; neither destroys what came before.
+ * - `parentId` makes the log a tree while `seq` keeps it a file. The tree is what a branch, a
+ *   retry and an undo navigate; the file order is what a client syncs against, which is why a
+ *   delta cursor keeps working across a branch switch.
+ */
+
+import { appendFile, mkdir, readFile, truncate } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { MY_CLAW_DIR } from "../core/config.ts";
+import { log } from "../utils/logger.ts";
+import type { ChatLocation } from "../channels/types.ts";
+import type { SessionAttachment, SessionSubAgentState } from "./store.ts";
+
+export const SESSION_LOG_VERSION = 1;
+
+export type EntryType =
+  | "user"
+  | "phase"
+  | "tool"
+  | "command"
+  | "failure"
+  | "compaction"
+  | "model_change"
+  | "note";
+
+/** Assigned by the log at append time, never by the caller -- that is what keeps ids stable. */
+interface EntryBase {
+  id: string;
+  seq: number;
+  parentId: string | null;
+  ts: number;
+  /**
+   * Shape version of this entry, absent meaning 1. A reader that meets a version it does not know
+   * keeps the entry rather than dropping it: the display degrades, the history does not lose a turn.
+   */
+  v?: number;
+  type: EntryType;
+  /**
+   * Whether this entry belongs in the LLM context, as opposed to being shown and nothing else.
+   *
+   * The single tableau this log replaces served both, which is where every reconciliation hack in
+   * the app came from. A slash command, a failed run and a hand-back note are things the owner
+   * must see again and the model must never read.
+   */
+  prompt: boolean;
+}
+
+export interface UserEntry extends EntryBase {
+  type: "user";
+  prompt: true;
+  text: string;
+  attachments?: SessionAttachment[];
+  location?: ChatLocation;
+  transcripts?: Record<string, string>;
+  /** Set when the turn came from another agent (a driven `send`, a hand-back) rather than a human. */
+  from?: { sessionId: string; label: string };
+}
+
+export interface PhaseEntry extends EntryBase {
+  type: "phase";
+  prompt: true;
+  text: string;
+  reasoning?: string;
+  reasoningTokens?: number;
+  /** Phases of one model turn share this, which is what lets the prompt fold them back together. */
+  runId: string;
+  /** Opaque provider state, replayed verbatim -- docs/reasoning-replay.md. Omitted on a truncated turn. */
+  providerMeta?: unknown;
+}
+
+export interface ToolEntry extends EntryBase {
+  type: "tool";
+  prompt: true;
+  /** The model's own call id. Also the card id on the device: one identity, not two. */
+  callId: string;
+  name: string;
+  args: Record<string, unknown>;
+  /** The clipped output. Anything longer lives at `outputPath`. */
+  output: string;
+  outputPath?: string;
+  truncated: boolean;
+  ok: boolean;
+  durationMs?: number;
+  spawn?: SessionSubAgentState;
+  runId: string;
+}
+
+export interface CommandEntry extends EntryBase {
+  type: "command";
+  prompt: false;
+  input: string;
+  output: string;
+  details?: string;
+}
+
+export interface FailureEntry extends EntryBase {
+  type: "failure";
+  prompt: false;
+  error: string;
+}
+
+export interface CompactionEntry extends EntryBase {
+  type: "compaction";
+  prompt: true;
+  summary: string;
+  /**
+   * First entry the summary does *not* cover. The prompt resumes there; everything between the
+   * start of the branch and this id is what the summary stands for, and is still on disk.
+   */
+  firstKeptEntryId: string;
+  tokensBefore: number;
+  count: number;
+}
+
+export interface ModelChangeEntry extends EntryBase {
+  type: "model_change";
+  prompt: false;
+  model?: string;
+  effort?: string;
+}
+
+export interface NoteEntry extends EntryBase {
+  type: "note";
+  prompt: false;
+  text: string;
+  from?: { sessionId: string; label: string };
+}
+
+export type Entry =
+  | UserEntry
+  | PhaseEntry
+  | ToolEntry
+  | CommandEntry
+  | FailureEntry
+  | CompactionEntry
+  | ModelChangeEntry
+  | NoteEntry;
+
+/**
+ * What a caller hands to `append`: the payload, without anything the log itself decides.
+ *
+ * Distributive on purpose. A bare `Omit` over a union keeps only the properties every member
+ * shares, so `append({ type: "failure", error })` stopped compiling; the conditional applies the
+ * Omit to each member and keeps the union. Same shape as pi's `ProvisionedEntry`.
+ */
+export type Provisioned<T extends Entry = Entry> = T extends Entry
+  ? Omit<T, "id" | "seq" | "parentId" | "ts">
+  : never;
+
+/**
+ * A cursor the log cannot place. Thrown rather than answered with a silent full page: the client
+ * has to know its delta was refused, or two windows drift apart with nobody noticing.
+ */
+export class UnknownCursorError extends Error {
+  readonly cursor: string;
+  constructor(cursor: string) {
+    super(`Entry not found: ${cursor}`);
+    this.name = "UnknownCursorError";
+    this.cursor = cursor;
+  }
+}
+
+const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
+
+function sanitizeSessionId(raw: string): string {
+  return raw.replace(/\.\./g, "_").replace(/\0/g, "");
+}
+
+export function sessionDir(sessionId: string): string {
+  return join(SESSIONS_DIR, sanitizeSessionId(sessionId));
+}
+
+export function entriesPath(sessionId: string): string {
+  return join(sessionDir(sessionId), "entries.jsonl");
+}
+
+/**
+ * UUIDv7: 48 bits of millisecond timestamp, then randomness. Ids sort by creation time, so the
+ * file order and the id order agree and a reader can bound a scan by time without an index.
+ */
+export function newEntryId(now = Date.now()): string {
+  const random = randomUUID().replace(/-/g, "");
+  const time = now.toString(16).padStart(12, "0");
+  const rest = random.slice(12);
+  // Version 7 in the high nibble of the 7th byte, variant 0b10 in the high bits of the 9th.
+  const version = `7${rest.slice(1, 4)}`;
+  const variant = ((parseInt(rest.slice(4, 5), 16) & 0x3) | 0x8).toString(16) + rest.slice(5, 8);
+  return `${time.slice(0, 8)}-${time.slice(8, 12)}-${version}-${variant}-${rest.slice(8, 20)}`;
+}
+
+/**
+ * Reads one line, or nothing.
+ *
+ * A truncated last line is what a process killed mid-append leaves behind, and it must cost that
+ * line alone. The whole point of the format is that damage is bounded to a line instead of taking
+ * the conversation with it, the way a half-written 12 MB JSON object did.
+ */
+function parseEntryLine(line: string, sessionId: string, lineNumber: number): Entry | null {
+  if (!line.trim()) return null;
+  try {
+    const parsed = JSON.parse(line) as Entry;
+    if (typeof parsed?.id !== "string" || typeof parsed?.type !== "string") {
+      void log("warn", "session log: entry without an id or a type, skipped", { sessionId, lineNumber });
+      return null;
+    }
+    return parsed;
+  } catch {
+    void log("warn", "session log: unreadable line, skipped", { sessionId, lineNumber });
+    return null;
+  }
+}
+
+/**
+ * Walks the branch that ends at `leafId`, oldest first.
+ *
+ * The tree is only ever traversed upwards, from a leaf to the root, because that is the direction
+ * `parentId` points and it is the one walk that cannot be ambiguous: a node has one parent and any
+ * number of children. A leaf the log does not hold falls back to the last entry written, which is
+ * what an app asking about a branch that was never created should see.
+ */
+export function pathOf(entries: readonly Entry[], leafId: string | null): Entry[] {
+  if (leafId === null) return [];
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  let current = byId.get(leafId);
+  if (!current) {
+    const last = entries[entries.length - 1];
+    if (!last) return [];
+    void log("warn", "session log: unknown leaf, falling back to the last entry", { leafId });
+    current = last;
+  }
+  const path: Entry[] = [];
+  // A cycle cannot happen through `append` (a parent is always already written) but a hand-edited
+  // or half-migrated file is not worth an infinite loop.
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    path.push(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  path.reverse();
+  return path;
+}
+
+/** Entries with no child: one per branch, which is what a branch picker lists. */
+export function leavesOf(entries: readonly Entry[]): Entry[] {
+  const parents = new Set<string>();
+  for (const entry of entries) if (entry.parentId) parents.add(entry.parentId);
+  return entries.filter((entry) => !parents.has(entry.id));
+}
+
+/**
+ * One session's entries, in memory and on disk.
+ *
+ * Opened through `openSessionLog`, which is the only path that reads the file. The instance owns
+ * its own `seq` and leaf, so an append never has to re-read anything.
+ */
+export class SessionLog {
+  readonly sessionId: string;
+  private readonly file: string;
+  private readonly list: Entry[];
+  private nextSeq: number;
+  private leafId: string | null;
+  /** Serializes appends: two awaited writes must not interleave inside one line. */
+  private tail: Promise<void> = Promise.resolve();
+
+  constructor(sessionId: string, entries: Entry[], leafId: string | null) {
+    this.sessionId = sessionId;
+    this.file = entriesPath(sessionId);
+    this.list = entries;
+    this.nextSeq = entries.reduce((max, entry) => Math.max(max, entry.seq), -1) + 1;
+    this.leafId = leafId ?? entries[entries.length - 1]?.id ?? null;
+  }
+
+  entries(): readonly Entry[] {
+    return this.list;
+  }
+
+  leaf(): string | null {
+    return this.leafId;
+  }
+
+  /** Id of the newest entry written, whatever branch it is on: the cursor a client syncs against. */
+  head(): string | null {
+    return this.list[this.list.length - 1]?.id ?? null;
+  }
+
+  get(entryId: string): Entry | undefined {
+    return this.list.find((entry) => entry.id === entryId);
+  }
+
+  path(): Entry[] {
+    return pathOf(this.list, this.leafId);
+  }
+
+  /**
+   * Appends an entry under the current leaf and makes it the new leaf.
+   *
+   * The write is fire-and-forget on purpose: the caller gets the entry back synchronously, with its
+   * id, so the live bubble and the stored entry are the same identity from the first frame. Waiting
+   * on the disk here would put a file write on the path of every token.
+   */
+  append<T extends Entry>(input: Provisioned<T>): T {
+    const now = Date.now();
+    const entry = {
+      ...input,
+      id: newEntryId(now),
+      seq: this.nextSeq++,
+      parentId: this.leafId,
+      ts: now,
+      // The generic is the caller's promise about which member it is building; the omitted four
+      // fields are put back right here, so the assertion restores exactly what Provisioned removed.
+    } as unknown as T;
+    this.list.push(entry);
+    this.leafId = entry.id;
+    const line = `${JSON.stringify(entry)}\n`;
+    this.tail = this.tail
+      .catch(() => {})
+      .then(() => appendFile(this.file, line, "utf-8"))
+      .catch((err) => {
+        // Deliberately not rethrown, and deliberately not recreating the directory: a write that
+        // fails with ENOENT means the conversation was deleted under the run, and resurrecting it
+        // one entry at a time is worse than losing the entry. Anything else is a disk problem the
+        // next append will meet again, loudly.
+        void log("error", "session log: append failed", { sessionId: this.sessionId, id: entry.id, error: String(err) });
+      });
+    return entry;
+  }
+
+  /**
+   * Moves the cursor. The entries left behind stay exactly where they are: that is what makes a
+   * retry non-destructive and an undo reversible, where truncating an array is neither.
+   */
+  branch(leafId: string | null): void {
+    if (leafId !== null && !this.get(leafId)) throw new UnknownCursorError(leafId);
+    this.leafId = leafId;
+  }
+
+  /**
+   * Everything written after `cursor`, in file order.
+   *
+   * File order, not branch order, and that is the point: a client applying these in order ends up
+   * with every entry it lacks whichever branch they were written on, and the leaf it is told about
+   * separately decides what it shows. That is why a branch switch does not invalidate a cursor.
+   */
+  since(cursor: string | null): Entry[] {
+    if (cursor === null) return [...this.list];
+    const index = this.list.findIndex((entry) => entry.id === cursor);
+    if (index < 0) throw new UnknownCursorError(cursor);
+    return this.list.slice(index + 1);
+  }
+
+  /** Resolves once every queued append has reached the disk. Awaited by shutdown, and by tests. */
+  async flush(): Promise<void> {
+    await this.tail;
+  }
+}
+
+/**
+ * Reads a session's log, or opens an empty one.
+ *
+ * A missing file is a new conversation, not an error. An unreadable line is skipped and logged --
+ * see `parseEntryLine` for why that is the whole reason this format was chosen.
+ */
+export async function openSessionLog(sessionId: string, leafId?: string | null): Promise<SessionLog> {
+  const path = entriesPath(sessionId);
+  let raw = "";
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      void log("warn", "session log: unreadable file, starting empty", { sessionId, error: String(err) });
+    }
+    await mkdir(dirname(path), { recursive: true });
+    return new SessionLog(sessionId, [], leafId ?? null);
+  }
+
+  const entries: Entry[] = [];
+  const lines = raw.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const entry = parseEntryLine(lines[i]!, sessionId, i + 1);
+    if (entry) entries.push(entry);
+  }
+
+  // A file that does not end on a newline ends on a line nobody finished writing. Skipping it at
+  // read time is not enough: the next append would glue itself to that stump, and the entry that
+  // was supposed to repair the damage would be swallowed by it. Cut the stump off the file instead,
+  // so the only thing the interrupted write costs is the entry it never finished.
+  if (raw.length > 0 && !raw.endsWith("\n")) {
+    const keep = raw.lastIndexOf("\n") + 1;
+    await truncate(path, keep).catch((err) => {
+      void log("error", "session log: could not drop an unterminated line", { sessionId, error: String(err) });
+    });
+    void log("warn", "session log: dropped an unterminated last line", { sessionId, bytes: raw.length - keep });
+  }
+
+  return new SessionLog(sessionId, entries, leafId ?? null);
+}
