@@ -840,14 +840,22 @@ maintenant, il disparaît avec la cause.
 | **0** | ~~`sealDanglingToolCalls` au démarrage de run~~ **livré `3b09196`** | — | — |
 | **1** | ~~Ce document en `docs/session-log.md`~~ **livré `a026c32`** | — | — |
 | **2** | ~~`sessions/log.ts` : entrée, `append`, lecture tolérante, `branch`, `since`, `pathOf`~~ **livré `d592d1d`** | — | 1 |
-| **3** | `promptOf` / `displayOf`, `bridge.ts` écrit des entrées, phases persistées (+ `providerMeta`), compaction en `firstKeptEntryId` | 1,5 j | 2 |
+| **3a** | ~~`promptOf` (`sessions/projection.ts`) + `displayOf`/`pageOf` (`channels/my-claw-app/display.ts`), purs, testés~~ **livré `f83bf60`, `0262e36`** | — | 2 |
+| **3b** | `bridge.ts` écrit des entrées, phases persistées (+ `providerMeta`), `promptMessages` retiré | 1,5 j | 3a, 6 |
 | **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
 | **5** | Magasin de sorties d'outils + GC des orphelins | 0,5 j | 2 |
-| **6** | Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles) | 0,5 j | 3 |
+| **6** | ~~Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles)~~ **livré `6253c15`, `7616080`, `3334ff4`** | — | 2 |
 | **7** | `/branches`, `/fork` (+ feuille d'action pièces jointes), `/retry` | 1,5 j | 4 |
 | **8** | `/undo`, `/redo` (abort du run en cours) | 0,5 j | 7 |
 | **9** | Queues persistées (mailbox durable) | 0,5 j | 2 |
 | **10** | Snapshots fichiers multi-dépôts + restauration proposée dans `/undo` | 1,5 j | 8 |
+
+Le lot 6 est passé **devant** le lot 3b, contrairement à l'ordre initial : basculer le
+bridge sans que les données existantes sachent se relire rouvrirait chaque conversation
+vide. L'import ne dépend que du lot 2 et se vérifie contre l'ancien chemin (`promptOf` de
+l'import == `promptMessages` de l'original), ce que la bascule ne permet plus une fois
+faite. Le lot 3 s'est coupé en deux pour la même raison : les projections sont pures et
+livrables seules, la bascule ne l'est pas.
 
 **Chemin critique jusqu'à `/undo` : lots 1 à 8 = ~7 jours.**
 Avec snapshots : ~9 jours.
@@ -967,3 +975,67 @@ binaire → refus d'ouvrir, jamais de lecture optimiste (`harness.md` §7.3).
 
 Reste à surveiller, pas à décider maintenant : la taille d'un thread de deux ans. Le lot 5
 enlève 94 % du volume ; le reste est du texte.
+
+---
+
+# Annexe C — Journal de livraison
+
+## Ce qui tourne aujourd'hui
+
+Les entrées, les projections et la migration sont livrées et testées. **Rien ne les lit
+encore en production** : `store.ts`, `bridge.ts` et `sessions.ts` sont intacts, le
+comportement est inchangé. Le disque, lui, a changé : au boot, chaque `<id>.json` devient
+un `<id>/` et l'ancien fichier part dans `sessions-archive/`.
+
+| Fichier | Rôle | Tests |
+|---|---|---|
+| `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |
+| `sessions/projection.ts` | `promptOf`, `contextEntries` | 20 |
+| `sessions/import.ts` | `SessionData` → entrées, pur | 28 |
+| `sessions/meta.ts` | la moitié réglages, `storageVersion` | (couvert par migrate) |
+| `sessions/migrate.ts` | la passe one-shot, idempotente | 15 |
+| `channels/my-claw-app/display.ts` | `displayOf`, `pageOf` | 21 |
+
+## Mesures sur les vraies données
+
+Passe à blanc sur une copie du store réel (68 sessions, 53 MB) :
+
+- migration : **596 ms**, 68/68, 13 050 entrées, 0 échec
+- `promptOf` de l'import == `promptMessages` de l'original sur **les 68**, tour pour tour
+- aucun `tool_call` sans réponse dans les 68 projections
+- plus grosse session, 4 239 entrées : ouverture **63 ms**, `append` **0,007 ms**,
+  `promptOf` **6,6 ms** — contre 41,1 ms de `JSON.stringify` synchrone toutes les 2 s
+
+## Trois choses trouvées en construisant, pas en concevant
+
+**Le plancher de compaction ne se résout pas par timestamp.** La compaction insère son
+résumé au milieu du tableau avec l'horloge du moment où elle tourne : sur une session
+réelle ici le résumé est estampillé 18:15:35 et le tour juste après 18:14:17. Toute
+recherche par `ts` saute les tours qu'elle devait garder. Résolu par position. La leçon
+était déjà écrite ailleurs dans le code (« l'ordre du tableau fait foi, l'horloge est un
+indice ») et n'avait pas été appliquée là.
+
+**Une frontière de compaction n'a pas une géométrie mais deux.** Vivante, elle est
+ajoutée *après* les tours qu'elle couvre ; importée, elle siégeait *au milieu* du tableau
+qu'elle résumait. Même énoncé, deux positions. `contextEntries` garde donc « tout à partir
+du plancher » au lieu d'une tranche entre deux index, et les deux cas se confondent.
+
+**Une entrée qui doit en nommer une autre a besoin d'un instant qui n'existait pas.**
+`append` sérialise sa ligne immédiatement et aucune entrée n'est jamais réécrite : une
+référence croisée ne peut donc être résolue ni avant (l'id n'existe pas) ni après (la
+ligne est écrite). D'où `appendAll(payloads, patch)`, qui assigne ids et chaînage de tout
+un lot, laisse résoudre, puis écrit.
+
+## Ce qui reste, et dans quel ordre
+
+Le lot 3b (bascule du bridge) est le premier changement de comportement. Il touche 68
+sites sur 14 fichiers et n'est pas décomposable en états intermédiaires cohérents : tant
+que `session.messages` et le log coexistent, c'est exactement le double usage que la
+refonte supprime, payé deux fois. Il se fait donc d'un bloc, vérifié par la suite
+existante plus une passe à blanc comparant `promptOf` à `promptMessages` sur le store réel
+— la même méthode que le lot 6, et la dernière fois qu'elle est disponible : une fois la
+bascule faite, `promptMessages` n'existe plus pour servir de témoin.
+
+Trou connu, assumé : `sourceId` n'est pas reporté sur l'id d'entrée à l'import. Le faire
+obligerait `append` à accepter un id imposé, ce qui casse « le log seul attribue les ids ».
+Le seul cas où ça compte est un thread ouvert sur un appareil à l'instant de la migration.
