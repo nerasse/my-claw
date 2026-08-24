@@ -323,18 +323,55 @@ export class SessionLog {
     } as unknown as T;
     this.list.push(entry);
     this.leafId = entry.id;
-    const line = `${JSON.stringify(entry)}\n`;
+    this.write(`${JSON.stringify(entry)}\n`, 1);
+    return entry;
+  }
+
+  /** Queues one write behind the last. Never rejects: see the comment inside for why. */
+  private write(lines: string, count: number): void {
     this.tail = this.tail
       .catch(() => {})
-      .then(() => appendFile(this.file, line, "utf-8"))
+      .then(() => appendFile(this.file, lines, "utf-8"))
       .catch((err) => {
         // Deliberately not rethrown, and deliberately not recreating the directory: a write that
         // fails with ENOENT means the conversation was deleted under the run, and resurrecting it
         // one entry at a time is worse than losing the entry. Anything else is a disk problem the
         // next append will meet again, loudly.
-        void log("error", "session log: append failed", { sessionId: this.sessionId, id: entry.id, error: String(err) });
+        void log("error", "session log: append failed", { sessionId: this.sessionId, count, error: String(err) });
       });
-    return entry;
+  }
+
+  /**
+   * Appends a whole chain at once, and hands it back before a byte is written.
+   *
+   * The point is the gap between the two: an entry that has to name another entry cannot be
+   * written until that id exists, and `append` serialises its line immediately, so patching one
+   * afterwards would either be lost or force a rewrite -- and no entry is ever rewritten. Here the
+   * ids and the chain are assigned first, `patch` gets to resolve the cross-references, and only
+   * then does anything reach the disk. A compaction boundary importing an old session is the case
+   * that needs it: it sits before the entries it keeps, so the id it must carry does not exist yet
+   * when its turn comes.
+   *
+   * An input may carry its own `ts`, which is the other thing an import needs: a conversation from
+   * last month must keep last month's dates, and an id sorts by the time it encodes, so the id is
+   * built from that timestamp too rather than from the clock of the migration.
+   */
+  appendAll(inputs: ReadonlyArray<Provisioned & { ts?: number }>, patch?: (entries: Entry[]) => void): Entry[] {
+    const now = Date.now();
+    const entries: Entry[] = [];
+    let parentId = this.leafId;
+    for (const input of inputs) {
+      const ts = input.ts ?? now;
+      const entry = { ...input, id: newEntryId(ts), seq: this.nextSeq++, parentId, ts } as unknown as Entry;
+      entries.push(entry);
+      parentId = entry.id;
+    }
+    patch?.(entries);
+    for (const entry of entries) this.list.push(entry);
+    this.leafId = parentId;
+    const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
+    if (lines.length > 0) this.write(lines, entries.length);
+    return entries;
   }
 
   /**

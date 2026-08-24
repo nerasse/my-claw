@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdirSync } from "node:fs";
-import { entriesOf, boundaryIndexOf } from "../../src/sessions/import.ts";
+import { entriesOf, importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { promptMessages } from "../../src/sessions/store.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
@@ -22,8 +22,7 @@ function session(messages: SessionMessage[], extra: Partial<SessionData> = {}): 
 
 /** Appends the import into a real log, which is what gives the entries their ids and chain. */
 async function intoLog(data: SessionData): Promise<{ log: SessionLog; entries: readonly Entry[] }> {
-  const imported = entriesOf(data);
-  const boundaryAt = boundaryIndexOf(data, imported);
+  const { entries: imported, boundaryIndex } = importSession(data);
   const log = new SessionLog("import-test", [], null);
   const written: Entry[] = [];
   for (const payload of imported) {
@@ -31,9 +30,9 @@ async function intoLog(data: SessionData): Promise<{ log: SessionLog; entries: r
     written.push(log.append(rest as Parameters<typeof log.append>[0]));
   }
   // The boundary names an entry, and the entry only has an id once it is written: patch after.
-  if (boundaryAt >= 0) {
+  if (boundaryIndex >= 0) {
     const boundary = [...written].reverse().find((entry) => entry.type === "compaction");
-    if (boundary) (boundary as { firstKeptEntryId: string }).firstKeptEntryId = written[boundaryAt]!.id;
+    if (boundary) (boundary as { firstKeptEntryId: string }).firstKeptEntryId = written[boundaryIndex]!.id;
   }
   // Flushed here, not left in flight: the harness clears sessions/ between tests, and a write
   // landing after that is the swallowed ENOENT the log logs and moves on from.
@@ -190,22 +189,30 @@ describe("entriesOf: the compaction boundary", () => {
   });
 
   test("the boundary points at the first entry the old index kept", () => {
-    const data = compacted();
-    const imported = entriesOf(data);
-    // The entry after the summary: the old index pointed at the summary turn itself, and the
-    // boundary is now that turn rather than a message before it.
-    expect(boundaryIndexOf(data, imported)).toBe(3);
+    // Resolved by position, never by timestamp: compaction stamps its summary with the clock of
+    // the moment it ran, so on a real session here the summary is stamped later than the turn
+    // right after it, and a ts-based match walks past the turns it was supposed to keep.
+    expect(importSession(compacted()).boundaryIndex).toBe(3);
+  });
+
+  test("the floor is found even when the summary is stamped after the turns it keeps", async () => {
+    // Measured on a real session: compaction inserts its summary into the middle of the array with
+    // the clock of the moment it ran, so the summary is stamped 18:15:35 while the turn right
+    // after it is stamped 18:14:17. A ts-based match walked straight past the kept turns.
+    const summary = userMsg("[Prior context summarized]\nresume\n\n[End of summary — respond to the message below]", 90, { summaryOf: 2 });
+    const data = session([userMsg("vieux", 1), assistantMsg("vieux 2", 2), summary, assistantMsg("garde", 3)], { promptBase: 2 });
+    const { entries, boundaryIndex } = importSession(data);
+    expect(boundaryIndex).toBe(3);
+    expect(entries[boundaryIndex]).toMatchObject({ type: "phase", text: "garde" });
   });
 
   test("a session with no boundary has no index to resolve", async () => {
-    const data = session([userMsg("q", 1)]);
-    expect(boundaryIndexOf(data, entriesOf(data))).toBe(-1);
+    expect(importSession(session([userMsg("q", 1)])).boundaryIndex).toBe(-1);
   });
 
   test("an index past the end reads as no boundary", () => {
     // A session rewritten under a stale index. `promptMessages` treats it the same way.
-    const data = session([userMsg("q", 1)], { promptBase: 99 });
-    expect(boundaryIndexOf(data, entriesOf(data))).toBe(-1);
+    expect(importSession(session([userMsg("q", 1)], { promptBase: 99 })).boundaryIndex).toBe(-1);
   });
 });
 

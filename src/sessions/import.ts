@@ -76,7 +76,27 @@ function parseArguments(raw: string): Record<string, unknown> {
  * command that outlived the turns it was typed on used to become unreachable.
  */
 export function entriesOf(session: SessionData): ImportedEntry[] {
+  return importSession(session).entries;
+}
+
+export interface ImportedSession {
+  entries: ImportedEntry[];
+  /**
+   * Where the compaction boundary's floor lands in `entries`, or -1 when there is none.
+   *
+   * Resolved by position, never by timestamp, and that is not a detail: compaction inserts its
+   * summary into the middle of the array with the clock of the moment it ran, so on a real session
+   * here the summary is stamped 18:15:35 while the turn right after it is stamped 18:14:17. Any
+   * ts-based match walks straight past the turns it was supposed to keep. The array order is the
+   * truth; the clock is a hint.
+   */
+  boundaryIndex: number;
+}
+
+export function importSession(session: SessionData): ImportedSession {
   const out: ImportedEntry[] = [];
+  /** First entry each message produced, so an index into `messages` can become one into `out`. */
+  const startOfMessage: number[] = [];
   let clock = msOf(session.createdAt, 0);
 
   // Each aside carries the entries it produces, so the merge below only compares timestamps.
@@ -116,6 +136,7 @@ export function entriesOf(session: SessionData): ImportedEntry[] {
     const ts = msOf(message.timestamp, clock);
     clock = ts;
     flushAsidesUpTo(ts);
+    startOfMessage[index] = out.length;
 
     if (message.role === "tool") continue;
 
@@ -183,19 +204,24 @@ export function entriesOf(session: SessionData): ImportedEntry[] {
   }
 
   flushAsidesUpTo(undefined);
-  return out;
+
+  const base = session.promptBase ?? 0;
+  // A boundary past the end is a session rewritten under a stale index: no boundary at all, which
+  // is exactly what `promptMessages` does with it.
+  if (base <= 0 || base >= session.messages.length) return { entries: out, boundaryIndex: -1 };
+
+  // The old index pointed at the summary turn itself, and the summary is now the boundary entry.
+  // The floor is therefore the first entry of the first message after it that produced one -- a
+  // turn can produce none (a `tool` message folds into the call above it), so this walks forward.
+  let boundaryIndex = -1;
+  for (let index = base + 1; index < session.messages.length; index++) {
+    const start = startOfMessage[index];
+    if (start !== undefined && start < out.length) {
+      boundaryIndex = start;
+      break;
+    }
+  }
+  return { entries: out, boundaryIndex };
 }
 
-/**
- * Which imported entry the compaction boundary should keep from, as an index into the result.
- *
- * Separate from `entriesOf` because the answer is an id the log assigns at append time: the writer
- * appends the entries, notes the id at this index, and patches the boundary before appending it.
- * Returns -1 when the session had no boundary, or one past the end of what it held.
- */
-export function boundaryIndexOf(session: SessionData, entries: readonly ImportedEntry[]): number {
-  const base = session.promptBase ?? 0;
-  if (base <= 0 || base >= session.messages.length) return -1;
-  const keptTs = msOf(session.messages[base]!.timestamp, 0);
-  return entries.findIndex((entry) => entry.prompt && entry.type !== "compaction" && entry.ts >= keptTs);
-}
+

@@ -324,3 +324,76 @@ describe("session log: paths", () => {
     await writeFile(file, "", "utf-8");
   });
 });
+
+describe("session log: appendAll", () => {
+  test("the chain is handed over before a byte is written", async () => {
+    // The one moment a cross-reference can be resolved: an entry that must name another cannot be
+    // written until that id exists, and no entry is ever rewritten.
+    const log = await openSessionLog(freshId());
+    let seenIds: string[] = [];
+    const written = log.appendAll(
+      [
+        { type: "user", prompt: true, text: "un" },
+        { type: "user", prompt: true, text: "deux" },
+      ],
+      (entries) => {
+        seenIds = entries.map((e) => e.id);
+        (entries[0] as { text: string }).text = `pointe vers ${entries[1]!.id}`;
+      },
+    );
+    await log.flush();
+    expect(seenIds).toEqual(written.map((e) => e.id));
+    expect((written[0] as { text: string }).text).toBe(`pointe vers ${written[1]!.id}`);
+  });
+
+  test("what the patch changed is what reaches the disk", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.appendAll([{ type: "user", prompt: true, text: "avant" }], (entries) => {
+      (entries[0] as { text: string }).text = "apres";
+    });
+    await log.flush();
+    expect((await openSessionLog(id)).entries().map((e) => (e as { text: string }).text)).toEqual(["apres"]);
+  });
+
+  test("the batch chains onto what is already there and moves the leaf", async () => {
+    const log = await openSessionLog(freshId());
+    const first = log.append<UserEntry>({ type: "user", prompt: true, text: "avant" });
+    const batch = log.appendAll([{ type: "user", prompt: true, text: "un" }, { type: "user", prompt: true, text: "deux" }]);
+    await log.flush();
+    expect(batch[0]!.parentId).toBe(first.id);
+    expect(batch[1]!.parentId).toBe(batch[0]!.id);
+    expect(log.leaf()).toBe(batch[1]!.id);
+    expect(log.path()).toHaveLength(3);
+  });
+
+  test("an input keeps its own timestamp, and its id encodes it", async () => {
+    // A conversation from last month must keep last month's dates, and an id sorts by the time it
+    // encodes -- built from the migration's clock, an imported session would sort as brand new.
+    const log = await openSessionLog(freshId());
+    const ts = Date.parse("2025-01-02T03:04:05.678Z");
+    const [entry] = log.appendAll([{ type: "user", prompt: true, text: "vieux", ts }]);
+    await log.flush();
+    expect(entry!.ts).toBe(ts);
+    expect(parseInt(entry!.id.slice(0, 8) + entry!.id.slice(9, 13), 16)).toBe(ts);
+  });
+
+  test("an empty batch writes nothing and leaves the leaf alone", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const first = log.append<UserEntry>({ type: "user", prompt: true, text: "seul" });
+    expect(log.appendAll([])).toEqual([]);
+    await log.flush();
+    expect(log.leaf()).toBe(first.id);
+    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+  });
+
+  test("seq stays dense across a batch, so a cursor keeps working", async () => {
+    const log = await openSessionLog(freshId());
+    log.append<UserEntry>({ type: "user", prompt: true, text: "a" });
+    log.appendAll([{ type: "user", prompt: true, text: "b" }, { type: "user", prompt: true, text: "c" }]);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "d" });
+    await log.flush();
+    expect(log.entries().map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+  });
+});
