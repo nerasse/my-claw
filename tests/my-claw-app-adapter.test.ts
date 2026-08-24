@@ -1286,6 +1286,26 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.hasMore, true);
   });
 
+  test("session.history says whether a run is in flight, both ways", async () => {
+    // The app makes this page authoritative over its own run flag, which `session.list` seeds on a
+    // separate round trip: a page that answered nothing let whichever reply landed first decide
+    // what of the screen to keep, and the sealed bubbles of the turn in progress were the loss.
+    const live = new Set<string>();
+    adapter.onRunActive((sessionId) => live.has(sessionId));
+    store.historyMap.set("a", [{ id: "h1", role: "user", text: "bonjour", ts: "t1" }]);
+
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a" }));
+    let frame = (await nextFrame(client)) as { type: string; activeRun?: boolean };
+    assert.equal(frame.type, "chat.history");
+    assert.equal(frame.activeRun, false);
+
+    live.add(store.resolveSessionId(DEVICE_ID, "a"));
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a" }));
+    frame = (await nextFrame(client)) as { type: string; activeRun?: boolean };
+    assert.equal(frame.type, "chat.history");
+    assert.equal(frame.activeRun, true);
+  });
+
   test("session.history with an unsafe threadId returns an error frame", async () => {
     client.ws.send(JSON.stringify({ type: "session.history", threadId: "../x" }));
     const frame = (await nextFrame(client)) as { type: string };

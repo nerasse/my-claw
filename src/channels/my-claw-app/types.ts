@@ -1290,6 +1290,13 @@ export interface MyClawAppChatHistory {
    * draft is wanted, and a page reaching backwards has no business carrying it -- docs/draft-sync.md.
    */
   draft?: string;
+  /**
+   * Whether a run is in flight for this conversation, as of this page. Carried on the page rather
+   * than read from `session.list`: the two are separate round trips, and the app decides what of
+   * its own screen to keep from this very answer. When the list won that race the flag was still
+   * false, and every sealed bubble of the turn in progress was dropped as stale.
+   */
+  activeRun?: boolean;
 }
 
 /**
