@@ -843,7 +843,7 @@ maintenant, il disparaît avec la cause.
 | **3a** | ~~`promptOf` (`sessions/projection.ts`) + `displayOf`/`pageOf` (`channels/my-claw-app/display.ts`), purs, testés~~ **livré `f83bf60`, `0262e36`** | — | 2 |
 | **3b** | `bridge.ts` écrit des entrées, phases persistées (+ `providerMeta`), `promptMessages` retiré | 1,5 j | 3a, 6 |
 | **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
-| **5** | Magasin de sorties d'outils + GC des orphelins | 0,5 j | 2 |
+| **5** | ~~Magasin de sorties d'outils + GC des orphelins~~ **livré `dc45495`** | — | 2 |
 | **6** | ~~Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles)~~ **livré `6253c15`, `7616080`, `3334ff4`** | — | 2 |
 | **7** | `/branches`, `/fork` (+ feuille d'action pièces jointes), `/retry` | 1,5 j | 4 |
 | **8** | `/undo`, `/redo` (abort du run en cours) | 0,5 j | 7 |
@@ -994,7 +994,9 @@ un `<id>/` et l'ancien fichier part dans `sessions-archive/`.
 | `sessions/import.ts` | `SessionData` → entrées, pur | 28 |
 | `sessions/meta.ts` | la moitié réglages, `storageVersion` | (couvert par migrate) |
 | `sessions/migrate.ts` | la passe one-shot, idempotente | 15 |
+| `sessions/tool-output.ts` | spill au-delà de 50 KB, lecture, GC des orphelins | 14 |
 | `channels/my-claw-app/display.ts` | `displayOf`, `pageOf` | 21 |
+| `tests/sessions/prompt-conformance.test.ts` | le prompt gelé en littéraux, sans témoin | 15 |
 
 ## Mesures sur les vraies données
 
