@@ -598,3 +598,50 @@ test("one-shot spawn emits subagent:spawn and subagent:complete with the parent 
   }
 });
 
+
+test("a send driven by a tool call runs the same lifecycle as a spawn", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const PARENT = "my-claw-app/thread/owner/main";
+
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "ack" } }] }),
+    { status: 200 },
+  ) as never);
+
+  const events: string[] = [];
+  const onSpawn = (ev: { id: string; action: string; toolCallId?: string; mode: string; parentSessionId: string }): void => {
+    events.push(`spawn:${ev.action}:${ev.toolCallId ?? "-"}:${ev.mode}:${ev.parentSessionId}`);
+  };
+  const onComplete = (ev: { parentSessionId: string }): void => { events.push(`complete:${ev.parentSessionId}`); };
+  hooks.on("subagent:spawn", onSpawn);
+  hooks.on("subagent:complete", onComplete);
+
+  try {
+    const existing = await reg.listExistingIds();
+    const { id } = await runner.spawn({ displayName: "worker", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: PARENT, visibility: "global" });
+    events.length = 0;
+
+    // A stream is only ever resolved after the spawn event, since the app channel creates the
+    // sub-agent's streamer while handling it.
+    const asked: string[] = [];
+    const provider = (subagentId: string): undefined => { asked.push(`${subagentId}:${events.length}`); return undefined; };
+
+    const sent = await runner.send(id, "again", undefined, createMessage(), reg, PARENT, undefined, undefined, "send-call-1", provider);
+    assert.equal(sent, "ack");
+    assert.deepEqual(events, [`spawn:send:send-call-1:session:${PARENT}`, `complete:${PARENT}`]);
+    assert.deepEqual(asked, [`${id}:1`]);
+
+    // A human driving the sub-agent's own thread has no parent card, so it stays silent.
+    events.length = 0;
+    assert.equal(await runner.send(id, "and again", undefined, createMessage(), reg, PARENT), "ack");
+    assert.deepEqual(events, []);
+
+    await deleteSession(id);
+  } finally {
+    hooks.off("subagent:spawn", onSpawn);
+    hooks.off("subagent:complete", onComplete);
+    fetchMock.restore();
+  }
+});

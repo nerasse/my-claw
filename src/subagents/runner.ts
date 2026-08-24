@@ -243,7 +243,7 @@ export class SubAgentRunner {
       await this.persistSession(id, session);
       indexSessionArchive(session);
 
-      hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
+      hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
       const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream);
       const result = await (enqueue ? enqueue(id, run) : run());
@@ -294,6 +294,11 @@ export class SubAgentRunner {
     // opened the sub-agent as a chat); a parent-driven send passes none and stays non-streaming,
     // which is what keeps `spawn`'s contract unchanged.
     stream?: SubAgentStream,
+    // The `send` tool call this run belongs to, when a model drove it. Present only on that path:
+    // a human typing in the sub-agent's own thread has the child thread as its UI and no parent
+    // card to annotate, so the lifecycle events below would target a card that does not exist.
+    toolCallId?: string,
+    streamProvider?: (id: string) => SubAgentStream | undefined,
   ): Promise<string> {
     return this.runTracked(id, signal, (trackedSignal) => registry.enqueue(id, async () => {
       const session = await loadSession(id);
@@ -320,8 +325,35 @@ export class SubAgentRunner {
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
+      // Same lifecycle as `spawn`, so a `send` card gets the same statuses, the same persisted
+      // state and the same roster pushes. `action` is the only difference on the wire.
+      const tracked = toolCallId !== undefined;
+      if (tracked) {
+        hooks.emit("subagent:spawn", {
+          id,
+          displayName: session.meta.displayName || id.slice("subagent/".length),
+          type: session.meta.type,
+          mode: "session",
+          parentSessionId: callerSessionId,
+          toolCallId,
+          action: "send",
+        });
+      }
+      // Resolved after the event, not before: the app channel creates the sub-agent's streamer
+      // while handling the spawn event, so asking any earlier always yields undefined.
+      const runStream = stream ?? (tracked ? streamProvider?.(id) : undefined);
       try {
-        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, stream, messageId);
+        const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, runStream, messageId);
+        if (tracked) hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId: callerSessionId });
+        return result;
+      } catch (err) {
+        // executeRunWithSession already reported this to the session's spawner; a send can come
+        // from another conversation, and that one owns the card being watched here.
+        if (tracked && callerSessionId !== (session.meta.parentSessionId ?? "")) {
+          if (isAbort(err, trackedSignal)) hooks.emit("subagent:aborted", { id, parentSessionId: callerSessionId });
+          else hooks.emit("subagent:error", { id, error: err, parentSessionId: callerSessionId });
+        }
+        throw err;
       } finally {
         // In the finally, not after: a failed run used to lose the question too, and the thread
         // came back from disk with no trace that anything had been sent.
@@ -493,7 +525,7 @@ export class SubAgentRunner {
       await this.persistSession(id, session);
       indexSessionArchive(session);
 
-      hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
+      hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
       this.activeCount += 1;
       try {

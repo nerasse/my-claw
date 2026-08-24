@@ -2,7 +2,7 @@ import { currentRunId } from "../../utils/run-context.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallInfo, ToolCallResult } from "../../agent/tool-status.ts";
 import { toolCardId } from "./types.ts";
-import type { MyClawAppServerFrame } from "./types.ts";
+import type { MyClawAppServerFrame, MyClawAppSpawnAction } from "./types.ts";
 
 /** Tool output is a debugging view, not context: cap it so a 2 MB result never hits the socket. */
 export const TOOL_OUTPUT_LIMIT = 4000;
@@ -108,13 +108,14 @@ export class MyClawAppStreamer {
   /**
    * A sub-agent spawned mid-run. Annotates the `spawn` tool card the start frame already opened
    * (linked by toolCallId) with its sub-agent identity and running state, or opens a standalone
-   * spawn card for a programmatic spawn (`send()`) that has no tool call.
+   * spawn card when there is no tool call to annotate.
    */
   async appendSpawnStart(info: {
     subagentId: string;
     displayName: string;
     type: string;
     mode: string;
+    action: MyClawAppSpawnAction;
     toolCallId?: string;
   }): Promise<void> {
     return this.enqueue(async () => {
@@ -132,6 +133,7 @@ export class MyClawAppStreamer {
         displayName: info.displayName,
         agentType: info.type,
         mode: info.mode,
+        action: info.action,
         ts: new Date().toISOString(),
       });
     });

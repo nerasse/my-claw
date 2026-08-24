@@ -288,8 +288,14 @@ export interface HookEventMap {
     mode: string;
     /** The parent run that asked for this spawn; routes the event to its streamer/roster. */
     parentSessionId: string;
-    /** The `spawn` tool call that produced this, if any. Lets a live card target the tool-start card. */
+    /** The `spawn` or `send` tool call that produced this, if any. Lets a live card target the tool-start card. */
     toolCallId?: string;
+    /**
+     * `spawn` created the sub-agent, `send` drove an existing one. Both go through the same
+     * lifecycle so the card, the persisted state and the roster behave identically; only the
+     * wording differs.
+     */
+    action: "spawn" | "send";
   };
   "subagent:complete": { id: string; resultLength: number; parentSessionId: string };
   "subagent:error": { id: string; error: unknown; parentSessionId: string };

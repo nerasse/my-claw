@@ -1,10 +1,14 @@
 import { type Tool, type ToolResult, str } from "./types.ts";
-import { SubAgentRunner } from "../subagents/runner.ts";
+import { SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 
-export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistry): Tool {
+export function createSendTool(
+  runner: SubAgentRunner,
+  registry: SubAgentRegistry,
+  streamProvider?: (subagentId: string) => SubAgentStream | undefined,
+): Tool {
   return {
     name: "send",
     description: "Send a message to an existing persistent sub-agent. The sub-agent loads its full session history, processes the message, and saves the updated session. Blocks if the sub-agent is already running.",
@@ -39,7 +43,10 @@ export function createSendTool(runner: SubAgentRunner, registry: SubAgentRegistr
         }
         const signal = args["__signal"] as AbortSignal | undefined;
         const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
-        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal);
+        // Carried for the same reason as in `spawn`: it is what ties the sub-agent's lifecycle to
+        // the card this tool call painted, live and in replayed history.
+        const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
+        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal, undefined, toolCallId, streamProvider);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);

@@ -963,6 +963,16 @@ for it to drift. The fallback applies only to a card whose own call has not retu
 invents a successful terminal state for an idle legacy card: a session sub-agent is reusable, so an
 idle roster entry identifies neither that this call is the running one nor how it ended.
 
+`send` runs the same lifecycle as `spawn`, and the `action` field (`spawn` or `send`) is the only
+difference on the wire. It used to run none of it: the tool carried no call id, emitted no
+lifecycle event and got no streamer, so driving an existing sub-agent painted a plain tool card
+with no status, no link to the child thread and nothing replayed after a reload, while the very
+same sub-agent shown by `spawn` had all of it. The events are emitted only when the tool call id
+is present, which is exactly the model-driven path: a human typing in the sub-agent's own thread
+has that thread as its UI and no parent card to annotate. A send from a conversation other than
+the spawner also reports its terminal state to the caller, since the card being watched belongs to
+whoever sent the message, not to whoever created the agent.
+
 ### Several surfaces per device
 
 A device may hold **as many sockets as it opens**, and every broadcast reaches all of them

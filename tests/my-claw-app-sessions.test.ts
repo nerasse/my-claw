@@ -114,6 +114,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
             displayName: "researcher",
             agentType: "research",
             mode: "run",
+            action: "spawn",
             status: "complete",
             resultLength: 17,
             startedAt: "2026-01-01T00:00:02.000Z",
@@ -129,6 +130,37 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(card.running, undefined);
     assert.equal(card.spawn?.status, "complete");
     assert.equal(card.spawn?.subagentId, "subagent/researcher-1");
+  });
+
+  test("replays a running send card the same way as a spawn card", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [{
+          id: "send-call",
+          name: "send",
+          arguments: '{"id":"subagent/researcher-1","message":"again"}',
+          spawn: {
+            subagentId: "subagent/researcher-1",
+            displayName: "researcher",
+            agentType: "research",
+            mode: "session",
+            action: "send",
+            status: "running",
+            startedAt: "2026-01-01T00:00:02.000Z",
+          },
+        }],
+      },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const card = entries.find((entry) => entry.role === "tool");
+    assert.ok(card && card.role === "tool");
+    assert.equal(card.running, true);
+    assert.equal(card.spawn?.action, "send");
+    assert.equal(card.spawn?.status, "running");
   });
 
   test("records a spawn lifecycle on its matching tool call and keeps terminal state sticky", () => {

@@ -722,6 +722,7 @@ async function main() {
       displayName?: string;
       type?: string;
       mode?: string;
+      action?: "spawn" | "send";
       resultLength?: number;
       error?: unknown;
       status: SessionSubAgentStatus;
@@ -738,6 +739,7 @@ async function main() {
           ...(event.displayName ? { displayName: event.displayName } : {}),
           ...(event.type ? { agentType: event.type } : {}),
           ...(event.mode ? { mode: event.mode } : {}),
+          ...(event.action ? { action: event.action } : {}),
           ...(event.resultLength !== undefined ? { resultLength: event.resultLength } : {}),
           ...(event.error !== undefined ? { error: String(event.error) } : {}),
         });
@@ -2183,11 +2185,11 @@ async function main() {
               parentSessionId === runSessionId
                 ? active
                 : subAgentContexts.has(parentSessionId) ? subAgentStreamers.get(parentSessionId) : undefined;
-            const onSubagentSpawn = (ev: { id: string; displayName: string; type: string; mode: string; parentSessionId: string; toolCallId?: string }): void => {
+            const onSubagentSpawn = (ev: { id: string; displayName: string; type: string; mode: string; parentSessionId: string; toolCallId?: string; action: "spawn" | "send" }): void => {
               const owner = parentStreamer(ev.parentSessionId);
               const context = ev.parentSessionId === runSessionId ? msg : subAgentContexts.get(ev.parentSessionId);
               if (!owner || !context) return;
-              void owner.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
+              void owner.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, action: ev.action, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
               streamSubAgent(ev, context);
             };
             const onSubagentComplete = (ev: { id: string; resultLength: number; parentSessionId: string; toolCallId?: string }): void => {
@@ -2585,7 +2587,7 @@ function registerSubAgentTools(
     () => agentRegistry.list(),
     streamProvider,
   ));
-  registry.register(createSendTool(runner, subRegistry));
+  registry.register(createSendTool(runner, subRegistry, streamProvider));
   registry.register(createListAgentsTool(runner, subRegistry));
   registry.register(createKillAgentTool(runner));
   registry.register(createResetAgentTool(runner));

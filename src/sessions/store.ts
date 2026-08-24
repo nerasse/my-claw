@@ -24,6 +24,12 @@ export interface SessionSubAgentState {
   displayName: string;
   agentType: string;
   mode: string;
+  /**
+   * Which tool opened this card: `spawn` created the sub-agent, `send` drove an existing one.
+   * The lifecycle is identical either way -- this only decides the wording, so a `send` card is
+   * not read as a second creation.
+   */
+  action: "spawn" | "send";
   status: SessionSubAgentStatus;
   resultLength?: number;
   error?: string;
@@ -305,6 +311,7 @@ export function recordSessionSubAgentState(session: SessionData, update: Session
     displayName: update.displayName ?? current?.displayName ?? update.subagentId,
     agentType: update.agentType ?? current?.agentType ?? "unknown",
     mode: update.mode ?? current?.mode ?? "run",
+    action: update.action ?? current?.action ?? "spawn",
     status: update.status,
     startedAt: current?.startedAt ?? now,
     ...(update.resultLength !== undefined ? { resultLength: update.resultLength } : current?.resultLength !== undefined ? { resultLength: current.resultLength } : {}),

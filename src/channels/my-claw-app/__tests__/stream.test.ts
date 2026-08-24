@@ -23,7 +23,7 @@ describe("MyClawAppStreamer live spawn cards", () => {
       subagentId: "subagent/run-123",
       displayName: "researcher",
       type: "research",
-      mode: "run",
+      mode: "run", action: "spawn",
       toolCallId: "model-tool-1",
     });
     expect(frames).toHaveLength(1);
@@ -44,7 +44,7 @@ describe("MyClawAppStreamer live spawn cards", () => {
       subagentId: "subagent/run-456",
       displayName: "coder",
       type: "general",
-      mode: "session",
+      mode: "session", action: "spawn",
       toolCallId: "model-tool-1",
     });
     const frame = frames.find((f) => f.type === "chat.spawn.start") as
@@ -70,7 +70,7 @@ describe("MyClawAppStreamer live spawn cards", () => {
       subagentId: "subagent/run-789",
       displayName: "researcher",
       type: "research",
-      mode: "run",
+      mode: "run", action: "spawn",
     });
     await streamer.appendSpawnEnd({
       subagentId: "subagent/run-789",
@@ -92,7 +92,7 @@ describe("MyClawAppStreamer live spawn cards", () => {
       subagentId: "subagent/run-999",
       displayName: "x",
       type: "general",
-      mode: "run",
+      mode: "run", action: "spawn",
     });
     expect(frames.filter((f) => f.type === "chat.spawn.start")).toHaveLength(0);
   });

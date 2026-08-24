@@ -866,11 +866,16 @@ export type MyClawAppClientFrame =
 
 export type MyClawAppSpawnStatus = "running" | "complete" | "error" | "aborted";
 
+/** Which tool opened the card. `spawn` and `send` share one lifecycle and differ only in label. */
+export type MyClawAppSpawnAction = "spawn" | "send";
+
 export interface MyClawAppSpawnState {
   subagentId: string;
   displayName: string;
   agentType: string;
   mode: string;
+  /** `spawn` created the sub-agent, `send` drove an existing one. Wording only: same lifecycle. */
+  action: MyClawAppSpawnAction;
   status: MyClawAppSpawnStatus;
   resultLength?: number;
   error?: string;
@@ -938,6 +943,7 @@ export interface MyClawAppSpawnStart {
   displayName: string;
   agentType: string;
   mode: string;
+  action: MyClawAppSpawnAction;
   ts: string;
 }
 

@@ -125,7 +125,7 @@ describe("MyClawAppStreamer media refs", () => {
   test("abort settles open tool cards and spawn cards instead of leaving them spinning", async () => {
     const { streamer, frames } = collect();
     await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep 30" } }]);
-    await streamer.appendSpawnStart({ subagentId: "subagent/sleep-probe", displayName: "sleep-probe", type: "general", mode: "run", toolCallId: "tu_1" });
+    await streamer.appendSpawnStart({ subagentId: "subagent/sleep-probe", displayName: "sleep-probe", type: "general", mode: "run", action: "spawn", toolCallId: "tu_1" });
     await streamer.abort("stopped by owner");
 
     const toolEnds = frames.filter((f) => f.type === "chat.tool") as { id: string; name: string; ok: boolean; output: string }[];
