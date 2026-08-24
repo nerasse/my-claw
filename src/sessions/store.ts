@@ -457,13 +457,16 @@ export interface SessionData {
   /**
    * Effort of the scope this run belongs to (a cron job's own pin). Sits under the session's
    * `/effort` and under a tag's pin: it is the config of the run, not a per-chat choice. Never
-   * persisted: a cron session is deleted after each run, exactly like `scopeOverride`.
+   * persisted: the scheduler sets it from the job before each run, exactly like `scopeOverride`,
+   * and a run session outlives its run (the app opens it as a chat), so a persisted copy would
+   * outlive the job settings it was taken from.
    */
   scopeEffort?: import("../core/config.ts").EffortLevel;
   /**
    * Per-job scope of a cron run, set by the scheduler from the job's own fields and slotted
    * above `agents.cron` when the agent's scope is resolved. Never persisted: a cron session is
-   * deleted after each run, so the override lives exactly as long as the run it belongs to.
+   * set again from the job before each run, so the override lives exactly as long as the run it
+   * belongs to. The session file itself stays: `pruneSessions` keeps the last 25 per job.
    */
   scopeOverride?: {
     skills?: string[];
