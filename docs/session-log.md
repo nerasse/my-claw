@@ -1108,3 +1108,26 @@ un leaf, ce qui est la même information sans dépendre de la longueur d'un tabl
 `tests/sessions/prompt-conformance.test.ts` gèle le prompt attendu en littéraux, sans
 comparaison à `promptMessages` — il survit donc à la suppression de son propre sujet. Le
 dernier bloc du fichier, lui, compare encore les deux chemins : il part avec eux.
+
+## Comment 3b-iv se fait : d'un bloc, sans double écriture
+
+Deux voies existaient. La double écriture transitoire — le bridge alimente `messages` *et*
+le log, avec une assertion d'égalité en fin de run — aurait permis de valider le
+`RunRecorder` contre de vrais runs avant que quoi que ce soit en dépende. C'est un shim de
+compatibilité, que `AGENTS.md` interdit, et l'exception n'a pas été prise : un shim daté
+reste un shim, et celui-ci demandait de maintenir deux écritures cohérentes dans les huit
+sites les plus délicats du fichier — soit exactement le double usage que la refonte
+supprime, réintroduit là où il coûte le plus cher.
+
+**Retenu : un seul diff.** `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts`, plus
+les tests. Le filet n'est pas une double écriture mais
+`tests/sessions/prompt-conformance.test.ts`, qui gèle le prompt attendu en littéraux et ne
+dépend donc pas du chemin qu'il vérifie.
+
+**Volume mesuré : 27 fichiers de tests** touchent `session.messages` (et non 41 : le
+premier comptage incluait `src/**/__tests__/` et des occurrences du mot sans rapport).
+C'est le gros du diff, pas les 14 sites de production.
+
+Aucun helper de test ne construit de session : il n'y a donc pas de point unique où
+absorber le changement, chaque fichier porte ses propres fixtures. C'est ce qui rend le
+travail long plutôt que difficile.
