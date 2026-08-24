@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, promptMessages } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, promptMessages, markSessionDirty } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
@@ -89,6 +89,7 @@ function accumulateUsage(
   if (historyLength !== undefined) {
     session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength, pruned) ?? session.lastPrompt;
   }
+  markSessionDirty(session);
   if (!session.tokenUsage) {
     session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
   }
@@ -668,6 +669,15 @@ export class AgentBridge implements AgentBackend {
           budgetRemaining: budget.remaining,
         });
 
+        // A turn cut on `length` stops mid-serialization, so the last tool call carries arguments
+        // the provider never finished writing. The lenient JSON parse that follows can make those
+        // validate: `{"path":"x.ts","content":"half of` recovers as a shorter string rather than
+        // as an error, and the write goes through with a truncated payload. `incomplete` does not
+        // cover this, by construction: it requires no tool calls at all (llm/provider.ts).
+        //
+        // The calls are reported back to the model as failed instead of executed. The model then
+        // sees why and reissues them, which is what a tool error is for.
+        const truncatedCalls = response.finishReason === "length";
         const assistantToolCalls = toOpenAiToolCalls(response.toolCalls);
 
         // `providerMeta` rides on the in-memory prompt only, never on `persistedAssistant` below:
@@ -704,6 +714,21 @@ export class AgentBridge implements AgentBackend {
         session.messages.push(persistedAssistant);
 
         const executeOne = async (tc: typeof response.toolCalls[number]) => {
+          if (truncatedCalls) {
+            void log("warn", "refused a tool call from a truncated turn", {
+              ...runLogData(message, session),
+              tool: tc.name,
+              toolCallId: tc.id,
+            });
+            return {
+              tc,
+              result: {
+                content: "Error: the model's turn was cut off by the output limit, so this call's arguments are incomplete. It was not executed. Reissue it, and split the work if the arguments were long.",
+                success: false,
+              },
+              durationMs: 0,
+            };
+          }
           const toolGate = await hooks.check("gate:tool:before", {
             toolName: tc.name,
             args: tc.arguments,
@@ -800,6 +825,8 @@ export class AgentBridge implements AgentBackend {
           toolExecutions += 1;
           const persistedCall = persistedAssistant.toolCalls.find((call) => call.id === tc.id);
           if (persistedCall) {
+            // In place, so the autosave's own dirty mark is what carries it to disk.
+            markSessionDirty(session);
             (persistedCall as { durationMs?: number }).durationMs = durationMs;
           }
           let transformedResult = (await hooks.transform("transform:tool:result", {

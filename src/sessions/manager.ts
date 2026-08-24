@@ -7,6 +7,8 @@ import {
   listSessionIdsByPrefix,
   cronThreadToSession,
   subagentThreadToSession,
+  isSessionDirty,
+  clearSessionDirty,
   type SessionData,
 } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
@@ -249,6 +251,9 @@ export class SessionManager {
     if (!session) return;
     await this.queueWrite(sessionId, async () => {
       const messageCount = session.messages.length;
+      // Cleared before the write, not after: a mutation landing while the file is being written
+      // must leave the session dirty for the next tick rather than be marked as saved.
+      clearSessionDirty(session);
       await saveSession(sessionId, session);
       if (this.sessions.get(sessionId) === session) this.savedCounts.set(sessionId, messageCount);
       hooks.emit("session:persisted", { sessionId, messageCount });
@@ -269,13 +274,18 @@ export class SessionManager {
   }
 
   /**
-   * Writes every cached session whose message count moved since its last write. A failure is
-   * logged and skipped rather than thrown: the tick is fire-and-forget, and the next one retries.
+   * Writes every cached session that moved since its last write. A failure is logged and skipped
+   * rather than thrown: the tick is fire-and-forget, and the next one retries.
+   *
+   * Two signals, because the message count alone is blind to a mutation that does not append: a
+   * tool duration written back, a sub-agent state settling, usage accumulated. Those used to
+   * survive a clean shutdown (`flushAll` writes regardless) and be lost to a kill.
    */
   async flushDirty(): Promise<void> {
     for (const sessionId of [...this.sessions.keys()]) {
       const session = this.sessions.get(sessionId);
-      if (!session || this.savedCounts.get(sessionId) === session.messages.length) continue;
+      if (!session) continue;
+      if (this.savedCounts.get(sessionId) === session.messages.length && !isSessionDirty(session)) continue;
       try {
         await this.persist(sessionId);
       } catch (err) {

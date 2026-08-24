@@ -188,6 +188,33 @@ export interface SessionCommandEntry {
 }
 
 /**
+ * Sessions changed in place since their last write.
+ *
+ * The autosave used to tell a dirty session from a clean one by its message count, which is blind
+ * to every mutation that does not append: a tool duration written back, a sub-agent state settling,
+ * a command journalled, a caller recorded, usage accumulated. Those survived a clean shutdown
+ * (`flushAll` ignores the check) and were lost to a kill.
+ *
+ * A WeakSet rather than a field, so the mark never reaches the file, and set by the mutators
+ * themselves rather than by their callers: a flag the caller must remember to raise is the same
+ * bug one level up.
+ */
+const dirtySessions = new WeakSet<SessionData>();
+
+export function markSessionDirty(session: SessionData): void {
+  dirtySessions.add(session);
+}
+
+/** True when this session has an unwritten in-place change. Cleared by the write itself. */
+export function isSessionDirty(session: SessionData): boolean {
+  return dirtySessions.has(session);
+}
+
+export function clearSessionDirty(session: SessionData): void {
+  dirtySessions.delete(session);
+}
+
+/**
  * Appends to a conversation's command journal.
  *
  * Nothing is dropped: a conversation keeps everything it was told, and the owner asked for the
@@ -195,6 +222,7 @@ export interface SessionCommandEntry {
  * and nothing else.
  */
 export function recordSessionCommand(session: SessionData, entry: SessionCommandEntry): void {
+  markSessionDirty(session);
   const journal = session.commands ?? [];
   journal.push(entry);
   session.commands = journal;
@@ -220,6 +248,7 @@ export interface SessionFailureEntry {
 export function recordSessionFailure(session: SessionData, error: string): void {
   const text = error.trim();
   if (!text) return;
+  markSessionDirty(session);
   const journal = session.failures ?? [];
   journal.push({ error: text.slice(0, FAILURE_TEXT_LIMIT), timestamp: new Date().toISOString() });
   session.failures = journal;
@@ -277,6 +306,7 @@ const MAX_SUBAGENT_CALLERS = 20;
 /** Records a run driven by `sessionId`. Returns true when the list changed. */
 export function recordSubAgentCaller(session: SessionData, sessionId: string, now = new Date().toISOString()): boolean {
   if (!sessionId || !session.meta) return false;
+  markSessionDirty(session);
   const callers = session.callers ?? [];
   const creator = sessionId === session.meta.parentSessionId;
   const existing = callers.find((c) => c.sessionId === sessionId);
@@ -353,6 +383,7 @@ export function recordSessionSubAgentState(session: SessionData, update: Session
   if (!target) return false;
   const current = target.spawn;
   if (current && current.status !== "running") return false;
+  markSessionDirty(session);
   const now = new Date().toISOString();
   target.spawn = {
     subagentId: update.subagentId,

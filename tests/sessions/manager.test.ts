@@ -1,7 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../src/sessions/manager.ts";
-import { deleteSession } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, recordSessionCommand } from "../../src/sessions/store.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
 function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
@@ -242,4 +243,52 @@ test("startAutosave: idempotent, and stoppable without having run", () => {
   mgr.startAutosave(50_000);
   mgr.stopAutosave();
   mgr.stopAutosave();
+});
+
+// The autosave told a dirty session from a clean one by its message count, which is blind to every
+// mutation that does not append. Those survived a clean shutdown (flushAll writes regardless) and
+// were lost to a kill -- a sub-agent card settling to "complete" right before one, for instance.
+test("flushDirty writes a session mutated in place without a new message", async () => {
+  const manager = new SessionManager();
+  const sessionId = "my-claw-app/thread/owner/dirty-inplace";
+  try {
+    const session = await manager.getOrCreate(sessionId, createMessage({ threadId: "dirty-inplace" }));
+    session.messages.push({ role: "user", content: "go", timestamp: new Date().toISOString() });
+    await manager.persist(sessionId);
+
+    // No append: the count is exactly what the last write recorded.
+    recordSessionCommand(session, { input: "/status", output: "all good", timestamp: new Date().toISOString() });
+    await manager.flushDirty();
+
+    // Read from disk, not from the cache the mutation happened in.
+    const onDisk = await loadSession(sessionId);
+    assert.equal(onDisk?.commands?.length, 1);
+    assert.equal(onDisk?.commands?.[0]?.input, "/status");
+  } finally {
+    await deleteSession(sessionId);
+  }
+});
+
+test("flushDirty skips a session nothing touched", async () => {
+  const manager = new SessionManager();
+  const sessionId = "my-claw-app/thread/owner/clean-session";
+  try {
+    const session = await manager.getOrCreate(sessionId, createMessage({ threadId: "clean-session" }));
+    session.messages.push({ role: "user", content: "go", timestamp: new Date().toISOString() });
+    await manager.persist(sessionId);
+
+    let writes = 0;
+    const spy = (ev: { sessionId: string }) => {
+      if (ev.sessionId === sessionId) writes++;
+    };
+    hooks.on("session:persisted", spy);
+    try {
+      await manager.flushDirty();
+      assert.equal(writes, 0, "a clean session is not rewritten on every tick");
+    } finally {
+      hooks.off("session:persisted", spy);
+    }
+  } finally {
+    await deleteSession(sessionId);
+  }
 });
