@@ -134,10 +134,16 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
  * The window here is picked so the two readings straddle the threshold: the raw history is over it
  * and the pruned prompt is well under. A compaction firing means the gate is measuring the wrong
  * array again.
+ *
+ * It has to leave room for the fixed cost of a run, now that the gate counts it: the system prompt
+ * alone measures ~5.2k here, so on the 10k window this used to use it was two thirds of the budget
+ * before a single message of history and both readings sat above the threshold. That would have
+ * made this test pass or fail on the size of the system prompt rather than on which array the gate
+ * measures, which is the only thing it is here to check.
  */
 test("bridge: the gate measures the pruned prompt, not the history behind it", async () => {
   const config = prunedConfig(2_000);
-  config.llm.limit = { context: 10_000 };
+  config.llm.limit = { context: 16_000 };
   const sess = session("my-claw-app/thread/u1/t1", history(10));
 
   runRegistry.clear();

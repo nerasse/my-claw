@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { resolveContextWindow, occupiedContextTokens, measuredPrompt, sessionMirrorRole } from "../../src/llm/context-window.ts";
+import { resolveContextWindow, occupiedContextTokens, measuredPrompt, measurementFor } from "../../src/llm/context-window.ts";
 import { DEFAULT_CONTEXT_TOKENS } from "../../src/llm/tokens.ts";
 import { DEFAULT_CONTEXT_CAP, resolveContextCap, type MyClawConfig } from "../../src/core/config.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
@@ -206,58 +206,63 @@ test("a measurement covering the whole history adds nothing for turns since", ()
   expect(occupiedContextTokens(history, toChat, { tokens: 50_000, messageCount: 2 })).toBe(50_000);
 });
 
-// -- transcript mirror -------------------------------------------------------------------------
-// The SDK owns its history and compacts it behind our back, while `session.messages` keeps every
-// turn and every tool result: flooring on the estimate over that mirror is what reported a
-// conversation at 98 percent of the window minutes after it had been compacted down to 15.
+// -- the fixed cost of a run ---------------------------------------------------------------------
 
-test("on a transcript mirror the measurement stands alone: the mirror estimate is not a floor", () => {
-  const history = ["a".repeat(40_000), "b".repeat(400)];
-  const measured = { tokens: 5_000, messageCount: 1 };
-  expect(occupiedContextTokens(history, toChat, measured)).toBeGreaterThan(10_000);
-  const transcript = occupiedContextTokens(history, toChat, measured, { kind: "transcript" });
-  expect(transcript).toBeGreaterThan(5_000);
-  expect(transcript).toBeLessThan(5_200);
-});
-
-test("without a measurement a transcript mirror counts from the last boundary only", () => {
-  const history = ["a".repeat(40_000), "b".repeat(400)];
-  const fromBoundary = occupiedContextTokens(history, toChat, undefined, { kind: "transcript", base: 1 });
-  expect(fromBoundary).toBeLessThan(200);
-  expect(fromBoundary).toBeLessThan(occupiedContextTokens(history, toChat, undefined, { kind: "transcript" }));
-});
-
-// The local summarizer can run on an SDK session, and it rewrites the mirror: an index into the
-// old array would then point past the end and report an empty context.
-test("a boundary past the end of a rewritten mirror falls back to the whole of it", () => {
+test("the system prompt and the tool schemas count: an estimate over the history cannot see them", () => {
   const history = ["a".repeat(400)];
-  const whole = occupiedContextTokens(history, toChat, undefined, { kind: "transcript" });
-  expect(occupiedContextTokens(history, toChat, undefined, { kind: "transcript", base: 12 })).toBe(whole);
+  const bare = occupiedContextTokens(history, toChat);
+  // 33k measured on a live prompt, against 13k of history: the larger half of the reading.
+  expect(occupiedContextTokens(history, toChat, undefined, 33_000)).toBe(bare + 33_000);
 });
 
-test("a stale measurement is discarded on a transcript mirror too", () => {
+test("a measurement already contains the fixed cost, so it is not added twice", () => {
+  const history = ["a".repeat(400), "b".repeat(400)];
+  // Billed 50k covering the whole history: that number already includes system prompt and schemas.
+  expect(occupiedContextTokens(history, toChat, { tokens: 50_000, messageCount: 2, pruned: true }, 33_000)).toBe(50_000);
+});
+
+test("a stale measurement falls back to the estimate plus the fixed cost, not the estimate alone", () => {
   const history = ["a".repeat(400)];
-  const stale = { tokens: 900_000, messageCount: 12 };
-  expect(occupiedContextTokens(history, toChat, stale, { kind: "transcript" })).toBeLessThan(1000);
+  const stale = { tokens: 900_000, messageCount: 12, pruned: true };
+  const bare = occupiedContextTokens(history, toChat, stale);
+  expect(occupiedContextTokens(history, toChat, stale, 33_000)).toBe(bare + 33_000);
 });
 
-// Every engine runs on the home loop now, so `session.messages` *is* the prompt: there is no
-// engine-owned transcript to mirror any more, whatever model the session or its agent picked.
-test("a stored session always carries a prompt mirror, whatever its model", () => {
-  const config = {
-    llm: {
-      providers: { anthropic: { type: "anthropic" }, litellm: { baseUrl: "http://x/v1" } },
-      defaultProvider: "anthropic",
-      defaultModel: "claude-sonnet-5",
-      models: [
-        { id: "claude-sonnet-5", label: "Sonnet", provider: "anthropic" },
-        { id: "mimo", label: "Mimo", provider: "litellm" },
-      ],
-    },
-    agents: { orchestrator: { llm: { defaultModel: "claude-sonnet-5" } } },
-  } as unknown as MyClawConfig;
+// -- prompt shape --------------------------------------------------------------------------------
 
-  expect(sessionMirrorRole(config, {})).toEqual({ kind: "prompt" });
-  expect(sessionMirrorRole(config, { modelOverride: "mimo" })).toEqual({ kind: "prompt" });
-  expect(sessionMirrorRole(config, {}, "research")).toEqual({ kind: "prompt" });
+// Pruning is prompt-side and engine-dependent, so the same history bills 5.2x more on Anthropic
+// (measured: 2 824 235 unpruned against 541 929 pruned on one 2820-message session). A number
+// billed on one shape is not a floor for the other: replayed on that session, an Anthropic-side
+// size used as the floor of a pruning-engine gate read 216 percent of the window against an honest
+// 9.1 percent, and would have compacted a conversation using a tenth of it.
+test("a measurement is kept only for the prompt shape it was taken on", () => {
+  const pruned = { tokens: 200_000, messageCount: 2, pruned: true };
+  expect(measurementFor(pruned, true)).toBe(pruned);
+  expect(measurementFor(pruned, false)).toBeUndefined();
+
+  const whole = { tokens: 200_000, messageCount: 2, pruned: false };
+  expect(measurementFor(whole, false)).toBe(whole);
+  expect(measurementFor(whole, true)).toBeUndefined();
+});
+
+test("an untagged measurement is trusted for neither shape", () => {
+  const legacy = { tokens: 200_000, messageCount: 2 };
+  expect(measurementFor(legacy, true)).toBeUndefined();
+  expect(measurementFor(legacy, false)).toBeUndefined();
+  expect(measurementFor(undefined, true)).toBeUndefined();
+});
+
+test("dropping a mismatched measurement is what keeps the gate off a prompt that was never sent", () => {
+  const history = ["a".repeat(4000), "b".repeat(4000)];
+  const foreign = { tokens: 900_000, messageCount: 2, pruned: false };
+  // Carried over, it dominates the reading outright.
+  expect(occupiedContextTokens(history, toChat, foreign)).toBe(900_000);
+  // Qualified, the reading is the estimate for the shape actually in use.
+  expect(occupiedContextTokens(history, toChat, measurementFor(foreign, true))).toBeLessThan(10_000);
+});
+
+test("the shape travels with the measurement it describes", () => {
+  expect(measuredPrompt(12, 5, true)).toEqual({ tokens: 12, messageCount: 5, pruned: true });
+  expect(measuredPrompt(12, 5, false)).toEqual({ tokens: 12, messageCount: 5, pruned: false });
+  expect(measuredPrompt(12, 5)).toEqual({ tokens: 12, messageCount: 5 });
 });

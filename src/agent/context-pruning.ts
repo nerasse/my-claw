@@ -143,8 +143,21 @@ export function promptSideChat(
   backend?: string,
 ): ChatMessage[] {
   const chat = sessionChatMessages(messages);
-  if (backend === "anthropic" || !contextPruningEnabled(config)) return chat;
+  if (!promptSidePruned(config, backend)) return chat;
   return pruneOldToolResults(chat, resolveContextPruning(config));
+}
+
+/**
+ * Whether `promptSideChat` prunes, for this engine and this config.
+ *
+ * Exported because a billed prompt size is only comparable to an estimate taken on the same shape.
+ * The same history is 5.2x larger unpruned (measured on a 2820-message session: 2 824 235 tokens
+ * against 541 929), so a measurement carried across a switch describes a prompt that no longer
+ * exists. Reading it as a floor made a model change look like a full window: the gate compacted on
+ * a codex measurement the moment the session moved to Anthropic. See docs/context-window.md.
+ */
+export function promptSidePruned(config: MyClawConfig, backend?: string): boolean {
+  return backend !== "anthropic" && contextPruningEnabled(config);
 }
 
 /**

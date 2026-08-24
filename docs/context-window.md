@@ -226,6 +226,68 @@ effective = max(estimate(all), measured + estimate(messages after measured.messa
   the measurement and falls back to the estimate.
 - Turn one has no measurement and falls back to the estimate.
 
+### The two sides of the `max` have to be in the same units
+
+A billed prompt counts the system prompt and the tool schemas. An estimate over the history counts
+neither, and the gap is not a rounding error: **46 370 billed against 13 337 estimated** on a live
+22-message prompt, so 33k of occupied window the estimate branch could not see. Whenever that
+branch won the `max` -- every turn with no measurement, and every turn whose measurement was
+invalidated -- the trigger read the window as if a run cost nothing before its first message.
+
+So the fixed cost is added to the estimate, and only to the estimate:
+
+```
+effective = max(estimate(all) + fixed, measured + estimate(messages after measured.messageCount))
+```
+
+`fixed` is `session.lastFixedTokens`, the system prompt plus the tool schemas of the last prompt
+built. It lags by a turn for the same reason the measurement does -- the turn-start gate runs before
+the prompt for that turn is assembled -- which is far closer than the zero it assumed before.
+
+One consequence worth knowing: on a window small enough that the fixed cost alone crosses the
+threshold, the gate fires on a conversation a summary cannot shrink, because a summary rewrites
+history and not the system prompt. It is bounded rather than unbounded: `compactSession` refuses
+below a minimum, that refusal is a `skipped`, and `skipped` arms `midRunCompactRetryAt`. Measured
+on the test window: a 5.2k system prompt against a 10k window is two thirds of the budget before a
+single message of history.
+
+### A measurement only describes the shape it was taken on
+
+Pruning old tool results is prompt-side and engine-dependent: Anthropic never prunes, because its
+cache is a prefix and rewriting an older result invalidates every block after it. The same history
+therefore measures **5.2x** larger on that path -- 2 824 235 tokens unpruned against 541 929 pruned,
+on one 2820-message session.
+
+A number billed on one shape is not a floor for the other, so `MeasuredPrompt` carries the shape it
+was taken on (`pruned`) and `measurementFor` drops it when it does not match. An untagged
+measurement (stored before the field existed) matches neither shape and falls back to the estimate;
+the next call records a tagged one.
+
+Replayed on the session that surfaced this, with an Anthropic-side size read on a pruning engine:
+
+| reading | occupancy | share of a 512k window |
+|---|---|---|
+| measurement carried across the switch | 1 105 681 | **216.0 %** |
+| shape qualified | 46 337 | **9.1 %** |
+
+A 23x over-read, which would compact a conversation using a tenth of its window -- the same failure
+mode as the thirty-compaction bug, by a different route.
+
+### What this does not explain
+
+The 216 percent that prompted this work was **not** that bug. It was the genuine unpruned estimate:
+the session had switched from a pruning engine to Anthropic, and on that path the history really was
+~1.1M tokens against a 512k budget. That compaction was correct, and qualifying the measurement does
+not suppress it -- the estimate branch wins the `max` either way. Two separate things share one
+number:
+
+- **Legitimate.** Moving a long conversation onto Anthropic multiplies its prompt by the pruning
+  ratio, so the first gate after the switch will usually fire. Nothing is wrong; the prompt really
+  is that large, and `rawContextLimit` in the log shows the model's own window beside the budget in
+  force (1M against the 512k this session had set, so it was over either way).
+- **The bug.** The shape was not recorded, so the number outlived the prompt it described. Harmless
+  in the direction observed, a 23x over-read in the other.
+
 ### When the measurement lands
 
 Each engine records it at the earliest moment its transport states it, and announces that with
@@ -243,40 +305,24 @@ taken there; usage, cost and the analytics row stay with the assistant message, 
 that is deduplicated across a parallel tool batch. Both paths sum the same three buckets (fresh
 input plus cache read plus cache creation), so the two readings of one turn cannot disagree.
 
-### The floor is wrong when the mirror is not the prompt
+### The mirror role, and why it is gone
 
-That formula assumes `session.messages` is what gets resent, which holds on the home loop and not
-on the Claude SDK. There the engine owns the transcript and compacts it on its own, while our
-mirror keeps every turn and every tool result forever. So the estimate over the mirror is not a
-lower bound on the prompt, it is an upper bound that only ever grows, and `max` pinned the reading
-near 100 percent for good. Measured on a live conversation: mirror 2 925 messages, estimate ~500k,
-reported 98 percent of a 512k window, while the last billed prompt was **79 552 tokens** and the
-gate (which reads the measurement) saw 15 percent. The header screamed and nothing compacted,
-which is exactly backwards.
+The formula assumes `session.messages` is what gets resent. That held on the home loop and not on
+the Claude SDK, where the engine owned the transcript and compacted it on its own while our mirror
+kept every turn forever. The estimate over that mirror was an upper bound that only grew, and `max`
+pinned the reading near 100 percent for good: measured once on a live conversation, mirror 2 925
+messages, estimate ~500k, reported 98 percent of a 512k window while the last billed prompt was
+**79 552 tokens** and the gate saw 15 percent. The header screamed and nothing compacted.
 
-Occupancy therefore takes the role of the mirror:
+Occupancy therefore used to take a *mirror role*, `prompt` or `transcript`, the second dropping the
+estimate floor and counting from the last SDK compaction boundary.
 
-| mirror | engine | occupancy |
-|---|---|---|
-| `prompt` | home loop | `max(estimate(all), measured + estimate(since))` |
-| `transcript` | claude-sdk | `measured + estimate(since)`, no floor |
-
-An engine runs a resolution, so the role has to come from the same one: `sessionMirrorRole` asks
-`chatModel` and reads the backend of what comes back. The session's pick alone is not enough. A chat
-that picked nothing runs on its agent's pin, and a model that cannot run steps down to one that may
-sit on the other engine; either way a display reading the override by itself ends up describing a
-mirror the gate is not looking at. The two engines do not ask at all: each one knows which it is and
-says so (`occupiedTokens` in the SDK backend passes `transcript`, the home loop takes the default).
-
-With no measurement at all, a transcript mirror counts from the last **compaction boundary**
-(`sdkTranscriptBase`, the mirror index where the engine's live transcript starts) rather than from
-the beginning: everything before it lives inside the SDK as a summary. The boundary is recorded
-wherever the SDK reports one, both for a compaction we asked for and for one it ran mid-run, and it
-is dropped when anything rewrites the mirror underneath it (`clearHistory`, the local summarizer).
-
-`sessionMirrorRole` is the single place that decision is made, resolving the engine from the
-session's own model choice, so a display can never read a conversation differently from the gate
-that compacts it.
+That engine is gone. Every engine runs on the home loop, so `session.messages` **is** the prompt,
+and the role had degenerated: `sessionMirrorRole` ignored all three of its arguments and returned
+`prompt` unconditionally, `transcript` was constructed nowhere, and two branches of
+`occupiedContextTokens` plus a `base` slice were unreachable. It is removed rather than kept as a
+seam for an engine that no longer exists. What replaces it is the pair of qualifications below: the
+prompt *shape* a measurement was taken on, which is the distinction that actually still varies.
 
 ### The cap mid-run
 
@@ -315,13 +361,12 @@ context limit 1,048,576 (session override: full)
 ```
 
 The app's chat header carries the same reading, permanently, as one number: `ctx 37%`, the
-occupancy over the effective window, mirror role included. It travels on `model.result` (`context.used`, alongside
+occupancy over the effective window. It travels on `model.result` (`context.used`, alongside
 `raw` / `effective` / `cap`), which the app already asks for when a conversation opens and now
 re-asks at the end of every run: the turn that just landed is what filled the window. It is the
-same `occupiedContextTokens` the compaction gate reads, with the same mirror role, deliberately,
-because a header and a trigger that disagreed about how full a conversation is would make the
-compaction look random. `/status` prints both numbers side by side and names the mirror when it is
-a transcript, since on that engine the estimate describes a history the model no longer holds.
+same `occupiedContextTokens` the compaction gate reads, with the same measurement qualification and
+the same fixed cost, deliberately, because a header and a trigger that disagreed about how full a
+conversation is would make the compaction look random. `/status` prints both numbers side by side.
 A thread with no session yet reports nothing rather than 0%, and the number is never folded
 back to 100: a prompt over its ceiling is exactly the reading worth seeing.
 

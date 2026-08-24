@@ -177,6 +177,16 @@ function resolveRaw(opts: ResolveWindowOptions): { raw: number; rawSource: Conte
 export interface MeasuredPrompt {
   tokens: number;
   messageCount: number;
+  /**
+   * Whether the prompt this covered had its old tool results pruned (`promptSidePruned`).
+   *
+   * The shape has to travel with the number: the same history measures 5.2x larger unpruned, so a
+   * measurement read across an engine switch describes a prompt that was never sent. Absent on a
+   * measurement stored before this field existed, which `measurementFor` treats as a mismatch
+   * against either shape -- the pure estimate is the safe reading, and one turn later the next call
+   * records a tagged one.
+   */
+  pruned?: boolean;
 }
 
 /**
@@ -186,50 +196,13 @@ export interface MeasuredPrompt {
  * written twice. A zero prompt is not a measurement: providers report it on some error paths, and
  * storing it would blind the gate until the next successful call.
  */
-export function measuredPrompt(promptTokens: number, historyLength: number): MeasuredPrompt | undefined {
+export function measuredPrompt(
+  promptTokens: number,
+  historyLength: number,
+  pruned?: boolean,
+): MeasuredPrompt | undefined {
   if (promptTokens <= 0) return undefined;
-  return { tokens: promptTokens, messageCount: historyLength };
-}
-
-/**
- * What `session.messages` is on the engine that ran the conversation.
- *
- * On the home loop it *is* the prompt: every entry is resent on the next call, so an estimate over
- * it is a lower bound worth keeping as a floor. On the Claude SDK the engine owns the transcript
- * and compacts it behind our back, while the mirror keeps every turn and every tool result
- * forever: there the estimate is an upper bound that only ever grows, and using it as a floor
- * reported a conversation at 98 percent of the window minutes after it was compacted to 15.
- */
-export type MirrorKind = "prompt" | "transcript";
-
-export interface MirrorRole {
-  kind: MirrorKind;
-  /**
-   * Index the engine's live transcript starts at, for a `transcript` mirror: where the last
-   * compaction boundary landed. Everything before it is summarised inside the engine and is not
-   * in the prompt any more.
-   */
-  base?: number;
-}
-
-const PROMPT_MIRROR: MirrorRole = { kind: "prompt" };
-
-/**
- * The mirror a stored session carries, for the surfaces that read occupancy without running
- * anything (`/status`, the app's chat header). The engine is resolved the same way the run resolves
- * it, from the session's own model choice, so a display can never read the window differently from
- * the gate that compacts it.
- */
-export function sessionMirrorRole(
-  config: MyClawConfig,
-  session: { modelOverride?: string },
-  agent: AgentToolType = "main",
-): MirrorRole {
-  // The model the run resolves, never the override alone: an agent pin puts a chat that picked
-  // nothing on the other engine, and an unavailable model steps down to one that may not share its
-  // backend. Reading the override by itself made a display disagree with the gate about which
-  // mirror it was looking at, which is the one thing this function exists to prevent.
-  return PROMPT_MIRROR;
+  return { tokens: promptTokens, messageCount: historyLength, ...(pruned === undefined ? {} : { pruned }) };
 }
 
 /**
@@ -239,26 +212,43 @@ export function sessionMirrorRole(
  * estimated, 2.3x -- which would make a cap miss its target by the same factor. The measurement
  * describes the prompt *as sent*, so it lags by a turn; pairing it with the message count it
  * covered lets the settled history stay exact while only the newest turn is estimated.
+ *
+ * `fixed` is the system prompt plus the tool schemas: real occupancy that no estimate over the
+ * history can see. It matters because the two readings were in different units -- a billed prompt
+ * counts it, an estimate does not, and the gap measured 33k on a live 22-message prompt (46 370
+ * billed against 13 337 estimated). Whenever the estimate branch won, that much window went
+ * unseen. Only added there, since a measurement already contains it.
  */
 export function occupiedContextTokens<T>(
   history: readonly T[],
   toChat: (messages: readonly T[]) => ChatMessage[],
   measured?: MeasuredPrompt,
-  mirror: MirrorRole = PROMPT_MIRROR,
+  fixed = 0,
 ): number {
-  // A base past the end means the mirror was rewritten under it (the local summarizer ran on an
-  // SDK session): the whole of what is left is in the prompt.
-  const base = mirror.kind === "transcript" && (mirror.base ?? 0) <= history.length ? mirror.base ?? 0 : 0;
-  const estimated = estimateMessagesTokens(toChat(base > 0 ? history.slice(base) : history));
-  if (!measured || measured.tokens <= 0) return estimated;
+  const estimated = estimateMessagesTokens(toChat(history));
+  if (!measured || measured.tokens <= 0) return estimated + fixed;
   // A shorter history than the measurement covered means compaction or a rewrite happened, which
   // invalidates it outright: the tokens it counted are no longer in the prompt.
-  if (measured.messageCount > history.length) return estimated;
+  if (measured.messageCount > history.length) return estimated + fixed;
   const delta = estimateMessagesTokens(toChat(history.slice(measured.messageCount)));
-  // The measurement is the whole truth on a transcript mirror: the engine's own compaction has
-  // already dropped from the prompt what the mirror still holds, so flooring on the estimate
-  // would pin the reading near 100 percent forever.
-  if (mirror.kind === "transcript") return measured.tokens + delta;
   // Never read lower than the pure estimate, so this can only tighten the gate, never loosen it.
-  return Math.max(estimated, measured.tokens + delta);
+  // `fixed` only on the estimate: a billed size already contains the system prompt and the tool
+  // schemas, while `delta` is history added since and does not.
+  return Math.max(estimated + fixed, measured.tokens + delta);
+}
+
+/**
+ * The measurement, or nothing when it describes a prompt of a different shape.
+ *
+ * A billed size is only comparable to an estimate taken the same way. Pruning is prompt-side and
+ * engine-dependent (`promptSidePruned`), so the same history measures 5.2x larger on Anthropic than
+ * on a pruning engine, and a measurement carried across that switch describes a prompt that was
+ * never sent. Replayed on the session that surfaced this: an Anthropic-side size used as the floor
+ * of a pruning-engine gate read 216 percent of the window where the honest reading is 9.1 percent,
+ * a 23x over-read that would compact a conversation using a tenth of its window. A mismatch drops
+ * back to the pure estimate, which is the reading that was already correct for the new shape.
+ */
+export function measurementFor(measured: MeasuredPrompt | undefined, pruned: boolean): MeasuredPrompt | undefined {
+  if (!measured) return undefined;
+  return measured.pruned === pruned ? measured : undefined;
 }

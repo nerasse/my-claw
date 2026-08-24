@@ -126,8 +126,8 @@ import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmComplete } from "./llm/transport.ts";
-import { occupiedContextTokens, sessionMirrorRole } from "./llm/context-window.ts";
-import { promptSideChat, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
+import { occupiedContextTokens, measurementFor } from "./llm/context-window.ts";
+import { promptSideChat, promptSidePruned, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
@@ -881,8 +881,11 @@ async function main() {
                 used: occupiedContextTokens(
                   promptMessages(session),
                   (msgs) => promptSideChat(msgs, config, backendOfModel(model)),
-                  session.lastPrompt,
-                  sessionMirrorRole(config, session),
+                  // A measurement taken on the other prompt shape is not comparable: the same
+                  // history bills 5.2x more unpruned, so reading it as a floor over-reads by that
+                  // much and the gauge disagrees with the gate.
+                  measurementFor(session.lastPrompt, promptSidePruned(config, backendOfModel(model))),
+                  session.lastFixedTokens ?? 0,
                 ),
               }
             : {}),

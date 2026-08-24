@@ -385,6 +385,15 @@ export interface SessionData {
   // The compaction gate needs a real number: chars/4 under-counts by ~2.3x on live traffic.
   lastPrompt?: import("../llm/context-window.ts").MeasuredPrompt;
   /**
+   * System prompt plus tool schemas of the last prompt built, in tokens.
+   *
+   * Window a run occupies before a single message of history is counted, and nothing that reads the
+   * history can derive it: it measured 33k here. The turn-start gate runs before the prompt for
+   * that turn is assembled, so it reads the last one -- stale by a turn, the same compromise
+   * `lastPrompt` already makes, and far closer than the zero it assumed before.
+   */
+  lastFixedTokens?: number;
+  /**
    * Where the prompt starts inside `messages`: everything before it is summarised by the turn at
    * this index and is not sent to any model again.
    *

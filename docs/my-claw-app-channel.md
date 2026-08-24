@@ -955,10 +955,13 @@ it live. The assistant tool call also persists the spawn lifecycle state (`runni
 between the lifecycle end and the outer `chat.tool` result therefore replays a settled card instead
 of resurrecting an empty spinner. Lifecycle writes are serialized per session, so a later turn
 cannot overtake the terminal snapshot on disk. Older sessions without this metadata still fall
-back to `subagents.list`: `spawnLiveOf` and `reconcileSpawnRoster` resolve the card's name against
-the roster while a child is running. They never invent a successful terminal state for an idle legacy
-card, because a session sub-agent is reusable and an idle roster entry does not identify how that
-particular call ended.
+back to `subagents.list`, in one place: `reconcileSpawnRoster` resolves the card's name against the
+roster when it arrives and writes the recovered state into the map every reader shares.
+`spawnLiveOf` is a pure projection of what the card already carries -- it used to re-derive the same
+match from the roster it happened to hold, which was a second copy of one rule and a second place
+for it to drift. The fallback applies only to a card whose own call has not returned, and it never
+invents a successful terminal state for an idle legacy card: a session sub-agent is reusable, so an
+idle roster entry identifies neither that this call is the running one nor how it ended.
 
 ### Several surfaces per device
 

@@ -2,7 +2,7 @@ import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
 import { leafModelId, resolveLlmConfig } from "../llm/resolver.ts";
-import { promptSideChat } from "../agent/context-pruning.ts";
+import { promptSideChat, promptSidePruned } from "../agent/context-pruning.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
 import { agentTypeOf, promptMessages } from "../sessions/store.ts";
 import {
@@ -17,7 +17,7 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
-import { resolveModelContextWindow, occupiedContextTokens, sessionMirrorRole } from "../llm/context-window.ts";
+import { resolveModelContextWindow, occupiedContextTokens, measurementFor } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
@@ -181,8 +181,15 @@ function collectStatusData(p: StatusParams): StatusData {
   // differ by everything a summary replaced, and a share of the window has to count what is in it.
   const prompt = p.session ? promptMessages(p.session) : [];
   const estimated = p.session ? estimateMessagesTokens(toChat(prompt)) : 0;
-  const mirror = p.session ? sessionMirrorRole(p.config, p.session, contextAgent) : { kind: "prompt" as const };
-  const occupied = p.session ? occupiedContextTokens(prompt, toChat, p.session.lastPrompt, mirror) : 0;
+  // `measurementFor`: a size billed on the other prompt shape is not a floor for this one.
+  const occupied = p.session
+    ? occupiedContextTokens(
+        prompt,
+        toChat,
+        measurementFor(p.session.lastPrompt, promptSidePruned(p.config, backend)),
+        p.session.lastFixedTokens ?? 0,
+      )
+    : 0;
   const autoCompactOn = autoCompactEnabled(p.config);
   const threshold = resolveAutoCompactThreshold(p.config);
   const own = p.session ? priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing) : [];

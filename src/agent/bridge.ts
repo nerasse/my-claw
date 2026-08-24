@@ -24,8 +24,8 @@ import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
-import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
-import { pruneOldToolResults, promptSideChat, sessionChatMessages, spillToolOutput } from "./context-pruning.ts";
+import { resolveContextWindow, occupiedContextTokens, measuredPrompt, measurementFor } from "../llm/context-window.ts";
+import { pruneOldToolResults, promptSideChat, promptSidePruned, sessionChatMessages, spillToolOutput } from "./context-pruning.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -74,12 +74,20 @@ function complete(
   return llmComplete(config, messages, tools, signal);
 }
 
-function accumulateUsage(session: SessionData, usage?: LlmUsage, historyLength?: number): void {
+function accumulateUsage(
+  session: SessionData,
+  usage?: LlmUsage,
+  historyLength?: number,
+  pruned?: boolean,
+): void {
   if (!usage) return;
-  // The billed prompt size, tied to the history it covered, so the compaction gate can stop
-  // guessing it from chars/4. See docs/context-window.md.
+  // The billed prompt size, tied to the history it covered and to the shape it was sent in, so the
+  // compaction gate can stop guessing it from chars/4. Without the shape the number outlives the
+  // prompt it describes: the same history bills 5.2x more unpruned, so an Anthropic-side size read
+  // as the floor of a pruning-engine gate put a session at 216 percent of a window it was using
+  // 9.1 percent of. See docs/context-window.md.
   if (historyLength !== undefined) {
-    session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength) ?? session.lastPrompt;
+    session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength, pruned) ?? session.lastPrompt;
   }
   if (!session.tokenUsage) {
     session.tokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, apiCalls: 0 };
@@ -420,6 +428,11 @@ export class AgentBridge implements AgentBackend {
       await this.injectMemory(message, chatMessages, session);
 
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+      // Carried on the session so the next turn-start gate can count it. That gate runs before this
+      // point, so the alternative was assuming zero: it read the window as if a run cost nothing
+      // before its first message, and on this install that hid 33k.
+      session.lastFixedTokens = toolSchemaTokens + estimateTokens(systemPrompt);
+  
 
       // The prompt is built from the history, so a mid-run compaction has to be followed by this:
       // rewriting one and keeping the other is how a summary lands in the session while the model
@@ -472,8 +485,11 @@ export class AgentBridge implements AgentBackend {
         // iteration so the protected window slides along long runs.
         // Never on the Anthropic transport: its cache is a prefix, so rewriting an older tool
         // result invalidates every cached block after it. At the measured 96 % cache-read ratio
-        // that trades a few thousand pruned tokens for a full prompt re-read, and
-        // `context_management.clear_thinking` already prunes server-side there.
+        // that trades a few thousand pruned tokens for a full prompt re-read.
+        // Not because anything prunes server-side there: `context_management.clear_thinking` goes
+        // out with `keep: "all"` (llm/anthropic.ts), which clears nothing. The prompt really is
+        // whole on this path, which is why the occupancy reading has to be told which shape it is
+        // looking at -- see `promptSidePruned`.
         if (llmConfig.backend !== "anthropic" && contextPruningEnabled(this.config)) {
           // The sending path, so this is the one that spills: what leaves the stub has to be
           // somewhere the agent can read it back, or the elision is a loss and the model goes and
@@ -529,7 +545,7 @@ export class AgentBridge implements AgentBackend {
           // Prompt-side length, the same units `occupiedContextTokens` pairs it with: measuring the
           // whole history against a billed number that only covered the window after the boundary
           // would read as a measurement of turns the model never saw.
-          accumulateUsage(session, response.usage, promptMessages(session).length);
+          accumulateUsage(session, response.usage, promptMessages(session).length, promptSidePruned(this.config, llmConfig.backend));
           // The measurement for this turn has landed. On this transport it is the earliest it can
           // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
           if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
@@ -1159,13 +1175,25 @@ export class AgentBridge implements AgentBackend {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const prompt = promptMessages(session);
-    const occupied = occupiedContextTokens(prompt, (msgs) => promptSideChat(msgs, this.config, llmConfig.backend), session.lastPrompt);
+    const pruned = promptSidePruned(this.config, llmConfig.backend);
+    const fixed = session.lastFixedTokens ?? 0;
+    const occupied = occupiedContextTokens(
+      prompt,
+      (msgs) => promptSideChat(msgs, this.config, llmConfig.backend),
+      measurementFor(session.lastPrompt, pruned),
+      fixed,
+    );
     return {
       over: occupied > window.effective * threshold,
       data: {
         sessionId: session.id,
         occupiedTokens: occupied,
         measured: session.lastPrompt?.tokens,
+        // Logged so a reading that fell back to the pure estimate says so instead of looking like
+        // a measurement that agreed with it.
+        measuredShapeMatches: measurementFor(session.lastPrompt, pruned) !== undefined,
+        promptPruned: pruned,
+        fixedTokens: fixed,
         contextLimit: window.effective,
         rawContextLimit: window.raw,
         windowSource: window.rawSource,
