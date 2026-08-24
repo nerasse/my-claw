@@ -841,7 +841,9 @@ maintenant, il disparaît avec la cause.
 | **1** | ~~Ce document en `docs/session-log.md`~~ **livré `a026c32`** | — | — |
 | **2** | ~~`sessions/log.ts` : entrée, `append`, lecture tolérante, `branch`, `since`, `pathOf`~~ **livré `d592d1d`** | — | 1 |
 | **3a** | ~~`promptOf` (`sessions/projection.ts`) + `displayOf`/`pageOf` (`channels/my-claw-app/display.ts`), purs, testés~~ **livré `f83bf60`, `0262e36`** | — | 2 |
-| **3b** | `bridge.ts` écrit des entrées, phases persistées (+ `providerMeta`), `promptMessages` retiré | 1,5 j | 3a, 6 |
+| **3b-i** | ~~`SessionManager.logOf`, cycle de vie (éviction, delete, flushAll), `meta.json` écrit~~ **livré `b8e5cb1`** | — | 2 |
+| **3b-ii** | ~~`RunRecorder` : un run écrit en entrées, `providerMeta` persisté, rewind non destructif~~ **livré `979465d`** | — | 3a |
+| **3b-iii** | Câblage : `bridge.ts` appelle le recorder, `promptOf` remplace `promptMessages`, `session.messages` retiré | 1 j | 3b-ii, 6 |
 | **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
 | **5** | ~~Magasin de sorties d'outils + GC des orphelins~~ **livré `dc45495`** | — | 2 |
 | **6** | ~~Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles)~~ **livré `6253c15`, `7616080`, `3334ff4`** | — | 2 |
@@ -1041,3 +1043,53 @@ bascule faite, `promptMessages` n'existe plus pour servir de témoin.
 Trou connu, assumé : `sourceId` n'est pas reporté sur l'id d'entrée à l'import. Le faire
 obligerait `append` à accepter un id imposé, ce qui casse « le log seul attribue les ids ».
 Le seul cas où ça compte est un thread ouvert sur un appareil à l'instant de la migration.
+
+---
+
+# Annexe D — Où en est le lot 3b
+
+La bascule s'est décomposée en trois, non pas pour la rendre livrable en morceaux — elle
+ne l'est pas — mais parce que **deux des trois ne changent aucun comportement** et se
+testent donc pour de vrai, isolément. Ce qui reste est le câblage, mécanique.
+
+| | Quoi | État |
+|---|---|---|
+| 3b-i | Le manager possède le log : `logOf`, éviction, delete, `flushAll`, `meta.json` | livré `b8e5cb1` |
+| 3b-ii | `RunRecorder` : la forme d'un run en entrées | livré `979465d` |
+| 3b-iii | Le câblage dans `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts` | **reste** |
+
+## Ce que 3b-iii doit faire, site par site
+
+Huit écritures dans `bridge.ts`, toutes remplaçables une pour une :
+
+| Ligne | Aujourd'hui | Devient |
+|---|---|---|
+| 414 | `messages.push` tour user (+ variante `prePushed`) | `recorder.user()` |
+| 619 | `messages.push` tour assistant final | `recorder.turn()` |
+| 726 | `persistedAssistant` avec `toolCalls` | `recorder.turn()` seul |
+| 861 | `messages.push` résultat d'outil | `await recorder.tool()` |
+| 895 | `messages.length = messageCountBeforeLoop` | `recorder.rewind()` |
+| 940 | `messages.push` tour injecté | `recorder.user()` |
+| 979 | `messages.push` consigne de résumé | `recorder.user()` |
+| 1040 | `messages.push` résumé final | `recorder.turn()` |
+
+Et six lectures (`429`, `435`, `457`, `458`, `565`, `1225`) qui deviennent toutes
+`promptOf(entries, leaf)`.
+
+**Le `prePushed` disparaît.** Le runner de sous-agents pré-pousse la tâche avec le même
+`sourceId` avant le run pour qu'un crash montre quand même la question ; le bridge
+complétait ensuite cette bulle au lieu d'en pousser une seconde. Avec le log, le runner
+écrit une `UserEntry` et le bridge n'a rien à compléter : l'entrée porte déjà son id.
+
+**`sealDanglingToolCalls` disparaît des deux côtés** (démarrage de run, abort). Il
+répare une forme que le recorder ne produit pas : les `tool_calls` du prompt sont dérivés
+des entrées qui portent les résultats.
+
+**`messageCountBeforeLoop` disparaît.** C'était l'index de rembobinage ; le recorder tient
+un leaf, ce qui est la même information sans dépendre de la longueur d'un tableau.
+
+## Ce qui reste vrai après, et qu'il faut vérifier avant de retirer quoi que ce soit
+
+`tests/sessions/prompt-conformance.test.ts` gèle le prompt attendu en littéraux, sans
+comparaison à `promptMessages` — il survit donc à la suppression de son propre sujet. Le
+dernier bloc du fichier, lui, compare encore les deux chemins : il part avec eux.
