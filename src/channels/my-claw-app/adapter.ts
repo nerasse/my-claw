@@ -242,6 +242,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   private subagents?: MyClawAppSubAgentsController;
+  /** Serializes roster snapshots per parent so a slower lifecycle read cannot publish stale state. */
+  private rosterPushes = new Map<string, Promise<void>>();
   private locationResolver?: MyClawAppLocationResolver;
   private stopRun?: (sessionId: string) => boolean;
   private runActive?: (sessionId: string) => boolean;
@@ -648,14 +650,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!this.subagents) return;
     const match = APP_THREAD_SESSION.exec(parentSessionId);
     if (!match) return;
-    const owner = match[1]!;
-    const threadId = match[2]!;
-    try {
-      const agents = await this.subagents.list(parentSessionId);
-      this.broadcast(owner, { type: "subagents.list.result", threadId, agents });
-    } catch (err) {
-      await myClawAppLog("debug", "roster push failed", { threadId, error: String(err) });
-    }
+    const previous = this.rosterPushes.get(parentSessionId) ?? Promise.resolve();
+    const push = previous.catch(() => {}).then(async () => {
+      const owner = match[1]!;
+      const threadId = match[2]!;
+      try {
+        const agents = await this.subagents!.list(parentSessionId);
+        this.broadcast(owner, { type: "subagents.list.result", threadId, agents });
+      } catch (err) {
+        await myClawAppLog("debug", "roster push failed", { threadId, error: String(err) });
+      }
+    });
+    const tracked = push.finally(() => {
+      if (this.rosterPushes.get(parentSessionId) === tracked) this.rosterPushes.delete(parentSessionId);
+    });
+    this.rosterPushes.set(parentSessionId, tracked);
+    await tracked;
   }
 
   /**

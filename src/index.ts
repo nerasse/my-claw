@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages, recordSessionSubAgentState, type SessionSubAgentStatus } from "./sessions/store.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -709,6 +709,54 @@ async function main() {
     );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
+
+    // Spawn lifecycle is display-only, but it is persisted on the parent tool call before the live
+    // frame is allowed to disappear. A reload in the narrow window between `spawn.end` and the
+    // outer `chat.tool` result therefore replays the terminal state instead of resurrecting a
+    // running spinner.
+    const pendingSubAgentHistory = new Map<string, Promise<void>>();
+    const persistSubAgentState = (event: {
+      id: string;
+      parentSessionId: string;
+      toolCallId?: string;
+      displayName?: string;
+      type?: string;
+      mode?: string;
+      resultLength?: number;
+      error?: unknown;
+      status: SessionSubAgentStatus;
+    }): void => {
+      if (!event.parentSessionId) return;
+      const previous = pendingSubAgentHistory.get(event.parentSessionId) ?? Promise.resolve();
+      const write = previous.catch(() => {}).then(async () => {
+        const session = await sessionManager.peek(event.parentSessionId);
+        if (!session) return;
+        const changed = recordSessionSubAgentState(session, {
+          subagentId: event.id,
+          status: event.status,
+          ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
+          ...(event.displayName ? { displayName: event.displayName } : {}),
+          ...(event.type ? { agentType: event.type } : {}),
+          ...(event.mode ? { mode: event.mode } : {}),
+          ...(event.resultLength !== undefined ? { resultLength: event.resultLength } : {}),
+          ...(event.error !== undefined ? { error: String(event.error) } : {}),
+        });
+        if (changed) await sessionManager.persist(session.id);
+      });
+      const tracked = write.finally(() => {
+        if (pendingSubAgentHistory.get(event.parentSessionId) === tracked) pendingSubAgentHistory.delete(event.parentSessionId);
+      });
+      pendingSubAgentHistory.set(event.parentSessionId, tracked);
+      void tracked.catch((error) => {
+        void log("warn", "sub-agent lifecycle history update failed", { sessionId: event.parentSessionId, subagentId: event.id, error: String(error) });
+      });
+    };
+    hooks.on("subagent:spawn", (event) => persistSubAgentState({ ...event, status: "running" }));
+    hooks.on("subagent:complete", (event) => persistSubAgentState({ ...event, status: "complete" }));
+    hooks.on("subagent:error", (event) => persistSubAgentState({ ...event, status: "error" }));
+    hooks.on("subagent:aborted", (event) => persistSubAgentState({ ...event, status: "aborted" }));
+    hooks.on("subagent:killed", (event) => persistSubAgentState({ ...event, status: "aborted" }));
+    hooks.on("subagent:reset", (event) => persistSubAgentState({ ...event, status: "aborted" }));
     myClawAppRef = myClawApp;
     noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));
 
@@ -2061,10 +2109,12 @@ async function main() {
     // so every window of the parent conversation gains/updates/loses the row live instead of
     // waiting for the next request (or the run-end refetch). spawn/complete also feed the per-run
     // spawn-card subscription above; this one is the always-on safety net that never blocks.
-    for (const ev of ["subagent:spawn", "subagent:complete", "subagent:killed", "subagent:reset"] as const) {
-      hooks.on(ev, (payload: { parentSessionId: string }) => {
-        if (!payload.parentSessionId) return;
-        void myClawApp.notifyRoster(payload.parentSessionId);
+    for (const ev of ["subagent:spawn", "subagent:complete", "subagent:error", "subagent:aborted", "subagent:killed", "subagent:reset"] as const) {
+      hooks.on(ev, (payload: { parentSessionId: string; callerSessionId?: string }) => {
+        if (payload.parentSessionId) void myClawApp.notifyRoster(payload.parentSessionId);
+        if (payload.callerSessionId && payload.callerSessionId !== payload.parentSessionId) {
+          void myClawApp.notifyRoster(payload.callerSessionId);
+        }
       });
     }
 
@@ -2104,48 +2154,76 @@ async function main() {
             // Sub-agent lifecycle is also a global hook; route this run's spawns to its streamer so
             // the spawn card lives where the parent run paints. rosterEverywhere runs one shared
             // subscription registered once at boot (see below), so nothing here broadcasts twice.
-            const streamSubAgent = (ev: { id: string; parentSessionId: string }): void => {
+            const subAgentContexts = new Map<string, UnifiedMessage>();
+            const streamSubAgent = (ev: { id: string }, context: UnifiedMessage): void => {
               const threadId = subagentSessionToThread(ev.id);
               if (!threadId) return;
               const streamer = myClawApp.createStreamer({
-                ...msg,
+                ...context,
                 id: `subagent-${ev.id}`,
                 threadId,
                 text: "",
               });
               subAgentStreamers.set(ev.id, streamer);
+              subAgentContexts.set(ev.id, context);
             };
             const settleSubAgentStream = (ev: { id: string; status: "complete" | "error" | "aborted"; error?: string; resultLength?: number }): void => {
               const streamer = subAgentStreamers.get(ev.id);
-              if (!streamer) return;
-              subAgentStreamers.delete(ev.id);
-              if (ev.status === "complete") void streamer.finish();
-              else void streamer.abort(ev.error);
+              if (streamer) {
+                subAgentStreamers.delete(ev.id);
+                if (ev.status === "complete") void streamer.finish();
+                else void streamer.abort(ev.error);
+              }
+              subAgentContexts.delete(ev.id);
             };
+            const parentStreamer = (parentSessionId: string): MyClawAppStreamer | undefined =>
+              parentSessionId === runSessionId
+                ? active
+                : subAgentContexts.has(parentSessionId) ? subAgentStreamers.get(parentSessionId) : undefined;
             const onSubagentSpawn = (ev: { id: string; displayName: string; type: string; mode: string; parentSessionId: string; toolCallId?: string }): void => {
-              if (ev.parentSessionId !== runSessionId) return;
-              void active.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
-              streamSubAgent(ev);
+              const owner = parentStreamer(ev.parentSessionId);
+              const context = ev.parentSessionId === runSessionId ? msg : subAgentContexts.get(ev.parentSessionId);
+              if (!owner || !context) return;
+              void owner.appendSpawnStart({ subagentId: ev.id, displayName: ev.displayName, type: ev.type, mode: ev.mode, ...(ev.toolCallId ? { toolCallId: ev.toolCallId } : {}) });
+              streamSubAgent(ev, context);
             };
             const onSubagentComplete = (ev: { id: string; resultLength: number; parentSessionId: string; toolCallId?: string }): void => {
-              if (ev.parentSessionId !== runSessionId) return;
-              void active.appendSpawnEnd({ subagentId: ev.id, status: "complete", resultLength: ev.resultLength });
+              const owner = parentStreamer(ev.parentSessionId);
+              if (!owner) return;
+              void owner.appendSpawnEnd({ subagentId: ev.id, status: "complete", resultLength: ev.resultLength });
               settleSubAgentStream({ id: ev.id, status: "complete", resultLength: ev.resultLength });
             };
             const onSubagentError = (ev: { id: string; error: unknown; parentSessionId: string; toolCallId?: string }): void => {
-              if (ev.parentSessionId !== runSessionId) return;
-              void active.appendSpawnEnd({ subagentId: ev.id, status: "error", error: String(ev.error) });
-              settleSubAgentStream({ id: ev.id, status: "error", error: String(ev.error) });
+              const owner = parentStreamer(ev.parentSessionId);
+              if (!owner) return;
+              const error = String(ev.error);
+              void owner.appendSpawnEnd({ subagentId: ev.id, status: "error", error });
+              settleSubAgentStream({ id: ev.id, status: "error", error });
             };
             const onSubagentAborted = (ev: { id: string; parentSessionId: string; toolCallId?: string }): void => {
-              if (ev.parentSessionId !== runSessionId) return;
-              void active.appendSpawnEnd({ subagentId: ev.id, status: "aborted" });
+              const owner = parentStreamer(ev.parentSessionId);
+              if (!owner) return;
+              void owner.appendSpawnEnd({ subagentId: ev.id, status: "aborted" });
               settleSubAgentStream({ id: ev.id, status: "aborted" });
+            };
+            const onSubagentKilled = (ev: { id: string; parentSessionId: string }): void => {
+              const owner = parentStreamer(ev.parentSessionId);
+              if (!owner) return;
+              void owner.appendSpawnEnd({ subagentId: ev.id, status: "aborted", error: "sub-agent killed" });
+              settleSubAgentStream({ id: ev.id, status: "aborted", error: "sub-agent killed" });
+            };
+            const onSubagentReset = (ev: { id: string; parentSessionId: string }): void => {
+              const owner = parentStreamer(ev.parentSessionId);
+              if (!owner) return;
+              void owner.appendSpawnEnd({ subagentId: ev.id, status: "aborted", error: "sub-agent reset" });
+              settleSubAgentStream({ id: ev.id, status: "aborted", error: "sub-agent reset" });
             };
             hooks.on("subagent:spawn", onSubagentSpawn);
             hooks.on("subagent:complete", onSubagentComplete);
             hooks.on("subagent:error", onSubagentError);
             hooks.on("subagent:aborted", onSubagentAborted);
+            hooks.on("subagent:killed", onSubagentKilled);
+            hooks.on("subagent:reset", onSubagentReset);
             hooks.emit("stream:start", { platform: "my-claw-app", chatId: msg.chatId });
             try {
               response = await routeWithReroute(router, msg, {
@@ -2181,6 +2259,14 @@ async function main() {
               hooks.off("subagent:complete", onSubagentComplete);
               hooks.off("subagent:error", onSubagentError);
               hooks.off("subagent:aborted", onSubagentAborted);
+              hooks.off("subagent:killed", onSubagentKilled);
+              hooks.off("subagent:reset", onSubagentReset);
+              for (const id of subAgentContexts.keys()) {
+                const streamer = subAgentStreamers.get(id);
+                subAgentStreamers.delete(id);
+                if (streamer) void streamer.abort("parent run ended");
+              }
+              subAgentContexts.clear();
             }
           } else {
             response = await routeWithReroute(router, msg, {});

@@ -428,7 +428,13 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         // is what made a reload render an in-flight tool as a finished one with empty output.
         const settled = outputs.has(call.id);
         const output = outputs.get(call.id) ?? "";
-        const truncated = output.length > TOOL_OUTPUT_LIMIT;
+        const spawn = call.spawn;
+        // A spawn lifecycle can settle before the outer tool result is written. In that window the
+        // card is no longer running even though `outputs` has no entry yet; replay the lifecycle
+        // state instead of resurrecting a spinner with empty output.
+        const running = spawn ? spawn.status === "running" && !settled : !settled;
+        const historyOutput = output || (spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "");
+        const truncated = historyOutput.length > TOOL_OUTPUT_LIMIT;
         entries.push({
           // Keyed on the model's own call id so this card and the live one are the same card. They
           // used to differ, so a tool finishing after a reload appended a second card beside the
@@ -440,10 +446,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           name: toolDisplayName(call.name),
           args: parseToolArguments(call.arguments),
           durationMs: call.durationMs,
-          ok: true,
-          output: truncated ? output.slice(0, TOOL_OUTPUT_LIMIT) : output,
+          ok: spawn ? spawn.status !== "error" && spawn.status !== "aborted" : true,
+          output: truncated ? historyOutput.slice(0, TOOL_OUTPUT_LIMIT) : historyOutput,
           truncated,
-          ...(settled ? {} : { running: true }),
+          ...(running ? { running: true } : {}),
+          ...(spawn ? { spawn } : {}),
           ts: message.timestamp,
         });
       }

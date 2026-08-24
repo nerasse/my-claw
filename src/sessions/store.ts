@@ -16,6 +16,27 @@ import type { ChatLocation } from "../channels/types.ts";
  */
 export type SessionAttachment = { type: "image"; path: string; mimeType?: string };
 
+export type SessionSubAgentStatus = "running" | "complete" | "error" | "aborted";
+
+/** Display-only state for a sub-agent attached to a parent `spawn` tool call. */
+export interface SessionSubAgentState {
+  subagentId: string;
+  displayName: string;
+  agentType: string;
+  mode: string;
+  status: SessionSubAgentStatus;
+  resultLength?: number;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
+export type SessionSubAgentStateUpdate = Partial<Omit<SessionSubAgentState, "subagentId" | "status" | "startedAt">> & {
+  subagentId: string;
+  status: SessionSubAgentStatus;
+  toolCallId?: string;
+};
+
 export type SessionMessage =
   | {
       role: "user";
@@ -43,7 +64,14 @@ export type SessionMessage =
       role: "assistant";
       content: string;
       timestamp: string;
-      toolCalls?: Array<{ id: string; name: string; arguments: string; durationMs?: number }>;
+      toolCalls?: Array<{
+        id: string;
+        name: string;
+        arguments: string;
+        durationMs?: number;
+        /** Display-only lifecycle state for a `spawn` call. Never sent back to a model. */
+        spawn?: SessionSubAgentState;
+      }>;
       /**
        * What the model thought before answering, for display only -- docs/reasoning-visibility.md.
        * It must never reach a model: both replay paths (`toChatMessages`,
@@ -248,6 +276,42 @@ export interface TokenUsage {
   apiCalls: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+}
+
+/**
+ * Updates the display-only sub-agent state on the parent assistant tool call. The spawn event has
+ * the model's tool call id, while terminal events only have the sub-agent id, so both are accepted.
+ * A terminal state is sticky: a late duplicate or a lifecycle event from an already settled child
+ * must not re-open the spinner in history.
+ */
+export function recordSessionSubAgentState(session: SessionData, update: SessionSubAgentStateUpdate): boolean {
+  let target: { id: string; name: string; arguments: string; durationMs?: number; spawn?: SessionSubAgentState } | undefined;
+  for (let i = session.messages.length - 1; i >= 0 && !target; i--) {
+    const message = session.messages[i];
+    if (message?.role !== "assistant") continue;
+    for (const call of message.toolCalls ?? []) {
+      if ((update.toolCallId && call.id === update.toolCallId) || call.spawn?.subagentId === update.subagentId) {
+        target = call;
+        break;
+      }
+    }
+  }
+  if (!target) return false;
+  const current = target.spawn;
+  if (current && current.status !== "running") return false;
+  const now = new Date().toISOString();
+  target.spawn = {
+    subagentId: update.subagentId,
+    displayName: update.displayName ?? current?.displayName ?? update.subagentId,
+    agentType: update.agentType ?? current?.agentType ?? "unknown",
+    mode: update.mode ?? current?.mode ?? "run",
+    status: update.status,
+    startedAt: current?.startedAt ?? now,
+    ...(update.resultLength !== undefined ? { resultLength: update.resultLength } : current?.resultLength !== undefined ? { resultLength: current.resultLength } : {}),
+    ...(update.error !== undefined ? { error: update.error } : current?.error !== undefined ? { error: current.error } : {}),
+    ...(update.status === "running" ? {} : { finishedAt: current?.finishedAt ?? now }),
+  };
+  return true;
 }
 
 export interface SessionData {

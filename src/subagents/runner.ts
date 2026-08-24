@@ -77,8 +77,14 @@ function isReachableFrom(meta: SubAgentMeta, caller: SubAgentCaller): boolean {
   return true;
 }
 
+interface ActiveSubAgentRun {
+  controller: AbortController;
+  done: Promise<void>;
+}
+
 export class SubAgentRunner {
   private activeCount = 0;
+  private activeRuns = new Map<string, Set<ActiveSubAgentRun>>();
 
   private sessionManager?: SessionManager;
 
@@ -99,6 +105,44 @@ export class SubAgentRunner {
    */
   setSessionManager(manager: SessionManager): void {
     this.sessionManager = manager;
+  }
+
+  private async runTracked<T>(id: string, parentSignal: AbortSignal | undefined, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const onParentAbort = (): void => controller.abort();
+    if (parentSignal?.aborted) controller.abort();
+    else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+    let resolveDone!: () => void;
+    const entry: ActiveSubAgentRun = { controller, done: new Promise<void>((resolve) => { resolveDone = resolve; }) };
+    const runs = this.activeRuns.get(id) ?? new Set<ActiveSubAgentRun>();
+    runs.add(entry);
+    this.activeRuns.set(id, runs);
+    try {
+      return await task(controller.signal);
+    } finally {
+      parentSignal?.removeEventListener("abort", onParentAbort);
+      runs.delete(entry);
+      if (runs.size === 0) this.activeRuns.delete(id);
+      resolveDone();
+    }
+  }
+
+  private async stopTracked(id: string): Promise<void> {
+    for (;;) {
+      const runs = this.activeRuns.get(id);
+      if (!runs || runs.size === 0) return;
+      for (const run of runs) run.controller.abort();
+      await Promise.allSettled([...runs].map((run) => run.done));
+    }
+  }
+
+  private async persistSession(id: string, session: SessionData): Promise<void> {
+    if (this.sessionManager) {
+      this.sessionManager.adopt(session);
+      await this.sessionManager.persist(id);
+    } else {
+      await saveSession(id, session);
+    }
   }
 
   canSpawn(depth: number): boolean {
@@ -195,15 +239,17 @@ export class SubAgentRunner {
       // pre-pushed bubble against the one the run re-pushes with its sourceId.
       sourceId: `subagent-${id}`,
     });
-    await saveSession(id, session);
-    indexSessionArchive(session);
+    return this.runTracked(id, signal, async (trackedSignal) => {
+      await this.persistSession(id, session);
+      indexSessionArchive(session);
 
-    hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
-    const stream = streamProvider?.(id);
-    const run = () => this.executeRun(id, type, resolved.dir, parentMessage, signal, model, stream);
-    const result = await (enqueue ? enqueue(id, run) : run());
-    hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
-    return { id, result };
+      hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
+      const stream = streamProvider?.(id);
+      const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream);
+      const result = await (enqueue ? enqueue(id, run) : run());
+      hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
+      return { id, result };
+    });
   }
 
   /**
@@ -249,7 +295,7 @@ export class SubAgentRunner {
     // which is what keeps `spawn`'s contract unchanged.
     stream?: SubAgentStream,
   ): Promise<string> {
-    return registry.enqueue(id, async () => {
+    return this.runTracked(id, signal, (trackedSignal) => registry.enqueue(id, async () => {
       const session = await loadSession(id);
       if (!session || !session.meta) {
         return `Error: sub-agent ${id} not found.`;
@@ -275,14 +321,14 @@ export class SubAgentRunner {
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
       try {
-        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, signal, undefined, stream, messageId);
+        return await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, stream, messageId);
       } finally {
         // In the finally, not after: a failed run used to lose the question too, and the thread
         // came back from disk with no trace that anything had been sent.
-        await saveSession(id, session);
+        await this.persistSession(id, session);
         indexSessionArchive(session);
       }
-    });
+    }));
   }
 
   async kill(id: string, callerSessionId: string): Promise<string> {
@@ -292,11 +338,17 @@ export class SubAgentRunner {
     if (!id.startsWith("subagent/") || !session?.meta || !isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
       return `Error: sub-agent ${id} not found.`;
     }
-    await deleteSession(id);
-    // Cache parity: the adopted session must not survive the kill. The file is already gone
-    // (deleteSession above), so only the cache entry is purged.
-    this.sessionManager?.drop(id);
-    hooks.emit("subagent:killed", { id, parentSessionId: callerSessionId });
+    await this.stopTracked(id);
+    if (this.sessionManager) await this.sessionManager.deleteSession(id);
+    else await deleteSession(id);
+    // Cache parity: the adopted session must not survive the kill. The manager delete also drains
+    // queued writes before removing the file, so a late autosave cannot resurrect the agent.
+    const parentSessionId = session.meta.parentSessionId || callerSessionId;
+    hooks.emit("subagent:killed", {
+      id,
+      parentSessionId,
+      ...(parentSessionId !== callerSessionId ? { callerSessionId } : {}),
+    });
     return `Sub-agent ${id} deleted.`;
   }
 
@@ -305,16 +357,31 @@ export class SubAgentRunner {
     if (!session || !session.meta || !isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
       return `Error: sub-agent ${id} not found.`;
     }
+    await this.stopTracked(id);
+    const current = this.sessionManager ? await this.sessionManager.peek(id) ?? session : session;
+    if (this.sessionManager) {
+      this.sessionManager.adopt(current);
+      await this.sessionManager.persist(id);
+    } else {
+      await saveSession(id, current);
+    }
     await archiveSession(id);
     // The workspace survives a reset like the rest of the identity: a sub-agent pinned to a
     // project must not silently come back in the default one.
-    const fresh = this.createSession(id, session.platform, session.chatType, session.meta, session.workspace);
-    await saveSession(id, fresh);
-    // The cache must hold the fresh session, not the archived one.
+    const fresh = this.createSession(id, current.platform, current.chatType, current.meta, current.workspace);
     if (this.sessionManager) {
       this.sessionManager.adopt(fresh);
+      await this.sessionManager.persist(id);
+    } else {
+      await saveSession(id, fresh);
     }
-    hooks.emit("subagent:reset", { id, parentSessionId: callerSessionId });
+    // The cache must hold the fresh session, not the archived one.
+    const parentSessionId = session.meta.parentSessionId || callerSessionId;
+    hooks.emit("subagent:reset", {
+      id,
+      parentSessionId,
+      ...(parentSessionId !== callerSessionId ? { callerSessionId } : {}),
+    });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
   }
 
@@ -369,10 +436,9 @@ export class SubAgentRunner {
         if (!session?.meta) continue;
         if (session.meta.visibility !== "private") continue;
         if (session.meta.parentSessionId !== parentSessionId) continue;
-        if (registry.isRunning(id)) continue;
-        await deleteSession(id);
-        // Cache parity: adopted sessions must not outlive their file.
-        this.sessionManager?.drop(id);
+        if (registry.isRunning(id) || this.activeRuns.has(id)) continue;
+        if (this.sessionManager) await this.sessionManager.deleteSession(id);
+        else await deleteSession(id);
         removed += 1;
       }
     } catch {
@@ -423,23 +489,25 @@ export class SubAgentRunner {
       // pre-pushed bubble against the one the run re-pushes with its sourceId.
       sourceId: `subagent-${id}`,
     });
-    await saveSession(id, session);
-    indexSessionArchive(session);
-
-    hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
-    const stream = streamProvider?.(id);
-    this.activeCount += 1;
-    try {
-      const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
-      const result = await (enqueue ? enqueue(id, execute) : execute());
-      hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
-      return { id, result };
-    } finally {
-      this.activeCount -= 1;
+    return this.runTracked(id, signal, async (trackedSignal) => {
+      await this.persistSession(id, session);
       indexSessionArchive(session);
-      // The run wrote its turns into the session in memory; this is the moment they land on disk.
-      await saveSession(id, session);
-    }
+
+      hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, ...(toolCallId ? { toolCallId } : {}) });
+      const stream = streamProvider?.(id);
+      this.activeCount += 1;
+      try {
+        const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, trackedSignal, model, stream);
+        const result = await (enqueue ? enqueue(id, execute) : execute());
+        hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
+        return { id, result };
+      } finally {
+        this.activeCount -= 1;
+        indexSessionArchive(session);
+        // The run wrote its turns into the session in memory; this is the moment they land on disk.
+        await this.persistSession(id, session);
+      }
+    });
   }
 
   private async executeRun(
@@ -463,7 +531,7 @@ export class SubAgentRunner {
     } finally {
       // Persist the first run so a session-mode sub-agent remembers its own answer; without this
       // the next send() reloads a history containing the task but not the reply.
-      await saveSession(id, session);
+      await this.persistSession(id, session);
       indexSessionArchive(session);
     }
   }

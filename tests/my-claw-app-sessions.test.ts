@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { saveSession, deleteSession, loadSession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
+import { recordSessionSubAgentState, saveSession, deleteSession, loadSession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -99,6 +99,66 @@ describe("MyClawAppSessionStoreImpl.history", () => {
    * `mcp__myclaw__bash` and the mirror kept that name. A reopened thread then showed the
    * plumbing on every card while the live cards, built from the registry, showed `bash`.
    */
+  test("replays a terminal spawn lifecycle when the outer tool result has not landed yet", async () => {
+    await saveSession(sessionId, session(sessionId, [
+      {
+        role: "assistant",
+        content: "",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [{
+          id: "spawn-call",
+          name: "spawn",
+          arguments: '{"name":"researcher","mode":"run"}',
+          spawn: {
+            subagentId: "subagent/researcher-1",
+            displayName: "researcher",
+            agentType: "research",
+            mode: "run",
+            status: "complete",
+            resultLength: 17,
+            startedAt: "2026-01-01T00:00:02.000Z",
+            finishedAt: "2026-01-01T00:00:03.000Z",
+          },
+        }],
+      },
+    ]));
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    const card = entries.find((entry) => entry.role === "tool");
+    assert.ok(card && card.role === "tool");
+    assert.equal(card.running, undefined);
+    assert.equal(card.spawn?.status, "complete");
+    assert.equal(card.spawn?.subagentId, "subagent/researcher-1");
+  });
+
+  test("records a spawn lifecycle on its matching tool call and keeps terminal state sticky", () => {
+    const current = session(sessionId, [{
+      role: "assistant",
+      content: "",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      toolCalls: [{ id: "spawn-call", name: "spawn", arguments: "{}" }],
+    }]);
+    assert.equal(recordSessionSubAgentState(current, {
+      subagentId: "subagent/researcher-2",
+      toolCallId: "spawn-call",
+      displayName: "researcher",
+      agentType: "research",
+      mode: "run",
+      status: "running",
+    }), true);
+    assert.equal(recordSessionSubAgentState(current, {
+      subagentId: "subagent/researcher-2",
+      resultLength: 4,
+      status: "complete",
+    }), true);
+    assert.equal(recordSessionSubAgentState(current, {
+      subagentId: "subagent/researcher-2",
+      status: "error",
+      error: "late duplicate",
+    }), false);
+    assert.equal(current.messages[0]?.role === "assistant" ? current.messages[0].toolCalls?.[0]?.spawn?.status : undefined, "complete");
+  });
+
   test("a replayed card names the tool, not the MCP wrapper the SDK wraps it in", async () => {
     await saveSession(sessionId, session(sessionId, [
       {

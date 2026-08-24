@@ -864,6 +864,20 @@ export type MyClawAppClientFrame =
   | MyClawAppTagsDelete
   | MyClawAppPing;
 
+export type MyClawAppSpawnStatus = "running" | "complete" | "error" | "aborted";
+
+export interface MyClawAppSpawnState {
+  subagentId: string;
+  displayName: string;
+  agentType: string;
+  mode: string;
+  status: MyClawAppSpawnStatus;
+  resultLength?: number;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+}
+
 export interface MyClawAppToolCallEntry {
   id: string;
   name: string;
@@ -872,6 +886,8 @@ export interface MyClawAppToolCallEntry {
   ok: boolean;
   output: string;
   truncated: boolean;
+  /** Persisted spawn lifecycle, so a reload cannot resurrect a completed spinner. */
+  spawn?: MyClawAppSpawnState;
   /**
    * The call was still executing when this snapshot was taken, so the card keeps its spinner.
    *

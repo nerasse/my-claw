@@ -36,15 +36,25 @@ export class SessionManager {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
       hooks.emit("session:evicted", { sessionId: key });
       this.savedCounts.delete(key);
-      const write = saveSession(key, value)
-        .catch((err) => {
-          void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
-        })
-        .finally(() => {
-          if (this.pendingWrites.get(key) === write) this.pendingWrites.delete(key);
-        });
-      this.pendingWrites.set(key, write);
+      void this.queueWrite(key, async () => {
+        await saveSession(key, value);
+      }).catch((err) => {
+        void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
+      });
     });
+  }
+
+  /** Serializes writes per session, so a lifecycle snapshot cannot overtake the next turn snapshot. */
+  private queueWrite(sessionId: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.pendingWrites.get(sessionId) ?? Promise.resolve();
+    const write = previous
+      .catch(() => {})
+      .then(work)
+      .finally(() => {
+        if (this.pendingWrites.get(sessionId) === write) this.pendingWrites.delete(sessionId);
+      });
+    this.pendingWrites.set(sessionId, write);
+    return write;
   }
 
   /** Every disk read of a session goes through here, so none of them can overtake an eviction. */
@@ -188,8 +198,8 @@ export class SessionManager {
     if (!session) throw new Error("conversation not found");
     if (workspace) session.workspace = workspace;
     else delete session.workspace;
-    await saveSession(sessionId, session);
-    this.cache(sessionId, session);
+    this.adopt(session);
+    await this.persist(sessionId);
     hooks.emit("session:workspace", { sessionId, workspace });
     return session;
   }
@@ -199,10 +209,13 @@ export class SessionManager {
     return listSessionIdsByPrefix(prefix, limit);
   }
 
-  /** Hard delete: evict from cache, drop the session file and every archive snapshot. */
+  /** Hard delete: drain queued writes, evict from cache, then drop the session file and archives. */
   async deleteSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
     this.savedCounts.delete(sessionId);
+    const pending = this.pendingWrites.get(sessionId);
+    if (pending) await pending.catch(() => {});
+    this.pendingWrites.delete(sessionId);
     await deleteSessionFile(sessionId);
     await deleteSessionArchives(sessionId);
     hooks.emit("session:deleted", { sessionId });
@@ -233,11 +246,13 @@ export class SessionManager {
 
   async persist(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (session) {
+    if (!session) return;
+    await this.queueWrite(sessionId, async () => {
+      const messageCount = session.messages.length;
       await saveSession(sessionId, session);
-      this.savedCounts.set(sessionId, session.messages.length);
-      hooks.emit("session:persisted", { sessionId, messageCount: session.messages.length });
-    }
+      if (this.sessions.get(sessionId) === session) this.savedCounts.set(sessionId, messageCount);
+      hooks.emit("session:persisted", { sessionId, messageCount });
+    });
   }
 
   /** Starts writing what running turns accumulate. Idempotent: a second call is a no-op. */
@@ -258,11 +273,11 @@ export class SessionManager {
    * logged and skipped rather than thrown: the tick is fire-and-forget, and the next one retries.
    */
   async flushDirty(): Promise<void> {
-    for (const [sessionId, session] of [...this.sessions.entries()]) {
-      if (this.savedCounts.get(sessionId) === session.messages.length) continue;
+    for (const sessionId of [...this.sessions.keys()]) {
+      const session = this.sessions.get(sessionId);
+      if (!session || this.savedCounts.get(sessionId) === session.messages.length) continue;
       try {
-        await saveSession(sessionId, session);
-        this.savedCounts.set(sessionId, session.messages.length);
+        await this.persist(sessionId);
       } catch (err) {
         void log("error", "session autosave failed", { sessionId, error: String(err) });
       }
@@ -271,12 +286,7 @@ export class SessionManager {
 
   /** Writes every cached session, dirty or not. The last thing to run before the process exits. */
   async flushAll(): Promise<void> {
-    const cached = [...this.sessions.entries()];
-    await Promise.allSettled(
-      cached.map(async ([sessionId, session]) => {
-        await saveSession(sessionId, session);
-        this.savedCounts.set(sessionId, session.messages.length);
-      }),
-    );
+    const cached = [...this.sessions.keys()];
+    await Promise.allSettled(cached.map((sessionId) => this.persist(sessionId)));
   }
 }

@@ -949,16 +949,16 @@ looked done while it was still going -- the sub-agent panel, which asks for stat
 distinction is a `has` rather than a `?? ""`, and the flag is only ever set by the history path;
 live cards get their spinner from `chat.tool.start` as before.
 
-`chat.spawn.start` annotates a spawn card with its sub-agent identity, and it is sent once, when
-the sub-agent starts -- it is never replayed. History carries no spawn state either, so a reloaded
-page has an empty status map and the card loses its "running sub-agent" line while the sub-agent
-behind it is plainly still going. Rather than persist the tool-call-to-sub-agent mapping, the app
-falls back to the roster, which is *asked for* (`subagents.list`) and therefore does come back on
-reconnect: `spawnLiveOf` resolves the card's `name` argument against the roster and reports
-`running` when that agent is busy. The fallback applies only to a card whose own call has not
-returned, because a session sub-agent is reusable and an old card naming a busy agent is not a
-card whose call is running. Only `running` is inferred; the roster never says whether this
-particular call completed or errored, and the card shows its own outcome once the result lands.
+`chat.spawn.start` annotates a spawn card with its sub-agent identity, and `chat.spawn.end` settles
+it live. The assistant tool call also persists the spawn lifecycle state (`running`, `complete`,
+`error` or `aborted`) with its timestamps and result metadata. A reload during the narrow window
+between the lifecycle end and the outer `chat.tool` result therefore replays a settled card instead
+of resurrecting an empty spinner. Lifecycle writes are serialized per session, so a later turn
+cannot overtake the terminal snapshot on disk. Older sessions without this metadata still fall
+back to `subagents.list`: `spawnLiveOf` and `reconcileSpawnRoster` resolve the card's name against
+the roster while a child is running. They never invent a successful terminal state for an idle legacy
+card, because a session sub-agent is reusable and an idle roster entry does not identify how that
+particular call ended.
 
 ### Several surfaces per device
 

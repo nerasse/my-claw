@@ -294,8 +294,8 @@ export interface HookEventMap {
   "subagent:complete": { id: string; resultLength: number; parentSessionId: string };
   "subagent:error": { id: string; error: unknown; parentSessionId: string };
   "subagent:aborted": { id: string; parentSessionId: string };
-  "subagent:killed": { id: string; parentSessionId: string };
-  "subagent:reset": { id: string; parentSessionId: string };
+  "subagent:killed": { id: string; parentSessionId: string; callerSessionId?: string };
+  "subagent:reset": { id: string; parentSessionId: string; callerSessionId?: string };
 
   // === CRON LIFECYCLE ===
   "cron:tick": { dueCount: number; totalJobs: number };
