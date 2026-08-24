@@ -838,8 +838,8 @@ maintenant, il disparaît avec la cause.
 | Lot | Contenu | Coût | Dépend de |
 |---|---|---|---|
 | **0** | ~~`sealDanglingToolCalls` au démarrage de run~~ **livré `3b09196`** | — | — |
-| **1** | Ce document en `docs/session-log.md` | 1 h | — |
-| **2** | `sessions/log.ts` : entrée, `append`, lecture tolérante, `branch`, `since`, `pathOf` | 1,5 j | 1 |
+| **1** | ~~Ce document en `docs/session-log.md`~~ **livré `a026c32`** | — | — |
+| **2** | ~~`sessions/log.ts` : entrée, `append`, lecture tolérante, `branch`, `since`, `pathOf`~~ **livré `d592d1d`** | — | 1 |
 | **3** | `promptOf` / `displayOf`, `bridge.ts` écrit des entrées, phases persistées (+ `providerMeta`), compaction en `firstKeptEntryId` | 1,5 j | 2 |
 | **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
 | **5** | Magasin de sorties d'outils + GC des orphelins | 0,5 j | 2 |
@@ -871,7 +871,9 @@ Pas de shim de compatibilité (règle `AGENTS.md`) : le lot 6 tourne une fois au
    corruption, pas un cas à réparer.
 4. `promptOf` et `displayOf` sont pures et ne partagent aucun état.
 5. Aucun `tool_call` sans résultat dans `promptOf` (garanti par `3b09196`).
-6. Une ligne JSONL invalide est sautée, jamais fatale.
+6. Une ligne JSONL invalide est sautée, jamais fatale. Et une dernière ligne **non
+   terminée** est retirée du fichier à l'ouverture : la sauter en lecture ne suffit pas, l'append
+   suivant se collerait au moignon et serait avalé avec lui (trouvé par le test au lot 2).
 7. Un curseur `since` inconnu est une erreur explicite, jamais un delta silencieux.
 8. Une pièce jointe appartient à un seul thread. Aucun partage inter-session, jamais.
 9. Un snapshot ne couvre que le workspace, et `/undo` le dit.
