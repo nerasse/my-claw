@@ -13,14 +13,14 @@ import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, Too
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import { loadSession, saveSession, deleteSession, archiveSession } from "../sessions/store.ts";
+import { loadSession, saveSession, deleteSession, archiveSession, recordSubAgentCaller } from "../sessions/store.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { indexSessionArchive } from "../conversations/store.ts";
-import type { SubAgentType, SubAgentMeta, SubAgentInfo } from "./types.ts";
+import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { formatLocationForModel } from "../agent/preprocess.ts";
@@ -231,6 +231,7 @@ export class SubAgentRunner {
 
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
     session.invokedBy = parentSessionId;
+    recordSubAgentCaller(session, parentSessionId);
     session.messages.push({
       role: "user",
       content: task,
@@ -336,6 +337,10 @@ export class SubAgentRunner {
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
+      // Who this agent is working for, which neither the creator nor the last driver answers: a
+      // global agent serves several conversations and the owner needs the list to hand an answer
+      // back to one of them.
+      recordSubAgentCaller(session, callerSessionId);
       // Same lifecycle as `spawn`, so a `send` card gets the same statuses, the same persisted
       // state and the same roster pushes. `action` is the only difference on the wire.
       const tracked = toolCallId !== undefined;
@@ -426,6 +431,35 @@ export class SubAgentRunner {
       ...(parentSessionId !== callerSessionId ? { callerSessionId } : {}),
     });
     return `Sub-agent ${id} session reset. Workspace preserved.`;
+  }
+
+  /**
+   * The conversations this sub-agent has worked for, newest first, as seen by `callerSessionId`.
+   *
+   * A caller who cannot reach the agent gets nothing: the roster rule decides who may read it, the
+   * same way it decides who may drive it. Each entry says whether it is still reachable rather than
+   * being dropped when it is not -- a caller whose conversation was deleted, or which left the
+   * workspace, is exactly the thing worth showing as unavailable instead of silently missing.
+   */
+  async callersOf(id: string, callerSessionId: string): Promise<SubAgentCallerInfo[] | undefined> {
+    const session = await loadSession(id);
+    if (!session?.meta) return undefined;
+    const caller = await this.resolveCaller(callerSessionId);
+    if (!isReachableFrom(session.meta, caller)) return undefined;
+    const out: SubAgentCallerInfo[] = [];
+    for (const entry of session.callers ?? []) {
+      const target = await loadSession(entry.sessionId);
+      out.push({
+        sessionId: entry.sessionId,
+        creator: entry.creator,
+        firstAt: entry.firstAt,
+        lastAt: entry.lastAt,
+        runs: entry.runs,
+        ...(target ? {} : { unreachable: "gone" as const }),
+        ...(target?.title ? { title: target.title } : {}),
+      });
+    }
+    return out;
   }
 
   async list(registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentInfo[]> {
@@ -524,6 +558,7 @@ export class SubAgentRunner {
       createdAt: new Date().toISOString(),
     }, workspaceKey);
     session.invokedBy = parentSessionId;
+    recordSubAgentCaller(session, parentSessionId);
     session.messages.push({
       role: "user",
       content: task,

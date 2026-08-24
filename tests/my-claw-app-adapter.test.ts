@@ -3950,6 +3950,14 @@ describe("subagents frames", () => {
       asked.push(`reset:${threadId}:${caller}`);
       return `Sub-agent ${threadId} session reset. Workspace preserved.`;
     },
+    callers: async (threadId: string, caller: string) => {
+      asked.push(`callers:${threadId}:${caller}`);
+      return [{ sessionId: "my-claw-app/thread/test-device/main", threadId: "main", creator: true, firstAt: "2026-01-01T00:00:00.000Z", lastAt: "2026-01-02T00:00:00.000Z", runs: 2, title: "Parent" }];
+    },
+    handoff: async (input: { threadId: string; targets: string[]; body: string; mode: string }) => {
+      asked.push(`handoff:${input.threadId}:${input.mode}:${input.targets.join(",")}:${input.body}`);
+      return input.targets.map((t) => ({ sessionId: t, threadId: "main", ok: true }));
+    },
     ...over,
   });
 
@@ -4037,6 +4045,46 @@ describe("subagents frames", () => {
     // The attempt happened and stopped there: no roster is sent after a refusal, so the app cannot
     // read one as confirmation.
     assert.deepEqual(asked, ["kill:sub-0123456789abcdef"]);
+  });
+
+  test("subagents.callers answers the asking socket alone", async () => {
+    adapter.onSubAgentsController(controller());
+    client.ws.send(JSON.stringify({ type: "subagents.callers", threadId: "sub-0123456789abcdef", parentThreadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "subagents.callers.result");
+    assert.equal(frame["threadId"], "sub-0123456789abcdef");
+    const callers = frame["callers"] as Array<Record<string, unknown>>;
+    assert.equal(callers[0]?.["creator"], true);
+    assert.deepEqual(asked, ["callers:sub-0123456789abcdef:my-claw-app/thread/test-device/main"]);
+  });
+
+  // Unreachable and missing answer the same way, so a refusal cannot be read as "it exists".
+  test("an unreachable sub-agent refuses the caller list", async () => {
+    adapter.onSubAgentsController(controller({ callers: async () => undefined }));
+    client.ws.send(JSON.stringify({ type: "subagents.callers", threadId: "sub-0123456789abcdef", parentThreadId: "main" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    assert.match(String(frame["message"]), /not found/);
+  });
+
+  test("subagents.handoff refuses an empty target list without asking the runner", async () => {
+    adapter.onSubAgentsController(controller());
+    client.ws.send(JSON.stringify({ type: "subagents.handoff", threadId: "sub-0123456789abcdef", parentThreadId: "main", targets: [], mode: "ask" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    assert.deepEqual(asked, []);
+  });
+
+  test("a handoff with nothing to hand back is refused, not delivered empty", async () => {
+    adapter.onSubAgentsController(controller());
+    client.ws.send(JSON.stringify({ type: "subagents.handoff", threadId: "sub-0123456789abcdef", parentThreadId: "main", targets: ["my-claw-app/thread/test-device/main"], mode: "ask" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "subagents");
+    assert.match(String(frame["message"]), /nothing to hand back/);
+    assert.deepEqual(asked, []);
   });
 
   test("kill and reset need both thread ids", async () => {

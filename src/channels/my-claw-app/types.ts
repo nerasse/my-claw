@@ -855,6 +855,8 @@ export type MyClawAppClientFrame =
   | MyClawAppDeviceList
   | MyClawAppDeviceRevoke
   | MyClawAppSubAgentsReset
+  | MyClawAppSubAgentsCallers
+  | MyClawAppSubAgentsHandoff
   | MyClawAppJobSave
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
@@ -2202,6 +2204,71 @@ export interface MyClawAppSubAgentsReset {
   parentThreadId: string;
 }
 
+/**
+ * Which conversations a sub-agent has worked for. Asked from the sub-agent's own thread, with
+ * `parentThreadId` naming the conversation the roster was read from -- the caller the visibility
+ * rule is applied to, exactly as for kill and reset.
+ */
+export interface MyClawAppSubAgentsCallers {
+  type: "subagents.callers";
+  threadId: string;
+  parentThreadId: string;
+}
+
+export interface MyClawAppSubAgentsCallersResult {
+  type: "subagents.callers.result";
+  threadId: string;
+  callers: MyClawAppSubAgentCaller[];
+}
+
+export interface MyClawAppSubAgentCaller {
+  sessionId: string;
+  /** The thread id the app addresses that conversation by, absent when it is not an app thread. */
+  threadId?: string;
+  /** The conversation that created the agent, which the sheet offers first. */
+  creator: boolean;
+  firstAt: string;
+  lastAt: string;
+  runs: number;
+  title?: string;
+  /** Set instead of the entry being dropped, so a caller that is gone reads as unavailable. */
+  unreachable?: "gone";
+}
+
+export interface MyClawAppSubAgentHandoffOutcome {
+  sessionId: string;
+  threadId?: string;
+  ok: boolean;
+  /** Why it did not land, for a target the owner asked for and the server refused. */
+  error?: string;
+}
+
+/**
+ * Hands one message of a sub-agent back to the conversations that called it.
+ *
+ * A sub-agent's answer reaches its parent only because a `spawn`/`send` tool call is awaiting it.
+ * When the owner is the one chatting, nothing is awaiting, so the return has to be asked for --
+ * docs/subagent-navigation.md, "Constraint 3". `targets` is a list because one answer can be owed
+ * to several conversations; `mode` decides whether each target runs on it or merely files it.
+ */
+export interface MyClawAppSubAgentsHandoff {
+  type: "subagents.handoff";
+  threadId: string;
+  parentThreadId: string;
+  /** Session ids taken from `subagents.callers.result`, never free-form. */
+  targets: string[];
+  /** Which message to hand back. Absent means the sub-agent's last answer. */
+  messageId?: string;
+  note?: string;
+  mode: "ask" | "note";
+}
+
+export interface MyClawAppSubAgentsHandoffResult {
+  type: "subagents.handoff.result";
+  threadId: string;
+  delivered: MyClawAppSubAgentHandoffOutcome[];
+}
+
 export interface MyClawAppJobsList {
   type: "jobs.list";
 }
@@ -2438,6 +2505,8 @@ export type MyClawAppServerFrame =
   | MyClawAppJobsListResult
   | MyClawAppJobsRunsResult
   | MyClawAppSubAgentsListResult
+  | MyClawAppSubAgentsCallersResult
+  | MyClawAppSubAgentsHandoffResult
   | MyClawAppNotificationsInfo
   | MyClawAppHello
   | MyClawAppTagsResult

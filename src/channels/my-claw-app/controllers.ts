@@ -9,6 +9,8 @@ import type {
   MyClawAppAgentFileSet,
   MyClawAppAgentsConfigResult,
   MyClawAppInstructionsFile,
+  MyClawAppSubAgentCaller,
+  MyClawAppSubAgentHandoffOutcome,
   MyClawAppInstructionsListResult,
   MyClawAppJobEntry,
   MyClawAppJobSave,
@@ -293,6 +295,26 @@ export interface MyClawAppSubAgentsController {
   kill(threadId: string, callerSessionId: string): Promise<string>;
   /** Archives the transcript and starts the sub-agent over, identity and workspace kept. */
   reset(threadId: string, callerSessionId: string): Promise<string>;
+  /**
+   * The conversations this sub-agent has worked for, so the owner can pick who an answer goes back
+   * to. `undefined` when the caller cannot reach the agent, which is the same answer as a missing
+   * one on purpose (docs/subagent-visibility.md).
+   */
+  callers(threadId: string, callerSessionId: string): Promise<MyClawAppSubAgentCaller[] | undefined>;
+  /**
+   * Hands one of the sub-agent's messages back to conversations that called it. Returns the
+   * per-target outcome, since one target may be gone while the others land.
+   */
+  handoff(input: {
+    threadId: string;
+    callerSessionId: string;
+    targets: string[];
+    /** The text to hand back, already resolved from the picked bubble by the replay view. */
+    body: string;
+    note?: string;
+    /** `ask` opens a run in the target so the orchestrator acts on it; `note` only files it. */
+    mode: "ask" | "note";
+  }): Promise<MyClawAppSubAgentHandoffOutcome[]>;
 }
 
 /**

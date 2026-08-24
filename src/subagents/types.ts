@@ -6,6 +6,21 @@ export type SubAgentType = string;
 
 export type { SubAgentMeta } from "../sessions/store.ts";
 
+/**
+ * One conversation a sub-agent has worked for, as offered to the owner when handing an answer back.
+ * `unreachable` is set rather than the entry being dropped: a caller whose conversation is gone is
+ * worth showing as unavailable instead of silently missing from the list.
+ */
+export interface SubAgentCallerInfo {
+  sessionId: string;
+  creator: boolean;
+  firstAt: string;
+  lastAt: string;
+  runs: number;
+  title?: string;
+  unreachable?: "gone";
+}
+
 export interface SubAgentInfo {
   id: string;
   displayName: string;

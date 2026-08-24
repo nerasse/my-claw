@@ -94,6 +94,43 @@ The inverse direction does work: the parent runs at `depth 0`, so
 parent is running, and a plain new run serves when it is idle. Hence C2: an explicit per-message
 action, never an implicit mirror.
 
+### The hand-back, as built
+
+**Who called this agent is a fact nothing recorded.** `meta.parentSessionId` is the creator and
+`invokedBy` is overwritten by every run, so neither answers "which conversations is this agent
+working for" -- the question the owner is really asking when handing an answer back. A global agent
+serves several, and the creator is not always among the ones still interested. `session.callers`
+(`sessions/store.ts`, `recordSubAgentCaller`) is that list: one entry per driving conversation with
+its first and last use and a run count, newest first, written by both `spawn` and `send`. It is
+capped at 20 entries, dropping the least recent, and the creator is never dropped -- it is the one
+entry the owner can always expect to see.
+
+**Reading the list is authorised exactly like driving the agent.** `callersOf` applies
+`isReachableFrom`, and an unreachable agent answers like a missing one, as everywhere else. The list
+it returns is also the allow-list a hand-back is checked against: a target the owner could not have
+been shown is refused. A caller whose conversation is gone comes back marked `unreachable` rather
+than being dropped, because "that one is no longer there" is worth showing.
+
+**Two frames.** `subagents.callers` answers the asking socket alone -- it is a menu opening, not a
+state change. `subagents.handoff` is broadcast, since it writes into other conversations and every
+window must learn what landed. It reports a per-target outcome instead of a single ok: one target
+being gone must not hide the ones that worked.
+
+**Which bubble, resolved by the replay view.** The ids the owner taps are the ids `history()` minted,
+and they are derived from the position of the entry in the replayed page, not from the message index
+in the session. So the adapter resolves `messageId` to text through `store.history()` and hands the
+text to the controller. Deriving the id a second time elsewhere would be one drift away from handing
+back the wrong turn. Only an assistant bubble is eligible: the owner's own question tells the parent
+nothing, and a tool card is an implementation detail of the run.
+
+**Two modes, because "return this" means two different things.** `ask` delivers the text as a real
+turn in the target conversation, through the same path a typed message takes
+(`deliverOwnerTurn`), so a target with a run in flight parks it in that run's mailbox and an idle one
+opens a fresh run. The orchestrator acts on it, and it costs tokens. `note` files it in the target's
+command journal, the display-only channel, so it reads back after a reload without ever reaching a
+model. Capped at three targets per hand-back: each `ask` starts a run somewhere else, and one tap in
+a menu must not be able to fan out without bound.
+
 ## Identity and status
 
 From `SubAgentMeta` (`sessions/store.ts:96-110`) and `SubAgentInfo` (`subagents/types.ts:9-15`):

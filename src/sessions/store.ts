@@ -251,6 +251,54 @@ export interface SubAgentMeta {
 }
 
 /**
+ * A conversation that has driven this sub-agent at least once, newest activity first.
+ *
+ * `parentSessionId` records who created the agent, `invokedBy` who drove the last run and is
+ * overwritten by the next one. Neither answers "which conversations is this agent working for",
+ * which is the question the owner asks when handing an answer back: a global agent can serve
+ * several, and the creator is not always among the ones still interested.
+ */
+export interface SubAgentCaller {
+  sessionId: string;
+  /** True for `meta.parentSessionId`: the conversation that created the agent. */
+  creator: boolean;
+  firstAt: string;
+  lastAt: string;
+  runs: number;
+}
+
+/**
+ * Enough to cover the conversations one agent realistically serves, capped so a long-lived global
+ * worker cannot grow its own session file without bound. The oldest activity is dropped first, and
+ * the creator is never dropped -- it is the one entry the owner can always expect to see.
+ */
+const MAX_SUBAGENT_CALLERS = 20;
+
+/** Records a run driven by `sessionId`. Returns true when the list changed. */
+export function recordSubAgentCaller(session: SessionData, sessionId: string, now = new Date().toISOString()): boolean {
+  if (!sessionId || !session.meta) return false;
+  const callers = session.callers ?? [];
+  const creator = sessionId === session.meta.parentSessionId;
+  const existing = callers.find((c) => c.sessionId === sessionId);
+  if (existing) {
+    existing.lastAt = now;
+    existing.runs += 1;
+    existing.creator = existing.creator || creator;
+  } else {
+    callers.push({ sessionId, creator, firstAt: now, lastAt: now, runs: 1 });
+  }
+  callers.sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+  if (callers.length > MAX_SUBAGENT_CALLERS) {
+    const kept = callers.filter((c) => c.creator).concat(callers.filter((c) => !c.creator));
+    callers.length = 0;
+    callers.push(...kept.slice(0, MAX_SUBAGENT_CALLERS));
+    callers.sort((a, b) => (a.lastAt < b.lastAt ? 1 : a.lastAt > b.lastAt ? -1 : 0));
+  }
+  session.callers = callers;
+  return true;
+}
+
+/**
  * Who a session's API calls should be billed to, strongest evidence first: the session that
  * triggered this run, then the one that created the agent, then itself.
  *
@@ -419,6 +467,12 @@ export interface SessionData {
   verbose?: boolean;
   approvedTools?: string[];
   meta?: SubAgentMeta;
+  /**
+   * Conversations that have driven this sub-agent, for a sub-agent session only. Display-only and
+   * never part of a prompt: this is what lets the owner hand an answer back to a caller instead of
+   * guessing which conversation was waiting for it -- docs/subagent-navigation.md.
+   */
+  callers?: SubAgentCaller[];
   // Session that triggered the run currently executing, set by the runner before each run. A
   // global sub-agent can be driven from a chat other than the one that created it, so the creator
   // in `meta` is only a fallback: attribution follows whoever asked for this run.

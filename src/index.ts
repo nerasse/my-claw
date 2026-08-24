@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages, recordSessionSubAgentState, type SessionSubAgentStatus } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages, recordSessionSubAgentState, loadSession, type SessionSubAgentStatus } from "./sessions/store.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -43,7 +43,7 @@ import { briefError } from "./utils/errors.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import type { MyClawAppStreamer } from "./channels/my-claw-app/stream.ts";
 import { defaultOwner } from "./channels/my-claw-app/devices.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
+import type { MyClawAppSubAgentHandoffOutcome, MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
 import { MyClawAppSessionStoreImpl, sanitizeThreadId } from "./channels/my-claw-app/sessions.ts";
@@ -210,6 +210,38 @@ async function routeWithReroute(
     if (err instanceof RerouteSignal) return await router.route(msg, { ...opts, noInject: true });
     throw err;
   }
+}
+
+/**
+ * At most this many conversations per hand-back. Each `ask` target opens a real run somewhere else,
+ * so one tap in a menu must not be able to start an unbounded fan-out.
+ */
+const MAX_HANDOFF_TARGETS = 3;
+
+/** The owner and thread behind an app conversation id, or null for anything that is not one. */
+function splitAppSession(sessionId: string): { owner: string; threadId: string } | null {
+  const prefix = "my-claw-app/thread/";
+  if (!sessionId.startsWith(prefix)) return null;
+  const rest = sessionId.slice(prefix.length);
+  const cut = rest.indexOf("/");
+  if (cut <= 0) return null;
+  const owner = rest.slice(0, cut);
+  const threadId = rest.slice(cut + 1);
+  return owner && threadId ? { owner, threadId } : null;
+}
+
+function appThreadOfSession(sessionId: string): string | undefined {
+  return splitAppSession(sessionId)?.threadId;
+}
+
+function ownerOfAppSession(sessionId: string): string | undefined {
+  return splitAppSession(sessionId)?.owner;
+}
+
+/** What the target conversation reads. Attributed, so the orchestrator knows it is not the owner. */
+function renderHandoff(label: string, body: string, note?: string): string {
+  const head = `Result handed back from sub-agent ${label}:`;
+  return note ? `${head}\n\n${note}\n\n---\n\n${body}` : `${head}\n\n${body}`;
 }
 
 async function main() {
@@ -2085,6 +2117,74 @@ async function main() {
         const sessionId = subagentThreadToSession(threadId);
         if (!sessionId) return `Error: sub-agent ${threadId} not found.`;
         return subAgentRunner.reset(sessionId, callerSessionId);
+      },
+      callers: async (threadId, callerSessionId) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return undefined;
+        const callers = await subAgentRunner.callersOf(sessionId, callerSessionId);
+        if (!callers) return undefined;
+        return callers.map((c) => {
+          const target = appThreadOfSession(c.sessionId);
+          return {
+            ...c,
+            ...(target ? { threadId: target } : { unreachable: "gone" as const }),
+          };
+        });
+      },
+      handoff: async ({ threadId, callerSessionId, targets, body: handed, note, mode }) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return targets.map((t) => ({ sessionId: t, ok: false, error: "sub-agent not found" }));
+        // The reader is authorised exactly like a driver, and the list it returns is also the
+        // allow-list: a target the owner could not have been shown is not a target.
+        const known = await subAgentRunner.callersOf(sessionId, callerSessionId);
+        if (!known) return targets.map((t) => ({ sessionId: t, ok: false, error: "sub-agent not found" }));
+        const session = await sessionManager.peek(sessionId) ?? await loadSession(sessionId) ?? undefined;
+        const label = session?.meta?.displayName || sessionId.slice("subagent/".length);
+        const outcomes: MyClawAppSubAgentHandoffOutcome[] = [];
+        // Sequential and capped: each `ask` opens a run in another conversation, and a menu tap
+        // must not be able to start an unbounded fan-out.
+        for (const target of targets.slice(0, MAX_HANDOFF_TARGETS)) {
+          const entry = known.find((c) => c.sessionId === target);
+          const appThread = appThreadOfSession(target);
+          if (!entry) {
+            outcomes.push({ sessionId: target, ok: false, error: "not a caller of this sub-agent" });
+            continue;
+          }
+          if (!appThread) {
+            outcomes.push({ sessionId: target, ok: false, error: "conversation is gone" });
+            continue;
+          }
+          const body = renderHandoff(label, handed, note);
+          try {
+            if (mode === "note") {
+              // Filed, never prompted: the journal is the display-only channel, so a note reads
+              // back on reload without ever reaching a model.
+              const targetSession = await sessionManager.read(target);
+              if (!targetSession) {
+                outcomes.push({ sessionId: target, threadId: appThread, ok: false, error: "conversation is gone" });
+                continue;
+              }
+              targetSession.commands = [...(targetSession.commands ?? []), {
+                input: `handoff from ${label}`,
+                output: body,
+                timestamp: new Date().toISOString(),
+              }];
+              await sessionManager.persist(target);
+              myClawApp.send(target.split("/")[2] ?? "", { text: body, notice: true, threadId: appThread });
+              outcomes.push({ sessionId: target, threadId: appThread, ok: true });
+            } else {
+              const owner = ownerOfAppSession(target);
+              const ok = owner ? await myClawApp.deliverOwnerTurn(owner, appThread, body) : false;
+              outcomes.push({ sessionId: target, threadId: appThread, ok, ...(ok ? {} : { error: "delivery refused" }) });
+            }
+          } catch (err) {
+            outcomes.push({ sessionId: target, threadId: appThread, ok: false, error: String(err) });
+          }
+        }
+        for (const extra of targets.slice(MAX_HANDOFF_TARGETS)) {
+          outcomes.push({ sessionId: extra, ok: false, error: `at most ${MAX_HANDOFF_TARGETS} targets at once` });
+        }
+        return outcomes;
       },
     });
 

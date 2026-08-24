@@ -689,3 +689,69 @@ test("a human send keeps its own message id, a model-driven one does not", async
     fetchMock.restore();
   }
 });
+
+// A hand-back needs to know which conversations an agent is working for. `meta.parentSessionId` is
+// the creator and `invokedBy` is only ever the last driver, so neither answers it.
+test("a sub-agent records every conversation that drove it, creator marked", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const CREATOR = "my-claw-app/thread/owner/main";
+  const OTHER = "my-claw-app/thread/owner/side";
+
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+    { status: 200 },
+  ) as never);
+
+  try {
+    const existing = await reg.listExistingIds();
+    const { id } = await runner.spawn({ displayName: "shared", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: CREATOR, visibility: "global" });
+
+    await runner.send(id, "from the other one", undefined, createMessage(), reg, OTHER);
+    await runner.send(id, "and again", undefined, createMessage(), reg, OTHER);
+
+    const callers = await runner.callersOf(id, CREATOR);
+    assert.ok(callers);
+    // Newest activity first, so the conversation that just used it is the one offered first.
+    assert.equal(callers![0]?.sessionId, OTHER);
+    assert.equal(callers![0]?.runs, 2);
+    assert.equal(callers![0]?.creator, false);
+    const creator = callers!.find((c) => c.sessionId === CREATOR);
+    assert.equal(creator?.creator, true);
+    assert.equal(creator?.runs, 1);
+
+    await deleteSession(id);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+// Reading the list is authorised exactly like driving the agent: it is also the allow-list a
+// hand-back is checked against, so a caller who may not reach the agent must not learn who does.
+test("the caller list obeys the visibility rule", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const OWNER = "my-claw-app/thread/owner/main";
+  const STRANGER = "my-claw-app/thread/owner/stranger";
+
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+    { status: 200 },
+  ) as never);
+
+  try {
+    const existing = await reg.listExistingIds();
+    const secret = await runner.spawn({ displayName: "secret", type: "research", mode: "session", task: "init", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: OWNER, visibility: "private" });
+
+    assert.ok(await runner.callersOf(secret.id, OWNER));
+    assert.equal(await runner.callersOf(secret.id, STRANGER), undefined);
+    // A missing agent and an unreachable one answer the same way, on purpose.
+    assert.equal(await runner.callersOf("subagent/does-not-exist", OWNER), undefined);
+
+    await deleteSession(secret.id);
+  } finally {
+    fetchMock.restore();
+  }
+});

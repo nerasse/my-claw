@@ -634,6 +634,17 @@ provider request URLs.
   next iteration boundary rather than queued; its answer streams back on the same thread, with the
   usual turn switch, unless the running turn was started by its parent (parent-driven runs are
   non-streaming, so the answer then lands in the sub-agent's history).
+- `subagents.callers { threadId, parentThreadId }` lists the conversations that have driven this
+  sub-agent, newest first, so the owner can hand one of its answers back to a caller. Answered to
+  the asking socket alone (`subagents.callers.result`): a menu opening is not a state change. The
+  visibility rule is applied to `parentThreadId` exactly as for kill and reset, and an unreachable
+  sub-agent answers like a missing one.
+- `subagents.handoff { threadId, parentThreadId, targets, messageId?, note?, mode }` hands one of
+  the sub-agent's answers back. Broadcast, since it writes into other conversations. `targets` are
+  session ids taken from `subagents.callers.result` and re-checked against it server-side; `mode`
+  is `ask` (a real turn in the target, so the orchestrator acts on it) or `note` (filed in the
+  target's command journal, never prompted). `subagents.handoff.result` reports a per-target
+  outcome, since one target being gone must not hide the ones that landed -- docs/subagent-navigation.md.
 - `subagents.kill { threadId, parentThreadId }` deletes a sub-agent, transcript included;
   `subagents.reset { threadId, parentThreadId }` archives its transcript and starts it over with its
   identity and workspace kept. `parentThreadId` is the caller the visibility rule is applied to, as

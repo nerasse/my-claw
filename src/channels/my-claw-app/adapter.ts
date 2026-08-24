@@ -72,6 +72,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionInstructionsSet,
   MyClawAppSubAgentsList,
   MyClawAppSubAgentsKill,
+  MyClawAppSubAgentsCallers,
+  MyClawAppSubAgentsHandoff,
   MyClawAppSubAgentsReset,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
@@ -1306,6 +1308,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "subagents.reset":
         this.detach(this.handleSubAgentAction(ws, frame), "handleSubAgentAction");
         break;
+      case "subagents.callers":
+        this.detach(this.handleSubAgentCallers(ws, frame), "handleSubAgentCallers");
+        break;
+      case "subagents.handoff":
+        this.detach(this.handleSubAgentHandoff(ws, frame), "handleSubAgentHandoff");
+        break;
       case "jobs.save":
         this.detach(handleJobSave(this.settingsDeps(), ws, frame), "handleJobSave");
         break;
@@ -1572,6 +1580,45 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * Delivers a turn into one of the owner's conversations without a device having typed it.
+   *
+   * The whole `chat.send` pipeline is reused on purpose: the bubble is mirrored to every window
+   * first, then the message goes through `messageHandler`, so a target with a run in flight parks
+   * it in that run's mailbox and a target at rest opens a fresh one. Anything narrower would be a
+   * second delivery path with its own idea of what a queued message is.
+   *
+   * Used by the sub-agent hand-back: a sub-agent's answer reaches its parent only because a tool
+   * call is awaiting it, and when the owner is the one chatting nothing is
+   * -- docs/subagent-navigation.md, "Constraint 3".
+   */
+  async deliverOwnerTurn(owner: string, threadId: string, text: string): Promise<boolean> {
+    const safe = sanitizeThreadId(threadId);
+    if (!safe || !this.messageHandler || !text.trim()) return false;
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    // Every window, sender included: no device drew this one, so there is no bubble to avoid
+    // duplicating -- the opposite of `echoUserMessage`.
+    this.broadcast(owner, { type: "chat.user", threadId: safe, id, text, ts });
+    void this.messageHandler({
+      id,
+      platform: "my-claw-app",
+      userId: owner,
+      chatId: owner,
+      chatType: "dm",
+      text,
+      timestamp: ts,
+      attachments: [],
+      isForwarded: false,
+      threadId: safe,
+      sessionScope: "per-user",
+      raw: { type: "chat.send", id, threadId: safe },
+    }).catch((err) => {
+      void myClawAppLog("error", "delivered turn failed", { owner, threadId: safe, error: String(err) });
+    });
+    return true;
+  }
+
+  /**
    * Mirrors a prompt to the owner's *other* windows. The sender drew this bubble the moment it
    * hit send and owns the id, so echoing it back would be a frame whose only job is to be
    * ignored. The app still drops an echo whose id it already holds, as a reconnect can put two
@@ -1691,6 +1738,113 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       await this.refuse(ws, "subagents", `${frame.type} failed`, { threadId, error: String(err) });
     }
+  }
+
+  /**
+   * Which conversations a sub-agent has worked for, so the owner can pick who its answer goes back
+   * to. Answered to the asking socket alone: it is a menu being opened, not a state change every
+   * window needs.
+   */
+  private async handleSubAgentCallers(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSubAgentsCallers,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    const parentThreadId = sanitizeThreadId(frame.parentThreadId);
+    if (!threadId || !parentThreadId) {
+      await this.refuse(ws, "subagents", "invalid threadId", { threadId: frame.threadId, parentThreadId: frame.parentThreadId });
+      return;
+    }
+    if (!this.subagents) {
+      await this.refuse(ws, "subagents", "sub-agents unavailable");
+      return;
+    }
+    const caller = this.store.resolveSessionId(ws.data.owner, parentThreadId);
+    try {
+      const callers = await this.subagents.callers(threadId, caller);
+      // Unreachable and missing answer the same way, on purpose (docs/subagent-visibility.md).
+      if (!callers) {
+        await this.refuse(ws, "subagents", `Error: sub-agent ${threadId} not found.`, { threadId });
+        return;
+      }
+      this.sendFrame(ws, { type: "subagents.callers.result", threadId, callers });
+    } catch (err) {
+      await this.refuse(ws, "subagents", "subagents.callers failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * Hands one of the sub-agent's messages back to conversations that called it.
+   *
+   * Broadcast, unlike the list: this writes into other conversations, so every window of the owner
+   * must learn what landed. The per-target outcome is reported rather than a single ok, since one
+   * target being gone must not hide the ones that worked.
+   */
+  private async handleSubAgentHandoff(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppSubAgentsHandoff,
+  ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    const parentThreadId = sanitizeThreadId(frame.parentThreadId);
+    if (!threadId || !parentThreadId) {
+      await this.refuse(ws, "subagents", "invalid threadId", { threadId: frame.threadId, parentThreadId: frame.parentThreadId });
+      return;
+    }
+    if (!this.subagents) {
+      await this.refuse(ws, "subagents", "sub-agents unavailable");
+      return;
+    }
+    const targets = Array.isArray(frame.targets) ? frame.targets.filter((t: unknown): t is string => typeof t === "string" && t.length > 0) : [];
+    if (targets.length === 0) {
+      await this.refuse(ws, "subagents", "no target", { threadId });
+      return;
+    }
+    const caller = this.store.resolveSessionId(ws.data.owner, parentThreadId);
+    // Resolved here, not in the controller: the ids the owner tapped are the ids this replay view
+    // minted, and deriving them a second time somewhere else is one drift away from handing back
+    // the wrong turn -- or nothing at all.
+    let body: string;
+    try {
+      const resolved = await this.resolveHandoffBody(ws.data.owner, threadId, frame.messageId);
+      if (!resolved) {
+        await this.refuse(ws, "subagents", "nothing to hand back", { threadId, messageId: frame.messageId });
+        return;
+      }
+      body = resolved;
+    } catch (err) {
+      await this.refuse(ws, "subagents", "subagents.handoff failed", { threadId, error: String(err) });
+      return;
+    }
+    try {
+      const delivered = await this.subagents.handoff({
+        threadId,
+        callerSessionId: caller,
+        targets,
+        body,
+        mode: frame.mode === "note" ? "note" : "ask",
+        ...(typeof frame.note === "string" && frame.note ? { note: frame.note } : {}),
+      });
+      this.broadcast(ws.data.owner, { type: "subagents.handoff.result", threadId, delivered });
+    } catch (err) {
+      await this.refuse(ws, "subagents", "subagents.handoff failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * The text behind the bubble the owner picked, or the sub-agent's last answer when none was.
+   *
+   * Only an assistant bubble is eligible: handing back the owner's own question tells the parent
+   * nothing it does not already have, and a tool card is an implementation detail of the run.
+   */
+  private async resolveHandoffBody(owner: string, threadId: string, messageId?: string): Promise<string | undefined> {
+    const { entries } = await this.store.history(owner, threadId);
+    const answers = entries.filter((e) => e.role === "assistant" && e.text.trim().length > 0);
+    if (typeof messageId === "string" && messageId) {
+      const picked = answers.find((e) => e.id === messageId);
+      return picked && picked.role === "assistant" ? picked.text : undefined;
+    }
+    const last = answers.at(-1);
+    return last && last.role === "assistant" ? last.text : undefined;
   }
 
   private async handleNotificationsRegister(
