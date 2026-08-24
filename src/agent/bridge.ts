@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, attributionParent, promptMessages, markSessionDirty } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, INTERRUPTED_RESULT, attributionParent, promptMessages, markSessionDirty } from "../sessions/store.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
@@ -381,6 +381,18 @@ export class AgentBridge implements AgentBackend {
       });
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
+
+      // A run starting is the one moment a tool call with no result can be read for what it is.
+      // On disk the two cases are identical -- a call still executing, and a call whose process was
+      // killed -- and the history deliberately renders it as running. But runs are serialized per
+      // session, so reaching here means no other run owns this history: an unanswered call is dead
+      // work. Left alone it makes every later prompt illegal (the provider refuses an assistant
+      // tool_call nothing answers) and the conversation is wedged for good.
+      const interrupted = sealDanglingToolCalls(session.messages, INTERRUPTED_RESULT);
+      if (interrupted > 0) {
+        markSessionDirty(session);
+        void log("warn", "sealed tool calls left unanswered by an interrupted run", { sessionId: session.id, sealed: interrupted });
+      }
 
       const userContent = this.preprocessor.buildUserContent(message);
       const now = new Date().toISOString();

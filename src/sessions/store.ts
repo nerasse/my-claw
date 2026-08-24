@@ -130,35 +130,48 @@ export function dropLeadingOrphanToolMessages(messages: SessionMessage[]): Sessi
   return start === 0 ? messages : messages.slice(start);
 }
 
+/** What a synthetic tool result says when the run that owed the real one never came back. */
+export const STOPPED_RESULT = "[Stopped by user]";
+export const INTERRUPTED_RESULT = "[Interrupted: the run did not survive a restart]";
+
 /**
- * Guarantee no assistant tool_call is left without a tool response. An aborted run can stop
- * between the tool request and its result; OpenAI-compatible APIs reject a request whose
- * assistant tool_calls are unanswered, which wedges every later turn on that session. Appends a
- * synthetic result for any dangling id in the last assistant message.
+ * Guarantee no assistant tool_call is left without a tool response.
+ *
+ * A run can stop between the tool request and its result -- the owner pressed stop, or the process
+ * died. The assistant turn is already persisted at that point (it is written before the tools run,
+ * and the autosave ticks every two seconds), so the file keeps a request nothing will ever answer.
+ * OpenAI-compatible APIs reject such a prompt outright, which wedges every later turn on that
+ * session: the conversation is dead, permanently, and nothing says why.
+ *
+ * Every assistant turn is scanned, not just the last: an abort settles the turn in flight, but a
+ * file repaired at load may carry damage from an older crash, under turns written since.
  */
-export function sealDanglingToolCalls(messages: SessionMessage[]): number {
-  let lastAssistantIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.role === "assistant") {
-      lastAssistantIdx = i;
-      break;
-    }
-  }
-  if (lastAssistantIdx < 0) return 0;
-  const assistant = messages[lastAssistantIdx]!;
-  if (assistant.role !== "assistant" || !assistant.toolCalls?.length) return 0;
-
-  const answered = new Set<string>();
-  for (let i = lastAssistantIdx + 1; i < messages.length; i++) {
-    const msg = messages[i]!;
-    if (msg.role === "tool" && msg.toolCallId) answered.add(msg.toolCallId);
-  }
-
+export function sealDanglingToolCalls(messages: SessionMessage[], reason: string = STOPPED_RESULT): number {
   let sealed = 0;
-  for (const call of assistant.toolCalls) {
-    if (answered.has(call.id)) continue;
-    messages.push({ role: "tool", toolCallId: call.id, content: "[Stopped by user]", timestamp: new Date().toISOString() });
-    sealed += 1;
+  // Backwards, so a splice never moves an index still to be visited.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const assistant = messages[i]!;
+    if (assistant.role !== "assistant" || !assistant.toolCalls?.length) continue;
+
+    // A turn's results are the run of `tool` messages right after it: the loop pushes them
+    // together, and stopping at the first non-tool message is what keeps two turns apart.
+    const answered = new Set<string>();
+    let end = i + 1;
+    for (; end < messages.length; end++) {
+      const msg = messages[end]!;
+      if (msg.role !== "tool") break;
+      answered.add(msg.toolCallId);
+    }
+
+    const missing = assistant.toolCalls.filter((call) => !answered.has(call.id));
+    if (missing.length === 0) continue;
+    const timestamp = new Date().toISOString();
+    messages.splice(
+      end,
+      0,
+      ...missing.map((call) => ({ role: "tool" as const, toolCallId: call.id, content: reason, timestamp })),
+    );
+    sealed += missing.length;
   }
   return sealed;
 }
