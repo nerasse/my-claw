@@ -3,7 +3,10 @@
 The app can see every sub-agent a conversation has spawned, open a named one as a real chat,
 talk to it, and hand its answer back to the parent on purpose.
 
-Status: **spec approved, not implemented.** Open decisions are settled in "Decisions taken".
+Status: **implemented.** Open decisions are settled in "Decisions taken". Two items of the original
+spec were never built and are not planned as written: a `subagents.report` / `subagents.changed`
+frame pair (kill and reset answer with `subagents.list.result` instead), and the automatic return to
+the parent refused in "Constraint 3", which is now an explicit hand-back instead.
 
 ## What the user gets
 
@@ -66,10 +69,19 @@ that read as a dead chat, so the gate is gone:
   the queued send otherwise. An injection the run could not absorb is settled with `RerouteSignal`
   and rerouted to a fresh, streamed run, exactly like the root path.
 
-The honest limitation that remains: while a *parent-driven* run is non-streaming, an injected
-message is absorbed into that run but its answer is not streamed to the app — it lands in the
-sub-agent's history when the run ends. An *app-driven* run streams everything, turn switches
-included, so chatting with a sub-agent the app started is fully live.
+A parent-driven run streams to the sub-agent's thread like an app-driven one, turn switches
+included. It did not at first: the model-driven stream sink carried no `onTurnSwitch`, so an
+injected message was absorbed but its answer melted into the bubble already in flight, and
+`message:injected` — emitted only from that callback — never fired. The owner's bubble therefore
+stayed marked "queued for the next turn" for good, and the answer was only findable by reopening
+the thread. The sink now seals the bubble, opens a fresh one addressed to the steering message, and
+emits the event, which is what lifts the mark. The sink also reads its streamer from the map on
+every call rather than capturing it, since that swap is exactly what a turn switch performs.
+
+Live tool output follows the same rule: `tool:execute:progress` is a global hook, and matching only
+the root session dropped every chunk a sub-agent produced, so a long command in a child ran blind.
+Each chunk is routed to the streamer of the session that emitted it, and only for a child the
+current run is showing — another run's sub-agent paints in its own window.
 
 ### Constraint 3 — "return to the parent" cannot be automatic
 

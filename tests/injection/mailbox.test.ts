@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { runRegistry, RerouteSignal, MAX_INJECTIONS_PER_RUN } from "../../src/core/run-registry.ts";
+import { AbortedError } from "../../src/core/aborted.ts";
 import { IterationBudget } from "../../src/agent/iteration-budget.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
@@ -77,6 +78,28 @@ test("settleMailbox resolve reroutes a pending-but-undrained injection", async (
   // never drained -> a successful run end must reroute it (not silently resolve)
   runRegistry.settleMailbox("s1", "resolve");
   await assert.rejects(p, (e: unknown) => e instanceof RerouteSignal && e.injected.id === "late");
+  runRegistry.clear();
+});
+
+// A message the run never read is still owed its own attempt: the run died for its own reasons.
+// It used to inherit that failure and vanish, which read as a send silently dropped.
+test("settleMailbox reject reroutes a pending-but-unread injection", async () => {
+  runRegistry.clear();
+  runRegistry.startRoot("s1");
+  const p = runRegistry.enqueueInjection("s1", msg("unread"))!;
+  runRegistry.settleMailbox("s1", "reject", new Error("boom"));
+  await assert.rejects(p, (e: unknown) => e instanceof RerouteSignal && e.injected.id === "unread");
+  runRegistry.clear();
+});
+
+// The exception: the owner asked for the stop, so reviving the message they interrupted would
+// defeat it.
+test("an aborted run does not revive its unread injections", async () => {
+  runRegistry.clear();
+  runRegistry.startRoot("s1");
+  const p = runRegistry.enqueueInjection("s1", msg("unread"))!;
+  runRegistry.settleMailbox("s1", "reject", new AbortedError());
+  await assert.rejects(p, (e: unknown) => e instanceof AbortedError);
   runRegistry.clear();
 });
 

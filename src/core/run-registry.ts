@@ -14,6 +14,7 @@
  */
 
 import type { UnifiedMessage } from "../channels/types.ts";
+import { isAbort } from "./aborted.ts";
 
 export interface RunNode {
   label: string;
@@ -231,6 +232,7 @@ class RunRegistry {
   settleMailbox(sessionId: string, outcome: "resolve" | "reject", err?: unknown): void {
     const mb = this.mailboxes.get(sessionId);
     if (!mb) return;
+    const aborted = outcome === "reject" && isAbort(err);
     mb.accepting = false;
     for (const item of mb.claimed) {
       if (outcome === "resolve") item.resolve();
@@ -238,9 +240,12 @@ class RunRegistry {
     }
     for (const item of mb.pending) {
       // Pending-but-undrained at settle only happens on forced close (budget exhausted) or
-      // abort/error. On success: reroute to a fresh run; otherwise propagate the failure.
-      if (outcome === "resolve") item.reject(new RerouteSignal(item.message));
-      else item.reject(err);
+      // abort/error. Either way this message was never read, so its own attempt is still owed: the
+      // run that died died for its own reasons. It used to inherit that failure and vanish, which
+      // read as a send silently dropped. An abort is the exception -- the owner asked for the stop,
+      // and reviving the message they interrupted would defeat it.
+      if (aborted) item.reject(err);
+      else item.reject(new RerouteSignal(item.message));
     }
     mb.claimed.length = 0;
     mb.pending.length = 0;

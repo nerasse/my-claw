@@ -551,15 +551,33 @@ async function main() {
   // Filled when `subagent:spawn` fires inside an app run, read by the spawn tool's
   // streamProvider to attach tokens to the sub-agent's own thread.
   const subAgentStreamers = new Map<string, MyClawAppStreamer>();
+  // How to open a fresh bubble in a sub-agent's thread, filled by the run that opened the first one.
+  // The provider below is built at boot and has no view of a thread, but a steered sub-agent needs
+  // exactly that: the app channel is what knows where the child paints.
+  const subAgentStreamRenew = new Map<string, (injected: UnifiedMessage) => MyClawAppStreamer>();
   registerSubAgentTools(
     toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry,
     (subagentId) => {
       const streamer = subAgentStreamers.get(subagentId);
       if (!streamer) return undefined;
       return {
-        onToken: (token) => streamer.push(token),
-        onToolUse: (tools, verbose) => streamer.appendToolUse(tools, verbose),
-        onToolStart: (call) => streamer.appendToolStart([call]),
+        // Read from the map on every call, never captured: a steered child swaps its streamer
+        // mid-run and a captured one would keep painting into the sealed bubble.
+        onToken: async (token) => { await subAgentStreamers.get(subagentId)?.push(token); },
+        onToolUse: async (tools, verbose) => { await subAgentStreamers.get(subagentId)?.appendToolUse(tools, verbose); },
+        onToolStart: async (call) => { await subAgentStreamers.get(subagentId)?.appendToolStart([call]); },
+        // A sub-agent driven by the model gets the same turn-switch contract as one driven from the
+        // app: the bubble in flight is sealed and the answer to the steering message opens a fresh
+        // one. Without it the reply melted into the previous bubble and `message:injected` was never
+        // emitted, so the owner's message stayed marked "queued for the next turn" for good.
+        onTurnSwitch: async (injected) => {
+          const current = subAgentStreamers.get(subagentId);
+          if (current) await current.finish();
+          const renew = subAgentStreamRenew.get(subagentId);
+          if (renew) subAgentStreamers.set(subagentId, renew(injected));
+          else subAgentStreamers.delete(subagentId);
+          hooks.emit("message:injected", { message: injected, sessionId: subagentId });
+        },
       };
     },
   );
@@ -2149,10 +2167,17 @@ async function main() {
             // finalizes it and opens a fresh bubble replying to that message.
             let active = myClawApp.createStreamer(msg);
             const runSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", msg.chatId, msg.userId, { threadId: msg.threadId, sessionScope: "per-user" });
-            // Live tool output (bash) is a global hook; route only this run's chunks to its streamer.
+            // Live tool output (bash) is a global hook; route each chunk to the streamer of the
+            // session that produced it. A sub-agent's chunks carry its own session id, so matching
+            // the root alone silently dropped them and a long command in a child ran blind.
             const onProgress = ({ toolCallId, sessionId, chunk }: { toolCallId: string; sessionId: string; chunk: { stdout?: string; stderr?: string } }): void => {
-              if (sessionId !== runSessionId) return;
-              void active.appendToolProgress(toolCallId, chunk);
+              if (sessionId === runSessionId) {
+                void active.appendToolProgress(toolCallId, chunk);
+                return;
+              }
+              // Only a child this run is showing: another run's sub-agent paints in its own window.
+              if (!subAgentContexts.has(sessionId)) return;
+              void subAgentStreamers.get(sessionId)?.appendToolProgress(toolCallId, chunk);
             };
             hooks.on("tool:execute:progress", onProgress);
 
@@ -2171,6 +2196,14 @@ async function main() {
               });
               subAgentStreamers.set(ev.id, streamer);
               subAgentContexts.set(ev.id, context);
+              // The boot-level stream provider has no thread to paint in; this is how a steered
+              // child opens its next bubble in the right place.
+              subAgentStreamRenew.set(ev.id, (injected) => myClawApp.createStreamer({
+                ...context,
+                ...(injected.id ? { id: injected.id } : {}),
+                threadId,
+                text: "",
+              }));
             };
             const settleSubAgentStream = (ev: { id: string; status: "complete" | "error" | "aborted"; error?: string; resultLength?: number }): void => {
               const streamer = subAgentStreamers.get(ev.id);
@@ -2180,6 +2213,7 @@ async function main() {
                 else void streamer.abort(ev.error);
               }
               subAgentContexts.delete(ev.id);
+              subAgentStreamRenew.delete(ev.id);
             };
             const parentStreamer = (parentSessionId: string): MyClawAppStreamer | undefined =>
               parentSessionId === runSessionId
@@ -2269,6 +2303,7 @@ async function main() {
               for (const id of subAgentContexts.keys()) {
                 const streamer = subAgentStreamers.get(id);
                 subAgentStreamers.delete(id);
+                subAgentStreamRenew.delete(id);
                 if (streamer) void streamer.abort("parent run ended");
               }
               subAgentContexts.clear();
