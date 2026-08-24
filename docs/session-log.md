@@ -843,7 +843,8 @@ maintenant, il disparaît avec la cause.
 | **3a** | ~~`promptOf` (`sessions/projection.ts`) + `displayOf`/`pageOf` (`channels/my-claw-app/display.ts`), purs, testés~~ **livré `f83bf60`, `0262e36`** | — | 2 |
 | **3b-i** | ~~`SessionManager.logOf`, cycle de vie (éviction, delete, flushAll), `meta.json` écrit~~ **livré `b8e5cb1`** | — | 2 |
 | **3b-ii** | ~~`RunRecorder` : un run écrit en entrées, `providerMeta` persisté, rewind non destructif~~ **livré `979465d`** | — | 3a |
-| **3b-iii** | Câblage : `bridge.ts` appelle le recorder, `promptOf` remplace `promptMessages`, `session.messages` retiré | 1 j | 3b-ii, 6 |
+| **3b-iii** | ~~Accès au log depuis un run (`sessions/log-access.ts`)~~ **livré `ebcac59`** | — | 3b-i |
+| **3b-iv** | Câblage : `bridge.ts` appelle le recorder, `promptOf` remplace `promptMessages`, `session.messages` retiré | 1 j | 3b-iii, 6 |
 | **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
 | **5** | ~~Magasin de sorties d'outils + GC des orphelins~~ **livré `dc45495`** | — | 2 |
 | **6** | ~~Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles)~~ **livré `6253c15`, `7616080`, `3334ff4`** | — | 2 |
@@ -1056,9 +1057,23 @@ testent donc pour de vrai, isolément. Ce qui reste est le câblage, mécanique.
 |---|---|---|
 | 3b-i | Le manager possède le log : `logOf`, éviction, delete, `flushAll`, `meta.json` | livré `b8e5cb1` |
 | 3b-ii | `RunRecorder` : la forme d'un run en entrées | livré `979465d` |
-| 3b-iii | Le câblage dans `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts` | **reste** |
+| 3b-iii | L'accès au log depuis un run (`sessionLogOf`) | livré `ebcac59` |
+| 3b-iv | Le câblage dans `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts` | **reste** |
 
-## Ce que 3b-iii doit faire, site par site
+## Pourquoi l'accès au log est passé devant
+
+`bridge.ts` reçoit un `SessionData` et ne voit pas le manager qui l'a mis en cache. Ses
+deux sites de construction passent déjà onze arguments positionnels : en enfiler un
+douzième à travers le dispatcher et le runner de sous-agents, pour donner à chaque run une
+chose que le boot possède déjà, est la mauvaise forme. D'où `sessions/log-access.ts`, la
+même couture que `llm/world.ts` pour le monde de disponibilité.
+
+Le résolveur par défaut ouvre le fichier directement au lieu de lever. Un run qui y arrive
+n'a pas de cache et ne partage rien, mais il **écrit** quand même : un bridge exercé sans
+manager est le cas normal en test, et la seule chose interdite est de perdre silencieusement
+ce qu'un run a produit.
+
+## Ce que 3b-iv doit faire, site par site
 
 Huit écritures dans `bridge.ts`, toutes remplaçables une pour une :
 
