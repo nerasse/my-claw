@@ -5,6 +5,8 @@ import {
   handleRetryCommand,
   handleBranchesCommand,
   handleForkCommand,
+  handleUndoCommand,
+  handleRedoCommand,
   type BranchCommandContext,
 } from "../../src/channels/branch-commands.ts";
 import {
@@ -37,12 +39,21 @@ function createMockSession(sessionId: string): SessionData {
 
 const testOwner = "test-owner";
 
+interface CreateContextOptions {
+  isRunning?: boolean;
+  sessionManager?: SessionManager;
+  onAbort?: () => void;
+}
+
 async function createContext(
   sessionId: string,
   log: SessionLog,
-  isRunning = false,
-  sessionManager?: SessionManager,
+  options: CreateContextOptions | boolean = {},
 ): Promise<BranchCommandContext> {
+  // Backward compat: if a boolean is passed, it's `isRunning`
+  const opts = typeof options === "boolean" ? { isRunning: options } : options;
+  const { isRunning = false, sessionManager, onAbort } = opts;
+
   const session = createMockSession(sessionId);
   const manager = sessionManager ?? new SessionManager();
   // Extract threadId from sessionId (format: my-claw-app/thread/<owner>/<threadId>)
@@ -55,8 +66,15 @@ async function createContext(
     owner: testOwner,
     threadId,
     isRunning: () => isRunning,
+    abortRun: async () => {
+      onAbort?.();
+    },
     persist: async () => {
-      const meta = metaOf(session, log.leaf());
+      // Read existing meta to preserve fields like `undo`, then update leaf
+      const existing = await readMeta(sessionId);
+      const meta = existing ?? metaOf(session, log.leaf());
+      meta.leafId = log.leaf();
+      meta.lastActiveAt = new Date().toISOString();
       await writeMeta(sessionId, meta);
     },
     resolveNewSessionId: (newThreadId: string) =>
@@ -255,7 +273,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     const result = await handleForkCommand(ctx, "");
 
     expect(result.text).toContain("4 entrée(s) copiée(s)");
@@ -290,7 +308,7 @@ describe("branch-commands: /fork", () => {
     const sourceLeafBefore = log.leaf();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     await handleForkCommand(ctx, "");
 
     // Verify source is unchanged
@@ -310,7 +328,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     // Fork from the first phase, not the leaf
     const result = await handleForkCommand(ctx, phase1.id);
 
@@ -343,7 +361,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     const result = await handleForkCommand(ctx, "");
 
     const newSessionId = ctx.resolveNewSessionId(result.newThreadId!);
@@ -367,7 +385,7 @@ describe("branch-commands: /fork", () => {
     // Go back to the first branch and fork from phase1
     log.branch(phase1.id);
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     const result = await handleForkCommand(ctx, phase1.id);
 
     expect(result.newThreadId).toBeDefined();
@@ -400,7 +418,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     const result = await handleForkCommand(ctx, "");
 
     expect(result.newThreadId).toBeDefined();
@@ -457,7 +475,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
     // Fork from phase1, which is BEFORE the second user entry with file2
     const result = await handleForkCommand(ctx, phase1.id);
 
@@ -490,7 +508,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     const manager = new SessionManager();
-    const ctx = await createContext(id, log, false, manager);
+    const ctx = await createContext(id, log, { sessionManager: manager });
 
     // Fork should succeed, not throw
     const result = await handleForkCommand(ctx, "");
@@ -503,5 +521,204 @@ describe("branch-commands: /fork", () => {
     const newUserEntry = newLog.entries()[0] as UserEntry;
     expect(newUserEntry.attachments).toHaveLength(1);
     expect(newUserEntry.attachments![0]!.path).toBe(missingPath);
+  });
+});
+
+describe("branch-commands: /undo", () => {
+  test("undo with no user turns returns an error", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const ctx = await createContext(id, log);
+
+    const result = await handleUndoCommand(ctx, "");
+    expect(result.text).toContain("Rien à annuler");
+    expect(result.reset).toBeUndefined();
+  });
+
+  test("undo moves cursor before the last user turn and returns the text", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const user1 = log.append<UserEntry>({ type: "user", prompt: true, text: "Question 1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse 1", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleUndoCommand(ctx, "");
+
+    expect(result.reset).toBe("branch-switch");
+    expect(result.compose).toBe("Question 1");
+    expect(result.text).toContain("/redo pour revenir");
+    expect(log.leaf()).toBe(user1.parentId); // null (root)
+  });
+
+  test("undo aborts a running turn", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    let abortCalled = false;
+    const ctx = await createContext(id, log, {
+      isRunning: true,
+      onAbort: () => { abortCalled = true; },
+    });
+
+    const result = await handleUndoCommand(ctx, "");
+
+    expect(abortCalled).toBe(true);
+    expect(result.reset).toBe("branch-switch");
+  });
+
+  test("undo saves undo state for redo", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    const oldLeaf = log.leaf()!;
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+
+    const meta = await readMeta(id);
+    expect(meta?.undo).toBeDefined();
+    expect(meta?.undo?.redoLeafId).toBe(oldLeaf);
+    expect(meta?.undo?.expectedLeafId).toBe(log.leaf() ?? "");
+  });
+
+  test("undo in series until root, then undo again returns error", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question 1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse 1", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+
+    // First undo succeeds
+    const result1 = await handleUndoCommand(ctx, "");
+    expect(result1.reset).toBe("branch-switch");
+    expect(log.leaf()).toBeNull();
+
+    // Second undo fails: at root, no user turn to undo
+    const result2 = await handleUndoCommand(ctx, "");
+    expect(result2.text).toContain("Rien à annuler");
+    expect(result2.reset).toBeUndefined();
+  });
+
+  test("undo leaves the abandoned branch visible in /branches", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+
+    // The abandoned branch should still be visible
+    const branchesResult = await handleBranchesCommand(ctx, "");
+    expect(branchesResult.text).toContain("1 branche");
+    expect(branchesResult.text).toContain("Question");
+  });
+});
+
+describe("branch-commands: /redo", () => {
+  test("redo without prior undo returns error", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleRedoCommand(ctx, "");
+
+    expect(result.text).toContain("pas de /undo en attente");
+    expect(result.reset).toBeUndefined();
+  });
+
+  test("redo after undo returns to the previous state", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    const phase1 = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+    expect(log.leaf()).toBeNull();
+
+    const result = await handleRedoCommand(ctx, "");
+    expect(result.reset).toBe("branch-switch");
+    expect(log.leaf()).toBe(phase1.id);
+  });
+
+  test("redo twice in a row: second fails", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+
+    // First redo succeeds
+    const result1 = await handleRedoCommand(ctx, "");
+    expect(result1.reset).toBe("branch-switch");
+
+    // Second redo fails: undo state was cleared
+    const result2 = await handleRedoCommand(ctx, "");
+    expect(result2.text).toContain("pas de /undo en attente");
+    expect(result2.reset).toBeUndefined();
+  });
+
+  test("redo after undo then new turn: refuses and points to /branches", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question 1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse 1", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+
+    // Write a new turn (simulates the user typing after undo)
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question 2" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse 2", runId: "r2" });
+    await log.flush();
+
+    // Persist to update leafId in meta (the real flow does this via persist())
+    await ctx.persist();
+
+    // Redo should refuse
+    const result = await handleRedoCommand(ctx, "");
+    expect(result.text).toContain("Redo impossible");
+    expect(result.text).toContain("évolué depuis le /undo");
+    expect(result.text).toContain("branche");
+    expect(result.reset).toBeUndefined();
+  });
+
+  test("redo clears undo state after success", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+
+    // Verify undo state exists
+    let meta = await readMeta(id);
+    expect(meta?.undo).toBeDefined();
+
+    await handleRedoCommand(ctx, "");
+
+    // Verify undo state is cleared
+    meta = await readMeta(id);
+    expect(meta?.undo).toBeUndefined();
   });
 });

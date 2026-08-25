@@ -11,7 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SessionLog, UserEntry, Entry, Provisioned } from "../sessions/log.ts";
 import { leavesOf, pathOf, openSessionLog } from "../sessions/log.ts";
-import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin } from "../sessions/meta.ts";
+import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type UndoState } from "../sessions/meta.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
@@ -37,6 +37,8 @@ export interface BranchCommandContext {
   threadId: string;
   /** Whether a run is in progress on this session. */
   isRunning: () => boolean;
+  /** Abort the current run (for /undo). Returns once the run has settled. */
+  abortRun: () => Promise<void>;
   /** Persist the session and its meta. */
   persist: () => Promise<void>;
   /** Generates a sessionId for a new threadId (for fork). */
@@ -156,6 +158,101 @@ export async function handleRetryCommand(
     text: `Retry: conversation rembobinée avant "${userTurn.text.slice(0, 50)}${userTurn.text.length > 50 ? "..." : ""}"`,
     reset: "branch-switch",
     compose: userTurn.text,
+  };
+}
+
+/**
+ * `/undo` — abort the run (if any), rewind before the last user turn, enable `/redo`.
+ *
+ * Unlike `/retry` and `/branches`, `/undo` aborts a running turn. The reasoning: `/undo`
+ * targets the turn that is running, so killing it is part of the ask. `/retry` and `/branches`
+ * do not imply that intent — silently discarding work in progress would be a costly surprise.
+ */
+export async function handleUndoCommand(
+  ctx: BranchCommandContext,
+  _args: string,
+): Promise<BranchCommandResult> {
+  // Abort if a run is in progress — this is the key difference with /retry.
+  if (ctx.isRunning()) {
+    await ctx.abortRun();
+  }
+
+  const path = ctx.log.path();
+  const userTurn = findNthUserFromEnd(path, 1);
+  if (!userTurn) {
+    return { text: "Rien à annuler : aucun tour utilisateur." };
+  }
+
+  // Capture the current leaf before moving — this is what /redo will return to.
+  const oldLeaf = ctx.log.leaf()!;
+
+  // Move cursor to before this user turn
+  ctx.log.branch(userTurn.parentId);
+  const newLeaf = ctx.log.leaf(); // May be null if we're at root
+
+  // Save undo state for /redo
+  const undoState: UndoState = {
+    redoLeafId: oldLeaf,
+    expectedLeafId: newLeaf ?? "", // Empty string means root
+  };
+
+  // Persist with undo state
+  const meta = (await readMeta(ctx.sessionId)) ?? metaOf(ctx.session, newLeaf);
+  meta.undo = undoState;
+  meta.leafId = newLeaf;
+  meta.lastActiveAt = new Date().toISOString();
+  ctx.session.lastActiveAt = meta.lastActiveAt;
+  await writeMeta(ctx.sessionId, meta);
+
+  const preview = userTurn.text.slice(0, 50) + (userTurn.text.length > 50 ? "..." : "");
+  return {
+    text: `Undo: conversation rembobinée avant "${preview}". /redo pour revenir.`,
+    reset: "branch-switch",
+    compose: userTurn.text,
+  };
+}
+
+/**
+ * `/redo` — return to where we were before `/undo`, if nothing was written in between.
+ *
+ * See `UndoState` in meta.ts for the full reasoning on why redo refuses after a new turn.
+ */
+export async function handleRedoCommand(
+  ctx: BranchCommandContext,
+  _args: string,
+): Promise<BranchCommandResult> {
+  const meta = await readMeta(ctx.sessionId);
+  if (!meta?.undo) {
+    return { text: "Rien à refaire : pas de /undo en attente." };
+  }
+
+  const currentLeaf = ctx.log.leaf() ?? "";
+  if (currentLeaf !== meta.undo.expectedLeafId) {
+    // A turn was written since the undo — redo is no longer the immediate inverse.
+    // Point the user to /branches with the branch number.
+    const entries = ctx.log.entries();
+    const leaves = leavesOf(entries);
+    const branchNum = leaves.findIndex((l) => l.id === meta.undo!.redoLeafId) + 1;
+    const branchHint = branchNum > 0 ? ` (branche ${branchNum} dans /branches)` : "";
+    return {
+      text: `Redo impossible : la conversation a évolué depuis le /undo. ` +
+        `La branche abandonnée est toujours accessible${branchHint}.`,
+    };
+  }
+
+  // Switch to the redo target
+  ctx.log.branch(meta.undo.redoLeafId);
+
+  // Clear undo state — redo is consumed
+  delete meta.undo;
+  meta.leafId = ctx.log.leaf();
+  meta.lastActiveAt = new Date().toISOString();
+  ctx.session.lastActiveAt = meta.lastActiveAt;
+  await writeMeta(ctx.sessionId, meta);
+
+  return {
+    text: "Redo: retour à l'état avant le /undo.",
+    reset: "branch-switch",
   };
 }
 

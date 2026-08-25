@@ -37,6 +37,30 @@ export interface ForkOrigin {
   entryId: string;
 }
 
+/**
+ * State saved by `/undo` to enable `/redo`.
+ *
+ * `/redo` is **the immediate inverse of `/undo`**, not "go to that leaf". The relationship
+ * only holds as long as nothing has been written in between. Once the owner types a new turn,
+ * the abandoned branch stops being "where I just was" and becomes one branch among many —
+ * navigating between arbitrary branches is exactly what `/branches` is for.
+ *
+ * Three reasons for this:
+ * 1. **The costly surprise.** If redo worked after writing, the owner would type a message,
+ *    hit `/redo`, and get teleported to an old branch leaving behind what they just wrote.
+ *    That is the same pattern we refused in lot 7 for `/branches` during a run.
+ * 2. **Muscle memory.** In every editor, typing after undo kills the redo stack. Going against
+ *    that requires a strong reason; "it's possible" is not one.
+ * 3. **Nothing is destroyed.** Refusing redo does not destroy access: the branch is listed in
+ *    `/branches`, reachable in one command. We remove a shortcut that ceased to be unambiguous.
+ */
+export interface UndoState {
+  /** The leaf to return to on `/redo`. */
+  redoLeafId: string;
+  /** The leaf we expect to be on when `/redo` is called. If current leaf differs, a turn was written. */
+  expectedLeafId: string;
+}
+
 export interface SessionMeta {
   id: string;
   platform: string;
@@ -71,6 +95,8 @@ export interface SessionMeta {
   branches?: BranchLabel[];
   /** Origin, when this session was created by `/fork`. */
   forkedFrom?: ForkOrigin;
+  /** Undo state: enables `/redo` as the immediate inverse of `/undo`. */
+  undo?: UndoState;
 }
 
 export function metaPath(sessionId: string): string {

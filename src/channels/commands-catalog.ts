@@ -35,7 +35,9 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "instructions", description: "Dump the composed system prompt" },
   { command: "branches", description: "List branches, switch: /branches [n], name: /branches name <n> <label>", channels: ["my-claw-app"] },
   { command: "retry", description: "Retry from before the last user turn: /retry [n]", channels: ["my-claw-app"] },
-  { command: "fork", description: "Fork conversation to a new thread (not yet implemented)", channels: ["my-claw-app"] },
+  { command: "fork", description: "Fork conversation to a new thread: /fork [entryId]", channels: ["my-claw-app"] },
+  { command: "undo", description: "Undo last turn (aborts running), /redo to revert", channels: ["my-claw-app"] },
+  { command: "redo", description: "Redo after /undo (only if no new turn was written)", channels: ["my-claw-app"] },
   { command: "help", description: "List available commands" },
 ];
 

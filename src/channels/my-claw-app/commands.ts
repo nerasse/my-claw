@@ -25,7 +25,13 @@ import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
-import { handleRetryCommand, handleBranchesCommand, handleForkCommand } from "../branch-commands.ts";
+import {
+  handleRetryCommand,
+  handleBranchesCommand,
+  handleForkCommand,
+  handleUndoCommand,
+  handleRedoCommand,
+} from "../branch-commands.ts";
 
 /**
  * Text slash commands for the my-claw-app channel:
@@ -268,7 +274,9 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
 
       case "branches":
       case "retry":
-      case "fork": {
+      case "fork":
+      case "undo":
+      case "redo": {
         const sessionLog = await deps.sessionManager.logOf(sessionId);
         const session =
           existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
@@ -280,6 +288,12 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           owner,
           threadId,
           isRunning: () => runRegistry.isRunning(sessionId),
+          abortRun: async () => {
+            runRegistry.stop(sessionId);
+            // Wait briefly for the run to settle. The abort is synchronous, but tools may take
+            // a moment to acknowledge the signal.
+            await new Promise((r) => setTimeout(r, 50));
+          },
           persist: async () => {
             session.lastActiveAt = new Date().toISOString();
             await deps.sessionManager.persist(sessionId);
@@ -295,6 +309,16 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           return result.reset
             ? { text: result.text, reset: result.reset, compose: result.compose }
             : result.text;
+        }
+        if (command === "undo") {
+          const result = await handleUndoCommand(ctx, args);
+          return result.reset
+            ? { text: result.text, reset: result.reset, compose: result.compose }
+            : result.text;
+        }
+        if (command === "redo") {
+          const result = await handleRedoCommand(ctx, args);
+          return result.reset ? { text: result.text, reset: result.reset } : result.text;
         }
         // fork
         const result = await handleForkCommand(ctx, args);
