@@ -105,6 +105,15 @@ test("MessageRouter keys an app conversation by its thread", async () => {
   assert.equal(capturedSessionId, "my-claw-app/thread/neras/t7");
 });
 
+/**
+ * The rate limiter counts turns, but each turn here goes through the real router: a session write,
+ * an entry appended and a meta write, times thirty. Ninety-odd atomic writes fit the default 5 s
+ * budget with room to spare on an idle box (measured 507 ms for the file), and did not on a CI
+ * runner building two workflows of the same release at once. The budget is the I/O, not the
+ * assertion -- nothing here waits on a clock -- so it is stated rather than left implicit.
+ */
+const IO_BOUND_TIMEOUT_MS = 30_000;
+
 test("first 30 messages from one user all succeed", async () => {
   const sessionManager = new SessionManager();
   const router = new MessageRouter(sessionManager, {
@@ -117,7 +126,7 @@ test("first 30 messages from one user all succeed", async () => {
     const result = await router.route(createMessage("rate-user"));
     assert.equal(result?.text, "ok");
   }
-});
+}, IO_BOUND_TIMEOUT_MS);
 
 test("31st message within window returns rate limit text", async () => {
   const sessionManager = new SessionManager();
@@ -132,7 +141,7 @@ test("31st message within window returns rate limit text", async () => {
   }
   const result = await router.route(createMessage("rl-user"));
   assert.ok(result?.text.toLowerCase().includes("rate limit"));
-});
+}, IO_BOUND_TIMEOUT_MS);
 
 test("different users have separate rate limits", async () => {
   const sessionManager = new SessionManager();
@@ -150,7 +159,7 @@ test("different users have separate rate limits", async () => {
 
   const otherResult = await router.route(createMessage("user-b"));
   assert.equal(otherResult?.text, "ok");
-});
+}, IO_BOUND_TIMEOUT_MS);
 
 test("concurrent messages to same session are serialized", async () => {
   const sessionManager = new SessionManager();
