@@ -1133,6 +1133,36 @@ clé ajoutée à `SessionMeta` sans être classée **casse la compilation** au l
 au prochain write. Le report ne concerne que les clés `carried` : un réglage que le
 propriétaire efface reste effacé, il n'est pas ressuscité depuis l'ancien fichier.
 
+### Les derniers lecteurs restés braqués sur l'ancien monde
+
+Une fois le répertoire canonique, il restait des endroits qui parlaient encore au fichier plat ou
+au tableau `messages`. Aucun ne levait d'erreur : ils rendaient simplement zéro.
+
+**`/reset` d'un sous-agent ne réinitialisait rien.** `archiveSession` déplaçait `<id>.json`, qui
+depuis le basculement ne contient que les réglages et un `messages` vide — la conversation, elle,
+est `<id>/entries.jsonl`. Le sous-agent « frais » revenait donc avec tout ce qu'il était censé
+avoir oublié. Mesuré : 1 entrée avant, 1 entrée après. `archiveSession` déplace maintenant les
+deux moitiés, le répertoire vers `<archive>/<ts>/` et le fichier legacy vers `<archive>/<ts>.json`.
+
+Et le manager doit **oublier le log**, pas seulement le vider : il est mis en cache aussi longtemps
+que la session, et il retient sa feuille. Laissé en place, le `persist` suivant écrivait cette
+ancienne feuille dans les réglages de la conversation neuve, et `logOf` continuait à rendre un log
+dont le fichier avait bougé. D'où `archiveConversation` sur le manager, que `runner.ts` appelle
+quand un manager existe.
+
+**Les conversations de sous-agents n'étaient plus cherchables.** `indexSessionArchive(session)`
+itère `session.messages`, appelé à cinq endroits de `runner.ts` : cinq no-ops depuis le
+basculement. `indexSessionEntries(session, entries)` indexe depuis le log. Les sorties d'outils
+sont exclues — les indexer noierait le corpus dans le bruit qu'elles servent justement à cacher.
+`indexSessionArchive` reste, pour le backfill des archives legacy qui ont, elles, un vrai
+`messages`.
+
+**Le compteur `skipped` grimpait pour toujours.** `persist` réécrit un fichier plat à côté de
+chaque répertoire migré, donc `legacySessionIds` le proposait, `alreadyMigrated` répondait « oui »,
+et la passe comptait un saut à chaque boot. Mesuré sur une copie d'une install réelle :
+`skipped: 10`, indéfiniment. Un fichier legacy posé à côté de son propre répertoire migré n'est
+pas du travail à faire : il n'est plus proposé, et la passe retombe à `skipped: 0`.
+
 Ce que l'inversion rend visible, c'est que `messages`, `commands` et `failures` de `SessionData`
 ne survivaient que par le fichier plat. `messages` est mort — rien dans `src/` n'y ajoute depuis
 le basculement, seul `manager.ts` le vide et compte. `commands` et `failures` sont des copies

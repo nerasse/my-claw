@@ -4,6 +4,7 @@ import {
   saveSession,
   deleteSession as deleteSessionFile,
   deleteSessionArchives,
+  archiveSession,
   listSessionIdsByPrefix,
   cronThreadToSession,
   subagentThreadToSession,
@@ -293,6 +294,27 @@ export class SessionManager {
     await rm(sessionDir(sessionId), { recursive: true, force: true }).catch(() => {});
     await deleteSessionArchives(sessionId);
     hooks.emit("session:deleted", { sessionId });
+  }
+
+  /**
+   * Files the conversation away and forgets it, so whatever is adopted next starts from nothing.
+   *
+   * The log has to be dropped, not just flushed. It is cached for as long as the session is, and it
+   * remembers its leaf: left in place, the next `persist` would write that old leaf into the fresh
+   * conversation's settings and `logOf` would keep handing back a log whose file has moved.
+   */
+  async archiveConversation(sessionId: string): Promise<string | null> {
+    const pending = this.pendingWrites.get(sessionId);
+    if (pending) await pending.catch(() => {});
+    this.pendingWrites.delete(sessionId);
+    const openLog = this.logs.get(sessionId);
+    if (openLog) {
+      this.logs.delete(sessionId);
+      await openLog.flush().catch(() => {});
+    }
+    this.sessions.delete(sessionId);
+    this.savedCounts.delete(sessionId);
+    return archiveSession(sessionId);
   }
 
   /**

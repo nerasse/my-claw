@@ -627,21 +627,41 @@ export async function deleteSessionFile(sessionId: string): Promise<void> {
   }
 }
 
+/** True for the one error that means "there was nothing there", which is never a failure here. */
+function isMissing(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: string }).code === "ENOENT";
+}
+
+/**
+ * Files a conversation away, both halves of it.
+ *
+ * It used to move `<id>.json` alone. Since the storage switch that file holds the settings and an
+ * empty `messages`, while the conversation itself is `<id>/entries.jsonl` -- so a `/reset` archived
+ * the wrapper and left the history in place, and the "fresh" sub-agent came back with everything it
+ * was supposed to have forgotten. The directory goes to `<archive>/<ts>/`, the legacy file, when one
+ * is still there, to `<archive>/<ts>.json` beside it.
+ */
 export async function archiveSession(sessionId: string): Promise<string | null> {
   const safe = sanitizeSessionId(sessionId);
-  const source = join(SESSIONS_DIR, `${safe}.json`);
-  const target = join(ARCHIVES_DIR, safe, `${archiveTimestamp()}.json`);
+  const target = join(ARCHIVES_DIR, safe, archiveTimestamp());
+  await mkdir(dirname(target), { recursive: true });
+
+  let archived: string | null = null;
   try {
-    await mkdir(dirname(target), { recursive: true });
-    await fsRename(source, target);
-    hooks.emit("session:archived", { sessionId, archivePath: target });
-    return target;
+    await fsRename(join(SESSIONS_DIR, safe), target);
+    archived = target;
   } catch (err) {
-    if (err && typeof err === "object" && (err as { code?: string }).code === "ENOENT") {
-      return null;
-    }
-    throw err;
+    if (!isMissing(err)) throw err;
   }
+  try {
+    await fsRename(join(SESSIONS_DIR, `${safe}.json`), `${target}.json`);
+    archived ??= `${target}.json`;
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+
+  if (archived) hooks.emit("session:archived", { sessionId, archivePath: archived });
+  return archived;
 }
 
 const SESSION_STALE_DAYS = 30;

@@ -8,6 +8,7 @@ import {
   archiveChannelMessage,
   closeConversationArchive,
   indexSessionArchive,
+  indexSessionEntries,
   readConversationHit,
   searchConversationArchive,
 } from "../../src/conversations/store.ts";
@@ -139,4 +140,32 @@ test("backfills existing sessions once", async () => {
   expect(await backfillConversationArchive()).toBeGreaterThanOrEqual(2);
   expect(await backfillConversationArchive()).toBe(0);
   expect(searchConversationArchive({ query: marker, limit: 20 })).toHaveLength(1);
+});
+
+test("a sub-agent conversation is searchable from its log, not from the retired array", () => {
+  // `indexSessionArchive` walks `session.messages`, which nothing has filled since the storage
+  // switch: every call meant to index a sub-agent was indexing an empty list.
+  const entries = [
+    { id: "e1", seq: 1, ts: Date.parse("2026-08-04T10:00:00.000Z"), type: "user", prompt: true, text: "trouve la fuite de contexte" },
+    { id: "e2", seq: 2, ts: Date.parse("2026-08-04T10:00:05.000Z"), type: "phase", prompt: true, text: "la fuite vient du prompt systeme", runId: "r1" },
+    { id: "e3", seq: 3, ts: Date.parse("2026-08-04T10:00:06.000Z"), type: "tool", prompt: true, name: "read", arguments: "{}", output: "bruit" },
+  ] as never;
+
+  const indexed = indexSessionEntries(session({}), entries);
+
+  expect(indexed).toBe(2);
+  const hits = searchConversationArchive({ query: "fuite", limit: 20 });
+  expect(hits).toHaveLength(2);
+  expect(hits.map((hit) => hit.role).sort()).toEqual(["assistant", "user"]);
+  // A tool output is not a turn: indexing it would drown the corpus in the noise it exists to hide.
+  expect(searchConversationArchive({ query: "bruit", limit: 20 })).toHaveLength(0);
+});
+
+test("indexing the same log twice adds nothing", () => {
+  const entries = [
+    { id: "e1", seq: 1, ts: Date.parse("2026-08-04T11:00:00.000Z"), type: "user", prompt: true, text: "question unique" },
+  ] as never;
+  expect(indexSessionEntries(session({}), entries)).toBe(1);
+  expect(indexSessionEntries(session({}), entries)).toBe(0);
+  expect(searchConversationArchive({ query: "unique", limit: 20 })).toHaveLength(1);
 });

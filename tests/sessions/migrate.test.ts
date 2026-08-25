@@ -115,11 +115,13 @@ describe("migrateSessions", () => {
     expect(await readFile(entriesPath("t1"), "utf-8")).toBe(before);
   });
 
-  test("a session already migrated but whose legacy file came back is skipped, not doubled", async () => {
+  test("a session already migrated whose legacy file came back is not doubled, nor counted", async () => {
     await writeLegacy(data("t1", [userMsg("q", 1)]));
     await migrateSessions(readLegacy);
+    // `persist` rewrites one on every turn, so this is the steady state, not an accident. It used
+    // to be offered and then skipped, which put a permanent count on an install that was fine.
     await writeLegacy(data("t1", [userMsg("q", 1)]));
-    expect(await migrateSessions(readLegacy)).toEqual({ migrated: 0, skipped: 1, failed: 0 });
+    expect(await migrateSessions(readLegacy)).toEqual({ migrated: 0, skipped: 0, failed: 0 });
     expect((await openSessionLog("t1")).entries()).toHaveLength(1);
   });
 
@@ -256,5 +258,33 @@ describe("metaOf keeps what the session does not own", () => {
 
     expect(rewritten.title).toBeUndefined();
     expect(rewritten.pinRank).toBeUndefined();
+  });
+});
+
+/**
+ * `persist` keeps rewriting a flat file beside every migrated directory, so offering it again meant
+ * `alreadyMigrated` answered "yes" and the pass counted a skip for it on every boot, for as long as
+ * the conversation existed. Measured on a copy of a real install: `skipped: 10`, forever.
+ */
+describe("a legacy file beside its own migrated directory is not work to do", () => {
+  test("it is not offered, so nothing is skipped for it", async () => {
+    const id = "my-claw-app/thread/frank/conv";
+    await mkdir(sessionDir(id), { recursive: true });
+    await writeFile(entriesPath(id), `{"id":"e1","seq":1,"ts":1,"type":"user","text":"hi","prompt":true}\n`, "utf-8");
+    await writeFile(metaPath(id), JSON.stringify({
+      id, platform: "my-claw-app", chatType: "dm", createdAt: at(0), lastActiveAt: at(0),
+      storageVersion: STORAGE_VERSION, leafId: "e1",
+    }), "utf-8");
+    // What persist leaves beside it.
+    await writeFile(join(SESSIONS_DIR, "my-claw-app", "thread", "frank", "conv.json"),
+      JSON.stringify({ id, platform: "my-claw-app", chatType: "dm", createdAt: at(0), lastActiveAt: at(0), messages: [] }), "utf-8");
+
+    expect(await legacySessionIds()).toEqual([]);
+    expect(await migrateSessions(async () => null)).toEqual({ migrated: 0, skipped: 0, failed: 0 });
+  });
+
+  test("a legacy file with no directory of its own is still work to do", async () => {
+    await writeLegacy(data("my-claw-app/thread/gina/conv", []));
+    expect(await legacySessionIds()).toEqual(["my-claw-app/thread/gina/conv"]);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, listSessionIdsByPrefix, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { loadSession, saveSession, deleteSession, pruneOldSessions, listSessionIdsByPrefix, archiveSession, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
@@ -438,5 +438,41 @@ describe("the directory is what gets read back", () => {
     expect(session?.title).toBe("le vrai titre");
     expect(session?.modelOverride).toBe("anthropic/claude-opus-5");
     expect(session?.contextOverride).toBe(512000);
+  });
+});
+
+/**
+ * Archiving used to move `<id>.json` alone. Since the storage switch that file holds the settings
+ * and an empty `messages`, while the conversation is `<id>/entries.jsonl` -- so a `/reset` filed the
+ * wrapper away and left the history exactly where it was.
+ */
+describe("archiving a conversation takes both halves", () => {
+  const ID = "subagent/archiver-a1b2";
+
+  afterAll(async () => {
+    await rm(join(SESSIONS_DIR, "subagent"), { recursive: true, force: true }).catch(() => {});
+    await rm(join(MY_CLAW_DIR, "sessions-archive", "subagent"), { recursive: true, force: true }).catch(() => {});
+  });
+
+  test("the log leaves with the settings, and nothing of the conversation stays behind", async () => {
+    const dir = join(SESSIONS_DIR, "subagent", "archiver-a1b2");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "entries.jsonl"), `{"id":"e1","seq":1,"ts":1,"type":"user","text":"a oublier","prompt":true}\n`, "utf-8");
+    await writeFile(join(dir, "meta.json"), JSON.stringify({ id: ID, platform: "subagent", chatType: "dm", createdAt: "a", lastActiveAt: "b", storageVersion: 1, leafId: "e1" }), "utf-8");
+    await writeFile(join(SESSIONS_DIR, "subagent", "archiver-a1b2.json"), JSON.stringify(makeSession(ID)), "utf-8");
+
+    const target = await archiveSession(ID);
+
+    expect(target).not.toBeNull();
+    expect(await stat(join(dir, "entries.jsonl")).catch(() => null)).toBeNull();
+    expect(await stat(dir).catch(() => null)).toBeNull();
+    expect(await stat(join(SESSIONS_DIR, "subagent", "archiver-a1b2.json")).catch(() => null)).toBeNull();
+    // Filed away, not destroyed: both halves are readable in the archive.
+    expect(await readFile(join(target!, "entries.jsonl"), "utf-8")).toContain("a oublier");
+    expect(await stat(`${target}.json`).catch(() => null)).not.toBeNull();
+  });
+
+  test("archiving a conversation that was never there is not a failure", async () => {
+    expect(await archiveSession("subagent/never-existed-c3d4")).toBeNull();
   });
 });

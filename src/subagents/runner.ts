@@ -21,7 +21,7 @@ import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import { indexSessionArchive } from "../conversations/store.ts";
+import { indexSessionEntries } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
@@ -138,6 +138,11 @@ export class SubAgentRunner {
     }
   }
 
+  /** Makes this conversation searchable from its log, which is where its turns actually are. */
+  private async indexForSearch(id: string, session: SessionData): Promise<void> {
+    indexSessionEntries(session, (await sessionLogOf(id)).entries());
+  }
+
   private async persistSession(id: string, session: SessionData): Promise<void> {
     if (this.sessionManager) {
       this.sessionManager.adopt(session);
@@ -245,7 +250,7 @@ export class SubAgentRunner {
     return this.runTracked(id, signal, async (trackedSignal) => {
       await entryLog.flush();
       await this.persistSession(id, session);
-      indexSessionArchive(session);
+      await this.indexForSearch(id, session);
 
       hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
@@ -366,7 +371,7 @@ export class SubAgentRunner {
         // In the finally, not after: a failed run used to lose the question too, and the thread
         // came back from disk with no trace that anything had been sent.
         await this.persistSession(id, session);
-        indexSessionArchive(session);
+        await this.indexForSearch(id, session);
       }
     }));
   }
@@ -405,7 +410,10 @@ export class SubAgentRunner {
     } else {
       await saveSession(id, current);
     }
-    await archiveSession(id);
+    // Through the manager when there is one: it owns the open log, and a reset that leaves that log
+    // cached hands the fresh conversation the old leaf and a handle to a file that has moved.
+    if (this.sessionManager) await this.sessionManager.archiveConversation(id);
+    else await archiveSession(id);
     // The workspace survives a reset like the rest of the identity: a sub-agent pinned to a
     // project must not silently come back in the default one.
     const fresh = this.createSession(id, current.platform, current.chatType, current.meta, current.workspace);
@@ -564,7 +572,7 @@ export class SubAgentRunner {
     return this.runTracked(id, signal, async (trackedSignal) => {
       await entryLog.flush();
       await this.persistSession(id, session);
-      indexSessionArchive(session);
+      await this.indexForSearch(id, session);
 
       hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
@@ -576,7 +584,7 @@ export class SubAgentRunner {
         return { id, result };
       } finally {
         this.activeCount -= 1;
-        indexSessionArchive(session);
+        await this.indexForSearch(id, session);
         // The run wrote its turns into the session in memory; this is the moment they land on disk.
         await this.persistSession(id, session);
       }
@@ -606,7 +614,7 @@ export class SubAgentRunner {
       // Persist the first run so a session-mode sub-agent remembers its own answer; without this
       // the next send() reloads a history containing the task but not the reply.
       await this.persistSession(id, session);
-      indexSessionArchive(session);
+      await this.indexForSearch(id, session);
     }
   }
 

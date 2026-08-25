@@ -40,16 +40,28 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
   // `<id>/meta` as a session that does not exist, which the pass then counts as a failure forever.
   if (await holdsSession(dir, entries.map((entry) => entry.name))) return [];
 
+  const directories = new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
   const ids: string[] = [];
   for (const entry of entries) {
     const id = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       ids.push(...(await legacySessionIds(join(dir, entry.name), id)));
-    } else if (entry.isFile() && entry.name.endsWith(".json")) {
-      ids.push(id.slice(0, -".json".length));
+      continue;
     }
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const base = entry.name.slice(0, -".json".length);
+    // A legacy file sitting beside its own migrated directory is not work to do. `persist` keeps
+    // rewriting one, so offering it again meant `alreadyMigrated` answered "yes" and the pass
+    // counted a skip for it on every boot, for as long as the conversation existed.
+    if (directories.has(base) && (await isSessionDirectory(join(dir, base)))) continue;
+    ids.push(id.slice(0, -".json".length));
   }
   return ids;
+}
+
+async function isSessionDirectory(dir: string): Promise<boolean> {
+  const names = await readdir(dir).catch(() => null);
+  return names !== null && (await holdsSession(dir, names));
 }
 
 /**

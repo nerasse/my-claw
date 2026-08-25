@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
+import type { Entry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 
 export type ConversationRole = "user" | "assistant";
@@ -382,6 +383,49 @@ export function archiveAssistantMessage(message: UnifiedMessage, sessionId: stri
     });
   } catch (error) {
     void log("warn", "conversation archive assistant write failed", { error: String(error) });
+  }
+}
+
+/**
+ * Indexes a conversation for search from its entry log.
+ *
+ * `indexSessionArchive` reads `session.messages`, which the storage switch retired: nothing has
+ * filled that array since, so every call meant to make a sub-agent conversation searchable was
+ * indexing an empty list and returning zero. The log is where the turns are.
+ */
+export function indexSessionEntries(session: SessionData, entries: readonly Entry[]): number {
+  try {
+    const address = sessionAddress(session);
+    let indexed = 0;
+    for (const entry of entries) {
+      if (entry.type !== "user" && entry.type !== "phase") continue;
+      const role = entry.type === "user" ? "user" : "assistant";
+      const content = entry.text;
+      if (!content.trim()) continue;
+      const occurredAt = new Date(entry.ts).toISOString();
+      const sourceId = sourceIdForSession(session.id, role, occurredAt, content);
+      const before = countBySourceId(sourceId);
+      insertMessage({
+        sourceId,
+        sourceKind: "session",
+        platform: address.platform,
+        chatId: address.chatId,
+        chatType: address.chatType,
+        threadId: address.threadId,
+        sessionId: session.id,
+        parentSessionId: session.invokedBy ?? session.meta?.parentSessionId,
+        agentType: session.meta?.type ?? (session.platform === "cron" ? "cron" : "main"),
+        role,
+        content,
+        occurredAt,
+        conversationKey: address.key,
+      });
+      indexed += before === 0 ? 1 : 0;
+    }
+    return indexed;
+  } catch (error) {
+    void log("warn", "conversation archive session write failed", { sessionId: session.id, error: String(error) });
+    return 0;
   }
 }
 

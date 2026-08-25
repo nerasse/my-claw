@@ -1,7 +1,6 @@
 import { DEFAULT_CONTEXT_TOKENS, estimateMessagesTokens } from "./tokens.ts";
 import { resolveContextCap, tagNameOf, tagRouteOf, type MyClawConfig, type AgentToolType, type LlmConfig } from "../core/config.ts";
 import { findModel, leafModelId } from "./resolver.ts";
-import { chatModel } from "./chat-model.ts";
 import { matchesAnyGlob } from "../utils/glob.ts";
 import type { ContextLookup } from "./pricing.ts";
 import type { ChatMessage } from "./provider.ts";
