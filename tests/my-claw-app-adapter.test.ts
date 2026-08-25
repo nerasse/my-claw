@@ -702,6 +702,73 @@ describe("MyClawAppAdapter", () => {
     await unlink(file).catch(() => {});
   });
 
+  test("a window that reloads mid-run is served the turn in flight", async () => {
+    // The run announces itself, then answers into a bubble nothing has persisted yet: a phase
+    // entry is written when the model call returns, so this text lives only in the frames that
+    // were broadcast -- docs/live-turn-replay.md.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m-live", DEVICE_ID));
+    await streamer.push("moitie de reponse");
+
+    // The reload: a brand new socket that never saw any of it, asking for the delta.
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+
+    const seen: Array<Record<string, unknown>> = [];
+    // The page comes first and the journal after it, so the replayed bubble lands at the end of
+    // the thread rather than before the history it continues.
+    while (seen.length < 3) seen.push(await nextFrame(reloaded));
+    assert.equal(seen[0]!.type, "session.sync.result");
+    assert.equal(seen[1]!.type, "chat.stream.start");
+    assert.equal(seen[2]!.type, "chat.stream.delta");
+    assert.equal(seen[2]!.text, "moitie de reponse");
+
+    // The run ends: the session owns the turn now, and a second window gets nothing replayed.
+    await streamer.finish();
+    adapter.notifyRun(DEVICE_ID, "default", false);
+    const after = await connectClient(adapter.port);
+    after.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(after)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(after, 300));
+
+    reloaded.ws.close();
+    after.ws.close();
+  });
+
+  test("a pending approval is asked again to a window that reloaded", async () => {
+    // The sheet is broadcast once. A window that reloads used to lose it, and the tool then waited
+    // out its timeout and was denied without the owner ever seeing the question.
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const watching = await connectClient(approvalsAdapter.port);
+    approvalsAdapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(watching)).type, "chat.run.start");
+
+    const decision = approvalsAdapter.confirmTool(approvalRequest());
+    assert.equal((await nextFrame(watching)).type, "approval.request");
+
+    const reloaded = await connectClient(approvalsAdapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+    const sheet = await nextFrame(reloaded);
+    assert.equal(sheet.type, "approval.request");
+
+    // Answered from the window that got the replay: the question is gone for everyone.
+    reloaded.ws.send(JSON.stringify({ type: "approval.response", id: sheet.id, decision: "deny" }));
+    assert.equal(await decision, "deny");
+    const other = await connectClient(approvalsAdapter.port);
+    other.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(other)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(other, 300));
+
+    watching.ws.close();
+    reloaded.ws.close();
+    other.ws.close();
+    await approvalsAdapter.stop();
+  });
+
   test("streaming emits start/delta/done frames and abort annotates the error", async () => {
     const streamer = adapter.createStreamer(streamerMessage(adapter, "m1", DEVICE_ID));
 

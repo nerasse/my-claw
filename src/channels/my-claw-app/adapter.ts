@@ -18,6 +18,7 @@ import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { SocketRegistry } from "./socket-registry.ts";
+import { LiveTurnJournal } from "./live-turn.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
 import { touchDevice } from "./devices.ts";
 import { pairPageResponse } from "./pair-page.ts";
@@ -253,6 +254,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private stopRun?: (sessionId: string) => boolean;
   private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
+  /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
+  private live = new LiveTurnJournal();
 
   constructor(
     private config: MyClawAppChannelConfig,
@@ -435,12 +438,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
       requestedAt: Date.now(),
     };
     // Asked on every window of the owner; the first answer wins and clears the pending entry.
+    // Journalled too: a sheet broadcast once is lost by a window that reloads, and the tool then
+    // waits out the timeout and is denied without the owner ever seeing the question.
+    this.live.recordApproval(request.chatId, threadId, id, frame);
     this.broadcast(request.chatId, frame);
 
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         const pending = this.pendingApprovals.get(id);
         this.pendingApprovals.delete(id);
+        this.live.resolveApproval(request.chatId, threadId, id);
         if (pending) this.journalApproval(id, pending, "expired");
         // The other windows are still showing a sheet nobody can answer any more.
         this.broadcast(audit.owner, { type: "approval.resolved", id, threadId, reason: "expired" });
@@ -483,7 +490,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
       threadId: message.threadId ?? DEFAULT_THREAD,
       minCharsBeforeDelta: this.config.streaming?.minChars,
       // Resolved per frame, not captured: a window that joins mid-answer still gets the rest.
-      send: (frame) => this.broadcast(owner, frame),
+      // The journal is fed from here because this is the single door every frame of a turn goes
+      // through, and a window that joins mid-answer needs the part it missed too --
+      // docs/live-turn-replay.md.
+      send: (frame) => {
+        this.live.record(owner, message.threadId ?? DEFAULT_THREAD, frame);
+        this.broadcast(owner, frame);
+      },
     });
   }
 
@@ -626,6 +639,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   notifyRun(owner: string, threadId: string, active: boolean, reason?: "done" | "aborted" | "error"): void {
+    // The run's own lifecycle owns the journal: opened here, dropped at the end, because past the
+    // end the session holds the same turn and two writers for one state is one too many.
+    if (active) this.live.open(owner, threadId);
+    else this.live.close(owner, threadId);
     if (active) {
       this.broadcast(owner, {
         type: "chat.run.start",
@@ -2057,6 +2074,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
       };
       this.sendFrame(ws, result);
+      // The delta ends where the store ends, which is the last settled call: everything the turn
+      // in flight has already shown lives only in the journal. Replayed after the page, in the
+      // order it was sent, so this window converges with the ones that never left --
+      // docs/live-turn-replay.md.
+      for (const live of this.live.replay(ws.data.owner, threadId)) this.sendFrame(ws, live);
     } catch (err) {
       await this.refuse(ws, "session", "sync failed", { threadId, error: String(err) });
     }
@@ -2240,6 +2262,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!pending) return;
     clearTimeout(pending.timer);
     this.pendingApprovals.delete(frame.id);
+    this.live.resolveApproval(pending.audit.owner, pending.audit.threadId, frame.id);
 
     // The wire is not a place to trust. Anything that is not one of the three grants is a deny:
     // an old client that still sends `accepted` lands here, and a tool must never run because a

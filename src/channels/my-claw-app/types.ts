@@ -966,6 +966,13 @@ export interface MyClawAppToolDelta {
   stdout: string;
   stderr: string;
   ts: string;
+  /**
+   * Set only on a replay: the output before this chunk was dropped from the live turn journal to
+   * hold its budget, so the card is marked truncated instead of reading as short but complete.
+   * The full output is fetchable with `chat.tool.full` once the call settles --
+   * docs/live-turn-replay.md.
+   */
+  clipped?: boolean;
 }
 
 /** A sub-agent spawned mid-run. Annotates the `spawn` tool card (by toolCallId) with its
