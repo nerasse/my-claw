@@ -33,6 +33,9 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "agents", description: "List agent types and live sub-agents" },
   { command: "mcp", description: "List MCP servers, optionally for one agent" },
   { command: "instructions", description: "Dump the composed system prompt" },
+  { command: "branches", description: "List branches, switch: /branches [n], name: /branches name <n> <label>", channels: ["my-claw-app"] },
+  { command: "retry", description: "Retry from before the last user turn: /retry [n]", channels: ["my-claw-app"] },
+  { command: "fork", description: "Fork conversation to a new thread (not yet implemented)", channels: ["my-claw-app"] },
   { command: "help", description: "List available commands" },
 ];
 

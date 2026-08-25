@@ -338,6 +338,12 @@ export type MyClawAppCommandOutput = {
   status?: MyClawAppStatusPayload;
   /** A long aside the app folds away (a compaction summary), never part of the outcome line. */
   details?: string;
+  /** When set, the app must reset the thread (branch switch or retry). */
+  reset?: "branch-switch";
+  /** Text to prefill in the composer (for retry). */
+  compose?: string;
+  /** The new threadId to navigate to (for fork). */
+  newThreadId?: string;
 };
 
 /** Text slash commands, executed server-side like on the other channels. */

@@ -1943,6 +1943,12 @@ export interface MyClawAppCommandResult {
   status?: MyClawAppStatusPayload;
   /** An aside too long for the bubble (a compaction summary), folded away like reasoning. */
   details?: string;
+  /** When set, the app must reset the thread (branch switch or retry). */
+  reset?: "branch-switch";
+  /** Text to prefill in the composer (for retry: the user message being retried). */
+  compose?: string;
+  /** The new threadId to navigate to (for fork). */
+  newThreadId?: string;
 }
 
 /**

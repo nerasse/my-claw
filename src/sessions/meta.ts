@@ -24,6 +24,19 @@ import type { SessionData } from "./store.ts";
  */
 export const STORAGE_VERSION = 1;
 
+/** A named branch, for the selector and for `/branches name`. */
+export interface BranchLabel {
+  leafId: string;
+  label: string;
+  ts: number;
+}
+
+/** Origin, when a session comes from a `/fork`. */
+export interface ForkOrigin {
+  sessionId: string;
+  entryId: string;
+}
+
 export interface SessionMeta {
   id: string;
   platform: string;
@@ -54,6 +67,10 @@ export interface SessionMeta {
   nestedAgents?: SessionData["nestedAgents"];
   lastPrompt?: SessionData["lastPrompt"];
   lastFixedTokens?: number;
+  /** Named branches for the selector. */
+  branches?: BranchLabel[];
+  /** Origin, when this session was created by `/fork`. */
+  forkedFrom?: ForkOrigin;
 }
 
 export function metaPath(sessionId: string): string {

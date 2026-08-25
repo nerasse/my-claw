@@ -5,7 +5,7 @@
  * owner. It did exactly that on 2026-08-23: a message opening with the words "/new doit etre
  * supprime" was read as the command, and 178 turns left the thread mid-task.
  */
-const META_COMMAND_PATTERN = /^\/(?:help|commands|models?|effort|status|compact|reload(?:-skills)?|verbose|cron|stop|codex|claude|config|skills|agents|mcp|instructions)(?:\b|@)/;
+const META_COMMAND_PATTERN = /^\/(?:help|commands|models?|effort|status|compact|reload(?:-skills)?|verbose|cron|stop|codex|claude|config|skills|agents|mcp|instructions|branches|fork|retry)(?:\b|@)/;
 
 export function isMetaCommand(text: string): boolean {
   return META_COMMAND_PATTERN.test(text.trim());

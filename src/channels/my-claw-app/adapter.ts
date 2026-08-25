@@ -1480,6 +1480,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
             const text = typeof output === "string" ? output : output.text;
             const status = typeof output === "string" ? undefined : output.status;
             const details = typeof output === "string" ? undefined : output.details;
+            const reset = typeof output === "string" ? undefined : output.reset;
+            const compose = typeof output === "string" ? undefined : output.compose;
+            const newThreadId = typeof output === "string" ? undefined : output.newThreadId;
             this.broadcast(owner, {
               type: "chat.command.result",
               threadId,
@@ -1487,6 +1490,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
               text,
               ...(status ? { status } : {}),
               ...(details ? { details } : {}),
+              ...(reset ? { reset } : {}),
+              ...(compose !== undefined ? { compose } : {}),
+              ...(newThreadId ? { newThreadId } : {}),
             });
             await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id);
           }

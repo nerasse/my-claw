@@ -25,6 +25,7 @@ import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
+import { handleRetryCommand, handleBranchesCommand, handleForkCommand } from "../branch-commands.ts";
 
 /**
  * Text slash commands for the my-claw-app channel:
@@ -263,6 +264,43 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         if (command === "agents") return handleAgentsCommand(params);
         if (command === "mcp") return handleMcpCommand(params);
         return instructionsText(await handleInstructionsCommand(params));
+      }
+
+      case "branches":
+      case "retry":
+      case "fork": {
+        const sessionLog = await deps.sessionManager.logOf(sessionId);
+        const session =
+          existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        const ctx = {
+          sessionManager: deps.sessionManager,
+          sessionId,
+          session,
+          log: sessionLog,
+          owner,
+          threadId,
+          isRunning: () => runRegistry.isRunning(sessionId),
+          persist: async () => {
+            session.lastActiveAt = new Date().toISOString();
+            await deps.sessionManager.persist(sessionId);
+          },
+          resolveNewSessionId: (newThreadId: string) => sessionIdFor(owner, newThreadId),
+        };
+        if (command === "branches") {
+          const result = await handleBranchesCommand(ctx, args);
+          return result.reset ? { text: result.text, reset: result.reset } : result.text;
+        }
+        if (command === "retry") {
+          const result = await handleRetryCommand(ctx, args);
+          return result.reset
+            ? { text: result.text, reset: result.reset, compose: result.compose }
+            : result.text;
+        }
+        // fork
+        const result = await handleForkCommand(ctx, args);
+        return result.newThreadId
+          ? { text: result.text, newThreadId: result.newThreadId }
+          : result.text;
       }
 
       default:
