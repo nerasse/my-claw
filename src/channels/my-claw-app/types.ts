@@ -101,6 +101,26 @@ export interface MyClawAppSessionHistory {
 }
 
 /**
+ * Requests a delta of entries since the client's last known state.
+ *
+ * The client says what it already has (`since` entry id) and on which branch it sits (`leaf`).
+ * The server returns everything written since that point, plus the current head and leaf.
+ *
+ * This replaces the full history reload on reconnect: the app merges the delta into what it
+ * already holds instead of replacing the thread.
+ */
+export interface MyClawAppSessionSync {
+  type: "session.sync";
+  threadId: string;
+  /** The id of the last entry the client has. Null or absent for a fresh open. */
+  since?: string | null;
+  /** The leaf the client is showing. Absent means "whatever the server has". */
+  leaf?: string;
+  /** Maximum entries to return. Defaults to SYNC_LIMIT (500), capped there. */
+  limit?: number;
+}
+
+/**
  * Asks for a tool output in full. Cards are pushed with the output clipped to TOOL_OUTPUT_LIMIT,
  * because a thread's history would otherwise carry every byte every tool ever printed for the
  * sake of the few a reader opens. The session keeps the whole thing, so a reader who does open
@@ -786,6 +806,7 @@ export type MyClawAppClientFrame =
   | MyClawAppFilesList
   | MyClawAppFileDelete
   | MyClawAppSessionHistory
+  | MyClawAppSessionSync
   | MyClawAppToolFull
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
@@ -1297,6 +1318,31 @@ export interface MyClawAppChatHistory {
    * false, and every sealed bubble of the turn in progress was dropped as stale.
    */
   activeRun?: boolean;
+}
+
+/**
+ * The answer to `session.sync`: a delta of entries since the client's cursor.
+ *
+ * Three cases, distinguished by `reset`:
+ * - Absent: `entries` is a delta to append, same branch.
+ * - `"unknown-cursor"`: the cursor was not found, `entries` is a fresh page, replace the thread.
+ * - `"branch-switch"`: the server's leaf diverges from the client's, `entries` is a fresh page.
+ */
+export interface MyClawAppSessionSyncResult {
+  type: "session.sync.result";
+  threadId: string;
+  /** Entries since the client's cursor, in write order. */
+  entries: MyClawAppHistoryEntry[];
+  /** The current leaf of the session (where the next append goes). */
+  leaf: string | null;
+  /** The id of the last entry in the file (may differ from leaf after a branch). */
+  head: string | null;
+  /** Whether a run is in flight for this conversation. */
+  activeRun?: boolean;
+  /** Why the delta was replaced by a full page. */
+  reset?: "unknown-cursor" | "branch-switch";
+  /** Whether entries were truncated by the limit. */
+  truncated?: boolean;
 }
 
 /**
@@ -2512,6 +2558,7 @@ export type MyClawAppServerFrame =
   | MyClawAppDiagSnapshotResult
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory
+  | MyClawAppSessionSyncResult
   | MyClawAppVoiceModeResult
   | MyClawAppUiPrefsResult
   | MyClawAppUpdateResult

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
 import { RunRecorder, newRunId } from "../../src/agent/run-recorder.ts";
 import { openSessionLog, sessionDir, type SessionLog, type PhaseEntry, type ToolEntry } from "../../src/sessions/log.ts";
@@ -12,6 +12,12 @@ beforeEach(async () => {
   await rm(sessionDir(SESSION), { recursive: true, force: true });
   await mkdir(sessionDir(SESSION), { recursive: true });
   entries = await openSessionLog(SESSION);
+});
+
+afterEach(async () => {
+  // Drain the write queue before the next test destroys the directory. Without this, pending
+  // writes from one test can race with rm -rf of the next, causing spurious ENOENT errors.
+  await entries.flush();
 });
 
 const call = (callId: string, over: Partial<Parameters<RunRecorder["tool"]>[0]> = {}) => ({

@@ -182,6 +182,27 @@ class FakeSessionStore {
     return { entries: all.slice(start, end), hasMore: start > 0, nextBefore: all.length - start };
   }
 
+  syncCalls: Array<{ since?: string | null; leaf?: string; limit?: number }> = [];
+
+  async sync(
+    deviceId: string,
+    threadId: string,
+    since?: string | null,
+    leaf?: string,
+    limit?: number,
+  ): Promise<{
+    entries: Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>;
+    leaf: string | null;
+    head: string | null;
+    reset?: "unknown-cursor" | "branch-switch";
+    truncated?: boolean;
+  }> {
+    this.syncCalls.push({ since, leaf, limit });
+    const all = this.historyMap.get(threadId) ?? [];
+    const head = all.length > 0 ? all[all.length - 1]!.id : null;
+    return { entries: all, leaf: head, head };
+  }
+
   journal: Array<{ threadId: string; input: string; output: string; details?: string }> = [];
 
   async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string): Promise<void> {

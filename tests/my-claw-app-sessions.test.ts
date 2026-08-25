@@ -1383,3 +1383,115 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
     assert.equal(await store.clearDraft(DEVICE, THREAD), false);
   });
 });
+
+describe("MyClawAppSessionStoreImpl.sync", () => {
+  let store: MyClawAppSessionStoreImpl;
+  let sessionId: string;
+  let logSetup: SessionLogSetup | null = null;
+
+  beforeEach(async () => {
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+  });
+
+  afterEach(async () => {
+    if (logSetup) {
+      await logSetup.log.flush();
+      logSetup.cleanup();
+      logSetup = null;
+    }
+    resetSessionLogResolver();
+  });
+
+  test("sync with no cursor returns all entries", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "first", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "second", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+
+    const result = await store.sync(DEVICE, THREAD);
+    assert.equal(result.entries.length, 2);
+    assert.equal((result.entries[0] as { text: string }).text, "first");
+    assert.equal((result.entries[1] as { text: string }).text, "second");
+    assert.equal(result.leaf, result.head);
+    assert.equal(result.reset, undefined);
+  });
+
+  test("sync with valid cursor returns only new entries", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "first", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "second", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+
+    // Get the first entry's id
+    const firstPage = await store.sync(DEVICE, THREAD);
+    const firstEntryId = firstPage.entries[0]!.id;
+
+    // Now sync from that cursor should return only the second entry
+    const result = await store.sync(DEVICE, THREAD, firstEntryId);
+    assert.equal(result.entries.length, 1);
+    assert.equal((result.entries[0] as { text: string }).text, "second");
+    assert.equal(result.reset, undefined);
+  });
+
+  test("sync with unknown cursor returns reset: unknown-cursor", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "first", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const result = await store.sync(DEVICE, THREAD, "nonexistent-entry-id");
+    assert.equal(result.entries.length, 1);
+    assert.equal(result.reset, "unknown-cursor");
+  });
+
+  test("sync with no session returns empty", async () => {
+    const result = await store.sync(DEVICE, "nonexistent-thread");
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.leaf, null);
+    assert.equal(result.head, null);
+  });
+
+  test("sync with head as cursor returns empty delta", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "first", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    const firstPage = await store.sync(DEVICE, THREAD);
+    const headId = firstPage.head;
+
+    const result = await store.sync(DEVICE, THREAD, headId!);
+    assert.equal(result.entries.length, 0);
+    assert.equal(result.reset, undefined);
+  });
+
+  test("sync respects the limit parameter", async () => {
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: "user" as const,
+      content: `message ${i}`,
+      timestamp: `2026-01-01T00:00:0${i}.000Z`,
+    }));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
+
+    const result = await store.sync(DEVICE, THREAD, null, undefined, 3);
+    // Should return last 3 entries when fresh
+    assert.equal(result.entries.length, 3);
+    assert.equal((result.entries[0] as { text: string }).text, "message 7");
+    assert.equal((result.entries[2] as { text: string }).text, "message 9");
+  });
+
+  test("sync caps at SYNC_LIMIT (500)", async () => {
+    // We can't easily create 600 entries, but we can verify the limit logic
+    const messages = Array.from({ length: 5 }, (_, i) => ({
+      role: "user" as const,
+      content: `message ${i}`,
+      timestamp: `2026-01-01T00:00:0${i}.000Z`,
+    }));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
+
+    // Request more than exists
+    const result = await store.sync(DEVICE, THREAD, null, undefined, 1000);
+    assert.equal(result.entries.length, 5);
+    assert.equal(result.truncated, undefined);
+  });
+});

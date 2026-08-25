@@ -64,6 +64,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionPin,
   MyClawAppSessionPinOrder,
   MyClawAppSessionHistory,
+  MyClawAppSessionSync,
+  MyClawAppSessionSyncResult,
   MyClawAppToolFull,
   MyClawAppSessionList,
   MyClawAppSessionListResult,
@@ -1334,6 +1336,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.history":
         this.detach(this.handleSessionHistory(ws, frame), "handleSessionHistory");
         break;
+      case "session.sync":
+        this.detach(this.handleSessionSync(ws, frame), "handleSessionSync");
+        break;
       case "chat.tool.full":
         this.detach(this.handleToolFull(ws, frame), "handleToolFull");
         break;
@@ -2020,6 +2025,34 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.sendFrame(ws, result);
     } catch (err) {
       await this.refuse(ws, "session", "history failed", { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * Delta sync: returns entries since the client's cursor, with metadata about the current state.
+   * Replaces full history reload on reconnect with an append-only delta.
+   */
+  private async handleSessionSync(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionSync): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    try {
+      const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit);
+      const result: MyClawAppSessionSyncResult = {
+        type: "session.sync.result",
+        threadId,
+        entries: page.entries,
+        leaf: page.leaf,
+        head: page.head,
+        ...(page.reset ? { reset: page.reset } : {}),
+        ...(page.truncated ? { truncated: page.truncated } : {}),
+        ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+      };
+      this.sendFrame(ws, result);
+    } catch (err) {
+      await this.refuse(ws, "session", "sync failed", { threadId, error: String(err) });
     }
   }
 

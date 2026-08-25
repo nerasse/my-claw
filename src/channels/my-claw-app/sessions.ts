@@ -4,7 +4,7 @@ import { recordSessionCommand, recordSessionFailure, FAILURE_TEXT_LIMIT } from "
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
-import { pathOf, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
+import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
 import { pageOf, displayOf, type DisplayResolvers } from "./display.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -17,10 +17,24 @@ import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistor
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
+/** The return value of `sync`, carrying the delta plus metadata. */
+export interface MyClawAppSyncPage {
+  entries: MyClawAppHistoryEntry[];
+  leaf: string | null;
+  head: string | null;
+  reset?: "unknown-cursor" | "branch-switch";
+  truncated?: boolean;
+}
+
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
   history(owner: string, threadId: string, limit?: number, before?: number): Promise<MyClawAppHistoryPage>;
+  /**
+   * Returns entries since the client's cursor, plus the current leaf and head.
+   * When the cursor is unknown or the branch diverges, returns a fresh page with `reset` set.
+   */
+  sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number): Promise<MyClawAppSyncPage>;
   /** One tool card's output in full; null when the session no longer holds the call. */
   toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
@@ -73,6 +87,8 @@ export function sanitizeThreadId(raw: string): string | null {
 }
 
 const HISTORY_LIMIT = 50;
+/** Maximum entries returned by sync, per docs/session-log.md §3.4 and §4.1. */
+const SYNC_LIMIT = 500;
 /**
  * How far back the newest page may reach to start on a question rather than mid-work. One
  * agentic turn is easily two hundred messages, and a page that starts inside one reads as a
@@ -338,6 +354,84 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
+
+  /**
+   * Returns entries since the client's cursor, or a fresh page when the cursor is unknown or
+   * the branch diverges. This is the delta sync that replaces full history reload on reconnect.
+   */
+  async sync(
+    owner: string,
+    threadId: string,
+    since?: string | null,
+    clientLeaf?: string,
+    limit = SYNC_LIMIT,
+  ): Promise<MyClawAppSyncPage> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) {
+      // No session yet: nothing to sync
+      return { entries: [], leaf: null, head: null };
+    }
+
+    const log = await sessionLogOf(sessionId);
+    const allEntries = log.entries();
+    const serverLeaf = log.leaf();
+    const head = allEntries.length > 0 ? allEntries[allEntries.length - 1]!.id : null;
+
+    // Effective limit, capped at SYNC_LIMIT
+    const effectiveLimit = Math.min(Math.max(limit ?? SYNC_LIMIT, 1), SYNC_LIMIT);
+
+    // Detect branch switch: the client's leaf is not on the path to the server's leaf
+    let reset: "unknown-cursor" | "branch-switch" | undefined;
+    if (clientLeaf && serverLeaf && clientLeaf !== serverLeaf) {
+      const path = pathOf(allEntries, serverLeaf);
+      const clientOnPath = path.some((e) => e.id === clientLeaf);
+      if (!clientOnPath) reset = "branch-switch";
+    }
+
+    let delta: Entry[];
+    if (reset === "branch-switch" || since === undefined || since === null) {
+      // Fresh page: return the path from the server's leaf, up to the limit
+      const path = pathOf(allEntries, serverLeaf);
+      delta = path.slice(-effectiveLimit);
+      if (since === undefined || since === null) reset = undefined; // Not a reset, just a fresh open
+    } else {
+      // Try to get delta since the cursor
+      try {
+        delta = log.since(since);
+        // If client's leaf is still valid and server moved, no reset needed
+      } catch (err) {
+        if (err instanceof UnknownCursorError) {
+          reset = "unknown-cursor";
+          const path = pathOf(allEntries, serverLeaf);
+          delta = path.slice(-effectiveLimit);
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // Check if we need to truncate
+    const truncated = delta.length > effectiveLimit;
+    if (truncated) delta = delta.slice(-effectiveLimit);
+
+    // Resolve attachments for display
+    const needsFiles = delta.some(
+      (e) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")),
+    );
+    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    const resolvers = makeResolvers(stored);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT);
+
+    return {
+      entries,
+      leaf: serverLeaf,
+      head,
+      ...(reset ? { reset } : {}),
+      ...(truncated ? { truncated } : {}),
+    };
+  }
+
   /**
    * One tool card's output, whole, straight out of the session.
    *
