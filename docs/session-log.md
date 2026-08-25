@@ -877,6 +877,9 @@ Pas de shim de compatibilité (règle `AGENTS.md`) : le lot 6 tourne une fois au
 ## 10.1 Invariants
 
 1. Une entrée écrite n'est jamais modifiée ni supprimée. Seul `meta.json` mute.
+   **Risque ouvert** : `log.ts:write()` avale les erreurs d'append (ENOENT = suppression sous le run,
+   erreur disque = la prochaine échouera aussi). Décision prise avant que le log soit la source
+   de vérité unique ; à réexaminer.
 2. `id` d'entrée = id de bulle. Le serveur ne dérive jamais un id d'affichage.
 3. `parentId` pointe une entrée existante, ou `null`. Un parent manquant est une
    corruption, pas un cas à réparer.
