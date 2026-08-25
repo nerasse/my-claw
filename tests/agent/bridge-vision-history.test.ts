@@ -1,16 +1,20 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import type { SessionLog } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "my-claw-app/thread/owner-1/t-vision";
 
 // A 1x1 png, small enough that the resizer passes it through untouched.
 const PNG = Buffer.from(
@@ -24,8 +28,6 @@ function visionConfig(): MyClawConfig {
     blacklist: [],
     channels: {},
     llm: {
-      // New-format config: only this shape reads `models[].vision` (the legacy one falls back
-      // to the single global flag).
       providers: { main: { baseUrl: "https://example.com" } },
       defaultProvider: "main",
       defaultModel: "seeing-model",
@@ -36,9 +38,9 @@ function visionConfig(): MyClawConfig {
   };
 }
 
-function session(messages: SessionMessage[]): SessionData {
+function sessionMeta(): SessionData {
   const now = new Date().toISOString();
-  return { id: "my-claw-app/thread/owner-1/t-1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages };
+  return { id: SESSION_ID, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 
 function msg(text: string, attachments: UnifiedMessage["attachments"] = []): UnifiedMessage {
@@ -54,17 +56,39 @@ function llmReply(): never {
 
 type Body = { messages: Array<{ role: string; content: unknown }> };
 
-async function capture(config: MyClawConfig, sess: SessionData, message: UnifiedMessage): Promise<Body[]> {
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, sessionMeta());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
+
+async function capture(config: MyClawConfig, messages: SessionMessage[], message: UnifiedMessage): Promise<Body[]> {
+  // Append prior messages to the log
+  if (messages.length > 0) {
+    appendMessages(log, messages);
+    await log.flush();
+  }
+  
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
-  const { signal, end } = runRegistry.startRoot(sess.id);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
   const bodies: Body[] = [];
   const mock = mockFetch(async (_u, init) => {
     bodies.push(JSON.parse(String(init?.body ?? "{}")) as Body);
     return llmReply();
   });
   try {
-    await bridge.handleMessage(message, sess, signal);
+    await bridge.handleMessage(message, sessionMeta(), signal);
     return bodies;
   } finally {
     mock.restore();
@@ -91,12 +115,10 @@ test("an attached image is sent as a media block and keeps the full user content
   const path = join(dir, "photo.png");
   await writeFile(path, PNG);
 
-  const bodies = await capture(visionConfig(), session([]), msg("Yooo", [{ type: "image", path, mimeType: "image/png" }]));
+  const bodies = await capture(visionConfig(), [], msg("Yooo", [{ type: "image", path, mimeType: "image/png" }]));
 
   const last = bodies[0]!.messages.at(-1)!;
   assert.equal(imageBlocks(last.content).length, 1);
-  // The turn must keep the built content, not the raw text: dropping it loses the [Attachments]
-  // block and the reply/thread context on the only turn that carries the picture.
   assert.match(textOf(last.content), /Yooo/);
   assert.match(textOf(last.content), /\[Attachments\]/);
 });
@@ -106,16 +128,13 @@ test("the image stays in the conversation on the turns that follow", async () =>
   const path = join(dir, "photo.png");
   await writeFile(path, PNG);
 
-  // Turn one carried the photo; the session keeps the reference the channel resolved.
   const now = new Date().toISOString();
-  const sess = session([
+  const priorMessages: SessionMessage[] = [
     { role: "user", content: "Yooo\n\n[Attachments]\n- image: " + path, timestamp: now, attachments: [{ type: "image", path }] },
     { role: "assistant", content: "Yo!", timestamp: now },
-  ]);
+  ];
 
-  // Turn two carries nothing: the chat API is stateless, so the picture is only still visible
-  // if it is resent with this request.
-  const bodies = await capture(visionConfig(), sess, msg("et la, tu vois quoi ?"));
+  const bodies = await capture(visionConfig(), priorMessages, msg("et la, tu vois quoi ?"));
 
   const withImages = bodies[0]!.messages.filter((m) => imageBlocks(m.content).length > 0);
   assert.equal(withImages.length, 1);
@@ -124,12 +143,12 @@ test("the image stays in the conversation on the turns that follow", async () =>
 
 test("a deleted attachment degrades to text instead of breaking the turn", async () => {
   const now = new Date().toISOString();
-  const sess = session([
+  const priorMessages: SessionMessage[] = [
     { role: "user", content: "look", timestamp: now, attachments: [{ type: "image", path: "/nope/gone.png" }] },
     { role: "assistant", content: "ok", timestamp: now },
-  ]);
+  ];
 
-  const bodies = await capture(visionConfig(), sess, msg("still there?"));
+  const bodies = await capture(visionConfig(), priorMessages, msg("still there?"));
 
   assert.equal(bodies[0]!.messages.filter((m) => imageBlocks(m.content).length > 0).length, 0);
   assert.equal(bodies[0]!.messages.some((m) => textOf(m.content).includes("look")), true);
@@ -143,7 +162,7 @@ test("a text-only model never receives image blocks", async () => {
   const config = visionConfig();
   config.llm.models = [{ id: "seeing-model", label: "Seeing", provider: "main", vision: false }];
 
-  const bodies = await capture(config, session([]), msg("Yooo", [{ type: "image", path, mimeType: "image/png" }]));
+  const bodies = await capture(config, [], msg("Yooo", [{ type: "image", path, mimeType: "image/png" }]));
 
   assert.equal(bodies[0]!.messages.filter((m) => imageBlocks(m.content).length > 0).length, 0);
 });

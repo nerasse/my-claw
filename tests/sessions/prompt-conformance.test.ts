@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
-import { promptMessages } from "../../src/sessions/store.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
 import type { Entry } from "../../src/sessions/log.ts";
 import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
@@ -174,39 +173,4 @@ describe("frozen: the invariant a provider enforces", () => {
     expect(answered).toEqual(asked);
     expect(asked).toHaveLength(30);
   });
-});
-
-describe("while it still exists: the old path agrees", () => {
-  /** `promptMessages` in the shape the new path produces. Deleted with the switch. */
-  const legacy = (data: SessionData): ChatMessage[] =>
-    promptMessages(data).map((message) => {
-      if (message.role === "tool") return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
-      if (message.role === "user") return { role: "user", content: message.content };
-      return {
-        role: "assistant",
-        content: message.content,
-        ...(message.toolCalls?.length
-          ? { tool_calls: message.toolCalls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })) }
-          : {}),
-      } as ChatMessage;
-    });
-
-  const cases: Array<[string, SessionData]> = [
-    ["plain", session([userMsg("q", 1), assistantMsg("a", 2)])],
-    ["tools", session([
-      assistantMsg("je regarde", 1, { toolCalls: [call("c1", "bash", "{}")] }),
-      toolMsg("c1", "ok", 2),
-      assistantMsg("voila", 3),
-    ])],
-    ["asides", session([userMsg("q", 1), assistantMsg("a", 4)], {
-      commands: [{ input: "/status", output: "ok", timestamp: at(2) }],
-      failures: [{ error: "boom", timestamp: at(3) }],
-    })],
-  ];
-
-  for (const [name, data] of cases) {
-    test(`${name}: both paths send the same messages`, async () => {
-      expect(await projected(data)).toEqual(legacy(data));
-    });
-  }
 });

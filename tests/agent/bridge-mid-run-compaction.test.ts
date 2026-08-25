@@ -1,6 +1,7 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
@@ -8,8 +9,10 @@ import { runRegistry } from "../../src/core/run-registry.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { promptMessages } from "../../src/sessions/store.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import { contextEntries } from "../../src/sessions/projection.ts";
+import type { Entry, CompactionEntry } from "../../src/sessions/log.ts";
+import type { SessionLog } from "../../src/sessions/log.ts";
 
 /**
  * The gate inside a run, on the engine that owns its own prompt. Without it the only thing standing
@@ -19,8 +22,8 @@ import type { SessionData } from "../../src/sessions/store.ts";
 
 const FILLER = "z".repeat(6_000);
 const SUMMARY = `Prior work: the agent ran the filler tool several times and gathered its output. ${"detail ".repeat(20)}`;
-/** Messages a run of this shape keeps when no summary ever lands: the hard trim alone. */
-const UNCOMPACTED_MESSAGES = 26;
+/** Entries a run of this shape keeps when no summary ever lands: the hard trim alone. */
+const UNCOMPACTED_ENTRIES = 26;
 
 function config(): MyClawConfig {
   return {
@@ -47,9 +50,9 @@ function message(): UnifiedMessage {
   return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "go", attachments: [], isForwarded: false, raw: {} };
 }
 
-function session(): SessionData {
+function session(id: string = SESSION_ID): SessionData {
   const now = new Date().toISOString();
-  return { id: "my-claw-app/dm/u1", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
+  return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
 
 function registry(): ToolRegistry {
@@ -77,13 +80,30 @@ interface Sent {
   messages: Array<{ role: string; content: unknown }>;
 }
 
+const SESSION_ID = "test-mid-run-compaction";
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, session());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
+
 /**
  * Twelve tool rounds, each adding 6k characters to the history, on a 20k window: the measurement
  * crosses the threshold around the tenth, by which point the history has the turns compaction needs
  * (it keeps a head and a tail, so bulk alone is not enough). The summarizer is told apart by its
  * own system prompt.
  */
-async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; sess: SessionData }> {
+async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; sess: SessionData; log: SessionLog }> {
   runRegistry.clear();
   const sess = session();
   const bridge = new AgentBridge(config(), registry(), new SkillRegistry());
@@ -109,7 +129,8 @@ async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; se
   });
   try {
     await bridge.handleMessage(message(), sess, signal);
-    return { sent, sess };
+    await log.flush();
+    return { sent, sess, log };
   } finally {
     mock.restore();
     end();
@@ -118,7 +139,7 @@ async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; se
 }
 
 test("a run that fills the window mid-flight is compacted, not trimmed", async () => {
-  const { sent, sess } = await run({ summary: SUMMARY });
+  const { sent, log: sessionLog } = await run({ summary: SUMMARY });
 
   const rounds = sent.filter((s) => s.kind === "run").length;
   const compactions = sent.filter((s) => s.kind === "compaction").length;
@@ -137,13 +158,13 @@ test("a run that fills the window mid-flight is compacted, not trimmed", async (
   const fillersAfter = after.split(FILLER).length - 1;
   assert.ok(fillersAfter <= fillersBefore - 2, `tool results summarized away: ${fillersBefore} -> ${fillersAfter}`);
 
-  // The prompt window moved, so the next run starts from the summary too. Compared against the
-  // untouched run below rather than a fixed count: the threshold is a share of the window, so a
-  // longer system prompt shifts the absolute number without changing the behaviour. The history
-  // behind the boundary is untouched -- a mid-run compaction is not allowed to eat the thread.
-  assert.ok(promptMessages(sess).length < UNCOMPACTED_MESSAGES, `prompt compacted, got ${promptMessages(sess).length} messages`);
-  assert.ok(sess.messages.length >= UNCOMPACTED_MESSAGES, `history kept, got ${sess.messages.length} messages`);
-  assert.ok(sess.messages.some((m) => m.content.includes("Prior context summarized")));
+  // The context window moved, so the next run starts from the summary too.
+  const entries = sessionLog.entries();
+  const context = contextEntries(entries, sessionLog.leaf());
+  assert.ok(context.length < UNCOMPACTED_ENTRIES, `context compacted, got ${context.length} entries`);
+  assert.ok(entries.length >= UNCOMPACTED_ENTRIES, `history kept, got ${entries.length} entries`);
+  const hasCompaction = context.some((e): e is CompactionEntry => e.type === "compaction");
+  assert.ok(hasCompaction, "compaction entry present in context");
 });
 
 // The mark exists because nothing travels for a minute or two while the summarizer runs, in the
@@ -166,15 +187,16 @@ test("the bubble is marked while a mid-run compaction runs", async () => {
 // A refused or empty summary must not be retried on every single iteration: the run would pay for
 // one summarization per tool round and never get anywhere.
 test("a summarization that produced nothing is not retried on the next iteration", async () => {
-  const { sent, sess } = await run({ summary: null });
+  const { sent, log: sessionLog } = await run({ summary: null });
 
   const rounds = sent.filter((s) => s.kind === "run").length;
   const attempts = sent.filter((s) => s.kind === "compaction").length;
+  const entries = sessionLog.entries();
   // Every iteration is over the threshold from now on, and each one could have paid for a summary.
   assert.ok(attempts >= 1);
-  assert.ok(attempts <= Math.ceil((sess.messages.length + 1) / 10), `backed off, got ${attempts} attempts over ${rounds} rounds`);
+  assert.ok(attempts <= Math.ceil((entries.length + 1) / 10), `backed off, got ${attempts} attempts over ${rounds} rounds`);
   // Nothing was rewritten, so the run kept its history and the hard trim stayed in charge.
-  assert.equal(sess.messages.length, UNCOMPACTED_MESSAGES, `history untouched, got ${sess.messages.length} messages`);
+  assert.equal(entries.length, UNCOMPACTED_ENTRIES, `history untouched, got ${entries.length} entries`);
 });
 
 /**
@@ -183,10 +205,11 @@ test("a summarization that produced nothing is not retried on the next iteration
  * rather than summarized.
  */
 test("a sub-agent run is compacted mid-flight", async () => {
-  runRegistry.clear();
+  const subId = "subagent/general-a1";
+  await deleteSession(subId);
   const now = new Date().toISOString();
   const sess: SessionData = {
-    id: "subagent/general-a1",
+    id: subId,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: now,
@@ -196,6 +219,11 @@ test("a sub-agent run is compacted mid-flight", async () => {
     // toolset, which the filler tool is not part of.
     meta: { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: now },
   };
+  await saveSession(subId, sess);
+  const subSetup = await setupSessionLog(subId);
+  const subLog = subSetup.log;
+
+  runRegistry.clear();
   const bridge = new AgentBridge(config(), registry(), new SkillRegistry(), undefined, undefined, 1, undefined, "general");
   const { signal, end } = runRegistry.startRoot(sess.id);
   let compactions = 0;
@@ -215,29 +243,39 @@ test("a sub-agent run is compacted mid-flight", async () => {
   });
   try {
     await bridge.handleMessage(message(), sess, signal);
+    await subLog.flush();
   } finally {
     mock.restore();
     end();
     runRegistry.clear();
+    subSetup.cleanup();
   }
 
   assert.ok(compactions >= 1, "the sub-agent was compacted");
-  assert.ok(sess.messages.some((m) => m.content.includes("Prior context summarized")));
+  const context = contextEntries(subLog.entries(), subLog.leaf());
+  const hasCompaction = context.some((e): e is CompactionEntry => e.type === "compaction");
+  assert.ok(hasCompaction, "compaction entry present in sub-agent context");
 });
 
 // A cron run is a fresh session every time, so the run-start gate has nothing to do there: what
 // fills the window is the run itself, and that is exactly what the mid-run gate covers.
 test("a cron run is compacted mid-flight too", async () => {
-  runRegistry.clear();
+  const cronId = "cron/job-1/1700000000000";
+  await deleteSession(cronId);
   const now = new Date().toISOString();
   const sess: SessionData = {
-    id: "cron/job-1/1700000000000",
+    id: cronId,
     platform: "cron",
     chatType: "dm",
     createdAt: now,
     lastActiveAt: now,
     messages: [],
   };
+  await saveSession(cronId, sess);
+  const cronSetup = await setupSessionLog(cronId);
+  const cronLog = cronSetup.log;
+
+  runRegistry.clear();
   const bridge = new AgentBridge(config(), registry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(sess.id);
   let compactions = 0;
@@ -257,10 +295,12 @@ test("a cron run is compacted mid-flight too", async () => {
   });
   try {
     await bridge.handleMessage({ ...message(), platform: "cron" }, sess, signal);
+    await cronLog.flush();
   } finally {
     mock.restore();
     end();
     runRegistry.clear();
+    cronSetup.cleanup();
   }
 
   assert.ok(compactions >= 1, "the cron run was compacted");

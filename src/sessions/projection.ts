@@ -140,15 +140,13 @@ export function promptOf(entries: readonly Entry[], leafId: string | null): Chat
  * Why no tool call here can be left dangling, and what it costs.
  *
  * The old store persisted the assistant turn with its `tool_calls` *before* the tools ran, so a
- * process killed mid-tool left a request nothing would ever answer -- and an OpenAI-compatible
- * provider refuses that prompt outright, killing the conversation rather than one turn. That is the
- * bug `sealDanglingToolCalls` repairs at run start, and two sub-agent files on this install were in
- * that state.
+ * process killed mid-tool left a request nothing would ever answer, and an OpenAI-compatible
+ * provider refuses that prompt outright, killing the conversation rather than one turn.
  *
- * It cannot happen here, and not because it is repaired: `tool_calls` above are *derived from the
- * tool entries*, and a tool entry is only written once the call has settled and has a result. A
- * killed run leaves phases and no tool entry, which projects to an assistant turn that asked for
- * nothing. The prompt is legal by construction.
+ * It cannot happen here: `tool_calls` above are *derived from the tool entries*, and a tool entry
+ * is only written once the call has settled and has a result. A killed run leaves phases and no
+ * tool entry, which projects to an assistant turn that asked for nothing. The prompt is legal by
+ * construction.
  *
  * The price is on the screen, not in the prompt: a call still executing is in no entry, so a page
  * built from the log alone cannot draw its spinner. The live frames carry it while the socket is

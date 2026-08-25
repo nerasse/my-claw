@@ -4,12 +4,21 @@
  * returned to the caller *and* left in the history as the message the next run resumes from.
  */
 
-import { test } from "bun:test";
+import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { compactSession } from "../../src/sessions/compaction.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { saveSessionWithLog, type SessionLogSetup } from "../helpers/session-log.ts";
+import { deleteSession } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { SessionData } from "../../src/sessions/store.ts";
+
+let logSetup: SessionLogSetup | undefined;
+
+afterEach(async () => {
+  logSetup?.cleanup();
+  logSetup = undefined;
+});
 
 function config(): MyClawConfig {
   return {
@@ -24,22 +33,31 @@ function config(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
-/** Long enough for the summarizer to have a middle to replace between head and tail. */
-function session(): SessionData {
+const SESSION_ID = "my-claw-app/thread/neras/compact";
+
+/** Create session with log entries. Long enough for the summarizer to have a middle to replace. */
+async function sessionWithLog(): Promise<SessionData> {
   const now = new Date().toISOString();
-  return {
-    id: "my-claw-app/thread/neras/compact",
+  const data: SessionData = {
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: now,
     lastActiveAt: now,
     modelOverride: "test-model",
-    messages: Array.from({ length: 14 }, (_, i) => ({
-      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-      content: `turn ${i} ${"filler ".repeat(20)}`,
-      timestamp: now,
-    })),
+    messages: [],  // Empty, data is in the log
   };
+  logSetup = await saveSessionWithLog(SESSION_ID, data);
+  // Add alternating user/assistant entries (14 turns)
+  for (let i = 0; i < 14; i++) {
+    if (i % 2 === 0) {
+      logSetup.log.append({ type: "user", prompt: true, text: `turn ${i} ${"filler ".repeat(20)}` });
+    } else {
+      logSetup.log.append({ type: "phase", prompt: true, text: `turn ${i} ${"filler ".repeat(20)}`, runId: `r${i}` });
+    }
+  }
+  await logSetup.log.flush();
+  return data;
 }
 
 function reply(content: string): Response {
@@ -54,19 +72,21 @@ const SUMMARY = `1. What the owner asked 2. What was built ${"and the rest of it
 test("the summary is returned and left in the history as the message the next run resumes from", async () => {
   const mock = mockFetch(async () => reply(SUMMARY));
   try {
-    const s = session();
-    const before = s.messages.length;
+    const s = await sessionWithLog();
+    const before = 14;  // 14 entries written to log
     const result = await compactSession(config(), s);
     assert.equal(result.ok, true);
     assert.equal(result.summary, SUMMARY.trim());
     assert.equal(result.beforeCount, before);
     assert.ok(result.afterCount < before);
-    // The summary is in the history, wrapped so the model reads it as prior context.
-    const kept = s.messages.find((m) => m.content.includes(SUMMARY.trim()));
-    assert.ok(kept, "the summary must survive in the session it compacted");
-    assert.match(kept!.content, /Prior context summarized/);
+    // The summary is in the log as a CompactionEntry
+    const entries = logSetup!.log.entries();
+    const compactionEntry = entries.find((e) => e.type === "compaction");
+    assert.ok(compactionEntry, "a compaction entry must exist in the log");
+    assert.ok((compactionEntry as { summary: string }).summary.includes(SUMMARY.trim()));
   } finally {
     mock.restore();
+    await deleteSession(SESSION_ID);
   }
 });
 
@@ -77,10 +97,12 @@ test("extra instructions ride along in the summarizer's prompt", async () => {
     return reply(SUMMARY);
   });
   try {
-    await compactSession(config(), session(), "keep every file path");
+    const s = await sessionWithLog();
+    await compactSession(config(), s, "keep every file path");
     assert.match(sent, /keep every file path/);
   } finally {
     mock.restore();
+    await deleteSession(SESSION_ID);
   }
 });
 
@@ -88,14 +110,19 @@ test("an empty or too-short summary is refused rather than written over the hist
   for (const content of ["", "too short"]) {
     const mock = mockFetch(async () => reply(content));
     try {
-      const s = session();
-      const before = [...s.messages];
+      const s = await sessionWithLog();
+      const beforeCount = logSetup!.log.entries().length;
       const result = await compactSession(config(), s);
       assert.equal(result.ok, false);
-      assert.equal(result.afterCount, before.length);
-      assert.deepEqual(s.messages, before, "a refused compaction must leave the history untouched");
+      assert.equal(result.afterCount, beforeCount);
+      // No compaction entry should be added
+      const compactionEntries = logSetup!.log.entries().filter((e) => e.type === "compaction");
+      assert.equal(compactionEntries.length, 0, "a refused compaction must leave the history untouched");
     } finally {
       mock.restore();
+      await deleteSession(SESSION_ID);
+      logSetup?.cleanup();
+      logSetup = undefined;
     }
   }
 });
@@ -103,12 +130,13 @@ test("an empty or too-short summary is refused rather than written over the hist
 test("a refusal is detected as one instead of being stored as the context", async () => {
   const mock = mockFetch(async () => reply(`I cannot summarize this conversation ${"for you ".repeat(10)}`));
   try {
-    const s = session();
+    const s = await sessionWithLog();
     const result = await compactSession(config(), s);
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /refused/);
   } finally {
     mock.restore();
+    await deleteSession(SESSION_ID);
   }
 });
 
@@ -117,11 +145,24 @@ test("a session too short to compact says so before reaching the wire", async ()
     throw new Error("the summarizer must not be called");
   });
   try {
-    const s = { ...session(), messages: [] };
-    const result = await compactSession(config(), s);
+    // Create session with empty log
+    const now = new Date().toISOString();
+    const data: SessionData = {
+      id: SESSION_ID,
+      platform: "my-claw-app",
+      chatType: "dm",
+      createdAt: now,
+      lastActiveAt: now,
+      messages: [],
+    };
+    logSetup = await saveSessionWithLog(SESSION_ID, data);
+    // Don't add any entries - log is empty
+    await logSetup.log.flush();
+    const result = await compactSession(config(), data);
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /too short/);
   } finally {
     mock.restore();
+    await deleteSession(SESSION_ID);
   }
 });

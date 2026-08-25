@@ -132,7 +132,7 @@ export async function handleSharedSessionCommand(
       return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
 
     case "status": {
-      return handleStatusCommand({
+      return await handleStatusCommand({
         config,
         sessionId,
         session: await sessionManager.peek(sessionId),

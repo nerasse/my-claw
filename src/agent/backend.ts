@@ -56,7 +56,7 @@ export interface AgentBackend {
   /** Speech-to-text output per recording, for channels that render it beside its own bubble. */
   transcriptsOf(messageId: string): Array<{ path: string; text: string }>;
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void;
-  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string, modelOverride?: RunModelOverride): Promise<string>;
+  handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string, modelOverride?: RunModelOverride, userEntryWritten?: boolean): Promise<string>;
   handleMessageStreaming(
     message: UnifiedMessage,
     session: SessionData,
@@ -70,5 +70,6 @@ export interface AgentBackend {
     reasoning?: ReasoningSink,
     onToolStart?: ToolStartCallback,
     modelOverride?: RunModelOverride,
+    userEntryWritten?: boolean,
   ): Promise<string>;
 }

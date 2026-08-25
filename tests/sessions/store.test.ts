@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, dropLeadingOrphanToolMessages, sealDanglingToolCalls, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { loadSession, saveSession, deleteSession, pruneOldSessions, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
@@ -217,31 +217,4 @@ describe("trim boundary repair (orphan tool messages)", () => {
     const trimmed = dropLeadingOrphanToolMessages(full.slice(-2));
     expect(trimmed[0]!.role).not.toBe("tool");
   });
-});
-
-describe("dangling tool calls", () => {
-  const ts = new Date().toISOString();
-  const U = (c: string): SessionMessage => ({ role: "user", content: c, timestamp: ts });
-  const A = (c: string, ids?: string[]): SessionMessage => ({ role: "assistant", content: c, timestamp: ts, ...(ids ? { toolCalls: ids.map((id) => ({ id, name: "x", arguments: "{}" })) } : {}) });
-  const T = (id: string): SessionMessage => ({ role: "tool", toolCallId: id, content: "res", timestamp: ts });
-
-  test("seals only what was left unanswered, in place", () => {
-    const msgs = [U("q"), A("", ["t1", "t2"]), T("t1")];
-    expect(sealDanglingToolCalls(msgs)).toBe(1);
-    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "tool"]);
-    expect(msgs[3]).toMatchObject({ role: "tool", toolCallId: "t2" });
-    // Idempotent: a second pass has nothing left to do.
-    expect(sealDanglingToolCalls(msgs)).toBe(0);
-  });
-
-  test("repairs a turn buried under later ones, not just the last", () => {
-    // The crash damaged the first turn; the session was used again afterwards, which is what a
-    // scan of the last assistant alone would walk straight past.
-    const msgs = [U("q"), A("", ["t1"]), U("encore"), A("", ["t2"]), T("t2")];
-    expect(sealDanglingToolCalls(msgs)).toBe(1);
-    expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "assistant", "tool"]);
-    // The result belongs to the turn that asked for it, not to the end of the conversation.
-    expect(msgs[2]).toMatchObject({ toolCallId: "t1" });
-  });
-
 });

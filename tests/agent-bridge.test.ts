@@ -1,9 +1,11 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { setupSessionLog } from "./helpers/session-log.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
+import type { SessionLog } from "../src/sessions/log.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import type { SessionData } from "../src/sessions/store.ts";
@@ -30,9 +32,11 @@ function createMessage(): UnifiedMessage {
   };
 }
 
+const SESSION_ID = "test-bridge";
+
 function createSession(): SessionData {
   return {
-    id: "telegram/dm/u1",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
@@ -40,6 +44,19 @@ function createSession(): SessionData {
     messages: [],
   };
 }
+
+let sharedLog: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  const setup = await setupSessionLog(SESSION_ID);
+  sharedLog = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+});
 
 test("AgentBridge returns plain LLM response", async () => {
   const registry = new ToolRegistry();
@@ -58,7 +75,12 @@ test("AgentBridge returns plain LLM response", async () => {
     const session = createSession();
     const response = await bridge.handleMessage(createMessage(), session);
     assert.equal(response, "hi back");
-    assert.equal(session.messages.length, 2);
+    // Verify the log has the entries (1 user + 1 phase = 2 prompt entries)
+    await sharedLog.flush();
+    const entries = sharedLog.entries();
+    assert.equal(entries.filter(e => e.prompt).length, 2);
+    assert.equal(entries[0]!.type, "user");
+    assert.equal(entries[1]!.type, "phase");
   } finally {
     fetchMock.restore();
   }
@@ -118,7 +140,10 @@ test("AgentBridge executes tool calls and supports model override", async () => 
     const response = await bridge.handleMessage(createMessage(), session);
     assert.equal(response, "done");
     assert.deepEqual(seenModels, ["override-model", "override-model"]);
-    assert.equal(session.messages.some((message) => message.role === "tool"), true);
+    // Verify tool entry exists in the log
+    await sharedLog.flush();
+    const entries = sharedLog.entries();
+    assert.equal(entries.some(e => e.type === "tool"), true);
   } finally {
     fetchMock.restore();
   }

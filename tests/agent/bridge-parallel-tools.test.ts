@@ -1,12 +1,17 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
+import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, ToolEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-parallel-tools";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -14,6 +19,7 @@ const config: MyClawConfig = {
   channels: {},
   llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
   agents: {},
+  memory: { enabled: false },
 };
 
 function createMessage(): UnifiedMessage {
@@ -32,7 +38,7 @@ function createMessage(): UnifiedMessage {
 
 function createSession(): SessionData {
   return {
-    id: "telegram/dm/u1",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
@@ -40,6 +46,22 @@ function createSession(): SessionData {
     messages: [],
   };
 }
+
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
 
 test("parallel tool calls: multiple tools run concurrently", async () => {
   const executionLog: Array<{ tool: string; event: "start" | "end"; time: number }> = [];
@@ -71,6 +93,7 @@ test("parallel tool calls: multiple tools run concurrently", async () => {
 
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(config, registry, skillRegistry);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   let callCount = 0;
   const fetchMock = mockFetch(async () => {
@@ -87,12 +110,13 @@ test("parallel tool calls: multiple tools run concurrently", async () => {
               ],
             },
           }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "done" } }] }),
+      JSON.stringify({ choices: [{ message: { content: "done" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
@@ -100,7 +124,7 @@ test("parallel tool calls: multiple tools run concurrently", async () => {
   try {
     const session = createSession();
     const startTime = Date.now();
-    const response = await bridge.handleMessage(createMessage(), session);
+    const response = await bridge.handleMessage(createMessage(), session, signal);
     const totalMs = Date.now() - startTime;
 
     assert.equal(response, "done");
@@ -118,6 +142,7 @@ test("parallel tool calls: multiple tools run concurrently", async () => {
     assert.ok(latestStart <= earliestEnd, "Both tools should start before either finishes (parallel execution)");
   } finally {
     fetchMock.restore();
+    end();
   }
 });
 
@@ -145,6 +170,7 @@ test("parallel tool calls: results are in correct order", async () => {
 
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(config, registry, skillRegistry);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   let callCount = 0;
   const fetchMock = mockFetch(async () => {
@@ -162,29 +188,32 @@ test("parallel tool calls: results are in correct order", async () => {
               ],
             },
           }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+      JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
 
   try {
     const session = createSession();
-    await bridge.handleMessage(createMessage(), session);
+    await bridge.handleMessage(createMessage(), session, signal);
 
-    // Check session messages: tool results should be in tc1, tc2 order
-    const toolMessages = session.messages.filter((m) => m.role === "tool");
-    assert.equal(toolMessages.length, 2);
-    assert.equal((toolMessages[0] as { toolCallId: string }).toolCallId, "tc1");
-    assert.equal((toolMessages[1] as { toolCallId: string }).toolCallId, "tc2");
-    assert.equal(toolMessages[0]!.content, "slow result");
-    assert.equal(toolMessages[1]!.content, "fast result");
+    // Check log entries: tool results should be in tc1, tc2 order
+    await log.flush();
+    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    assert.equal(toolEntries.length, 2);
+    assert.equal(toolEntries[0]!.callId, "tc1");
+    assert.equal(toolEntries[1]!.callId, "tc2");
+    assert.equal(toolEntries[0]!.output, "slow result");
+    assert.equal(toolEntries[1]!.output, "fast result");
   } finally {
     fetchMock.restore();
+    end();
   }
 });
 
@@ -200,6 +229,7 @@ test("parallel tool calls: single tool call still works (no Promise.all)", async
   });
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(config, registry, skillRegistry);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   let callCount = 0;
   const fetchMock = mockFetch(async () => {
@@ -213,25 +243,28 @@ test("parallel tool calls: single tool call still works (no Promise.all)", async
               tool_calls: [{ id: "tc1", function: { name: "demo", arguments: "{}" } }],
             },
           }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "done" } }] }),
+      JSON.stringify({ choices: [{ message: { content: "done" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
 
   try {
     const session = createSession();
-    const response = await bridge.handleMessage(createMessage(), session);
+    const response = await bridge.handleMessage(createMessage(), session, signal);
     assert.equal(response, "done");
     assert.equal(callCount, 2);
-    const toolMessages = session.messages.filter((m) => m.role === "tool");
-    assert.equal(toolMessages.length, 1);
+    await log.flush();
+    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    assert.equal(toolEntries.length, 1);
   } finally {
     fetchMock.restore();
+    end();
   }
 });
 
@@ -258,6 +291,7 @@ test("parallel tool calls: one failure does not block others", async () => {
 
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(config, registry, skillRegistry);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   let callCount = 0;
   const fetchMock = mockFetch(async () => {
@@ -274,26 +308,29 @@ test("parallel tool calls: one failure does not block others", async () => {
               ],
             },
           }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     }
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "handled" } }] }),
+      JSON.stringify({ choices: [{ message: { content: "handled" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
 
   try {
     const session = createSession();
-    const response = await bridge.handleMessage(createMessage(), session);
+    const response = await bridge.handleMessage(createMessage(), session, signal);
     assert.equal(response, "handled");
 
-    const toolMessages = session.messages.filter((m) => m.role === "tool");
-    assert.equal(toolMessages.length, 2);
-    assert.equal(toolMessages[0]!.content, "good result");
-    assert.ok(toolMessages[1]!.content.includes("tool failed"));
+    await log.flush();
+    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    assert.equal(toolEntries.length, 2);
+    assert.equal(toolEntries[0]!.output, "good result");
+    assert.ok(toolEntries[1]!.output.includes("tool failed"));
   } finally {
     fetchMock.restore();
+    end();
   }
 });

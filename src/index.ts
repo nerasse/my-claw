@@ -1,6 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, promptMessages, recordSessionSubAgentState, loadSession, type SessionSubAgentStatus } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, recordSessionSubAgentState, loadSession, type SessionSubAgentStatus } from "./sessions/store.ts";
+import { sessionLogOf } from "./sessions/log-access.ts";
+import { promptOf } from "./sessions/projection.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
 import { setSessionLogResolver } from "./sessions/log-access.ts";
 import { join, dirname, isAbsolute, resolve } from "node:path";
@@ -129,10 +131,12 @@ import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmComplete } from "./llm/transport.ts";
 import { occupiedContextTokens, measurementFor } from "./llm/context-window.ts";
-import { promptSideChat, promptSidePruned, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
+import { promptSidePruned, pruneOldToolResults, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
+import { resolveContextPruning } from "./core/config.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import type { ChatMessage } from "./llm/provider.ts";
 import { tagRouteOf } from "./core/config.ts";
 import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
 import { referenceWithRoute, routesFor, sortRoutes } from "./channels/route-menu.ts";
@@ -936,22 +940,25 @@ async function main() {
           ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
           // The occupancy the compaction gate reads, not a second estimate of it: the chat header
           // shows a share of the window, and two numbers for one thing would disagree by a turn.
-          // Both halves matter. `promptMessages` because `session.messages` is append-only since
-          // compaction became a boundary, so reading it whole would pin the gauge at full and never
-          // let it come back down. `promptSideChat` because the loop prunes old tool results out of
-          // the prompt, and counting them is what read 8.7x over the billed number.
+          // The prompt is read from the log (the source of truth), and pruning is applied if enabled.
           ...(session
-            ? {
-                used: occupiedContextTokens(
-                  promptMessages(session),
-                  (msgs) => promptSideChat(msgs, config, backendOfModel(model)),
-                  // A measurement taken on the other prompt shape is not comparable: the same
-                  // history bills 5.2x more unpruned, so reading it as a floor over-reads by that
-                  // much and the gauge disagrees with the gate.
-                  measurementFor(session.lastPrompt, promptSidePruned(config, backendOfModel(model))),
-                  session.lastFixedTokens ?? 0,
-                ),
-              }
+            ? await (async () => {
+                const log = await sessionLogOf(session.id);
+                const prompt = promptOf(log.entries(), log.leaf());
+                const backend = backendOfModel(model);
+                const pruning = promptSidePruned(config, backend);
+                const pruningOpts = resolveContextPruning(config);
+                const toChat = (msgs: readonly ChatMessage[]): ChatMessage[] =>
+                  pruning ? pruneOldToolResults([...msgs], pruningOpts) : [...msgs];
+                return {
+                  used: occupiedContextTokens(
+                    prompt,
+                    toChat,
+                    measurementFor(session.lastPrompt, pruning),
+                    session.lastFixedTokens ?? 0,
+                  ),
+                };
+              })()
             : {}),
         },
       };

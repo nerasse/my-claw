@@ -1,13 +1,18 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import { TtsPipeline } from "../../src/voice/tts.ts";
+import { runRegistry } from "../../src/core/run-registry.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-voice";
 
 function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
   return {
@@ -16,6 +21,7 @@ function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
     channels: {},
     agents: {},
     llm: { provider: "test", baseUrl: "http://test", model: "test", apiKey: "test" },
+    memory: { enabled: false },
     ...overrides,
   } as MyClawConfig;
 }
@@ -37,7 +43,7 @@ function createMessage(overrides?: Partial<UnifiedMessage>): UnifiedMessage {
 
 function createSession(): SessionData {
   return {
-    id: "test-session",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     messages: [],
@@ -45,6 +51,22 @@ function createSession(): SessionData {
     lastActiveAt: new Date().toISOString(),
   };
 }
+
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
 
 describe("AgentBridge voice integration", () => {
   test("preprocesses audio attachments and adds echo", async () => {
@@ -62,6 +84,7 @@ describe("AgentBridge voice integration", () => {
       voiceManager,
       sttPipeline,
     );
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const message = createMessage({
       text: "check this audio",
@@ -76,14 +99,17 @@ describe("AgentBridge voice integration", () => {
     // indirectly via echo messages. The STT will fail (no server), but the
     // attachment should still be processed.
     try {
-      await bridge.handleMessage(message, session);
+      await bridge.handleMessage(message, session, signal);
     } catch {
       // Expected to fail due to mocked LLM.
+    } finally {
+      end();
     }
 
-    const userMessage = session.messages.find((m) => m.role === "user");
-    expect(userMessage).toBeDefined();
-    expect(userMessage!.content).toContain("[Audio]:");
+    await log.flush();
+    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    expect(userEntry).toBeDefined();
+    expect(userEntry!.text).toContain("[Audio]:");
   });
 
   test("flags inbound audio correctly", async () => {
@@ -101,6 +127,7 @@ describe("AgentBridge voice integration", () => {
       voiceManager,
       sttPipeline,
     );
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const message = createMessage({
       attachments: [
@@ -112,9 +139,11 @@ describe("AgentBridge voice integration", () => {
     expect(bridge.hadAudioInbound(message.id)).toBe(false);
 
     try {
-      await bridge.handleMessage(message, session);
+      await bridge.handleMessage(message, session, signal);
     } catch {
       // Expected.
+    } finally {
+      end();
     }
 
     expect(bridge.hadAudioInbound(message.id)).toBe(true);
@@ -135,14 +164,17 @@ describe("AgentBridge voice integration", () => {
       voiceManager,
       sttPipeline,
     );
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const message = createMessage({ text: "hello" });
     const session = createSession();
 
     try {
-      await bridge.handleMessage(message, session);
+      await bridge.handleMessage(message, session, signal);
     } catch {
       // Expected.
+    } finally {
+      end();
     }
 
     expect(bridge.hadAudioInbound(message.id)).toBe(false);
@@ -163,6 +195,7 @@ describe("AgentBridge voice integration", () => {
       voiceManager,
       sttPipeline,
     );
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const message = createMessage({
       text: "check this",
@@ -174,15 +207,18 @@ describe("AgentBridge voice integration", () => {
     const session = createSession();
 
     try {
-      await bridge.handleMessage(message, session);
+      await bridge.handleMessage(message, session, signal);
     } catch {
       // Expected to fail due to mocked LLM.
+    } finally {
+      end();
     }
 
     // The transcript is what the agent reads; the path is what lets it act on the recording.
-    const userMessage = session.messages.find((m) => m.role === "user");
-    expect(userMessage).toBeDefined();
-    const attachmentsMatch = userMessage!.content.match(/\[Attachments\][\s\S]*/);
+    await log.flush();
+    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    expect(userEntry).toBeDefined();
+    const attachmentsMatch = userEntry!.text.match(/\[Attachments\][\s\S]*/);
     expect(attachmentsMatch).not.toBeNull();
     expect(attachmentsMatch![0]).toContain("image");
     expect(attachmentsMatch![0]).toContain("- audio: /tmp/test.ogg");
@@ -203,6 +239,7 @@ describe("AgentBridge voice integration", () => {
       voiceManager,
       sttPipeline,
     );
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const message = createMessage({
       attachments: [
@@ -212,15 +249,18 @@ describe("AgentBridge voice integration", () => {
     const session = createSession();
 
     try {
-      await bridge.handleMessage(message, session);
+      await bridge.handleMessage(message, session, signal);
     } catch {
       // Expected.
+    } finally {
+      end();
     }
 
-    const userMessage = session.messages.find((m) => m.role === "user");
-    expect(userMessage).toBeDefined();
-    expect(userMessage!.content).toContain("[Audio]: [Transcription failed");
+    await log.flush();
+    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    expect(userEntry).toBeDefined();
+    expect(userEntry!.text).toContain("[Audio]: [Transcription failed");
     // The words are lost, so the file is the only thing left to work with.
-    expect(userMessage!.content).toContain("- audio: /tmp/nonexistent.ogg");
+    expect(userEntry!.text).toContain("- audio: /tmp/nonexistent.ogg");
   });
 });

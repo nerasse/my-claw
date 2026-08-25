@@ -1,11 +1,16 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
+import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, ToolEntry, UserEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-errors";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -13,6 +18,7 @@ const config: MyClawConfig = {
   channels: {},
   llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
   agents: {},
+  memory: { enabled: false },
 };
 
 function createMessage(text = "hello"): UnifiedMessage {
@@ -31,7 +37,7 @@ function createMessage(text = "hello"): UnifiedMessage {
 
 function createSession(): SessionData {
   return {
-    id: "test-session",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
@@ -42,7 +48,7 @@ function createSession(): SessionData {
 
 function okResponse(content: string) {
   return new Response(
-    JSON.stringify({ choices: [{ message: { content } }] }),
+    JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
@@ -56,10 +62,27 @@ function toolCallResponse(toolName: string, args: Record<string, unknown> = {}) 
           tool_calls: [{ id: "tc1", function: { name: toolName, arguments: JSON.stringify(args) } }],
         },
       }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
+
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
 
 describe("AgentBridge error handling", () => {
   test("tool that throws returns error content, does not crash", async () => {
@@ -73,6 +96,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -83,19 +107,22 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("handled error");
-      const toolMsg = session.messages.find((m) => m.role === "tool");
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.content).toContain("tool explosion");
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry).toBeDefined();
+      expect(toolEntry!.output).toContain("tool explosion");
     } finally {
       mock.restore();
+      end();
     }
   });
 
   test("unknown tool returns error message", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -106,13 +133,15 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("ok");
-      const toolMsg = session.messages.find((m) => m.role === "tool");
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.content).toContain("unknown tool");
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry).toBeDefined();
+      expect(toolEntry!.output).toContain("unknown tool");
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -127,6 +156,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -137,49 +167,54 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("denied path");
-      const toolMsg = session.messages.find((m) => m.role === "tool");
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.content).toContain("denied");
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry).toBeDefined();
+      expect(toolEntry!.output).toContain("denied");
     } finally {
       mock.restore();
+      end();
     }
   });
 
   test("LLM returns no content and no tool calls", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
       callCount++;
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: "" } }] }),
+        JSON.stringify({ choices: [{ message: { content: "" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     });
 
     try {
       const session = createSession();
-      await expect(bridge.handleMessage(createMessage(), session)).rejects.toThrow("empty final turn");
+      await expect(bridge.handleMessage(createMessage(), session, signal)).rejects.toThrow("empty final turn");
       // 1 initial call + MAX_EMPTY_TURN_RETRIES(2) retries.
       expect(callCount).toBe(3);
     } finally {
       mock.restore();
+      end();
     }
   });
 
   test("an empty turn is retried and a valid answer completes the run", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
       callCount++;
       if (callCount <= 2) {
         return new Response(
-          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          JSON.stringify({ choices: [{ message: { content: "" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ) as never;
       }
@@ -188,11 +223,12 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("recovered");
       expect(callCount).toBe(3);
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -205,13 +241,14 @@ describe("AgentBridge error handling", () => {
     };
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(tightConfig, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
       callCount++;
       if (callCount === 1) {
         return new Response(
-          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          JSON.stringify({ choices: [{ message: { content: "" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ) as never;
       }
@@ -220,11 +257,12 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("budget preserved");
       expect(callCount).toBe(2);
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -241,6 +279,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -248,7 +287,7 @@ describe("AgentBridge error handling", () => {
       // 1: empty (retry) -> 2: tool call -> 3: empty (retry, counter was reset) -> 4: final text
       if (callCount === 1 || callCount === 3) {
         return new Response(
-          JSON.stringify({ choices: [{ message: { content: "" } }] }),
+          JSON.stringify({ choices: [{ message: { content: "" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ) as never;
       }
@@ -258,30 +297,33 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("done after reset");
       expect(callCount).toBe(4);
     } finally {
       mock.restore();
+      end();
     }
   });
 
   test("LLM returns null content", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const mock = mockFetch(async () =>
       new Response(
-        JSON.stringify({ choices: [{ message: { content: null } }] }),
+        JSON.stringify({ choices: [{ message: { content: null } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never,
     );
 
     try {
       const session = createSession();
-      await expect(bridge.handleMessage(createMessage(), session)).rejects.toThrow("empty final turn");
+      await expect(bridge.handleMessage(createMessage(), session, signal)).rejects.toThrow("empty final turn");
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -296,6 +338,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -306,17 +349,19 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("handled failure");
       expect(callCount).toBe(2);
     } finally {
       mock.restore();
+      end();
     }
   });
 
   test("session messages are recorded even when LLM fails", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     const mock = mockFetch(async () =>
       new Response(
@@ -327,12 +372,15 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      await expect(bridge.handleMessage(createMessage("test msg"), session)).rejects.toThrow();
-      // User message should still be recorded
-      expect(session.messages.length).toBeGreaterThanOrEqual(1);
-      expect(session.messages[0]!.role).toBe("user");
+      await expect(bridge.handleMessage(createMessage("test msg"), session, signal)).rejects.toThrow();
+      // User message should still be recorded in the log
+      await log.flush();
+      const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+      expect(userEntry).toBeDefined();
+      expect(userEntry!.text).toBe("test msg");
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -351,7 +399,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(memoryConfig, registry, new SkillRegistry());
-    // No approval handler set: with an empty blacklist none is needed.
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -362,13 +410,15 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("saved");
-      const toolMsg = session.messages.find((m) => m.role === "tool");
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.content).toContain("memory write ok");
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry).toBeDefined();
+      expect(toolEntry!.output).toContain("memory write ok");
     } finally {
       mock.restore();
+      end();
     }
   });
 
@@ -387,6 +437,7 @@ describe("AgentBridge error handling", () => {
       },
     });
     const bridge = new AgentBridge(memoryConfig, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
     let callCount = 0;
     const mock = mockFetch(async () => {
@@ -397,13 +448,15 @@ describe("AgentBridge error handling", () => {
 
     try {
       const session = createSession();
-      const result = await bridge.handleMessage(createMessage(), session);
+      const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("denied");
-      const toolMsg = session.messages.find((m) => m.role === "tool");
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.content).toContain("denied");
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry).toBeDefined();
+      expect(toolEntry!.output).toContain("denied");
     } finally {
       mock.restore();
+      end();
     }
   });
 });

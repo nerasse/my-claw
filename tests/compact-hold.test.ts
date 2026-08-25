@@ -16,6 +16,7 @@ import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { setupSessionLog, type SessionLogSetup } from "./helpers/session-log.ts";
 
 function makeConfig(): MyClawConfig {
   return {
@@ -36,25 +37,41 @@ function makeConfig(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
-/**
- * Long enough for the summarizer to have something to compact: below
- * `MIN_MESSAGES_TO_COMPACT` it refuses before ever reaching the wire.
- */
 function makeSession(id: string): SessionData {
-  const messages = Array.from({ length: 14 }, (_, i) => ({
-    role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-    content: `turn ${i} ${"filler ".repeat(20)}`,
-    timestamp: new Date().toISOString(),
-  }));
   return {
     id,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
-    messages,
+    messages: [],
     modelOverride: "test-model",
   };
+}
+
+/**
+ * Creates a session with log entries. Long enough for the summarizer to have
+ * something to compact: below `MIN_MESSAGES_TO_COMPACT` it refuses.
+ */
+async function makeSessionWithLog(id: string): Promise<{ session: SessionData; setup: SessionLogSetup }> {
+  const session = makeSession(id);
+  const setup = await setupSessionLog(id);
+  // Write 14 turns (7 user + 7 assistant)
+  for (let i = 0; i < 7; i++) {
+    setup.log.append({
+      type: "user",
+      prompt: true,
+      text: `turn ${i * 2} ${"filler ".repeat(20)}`,
+    });
+    setup.log.append({
+      type: "phase",
+      prompt: true,
+      text: `turn ${i * 2 + 1} ${"filler ".repeat(20)}`,
+      runId: `run-${i}`,
+    });
+  }
+  await setup.log.flush();
+  return { session, setup };
 }
 
 /** A summary long enough to clear the summarizer's own floor. */
@@ -80,7 +97,7 @@ test("a run in flight refuses the hold, so no compaction starts under it", () =>
 
 test("a compaction in flight refuses a second one, and the hold is released after it", async () => {
   const config = makeConfig();
-  const session = makeSession("s2");
+  const { session, setup } = await makeSessionWithLog("s2");
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -106,22 +123,25 @@ test("a compaction in flight refuses a second one, and the hold is released afte
     assert.equal(runRegistry.isCompacting("s2"), false);
   } finally {
     mock.restore();
+    await setup.cleanup();
   }
 });
 
 test("the hold is released when the summarizer fails", async () => {
   // A failed summary is an outcome, not a throw: what matters here is that the session is free
   // again, because a hold left standing parks every later message forever.
+  const { session, setup } = await makeSessionWithLog("s3");
   const mock = mockFetch(async () => summaryResponse(""));
   try {
     const outcome = await handleCompactCommand({
       config: makeConfig(),
-      session: makeSession("s3"),
+      session,
       persist: async () => {},
     });
     assert.equal(outcome.ok, false);
   } finally {
     mock.restore();
+    await setup.cleanup();
   }
   assert.equal(runRegistry.isCompacting("s3"), false);
 });
@@ -176,11 +196,13 @@ test("the end of a /compact is announced once, whatever the summarizer answered"
   };
   hooks.on("session:compact:finished", collect);
 
+  const { session: s7, setup: setup7 } = await makeSessionWithLog("s7");
+  const { session: s8, setup: setup8 } = await makeSessionWithLog("s8");
   let mock = mockFetch(async () => summaryResponse(SUMMARY));
   try {
     await handleCompactCommand({
       config: makeConfig(),
-      session: makeSession("s7"),
+      session: s7,
       persist: async () => {},
       threadId: "thread-7",
     });
@@ -197,7 +219,7 @@ test("the end of a /compact is announced once, whatever the summarizer answered"
     mock = mockFetch(async () => summaryResponse("too short"));
     await handleCompactCommand({
       config: makeConfig(),
-      session: makeSession("s8"),
+      session: s8,
       persist: async () => {},
     });
     assert.equal(seen.length, 2);
@@ -205,7 +227,7 @@ test("the end of a /compact is announced once, whatever the summarizer answered"
     assert.equal(seen[1]?.threadId, undefined);
 
     // A session too short to compact never reaches the wire, and still announces its end.
-    const short = { ...makeSession("s9"), messages: [] };
+    const short = makeSession("s9");
     await handleCompactCommand({ config: makeConfig(), session: short, persist: async () => {} });
     assert.equal(seen.length, 3);
     assert.equal(seen[2]?.ok, false);
@@ -223,6 +245,8 @@ test("the end of a /compact is announced once, whatever the summarizer answered"
   } finally {
     mock.restore();
     hooks.off("session:compact:finished", collect);
+    await setup7.cleanup();
+    await setup8.cleanup();
   }
 });
 

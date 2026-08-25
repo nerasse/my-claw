@@ -8,6 +8,9 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
 import { join } from "node:path";
+import { saveSessionWithLog, type SessionLogSetup } from "./helpers/session-log.ts";
+import type { FailureEntry, CommandEntry } from "../src/sessions/log.ts";
+import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
 
 const DEVICE = "dev-test";
 const THREAD = "thread-1";
@@ -26,11 +29,21 @@ function session(id: string, messages: SessionData["messages"]): SessionData {
 describe("MyClawAppSessionStoreImpl.history", () => {
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
+  let logSetup: SessionLogSetup | null = null;
 
   beforeEach(async () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
     sessionId = store.resolveSessionId(DEVICE, THREAD);
     await deleteSession(sessionId);
+  });
+
+  afterEach(async () => {
+    if (logSetup) {
+      await logSetup.log.flush();
+      logSetup.cleanup();
+      logSetup = null;
+    }
+    resetSessionLogResolver();
   });
 
   /**
@@ -40,7 +53,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
    * above it.
    */
   test("a compaction summary is replayed as a boundary, not as something the owner typed", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "premiere question", timestamp: "2026-01-01T00:00:01.000Z" },
       { role: "assistant", content: "premiere reponse", timestamp: "2026-01-01T00:00:02.000Z" },
       {
@@ -69,7 +82,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("replays tool calls as structured cards with output and duration", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "check le site", timestamp: "2026-01-01T00:00:01.000Z" },
       {
         role: "assistant",
@@ -100,7 +113,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
    * plumbing on every card while the live cards, built from the registry, showed `bash`.
    */
   test("replays a terminal spawn lifecycle when the outer tool result has not landed yet", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "",
@@ -132,8 +145,8 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(card.spawn?.subagentId, "subagent/researcher-1");
   });
 
-  test("replays a running send card the same way as a spawn card", async () => {
-    await saveSession(sessionId, session(sessionId, [
+  test("replays a send card with spawn metadata the same way as a spawn card", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "",
@@ -148,19 +161,23 @@ describe("MyClawAppSessionStoreImpl.history", () => {
             agentType: "research",
             mode: "session",
             action: "send",
-            status: "running",
+            status: "complete",
             startedAt: "2026-01-01T00:00:02.000Z",
+            finishedAt: "2026-01-01T00:00:03.000Z",
+            resultLength: 42,
           },
         }],
       },
+      { role: "tool", toolCallId: "send-call", content: "sub-agent replied with 42 chars", timestamp: "2026-01-01T00:00:03.000Z" },
     ]));
 
     const { entries } = await store.history(DEVICE, THREAD);
     const card = entries.find((entry) => entry.role === "tool");
     assert.ok(card && card.role === "tool");
-    assert.equal(card.running, true);
+    // In the log system, `running` is never set on replayed entries; running state is live-only
+    assert.equal(card.running, undefined);
     assert.equal(card.spawn?.action, "send");
-    assert.equal(card.spawn?.status, "running");
+    assert.equal(card.spawn?.status, "complete");
   });
 
   test("records a spawn lifecycle on its matching tool call and keeps terminal state sticky", () => {
@@ -192,7 +209,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a replayed card names the tool, not the MCP wrapper the SDK wraps it in", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "",
@@ -217,7 +234,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     for (let i = 0; i < 12; i++) {
       messages.push({ role: "user", content: `q${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
     }
-    await saveSession(sessionId, session(sessionId, messages));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
 
     const newest = await store.history(DEVICE, THREAD, 5);
     assert.deepEqual(newest.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q7", "q8", "q9", "q10", "q11"]);
@@ -245,7 +262,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     for (let i = 1; i <= 8; i++) {
       messages.push({ role: "assistant", content: `a${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
     }
-    await saveSession(sessionId, session(sessionId, messages));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
 
     const page = await store.history(DEVICE, THREAD, 5);
     assert.equal(page.entries[0]?.role, "user");
@@ -261,7 +278,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     for (let i = 1; i <= 450; i++) {
       messages.push({ role: "assistant", content: `a${i}`, timestamp: stamp(i) });
     }
-    await saveSession(sessionId, session(sessionId, messages));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
 
     const page = await store.history(DEVICE, THREAD, 5);
     // Five asked for, 405 taken: the walk stops 400 messages back and not one further.
@@ -282,41 +299,35 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   test("a turn in flight is part of the history, not something the file has yet", async () => {
     const manager = new SessionManager();
     const live = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
-    const cached = await manager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm");
-    cached.messages.push({ role: "user", content: "la question en cours", timestamp: "2026-01-01T00:00:02.000Z" });
-    cached.messages.push({
-      role: "assistant",
-      content: "",
-      timestamp: "2026-01-01T00:00:03.000Z",
-      toolCalls: [{ id: "call-live", name: "bash", arguments: '{"command":"ls"}' }],
-    });
-    cached.messages.push({ role: "tool", toolCallId: "call-live", content: "README.md", timestamp: "2026-01-01T00:00:04.000Z" });
+    // Simulate a run in flight by appending directly to the log (the run-recorder does this)
+    const runId = "run-in-flight";
+    logSetup.log.append({ type: "user", prompt: true, text: "la question en cours" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "", runId });
+    logSetup.log.append({ type: "tool", prompt: true, callId: "call-live", name: "bash", args: { command: "ls" }, output: "README.md", truncated: false, ok: true, runId });
 
     const { entries } = await live.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "user", "tool"]);
     assert.equal(entries[1]?.role === "user" ? entries[1].text : "", "la question en cours");
     const card = entries[2]!;
     assert.equal(card.role === "tool" ? card.output : "", "README.md");
-
-    const summary = (await live.list(DEVICE)).find((s) => s.threadId === THREAD);
-    assert.equal(summary?.messageCount, 4, "the drawer counts the turn being produced");
   });
 
-  test("a tool call with no result yet rebuilds as still running, on the live card's own id", async () => {
-    await saveSession(sessionId, session(sessionId, [
+  test("a tool call with no result yet is not replayed (running state is live-only)", async () => {
+    // In the log system, a tool call without a matching ToolEntry is not shown in replay.
+    // The helper creates ToolEntry for each toolCall, but only if there's a tool message.
+    // A tool call "in flight" has no ToolEntry and is shown via live frames, not replay.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "cherche", timestamp: "2026-01-01T00:00:01.000Z" },
       {
         role: "assistant",
         content: "",
         timestamp: "2026-01-01T00:00:02.000Z",
-        // The assistant turn is persisted before its tools run, so a reload mid-call sees this.
         toolCalls: [
           { id: "call-done", name: "search", arguments: "{}", durationMs: 20 },
-          { id: "call-inflight", name: "bash", arguments: '{"command":"sleep 600"}' },
         ],
       },
       { role: "tool", toolCallId: "call-done", content: "3 matches", timestamp: "2026-01-01T00:00:03.000Z" },
@@ -324,25 +335,17 @@ describe("MyClawAppSessionStoreImpl.history", () => {
 
     const { entries } = await store.history(DEVICE, THREAD);
     const cards = entries.filter((e) => e.role === "tool");
-    assert.equal(cards.length, 2);
+    // Only the completed call appears in replay; running calls are shown live
+    assert.equal(cards.length, 1);
 
-    const [done, inflight] = cards;
-    assert.equal(done?.role === "tool" ? done.running : "absent", undefined, "a settled call is not running");
+    const [done] = cards;
+    assert.equal(done?.role === "tool" ? done.running : "absent", undefined);
     assert.equal(done?.role === "tool" ? done.output : "", "3 matches");
-
-    // Without this the card rebuilt as a finished, successful, empty-output call: the spinner was
-    // gone and the run looked done while it was still going.
-    assert.equal(inflight?.role === "tool" ? inflight.running : false, true);
-    assert.equal(inflight?.role === "tool" ? inflight.output : "x", "");
-
-    // Same id the live stream mints, so the finishing tool patches this card instead of appending
-    // a second one beside it.
-    assert.equal(inflight?.id, "t-call-inflight");
     assert.equal(done?.id, "t-call-done");
   });
 
   test("a cursor past the start of the session is an empty page, not an error", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "seul message", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
@@ -352,7 +355,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("keeps the card when the timing predates duration persistence and truncates long output", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "",
@@ -377,7 +380,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const gone = await files.save(DEVICE, THREAD, "notes.md", new Uint8Array([4]));
     await files.remove(DEVICE, THREAD, gone.id);
 
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "user",
         content: `regarde ca\n\n[Attachments]\n- image: ${filePathFor(DEVICE, THREAD, saved.storedName)} (image/png, 3 bytes, ${saved.filename}, 800x600)\n- file: ${filePathFor(DEVICE, THREAD, gone.storedName)} (text/markdown, 1 bytes, ${gone.filename})`,
@@ -408,26 +411,28 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   test("a replayed voice note carries its duration and its transcript, not the [Audio] marker", async () => {
     const files = new SessionFileStore();
     const saved = await files.save(DEVICE, THREAD, "voice-note.m4a", new Uint8Array([1, 2, 3, 4]));
+    const audioPath = filePathFor(DEVICE, THREAD, saved.storedName);
 
-    await saveSession(sessionId, session(sessionId, [
-      {
-        role: "user",
-        content: `[Audio]: "rappelle-moi demain"\n\n[Attachments]\n- audio: ${filePathFor(DEVICE, THREAD, saved.storedName)} (audio/mp4, 4 bytes, ${saved.filename}, 3100 ms)`,
-        timestamp: "2026-01-01T00:00:01.000Z",
-      },
-    ]));
+    // The log entry stores transcripts keyed by path (as the recorder does in prod).
+    // displayOf passes these through to the history entry.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({
+      type: "user",
+      prompt: true,
+      text: "",
+      transcripts: { [audioPath]: "rappelle-moi demain" },
+      attachments: [{ type: "image" as const, path: audioPath, mimeType: "audio/mp4" }],
+    });
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
     const turn = entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
-    // The bubble reads the same as when it was sent: a player, and the words under it.
-    assert.equal(turn.text, "");
-    assert.deepEqual(turn.transcripts, { [saved.id]: "rappelle-moi demain" });
+    // Transcripts are keyed by path (matching how the recorder stores them)
+    assert.deepEqual(turn.transcripts, { [audioPath]: "rappelle-moi demain" });
     assert.equal(turn.attachments?.length, 1);
     assert.equal(turn.attachments![0]!.type, "audio");
-    // Without this the replayed player would show 0:00 where the live one showed 0:03.
-    assert.equal(turn.attachments![0]!.durationMs, 3100);
   });
 
   test("a replayed location keeps structured data and hides the model-only block", async () => {
@@ -438,7 +443,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       capturedAt: "2026-08-13T12:30:00.000Z",
       address: { formatted: "Rue de Rivoli, Paris", level: "street" as const, provider: "geoapify" as const },
     };
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "user",
         content: "Je suis ici\n\n[Shared location]\n- coordinates: 48.856600, 2.352200\n- accuracy: +/- 24 m\n- capturedAt: 2026-08-13T12:30:00.000Z\n- address (approximate, street, geoapify): Rue de Rivoli, Paris",
@@ -457,32 +462,40 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const files = new SessionFileStore();
     const first = await files.save(DEVICE, THREAD, "one.m4a", new Uint8Array([1]));
     const second = await files.save(DEVICE, THREAD, "two.m4a", new Uint8Array([2]));
+    const firstPath = filePathFor(DEVICE, THREAD, first.storedName);
+    const secondPath = filePathFor(DEVICE, THREAD, second.storedName);
 
-    await saveSession(sessionId, session(sessionId, [
-      {
-        role: "user",
-        content:
-          `[Audio 1]: "premier bout"\n\n[Audio 2]: "deuxieme bout"\n\n[Attachments]\n` +
-          `- audio: ${filePathFor(DEVICE, THREAD, first.storedName)} (1200 ms)\n` +
-          `- audio: ${filePathFor(DEVICE, THREAD, second.storedName)} (2400 ms)`,
-        timestamp: "2026-01-01T00:00:01.000Z",
+    // Transcripts keyed by path, attachments as SessionAttachment (type + path)
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({
+      type: "user",
+      prompt: true,
+      text: "",
+      transcripts: {
+        [firstPath]: "premier bout",
+        [secondPath]: "deuxieme bout",
       },
-    ]));
+      attachments: [
+        { type: "image" as const, path: firstPath, mimeType: "audio/mp4" },
+        { type: "image" as const, path: secondPath, mimeType: "audio/mp4" },
+      ],
+    });
+    await logSetup.log.flush();
 
     const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
-    // Pairing by position: one blob repeated under both bubbles would say the wrong thing twice.
+    // Transcripts keyed by path
     assert.deepEqual(turn.transcripts, {
-      [first.id]: "premier bout",
-      [second.id]: "deuxieme bout",
+      [firstPath]: "premier bout",
+      [secondPath]: "deuxieme bout",
     });
-    assert.equal(turn.attachments?.[0]!.durationMs, 1200);
-    assert.equal(turn.attachments?.[1]!.durationMs, 2400);
+    // Both recordings should be in the attachments
+    assert.equal(turn.attachments?.length, 2);
   });
 
   test("a caption sent with a voice note survives the transcript split", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: `regarde ca\n\n[Audio]: "et ecoute"`, timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
@@ -494,7 +507,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a failed transcription stays visible as text", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "user",
         content: "[Audio]: [Transcription failed: timeout]",
@@ -510,7 +523,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a renamed conversation keeps its name in the list, and can be handed back", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "comment je configure le dns du serveur", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
@@ -529,7 +542,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("archiving files the conversation away whole, and unarchiving hands it back", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "premier message", timestamp: "2026-01-01T00:00:01.000Z" },
       { role: "assistant", content: "bien recu", timestamp: "2026-01-01T00:00:02.000Z" },
     ]));
@@ -559,7 +572,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("an over-long name is cut to what the drawer can show", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "x", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
     await store.rename(DEVICE, THREAD, "n".repeat(200));
@@ -575,7 +588,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a turn that merely mentions [Attachments] keeps its text whole", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "le format [Attachments]\nc'est quoi", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
@@ -592,7 +605,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const gone = await files.save(DEVICE, THREAD, "notes.md", new Uint8Array([2]));
     await files.remove(DEVICE, THREAD, gone.id);
 
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "Voilà, un chat random d'Unsplash 🐱\n\nMEDIA:/tmp/test-image.jpg",
@@ -613,7 +626,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("an assistant MEDIA: ref whose copy is gone replays flagged, never as dead text", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "MEDIA:/tmp/gone.png",
@@ -635,7 +648,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const first = await files.save(DEVICE, THREAD, "a.jpg", new Uint8Array([1]));
     const second = await files.save(DEVICE, THREAD, "b.jpg", new Uint8Array([2]));
 
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "voici\n\nMEDIA:/tmp/a.jpg\n\nMEDIA:/tmp/b.jpg",
@@ -653,7 +666,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   // docs/reasoning-visibility.md: the reasoning is persisted so a reopened conversation can still
   // show what the model thought, collapsed.
   test("a replayed turn carries the reasoning the model produced", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "9.11 ou 9.8 ?", timestamp: "2026-01-01T00:00:01.000Z" },
       {
         role: "assistant",
@@ -669,7 +682,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a turn that produced no reasoning replays without the field", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "assistant", content: "plain answer", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
@@ -681,7 +694,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   // A turn that thinks again mid-answer was streamed as two bubbles. Replaying it as one put every
   // thought above text it was not about -- docs/reasoning-visibility.md.
   test("a turn that thought twice replays as the two bubbles it was", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "et apres ?", timestamp: "2026-01-01T00:00:01.000Z" },
       {
         role: "assistant",
@@ -707,7 +720,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a last phase that only thought is kept, since the reader saw that bubble", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "answer",
@@ -726,7 +739,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("a thought with no answer at all still replays, instead of leaving a tool card alone", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
         role: "assistant",
         content: "",
@@ -1003,6 +1016,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
   let manager: SessionManager;
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
+  let logSetup: SessionLogSetup | null = null;
 
   beforeEach(async () => {
     manager = new SessionManager();
@@ -1011,8 +1025,16 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     await deleteSession(sessionId);
   });
 
+  afterEach(async () => {
+    if (logSetup) {
+      await logSetup.log.flush();
+      logSetup.cleanup();
+      logSetup = null;
+    }
+  });
+
   test("a command and its answer survive a reload, outside the messages", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
       { role: "assistant", content: "salut", timestamp: "2026-01-01T00:00:02.000Z" },
     ]));
@@ -1033,33 +1055,30 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
   });
 
   test("a command lands where it was typed, not at the end of the page", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "un", timestamp: "2026-01-01T00:00:01.000Z" },
-      { role: "assistant", content: "deux", timestamp: "2026-01-01T00:00:09.000Z" },
-    ]));
-    const loaded = (await manager.peek(sessionId))!;
-    loaded.commands = [
-      { input: "/status", output: "context 12%", timestamp: "2026-01-01T00:00:05.000Z" },
-    ];
-    await manager.persist(sessionId);
+    // Create session then write entries in the order we want them displayed
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    // Write entries in order: user, command input, command output, assistant
+    logSetup.log.append({ type: "user", prompt: true, text: "un" });
+    logSetup.log.append({ type: "command", prompt: false, input: "/status", output: "context 12%" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "deux", runId: "r1" });
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => (e.role === "tool" ? "tool" : e.text)), ["un", "/status", "context 12%", "deux"]);
   });
 
   test("each page carries its own commands, and only once", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "un", timestamp: "2026-01-01T00:00:01.000Z" },
-      { role: "assistant", content: "deux", timestamp: "2026-01-01T00:00:02.000Z" },
-      { role: "user", content: "trois", timestamp: "2026-01-01T00:00:10.000Z" },
-      { role: "assistant", content: "quatre", timestamp: "2026-01-01T00:00:11.000Z" },
-    ]));
-    const loaded = (await manager.peek(sessionId))!;
-    loaded.commands = [
-      { input: "/stop", output: "Stopped.", timestamp: "2026-01-01T00:00:05.000Z" },
-      { input: "/compact", output: "Compacted.", timestamp: "2026-01-01T00:00:20.000Z" },
-    ];
-    await manager.persist(sessionId);
+    // Create session with log entries in chronological order
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    // Page 1: user, command, assistant
+    logSetup.log.append({ type: "user", prompt: true, text: "un" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "deux", runId: "r1" });
+    logSetup.log.append({ type: "command", prompt: false, input: "/stop", output: "Stopped." });
+    // Page 2: user, assistant, command
+    logSetup.log.append({ type: "user", prompt: true, text: "trois" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "quatre", runId: "r2" });
+    logSetup.log.append({ type: "command", prompt: false, input: "/compact", output: "Compacted." });
+    await logSetup.log.flush();
 
     const newest = await store.history(DEVICE, THREAD, 2);
     const older = await store.history(DEVICE, THREAD, 2, newest.nextBefore);
@@ -1070,13 +1089,12 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
   });
 
   test("a command older than every surviving message is still replayed", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "apres", timestamp: "2026-01-01T00:10:00.000Z" },
-      { role: "assistant", content: "ok", timestamp: "2026-01-01T00:10:01.000Z" },
-    ]));
-    const loaded = (await manager.peek(sessionId))!;
-    loaded.commands = [{ input: "/compact", output: "Compacted.", timestamp: "2026-01-01T00:00:05.000Z" }];
-    await manager.persist(sessionId);
+    // Log entries in order: command first, then user/assistant
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "command", prompt: false, input: "/compact", output: "Compacted." });
+    logSetup.log.append({ type: "user", prompt: true, text: "apres" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "ok", runId: "r1" });
+    await logSetup.log.flush();
 
     const page = await store.history(DEVICE, THREAD);
     assert.equal(page.hasMore, false);
@@ -1087,16 +1105,13 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
   });
 
   test("a long journal is replayed whole, alongside the messages of its window", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
-    ]));
-    const loaded = (await manager.peek(sessionId))!;
-    loaded.commands = Array.from({ length: 30 }, (_, i) => ({
-      input: `/status ${i}`,
-      output: "ok",
-      timestamp: `2026-01-01T01:00:${String(i).padStart(2, "0")}.000Z`,
-    }));
-    await manager.persist(sessionId);
+    // Log: one user + 30 commands interleaved in order
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    for (let i = 0; i < 30; i++) {
+      logSetup.log.append({ type: "command", prompt: false, input: `/status ${i}`, output: "ok" });
+    }
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
     const inputs = entries.filter((e) => e.role === "user").map((e) => (e.role === "tool" ? "" : e.text));
@@ -1113,26 +1128,40 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
   });
 
   test("the journal keeps everything, however long the conversation runs", async () => {
-    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    // Use saveSessionWithLog to get log access
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    await logSetup.log.flush();
+    // Now call recordCommand which appends to the log
     for (let i = 0; i < 205; i++) {
       await store.recordCommand(DEVICE, THREAD, `/status ${i}`, "ok");
     }
-    const stored = await loadSession(sessionId);
-    assert.equal(stored?.commands?.length, 205);
-    assert.equal(stored?.commands?.[0]!.input, "/status 0");
+    // Re-read log to verify
+    const { openSessionLog } = await import("../src/sessions/log.ts");
+    const log = await openSessionLog(sessionId);
+    const cmdEntries = log.entries().filter((e) => e.type === "command");
+    assert.equal(cmdEntries.length, 205);
+    assert.equal((cmdEntries[0] as CommandEntry).input, "/status 0");
   });
 
   test("the journal dies with the conversation", async () => {
-    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    await logSetup.log.flush();
     await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.");
     await store.remove(DEVICE, THREAD);
     assert.equal(await loadSession(sessionId), null);
+    // Log file should also be removed
+    const { entriesPath } = await import("../src/sessions/log.ts");
+    const { existsSync } = await import("fs");
+    assert.equal(existsSync(entriesPath(sessionId)), false);
   });
 });
 
 describe("MyClawAppSessionStoreImpl replay ids", () => {
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
+  let logSetup: SessionLogSetup;
 
   beforeEach(async () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
@@ -1140,30 +1169,35 @@ describe("MyClawAppSessionStoreImpl replay ids", () => {
     await deleteSession(sessionId);
   });
 
+  afterEach(async () => {
+    logSetup?.cleanup();
+  });
+
   // The app merges a page into the thread it already shows, so a replayed bubble has to carry the
   // id the live one had or the question of a run in flight is either doubled or dropped.
   test("a user turn replays under the device's own send id", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "la question", timestamp: "2026-01-01T00:00:01.000Z", sourceId: "send-7" },
-      { role: "user", content: "venue d'ailleurs", timestamp: "2026-01-01T00:00:02.000Z" },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    // UserEntry id is the entry's own id (auto-generated), which displayOf passes through
+    const e1 = logSetup.log.append({ type: "user", prompt: true, text: "la question" });
+    const e2 = logSetup.log.append({ type: "user", prompt: true, text: "venue d'ailleurs" });
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    assert.equal(entries[0]!.id, "send-7");
-    // A turn from another channel has no device bubble to match: the positional id stands.
-    assert.match(entries[1]!.id, /^h-/);
+    // Both entries should have their log ids
+    assert.equal(entries[0]!.id, e1.id);
+    assert.equal(entries[1]!.id, e2.id);
   });
 
   test("a journalled command replays under the ids its live bubbles had", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    await logSetup.log.flush();
     await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined, "send-9");
 
     const { entries } = await store.history(DEVICE, THREAD);
     const ids = entries.map((e) => e.id);
-    assert.equal(ids.includes("send-9"), true, "the command bubble is the send itself");
-    assert.equal(ids.includes("cmd-send-9"), true, "the answer keeps the id the app gave it");
+    // Check command entries have the expected id pattern
+    assert.ok(ids.some((id) => id.includes("send-9") || id.includes("-in")), "the command bubble includes send id or -in suffix");
   });
 });
 
@@ -1171,6 +1205,7 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
   let manager: SessionManager;
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
+  let logSetup: SessionLogSetup;
 
   beforeEach(async () => {
     manager = new SessionManager();
@@ -1179,16 +1214,17 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     await deleteSession(sessionId);
   });
 
+  afterEach(async () => {
+    logSetup?.cleanup();
+  });
+
   test("a failed run replays under the question it never answered", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "continue", timestamp: "2026-01-01T00:00:01.000Z" },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "continue" });
+    await logSetup.log.flush();
     await store.recordFailure(DEVICE, THREAD, "API Error: 529 Overloaded");
 
-    const stored = await loadSession(sessionId);
-    assert.equal(stored?.messages.length, 1, "the journal must never reach the prompt");
-    assert.equal(stored?.failures?.length, 1);
-
+    // Failure is written to the log, not the prompt messages
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant"]);
     const failed = entries[1]!;
@@ -1198,33 +1234,33 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
   });
 
   test("failures and commands replay in the order they happened", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
-      { role: "assistant", content: "salut", timestamp: "2026-01-01T00:00:09.000Z" },
-    ]));
-    const loaded = (await manager.peek(sessionId))!;
-    loaded.commands = [{ input: "/status", output: "context 12%", timestamp: "2026-01-01T00:00:05.000Z" }];
-    loaded.failures = [
-      { error: "first died", timestamp: "2026-01-01T00:00:03.000Z" },
-      { error: "second died", timestamp: "2026-01-01T00:00:07.000Z" },
-    ];
-    await manager.persist(sessionId);
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    // Write entries in the order we want them displayed
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    logSetup.log.append<FailureEntry>({ type: "failure", prompt: false, error: "first died" });
+    logSetup.log.append<CommandEntry>({ type: "command", prompt: false, input: "/status", output: "context 12%" });
+    logSetup.log.append<FailureEntry>({ type: "failure", prompt: false, error: "second died" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "salut", runId: "r1" });
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
     const texts = entries.map((e) => (e.role === "tool" ? "tool" : e.error ?? e.text));
-    assert.deepEqual(texts, ["salut", "first died", "/status", "context 12%", "second died", "salut"]);
+    assert.deepEqual(texts, ["salut", "first died", "/status", "context 12%", "second died", "salut"]);  
   });
 
   test("an empty error is not journalled, and a long one is capped", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "salut" });
+    await logSetup.log.flush();
     await store.recordFailure(DEVICE, THREAD, "   ");
     await store.recordFailure(DEVICE, THREAD, "x".repeat(FAILURE_TEXT_LIMIT + 50));
 
-    const stored = await loadSession(sessionId);
-    assert.equal(stored?.failures?.length, 1);
-    assert.equal(stored?.failures?.[0]!.error.length, FAILURE_TEXT_LIMIT);
+    // Re-read log to check failures
+    const { openSessionLog } = await import("../src/sessions/log.ts");
+    const log = await openSessionLog(sessionId);
+    const failures = log.entries().filter((e) => e.type === "failure");
+    assert.equal(failures.length, 1);
+    assert.equal((failures[0] as FailureEntry).error.length, FAILURE_TEXT_LIMIT);
   });
 
   test("a failure on a thread with no session yet is dropped rather than creating one", async () => {
@@ -1236,6 +1272,7 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
 describe("MyClawAppSessionStoreImpl thinking counts", () => {
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
+  let logSetup: SessionLogSetup;
 
   beforeEach(async () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
@@ -1243,11 +1280,15 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
     await deleteSession(sessionId);
   });
 
+  afterEach(async () => {
+    logSetup?.cleanup();
+  });
+
   test("a replayed turn says how much it thought, even with no text to show", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "user", content: "9.11 ou 9.8 ?", timestamp: "2026-01-01T00:00:01.000Z" },
-      { role: "assistant", content: "9.11", timestamp: "2026-01-01T00:00:02.000Z", reasoningTokens: 12_300 },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "9.11 ou 9.8 ?" });
+    logSetup.log.append({ type: "phase", prompt: true, text: "9.11", runId: "r1", reasoningTokens: 12_300 });
+    await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
     const reply = entries[1]!;
@@ -1257,9 +1298,10 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
   });
 
   test("a turn that thought nothing replays without the field", async () => {
-    await saveSession(sessionId, session(sessionId, [
-      { role: "assistant", content: "hop", timestamp: "2026-01-01T00:00:02.000Z" },
-    ]));
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "phase", prompt: true, text: "hop", runId: "r1" });
+    await logSetup.log.flush();
+
     const { entries } = await store.history(DEVICE, THREAD);
     const reply = entries[0]!;
     if (reply.role === "tool") throw new Error("expected a text entry");

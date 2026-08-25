@@ -1,12 +1,16 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "../../src/voice/index.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, UserEntry, PhaseEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-budget";
 
 function configWithBudget(maxIterations: number): MyClawConfig {
   return {
@@ -43,7 +47,7 @@ function createMessage(): UnifiedMessage {
 
 function createSession(): SessionData {
   return {
-    id: "session-1",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
@@ -65,6 +69,21 @@ function createBridge(registry: ToolRegistry, maxIterations: number) {
     sttPipeline,
   );
 }
+
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+});
 
 test("AgentBridge requests summary when iteration budget is exhausted", async () => {
   const registry = new ToolRegistry();
@@ -117,10 +136,12 @@ test("AgentBridge requests summary when iteration budget is exhausted", async ()
     expect(response).toBe("Summary: done with the task.");
     expect(callCount).toBe(3);
 
-    // Session should contain the summary prompt injected by handleMaxIterations
-    const userMsgs = session.messages.filter((m) => m.role === "user");
-    const summaryMsg = userMsgs[userMsgs.length - 1];
-    expect(summaryMsg?.content).toContain("maximum number of tool-calling iterations");
+    // Check log for the summary prompt injected by handleMaxIterations
+    await log.flush();
+    const entries = log.entries();
+    const userEntries = entries.filter((e): e is UserEntry => e.type === "user");
+    const summaryEntry = userEntries[userEntries.length - 1];
+    expect(summaryEntry?.text).toContain("maximum number of tool-calling iterations");
   } finally {
     fetchMock.restore();
   }
@@ -171,7 +192,6 @@ test("AgentBridge stops gracefully after budget with no tools in summary call", 
 });
 
 test("cron messages use config.cron.maxIterations, not the orchestrator budget", async () => {
-  // The cron runaway guard must cap the loop regardless of the (much larger) orchestrator budget.
   const registry = new ToolRegistry();
   registry.register({
     name: "demo",
@@ -182,8 +202,8 @@ test("cron messages use config.cron.maxIterations, not the orchestrator budget",
     },
   });
 
-  const config = configWithBudget(10); // orchestrator budget = 10
-  config.cron = { enabled: true, maxIterations: 1 }; // cron budget = 1
+  const config = configWithBudget(10);
+  config.cron = { enabled: true, maxIterations: 1 };
   const voiceManager = new VoiceManager(config);
   const bridge = new AgentBridge(
     config,
@@ -200,27 +220,35 @@ test("cron messages use config.cron.maxIterations, not the orchestrator budget",
   const fetchMock = mockFetch(async (_input, init) => {
     callCount++;
     const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { tools?: unknown[] };
-    // Always ask for another tool call; only the budget can stop the loop.
-    if (body.tools !== undefined) {
+
+    if (callCount === 1) {
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: "", tool_calls: [{ id: `tc${callCount}`, function: { name: "demo", arguments: "{}" } }] } }],
+          choices: [
+            {
+              message: {
+                content: "",
+                tool_calls: [{ id: "tc1", function: { name: "demo", arguments: "{}" } }],
+              },
+            },
+          ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ) as never;
     }
-    // Grace/summary call (no tools) once the budget is spent.
+
+    expect(body.tools).toBeUndefined();
     return new Response(
-      JSON.stringify({ choices: [{ message: { content: "cron summary" } }] }),
+      JSON.stringify({
+        choices: [{ message: { content: "Cron summary." } }],
+      }),
       { status: 200, headers: { "Content-Type": "application/json" } },
     ) as never;
   });
 
   try {
     const response = await bridge.handleMessage(cronMessage, session);
-    expect(response).toBe("cron summary");
-    // budget 1 -> exactly one tool-calling round (call 1) + one grace call (call 2).
-    // Had it used the orchestrator budget of 10, callCount would be 11.
+    expect(response).toBe("Cron summary.");
     expect(callCount).toBe(2);
   } finally {
     fetchMock.restore();
@@ -229,20 +257,36 @@ test("cron messages use config.cron.maxIterations, not the orchestrator budget",
 
 test("AgentBridge returns plain response before budget is exhausted", async () => {
   const registry = new ToolRegistry();
-  const bridge = createBridge(registry, 10);
+  const config = configWithBudget(5);
+  const voiceManager = new VoiceManager(config);
+  const bridge = new AgentBridge(
+    config,
+    registry,
+    new SkillRegistry(),
+    voiceManager,
+    new SttPipeline(voiceManager),
+  );
+
   const session = createSession();
 
-  const fetchMock = mockFetch(async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "plain response" } }] }),
+  const fetchMock = mockFetch(async () => {
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "plain response" } }],
+      }),
       { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never,
-  );
+    ) as never;
+  });
 
   try {
     const response = await bridge.handleMessage(createMessage(), session);
     expect(response).toBe("plain response");
-    expect(session.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+    
+    // Check log for the assistant response
+    await log.flush();
+    const entries = log.entries();
+    const phaseEntries = entries.filter((e): e is PhaseEntry => e.type === "phase");
+    expect(phaseEntries.length).toBe(1);
   } finally {
     fetchMock.restore();
   }

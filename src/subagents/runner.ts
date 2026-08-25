@@ -14,6 +14,8 @@ import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, Too
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { loadSession, saveSession, deleteSession, archiveSession, recordSubAgentCaller } from "../sessions/store.ts";
+import { sessionLogOf } from "../sessions/log-access.ts";
+import type { UserEntry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
@@ -232,21 +234,22 @@ export class SubAgentRunner {
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
     session.invokedBy = parentSessionId;
     recordSubAgentCaller(session, parentSessionId);
-    session.messages.push({
-      role: "user",
-      content: task,
-      timestamp: new Date().toISOString(),
-      // Stable id, the same the bridge uses (subMessage.id) so a page can dedupe the
-      // pre-pushed bubble against the one the run re-pushes with its sourceId.
-      sourceId: `subagent-${id}`,
+    // Write the user turn to the log before the run starts: a crash before the first bridge
+    // turn must still show the question that was asked.
+    const entryLog = await sessionLogOf(id);
+    entryLog.append<UserEntry>({
+      type: "user",
+      prompt: true,
+      text: task,
     });
     return this.runTracked(id, signal, async (trackedSignal) => {
+      await entryLog.flush();
       await this.persistSession(id, session);
       indexSessionArchive(session);
 
       hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
-      const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream);
+      const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream, task);
       const result = await (enqueue ? enqueue(id, run) : run());
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result };
@@ -311,28 +314,17 @@ export class SubAgentRunner {
       }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
-      // A human typing in the sub-agent's own thread gets their own id back, so the bubble the page
-      // already drew is the bubble history replays: a forged id deduped correctly inside the session
-      // (the bridge matches on it) while being invisible to the page, which then showed the message
-      // twice. A model-driven send keeps a forged id on purpose -- its bubble lives in the parent
-      // thread, and two sends in one parent turn would otherwise share one id and collapse into a
-      // single turn here.
-      // Never a value this session already carries: the bridge completes the pre-push by finding
-      // the first turn with that sourceId, so a repeated id would rewrite an older turn instead of
-      // opening a new one -- two sends collapsing into one.
-      const reusable = toolCallId === undefined
-        && parentMessage.id
-        && !session.messages.some((m) => m.role === "user" && m.sourceId === parentMessage.id);
-      const messageId = reusable
-        ? parentMessage.id
-        : `subagent-${id}-${crypto.randomUUID().slice(0, 8)}`;
-      session.messages.push({
-        role: "user",
-        content: userContent,
-        timestamp: new Date().toISOString(),
+      // Write user turn to the log. A crash before the first bridge turn must still show the question.
+      const entryLog = await sessionLogOf(id);
+      entryLog.append<UserEntry>({
+        type: "user",
+        prompt: true,
+        text: userContent,
         ...(parentMessage.location ? { location: parentMessage.location } : {}),
-        sourceId: messageId,
+        // When a model drives the send, record where it came from
+        ...(toolCallId ? { from: { sessionId: callerSessionId, label: "send" } } : {}),
       });
+      await entryLog.flush();
 
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
@@ -359,7 +351,7 @@ export class SubAgentRunner {
       // while handling the spawn event, so asking any earlier always yields undefined.
       const runStream = stream ?? (tracked ? streamProvider?.(id) : undefined);
       try {
-        const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, runStream, messageId);
+        const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, runStream, undefined, userContent);
         if (tracked) hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId: callerSessionId });
         return result;
       } catch (err) {
@@ -476,11 +468,13 @@ export class SubAgentRunner {
         const session = await loadSession(id);
         if (!session?.meta) continue;
         if (!isReachableFrom(session.meta, caller)) continue;
+        // Get entry count from the log
+        const entryLog = await sessionLogOf(id);
         out.push({
           id,
           displayName: session.meta.displayName,
           type: session.meta.type,
-          messageCount: session.messages.length,
+          messageCount: entryLog.entries().filter(e => e.prompt).length,
           status: registry.isRunning(id) ? "running" : "idle",
           visibility: session.meta.visibility,
           ...(session.meta.workspaceKey ? { workspaceKey: session.meta.workspaceKey } : {}),
@@ -559,15 +553,16 @@ export class SubAgentRunner {
     }, workspaceKey);
     session.invokedBy = parentSessionId;
     recordSubAgentCaller(session, parentSessionId);
-    session.messages.push({
-      role: "user",
-      content: task,
-      timestamp: new Date().toISOString(),
-      // Stable id, the same the bridge uses (subMessage.id) so a page can dedupe the
-      // pre-pushed bubble against the one the run re-pushes with its sourceId.
-      sourceId: `subagent-${id}`,
+    // Write the user turn to the log before the run starts: a crash before the first bridge
+    // turn must still show the question that was asked.
+    const entryLog = await sessionLogOf(id);
+    entryLog.append<UserEntry>({
+      type: "user",
+      prompt: true,
+      text: task,
     });
     return this.runTracked(id, signal, async (trackedSignal) => {
+      await entryLog.flush();
       await this.persistSession(id, session);
       indexSessionArchive(session);
 
@@ -575,7 +570,7 @@ export class SubAgentRunner {
       const stream = streamProvider?.(id);
       this.activeCount += 1;
       try {
-        const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, trackedSignal, model, stream);
+        const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, trackedSignal, model, stream, undefined, task);
         const result = await (enqueue ? enqueue(id, execute) : execute());
         hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
         return { id, result };
@@ -596,6 +591,7 @@ export class SubAgentRunner {
     signal?: AbortSignal,
     model?: string,
     stream?: SubAgentStream,
+    userText?: string,
   ): Promise<string> {
     // `loadSession` also returns null on a truncated file, and the non-null assertion turned that
     // into a TypeError the model received as an opaque tool error.
@@ -605,7 +601,7 @@ export class SubAgentRunner {
       return `Error: sub-agent ${id} not found.`;
     }
     try {
-      return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream);
+      return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream, undefined, userText);
     } finally {
       // Persist the first run so a session-mode sub-agent remembers its own answer; without this
       // the next send() reloads a history containing the task but not the reply.
@@ -623,6 +619,8 @@ export class SubAgentRunner {
     model?: string,
     stream?: SubAgentStream,
     messageId?: string,
+    /** User text for the subMessage. The runner already wrote the UserEntry to the log. */
+    userText?: string,
   ): Promise<string> {
     const depth = 1;
     // Adopt the session into the shared cache before the run: the app channel's history/peek
@@ -684,7 +682,7 @@ export class SubAgentRunner {
       chatType: parentMessage.chatType,
       chatId: parentMessage.chatId,
       userId: parentMessage.userId,
-      text: session.messages[session.messages.length - 1]?.content ?? "",
+      text: userText ?? "",
       attachments: [],
       isForwarded: false,
       raw: null,
@@ -702,6 +700,8 @@ export class SubAgentRunner {
     runRegistry.openMailbox(session.id);
     let failure: unknown = null;
     try {
+      // userEntryWritten: true — the runner wrote the UserEntry before calling the bridge,
+      // so the bridge must not write a duplicate.
       const result = stream?.onToken
         ? await bridge.handleMessageStreaming(
             subMessage,
@@ -714,8 +714,11 @@ export class SubAgentRunner {
             stream.onTurnSwitch,
             undefined,
             stream.reasoning,
+            stream.onToolStart,
+            undefined,
+            true, // userEntryWritten
           )
-        : await bridge.handleMessage(subMessage, session, signal);
+        : await bridge.handleMessage(subMessage, session, signal, undefined, undefined, true);
       return result;
     } catch (err) {
       failure = err;

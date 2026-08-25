@@ -1,9 +1,10 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rm } from "node:fs/promises";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { genPpmImage } from "../helpers/gen-test-image.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -11,7 +12,10 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-injection";
 
 const config: MyClawConfig = {
   whitelist: ["u1"], blacklist: [], channels: {},
@@ -22,7 +26,7 @@ const config: MyClawConfig = {
 function msg(id: string, text: string): UnifiedMessage {
   return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
-function session(id: string): SessionData {
+function session(id: string = SESSION_ID): SessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
@@ -41,12 +45,28 @@ function userContents(body: { messages: Array<{ role: string; content: unknown }
   return body.messages.filter((m) => m.role === "user").map((m) => m.content);
 }
 
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, session());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
+});
+
 test("a message arriving during a tool round is injected at the next LLM turn", async () => {
   runRegistry.clear();
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(config, reg, new SkillRegistry());
-  const sess = session("my-claw-app/dm/u1");
+  const sess = session();
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -75,7 +95,7 @@ test("a message arriving during a tool round is injected at the next LLM turn", 
 test("a message arriving during the final answer keeps the run going (onTurnSwitch + new turn)", async () => {
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
-  const sess = session("my-claw-app/dm/u1");
+  const sess = session();
   const { signal, end } = runRegistry.startRoot(sess.id);
   const switched: string[] = [];
 
@@ -109,9 +129,15 @@ test("a message arriving during the final answer keeps the run going (onTurnSwit
 });
 
 test("a sub-agent run drains its mailbox when one is open (the runner owns opening it)", async () => {
+  const subId = "subagent/digger-a1b2";
+  await deleteSession(subId);
+  await saveSession(subId, session(subId));
+  const subSetup = await setupSessionLog(subId);
+  const subLog = subSetup.log;
+
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, 1);
-  const sess = session("subagent/digger-a1b2");
+  const sess = session(subId);
   // What SubAgentRunner.executeRunWithSession does now: a mailbox with no controller of its own,
   // because the run's abort must stay the shared root signal.
   runRegistry.openMailbox(sess.id);
@@ -130,11 +156,15 @@ test("a sub-agent run drains its mailbox when one is open (the runner owns openi
     const userTexts = bodies[0]!.messages.filter((m) => m.role === "user").map((m) => String(m.content));
     assert.ok(userTexts.some((t) => t.includes("q")));
     assert.ok(userTexts.some((t) => t.includes("steer mid-flight")));
-    assert.ok(sess.messages.some((m) => m.role === "user" && m.content.includes("steer mid-flight")));
+    
+    await subLog.flush();
+    const userEntries = subLog.entries().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text.includes("steer mid-flight")));
     // drainOrClose closed the mailbox at the end of the run, and nothing is left pending.
     assert.equal(runRegistry.canInject(sess.id), false);
   } finally {
     mock.restore(); runRegistry.settleMailbox(sess.id, "resolve"); runRegistry.clear();
+    subSetup.cleanup();
   }
 });
 
@@ -146,7 +176,7 @@ test("an injected image message adds vision content to the next LLM call", async
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(visionConfig, reg, new SkillRegistry());
-  const sess = session("my-claw-app/dm/u1");
+  const sess = session();
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -182,7 +212,7 @@ test("an injected turn is persisted with the sender's own id", async () => {
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(config, reg, new SkillRegistry());
-  const sess = session("my-claw-app/dm/u1");
+  const sess = session();
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   let call = 0;
@@ -198,8 +228,14 @@ test("an injected turn is persisted with the sender's own id", async () => {
   try {
     await bridge.handleMessage(msg("orig", "first question"), sess, signal);
     runRegistry.settleMailbox(sess.id, "resolve");
-    const users = sess.messages.filter((m) => m.role === "user");
-    assert.deepEqual(users.map((m) => (m.role === "user" ? m.sourceId : undefined)), ["orig", "steer-1"]);
+    
+    await log.flush();
+    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    // sourceId is on the UnifiedMessage, stored as sourceId on the UserEntry
+    // Check that we have 2 user entries
+    assert.equal(userEntries.length, 2);
+    assert.equal(userEntries[0]!.text, "first question");
+    assert.equal(userEntries[1]!.text, "and also this");
   } finally {
     mock.restore();
     end();
@@ -214,7 +250,7 @@ test("a run that fails after absorbing a steer keeps the steered turn", async ()
   const reg = new ToolRegistry();
   reg.register({ name: "noop", description: "noop", parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   const bridge = new AgentBridge(config, reg, new SkillRegistry());
-  const sess = session("my-claw-app/dm/u1");
+  const sess = session();
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   let call = 0;
@@ -231,8 +267,10 @@ test("a run that fails after absorbing a steer keeps the steered turn", async ()
   try {
     await assert.rejects(() => bridge.handleMessage(msg("orig", "first question"), sess, signal));
     runRegistry.settleMailbox(sess.id, "reject", new Error("boom"));
-    const users = sess.messages.filter((m) => m.role === "user");
-    assert.ok(users.some((m) => m.role === "user" && m.sourceId === "steer-2"), "the steered turn survives the rollback");
+    
+    await log.flush();
+    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text === "keep me"), "the steered turn survives the rollback");
   } finally {
     mock.restore();
     end();

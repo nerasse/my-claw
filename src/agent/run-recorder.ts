@@ -90,8 +90,8 @@ export function newRunId(): string {
  */
 export class RunRecorder {
   private readonly entries: SessionLog;
-  /** Where the conversation stood before this run wrote anything. */
-  private readonly startLeaf: string | null;
+  /** Where rewind() returns: advances when user() is called, so rewinding never erases a user turn. */
+  private startLeaf: string | null;
   private currentRunId: string;
 
   constructor(entries: SessionLog) {
@@ -115,7 +115,12 @@ export class RunRecorder {
     return this.currentRunId;
   }
 
-  /** What the owner (or another agent) asked. */
+  /**
+   * What the owner (or another agent) asked.
+   *
+   * Advances the rewind floor: a failed run must never erase a question the owner actually sent.
+   * The floor moves here, not in a separate call, so the invariant holds by construction.
+   */
   user(input: {
     text: string;
     attachments?: SessionAttachment[];
@@ -123,7 +128,7 @@ export class RunRecorder {
     transcripts?: Record<string, string>;
     from?: { sessionId: string; label: string };
   }): UserEntry {
-    return this.entries.append<UserEntry>({
+    const entry = this.entries.append<UserEntry>({
       type: "user",
       prompt: true,
       text: input.text,
@@ -132,6 +137,8 @@ export class RunRecorder {
       ...(input.transcripts && Object.keys(input.transcripts).length > 0 ? { transcripts: input.transcripts } : {}),
       ...(input.from ? { from: input.from } : {}),
     });
+    this.startLeaf = entry.id;
+    return entry;
   }
 
   /**

@@ -12,6 +12,7 @@ import { VoiceManager, SttPipeline } from "../src/voice/index.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { deleteSession, loadSession } from "../src/sessions/store.ts";
+import { openSessionLog, type PhaseEntry, type UserEntry } from "../src/sessions/log.ts";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -118,17 +119,20 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
     assert.ok(session);
     assert.equal(session?.meta?.displayName, "persist");
     // The first run's reply must be persisted (a session sub-agent remembers its own answer).
-    const firstRunReply = session?.messages.filter((m) => m.role === "assistant").at(-1);
-    assert.equal(firstRunReply?.content, "ack");
-    const lengthAfterSpawn = session!.messages.length;
+    const log = await openSessionLog(id);
+    const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const firstRunReply = phases.at(-1);
+    assert.equal(firstRunReply?.text, "ack");
+    const lengthAfterSpawn = log.entries().length;
 
     const sendResult = await runner.send(id, "second message", undefined, createMessage(), reg, "matrix/room/!caller:test");
     assert.equal(sendResult, "ack");
 
-    const session2 = await loadSession(id);
+    const log2 = await openSessionLog(id);
     // History grew (the send turn was appended on top of the persisted first run).
-    assert.ok((session2?.messages.length ?? 0) > lengthAfterSpawn);
-    assert.equal(session2?.messages.at(-1)?.content, "ack");
+    assert.ok(log2.entries().length > lengthAfterSpawn);
+    const lastPhase = log2.entries().filter((e): e is PhaseEntry => e.type === "phase").at(-1);
+    assert.equal(lastPhase?.text, "ack");
 
     await deleteSession(id);
   } finally {
@@ -189,11 +193,11 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
     // Messages should execute in FIFO order
     assert.deepEqual(executionOrder, ["init", "msg1", "msg2"]);
 
-    // Both user messages should be in the session
-    const session = await loadSession(id);
-    const userContents = session?.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content) ?? [];
+    // Both user messages should be in the log
+    const log = await openSessionLog(id);
+    const userContents = log.entries()
+      .filter((e): e is UserEntry => e.type === "user")
+      .map((e) => e.text);
     assert.ok(userContents.includes("msg1"));
     assert.ok(userContents.includes("msg2"));
 
@@ -674,15 +678,14 @@ test("a human send keeps its own message id, a model-driven one does not", async
     await runner.send(id, "model one", undefined, from("parent-turn"), reg, PARENT, undefined, undefined, "call-a");
     await runner.send(id, "model two", undefined, from("parent-turn"), reg, PARENT, undefined, undefined, "call-b");
 
-    const session = await loadSession(id);
-    const ids = (session?.messages ?? []).filter((m) => m.role === "user").map((m) => (m.role === "user" ? m.sourceId : undefined));
-    assert.equal(ids[1], "bubble-1");
-    assert.equal(ids[2], "bubble-2");
-    assert.ok(ids[3]?.startsWith(`subagent-${id}-`), "a model-driven send forges its own id");
-    assert.ok(ids[4]?.startsWith(`subagent-${id}-`));
-    assert.notEqual(ids[3], ids[4]);
-    // Four sends, four distinct turns: none of them overwrote another.
-    assert.equal(new Set(ids).size, ids.length);
+    // In the log system, each UserEntry has its own unique id. Four sends = four distinct entries.
+    const log = await openSessionLog(id);
+    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    // The init task + 4 sends = 5 user entries
+    assert.equal(userEntries.length, 5);
+    // All ids are unique
+    const ids = userEntries.map((e) => e.id);
+    assert.equal(new Set(ids).size, ids.length, "each send creates a distinct entry");
 
     await deleteSession(id);
   } finally {

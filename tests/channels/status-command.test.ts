@@ -8,6 +8,7 @@ import { recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { handleStatusCommand, statusReport } from "../../src/channels/status-command.ts";
 import { chatModel } from "../../src/llm/chat-model.ts";
+import { saveSessionWithLog } from "../helpers/session-log.ts";
 
 function pricing(): ModelPricing {
   mkdirSync(MY_CLAW_DIR, { recursive: true });
@@ -42,13 +43,13 @@ function session(id: string, over: Partial<SessionData> = {}): SessionData {
   };
 }
 
-test("no session still reports the model and the live runs", () => {
-  const out = handleStatusCommand({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [] });
+test("no session still reports the model and the live runs", async () => {
+  const out = await handleStatusCommand({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [] });
   expect(out).toContain("Session: none active");
   expect(out).toContain("claude-opus-5");
 });
 
-test("both totals appear, labelled, because the same id carries two answers", () => {
+test("both totals appear, labelled, because the same id carries two answers", async () => {
   const sessionId = "matrix/room/!twototals:test";
   // Analytics keeps accumulating under the room-derived id; /new resets only the session counter.
   for (let i = 0; i < 4; i++) {
@@ -68,7 +69,7 @@ test("both totals appear, labelled, because the same id carries two answers", ()
       durationMs: 1000,
     });
   }
-  const out = handleStatusCommand({
+  const out = await handleStatusCommand({
     config,
     sessionId,
     session: session(sessionId, { tokenUsage: { promptTokens: 500, completionTokens: 10, totalTokens: 510, apiCalls: 1 } }),
@@ -86,7 +87,7 @@ test("both totals appear, labelled, because the same id carries two answers", ()
   expect(out).not.toMatch(/^ {2}billed\s/m);
 });
 
-test("a billed endpoint and a subscription are totalled separately", () => {
+test("a billed endpoint and a subscription are totalled separately", async () => {
   const sessionId = "matrix/room/!mixed:test";
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "accounts/fireworks/routers/kimi-k2p6-turbo",
@@ -98,12 +99,12 @@ test("a billed endpoint and a subscription are totalled separately", () => {
     baseUrl: "https://api.anthropic.com", streaming: true, caller: "orchestrator",
     promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1000000, toolCalls: 0, iteration: 1, durationMs: 10,
   });
-  const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
   expect(out).toContain("billed        $2.00");
   expect(out).toContain("reference    *$5.00");
 });
 
-test("work delegated to a sub-agent is reported under the session that drove it", () => {
+test("work delegated to a sub-agent is reported under the session that drove it", async () => {
   const parent = "matrix/room/!parent:test";
   recordApiCall({
     sessionId: "subagent/digger-aaaa", parentSessionId: parent, platform: "matrix", model: "claude-opus-5",
@@ -115,21 +116,23 @@ test("work delegated to a sub-agent is reported under the session that drove it"
     baseUrl: "https://api.anthropic.com", streaming: false, caller: "browser",
     promptTokens: 50_000, completionTokens: 50, totalTokens: 50050, toolCalls: 0, iteration: 1, durationMs: 10,
   });
-  const out = handleStatusCommand({ config, sessionId: parent, session: session(parent), liveRuns: [], pricing: pricing() });
+  const out = await handleStatusCommand({ config, sessionId: parent, session: session(parent), liveRuns: [], pricing: pricing() });
   expect(out).toContain("Delegated by this session");
   expect(out).toContain("2 calls");
   // The parent's own block must not absorb the children's calls.
   expect(out).not.toContain("This session, 90 d");
 });
 
-test("measured, estimated and occupied are reported apart, because the estimate under-counts", () => {
+test("measured, estimated and occupied are reported apart, because the estimate under-counts", async () => {
   const sessionId = "matrix/room/!ctx:test";
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 12_345, completionTokens: 1, totalTokens: 12346, toolCalls: 0, iteration: 1, durationMs: 5,
   });
-  // No session.lastPrompt here, so this also covers the analytics fallback for older sessions.
-  const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  // The session needs lastPrompt since there is no log to derive measurements from.
+  const sess = session(sessionId, { lastPrompt: { tokens: 12_345, messageCount: 1 } });
+  await saveSessionWithLog(sessionId, sess);
+  const out = await handleStatusCommand({ config, sessionId, session: sess, liveRuns: [], pricing: pricing() });
   // Share of the *effective* window: claude-opus-5 resolves to 1M and the default cap lowers it to
   // 512k, so a percentage computed against the raw window would read half as much.
   expect(out).toMatch(/measured\s+12k on the last call - 2\.4% of the limit/);
@@ -140,15 +143,15 @@ test("measured, estimated and occupied are reported apart, because the estimate 
   expect(out).not.toMatch(/estimated\s+12k/);
 });
 
-test("the cap lowers the window and says what it lowered, so the number can be explained", () => {
+test("the cap lowers the window and says what it lowered, so the number can be explained", async () => {
   const sessionId = "matrix/room/!capped:test";
-  const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
   expect(out).toMatch(/context limit\s+512k \(declared, capped from 1,000,000\)/);
 });
 
-test("a session that asked for the full window is not capped, and the override is named", () => {
+test("a session that asked for the full window is not capped, and the override is named", async () => {
   const sessionId = "matrix/room/!full:test";
-  const out = handleStatusCommand({
+  const out = await handleStatusCommand({
     config,
     sessionId,
     session: session(sessionId, { contextOverride: "full" }),
@@ -161,9 +164,9 @@ test("a session that asked for the full window is not capped, and the override i
   expect(out).toMatch(/threshold 80% = 800k/);
 });
 
-test("a sub-agent session reports its visibility and who spawned it", () => {
+test("a sub-agent session reports its visibility and who spawned it", async () => {
   const id = "subagent/digger-bbbb";
-  const out = handleStatusCommand({
+  const out = await handleStatusCommand({
     config,
     sessionId: id,
     session: session(id, {
@@ -176,9 +179,9 @@ test("a sub-agent session reports its visibility and who spawned it", () => {
   expect(out).toContain("matrix/room/!boss:test");
 });
 
-test("an active run is named", () => {
+test("an active run is named", async () => {
   const id = "matrix/room/!running:test";
-  const out = handleStatusCommand({
+  const out = await handleStatusCommand({
     config,
     sessionId: id,
     session: session(id),
@@ -188,18 +191,18 @@ test("an active run is named", () => {
   expect(out).toContain("main");
 });
 
-test("without a price table the tokens are still reported", () => {
+test("without a price table the tokens are still reported", async () => {
   const sessionId = "matrix/room/!noprice:test";
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 1000, completionTokens: 10, totalTokens: 1010, toolCalls: 0, iteration: 1, durationMs: 5,
   });
-  const out = handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [] });
+  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [] });
   expect(out).toContain("1 calls");
   expect(out).toContain("unpriced");
 });
 
-test("after a reset the previous call is not reported as filling the window", () => {
+test("after a reset the previous call is not reported as filling the window", async () => {
   const sessionId = "matrix/room/!reset:test";
   recordApiCall({
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
@@ -207,33 +210,33 @@ test("after a reset the previous call is not reported as filling the window", ()
   });
   // Analytics keeps the call; the session history does not. Showing it as a share of the window
   // would contradict the occupied line on the very next row.
-  const out = handleStatusCommand({
+  const out = await handleStatusCommand({
     config, sessionId, session: session(sessionId, { messages: [] }), liveRuns: [], pricing: pricing(),
   });
   expect(out).toContain("measured      no call recorded yet");
   expect(out).not.toMatch(/measured\s+10k/);
 });
 
-test("statusReport hands the payload over as `status`, the field the app channel reads", () => {
+test("statusReport hands the payload over as `status`, the field the app channel reads", async () => {
   // The app channel's command output types `status` as optional, so a rename here is assignable
   // and only shows up in production as "status unavailable". Pin the field name.
   const sessionId = "matrix/room/!report:test";
-  const report = statusReport({ config, sessionId, session: session(sessionId), liveRuns: [] });
+  const report = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [] });
 
   expect(report.status.model.current).toBe("claude-opus-5");
   expect(report.text).toContain("claude-opus-5");
   expect("payload" in report).toBe(false);
 });
 
-test("the report text is the chat command's, character for character", () => {
+test("the report text is the chat command's, character for character", async () => {
   const sessionId = "matrix/room/!parity:test";
   const data = session(sessionId);
-  const report = statusReport({ config, sessionId, session: data, liveRuns: [] });
+  const report = await statusReport({ config, sessionId, session: data, liveRuns: [] });
 
-  expect(report.text).toBe(handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
+  expect(report.text).toBe(await handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
 });
 
-test("a tag reference is resolved to the model it runs, with the tag named", () => {
+test("a tag reference is resolved to the model it runs, with the tag named", async () => {
   const tagged = {
     llm: {
       defaultModel: "claude-opus-5",
@@ -244,12 +247,12 @@ test("a tag reference is resolved to the model it runs, with the tag named", () 
 
   const sessionId = "matrix/room/!tagged:test";
   const withTag = session(sessionId, { modelOverride: "tag:zsmart" });
-  const out = handleStatusCommand({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  const out = await handleStatusCommand({ config: tagged, sessionId, session: withTag, liveRuns: [] });
   // The page shows the model the API receives; the tag stays named so the chain is explainable.
   expect(out).toMatch(/current\s+claude-opus-5 \(tag zsmart\) \(session override\)/);
   expect(out).not.toContain("tag:zsmart");
 
-  const report = statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  const report = await statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
   expect(report.status.model.current).toBe("claude-opus-5");
   expect(report.status.model.tag).toBe("zsmart");
 });
@@ -257,7 +260,7 @@ test("a tag reference is resolved to the model it runs, with the tag named", () 
 // Criterion 8 of docs/model-resolution.md: the surfaces do not each keep their own idea of the
 // current model. /status is the one that was already right; this pins it to the shared function so
 // the two cannot drift apart again.
-test("/status names the model the run would use, pin included, exactly like chatModel", () => {
+test("/status names the model the run would use, pin included, exactly like chatModel", async () => {
   const pinned = {
     llm: {
       defaultModel: "claude-opus-5",
@@ -270,7 +273,7 @@ test("/status names the model the run would use, pin included, exactly like chat
   } as unknown as MyClawConfig;
 
   const sessionId = "matrix/room/!pin:test";
-  const out = handleStatusCommand({ config: pinned, sessionId, session: session(sessionId), liveRuns: [] });
+  const out = await handleStatusCommand({ config: pinned, sessionId, session: session(sessionId), liveRuns: [] });
   const expected = chatModel(pinned, undefined);
   expect(expected).toBe("kimi-k26-turbo");
   expect(out).toContain(expected);
@@ -279,30 +282,30 @@ test("/status names the model the run would use, pin included, exactly like chat
 
   // And a chat with its own pick reports that instead, on the same code path.
   const withPick = session(sessionId, { modelOverride: "claude-opus-5" });
-  const picked = handleStatusCommand({ config: pinned, sessionId, session: withPick, liveRuns: [] });
+  const picked = await handleStatusCommand({ config: pinned, sessionId, session: withPick, liveRuns: [] });
   expect(picked).toContain(chatModel(pinned, "claude-opus-5"));
 });
 
-function bulky(count: number): SessionData["messages"] {
-  return Array.from({ length: count }, () => ({
-    role: "user" as const,
-    content: "x".repeat(4000),
-    timestamp: new Date().toISOString(),
-  }));
-}
-
-test("the same history on the home loop keeps the estimate as a floor", () => {
+test("the same history on the home loop keeps the estimate as a floor", async () => {
   const homeConfig = {
     llm: { defaultModel: "mimo", models: [{ id: "mimo", label: "Mimo", limit: { context: 1_000_000 } }] },
     context: { cap: 512_000 },
   } as unknown as MyClawConfig;
-  const sess = session("matrix/room/!home:test", {
-    messages: bulky(400),
+  const sessionId = "matrix/room/!home:test";
+  // Occupancy now comes from the log, so we build a session with 400 messages to populate it
+  const messages: SessionData["messages"] = Array.from({ length: 400 }, (_, i) => ({
+    role: "user" as const,
+    content: "x".repeat(4000),
+    timestamp: new Date(Date.now() + i * 1000).toISOString(),
+  }));
+  const sess = session(sessionId, {
+    messages,
     lastPrompt: { tokens: 79_552, messageCount: 400 },
   });
-  const { status } = statusReport({ config: homeConfig, sessionId: sess.id, session: sess, liveRuns: [] });
+  await saveSessionWithLog(sessionId, sess);
+
+  const { status } = await statusReport({ config: homeConfig, sessionId: sess.id, session: sess, liveRuns: [] });
 
   // Every one of those messages is resent on the next call, so the estimate is a lower bound.
   expect(status.context.occupied).toBe(status.context.estimated);
 });
-

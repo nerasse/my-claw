@@ -1103,6 +1103,13 @@ des entrées qui portent les résultats.
 **`messageCountBeforeLoop` disparaît.** C'était l'index de rembobinage ; le recorder tient
 un leaf, ce qui est la même information sans dépendre de la longueur d'un tableau.
 
+**`user()` déplace le plancher de rembobinage.** Un run qui échoue ne doit jamais emporter
+une question que le propriétaire a posée. Dans le code actuel, `messageCountBeforeLoop`
+est re-fixé après chaque tour user (initial ou injection mid-run). `RunRecorder.user()`
+reprend cette sémantique en avançant `startLeaf` à chaque appel, de sorte que `rewind()`
+ne remonte jamais par-dessus un tour user. L'invariant tient par construction, pas par
+discipline de l'appelant.
+
 ## Ce qui reste vrai après, et qu'il faut vérifier avant de retirer quoi que ce soit
 
 `tests/sessions/prompt-conformance.test.ts` gèle le prompt attendu en littéraux, sans

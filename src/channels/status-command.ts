@@ -2,9 +2,12 @@ import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
 import { leafModelId, resolveLlmConfig } from "../llm/resolver.ts";
-import { promptSideChat, promptSidePruned } from "../agent/context-pruning.ts";
+import { promptSidePruned, pruneOldToolResults } from "../agent/context-pruning.ts";
+import { resolveContextPruning } from "../core/config.ts";
 import type { SessionData, SessionMessage } from "../sessions/store.ts";
-import { agentTypeOf, promptMessages } from "../sessions/store.ts";
+import { agentTypeOf } from "../sessions/store.ts";
+import { sessionLogOf } from "../sessions/log-access.ts";
+import { promptOf } from "../sessions/projection.ts";
 import {
   getSessionModelUsage,
   getLastContextTokens,
@@ -143,7 +146,7 @@ interface StatusData {
   verboseOff: boolean;
 }
 
-function collectStatusData(p: StatusParams): StatusData {
+async function collectStatusData(p: StatusParams): Promise<StatusData> {
   const configured = resolveAgentLlm(p.config, "main");
   // The same chain the run uses, rather than a copy of it that happens to agree today.
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
@@ -173,20 +176,28 @@ function collectStatusData(p: StatusParams): StatusData {
   // counts tokens that are never sent. That gap read 8.7x here and fired thirty compactions on a
   // session at nine percent of its window. Two numbers for one thing must not disagree.
   const backend = backendOf(p.config, currentModel);
-  const toChat = (msgs: readonly SessionMessage[]): ChatMessage[] => promptSideChat(msgs, p.config, backend);
+  const pruning = promptSidePruned(p.config, backend);
+  const pruningOpts = resolveContextPruning(p.config);
+  const toChat = (msgs: readonly ChatMessage[]): ChatMessage[] => pruning ? pruneOldToolResults([...msgs], pruningOpts) : [...msgs];
+
+  // Read prompt from the log (the source of truth), not session.messages
+  let prompt: ChatMessage[] = [];
+  let promptLength = 0;
+  if (p.session) {
+    const log = await sessionLogOf(p.session.id);
+    prompt = promptOf(log.entries(), log.leaf());
+    promptLength = prompt.length;
+  }
   const measured = p.session
-    ? p.session.lastPrompt?.tokens ?? (p.session.messages.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
+    ? p.session.lastPrompt?.tokens ?? (promptLength > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
-  // The prompt window, not the whole conversation: since compaction moved to a boundary the two
-  // differ by everything a summary replaced, and a share of the window has to count what is in it.
-  const prompt = p.session ? promptMessages(p.session) : [];
   const estimated = p.session ? estimateMessagesTokens(toChat(prompt)) : 0;
   // `measurementFor`: a size billed on the other prompt shape is not a floor for this one.
   const occupied = p.session
     ? occupiedContextTokens(
         prompt,
         toChat,
-        measurementFor(p.session.lastPrompt, promptSidePruned(p.config, backend)),
+        measurementFor(p.session.lastPrompt, pruning),
         p.session.lastFixedTokens ?? 0,
       )
     : 0;
@@ -396,8 +407,8 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
   };
 }
 
-export function handleStatusCommand(p: StatusParams): string {
-  return formatStatusText(collectStatusData(p));
+export async function handleStatusCommand(p: StatusParams): Promise<string> {
+  return formatStatusText(await collectStatusData(p));
 }
 
 /**
@@ -406,8 +417,8 @@ export function handleStatusCommand(p: StatusParams): string {
  * command output, whose `status` is optional, so a rename here would otherwise be swallowed
  * by the optional field and only surface at runtime as "status unavailable".
  */
-export function statusReport(p: StatusParams): { text: string; status: MyClawAppStatusPayload } {
-  const data = collectStatusData(p);
+export async function statusReport(p: StatusParams): Promise<{ text: string; status: MyClawAppStatusPayload }> {
+  const data = await collectStatusData(p);
   return { text: formatStatusText(data), status: statusPayload(data) };
 }
 

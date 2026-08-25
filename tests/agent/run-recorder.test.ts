@@ -189,10 +189,56 @@ describe("RunRecorder: the prompt it produces", () => {
   });
 });
 
+describe("RunRecorder: rewind never erases a user turn", () => {
+  test("a run that fails after its opening question keeps that question", async () => {
+    const recorder = new RunRecorder(entries);
+    recorder.user({ text: "la question du proprio" });
+    recorder.turn({ content: "un debut" });
+    await recorder.tool(call("c1"));
+    recorder.rewind();
+    await entries.flush();
+
+    const prompt = promptOf(entries.entries(), entries.leaf());
+    expect(prompt.map((m) => m.content)).toEqual(["la question du proprio"]);
+  });
+
+  test("a mid-run injection survives a later failure", async () => {
+    const recorder = new RunRecorder(entries);
+    recorder.user({ text: "question initiale" });
+    recorder.turn({ content: "debut" });
+    await recorder.tool(call("c1"));
+    recorder.nextTurn();
+    recorder.user({ text: "steering mid-run" });
+    recorder.turn({ content: "suite" });
+    await recorder.tool(call("c2"));
+    recorder.rewind();
+    await entries.flush();
+
+    const prompt = promptOf(entries.entries(), entries.leaf());
+    expect(prompt.map((m) => m.content)).toEqual(["question initiale", "debut", "ok", "steering mid-run"]);
+  });
+
+  test("two injections: rewind stops at the last one", async () => {
+    const recorder = new RunRecorder(entries);
+    recorder.user({ text: "q1" });
+    recorder.turn({ content: "a1" });
+    recorder.user({ text: "q2" });
+    recorder.turn({ content: "a2" });
+    recorder.user({ text: "q3" });
+    recorder.turn({ content: "a3 qui echoue" });
+    recorder.rewind();
+    await entries.flush();
+
+    const prompt = promptOf(entries.entries(), entries.leaf());
+    expect(prompt.map((m) => m.content)).toEqual(["q1", "a1", "q2", "a2", "q3"]);
+  });
+});
+
 describe("RunRecorder: a run that fails", () => {
   test("rewinding keeps what the run wrote and takes it off the branch", async () => {
     // The old loop cut the array back, destroying the turn. A branch is what makes the abandoned
     // attempt a sibling of the retry rather than something the retry overwrote.
+    // The user turn survives (it is the owner's question), only the model's work is abandoned.
     const recorder = new RunRecorder(entries);
     recorder.user({ text: "avant" });
     recorder.turn({ content: "etabli" });
@@ -209,8 +255,8 @@ describe("RunRecorder: a run that fails", () => {
 
     // Nothing was deleted.
     expect(entries.entries()).toHaveLength(writtenBefore);
-    // And the prompt no longer carries the dead turn.
-    expect(promptOf(entries.entries(), entries.leaf()).map((m) => m.content)).toEqual(["avant", "etabli"]);
+    // The user's question survives; only the assistant's work is gone.
+    expect(promptOf(entries.entries(), entries.leaf()).map((m) => m.content)).toEqual(["avant", "etabli", "la question qui a echoue"]);
   });
 
   test("the abandoned branch is still reachable, and coherent", async () => {

@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { entriesOf, importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
-import { promptMessages } from "../../src/sessions/store.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
 import type { Entry } from "../../src/sessions/log.ts";
 import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
@@ -211,64 +210,8 @@ describe("entriesOf: the compaction boundary", () => {
   });
 
   test("an index past the end reads as no boundary", () => {
-    // A session rewritten under a stale index. `promptMessages` treats it the same way.
+    // A session rewritten under a stale index: treated as no boundary.
     expect(importSession(session([userMsg("q", 1)], { promptBase: 99 })).boundaryIndex).toBe(-1);
-  });
-});
-
-describe("the import preserves the prompt", () => {
-  /** What the old path would have sent, in the shape the new one produces. */
-  const legacyPrompt = (data: SessionData) =>
-    promptMessages(data).map((message) => {
-      if (message.role === "tool") return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
-      if (message.role === "user") return { role: "user", content: message.content };
-      return {
-        role: "assistant",
-        content: message.content,
-        ...(message.toolCalls?.length
-          ? { tool_calls: message.toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) }
-          : {}),
-      };
-    });
-
-  test("a plain conversation projects to the same messages", async () => {
-    const data = session([userMsg("q", 1), assistantMsg("a", 2), userMsg("q2", 3), assistantMsg("a2", 4)]);
-    const { log, entries } = await intoLog(data);
-    expect(promptOf(entries, log.leaf())).toEqual(legacyPrompt(data) as never);
-  });
-
-  test("a turn with tools projects to the same messages", async () => {
-    const data = session([
-      userMsg("q", 1),
-      assistantMsg("je regarde", 2, { toolCalls: [{ id: "c1", name: "bash", arguments: '{"command":"ls"}' }] }),
-      toolMsg("c1", "fichier.txt", 3),
-      assistantMsg("voila", 4),
-    ]);
-    const { log, entries } = await intoLog(data);
-    expect(promptOf(entries, log.leaf())).toEqual(legacyPrompt(data) as never);
-  });
-
-  test("a compacted conversation sends the same turns as the old boundary did", async () => {
-    const summary = userMsg("[Prior context summarized]\nresume\n\n[End of summary — respond to the message below]", 3, { summaryOf: 2 });
-    const data = session([userMsg("vieux", 1), assistantMsg("vieux 2", 2), summary, userMsg("garde", 4)], { promptBase: 2 });
-    const { log, entries } = await intoLog(data);
-    const projected = promptOf(entries, log.leaf());
-    // The old path sent the summary turn then everything after it; so does this one, and the
-    // turns above the boundary are excluded on both sides.
-    expect(projected.map((m) => m.role)).toEqual(["user", "user"]);
-    expect(projected[0]!.content).toContain("resume");
-    expect(projected[1]!.content).toBe("garde");
-  });
-
-  test("what was on screen and never in the prompt stays out of it", async () => {
-    const data = session([userMsg("q", 1), assistantMsg("a", 4)], {
-      commands: [{ input: "/status", output: "ok", timestamp: at(2) }],
-      failures: [{ error: "boom", timestamp: at(3) }],
-    });
-    const { log, entries } = await intoLog(data);
-    expect(promptOf(entries, log.leaf())).toEqual(legacyPrompt(data) as never);
-    // And they are on disk all the same, which is the point of importing them.
-    expect(entries.map((e) => e.type)).toEqual(["user", "command", "failure", "phase"]);
   });
 });
 

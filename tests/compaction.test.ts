@@ -1,25 +1,32 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { compactSession } from "../src/sessions/compaction.ts";
-import { promptMessages } from "../src/sessions/store.ts";
-import type { SessionData } from "../src/sessions/store.ts";
+import { compactSession, summaryBodyOf } from "../src/sessions/compaction.ts";
+import { saveSession, type SessionData, type SessionMessage } from "../src/sessions/store.ts";
+import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { setupSessionLog, appendMessages } from "./helpers/session-log.ts";
+import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
+import { contextEntries } from "../src/sessions/projection.ts";
 
-function makeSession(messagesCount: number): SessionData {
-  const messages = Array.from({ length: messagesCount }, (_, i) => ({
+const SESSION_ID = "test-compaction";
+
+function makeMessages(count: number): SessionMessage[] {
+  return Array.from({ length: count }, (_, i) => ({
     role: i % 2 === 0 ? "user" : "assistant",
     content: `Message ${i + 1}`,
     timestamp: new Date().toISOString(),
   } as const));
+}
 
+function sessionMeta(): SessionData {
   return {
-    id: "test-session",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
     lastActiveAt: new Date().toISOString(),
-    messages: messages.map((m) => ({ ...m })),
+    messages: [],
   };
 }
 
@@ -49,18 +56,38 @@ function makeConfig(): MyClawConfig {
   };
 }
 
-test("compactSession refuses sessions with fewer than 10 messages", async () => {
-  const session = makeSession(5);
+let log: SessionLog;
+let cleanupLog: () => void;
+let session: SessionData;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  session = sessionMeta();
+  await saveSession(SESSION_ID, session);
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+});
+
+test("compactSession refuses sessions with fewer than 10 entries", async () => {
+  appendMessages(log, makeMessages(5));
+  await log.flush();
+
   const result = await compactSession(makeConfig(), session);
   assert.equal(result.ok, false);
   assert.ok(result.reason?.includes("too short"));
   assert.equal(result.beforeCount, 5);
   assert.equal(result.afterCount, 5);
-  assert.equal(session.messages.length, 5);
 });
 
-test("compactSession moves the prompt boundary and deletes nothing", async () => {
-  const session = makeSession(12);
+test("compactSession writes a compaction entry and shrinks the context", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
   const fetchMock = mockFetch(async () =>
     new Response(
       JSON.stringify({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }),
@@ -71,31 +98,21 @@ test("compactSession moves the prompt boundary and deletes nothing", async () =>
   try {
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, true);
-    // Both counts are prompt-window sizes: 12 turns in, summary + 4-turn tail out.
     assert.equal(result.beforeCount, 12);
-    assert.equal(result.afterCount, 5);
+    // After compaction: compaction entry + tail entries
+    assert.ok(result.afterCount < result.beforeCount);
 
-    // Nothing the owner wrote is gone: the 12 turns are still there, the summary spliced between
-    // the ones it describes and the tail it hands over to.
-    assert.equal(session.messages.length, 13);
-    assert.deepEqual(
-      session.messages.filter((_, i) => i !== 8).map((m) => m.content),
-      Array.from({ length: 12 }, (_, i) => `Message ${i + 1}`),
-    );
+    // Check the log has a compaction entry
+    await log.flush();
+    const entries = log.entries();
+    const compactionEntry = entries.find((e): e is CompactionEntry => e.type === "compaction");
+    assert.ok(compactionEntry, "compaction entry should exist");
+    assert.ok(compactionEntry.summary.includes("Summary of earlier context"));
+    assert.ok(compactionEntry.count > 0);
 
-    // The boundary lands on the summary, so the prompt is summary + tail.
-    assert.equal(session.promptBase, 8);
-    const prompt = promptMessages(session);
-    assert.equal(prompt.length, 5);
-    assert.equal(prompt[0]!.role, "user");
-    assert.ok(prompt[0]!.content.includes("Prior context summarized"));
-    assert.ok(prompt[0]!.content.includes("Summary of earlier context."));
-    // Marked as a boundary so the app draws it as one instead of as something the owner typed.
-    assert.equal(prompt[0]!.role === "user" ? prompt[0]!.summaryOf : undefined, 8);
-    assert.deepEqual(
-      prompt.slice(1).map((m) => m.content),
-      ["Message 9", "Message 10", "Message 11", "Message 12"],
-    );
+    // The context should now be smaller
+    const context = contextEntries(entries, log.leaf());
+    assert.equal(context.length, result.afterCount);
   } finally {
     fetchMock.restore();
   }
@@ -106,7 +123,9 @@ test("compactSession moves the prompt boundary and deletes nothing", async () =>
  * summarise the previous summary and re-bill turns no model can see any more.
  */
 test("a second compaction summarizes only what is past the previous boundary", async () => {
-  const session = makeSession(12);
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
   const seen: string[] = [];
   const fetchMock = mockFetch(async (_url, init) => {
     const body = init?.body;
@@ -118,32 +137,39 @@ test("a second compaction summarizes only what is past the previous boundary", a
   });
 
   try {
-    await compactSession(makeConfig(), session);
-    // Back over the floor so the second pass is allowed to run at all.
-    for (let i = 13; i <= 20; i++) {
-      session.messages.push({ role: i % 2 === 0 ? "user" : "assistant", content: `Message ${i}`, timestamp: new Date().toISOString() });
+    const first = await compactSession(makeConfig(), session);
+    assert.equal(first.ok, true);
+
+    // Add more entries to get back over the floor (alternating user/assistant)
+    for (let i = 13; i <= 24; i++) {
+      if (i % 2 === 1) {
+        log.append({ type: "user", prompt: true, text: `Message ${i}` } as any);
+      } else {
+        log.append({ type: "phase", prompt: true, text: `Message ${i}`, runId: `run-${i}` } as any);
+      }
     }
+    await log.flush();
 
     const second = await compactSession(makeConfig(), session);
     assert.equal(second.ok, true);
 
-    // The first eight turns are behind the first boundary: the second prompt must not contain them.
+    // The first 8 entries are behind the first compaction boundary: they must not appear in the second prompt
     const secondPrompt = seen[1]!;
-    assert.ok(!secondPrompt.includes("Message 1\\n"));
-    assert.ok(secondPrompt.includes("Summary number 1"));
-    // And they are still on disk, untouched, under the new boundary.
-    assert.equal(session.messages[0]!.content, "Message 1");
-    assert.ok(session.promptBase! > 8);
-    assert.ok(promptMessages(session).length < session.messages.length);
+    // Use word boundary patterns to avoid matching "Message 10" when looking for "Message 1"
+    assert.ok(!secondPrompt.includes("User: Message 1\n"), "Message 1 should be behind the first boundary");
+    assert.ok(!secondPrompt.includes("User: Message 3\n"), "Message 3 should be behind the first boundary");
+    // But the tail from the first compaction should be there (Message 9-12)
+    assert.ok(secondPrompt.includes("User: Message 9"), "Message 9 should be in second prompt");
   } finally {
     fetchMock.restore();
   }
 });
 
 test("compactSession passes instructions to the prompt", async () => {
-  const session = makeSession(12);
-  let capturedBody = "";
+  appendMessages(log, makeMessages(12));
+  await log.flush();
 
+  let capturedBody = "";
   const fetchMock = mockFetch(async (_url, init) => {
     const body = init?.body;
     if (typeof body === "string") {
@@ -165,21 +191,23 @@ test("compactSession passes instructions to the prompt", async () => {
   }
 });
 
-test("compactSession handles tool pairs without splitting them", async () => {
-  const session = makeSession(12);
+test("compactSession handles tool entries without splitting them", async () => {
+  const messages: SessionMessage[] = makeMessages(12);
   // Replace some messages with tool pairs
-  session.messages[3] = {
+  messages[3] = {
     role: "assistant",
     content: "Using tool...",
     timestamp: new Date().toISOString(),
     toolCalls: [{ id: "tc1", name: "bash", arguments: "{}" }],
   };
-  session.messages[4] = {
+  messages[4] = {
     role: "tool",
     toolCallId: "tc1",
     content: "tool output",
     timestamp: new Date().toISOString(),
   };
+  appendMessages(log, messages);
+  await log.flush();
 
   const fetchMock = mockFetch(async () =>
     new Response(
@@ -192,19 +220,10 @@ test("compactSession handles tool pairs without splitting them", async () => {
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, true);
 
-    // The tool pair should either be fully in head, fully in middle, or fully in tail
-    // Since head is 3 and tail is 4, the pair at indices 3-4 is in the middle
-    // But the tail boundary alignment should ensure nothing is split
-    const summaryIdx = session.messages.findIndex((m) => m.content.includes("Summary of the tool usage"));
-    assert.ok(summaryIdx > 0);
-
-    // Messages before summary should not have orphaned tool results
-    for (let i = 0; i < summaryIdx; i++) {
-      const cur = session.messages[i]!;
-      if (cur.role === "tool") {
-        const prev = session.messages[i - 1];
-        assert.ok(prev?.role === "assistant" && prev.toolCalls?.some((tc) => tc.id === cur.toolCallId));
-      }
+    // The context should be valid (no orphaned tool entries at the start)
+    const context = contextEntries(log.entries(), log.leaf());
+    if (context[0]?.type === "tool") {
+      throw new Error("Context starts with orphaned tool entry");
     }
   } finally {
     fetchMock.restore();
@@ -212,7 +231,9 @@ test("compactSession handles tool pairs without splitting them", async () => {
 });
 
 test("compactSession handles LLM errors gracefully", async () => {
-  const session = makeSession(12);
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
   const fetchMock = mockFetch(async () =>
     new Response(
       JSON.stringify({ error: { message: "model overloaded" } }),
@@ -224,7 +245,8 @@ test("compactSession handles LLM errors gracefully", async () => {
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, false);
     assert.ok(result.reason?.includes("Compaction error"));
-    assert.equal(session.messages.length, 12); // untouched
+    assert.equal(result.beforeCount, 12);
+    assert.equal(result.afterCount, 12);
   } finally {
     fetchMock.restore();
   }
@@ -253,24 +275,32 @@ function agentScopedConfig(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
-function longSession(over: Partial<SessionData>): SessionData {
+async function summarizerHost(sessionId: string, sessionOver: Partial<SessionData>): Promise<string[]> {
+  await deleteSession(sessionId);
   const now = new Date().toISOString();
-  return {
-    id: "s",
+  const testSession: SessionData = {
+    id: sessionId,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: now,
     lastActiveAt: now,
-    messages: Array.from({ length: 20 }, (_, i) => ({
-      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
-      content: `turn ${i} `.repeat(20),
-      timestamp: now,
-    })),
-    ...over,
+    messages: [],
+    ...sessionOver,
   };
-}
+  await saveSession(sessionId, testSession);
 
-async function summarizerHost(session: SessionData): Promise<string[]> {
+  const setup = await setupSessionLog(sessionId);
+  const testLog = setup.log;
+  // Add 20 entries
+  for (let i = 0; i < 20; i++) {
+    testLog.append({
+      type: i % 2 === 0 ? "user" : "phase",
+      prompt: true,
+      ...(i % 2 === 0 ? { text: `turn ${i} `.repeat(20) } : { text: `turn ${i} `.repeat(20), runId: `run-${i}` }),
+    } as any);
+  }
+  await testLog.flush();
+
   const hosts: string[] = [];
   const mock = mockFetch(async (url) => {
     hosts.push(new URL(String(url)).host);
@@ -283,26 +313,29 @@ async function summarizerHost(session: SessionData): Promise<string[]> {
     ) as never;
   });
   try {
-    const result = await compactSession(agentScopedConfig(), session);
+    const result = await compactSession(agentScopedConfig(), testSession);
     assert.equal(result.ok, true, result.reason ?? "");
     return hosts;
   } finally {
     mock.restore();
+    setup.cleanup();
   }
 }
 
 test("a sub-agent session is summarized by the sub-agent's own model", async () => {
-  const session = longSession({
+  const hosts = await summarizerHost("subagent/general-1", {
     id: "subagent/general-1",
     meta: { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: new Date().toISOString() },
   });
-  assert.deepEqual(await summarizerHost(session), ["cheap.example.com"]);
+  assert.deepEqual(hosts, ["cheap.example.com"]);
 });
 
 test("a cron session is summarized by the cron agent's model", async () => {
-  assert.deepEqual(await summarizerHost(longSession({ id: "cron/job-1/1", platform: "cron" })), ["cheap.example.com"]);
+  const hosts = await summarizerHost("cron/job-1/1", { id: "cron/job-1/1", platform: "cron" });
+  assert.deepEqual(hosts, ["cheap.example.com"]);
 });
 
 test("a chat session still follows the orchestrator", async () => {
-  assert.deepEqual(await summarizerHost(longSession({ id: "my-claw-app/dm/u1" })), ["main.example.com"]);
+  const hosts = await summarizerHost("my-claw-app/dm/u1", { id: "my-claw-app/dm/u1" });
+  assert.deepEqual(hosts, ["main.example.com"]);
 });

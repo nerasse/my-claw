@@ -215,7 +215,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
 
       case "status":
-        return statusReport({
+        return await statusReport({
           config: deps.config,
           sessionId,
           session: existing,

@@ -257,7 +257,6 @@ export class MessageRouter {
         ...messageLogData(message),
         sessionId,
         streaming,
-        sessionMessageCount: session.messages.length,
         modelOverride: session.modelOverride,
       });
 
@@ -287,7 +286,6 @@ export class MessageRouter {
         streaming,
         responseChars: text?.length ?? 0,
         attachmentCount: attachments?.length ?? 0,
-        sessionMessageCount: session.messages.length,
         durationMs,
       });
 

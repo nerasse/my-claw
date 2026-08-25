@@ -1,22 +1,29 @@
-import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
+import { test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rmSync, mkdtempSync } from "node:fs";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
+import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
 import { remember } from "../../src/memory/index.ts";
 import { closeMemoryDb, clearAllEntries } from "../../src/memory/db.ts";
 import { clearRecallCache } from "../../src/memory/cache.ts";
 
+const SESSION_ID = "test-memory-injection";
 const DB = join(tmpdir(), `mc-bridge-mem-${process.pid}-${Date.now()}.db`);
 let workspace: string;
 let savedWs: string | undefined;
 let savedDb: string | undefined;
+
+let log: SessionLog;
+let cleanupLog: () => void;
 
 function baseConfig(memory: MyClawConfig["memory"]): MyClawConfig {
   return {
@@ -45,7 +52,7 @@ function createMessage(text: string): UnifiedMessage {
 
 function createSession(): SessionData {
   return {
-    id: "telegram/dm/u1",
+    id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
     createdAt: new Date().toISOString(),
@@ -57,21 +64,23 @@ function createSession(): SessionData {
 /** Capture the user message content sent to the LLM. */
 async function runAndCaptureUser(config: MyClawConfig, text: string): Promise<string> {
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
   let userContent = "";
   const fetchMock = mockFetch(async (_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as {
       messages: Array<{ role: string; content: string }>;
     };
     userContent = body.messages.find((m) => m.role === "user")?.content ?? "";
-    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never;
   });
   try {
-    await bridge.handleMessage(createMessage(text), createSession());
+    await bridge.handleMessage(createMessage(text), createSession(), signal);
   } finally {
     fetchMock.restore();
+    end();
   }
   return userContent;
 }
@@ -93,9 +102,19 @@ afterAll(() => {
   if (savedWs === undefined) delete process.env["MY_CLAW_WORKSPACE"];
   else process.env["MY_CLAW_WORKSPACE"] = savedWs;
 });
-beforeEach(() => {
+beforeEach(async () => {
   clearAllEntries();
   clearRecallCache();
+  runRegistry.clear();
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+afterEach(() => {
+  cleanupLog();
+  runRegistry.clear();
 });
 
 test("e2e: relevant memory is recalled and injected into the LLM user message", async () => {
@@ -135,19 +154,23 @@ test("e2e: injected memory is ephemeral (not persisted to session history)", asy
   await remember("User prefers responses in French", "user");
   const config = baseConfig({});
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
   const session = createSession();
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never,
   );
   try {
-    await bridge.handleMessage(createMessage("which language do you use with this user"), session);
+    await bridge.handleMessage(createMessage("which language do you use with this user"), session, signal);
   } finally {
     fetchMock.restore();
+    end();
   }
-  const stored = session.messages.find((m) => m.role === "user");
-  expect(stored?.content).not.toContain("<memory-context>");
-  expect(stored?.content).toContain("which language");
+  // Check log entry: the user entry should not contain memory context
+  await log.flush();
+  const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+  expect(userEntry?.text).not.toContain("<memory-context>");
+  expect(userEntry?.text).toContain("which language");
 });

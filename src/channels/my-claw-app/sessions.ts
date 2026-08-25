@@ -1,7 +1,11 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { recordSessionCommand, recordSessionFailure } from "../../sessions/store.ts";
+import { recordSessionCommand, recordSessionFailure, FAILURE_TEXT_LIMIT } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
+import { readToolOutput } from "../../sessions/tool-output.ts";
+import { sessionLogOf } from "../../sessions/log-access.ts";
+import { pathOf, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
+import { pageOf, displayOf, type DisplayResolvers } from "./display.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -201,6 +205,42 @@ function mediaRefAttachments(refs: Array<{ path: string }>, files: SessionFile[]
   return out;
 }
 
+/** Convert SessionAttachment[] to MyClawAppHistoryAttachment[] using thread files. */
+import type { SessionAttachment } from "../../sessions/store.ts";
+
+function sessionAttachmentsToHistory(
+  attachments: SessionAttachment[],
+  files: SessionFile[],
+): MyClawAppHistoryAttachment[] {
+  const byId = new Map(files.map((f) => [f.id, f]));
+  const out: MyClawAppHistoryAttachment[] = [];
+  for (const att of attachments) {
+    const parsed = parseStoredName(basename(att.path));
+    if (!parsed) continue;
+    const file = byId.get(parsed.id);
+    if (file) {
+      out.push({
+        id: file.id,
+        type: file.type,
+        mimeType: file.mimeType,
+        filename: file.filename,
+        sizeBytes: file.sizeBytes,
+      });
+    } else {
+      out.push({ id: parsed.id, type: att.type, filename: parsed.filename, deleted: true });
+    }
+  }
+  return out;
+}
+
+/** Build display resolvers for a thread's files. */
+function makeResolvers(files: SessionFile[]): DisplayResolvers {
+  return {
+    attachmentsOf: (attachments) => sessionAttachmentsToHistory(attachments, files),
+    mediaOf: (refs) => mediaRefAttachments(refs, files),
+  };
+}
+
 export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   constructor(
     private sessionManager: SessionManager,
@@ -247,15 +287,18 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       // is producing, or the drawer shows a stale message count next to a thread that is moving.
       const session = await this.sessionManager.read(sessionId);
       if (!session) continue;
-      const firstUser = session.messages.find((m) => m.role === "user");
+      // Get entries from the log
+      const log = await sessionLogOf(sessionId);
+      const entries = log.entries();
+      const firstUser = entries.find((e): e is UserEntry => e.type === "user");
       // Without the block, a "here, look" + photo would be titled by a server path.
-      const firstText = firstUser ? stripLocationBlock(splitAttachmentBlock(firstUser.content).text) : "";
+      const firstText = firstUser ? stripLocationBlock(splitAttachmentBlock(firstUser.text).text) : "";
       const derived = firstText.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
       const title = session.title?.trim() || derived || (firstUser?.location ? "(location)" : "(new conversation)");
       summaries.push({
         threadId: sessionId.slice(sessionId.lastIndexOf("/") + 1),
         title,
-        messageCount: session.messages.length,
+        messageCount: entries.filter(e => e.prompt).length,
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),
@@ -278,189 +321,23 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const session = await this.sessionManager.read(sessionId);
     if (!session) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
 
-    // `before` counts back from the newest message, so page N is the slice that ends where the
-    // previous one began. Clamped rather than validated: a cursor past the start of a session
-    // is an app that scrolled further than there is history, which is an empty page, not an error.
-    const total = session.messages.length;
-    const end = Math.max(total - Math.max(before, 0), 0);
-    const rawStart = Math.max(end - Math.max(limit, 0), 0);
-    const start = turnAlignedStart(session.messages, rawStart, MAX_TURN_LOOKBACK);
-    const window = session.messages.slice(start, end);
-    const hasMore = start > 0;
-    const nextBefore = total - start;
-    // Outputs live in the role:"tool" messages that follow the assistant turn, keyed by call id.
-    const outputs = new Map<string, string>();
-    for (const message of window) {
-      if (message.role === "tool") outputs.set(message.toolCallId, message.content);
-    }
+    // Get the log and compute the full path (display shows everything, including pre-compaction entries)
+    const log = await sessionLogOf(sessionId);
+    const path = pathOf(log.entries(), log.leaf());
+    if (path.length === 0) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
 
-    const stored = window.some((m) => m.role === "user" || m.content.includes("MEDIA:")) ? await this.files.list(owner, threadId) : [];
+    // Pagination: pageOf aligns on turn boundaries
+    const { window, hasMore, nextBefore } = pageOf(path, limit, before);
 
-    const entries: MyClawAppHistoryEntry[] = [];
-    // A command belongs to the page whose messages surround it in time. The newest page has no
-    // upper bound, so a command typed after the last message (the usual case: a `/compact` at the
-    // end of a turn) lands there rather than nowhere; an older page stops at the first message of
-    // the page after it, so no command is ever replayed twice. The first page has no lower bound
-    // either: a compaction drops messages the journal outlived, and a command older than every
-    // surviving message must still surface somewhere rather than be silently unreachable.
-    const lowerBound = hasMore ? (window[0]?.timestamp ?? "") : "";
-    const upperBound = end < total ? session.messages[end]!.timestamp : undefined;
-    const inPage = (ts: string): boolean => ts >= lowerBound && (upperBound === undefined || ts < upperBound);
-    // Everything of the window, however much: a page that showed only the last twenty hid the rest
-    // with no way to reach them, since a journal entry belongs to exactly one page. Commands and
-    // failed runs share one timeline so they land in the order they happened.
-    const asides: { ts: string; entries: MyClawAppHistoryEntry[] }[] = [];
-    (session.commands ?? []).filter((entry) => inPage(entry.timestamp)).forEach((entry, index) => {
-      asides.push({
-        ts: entry.timestamp,
-        entries: [
-          // Same ids the live bubbles had, when the send is known: the device typed the command in
-          // a bubble of its own and drew the answer in `cmd-<send id>`.
-          { id: entry.sourceId ?? `c-${entry.timestamp}-${index}-in`, role: "user", text: entry.input, ts: entry.timestamp },
-          {
-            id: entry.sourceId ? `cmd-${entry.sourceId}` : `c-${entry.timestamp}-${index}-out`,
-            role: "assistant",
-            text: entry.output,
-            ts: entry.timestamp,
-            command: true,
-            ...(entry.details ? { details: entry.details } : {}),
-          },
-        ],
-      });
-    });
-    // A failed run replays as the error bubble the owner saw live, under the question it never
-    // answered: the mirror keeps that question now, and a question with nothing under it reads as
-    // a message the agent ignored.
-    (session.failures ?? []).filter((entry) => inPage(entry.timestamp)).forEach((entry, index) => {
-      asides.push({
-        ts: entry.timestamp,
-        entries: [{ id: `f-${entry.timestamp}-${index}`, role: "assistant", text: "", ts: entry.timestamp, error: entry.error }],
-      });
-    });
-    asides.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-    let nextAside = 0;
-    // Flushed as the messages are walked, so an aside sits where it happened rather than in a
-    // block at one end of the page.
-    const flushCommandsUpTo = (limit?: string): void => {
-      while (nextAside < asides.length) {
-        const aside = asides[nextAside]!;
-        if (limit !== undefined && aside.ts > limit) return;
-        nextAside += 1;
-        entries.push(...aside.entries);
-      }
-    };
+    // List thread files for attachment resolution
+    const needsFiles = window.some((e: Entry) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")));
+    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    const resolvers = makeResolvers(stored);
 
-    for (const message of window) {
-      flushCommandsUpTo(message.timestamp);
-      if (message.role === "user") {
-        // A compaction summary rides in a user turn because that is the role the prompt needs it
-        // in. Replayed as one it reads as a wall of `[Prior context summarized]` the owner never
-        // typed, which is exactly how it looked. It is a boundary: the turns above it are still
-        // there in full, and the summary itself folds away under the marker.
-        if (message.summaryOf) {
-          entries.push({
-            id: `h-${message.timestamp}-${entries.length}`,
-            role: "user",
-            text: summaryBodyOf(message.content),
-            ts: message.timestamp,
-            summaryOf: message.summaryOf,
-          });
-          continue;
-        }
-        const block = splitAttachmentBlock(message.content);
-        const { text, spoken } = splitTranscript(block.text);
-        const resolved = historyAttachments(block.attachments, stored);
-        // `[Audio 1]`, `[Audio 2]` are written in the order the recordings were attached, and
-        // the block lists them in that same order, so position is what pairs them back up.
-        const transcripts: Record<string, string> = {};
-        const recordings = resolved.filter((entry) => entry.type === "audio");
-        for (let i = 0; i < recordings.length && i < spoken.length; i++) {
-          transcripts[recordings[i]!.id] = spoken[i]!;
-        }
-        entries.push({
-          // The device's own bubble id when the message came from it, so a page can be merged
-          // with a thread already on screen: the question of a run in flight is then recognised
-          // rather than duplicated -- docs/my-claw-app-channel.md.
-          id: message.sourceId ?? `h-${message.timestamp}-${entries.length}`,
-          role: "user",
-          text: stripLocationBlock(text),
-          ts: message.timestamp,
-          ...(Object.keys(transcripts).length > 0 ? { transcripts } : {}),
-          ...(resolved.length > 0 ? { attachments: resolved } : {}),
-          ...(message.location ? { location: message.location } : {}),
-        });
-        continue;
-      }
-      if (message.role !== "assistant") continue;
-      // One bubble per thinking phase, exactly where the live stream closed one and opened the
-      // next. Without the cuts the turn came back as a single bubble with every thought stacked
-      // above text they were not about -- docs/reasoning-visibility.md. A turn with one phase is
-      // stored without them, and is its own only phase.
-      const phases: HistoryPhase[] = message.segments ?? [
-        {
-          ...(message.reasoning ? { reasoning: message.reasoning } : {}),
-          ...(message.reasoningTokens ? { reasoningTokens: message.reasoningTokens } : {}),
-          content: message.content,
-        },
-      ];
-      for (const phase of phases) {
-        // The agent names its files with MEDIA: refs, but a replayed turn must show real
-        // attachments: resolve each ref against the thread's store, like the user side does.
-        const refs = extractMediaRefs(phase.content);
-        const text = stripMediaRefs(phase.content).trim();
-        const media = refs.length > 0 ? mediaRefAttachments(refs, stored) : [];
-        const tokens = phase.reasoningTokens;
-        // A phase that thought and then called a tool wrote no prose, and the bubble the reader
-        // saw was that thought: dropping it here is what made a reopened thread jump from the
-        // question to a tool card.
-        if (!text && media.length === 0 && !phase.reasoning?.trim() && !tokens) continue;
-        entries.push({
-          id: `h-${message.timestamp}-${entries.length}`,
-          role: "assistant",
-          text,
-          ts: message.timestamp,
-          ...(media.length > 0 ? { attachments: media } : {}),
-          ...(phase.reasoning ? { reasoning: phase.reasoning } : {}),
-          ...(tokens ? { reasoningTokens: tokens } : {}),
-        });
-      }
-      // Same shape as the live chat.tool frames so a reopened thread renders identical cards.
-      for (const call of message.toolCalls ?? []) {
-        // `has`, not `?? ""`: a call with no result yet is still running, and collapsing the two
-        // is what made a reload render an in-flight tool as a finished one with empty output.
-        const settled = outputs.has(call.id);
-        const output = outputs.get(call.id) ?? "";
-        const spawn = call.spawn;
-        // A spawn lifecycle can settle before the outer tool result is written. In that window the
-        // card is no longer running even though `outputs` has no entry yet; replay the lifecycle
-        // state instead of resurrecting a spinner with empty output.
-        const running = spawn ? spawn.status === "running" && !settled : !settled;
-        const historyOutput = output || (spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "");
-        const truncated = historyOutput.length > TOOL_OUTPUT_LIMIT;
-        entries.push({
-          // Keyed on the model's own call id so this card and the live one are the same card. They
-          // used to differ, so a tool finishing after a reload appended a second card beside the
-          // one history had just drawn.
-          id: toolCardId(call.id) ?? `h-${message.timestamp}-${entries.length}`,
-          role: "tool",
-          // Sessions written before the mirror was cleaned still hold `mcp__myclaw__bash`, the
-          // name the SDK gives our own tools; the card must show the tool, not the plumbing.
-          name: toolDisplayName(call.name),
-          args: parseToolArguments(call.arguments),
-          durationMs: call.durationMs,
-          ok: spawn ? spawn.status !== "error" && spawn.status !== "aborted" : true,
-          output: truncated ? historyOutput.slice(0, TOOL_OUTPUT_LIMIT) : historyOutput,
-          truncated,
-          ...(running ? { running: true } : {}),
-          ...(spawn ? { spawn } : {}),
-          ts: message.timestamp,
-        });
-      }
-    }
-    flushCommandsUpTo();
+    // Convert entries to display format
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
-
   /**
    * One tool card's output, whole, straight out of the session.
    *
@@ -476,21 +353,22 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.read(sessionId);
     if (!session) return null;
-    const outputs = new Map<string, string>();
-    for (const message of session.messages) {
-      if (message.role === "tool") outputs.set(message.toolCallId, message.content);
-    }
-    for (const message of session.messages) {
-      if (message.role !== "assistant") continue;
-      for (const call of message.toolCalls ?? []) {
-        if (toolCardId(call.id) !== cardId) continue;
-        const output = outputs.get(call.id);
-        if (output !== undefined) return output;
-        // Settled as an error or an abort before any tool message was written: the lifecycle
-        // carries the only text there is, which is exactly what the card is showing clipped.
-        const spawn = call.spawn;
-        return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
+    // cardId = "t-" + callId per toolCardId()
+    const callId = cardId.startsWith("t-") ? cardId.slice(2) : cardId;
+    const log = await sessionLogOf(sessionId);
+    for (const entry of log.entries()) {
+      if (entry.type !== "tool") continue;
+      if (entry.callId !== callId) continue;
+      // Spillèd output takes precedence; else the inline extract.
+      if (entry.outputPath) {
+        const full = await readToolOutput(sessionId, callId);
+        if (full !== null) return full;
       }
+      // No spill or file missing: return inline output.
+      if (entry.output) return entry.output;
+      // Settled as an error or abort before any output was produced.
+      const spawn = entry.spawn;
+      return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
     }
     return null;
   }
@@ -499,6 +377,17 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
+    // Empty errors are not journalled (matches recordSessionFailure behavior)
+    const text = error.trim();
+    if (!text) return;
+    const capped = text.slice(0, FAILURE_TEXT_LIMIT);
+    // Write to the log (the source of truth) and to session.failures (for legacy compat)
+    const log = await sessionLogOf(sessionId);
+    log.append<FailureEntry>({
+      type: "failure",
+      prompt: false,
+      error: capped,
+    });
     recordSessionFailure(session, error);
     await this.sessionManager.persist(sessionId);
   }
@@ -507,6 +396,15 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
+    // Write to the log (the source of truth) and to session.commands (for legacy compat)
+    const log = await sessionLogOf(sessionId);
+    log.append<CommandEntry>({
+      type: "command",
+      prompt: false,
+      input,
+      output,
+      ...(details ? { details } : {}),
+    });
     recordSessionCommand(session, {
       input,
       output,

@@ -1,14 +1,18 @@
 import type { MyClawConfig } from "../core/config.ts";
-import { chatCompletion } from "../llm/provider.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { llmComplete } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
-import type { SessionData, SessionMessage } from "./store.ts";
-import { agentTypeOf, attributionParent, promptMessages } from "./store.ts";
+import type { SessionData } from "./store.ts";
+import { agentTypeOf, attributionParent } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { hooks } from "../hooks/index.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
+import { sessionLogOf } from "./log-access.ts";
+import { contextEntries } from "./projection.ts";
+import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry } from "./log.ts";
+import { estimateMessagesTokens } from "../llm/tokens.ts";
+import { promptOf } from "./projection.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 const TAIL_KEEP = 4;
@@ -43,39 +47,73 @@ export interface CompactionResult {
   summary?: string;
 }
 
-function alignTailBoundary(messages: SessionMessage[], tailStart: number): number {
+/**
+ * Align tail boundary for entries. Never start the tail inside a tool block or mid-turn.
+ * The boundary must land on a user entry or the start of a new model turn (first phase of a runId).
+ */
+function alignEntryTailBoundary(entries: Entry[], tailStart: number): number {
   let idx = tailStart;
   if (idx <= 0) return 0;
 
-  // Never start the tail inside a tool block. With parallel tool calls the tail can begin on the
-  // 2nd/3rd tool result, whose predecessor is another tool (not the assistant) — walking back over
-  // all contiguous tool results lands on their owning assistant, keeping the whole block together.
-  while (idx > 0 && messages[idx]?.role === "tool") {
+  // Walk back over tool entries
+  while (idx > 0 && entries[idx]?.type === "tool") {
     idx -= 1;
+  }
+  // Walk back over phase entries that share a runId with the previous one (same model turn)
+  while (idx > 0 && entries[idx]?.type === "phase") {
+    const current = entries[idx] as PhaseEntry;
+    const prev = entries[idx - 1];
+    if (prev?.type === "phase" && (prev as PhaseEntry).runId === current.runId) {
+      idx -= 1;
+    } else {
+      break;
+    }
   }
   return idx;
 }
 
-function serializeForCompaction(messages: SessionMessage[]): string {
+/** Serialize entries for the compaction prompt. */
+function serializeEntriesForCompaction(entries: Entry[]): string {
   const parts: string[] = [];
-  for (const msg of messages) {
-    switch (msg.role) {
-      case "user":
-        parts.push(`User: ${msg.content}`);
-        break;
-      case "assistant": {
-        let text = `Assistant: ${msg.content}`;
-        if (msg.toolCalls && msg.toolCalls.length > 0) {
-          text += `\n[Tool calls: ${msg.toolCalls.map((tc) => tc.name).join(", ")}]`;
-        }
-        parts.push(text);
-        break;
+  let currentRunId: string | undefined;
+  let currentAssistantText = "";
+  let currentToolNames: string[] = [];
+
+  const flushAssistant = () => {
+    if (currentAssistantText) {
+      let text = `Assistant: ${currentAssistantText}`;
+      if (currentToolNames.length > 0) {
+        text += `\n[Tool calls: ${currentToolNames.join(", ")}]`;
       }
-      case "tool":
-        parts.push(`Tool result (${msg.toolCallId}): ${msg.content.slice(0, 1200)}`);
-        break;
+      parts.push(text);
+      currentAssistantText = "";
+      currentToolNames = [];
+    }
+  };
+
+  for (const entry of entries) {
+    if (entry.type === "user") {
+      flushAssistant();
+      currentRunId = undefined;
+      parts.push(`User: ${(entry as UserEntry).text}`);
+    } else if (entry.type === "phase") {
+      const phase = entry as PhaseEntry;
+      if (phase.runId !== currentRunId) {
+        flushAssistant();
+        currentRunId = phase.runId;
+      }
+      if (currentAssistantText) currentAssistantText += "\n";
+      currentAssistantText += phase.text;
+    } else if (entry.type === "tool") {
+      const tool = entry as ToolEntry;
+      currentToolNames.push(tool.name);
+      parts.push(`Tool result (${tool.callId}): ${tool.output.slice(0, 1200)}`);
+    } else if (entry.type === "compaction") {
+      // Skip existing compaction entries in the serialization
     }
   }
+  flushAssistant();
+
   return parts.join("\n\n---\n\n");
 }
 
@@ -107,42 +145,48 @@ export async function compactSession(
   session: SessionData,
   instructions?: string,
 ): Promise<CompactionResult> {
-  // The prompt side alone. Everything before the previous boundary is already inside an earlier
-  // summary: re-reading it would summarise a summary and re-bill turns the model cannot see.
-  const base = session.promptBase ?? 0;
-  const messages = promptMessages(session);
-  hooks.emit("session:compact:start", { sessionId: session.id, messageCount: messages.length });
+  // Get the log and context entries
+  const log = await sessionLogOf(session.id);
+  const entries = contextEntries(log.entries(), log.leaf());
+  hooks.emit("session:compact:start", { sessionId: session.id, messageCount: entries.length });
 
-  if (messages.length < MIN_MESSAGES_TO_COMPACT) {
+  if (entries.length < MIN_MESSAGES_TO_COMPACT) {
     return {
       ok: false,
-      reason: `Session too short to compact (${messages.length} messages, minimum ${MIN_MESSAGES_TO_COMPACT}).`,
-      beforeCount: messages.length,
-      afterCount: messages.length,
+      reason: `Session too short to compact (${entries.length} entries, minimum ${MIN_MESSAGES_TO_COMPACT}).`,
+      beforeCount: entries.length,
+      afterCount: entries.length,
     };
   }
 
-  // Everything but the last few turns is summarised. The old shape also kept the first turns
-  // verbatim, which a boundary cannot express: the prompt is one contiguous window, and a head
-  // held out of it would sit before the boundary and vanish from the prompt unsummarised. The
-  // summariser is told to preserve the main task, which is what the head was there for.
-  const tailStartRaw = Math.max(0, messages.length - TAIL_KEEP);
-  const tailStart = alignTailBoundary(messages, tailStartRaw);
+  // Everything but the last few turns is summarised. The boundary must land on a clean entry.
+  const tailStartRaw = Math.max(0, entries.length - TAIL_KEEP);
+  const tailStart = alignEntryTailBoundary(entries, tailStartRaw);
 
   if (tailStart <= 0) {
     return {
       ok: false,
-      reason: "Not enough messages before the tail to compact.",
-      beforeCount: messages.length,
-      afterCount: messages.length,
+      reason: "Not enough entries before the tail to compact.",
+      beforeCount: entries.length,
+      afterCount: entries.length,
     };
   }
 
-  const middle = messages.slice(0, tailStart);
-  const tail = messages.slice(tailStart);
+  const middle = entries.slice(0, tailStart);
+  const tail = entries.slice(tailStart);
+  const firstKeptEntry = tail[0];
+  if (!firstKeptEntry) {
+    return {
+      ok: false,
+      reason: "No entries in tail after boundary alignment.",
+      beforeCount: entries.length,
+      afterCount: entries.length,
+    };
+  }
 
-  const serialized = serializeForCompaction(middle);
+  const serialized = serializeEntriesForCompaction(middle);
   const prompt = buildCompactionPrompt(serialized, instructions);
+  const tokensBefore = estimateMessagesTokens(promptOf(log.entries(), log.leaf()));
 
   // The model the session actually runs, agent pin and tag included -- not the raw session override,
   // which is absent on every chat that inherits a pin and made the summarizer resolve the global
@@ -193,8 +237,8 @@ export async function compactSession(
       return {
         ok: false,
         reason: summary ? "The model returned a summary that is too short." : "The model returned an empty summary.",
-        beforeCount: messages.length,
-        afterCount: messages.length,
+        beforeCount: entries.length,
+        afterCount: entries.length,
       };
     }
 
@@ -210,39 +254,35 @@ export async function compactSession(
       return {
         ok: false,
         reason: "The model refused to generate a summary.",
-        beforeCount: messages.length,
-        afterCount: messages.length,
+        beforeCount: entries.length,
+        afterCount: entries.length,
       };
     }
 
-    const summaryMessage: SessionMessage = {
-      role: "user",
-      content: `${SUMMARY_OPEN}\n${summary}\n\n${SUMMARY_CLOSE}`,
-      timestamp: new Date().toISOString(),
-      summaryOf: middle.length,
-    };
+    // Write the compaction entry to the log
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary,
+      firstKeptEntryId: firstKeptEntry.id,
+      tokensBefore,
+      count: middle.length,
+    });
+    await log.flush();
 
-    // The summarised turns stay in `messages`; only the prompt window moves. The summary is spliced
-    // in where they end, so the boundary lands on it and the model reads summary + tail, while the
-    // app still replays every turn the owner wrote. `middle` is re-listed rather than left in place
-    // because `alignTailBoundary` may have moved the cut, and the splice must rebuild exactly the
-    // window the summary describes.
-    session.messages = [...session.messages.slice(0, base), ...middle, summaryMessage, ...tail];
-    session.promptBase = base + middle.length;
     session.lastActiveAt = new Date().toISOString();
-    // Both counts are prompt-window sizes. `session.messages` only ever grows now, so reporting its
-    // length against a `beforeCount` taken from the window would announce a compaction as
-    // "12 -> 13 messages" -- the one number the command exists to make go down, going up.
-    const afterCount = promptMessages(session).length;
+    // Recalculate context entries after compaction
+    const afterEntries = contextEntries(log.entries(), log.leaf());
+    const afterCount = afterEntries.length;
     hooks.emit("session:compact:end", {
       sessionId: session.id,
-      beforeCount: messages.length,
+      beforeCount: entries.length,
       afterCount,
       summaryLength: summary.length,
     });
     return {
       ok: true,
-      beforeCount: messages.length,
+      beforeCount: entries.length,
       afterCount,
       summary,
     };
@@ -252,8 +292,8 @@ export async function compactSession(
     return {
       ok: false,
       reason: `Compaction error: ${errorMsg}`,
-      beforeCount: messages.length,
-      afterCount: messages.length,
+      beforeCount: entries.length,
+      afterCount: entries.length,
     };
   }
 }

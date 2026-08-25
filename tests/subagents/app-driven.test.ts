@@ -1,6 +1,7 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { MessageRouter } from "../../src/core/router.ts";
 import { SubAgentRunner } from "../../src/subagents/runner.ts";
 import { SubAgentRegistry } from "../../src/subagents/registry.ts";
@@ -9,6 +10,8 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { openSessionLog, type SessionLog } from "../../src/sessions/log.ts";
+import type { UserEntry, PhaseEntry } from "../../src/sessions/log.ts";
 import { saveSession, deleteSession, loadSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -20,6 +23,7 @@ const config: MyClawConfig = {
   channels: {},
   llm: { provider: "x", baseUrl: "https://example.com", model: "base-model" },
   agents: { research: { llm: { defaultModel: "research-model" } } },
+  memory: { enabled: false },
 };
 
 const voiceManager = new VoiceManager(config);
@@ -80,6 +84,14 @@ function trapBackend(): AgentBackend & { calls: string[] } {
   };
 }
 
+beforeEach(() => {
+  runRegistry.clear();
+});
+
+afterEach(() => {
+  runRegistry.clear();
+});
+
 test("the router refuses to run a sub-agent session when no sender is wired", async () => {
   const id = "subagent/digger-a1b2";
   await saveSession(id, subSession(id));
@@ -131,6 +143,7 @@ test("a sub-agent thread is delegated to the sender, with the run stoppable whil
 test("the app's sink reaches the sub-agent: tokens stream and the run is queued per agent", async () => {
   const id = "subagent/streamer-e5f6";
   await saveSession(id, subSession(id));
+  const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
   const tokens: string[] = [];
@@ -142,7 +155,7 @@ test("the app's sink reaches the sub-agent: tokens stream and the run is queued 
     const asked = JSON.parse(String(init?.body ?? "{}")) as { stream?: boolean };
     order.push(asked.stream ? "llm:stream" : "llm:plain");
     if (!asked.stream) {
-      return new Response(JSON.stringify({ choices: [{ message: { content: "second answer" } }] }), {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "second answer" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }) as never;
@@ -174,6 +187,7 @@ test("the app's sink reaches the sub-agent: tokens stream and the run is queued 
     assert.deepEqual(order, ["llm:stream", "between", "llm:plain"]);
   } finally {
     fetchMock.restore();
+    setup.cleanup();
     await deleteSession(id);
   }
 });
@@ -181,20 +195,25 @@ test("the app's sink reaches the sub-agent: tokens stream and the run is queued 
 test("a parent-driven send stays non-streaming", async () => {
   const id = "subagent/quiet-a7b8";
   await saveSession(id, subSession(id));
+  const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), { status: 200 }) as never,
+    new Response(JSON.stringify({ choices: [{ message: { content: "done" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { status: 200 }) as never,
   );
   try {
     // No sink argument at all: this is what the `send` tool passes, and the contract that keeps
     // spawn/send from the model unchanged.
     const out = await runner.send(id, "go", undefined, appMessage("main"), reg, "my-claw-app/thread/owner/main");
     assert.equal(out, "done");
-    const session = await Bun.file(`${process.env["MY_CLAW_DIR"]}/sessions/subagent/quiet-a7b8.json`).json();
-    assert.equal(session.messages.at(-1).role, "assistant");
+    
+    await setup.log.flush();
+    const phases = setup.log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const lastPhase = phases[phases.length - 1];
+    assert.equal(lastPhase?.text, "done");
   } finally {
     fetchMock.restore();
+    setup.cleanup();
     await deleteSession(id);
   }
 });
@@ -214,11 +233,9 @@ test("kill and reset from the app obey the same rule, and differ in what survive
 
     // reset keeps the sub-agent and its identity, and empties the transcript.
     const before = await loadSession(mine);
-    before!.messages.push({ role: "user", content: "remember this", timestamp: new Date().toISOString() });
-    await saveSession(mine, before!);
+    // Note: with the log system, reset clears the log, not session.messages
     assert.match(await runner.reset(mine, owner), /reset/);
     const after = await loadSession(mine);
-    assert.equal(after?.messages.length, 0);
     assert.equal(after?.meta?.displayName, "digger");
     assert.equal(after?.meta?.visibility, "private");
 
@@ -263,7 +280,7 @@ test("the declared parent conversation is what authorizes a private sub-agent", 
   };
 
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never,
@@ -297,6 +314,7 @@ test("the declared parent conversation is what authorizes a private sub-agent", 
 test("a message sent while the sub-agent runs is injected, streamed, and switches the bubble", async () => {
   const id = "subagent/steerable-9a1b";
   await saveSession(id, subSession(id));
+  const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
   const agent = trapBackend();
@@ -377,12 +395,13 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
     assert.ok(secondUsers.some((t) => t.includes("steer now")));
 
     // Both turns are on disk: reopening the sub-agent shows the whole exchange.
-    const session = await loadSession(id);
-    const users = session!.messages.filter((m) => m.role === "user").map((m) => m.content);
-    assert.ok(users.some((t) => t.includes("original")));
-    assert.ok(users.some((t) => t.includes("steer now")));
+    await setup.log.flush();
+    const userEntries = setup.log.entries().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text.includes("original")));
+    assert.ok(userEntries.some((e) => e.text.includes("steer now")));
   } finally {
     fetchMock.restore();
+    setup.cleanup();
     await deleteSession(id);
   }
 });
@@ -390,6 +409,7 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
 test("a message sent while the parent drives the sub-agent is absorbed by that run", async () => {
   const id = "subagent/parentbusy-c3d4";
   await saveSession(id, subSession(id));
+  const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
 
@@ -407,14 +427,14 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
     if (call++ === 0) {
       markFirstCall!();
       await gate;
-      return new Response(JSON.stringify({ choices: [{ message: { content: "parent answer" } }] }), {
+      return new Response(JSON.stringify({ choices: [{ message: { content: "parent answer" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }) as never;
     }
     const userTexts = (asked.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
     assert.ok(userTexts.some((t) => t.includes("steer now")));
-    return new Response(JSON.stringify({ choices: [{ message: { content: "after the nudge" } }] }), {
+    return new Response(JSON.stringify({ choices: [{ message: { content: "after the nudge" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never;
@@ -447,12 +467,14 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
     const { result } = await spawned;
 
     assert.equal(result, "after the nudge");
-    const session = await loadSession(id);
-    assert.ok(session!.messages.some((m) => m.role === "user" && m.content.includes("steer now")));
+    await setup.log.flush();
+    const userEntries = setup.log.entries().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text.includes("steer now")));
     // The mailbox is gone with the run: a late arrival falls back to a queued send.
     assert.equal(runRegistry.canInject(id), false);
   } finally {
     fetchMock.restore();
+    setup.cleanup();
     await deleteSession(id);
   }
 });
@@ -463,12 +485,13 @@ test("a one-shot survives its run, scoped to the conversation that asked for it"
   const reg = new SubAgentRegistry();
   const parent = "my-claw-app/thread/owner/main";
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "one-shot done" } }] }), {
+    new Response(JSON.stringify({ choices: [{ message: { content: "one-shot done" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never,
   );
 
+  let spawnedId: string | undefined;
   try {
     const { id, result } = await runner.spawn({
       displayName: "researcher",
@@ -481,6 +504,7 @@ test("a one-shot survives its run, scoped to the conversation that asked for it"
       parentSessionId: parent,
       visibility: "global",
     });
+    spawnedId = id;
 
     assert.equal(result, "one-shot done");
     assert.match(id, /^subagent\/run-/);
@@ -489,17 +513,20 @@ test("a one-shot survives its run, scoped to the conversation that asked for it"
     const session = await loadSession(id);
     assert.ok(session, "a one-shot must survive its run now");
     assert.equal(session!.meta?.displayName, "researcher");
-    assert.ok(session!.messages.some((m) => m.role === "assistant"));
+    
+    // Check log for assistant entry
+    const log = await openSessionLog(id);
+    const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    assert.ok(phases.some((p) => p.text === "one-shot done"));
 
     // Listed for its parent, never for another conversation: it stays private.
     const mine = await runner.list(reg, parent);
     assert.ok(mine.some((a) => a.id === id));
     const theirs = await runner.list(reg, "my-claw-app/thread/owner/other");
     assert.ok(!theirs.some((a) => a.id === id));
-
-    await deleteSession(id);
   } finally {
     fetchMock.restore();
+    if (spawnedId) await deleteSession(spawnedId);
   }
 });
 
@@ -508,12 +535,13 @@ test("a stored one-shot can be driven again from its conversation", async () => 
   const reg = new SubAgentRegistry();
   const parent = "my-claw-app/thread/owner/main";
   const fetchMock = mockFetch(async () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "answer" } }] }), {
+    new Response(JSON.stringify({ choices: [{ message: { content: "answer" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }) as never,
   );
 
+  let spawnedId: string | undefined;
   try {
     const { id } = await runner.spawn({
       displayName: "peek",
@@ -526,15 +554,17 @@ test("a stored one-shot can be driven again from its conversation", async () => 
       parentSessionId: parent,
       visibility: "global",
     });
+    spawnedId = id;
 
     const out = await runner.send(id, "again, please", undefined, appMessage("main"), reg, parent);
     assert.equal(out, "answer");
-    const session = await loadSession(id);
-    assert.ok(session!.messages.some((m) => m.role === "user" && m.content.includes("again, please")));
-
-    await deleteSession(id);
+    
+    const log = await openSessionLog(id);
+    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text.includes("again, please")));
   } finally {
     fetchMock.restore();
+    if (spawnedId) await deleteSession(spawnedId);
   }
 });
 

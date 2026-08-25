@@ -1,6 +1,7 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
@@ -8,7 +9,11 @@ import { AbortedError } from "../../src/core/aborted.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
+import { contextEntries } from "../../src/sessions/projection.ts";
+
+const SESSION_ID = "test-abort";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -24,7 +29,7 @@ function createMessage(): UnifiedMessage {
 }
 
 function createSession(): SessionData {
-  return { id: "telegram/dm/u1", platform: "my-claw-app", chatType: "dm", createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(), messages: [] };
+  return { id: SESSION_ID, platform: "my-claw-app", chatType: "dm", createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(), messages: [] };
 }
 
 function toolCallResponse(): Response {
@@ -33,6 +38,21 @@ function toolCallResponse(): Response {
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
+
+let log: SessionLog;
+let cleanupLog: () => void;
+
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+});
 
 test("bridge: already-aborted signal stops before the first LLM call and emits agent:run:aborted", async () => {
   const registry = new ToolRegistry();
@@ -56,7 +76,7 @@ test("bridge: already-aborted signal stops before the first LLM call and emits a
   }
 });
 
-test("bridge: abort mid-tool seals dangling tool_calls and never swallows the abort", async () => {
+test("bridge: abort mid-tool rewinds and leaves the user turn but not the partial work", async () => {
   const registry = new ToolRegistry();
   // Sealing only happens once the assistant tool_call message is in the session, so the abort has
   // to land while the tool runs. A fixed delay made that a race: on a loaded machine it could fire
@@ -85,12 +105,20 @@ test("bridge: abort mid-tool seals dangling tool_calls and never swallows the ab
     c.abort();
     await assert.rejects(() => p, AbortedError);
 
-    // Assistant tool_call is present and sealed with a synthetic tool result (no orphan).
-    const assistant = session.messages.find((m) => m.role === "assistant" && "toolCalls" in m && m.toolCalls?.length);
-    assert.ok(assistant, "assistant tool_call message kept");
-    const toolMsg = session.messages.find((m) => m.role === "tool" && m.toolCallId === "tc1");
-    assert.ok(toolMsg, "dangling tool_call sealed");
-    assert.equal((toolMsg as { content: string }).content, "[Stopped by user]");
+    // With the new log system, abort does a rewind() which moves the cursor back.
+    // The user turn is kept (recorder.user advances startLeaf), but the partial tool work is not on the branch.
+    await log.flush();
+    const entries = log.entries();
+    const context = contextEntries(entries, log.leaf());
+    
+    // The user turn should be in the context (rewind never erases it)
+    const userEntry = context.find((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntry, "user turn should be in context");
+    assert.equal(userEntry.text, "hello");
+    
+    // The tool call and result should NOT be in the context (rewound past them)
+    const toolEntry = context.find((e) => e.type === "tool");
+    assert.equal(toolEntry, undefined, "tool entry should not be in context after rewind");
   } finally {
     fetchMock.restore();
   }

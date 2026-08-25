@@ -12,7 +12,11 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, sealDanglingToolCalls, INTERRUPTED_RESULT, attributionParent, promptMessages, markSessionDirty } from "../sessions/store.ts";
+import { dropLeadingOrphanToolMessages, attributionParent, markSessionDirty } from "../sessions/store.ts";
+import { sessionLogOf } from "../sessions/log-access.ts";
+import { promptOf, contextEntries } from "../sessions/projection.ts";
+import type { Entry } from "../sessions/log.ts";
+import { RunRecorder } from "./run-recorder.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
@@ -232,8 +236,10 @@ export class AgentBridge implements AgentBackend {
     signal?: AbortSignal,
     modelId?: string,
     modelOverride?: RunModelOverride,
+    /** When true, the caller already wrote the UserEntry to the log (sub-agent path). */
+    userEntryWritten?: boolean,
   ): Promise<string> {
-    return this.handle(message, session, undefined, undefined, signal, undefined, modelId, undefined, undefined, modelOverride);
+    return this.handle(message, session, undefined, undefined, signal, undefined, modelId, undefined, undefined, modelOverride, userEntryWritten);
   }
 
   async handleMessageStreaming(
@@ -247,8 +253,10 @@ export class AgentBridge implements AgentBackend {
     reasoning?: ReasoningSink,
     onToolStart?: ToolStartCallback,
     modelOverride?: RunModelOverride,
+    /** When true, the caller already wrote the UserEntry to the log (sub-agent path). */
+    userEntryWritten?: boolean,
   ): Promise<string> {
-    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning, onToolStart, modelOverride);
+    return this.handle(message, session, onToken, onToolUse, signal, onTurnSwitch, modelId, reasoning, onToolStart, modelOverride, userEntryWritten);
   }
 
   async preprocessMessage(message: UnifiedMessage): Promise<void> {
@@ -266,6 +274,8 @@ export class AgentBridge implements AgentBackend {
     reasoningSink?: ReasoningSink,
     onToolStart?: ToolStartCallback,
     modelOverride?: RunModelOverride,
+    /** When true, the caller already wrote the UserEntry to the log (sub-agent path). */
+    userEntryWritten?: boolean,
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
@@ -325,16 +335,18 @@ export class AgentBridge implements AgentBackend {
       maxIterations: budget.total,
     });
 
+    const entries = await sessionLogOf(session.id);
+    const recorder = new RunRecorder(entries);
+    const contextCount = contextEntries(entries.entries(), entries.leaf()).length;
+
     void log("info", "agent run started", {
       ...runLogData(message, session),
       model: llmConfig.model,
       streaming,
       toolCount: tools.length,
       maxIterations: budget.total,
-      sessionMessageCount: session.messages.length,
+      sessionEntryCount: contextCount,
     });
-
-    let messageCountBeforeLoop = session.messages.length;
 
     // Run-local (never persisted to session): tracks which nested AGENTS.md were already
     // injected this run and the byte budget spent, so each file lands at most once.
@@ -349,7 +361,7 @@ export class AgentBridge implements AgentBackend {
       // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
       // the profile that fills a window, and it used to have nothing but the hard trim.
       if (autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(message, session, llmConfig, agentToolType);
+        await this.maybeAutoCompact(message, session, llmConfig, agentToolType, entries);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
@@ -382,57 +394,32 @@ export class AgentBridge implements AgentBackend {
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
 
-      // A run starting is the one moment a tool call with no result can be read for what it is.
-      // On disk the two cases are identical -- a call still executing, and a call whose process was
-      // killed -- and the history deliberately renders it as running. But runs are serialized per
-      // session, so reaching here means no other run owns this history: an unanswered call is dead
-      // work. Left alone it makes every later prompt illegal (the provider refuses an assistant
-      // tool_call nothing answers) and the conversation is wedged for good.
-      const interrupted = sealDanglingToolCalls(session.messages, INTERRUPTED_RESULT);
-      if (interrupted > 0) {
-        markSessionDirty(session);
-        void log("warn", "sealed tool calls left unanswered by an interrupted run", { sessionId: session.id, sealed: interrupted });
-      }
-
       const userContent = this.preprocessor.buildUserContent(message);
-      const now = new Date().toISOString();
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
       const images = imageAttachmentsOf(message);
-      // The sub-agent runner pre-pushes the task with the same sourceId before the run starts
-      // (so a crash or a mid-run page load still shows the prompt). Rather than pushing a second
-      // copy, complete the pre-pushed bubble: transformed content, attachments, location.
-      const prePushed =
-        message.id != null
-          ? session.messages.find((m) => m.role === "user" && m.sourceId === message.id)
-          : undefined;
-      if (prePushed && prePushed.role === "user") {
-        prePushed.content = transformedContent;
-        prePushed.timestamp = now;
-        if (images.length > 0) prePushed.attachments = images;
-        if (message.location) prePushed.location = message.location;
-      } else {
-        session.messages.push({
-          role: "user",
-          content: transformedContent,
-          timestamp: now,
-          ...(message.id ? { sourceId: message.id } : {}),
+      const transcripts = this.preprocessor.transcriptsOf(message.id);
+      // Sub-agent path: the runner already wrote the UserEntry to survive a crash before the
+      // first turn. Skip it here to avoid a duplicate.
+      if (!userEntryWritten) {
+        recorder.user({
+          text: transformedContent,
           ...(images.length > 0 ? { attachments: images } : {}),
           ...(message.location ? { location: message.location } : {}),
+          ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
         });
       }
-      messageCountBeforeLoop = session.messages.length;
 
       const openaiTools = toOpenAiToolDefinitions(tools);
 
       const chatMessages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
-        ...this.toChatMessages(promptMessages(session)),
+        ...promptOf(entries.entries(), entries.leaf()),
       ];
 
       // Vision is resolved per model (resolver merges the model entry over the global flag):
       // the global default may be a text-only model while another configured model has vision.
       if (llmConfig.vision) {
-        const attached = await this.attachImages(chatMessages, promptMessages(session));
+        const attached = await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
         if (attached > 0) void log("debug", "images attached to the prompt", { sessionId: session.id, model: llmConfig.model, images: attached });
       } else if (imageAttachmentsOf(message).length > 0) {
         void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
@@ -454,8 +441,8 @@ export class AgentBridge implements AgentBackend {
       // history the summary was made from.
       const rebuildPrompt = async (): Promise<void> => {
         chatMessages.length = 0;
-        chatMessages.push({ role: "system", content: systemPrompt }, ...this.toChatMessages(promptMessages(session)));
-        if (llmConfig.vision) await this.attachImages(chatMessages, promptMessages(session));
+        chatMessages.push({ role: "system", content: systemPrompt }, ...promptOf(entries.entries(), entries.leaf()));
+        if (llmConfig.vision) await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
       };
 
       let iteration = 0;
@@ -477,25 +464,20 @@ export class AgentBridge implements AgentBackend {
         {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
-            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
-            // The rollback below must not reach past a turn the owner actually sent. It used to,
-            // and a run that failed after absorbing a steering message erased the message with it:
-            // the answer was an error and the question was gone from the history.
-            messageCountBeforeLoop = session.messages.length;
+            // recorder.user() advances startLeaf automatically - rewind() cannot erase this turn
+            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
           }
         }
         iteration++;
         // Between two iterations, before the prompt is assembled: the loop is the only writer here
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
-        if (autoCompactEnabled(this.config) && session.messages.length >= midRunCompactRetryAt) {
-          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration);
+        const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;
+        if (autoCompactEnabled(this.config) && currentEntryCount >= midRunCompactRetryAt) {
+          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration, entries);
           if (outcome === "compacted") {
             await rebuildPrompt();
-            // The turns this run appended are inside the summary now: rolling back to a longer
-            // history than the session holds would extend the array with holes.
-            messageCountBeforeLoop = session.messages.length;
           } else if (outcome === "skipped") {
-            midRunCompactRetryAt = session.messages.length + MID_RUN_COMPACT_RETRY_TURNS;
+            midRunCompactRetryAt = currentEntryCount + MID_RUN_COMPACT_RETRY_TURNS;
           }
         }
         // Prompt-side only: session.messages keeps the full outputs. Re-applied every
@@ -562,7 +544,7 @@ export class AgentBridge implements AgentBackend {
           // Prompt-side length, the same units `occupiedContextTokens` pairs it with: measuring the
           // whole history against a billed number that only covered the window after the boundary
           // would read as a measurement of turns the model never saw.
-          accumulateUsage(session, response.usage, promptMessages(session).length, promptSidePruned(this.config, llmConfig.backend));
+          accumulateUsage(session, response.usage, promptOf(entries.entries(), entries.leaf()).length, promptSidePruned(this.config, llmConfig.backend));
           // The measurement for this turn has landed. On this transport it is the earliest it can
           // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
           if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
@@ -616,14 +598,15 @@ export class AgentBridge implements AgentBackend {
 
         if (!response.toolCalls?.length) {
           const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
-          session.messages.push({
-            role: "assistant",
+          // Dropped when a hook rewrote the answer: the cuts are offsets into text that no
+          // longer exists, and a wrong cut is worse than none.
+          const segments = response.segments && transformedResponse === response.content ? response.segments : undefined;
+          recorder.turn({
             content: transformedResponse,
-            timestamp: new Date().toISOString(),
             ...(response.reasoning ? { reasoning: response.reasoning } : {}),
-            // Dropped when a hook rewrote the answer: the cuts are offsets into text that no
-            // longer exists, and a wrong cut is worse than none.
-            ...(response.segments && transformedResponse === response.content ? { segments: response.segments } : {}),
+            ...(segments ? { segments } : {}),
+            ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
+            ...(response.incomplete ? { incomplete: response.incomplete } : {}),
           });
 
           // Mid-run steering: a message that arrived during this final call keeps the run going
@@ -636,8 +619,8 @@ export class AgentBridge implements AgentBackend {
               chatMessages.push({ role: "assistant", content: transformedResponse });
               for (const m of injected) {
                 budget.grant(injectionBonus);
-                await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), onTurnSwitch);
-                messageCountBeforeLoop = session.messages.length;
+                // recorder.user() advances startLeaf automatically - rewind() cannot erase this turn
+                await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
               }
               continue;
             }
@@ -662,7 +645,7 @@ export class AgentBridge implements AgentBackend {
             toolExecutions,
             maxIterations: budget.total,
             responseChars: transformedResponse.length,
-            sessionMessageCount: session.messages.length,
+            sessionEntryCount: contextEntries(entries.entries(), entries.leaf()).length,
             durationMs,
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
@@ -708,22 +691,16 @@ export class AgentBridge implements AgentBackend {
           ...(replayable ? { providerMeta: response.providerMeta } : {}),
         });
 
-        // Kept as a reference so the tool durations measured below can be written back into the
-        // persisted message: history renderers (app bubbles) show the same detail as the
-        // live stream only if the timings survive the session file.
-        const persistedAssistant = {
-          role: "assistant" as const,
+        // The turn that asked for tools. The tool_calls are not on it: they are derived from the
+        // ToolEntry that carry the results, so the prompt cannot contain a request without an
+        // answer.
+        recorder.turn({
           content: response.content,
-          toolCalls: assistantToolCalls.map((tc) => ({
-            id: tc.id,
-            name: tc.function.name,
-            arguments: tc.function.arguments,
-          })),
-          timestamp: new Date().toISOString(),
           ...(response.reasoning ? { reasoning: response.reasoning } : {}),
           ...(response.segments ? { segments: response.segments } : {}),
-        };
-        session.messages.push(persistedAssistant);
+          ...(replayable ? { providerMeta: response.providerMeta } : {}),
+          ...(response.incomplete ? { incomplete: response.incomplete } : {}),
+        });
 
         const executeOne = async (tc: typeof response.toolCalls[number]) => {
           if (truncatedCalls) {
@@ -835,12 +812,6 @@ export class AgentBridge implements AgentBackend {
         const toolResults: ToolCallResult[] = [];
         for (const { tc, result, durationMs } of settled) {
           toolExecutions += 1;
-          const persistedCall = persistedAssistant.toolCalls.find((call) => call.id === tc.id);
-          if (persistedCall) {
-            // In place, so the autosave's own dirty mark is what carries it to disk.
-            markSessionDirty(session);
-            (persistedCall as { durationMs?: number }).durationMs = durationMs;
-          }
           let transformedResult = (await hooks.transform("transform:tool:result", {
             toolName: tc.name,
             result: result.content,
@@ -858,7 +829,14 @@ export class AgentBridge implements AgentBackend {
           }
           stagnation.observe(transformedResult);
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: transformedResult });
-          session.messages.push({ role: "tool", toolCallId: tc.id, content: transformedResult, timestamp: new Date().toISOString() });
+          await recorder.tool({
+            callId: tc.id,
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+            output: transformedResult,
+            ok: result.success,
+            ...(durationMs !== undefined ? { durationMs } : {}),
+          });
         }
 
         if (onToolUse) {
@@ -872,10 +850,9 @@ export class AgentBridge implements AgentBackend {
         maxIterations: budget.total,
         toolExecutions,
       });
-      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, signal);
+      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, recorder, signal);
     } catch (err) {
       if (isAbort(err, signal)) {
-        sealDanglingToolCalls(session.messages);
         hooks.emit("agent:run:aborted", {
           messageId: message.id,
           sessionId: session.id,
@@ -892,12 +869,7 @@ export class AgentBridge implements AgentBackend {
         });
         throw new AbortedError();
       }
-      session.messages.length = messageCountBeforeLoop;
-      // A mid-run compaction moves the boundary forward; a failed run rolls the history back past
-      // it. Left alone the boundary would point beyond the end and, on the next turn, hide turns
-      // no summary ever described. `promptMessages` treats an out-of-range base as none, so this is
-      // belt and braces -- but a stored index that lies about its own array is worth not keeping.
-      if ((session.promptBase ?? 0) > session.messages.length) delete session.promptBase;
+      await recorder.rewind();
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -931,20 +903,16 @@ export class AgentBridge implements AgentBackend {
     chatMessages: ChatMessage[],
     session: SessionData,
     vision: boolean,
+    recorder: RunRecorder,
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<void> {
     if (onTurnSwitch) await onTurnSwitch(injected);
 
     const userContent = this.preprocessor.buildUserContent(injected);
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
-    session.messages.push({
-      role: "user",
-      content: transformedContent,
-      timestamp: new Date().toISOString(),
-      // The same anchor the opening turn carries. Without it a steered turn came back from history
-      // under a derived id, so the page could not match it against the bubble it had already drawn
-      // and showed the message twice -- docs/my-claw-app-channel.md.
-      ...(injected.id ? { sourceId: injected.id } : {}),
+    // recorder.user() advances startLeaf automatically, so rewind() cannot erase this turn
+    recorder.user({
+      text: transformedContent,
       ...(injected.location ? { location: injected.location } : {}),
     });
 
@@ -968,6 +936,7 @@ export class AgentBridge implements AgentBackend {
     toolExecutions: number,
     iteration: number,
     budget: IterationBudget,
+    recorder: RunRecorder,
     signal?: AbortSignal,
   ): Promise<string> {
     const summaryPrompt =
@@ -975,8 +944,9 @@ export class AgentBridge implements AgentBackend {
       "Please provide a final response summarizing what you've found and accomplished so far, " +
       "without calling any more tools.";
 
+    const injectedText = `[system: ${summaryPrompt}]`;
     chatMessages.push({ role: "system", content: summaryPrompt });
-    session.messages.push({ role: "user", content: `[system: ${summaryPrompt}]`, timestamp: new Date().toISOString() });
+    recorder.user({ text: injectedText });
 
     const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig, agent).effective);
     if (trimmed !== chatMessages) {
@@ -1037,7 +1007,7 @@ export class AgentBridge implements AgentBackend {
     const rawFinalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
     const finalText = (await hooks.transform("transform:agent:response", { response: rawFinalText, sessionId: session.id, model: llmConfig.model })).response;
 
-    session.messages.push({ role: "assistant", content: finalText, timestamp: new Date().toISOString() });
+    recorder.turn({ content: finalText });
 
     const durationMs = Date.now() - startedAt;
     hooks.emit("agent:run:finish", {
@@ -1219,15 +1189,16 @@ export class AgentBridge implements AgentBackend {
     session: SessionData,
     llmConfig: ResolvedLlmConfig,
     agent: AgentToolType,
+    entries: { entries: () => readonly Entry[]; leaf: () => string | null },
   ): { over: boolean; data: Record<string, unknown> } {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
-    const prompt = promptMessages(session);
+    const prompt = promptOf(entries.entries(), entries.leaf());
     const pruned = promptSidePruned(this.config, llmConfig.backend);
     const fixed = session.lastFixedTokens ?? 0;
     const occupied = occupiedContextTokens(
       prompt,
-      (msgs) => promptSideChat(msgs, this.config, llmConfig.backend),
+      (msgs) => pruned ? pruneOldToolResults([...msgs], resolveContextPruning(this.config)) : [...msgs],
       measurementFor(session.lastPrompt, pruned),
       fixed,
     );
@@ -1253,8 +1224,8 @@ export class AgentBridge implements AgentBackend {
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType): Promise<void> {
-    const gate = this.contextGate(session, llmConfig, agent);
+  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }): Promise<void> {
+    const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return;
 
     void log("info", "auto-compaction triggered", gate.data);
@@ -1291,8 +1262,9 @@ export class AgentBridge implements AgentBackend {
     llmConfig: ResolvedLlmConfig,
     agent: AgentToolType,
     iteration: number,
+    entries: { entries: () => readonly Entry[]; leaf: () => string | null },
   ): Promise<"under" | "skipped" | "compacted"> {
-    const gate = this.contextGate(session, llmConfig, agent);
+    const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return "under";
 
     void log("info", "auto-compaction triggered mid-run", { ...gate.data, iteration });
@@ -1327,14 +1299,28 @@ export class AgentBridge implements AgentBackend {
    * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
    * photos, and each one costs its tokens on every single turn.
    */
-  private async attachImages(chatMessages: ChatMessage[], messages: SessionMessage[]): Promise<number> {
-    const kept = dropLeadingOrphanToolMessages(messages);
-    // chatMessages[0] is the system prompt, the rest maps 1:1 onto `kept`.
-    const withImages: Array<{ index: number; text: string; paths: string[] }> = [];
-    for (const [i, msg] of kept.entries()) {
-      if (msg.role !== "user" || !msg.attachments?.length) continue;
-      const paths = msg.attachments.filter((a) => a.type === "image").map((a) => a.path);
-      if (paths.length > 0) withImages.push({ index: i + 1, text: msg.content, paths });
+  /**
+   * Puts the images back into the turns that carry them, not just the last one. The chat APIs
+   * are stateless: an image only stays visible to the model if it is resent with every request,
+   * which is what opencode and Claude Code do. Without this, "and here, what do you see?" hits
+   * a model that lost the picture one turn ago.
+   *
+   * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
+   * photos, and each one costs its tokens on every single turn.
+   */
+  private async attachImages(chatMessages: ChatMessage[], path: readonly Entry[]): Promise<number> {
+    const withImages: Array<{ chatIndex: number; text: string; paths: string[] }> = [];
+    let chatIndex = 1;
+    for (const entry of path) {
+      if (entry.type === "user") {
+        const paths = (entry.attachments ?? []).filter((a) => a.type === "image").map((a) => a.path);
+        if (paths.length > 0) withImages.push({ chatIndex, text: entry.text, paths });
+        chatIndex++;
+      } else if (entry.type === "phase") {
+        chatIndex++;
+      } else if (entry.type === "compaction") {
+        chatIndex++;
+      }
     }
 
     let budget = MAX_HISTORY_IMAGES;
@@ -1343,11 +1329,11 @@ export class AgentBridge implements AgentBackend {
       if (budget <= 0) break;
       const paths = turn.paths.slice(-budget);
       budget -= paths.length;
-      const target = chatMessages[turn.index];
+      const target = chatMessages[turn.chatIndex];
       if (target?.role !== "user") continue;
       const content = await imageContentFrom(turn.text, paths);
       if (content.length > 1) {
-        chatMessages[turn.index] = { role: "user", content };
+        chatMessages[turn.chatIndex] = { role: "user", content };
         attached += content.length - 1;
       }
     }

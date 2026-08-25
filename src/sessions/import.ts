@@ -206,8 +206,7 @@ export function importSession(session: SessionData): ImportedSession {
   flushAsidesUpTo(undefined);
 
   const base = session.promptBase ?? 0;
-  // A boundary past the end is a session rewritten under a stale index: no boundary at all, which
-  // is exactly what `promptMessages` does with it.
+  // A boundary past the end is a session rewritten under a stale index: treat as no boundary.
   if (base <= 0 || base >= session.messages.length) return { entries: out, boundaryIndex: -1 };
 
   // The old index pointed at the summary turn itself, and the summary is now the boundary entry.

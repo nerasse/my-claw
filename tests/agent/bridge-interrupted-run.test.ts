@@ -1,13 +1,17 @@
-import { test } from "bun:test";
+import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
-import { sessionChatMessages } from "../../src/agent/context-pruning.ts";
+import { promptOf } from "../../src/sessions/projection.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import type { SessionLog, PhaseEntry } from "../../src/sessions/log.ts";
+
+const SESSION_ID = "test-interrupted";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -22,68 +26,95 @@ function createMessage(): UnifiedMessage {
   return { id: "m2", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "encore", attachments: [], isForwarded: false, raw: {} };
 }
 
-/**
- * The assistant turn is persisted before its tools run, and the autosave ticks every two seconds:
- * a process killed during a long tool leaves a request nothing will ever answer. Every later prompt
- * on that conversation is then refused by the provider, permanently.
- */
-function interruptedSession(): SessionData {
-  const ts = new Date().toISOString();
-  return {
-    id: "my-claw-app/dm/u1",
-    platform: "my-claw-app",
-    chatType: "dm",
-    createdAt: ts,
-    lastActiveAt: ts,
-    messages: [
-      { role: "user", content: "lance le build", timestamp: ts },
-      { role: "assistant", content: "", timestamp: ts, toolCalls: [{ id: "dead-1", name: "bash", arguments: "{}" }] },
-    ],
-  };
+function createSession(): SessionData {
+  return { id: SESSION_ID, platform: "my-claw-app", chatType: "dm", createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(), messages: [] };
 }
 
-test("bridge: a run left unanswered by a killed process does not wedge the conversation", async () => {
-  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+let log: SessionLog;
+let cleanupLog: () => void;
 
-  let sent: { role: string; tool_calls?: unknown[]; tool_call_id?: string }[] = [];
-  const fetchMock = mockFetch(async (_input, init) => {
-    sent = JSON.parse(String((init as { body?: string }).body)).messages;
-    return new Response(JSON.stringify({ choices: [{ message: { content: "reparti" } }] }), {
+beforeEach(async () => {
+  await deleteSession(SESSION_ID);
+  await saveSession(SESSION_ID, createSession());
+  const setup = await setupSessionLog(SESSION_ID);
+  log = setup.log;
+  cleanupLog = setup.cleanup;
+});
+
+afterEach(() => {
+  cleanupLog();
+});
+
+/**
+ * With the new log system, tool entries are only written when the tool completes.
+ * A run killed during tool execution leaves phases but no tool entries.
+ * The projection produces an assistant turn with no tool_calls (not a dangling one).
+ * This test verifies that a new run can proceed without issues after an interrupted run.
+ */
+test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", async () => {
+  // Simulate an interrupted run: user turn + phase (the LLM requested a tool call)
+  // but no tool entry (the tool never completed)
+  log.append({ type: "user", prompt: true, text: "lance le build" } as any);
+  log.append({ type: "phase", prompt: true, text: "", runId: "dead-run" } as any);
+  await log.flush();
+
+  // The projection should show an assistant turn with no tool_calls
+  const entries = log.entries();
+  const prompt = promptOf(entries, log.leaf());
+  
+  // The assistant turn should have content (empty string) but no tool_calls
+  const assistant = prompt.find((m) => m.role === "assistant");
+  assert.ok(assistant, "assistant turn exists");
+  assert.equal("tool_calls" in assistant, false, "no dangling tool_calls");
+
+  // Now run the bridge - it should work without issues
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const fetchMock = mockFetch(async () => 
+    new Response(JSON.stringify({ choices: [{ message: { content: "reparti" } }] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
-    }) as never;
-  });
+    }) as never,
+  );
 
   try {
-    const session = interruptedSession();
-    await bridge.handleMessage(createMessage(), session);
-
-    const sealed = session.messages.find((m) => m.role === "tool" && m.toolCallId === "dead-1") as { content: string } | undefined;
-    assert.ok(sealed, "the abandoned call is answered");
-    assert.match(sealed.content, /interrupted/i);
-
-    // The result sits under the turn that asked for it, before the new question.
-    assert.deepEqual(session.messages.map((m) => m.role), ["user", "assistant", "tool", "user", "assistant"]);
-
-    // What the provider was actually handed: every tool_call has its answer.
-    const requested = sent.flatMap((m) => (m.role === "assistant" && m.tool_calls ? (m.tool_calls as { id: string }[]).map((c) => c.id) : []));
-    const answered = sent.filter((m) => m.role === "tool").map((m) => m.tool_call_id);
-    assert.deepEqual(requested, ["dead-1"]);
-    assert.deepEqual(answered, ["dead-1"]);
+    const session = createSession();
+    const response = await bridge.handleMessage(createMessage(), session);
+    assert.equal(response, "reparti");
+    
+    // Verify the new run completed successfully
+    await log.flush();
+    const newEntries = log.entries();
+    const phases = newEntries.filter((e): e is PhaseEntry => e.type === "phase");
+    // Should have the old phase + the new phase
+    assert.ok(phases.length >= 2, "new phase was added");
   } finally {
     fetchMock.restore();
   }
 });
 
-test("an unanswered call is what a provider refuses, which is why the seal exists", () => {
-  const ts = new Date().toISOString();
-  const chat = sessionChatMessages([
-    { role: "user", content: "lance le build", timestamp: ts },
-    { role: "assistant", content: "", timestamp: ts, toolCalls: [{ id: "dead-1", name: "bash", arguments: "{}" }] },
-    { role: "user", content: "encore", timestamp: ts },
-  ]);
-  // Pinned as the shape to avoid: an assistant carrying tool_calls, then a user turn, and no tool
-  // message between them. OpenAI-compatible endpoints reject the request outright.
-  assert.deepEqual(chat.map((m) => m.role), ["user", "assistant", "user"]);
-  assert.equal(chat.filter((m) => m.role === "tool").length, 0);
+/**
+ * This test pins the shape that used to cause problems: an assistant with tool_calls
+ * but no tool results. With the new log system, this shape cannot occur because
+ * tool_calls are derived from tool entries, not stored directly.
+ */
+test("the old dangling-tool-call shape cannot occur with the log system", () => {
+  // With the log system, tool_calls in the prompt are derived from ToolEntry records.
+  // A ToolEntry is only written when the tool completes with a result.
+  // Therefore, every tool_call in the prompt has a corresponding tool result.
+  
+  // Simulate a phase that was meant to call a tool (conceptually) but the tool never ran
+  log.append({ type: "user", prompt: true, text: "lance le build" } as any);
+  log.append({ type: "phase", prompt: true, text: "", runId: "r1" } as any);
+  // No tool entry - this is what happens when a run is killed mid-tool
+  log.append({ type: "user", prompt: true, text: "encore" } as any);
+
+  const prompt = promptOf(log.entries(), log.leaf());
+  
+  // Count tool_calls and tool results
+  const toolCallCount = prompt.reduce((count, m) => 
+    count + (m.role === "assistant" && "tool_calls" in m ? (m.tool_calls?.length ?? 0) : 0), 0);
+  const toolResultCount = prompt.filter((m) => m.role === "tool").length;
+  
+  // They must match - every tool_call has a result
+  assert.equal(toolCallCount, toolResultCount, "tool_calls and tool results are balanced");
 });
