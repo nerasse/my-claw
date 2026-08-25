@@ -19,6 +19,7 @@ import { approvalStats, listApprovals, recordApproval, serializeArgs, type Appro
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
+import { newEntryId } from "../../sessions/log.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
 import { touchDevice } from "./devices.ts";
 import { pairPageResponse } from "./pair-page.ts";
@@ -485,7 +486,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
   createStreamer(message: UnifiedMessage): MyClawAppStreamer {
     const owner = message.chatId;
     return new MyClawAppStreamer({
-      id: crypto.randomUUID(),
+      // An entry id, not a uuid of its own: the phase written for this bubble is appended under it
+      // -- docs/bubble-identity.md.
+      id: newEntryId(),
       replyToId: message.id,
       threadId: message.threadId ?? DEFAULT_THREAD,
       minCharsBeforeDelta: this.config.streaming?.minChars,

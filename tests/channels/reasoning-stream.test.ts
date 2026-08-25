@@ -15,6 +15,18 @@ function collect(minCharsBeforeDelta?: number) {
   return { streamer, frames };
 }
 
+/**
+ * The id of the nth bubble, read off the stream rather than guessed. A bubble id used to be
+ * derived from the run's (`s1#1`); it is now minted per bubble, because the phase the log keeps of
+ * that bubble is appended under it -- docs/bubble-identity.md.
+ */
+function bubbleId(frames: MyClawAppServerFrame[], index: number): string {
+  const starts = frames.filter((f): f is MyClawAppServerFrame & { type: "chat.stream.start"; id: string } => f.type === "chat.stream.start");
+  const start = starts[index];
+  if (!start) throw new Error(`no bubble ${index} in ${starts.length} started`);
+  return start.id;
+}
+
 function types(frames: MyClawAppServerFrame[]): string[] {
   return frames.map((frame) => frame.type);
 }
@@ -101,8 +113,8 @@ describe("reasoning belongs to its segment", () => {
     await streamer.push("after tool");
     await streamer.finish();
 
-    expect(reasoningOf(frames, "s1")).toBe("first thought");
-    expect(reasoningOf(frames, "s1#1")).toBe("second thought");
+    expect(reasoningOf(frames, bubbleId(frames, 0))).toBe("first thought");
+    expect(reasoningOf(frames, bubbleId(frames, 1))).toBe("second thought");
   });
 
   // Reported from the app: a second thinking phase rendered above the answer already on screen,
@@ -115,10 +127,10 @@ describe("reasoning belongs to its segment", () => {
     await streamer.push("second answer");
     await streamer.finish();
 
-    expect(reasoningOf(frames, "s1")).toBe("first thought");
-    expect(reasoningOf(frames, "s1#1")).toBe("second thought");
-    expect(textOf(frames, "s1")).toBe("first answer");
-    expect(textOf(frames, "s1#1")).toBe("second answer");
+    expect(reasoningOf(frames, bubbleId(frames, 0))).toBe("first thought");
+    expect(reasoningOf(frames, bubbleId(frames, 1))).toBe("second thought");
+    expect(textOf(frames, bubbleId(frames, 0))).toBe("first answer");
+    expect(textOf(frames, bubbleId(frames, 1))).toBe("second answer");
     // The first bubble closes before the second opens, so the app renders them in order.
     expect(types(frames).filter((t) => t === "chat.stream.start")).toHaveLength(2);
     expect(types(frames).indexOf("chat.stream.done")).toBeLessThan(types(frames).lastIndexOf("chat.stream.start"));
@@ -131,10 +143,10 @@ describe("reasoning belongs to its segment", () => {
     await streamer.push("second answer");
     await streamer.finish();
 
-    expect(textOf(frames, "s1")).toBe("first answer");
-    expect(textOf(frames, "s1#1")).toBe("second answer");
+    expect(textOf(frames, bubbleId(frames, 0))).toBe("first answer");
+    expect(textOf(frames, bubbleId(frames, 1))).toBe("second answer");
     const tokens = frames.find((f) => f.type === "chat.reasoning.tokens");
-    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe("s1#1");
+    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe(bubbleId(frames, 1));
   });
 
   test("a thinking phase that never answered is not split in two", async () => {
@@ -155,8 +167,8 @@ describe("reasoning belongs to its segment", () => {
     await streamer.finish();
 
     // No ceiling and no marker: the reader gets the sentence the model finished.
-    expect(reasoningOf(frames, "s1")).toBe(long);
-    expect(reasoningOf(frames, "s1#1")).toBe("still heard");
+    expect(reasoningOf(frames, bubbleId(frames, 0))).toBe(long);
+    expect(reasoningOf(frames, bubbleId(frames, 1))).toBe("still heard");
   });
 
   test("nothing stops being sent, however long the thinking runs", async () => {
@@ -200,8 +212,8 @@ test("reasoning and text keep their order under interleaved pushes", async () =>
   expect(frames[frames.length - 1]!.type).toBe("chat.stream.done");
   // r2 arrives after t1 is on screen, so it belongs to the next bubble, not to the one the
   // reader is already looking at.
-  expect(reasoningOf(frames, "s1")).toBe("r1");
-  expect(reasoningOf(frames, "s1#1")).toBe("r2");
-  expect(textOf(frames, "s1")).toBe("t1");
-  expect(textOf(frames, "s1#1")).toBe("t2");
+  expect(reasoningOf(frames, bubbleId(frames, 0))).toBe("r1");
+  expect(reasoningOf(frames, bubbleId(frames, 1))).toBe("r2");
+  expect(textOf(frames, bubbleId(frames, 0))).toBe("t1");
+  expect(textOf(frames, bubbleId(frames, 1))).toBe("t2");
 });

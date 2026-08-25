@@ -375,11 +375,13 @@ export class SessionLog {
    * id, so the live bubble and the stored entry are the same identity from the first frame. Waiting
    * on the disk here would put a file write on the path of every token.
    */
-  append<T extends Entry>(input: Provisioned<T>): T {
+  append<T extends Entry>(input: Provisioned<T>, id?: string): T {
     const now = Date.now();
     const entry = {
       ...input,
-      id: newEntryId(now),
+      // A caller-provided id is one already on screen: the channel minted it when it opened the
+      // bubble this entry holds the text of, so the two are one identity -- docs/bubble-identity.md.
+      id: id ?? newEntryId(now),
       seq: this.nextSeq++,
       parentId: this.leafId,
       ts: now,

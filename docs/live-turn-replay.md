@@ -40,11 +40,17 @@ A journal is not a copy of the run. A bubble that closes and a tool that settles
 it on the spot: `recorder.turn` writes the phases as soon as the model call returns, and a tool
 entry is written when the call settles, so from that instant the delta is what serves them.
 
-This is not an optimisation, it is what keeps the replay correct. A persisted phase and the live
-bubble it was streamed into **do not share an id** -- a user turn does, since the entry carries the
-id the device sent, but a phase id is minted by the entry store. So a client cannot dedupe prose it
-receives twice, and replaying a settled bubble alongside the delta that already carries it would
-show the run's text twice, for good, on screen.
+This is not an optimisation, it is what keeps the replay correct. It was written when a persisted
+phase and the live bubble it was streamed into did **not** share an id; they do now
+(`docs/bubble-identity.md`), so the rule is no longer load-bearing and an end-of-run sync has
+become possible. It stays as it is because a journal that holds only what the store cannot know is
+smaller and easier to reason about, not because a duplicate would still be permanent.
+
+The reasoning it was built on, kept because it is what any change here has to answer to: a
+persisted phase and the live bubble it was streamed into did not share an id -- a user turn did,
+since its entry carries the id the device sent, but a phase id was minted by the entry store. A
+client handed the same prose twice could not tell, so replaying a settled bubble beside the delta
+that already carried it printed the run's text twice, for good, on screen.
 
 The trade is a window of sub-millisecond width: between the `chat.stream.done` that drops a bubble
 and the entry that replaces it, a sync would miss that bubble. A gap that narrow, in exchange for

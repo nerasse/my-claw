@@ -1,4 +1,5 @@
 import { currentRunId } from "../../utils/run-context.ts";
+import { newEntryId } from "../../sessions/log.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallInfo, ToolCallResult } from "../../agent/tool-status.ts";
 import { toolCardId } from "./types.ts";
@@ -8,6 +9,11 @@ import type { MyClawAppServerFrame, MyClawAppSpawnAction } from "./types.ts";
 export const TOOL_OUTPUT_LIMIT = 4000;
 
 export interface MyClawAppStreamerOptions {
+  /**
+   * The first bubble's id. An entry id, minted by the caller: the phase the log keeps of this
+   * bubble is appended under it, so the bubble on screen and the entry behind it are one identity
+   * -- docs/bubble-identity.md.
+   */
   id: string;
   threadId: string;
   replyToId?: string;
@@ -36,6 +42,10 @@ export class MyClawAppStreamer {
   private toolIdsByModelId = new Map<string, string>();
   /** subagentId -> the spawn card id (tool-start card for tool spawns, else the subagent id). */
   private spawnCardIds = new Map<string, string>();
+  /** Bubble id per segment, minted on first use. */
+  private segmentIds: string[] = [];
+  /** Bubble ids not yet taken by the recorder, oldest first. */
+  private unclaimed: string[] = [];
   private started = false;
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
@@ -166,8 +176,26 @@ export class MyClawAppStreamer {
   }
 
 
+  /**
+   * The bubble ids opened and not yet claimed. The recorder takes them when the model call
+   * returns and appends its phases under them, which is what makes the two the same thing.
+   */
+  take(): string[] {
+    const ids = this.unclaimed;
+    this.unclaimed = [];
+    return ids;
+  }
+
   private currentId(): string {
-    return this.segment === 0 ? this.opts.id : `${this.opts.id}#${this.segment}`;
+    // A segment is a bubble, and a bubble is an entry waiting to be written: its id is minted here
+    // rather than derived from the run's, because a derived `id#2` is not something the log can
+    // carry, and an entry the log minted separately is a second identity for one piece of prose.
+    const existing = this.segmentIds[this.segment];
+    if (existing) return existing;
+    const id = this.segment === 0 ? this.opts.id : newEntryId();
+    this.segmentIds[this.segment] = id;
+    this.unclaimed.push(id);
+    return id;
   }
 
   private enqueue(work: () => Promise<void>): Promise<void> {

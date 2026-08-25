@@ -26,6 +26,7 @@
  * branch on disk, reachable, which is what makes `/retry` a sibling rather than an overwrite.
  */
 
+import { takeRunBubbles } from "../utils/run-context.ts";
 import { spillToolOutput } from "../sessions/tool-output.ts";
 import type { SessionLog, Entry, PhaseEntry, ToolEntry, UserEntry } from "../sessions/log.ts";
 import type { SessionAttachment } from "../sessions/store.ts";
@@ -157,6 +158,14 @@ export class RunRecorder {
       : [{ content: recorded.content, ...(recorded.reasoning ? { reasoning: recorded.reasoning } : {}) }];
     const replayable = recorded.providerMeta && !recorded.incomplete ? recorded.providerMeta : undefined;
 
+    // The ids of the bubbles this turn was streamed into, so a phase and the bubble holding its
+    // text are one identity -- docs/bubble-identity.md. Used only when there are exactly as many
+    // as there are phases: a segment can hold thinking that never becomes prose, and pairing by
+    // position through a mismatch would give a phase the id of a bubble holding something else,
+    // which is worse than two ids. A turn that does not line up keeps the ids the log mints.
+    const bubbles = takeRunBubbles(this.entries.sessionId);
+    const ids = bubbles.length === phases.length ? bubbles : [];
+
     return phases.map((phase, index) => {
       const last = index === phases.length - 1;
       return this.entries.append<PhaseEntry>({
@@ -169,7 +178,7 @@ export class RunRecorder {
         ...(last && recorded.reasoningTokens ? { reasoningTokens: recorded.reasoningTokens } : {}),
         runId: this.currentRunId,
         ...(last && replayable ? { providerMeta: replayable } : {}),
-      });
+      }, ids[index]);
     });
   }
 

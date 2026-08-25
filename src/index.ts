@@ -82,7 +82,7 @@ import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { isAbort } from "./core/aborted.ts";
-import { withRunContext } from "./utils/run-context.ts";
+import { setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
@@ -2245,6 +2245,10 @@ async function main() {
             // finalizes it and opens a fresh bubble replying to that message.
             let active = myClawApp.createStreamer(msg);
             const runSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", msg.chatId, msg.userId, { threadId: msg.threadId, sessionScope: "per-user" });
+            // The bubbles this run paints in, so the phases the recorder writes are appended under
+            // the ids already on screen -- docs/bubble-identity.md. Read through `active`, which a
+            // mid-run injection replaces: the sink must follow the bubble that is open now.
+            setRunBubbles(runSessionId, { take: () => active.take() });
             // Live tool output (bash) is a global hook; route each chunk to the streamer of the
             // session that produced it. A sub-agent's chunks carry its own session id, so matching
             // the root alone silently dropped them and a long command in a child ran blind.
@@ -2274,6 +2278,9 @@ async function main() {
               });
               subAgentStreamers.set(ev.id, streamer);
               subAgentContexts.set(ev.id, context);
+              // Keyed by the child's own session: unkeyed, the parent's phases would claim the
+              // bubbles its child opened.
+              setRunBubbles(ev.id, { take: () => subAgentStreamers.get(ev.id)?.take() ?? [] });
               // The boot-level stream provider has no thread to paint in; this is how a steered
               // child opens its next bubble in the right place.
               subAgentStreamRenew.set(ev.id, (injected) => myClawApp.createStreamer({

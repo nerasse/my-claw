@@ -4,6 +4,7 @@ import { RunRecorder, newRunId } from "../../src/agent/run-recorder.ts";
 import { openSessionLog, sessionDir, type SessionLog, type PhaseEntry, type ToolEntry } from "../../src/sessions/log.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { readToolOutput } from "../../src/sessions/tool-output.ts";
+import { setRunBubbles, withRunContext } from "../../src/utils/run-context.ts";
 
 const SESSION = "recorder";
 
@@ -344,5 +345,65 @@ describe("RunRecorder: durability", () => {
     await entries.flush();
     const reread = (await openSessionLog(SESSION)).entries()[0] as ToolEntry;
     expect(await readToolOutput(SESSION, reread.callId)).toHaveLength(60_000);
+  });
+});
+
+describe("a phase keeps the id of the bubble it was streamed into", () => {
+  // Before this, the channel minted a bubble id and the log minted an entry id, so one piece of
+  // prose had two identities and nothing could tell they were the same -- docs/bubble-identity.md.
+  const bubbles = (ids: string[]) => ({ take: () => ids.splice(0, ids.length) });
+
+  // A log of its own per test: these tests write ids they chose, and a leaf pointer left behind
+  // under a name another test reuses is a stale cursor rather than a finding.
+  async function freshLog(name: string): Promise<{ id: string; log: SessionLog }> {
+    const id = `${SESSION}-${name}`;
+    await rm(sessionDir(id), { recursive: true, force: true });
+    await mkdir(sessionDir(id), { recursive: true });
+    return { id, log: await openSessionLog(id) };
+  }
+
+  test("takes the bubble ids of its own session", async () => {
+    const { id, log } = await freshLog("own");
+    const recorder = new RunRecorder(log);
+    const phases = await withRunContext({ platform: "test" }, async () => {
+      setRunBubbles(id, bubbles(["bubble-1", "bubble-2"]));
+      return recorder.turn({ content: "deux temps", segments: [{ content: "un" }, { content: "deux" }] });
+    });
+    await log.flush();
+    expect(phases.map((phase) => phase.id)).toEqual(["bubble-1", "bubble-2"]);
+  });
+
+  test("ignores a sink belonging to another session, which is a sub-agent's", async () => {
+    const { log } = await freshLog("parent");
+    const recorder = new RunRecorder(log);
+    const phases = await withRunContext({ platform: "test" }, async () => {
+      setRunBubbles("subagent/other", bubbles(["child-1"]));
+      return recorder.turn({ content: "le parent ecrit" });
+    });
+    await log.flush();
+    expect(phases[0]!.id).not.toBe("child-1");
+  });
+
+  test("mints as before when the counts disagree, rather than pairing the wrong two", async () => {
+    // A segment can hold thinking that never became prose. Pairing by position through that would
+    // give a phase the id of a bubble holding something else, and the client would merge them.
+    const { id, log } = await freshLog("mismatch");
+    const recorder = new RunRecorder(log);
+    const phases = await withRunContext({ platform: "test" }, async () => {
+      setRunBubbles(id, bubbles(["bubble-1", "bubble-2", "bubble-3"]));
+      return recorder.turn({ content: "deux temps", segments: [{ content: "un" }, { content: "deux" }] });
+    });
+    await log.flush();
+    expect(phases.map((phase) => phase.id)).not.toContain("bubble-1");
+    expect(new Set(phases.map((phase) => phase.id)).size).toBe(2);
+  });
+
+  test("mints as before when nothing is painting the run, like cron", async () => {
+    const { log } = await freshLog("cron");
+    const recorder = new RunRecorder(log);
+    const phases = await withRunContext({ platform: "cron" }, async () => recorder.turn({ content: "sans fenetre" }));
+    await log.flush();
+    expect(phases[0]!.id).toBeTruthy();
+    expect(promptOf(log.path(), phases[0]!.id).map((m) => m.content)).toContain("sans fenetre");
   });
 });

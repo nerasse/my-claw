@@ -9,11 +9,25 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+/**
+ * The ids of the bubbles a channel has opened and not yet handed over, oldest first. Taking them
+ * empties the sink: they are claimed once, by the phases that were streamed into them --
+ * docs/bubble-identity.md.
+ */
+export interface BubbleSink {
+  take(): string[];
+}
+
 export interface RunContext {
   /** Short on purpose: it is meant to be read off a phone screen and typed back. */
   runId: string;
   platform?: string;
   sessionId?: string;
+  /**
+   * Bubble ids per session. Keyed, because a sub-agent paints its own bubbles inside the parent's
+   * run context: unkeyed, the child's ids would be claimed by the parent's phases.
+   */
+  bubbles?: Map<string, BubbleSink>;
 }
 
 const storage = new AsyncLocalStorage<RunContext>();
@@ -46,4 +60,24 @@ export function currentRunId(): string | undefined {
 export function setRunSession(sessionId: string): void {
   const ctx = storage.getStore();
   if (ctx) ctx.sessionId = sessionId;
+}
+
+/**
+ * A channel announcing where it paints one session's answer. Called when the streamer is built,
+ * which is inside the run context the channel opened at ingress.
+ */
+export function setRunBubbles(sessionId: string, sink: BubbleSink): void {
+  const ctx = storage.getStore();
+  if (!ctx) return;
+  if (!ctx.bubbles) ctx.bubbles = new Map();
+  ctx.bubbles.set(sessionId, sink);
+}
+
+/**
+ * The ids of the bubbles opened for this session since the last call, oldest first. Empty when no
+ * channel is painting this run (cron, a sub-agent nobody is watching), and the phases then keep
+ * the ids the log mints for them.
+ */
+export function takeRunBubbles(sessionId: string): string[] {
+  return storage.getStore()?.bubbles?.get(sessionId)?.take() ?? [];
 }
