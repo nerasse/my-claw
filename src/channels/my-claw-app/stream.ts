@@ -100,9 +100,11 @@ export class MyClawAppStreamer {
     if (!stdout && !stderr) return;
     return this.enqueue(async () => {
       if (this.finished) return;
-      // The hook carries the model's tool_use id; the card's id is the start's. Look it up so the
-      // app appends to the right card.
-      const id = this.toolIdsByModelId.get(toolCallId) ?? toolCallId;
+      // The hook carries the model's tool_use id; the card's id is derived from it. Derived, not
+      // looked up: the table is per streamer, and a mid-run injection builds a fresh one, so a
+      // lookup silently fell back to the raw model id -- output addressed to a card that does not
+      // exist, and a journal that never forgets it on settle. One card, one id.
+      const id = toolCardId(toolCallId) ?? this.toolIdsByModelId.get(toolCallId) ?? toolCallId;
       await this.opts.send({
         type: "chat.tool.delta",
         id,
@@ -132,7 +134,10 @@ export class MyClawAppStreamer {
       if (this.finished) return;
       // Link to the tool-start card when the spawn came from a tool call; else the sub-agent id is
       // the card id so a later end frame settles the same card.
-      const cardId = (info.toolCallId && this.toolIdsByModelId.get(info.toolCallId)) || info.subagentId;
+      // Looked up, not derived, unlike a tool's live output: here the question is whether a tool
+      // card EXISTS to link to. A programmatic spawn, or one whose card was suppressed, must fall
+      // back to the sub-agent id -- deriving `t-<toolu>` would name a card nobody drew.
+      const cardId = (info.toolCallId ? this.toolIdsByModelId.get(info.toolCallId) : undefined) ?? info.subagentId;
       this.spawnCardIds.set(info.subagentId, cardId);
       await this.opts.send({
         type: "chat.spawn.start",
@@ -159,7 +164,7 @@ export class MyClawAppStreamer {
   }): Promise<void> {
     return this.enqueue(async () => {
       if (this.finished) return;
-      const cardId = this.spawnCardIds.get(info.subagentId) ?? ((info.toolCallId && this.toolIdsByModelId.get(info.toolCallId)) || info.subagentId);
+      const cardId = this.spawnCardIds.get(info.subagentId) ?? (info.toolCallId ? this.toolIdsByModelId.get(info.toolCallId) : undefined) ?? info.subagentId;
       this.spawnCardIds.delete(info.subagentId);
       await this.opts.send({
         type: "chat.spawn.end",

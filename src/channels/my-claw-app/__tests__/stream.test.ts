@@ -97,3 +97,26 @@ describe("MyClawAppStreamer live spawn cards", () => {
     expect(frames.filter((f) => f.type === "chat.spawn.start")).toHaveLength(0);
   });
 });
+
+describe("one card, one id", () => {
+  test("live output is addressed by the card id, even from a streamer that never opened it", async () => {
+    // A mid-run injection replaces the streamer. The replacement never saw the tool start, so its
+    // model-id table is empty: a lookup fell back to the raw `toolu_...` and the output went to a
+    // card that does not exist -- invisible live output, and a journal that never forgot it.
+    const { streamer, frames } = makeStreamer();
+    await streamer.appendToolProgress("toolu_abc", { stdout: "une ligne\n" });
+
+    const delta = frames.find((f) => f.type === "chat.tool.delta");
+    expect(delta && "id" in delta ? delta.id : undefined).toBe("t-toolu_abc");
+  });
+
+  test("the start of that same call names the same card", async () => {
+    const { streamer, frames } = makeStreamer();
+    await streamer.appendToolStart([{ id: "toolu_abc", name: "bash", arguments: { command: "ls" } }]);
+    await streamer.appendToolProgress("toolu_abc", { stdout: "sortie\n" });
+
+    const ids = frames.filter((f) => f.type === "chat.tool.start" || f.type === "chat.tool.delta").map((f) => ("id" in f ? f.id : ""));
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toBe("t-toolu_abc");
+  });
+});
