@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { FailureEntry, CommandEntry } from "../src/sessions/log.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
+import { appendSpawnState } from "../src/sessions/spawn-state.ts";
 
 const DEVICE = "dev-test";
 const THREAD = "thread-1";
@@ -1455,6 +1456,63 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
     assert.equal(result.entries.length, 3);
     assert.equal((result.entries[0] as { text: string }).text, "message 7");
     assert.equal((result.entries[2] as { text: string }).text, "message 9");
+  });
+
+  test("a child settling after the cursor resends the card it settled", async () => {
+    // The case the whole entry type exists for. The `spawn` card was synced while the child was
+    // still working, so the only thing after the cursor is its ending -- and an ending is not
+    // something a client can draw. It gets the card back instead, current.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "lance un audit", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        role: "assistant", content: "j'y vais", timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [{ id: "call-1", name: "spawn", arguments: JSON.stringify({ name: "auditor" }) }],
+      },
+      { role: "tool", toolCallId: "call-1", content: "started", timestamp: "2026-01-01T00:00:03.000Z" },
+    ]));
+    const running = appendSpawnState(logSetup.log, {
+      subagentId: "subagent/auditor",
+      status: "running",
+      toolCallId: "call-1",
+      displayName: "dup-audit",
+      agentType: "research",
+      mode: "run",
+      action: "spawn",
+    });
+    assert.ok(running);
+
+    const cursor = (await store.sync(DEVICE, THREAD)).head;
+    assert.ok(cursor);
+    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 4096 });
+
+    const delta = await store.sync(DEVICE, THREAD, cursor);
+    assert.equal(delta.entries.length, 1);
+    const card = delta.entries[0] as { id: string; role: string; spawn?: { status: string; displayName: string; resultLength?: number } };
+    assert.equal(card.role, "tool");
+    assert.equal(card.id, "t-call-1");
+    assert.equal(card.spawn?.status, "complete");
+    assert.equal(card.spawn?.displayName, "dup-audit");
+    assert.equal(card.spawn?.resultLength, 4096);
+  });
+
+  test("a child still running syncs nothing on its own", async () => {
+    // Its card is already on screen with a spinner the live frames put there. Resending it would
+    // say nothing new, and the state entry alone is not drawable.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "lance un audit", timestamp: "2026-01-01T00:00:01.000Z" },
+      {
+        role: "assistant", content: "j'y vais", timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [{ id: "call-1", name: "spawn", arguments: "{}" }],
+      },
+      { role: "tool", toolCallId: "call-1", content: "started", timestamp: "2026-01-01T00:00:03.000Z" },
+    ]));
+    const cursor = (await store.sync(DEVICE, THREAD)).head;
+    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "running", toolCallId: "call-1" });
+
+    const delta = await store.sync(DEVICE, THREAD, cursor!);
+    // The card comes back once, because its state changed -- and it comes back as a card.
+    assert.equal(delta.entries.length, 1);
+    assert.equal((delta.entries[0] as { role: string }).role, "tool");
   });
 
   test("sync caps at SYNC_LIMIT (500)", async () => {

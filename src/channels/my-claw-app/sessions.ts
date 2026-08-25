@@ -5,7 +5,8 @@ import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, displayOf, type DisplayResolvers } from "./display.ts";
+import { pageOf, displayOf, withSpawnCards, type DisplayResolvers } from "./display.ts";
+import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
@@ -350,8 +351,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const stored = needsFiles ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
 
-    // Convert entries to display format
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT);
+    // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
+    // and a card whose state entry fell outside the window would replay as a spinner for good.
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()));
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -415,13 +417,18 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const truncated = delta.length > effectiveLimit;
     if (truncated) delta = delta.slice(-effectiveLimit);
 
+    // A state entry the client cannot draw becomes the card it revised, before anything else looks
+    // at the delta -- including the attachment scan, which now sees a tool entry rather than an
+    // annotation.
+    delta = withSpawnCards(delta, allEntries);
+
     // Resolve attachments for display
     const needsFiles = delta.some(
       (e) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")),
     );
     const stored = needsFiles ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries));
 
     return {
       entries,
@@ -460,8 +467,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       }
       // No spill or file missing: return inline output.
       if (entry.output) return entry.output;
-      // Settled as an error or abort before any output was produced.
-      const spawn = entry.spawn;
+      // Settled as an error or abort before any output was produced. For a `spawn` card that is the
+      // child's own ending, which lands well after this entry was written.
+      const spawn = spawnStates(log.entries()).get(callId) ?? entry.spawn;
       return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
     }
     return null;

@@ -28,7 +28,7 @@
 
 import { spillToolOutput } from "../sessions/tool-output.ts";
 import type { SessionLog, Entry, PhaseEntry, ToolEntry, UserEntry } from "../sessions/log.ts";
-import type { SessionAttachment, SessionSubAgentState } from "../sessions/store.ts";
+import type { SessionAttachment } from "../sessions/store.ts";
 import type { ChatLocation } from "../channels/types.ts";
 import type { ProviderMeta } from "../llm/provider.ts";
 
@@ -59,7 +59,6 @@ export interface RecordedToolCall {
   output: string;
   ok: boolean;
   durationMs?: number;
-  spawn?: SessionSubAgentState;
 }
 
 function parseArguments(raw: string): Record<string, unknown> {
@@ -193,7 +192,9 @@ export class RunRecorder {
       truncated: spilled.truncated,
       ok: call.ok,
       ...(call.durationMs !== undefined ? { durationMs: call.durationMs } : {}),
-      ...(call.spawn ? { spawn: call.spawn } : {}),
+      // No sub-agent state here, and it is not an omission: a `spawn` returns while its child runs,
+      // so this entry is written before there is anything terminal to record. `spawn_state` entries
+      // carry the lifecycle -- src/sessions/spawn-state.ts.
       runId: this.currentRunId,
     });
   }

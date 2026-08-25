@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import type { ChatLocation } from "../channels/types.ts";
-import type { SessionAttachment, SessionSubAgentState } from "./store.ts";
+import type { SessionAttachment, SessionSubAgentAction, SessionSubAgentState, SessionSubAgentStatus } from "./store.ts";
 
 export const SESSION_LOG_VERSION = 1;
 
@@ -32,7 +32,8 @@ export type EntryType =
   | "failure"
   | "compaction"
   | "model_change"
-  | "note";
+  | "note"
+  | "spawn_state";
 
 /** Assigned by the log at append time, never by the caller -- that is what keeps ids stable. */
 interface EntryBase {
@@ -92,6 +93,13 @@ export interface ToolEntry extends EntryBase {
   truncated: boolean;
   ok: boolean;
   durationMs?: number;
+  /**
+   * Sub-agent state as it stood when a pre-log session was imported, and only then: the shape kept
+   * the lifecycle on the assistant turn's tool call, so the migration copies it here rather than
+   * losing it. Nothing writes it live -- a sub-agent outlives the call that started it, so its
+   * state cannot be part of an entry written once, at settle. `spawn_state` entries carry it now,
+   * and `spawnStates` reads both, this one being the floor.
+   */
   spawn?: SessionSubAgentState;
   runId: string;
 }
@@ -137,6 +145,34 @@ export interface NoteEntry extends EntryBase {
   from?: { sessionId: string; label: string };
 }
 
+/**
+ * One step of a sub-agent's life, on the card of the call that started it -- docs/session-log.md §5.
+ *
+ * The only entry that describes another entry, and the reason it has to exist: a `spawn` tool
+ * returns as soon as the child is launched, so the tool entry is written while the child is still
+ * running and every later state -- complete, error, killed -- happens after the one write it would
+ * have fitted in. Nothing here rewrites that entry. The state is appended as it happens and folded
+ * back onto `callId` at read time, which is the same trade the whole format makes: an immutable
+ * log, a view that is computed.
+ *
+ * Never in a prompt. A model reads the child's result in the tool output; this is the spinner.
+ */
+export interface SpawnStateEntry extends EntryBase {
+  type: "spawn_state";
+  prompt: false;
+  /** The card this annotates: the model's own id for the `spawn` or `send` call that opened it. */
+  callId: string;
+  subagentId: string;
+  status: SessionSubAgentStatus;
+  /** Identity, carried by the opening entry only -- a terminal event knows the child, not its name. */
+  displayName?: string;
+  agentType?: string;
+  mode?: string;
+  action?: SessionSubAgentAction;
+  resultLength?: number;
+  error?: string;
+}
+
 export type Entry =
   | UserEntry
   | PhaseEntry
@@ -145,7 +181,8 @@ export type Entry =
   | FailureEntry
   | CompactionEntry
   | ModelChangeEntry
-  | NoteEntry;
+  | NoteEntry
+  | SpawnStateEntry;
 
 /**
  * What a caller hands to `append`: the payload, without anything the log itself decides.

@@ -16,7 +16,7 @@ import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { toolCardId } from "./types.ts";
 import type { Entry } from "../../sessions/log.ts";
-import type { SessionAttachment } from "../../sessions/store.ts";
+import type { SessionAttachment, SessionSubAgentState } from "../../sessions/store.ts";
 import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry } from "./types.ts";
 
 /**
@@ -60,6 +60,48 @@ export function pageOf(
 /** Long enough for a real turn, short enough that one runaway turn does not pull in the session. */
 const MAX_TURN_LOOKBACK = 400;
 
+/**
+ * Turns a sync delta's `spawn_state` entries into the cards they revise.
+ *
+ * A delta is what the client has not seen, and a state entry on its own is not something it can
+ * draw: the card it annotates may have arrived pages ago, when the child was still running. So each
+ * one is replaced by its tool entry, whole. The client keys cards on the call id, so the same card
+ * arriving twice updates in place instead of appearing twice -- and `displayOf` fills in the state
+ * from the fold over the entire log, which is what makes the resent card current rather than a copy
+ * of what was already shown.
+ *
+ * Once per card, at the position of the state that revised it. A state whose call never settled is
+ * dropped: there is no card yet, and the live frames are still carrying that one.
+ */
+export function withSpawnCards(delta: readonly Entry[], all: readonly Entry[]): Entry[] {
+  if (!delta.some((entry) => entry.type === "spawn_state")) return [...delta];
+
+  // Indexed once. Scanning the log per state entry is linear in a conversation that only grows,
+  // and a delta is capped at 500: measured at 28 ms on a 4 667-entry session, against 0.1 ms here.
+  const cards = new Map<string, Entry>();
+  for (const entry of all) if (entry.type === "tool" && !cards.has(entry.callId)) cards.set(entry.callId, entry);
+
+  const emitted = new Set<string>();
+  const out: Entry[] = [];
+  for (const entry of delta) {
+    if (entry.type === "tool") {
+      emitted.add(entry.callId);
+      out.push(entry);
+      continue;
+    }
+    if (entry.type !== "spawn_state") {
+      out.push(entry);
+      continue;
+    }
+    if (emitted.has(entry.callId)) continue;
+    const card = cards.get(entry.callId);
+    if (!card) continue;
+    emitted.add(entry.callId);
+    out.push(card);
+  }
+  return out;
+}
+
 /** The app speaks ISO timestamps; the log stores the millisecond it was written. */
 function tsOf(entry: Entry): string {
   return new Date(entry.ts).toISOString();
@@ -76,6 +118,7 @@ export function displayOf(
   entries: readonly Entry[],
   resolvers: DisplayResolvers,
   outputLimit: number,
+  spawn?: ReadonlyMap<string, SessionSubAgentState>,
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
@@ -120,9 +163,15 @@ export function displayOf(
       continue;
     }
 
+    // No bubble of its own: it is an annotation on the card named by its `callId`, and it reaches
+    // the screen through the `spawn` map -- which is folded from the whole log, not from this page,
+    // because a child launched fifty entries ago finishes here.
+    if (entry.type === "spawn_state") continue;
+
     if (entry.type === "tool") {
       const output = entry.output;
       const truncated = entry.truncated || output.length > outputLimit;
+      const state = spawn?.get(entry.callId) ?? entry.spawn;
       out.push({
         // Keyed on the model's own call id, so this card and the live one are one card. They used
         // to differ, and a tool finishing after a reload appended a second card beside the first.
@@ -136,9 +185,11 @@ export function displayOf(
         ok: entry.ok,
         output: truncated ? output.slice(0, outputLimit) : output,
         truncated,
-        // No `running` here, ever: an entry exists only once the call has settled. A card still
-        // spinning is carried by the live frames and by `chat.history.activeRun` (commit 48f084d).
-        ...(entry.spawn ? { spawn: entry.spawn } : {}),
+        // The tool itself never spins here -- an entry exists only once the call has settled, and a
+        // call in flight is carried by the live frames and by `chat.history.activeRun` (commit
+        // 48f084d). The sub-agent behind it can, though: `spawn` returns while the child works, so
+        // a `running` state on a settled card is the honest reading of a background child.
+        ...(state ? { spawn: state } : {}),
         ts,
       });
       continue;

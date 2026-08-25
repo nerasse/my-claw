@@ -283,6 +283,7 @@ type EntryType =
   | "compaction"    // un résumé et la borne qu'il pose
   | "model_change"  // /model, /effort
   | "note"          // affichage seul, jamais envoyé au modèle
+  | "spawn_state"   // un pas dans la vie d'un sous-agent, sur la carte qui l'a lancé (§3.5)
   | "queued";       // un message parqué en mailbox (lot 9)
 ```
 
@@ -299,6 +300,7 @@ seul. C'est la distinction `CustomEntry` / `CustomMessageEntry` de pi, général
 | `compaction` | `true` | porte le résumé |
 | `model_change` | `false` | |
 | `note` | `false` | le `note` du hand-back sous-agent |
+| `spawn_state` | `false` | le spinner du sous-agent ; le modèle lit son résultat dans `tool` |
 | `queued` | `false` | devient `user` quand il est drainé |
 
 ## 2.3 Charges utiles
@@ -339,8 +341,23 @@ interface ToolEntry extends EntryBase {
   truncated: boolean;
   ok: boolean;
   durationMs?: number;
+  /** Legacy : l'état tel qu'il était à l'import d'une session d'avant le log (§3.5). */
   spawn?: SpawnState;
   runId: string;
+}
+
+/** La seule entrée qui parle d'une autre entrée. Pourquoi : §3.5. */
+interface SpawnStateEntry extends EntryBase {
+  type: "spawn_state"; prompt: false;
+  callId: string;            // la carte annotée = l'id d'appel du spawn/send
+  subagentId: string;
+  status: "running" | "complete" | "error" | "aborted";
+  displayName?: string;      // identité : portée par l'entrée d'ouverture seule
+  agentType?: string;
+  mode?: string;
+  action?: "spawn" | "send";
+  resultLength?: number;
+  error?: string;
 }
 
 interface CompactionEntry extends EntryBase {
@@ -505,6 +522,80 @@ logique devient une ligne dans `displayOf`.
 **Côté app, plafond ~500 entrées en mémoire par thread.** Le delta accumule sinon
 indéfiniment, et une session de 3695 entrées sur un téléphone finirait par ramer. Au-delà,
 les plus anciennes sont relâchées et redemandées au scroll.
+
+## 3.5 `spawnStates` — l'état d'un sous-agent, replié sur sa carte
+
+### Le problème : un état qui arrive après la seule écriture de son entrée
+
+Un `spawn` rend la main **au lancement de l'enfant**, pas à sa fin. L'entrée `tool` est donc
+écrite pendant que l'enfant travaille, et tout ce qui vient après — `complete`, `error`,
+`killed`, `reset` — arrive après l'unique écriture que cette entrée aura jamais. Or aucune
+entrée n'est réécrite : c'est l'invariant qui permet à un lecteur de croire ce qu'il lit.
+
+Ce n'était pas une hypothèse. `ToolEntry.spawn` **n'a jamais eu de producteur vivant** :
+`bridge.ts` n'a jamais renseigné `call.spawn`, et le seul écrivain historique,
+`recordSessionSubAgentState`, mutait `session.messages` — un tableau auquel plus rien
+n'appendait depuis le passage au log. Les 26 états présents dans le log de prod viennent
+tous d'`import.ts`, donc de sessions d'avant le log. Depuis 0.4.53, **aucune conversation
+neuve n'a jamais persisté le cycle de vie d'un sous-agent** : au redémarrage, une carte
+lancée redevenait une carte muette.
+
+### La forme retenue : log immuable, vue calculée
+
+C'est le modèle d'opencode v2 (log append-only + projection mutable), sans sa base SQLite :
+ici le JSONL reste la vérité et la projection est repliée à la lecture plutôt que stockée.
+
+- **L'écrivain append.** Un pas du cycle de vie = une entrée `spawn_state`, qui nomme la
+  carte (`callId`) au lieu de la modifier.
+- **Le lecteur replie.** `spawnStates(entries)` rend `Map<callId, SpawnState>` ;
+  `displayOf` la reçoit et pose l'état sur la carte.
+
+Deux règles, et elles vivent **dans le lecteur seul**, pour que le sens du log ne dépende
+jamais de la discipline de celui qui l'a écrit :
+
+1. **Un état terminal est définitif.** Rien après lui ne compte : ni un doublon, ni un
+   `kill` visant un enfant qui avait déjà répondu. Sans cette règle, un balayage de roster
+   à l'extinction transforme toute carte finie de l'historique en carte avortée. (C'est la
+   règle « collant » de `recordSessionSubAgentState`, perdue avec lui, réexprimée ici.)
+2. **Un `spawn` inline sur l'entrée `tool` est le plancher.** Les sessions d'avant portent
+   leur état sur l'entrée elle-même, et c'est un état déjà réglé.
+
+`cardOf` complète : un événement terminal ne connaît que l'enfant, jamais l'appel qui l'a
+demandé — c'est le log qui répond, via l'entrée d'ouverture. La **dernière**, parce qu'un
+`send` vers un enfant vivant ouvre une nouvelle carte, et c'est celle-là que la prochaine
+réponse concerne.
+
+### Ce qui n'est pas écrit
+
+Un cycle de vie **sans carte derrière lui** (un enfant lancé depuis le roster, pas par un
+appel d'outil) n'annote rien : rien n'est écrit. Un cycle de vie **au-delà d'un état
+terminal** non plus. Dans les deux cas ce serait une ligne qu'aucun lecteur ne demande.
+
+### Côté synchronisation
+
+Un delta est ce que le client n'a pas vu, et un `spawn_state` seul n'est pas dessinable :
+la carte qu'il annote a pu arriver il y a des pages, quand l'enfant tournait encore.
+`withSpawnCards` le remplace donc par **son entrée `tool`, entière**. Le client indexe les
+cartes sur l'id d'appel, donc la même carte qui revient se met à jour au lieu d'apparaître
+deux fois — et `displayOf` y pose l'état replié sur le log **entier**, ce qui fait de cette
+carte renvoyée une carte à jour et non une copie de ce qui était déjà affiché. Une carte
+par delta, à la position de l'état qui l'a révisée. Un état dont l'appel n'a jamais abouti
+est jeté : il n'y a pas encore de carte, et les frames live portent celle-là.
+
+Même raison pour la pagination : le pli se fait sur `log.entries()`, jamais sur la fenêtre.
+Un enfant lancé cinquante entrées plus haut se règle ici, et replier la page seule laisse
+la carte tourner pour toujours.
+
+### Où c'est branché
+
+`recordSpawnLifecycle` s'abonne aux six hooks (`subagent:spawn|complete|error|aborted|
+killed|reset`) **une fois au boot**, pas par run : un sous-agent de fond survit au run qui
+l'a lancé, donc un abonnement démonté avec ce run manquerait précisément ce qu'on veut
+enregistrer. La carte est dans la conversation du parent, donc c'est ce log qu'on écrit —
+`kill` et `reset` l'atteignent depuis une troisième conversation et tombent quand même sur
+la bonne carte. Une chaîne de promesses par conversation garantit l'ordre : `logOf` est
+asynchrone, et une entrée d'ouverture écrite après son propre état terminal, c'est une
+carte bloquée sur le spinner à jamais.
 
 ---
 
@@ -1209,13 +1300,14 @@ Trois compteurs de surface (`/status`, la liste des runs cron, l'état renvoyé 
 nom `messages`** : un APK déjà installé le lit sous ce nom et ne se met pas à jour au rythme du
 serveur, donc renommer pour la cosmétique casserait des clients.
 
-**Ce qui n'est pas fait, et pourquoi.** `ToolEntry.spawn` existe, `display.ts` le rend, `import.ts`
-le remplit depuis une session d'avant la refonte — mais rien ne l'alimente pour une conversation
+**Ce qui n'était pas fait, et pourquoi.** `ToolEntry.spawn` existe, `display.ts` le rend, `import.ts`
+le remplit depuis une session d'avant la refonte — mais rien ne l'alimentait pour une conversation
 neuve, parce que `call.spawn` n'est jamais assigné. La persistance du cycle de vie des sous-agents
 n'a donc jamais fonctionné depuis le basculement. Le code qui prétendait le faire est retiré, ce
 qui rend le trou visible ; le combler demande de décider comment l'état terminal rejoint l'entrée
 d'outil, qui est écrite après lui. Et la règle « un état terminal est collant » que son test
-encodait est perdue avec lui : elle devra être réécrite sur le log.
+encodait est perdue avec lui : elle devra être réécrite sur le log. **Livré depuis** — voir
+« Un état qui arrive après son entrée » plus bas et §3.5.
 
 | Fichier | Rôle | Tests |
 |---|---|---|
@@ -1225,8 +1317,40 @@ encodait est perdue avec lui : elle devra être réécrite sur le log.
 | `sessions/meta.ts` | la moitié réglages, `storageVersion` | (couvert par migrate) |
 | `sessions/migrate.ts` | la passe one-shot, idempotente | 15 |
 | `sessions/tool-output.ts` | spill au-delà de 50 KB, lecture, GC des orphelins | 14 |
-| `channels/my-claw-app/display.ts` | `displayOf`, `pageOf` | 21 |
+| `sessions/spawn-state.ts` | `spawnStates`, `cardOf`, `appendSpawnState`, `recordSpawnLifecycle` | 16 |
+| `channels/my-claw-app/display.ts` | `displayOf`, `pageOf`, `withSpawnCards` | 30 |
 | `tests/sessions/prompt-conformance.test.ts` | le prompt gelé en littéraux, sans témoin | 15 |
+
+### Un état qui arrive après son entrée
+
+Le trou signalé ci-dessus est comblé, et la façon dont il l'est vaut d'être notée parce qu'elle
+se reposera : **une entrée est écrite une fois, et certains faits arrivent après.**
+
+Deux dépôts ont été lus avant de trancher. **pi-mono** n'offre rien d'exploitable : son seul
+stockage en production (`SessionManager` v3, 1715 lignes) est un JSONL à entrées plates, c'est-à-dire
+le nôtre avec le même trou ; son successeur v4 est complet et testé mais son unique consommateur
+`AgentHarness.prompt()` fait `throw` ; et le modèle à registres mutables décrit sur 2941 lignes
+dans `docs/harness.md` n'existe nulle part dans le code. **opencode v2** en offre un, vivant :
+table `event` append-only, tables `message`/`part` projetées **dans la même transaction**, l'UI
+lisant la projection et jamais le log, chaque append étant un instantané complet que le projecteur
+`UPSERT` par-dessus.
+
+Retenu : le principe, pas la base SQLite. Le JSONL reste la vérité, la projection est repliée à la
+lecture (`spawnStates`), et l'instantané complet se fait au moment de projeter plutôt qu'au moment
+d'écrire. Aucun consommateur n'a besoin de SQL sur les parts, et le manager LRU met déjà la session
+repliée en cache.
+
+**Ce que ça a corrigé au passage.** `ToolEntry.spawn` n'est pas un champ mort : 26 entrées d'un log
+de prod le portent, toutes issues d'`import.ts`. L'audit initial concluait « zéro donnée » et se
+trompait — le champ est **legacy et figé**, pas vide, et le retirer aurait effacé de l'historique
+affiché. Il reste donc en lecture, comme plancher du pli.
+
+**Vérifié sur les vraies données** (copie du store, 70 sessions, 17 190 entrées) : 26 cartes
+repliées, toutes `complete`, toutes venant du legacy inline ; aucun `spawn_state` n'atteint un
+prompt ; aucune carte orpheline ; 5 996 bulles projetées sans erreur. Puis un cycle de vie complet
+rejoué par le bus sur une vraie conversation : `complete`, `error`, `killed`, encore en cours,
+`send` réinitialisé, plus un `kill` tardif visant un enfant déjà réglé — les six cartes se relisent
+correctement après réouverture, le `kill` tardif est refusé, et l'enfant sans carte n'écrit rien.
 
 ## Mesures sur les vraies données
 

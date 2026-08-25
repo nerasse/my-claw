@@ -19,30 +19,26 @@ export type SessionAttachment = { type: "image"; path: string; mimeType?: string
 
 export type SessionSubAgentStatus = "running" | "complete" | "error" | "aborted";
 
+/**
+ * Which tool opened this card: `spawn` created the sub-agent, `send` drove an existing one.
+ * The lifecycle is identical either way -- this only decides the wording, so a `send` card is
+ * not read as a second creation.
+ */
+export type SessionSubAgentAction = "spawn" | "send";
+
 /** Display-only state for a sub-agent attached to a parent `spawn` tool call. */
 export interface SessionSubAgentState {
   subagentId: string;
   displayName: string;
   agentType: string;
   mode: string;
-  /**
-   * Which tool opened this card: `spawn` created the sub-agent, `send` drove an existing one.
-   * The lifecycle is identical either way -- this only decides the wording, so a `send` card is
-   * not read as a second creation.
-   */
-  action: "spawn" | "send";
+  action: SessionSubAgentAction;
   status: SessionSubAgentStatus;
   resultLength?: number;
   error?: string;
   startedAt: string;
   finishedAt?: string;
 }
-
-export type SessionSubAgentStateUpdate = Partial<Omit<SessionSubAgentState, "subagentId" | "status" | "startedAt">> & {
-  subagentId: string;
-  status: SessionSubAgentStatus;
-  toolCallId?: string;
-};
 
 export type SessionMessage =
   | {

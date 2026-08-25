@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, pageOf, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { displayOf, pageOf, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 
 let seq = 0;
@@ -120,6 +120,81 @@ describe("displayOf: tool cards", () => {
     // call it whole and hide the "see more" the reader needs.
     const drawn = show(chain([tool("c1", { output: "court", truncated: true })])) as Array<{ truncated: boolean }>;
     expect(drawn[0]!.truncated).toBe(true);
+  });
+});
+
+describe("displayOf: a sub-agent's card", () => {
+  const spawnState = (extra: Record<string, unknown> = {}) => ({
+    subagentId: "subagent/auditor", displayName: "dup-audit", agentType: "research", mode: "run",
+    action: "spawn" as const, status: "complete" as const, startedAt: "2026-08-24T15:49:48.654Z", ...extra,
+  });
+
+  test("a state entry draws no bubble of its own", () => {
+    // It describes another entry. Drawn as a bubble it would read as an empty assistant turn
+    // between the question and the card it belongs to.
+    const entries = chain([
+      user("lance un audit"),
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/auditor", status: "running" },
+      tool("c1", { name: "spawn" }),
+    ]);
+    expect(show(entries).map((e) => e.role)).toEqual(["user", "tool"]);
+  });
+
+  test("the card carries the state folded from the whole log, not from its page", () => {
+    // A child spawned fifty entries ago settles here, so its state entry falls outside the window
+    // the page was cut to. Folding over the page alone leaves the card spinning for good.
+    const entries = chain([tool("c1", { name: "spawn" })]);
+    const drawn = displayOf(entries, resolvers, 1000, new Map([["c1", spawnState()]]));
+    expect(drawn[0]).toMatchObject({ spawn: { displayName: "dup-audit", status: "complete" } });
+  });
+
+  test("a state imported onto the entry still draws when nothing folded over it", () => {
+    // Sessions from before the state entry existed keep it inline. They must not go blank.
+    const entries = chain([tool("c1", { name: "spawn", spawn: spawnState({ resultLength: 14565 }) })]);
+    expect(show(entries)[0]).toMatchObject({ spawn: { resultLength: 14565 } });
+  });
+
+  test("a card nobody reported on carries no state", () => {
+    expect("spawn" in show(chain([tool("c1")]))[0]!).toBe(false);
+  });
+});
+
+describe("withSpawnCards: what a delta can draw", () => {
+  test("a state alone becomes the card it revised", () => {
+    // The card arrived pages ago, while the child was still running. The client keys on the call id,
+    // so resending it whole updates that card instead of drawing a second one.
+    const all = chain([tool("c1", { name: "spawn" }), user("et apres")]);
+    const state = chain([{ type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" }]);
+    const delta = withSpawnCards(state, [...all, ...state]);
+    expect(delta).toEqual([all[0]!]);
+  });
+
+  test("a card in the delta is not sent twice", () => {
+    const entries = chain([
+      tool("c1", { name: "spawn" }),
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
+    ]);
+    expect(withSpawnCards(entries, entries)).toEqual([entries[0]!]);
+  });
+
+  test("two states on one card send it once", () => {
+    const all = chain([
+      tool("c1", { name: "spawn" }),
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" },
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
+    ]);
+    expect(withSpawnCards(all.slice(1), all)).toEqual([all[0]!]);
+  });
+
+  test("a state whose call never settled is dropped", () => {
+    // There is no card to revise yet: the tool is still running and the live frames carry it.
+    const state = chain([{ type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" }]);
+    expect(withSpawnCards(state, state)).toEqual([]);
+  });
+
+  test("a delta with no state entry is handed back untouched", () => {
+    const entries = chain([user("q"), phase("a")]);
+    expect(withSpawnCards(entries, entries)).toEqual(entries);
   });
 });
 
