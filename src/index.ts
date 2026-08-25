@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, recordSessionSubAgentState, loadSession, type SessionSubAgentStatus } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, recordSessionSubAgentState, loadSession, loadLegacySession, type SessionSubAgentStatus } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
@@ -624,7 +624,7 @@ async function main() {
   // still running would read a conversation the pass is halfway through moving. Measured at 596 ms
   // for the 68 sessions on this install, and it is a one-off -- a session that already has its
   // directory is skipped, so every later boot pays a directory scan and nothing else.
-  await migrateSessions(loadSession);
+  await migrateSessions(loadLegacySession);
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();

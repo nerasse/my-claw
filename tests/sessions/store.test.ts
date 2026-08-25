@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { loadSession, saveSession, deleteSession, pruneOldSessions, listSessionIdsByPrefix, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
@@ -216,5 +216,105 @@ describe("trim boundary repair (orphan tool messages)", () => {
     const full = [U("q"), A("", ["t1", "t2"]), T("t1"), T("t2"), A("done")];
     const trimmed = dropLeadingOrphanToolMessages(full.slice(-2));
     expect(trimmed[0]!.role).not.toBe("tool");
+  });
+});
+
+/**
+ * The storage switch made a session a directory. Both halves of "find a session on disk" had to
+ * learn that, and one of them did not: the walk kept looking for `*.json`, so the only thing left
+ * to find inside a migrated conversation was its own `meta.json`.
+ */
+describe("a migrated session is a directory, not a file", () => {
+  const OWNER_PREFIX = "my-claw-app/thread/scan-owner/";
+  const OWNER_DIR = join(SESSIONS_DIR, "my-claw-app", "thread", "scan-owner");
+  const CRON_DIR = join(SESSIONS_DIR, "cron", "scan-job");
+
+  async function writeMigrated(dir: string, meta: Record<string, unknown>): Promise<void> {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "entries.jsonl"), `{"id":"e1","seq":1,"ts":1,"type":"user","text":"hi","prompt":true}\n`, "utf-8");
+    await writeFile(join(dir, "meta.json"), JSON.stringify({ storageVersion: 1, leafId: "e1", ...meta }), "utf-8");
+  }
+
+  afterAll(async () => {
+    await rm(join(SESSIONS_DIR, "my-claw-app"), { recursive: true, force: true }).catch(() => {});
+    await rm(join(SESSIONS_DIR, "cron"), { recursive: true, force: true }).catch(() => {});
+  });
+
+  test("listing yields the conversation, never its meta file", async () => {
+    await writeMigrated(join(OWNER_DIR, "thread-a"), { id: `${OWNER_PREFIX}thread-a`, platform: "my-claw-app", chatType: "dm", createdAt: "x", lastActiveAt: "x" });
+
+    const ids = await listSessionIdsByPrefix(OWNER_PREFIX, Number.MAX_SAFE_INTEGER);
+
+    expect(ids).toEqual([`${OWNER_PREFIX}thread-a`]);
+    // The ghost the drawer used to show: a threadId of "meta", one per real conversation.
+    expect(ids.some((id) => id.endsWith("/meta"))).toBe(false);
+  });
+
+  test("the walk stops at a session, so nothing inside it reads as a conversation", async () => {
+    const dir = join(OWNER_DIR, "thread-b");
+    await writeMigrated(dir, { id: `${OWNER_PREFIX}thread-b`, platform: "my-claw-app", chatType: "dm", createdAt: "x", lastActiveAt: "x" });
+    // A spilled tool output, and the empty directory the broken listing itself created.
+    await mkdir(join(dir, "tool-output"), { recursive: true });
+    await writeFile(join(dir, "tool-output", "spill.json"), "{}", "utf-8");
+    await mkdir(join(dir, "meta"), { recursive: true });
+
+    const ids = await listSessionIdsByPrefix(`${OWNER_PREFIX}thread-b`, Number.MAX_SAFE_INTEGER);
+
+    expect(ids).toEqual([`${OWNER_PREFIX}thread-b`]);
+  });
+
+  test("a session that is both shapes at once is listed once", async () => {
+    const id = `${OWNER_PREFIX}thread-c`;
+    await writeMigrated(join(OWNER_DIR, "thread-c"), { id, platform: "my-claw-app", chatType: "dm", createdAt: "x", lastActiveAt: "x" });
+    // What `persist` still writes beside the directory.
+    await writeFile(join(OWNER_DIR, "thread-c.json"), JSON.stringify({ ...makeSession(id), messages: [] }), "utf-8");
+
+    const ids = await listSessionIdsByPrefix(`${OWNER_PREFIX}thread-c`, Number.MAX_SAFE_INTEGER);
+
+    expect(ids).toEqual([id]);
+  });
+
+  test("loading a migrated session returns its settings, not a blank one", async () => {
+    const id = `${OWNER_PREFIX}thread-d`;
+    await writeMigrated(join(OWNER_DIR, "thread-d"), {
+      id,
+      platform: "my-claw-app",
+      chatType: "dm",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      lastActiveAt: "2026-08-02T00:00:00.000Z",
+      title: "the one with the audit",
+      modelOverride: "anthropic/claude-opus-5",
+      contextOverride: 512000,
+      workspace: "dev",
+    });
+
+    const session = await loadSession(id);
+
+    // Without this, the conversation reopens as a new one and the next persist writes the
+    // defaults over meta.json: same entries, no title, no model, no window.
+    expect(session).not.toBeNull();
+    expect(session!.title).toBe("the one with the audit");
+    expect(session!.modelOverride).toBe("anthropic/claude-opus-5");
+    expect(session!.contextOverride).toBe(512000);
+    expect(session!.workspace).toBe("dev");
+    expect(session!.messages).toEqual([]);
+    // Directory bookkeeping is not part of the session.
+    expect(session as unknown as Record<string, unknown>).not.toHaveProperty("storageVersion");
+    expect(session as unknown as Record<string, unknown>).not.toHaveProperty("leafId");
+  });
+
+  test("pruning a stale session takes the whole directory, not just its settings", async () => {
+    const dir = join(CRON_DIR, "stale-run");
+    await writeMigrated(dir, { id: "cron/scan-job/stale-run", platform: "cron", chatType: "dm", createdAt: "x", lastActiveAt: "x" });
+    const staleAt = new Date(Date.now() - 60 * 86_400_000);
+    for (const name of ["entries.jsonl", "meta.json"]) {
+      await utimes(join(dir, name), staleAt, staleAt);
+    }
+
+    await pruneOldSessions();
+
+    // The old sweep deleted `meta.json` alone and left the log: listed, but unopenable.
+    expect(await stat(join(dir, "entries.jsonl")).catch(() => null)).toBeNull();
+    expect(await stat(dir).catch(() => null)).toBeNull();
   });
 });

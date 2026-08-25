@@ -13,7 +13,7 @@ import { readdir, rename, stat, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
-import { openSessionLog, sessionDir, entriesPath } from "./log.ts";
+import { openSessionLog, sessionDir, entriesPath, ENTRIES_FILE } from "./log.ts";
 import { importSession } from "./import.ts";
 import { metaOf, writeMeta } from "./meta.ts";
 import type { SessionData } from "./store.ts";
@@ -38,7 +38,7 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
   // A session id can nest (`cron/<jobId>/<runId>`), so a directory is walked rather than skipped.
   // But a migrated session is *also* a directory, holding `meta.json`: walked blindly it yields
   // `<id>/meta` as a session that does not exist, which the pass then counts as a failure forever.
-  if (entries.some((entry) => entry.name === "entries.jsonl")) return [];
+  if (entries.some((entry) => entry.name === ENTRIES_FILE)) return [];
 
   const ids: string[] = [];
   for (const entry of entries) {

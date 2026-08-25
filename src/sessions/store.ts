@@ -1,11 +1,13 @@
 import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, rmdir, stat } from "node:fs/promises";
 import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join, dirname, relative, sep } from "node:path";
+import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { ENTRIES_FILE } from "./log.ts";
+import { readMeta, sessionFromMeta } from "./meta.ts";
 import type { ChatLocation } from "../channels/types.ts";
 
 /**
@@ -560,7 +562,11 @@ export function subagentThreadToSession(threadId: string): string | null {
   return null;
 }
 
-export async function loadSession(sessionId: string): Promise<SessionData | null> {
+/**
+ * The legacy flat file, and only it. For the boot migration, whose whole job is to read the file
+ * the new format replaces: falling back to the directory would let it read its own output.
+ */
+export async function loadLegacySession(sessionId: string): Promise<SessionData | null> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     const raw = await readFile(path, "utf-8");
@@ -570,6 +576,26 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
     void log("warn", "corrupt session file, treating as empty", { sessionId, error: String(err) });
     return null;
   }
+}
+
+/**
+ * A stored session, from wherever it lives: the flat file, or the directory that replaced it.
+ *
+ * The migration archives `<id>.json`, so for every migrated conversation the flat read returns
+ * nothing. Without the second half, `getOrCreateWithMeta` treats that as "no such session" and
+ * hands back a *new* one: same entries on disk, but default title, default model, default context
+ * window, no approvals -- and the next `persist` writes those defaults over `meta.json`. The
+ * settings are in the directory the whole time, which is what `meta.ts` means by "losing it
+ * silently would reopen a conversation with its title, its model and its approvals gone".
+ *
+ * A directory from a newer binary throws rather than reading as absent, for that same reason: a
+ * fresh session would be persisted straight over settings we could not parse.
+ */
+export async function loadSession(sessionId: string): Promise<SessionData | null> {
+  const flat = await loadLegacySession(sessionId);
+  if (flat) return flat;
+  const meta = await readMeta(sessionId);
+  return meta ? sessionFromMeta(meta) : null;
 }
 
 export async function saveSession(sessionId: string, data: SessionData): Promise<void> {
@@ -621,22 +647,25 @@ const SESSION_STALE_DAYS = 30;
  * re-invocable, and deleting it after a quiet month would break that promise silently. Reclaiming
  * the space is `kill_agent`, or the app's own delete. See docs/subagent-navigation.md.
  */
-const PRUNE_EXEMPT_PREFIXES = [`my-claw-app${sep}`, `subagent${sep}`];
+const PRUNE_EXEMPT_PREFIXES = ["my-claw-app/", "subagent/"];
 
-function isPruneExempt(filePath: string): boolean {
-  const rel = relative(SESSIONS_DIR, filePath);
-  return PRUNE_EXEMPT_PREFIXES.some((prefix) => rel.startsWith(prefix));
+function isPruneExempt(sessionId: string): boolean {
+  return PRUNE_EXEMPT_PREFIXES.some((prefix) => sessionId.startsWith(prefix));
 }
 
 export async function pruneOldSessions(): Promise<number> {
   const cutoffMs = Date.now() - SESSION_STALE_DAYS * 86_400_000;
   let removed = 0;
   try {
-    const entries = await scanSessionFiles(SESSIONS_DIR);
-    for (const { path: filePath, mtimeMs } of entries) {
+    for (const [sessionId, mtimeMs] of await scanSessions(SESSIONS_DIR)) {
       if (mtimeMs >= cutoffMs) continue;
-      if (isPruneExempt(filePath)) continue;
-      await rm(filePath, { force: true }).catch(() => {});
+      if (isPruneExempt(sessionId)) continue;
+      // Both shapes, because a session can be either. Removing the `*.json` files the walk used
+      // to hand back deleted `<id>/meta.json` on its own, leaving a stale conversation as an
+      // entry log with no settings -- present enough to list, too broken to open.
+      const safe = sanitizeSessionId(sessionId);
+      await rm(join(SESSIONS_DIR, `${safe}.json`), { force: true }).catch(() => {});
+      await rm(join(SESSIONS_DIR, safe), { recursive: true, force: true }).catch(() => {});
       removed += 1;
     }
   } catch {
@@ -645,40 +674,59 @@ export async function pruneOldSessions(): Promise<number> {
   return removed;
 }
 
-async function scanSessionFiles(dir: string): Promise<Array<{ path: string; mtimeMs: number }>> {
-  const results: Array<{ path: string; mtimeMs: number }> = [];
+/**
+ * Every stored session under `dir`, as ids rather than paths, keyed to when it last moved.
+ *
+ * A migrated session is *also* a directory, holding `meta.json`. Walked blindly it yields
+ * `<id>/meta`: a conversation that does not exist, and -- since the migration archives the real
+ * `<id>.json` -- the only thing left to list, so the drawer showed one ghost per conversation and
+ * not a single real one. Every ghost also collapses to the same threadId, `"meta"`, because a
+ * threadId is the last segment of the id. `migrate.ts` guards its own walk with this exact test.
+ *
+ * A session can be both shapes at once while `persist` still writes a flat file beside the
+ * directory, so ids are deduplicated on the later of the two mtimes.
+ */
+async function scanSessions(dir: string, prefix = ""): Promise<Map<string, number>> {
+  const found = new Map<string, number>();
   let entries: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }> = [];
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return results;
+    return found;
   }
+
+  const record = (id: string, mtimeMs: number): void => {
+    found.set(id, Math.max(found.get(id) ?? 0, mtimeMs));
+  };
+
+  if (entries.some((entry) => entry.isFile() && entry.name === ENTRIES_FILE)) {
+    // The log is the session's clock: `meta.json` also moves when only a title changes.
+    const s = await stat(join(dir, ENTRIES_FILE)).catch(() => null);
+    if (s && prefix) record(prefix, s.mtimeMs);
+    return found;
+  }
+
   for (const entry of entries) {
     const full = join(dir, entry.name);
+    const id = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      results.push(...(await scanSessionFiles(full)));
+      for (const [nested, mtimeMs] of await scanSessions(full, id)) record(nested, mtimeMs);
     } else if (entry.isFile() && entry.name.endsWith(".json")) {
       const s = await stat(full).catch(() => null);
-      if (s) results.push({ path: full, mtimeMs: s.mtimeMs });
+      if (s) record(id.slice(0, -".json".length), s.mtimeMs);
     }
   }
-  return results;
+  return found;
 }
 
 /** All persisted session ids under a prefix, most recently active first. */
 export async function listSessionIdsByPrefix(prefix: string, limit = 50): Promise<string[]> {
-  const files = await scanSessionFiles(SESSIONS_DIR);
-  const ids: Array<{ id: string; mtimeMs: number }> = [];
-  for (const { path, mtimeMs } of files) {
-    if (!path.endsWith(".json")) continue;
-    const rel = path.slice(SESSIONS_DIR.length + 1, -".json".length);
-    const id = rel.replace(/\\/g, "/");
-    if (id.startsWith(prefix)) ids.push({ id, mtimeMs });
-  }
-  return ids
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  const found = await scanSessions(SESSIONS_DIR);
+  return [...found]
+    .filter(([id]) => id.startsWith(prefix))
+    .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
-    .map((entry) => entry.id);
+    .map(([id]) => id);
 }
 
 /** Remove every archive snapshot of a session (used by hard delete). */

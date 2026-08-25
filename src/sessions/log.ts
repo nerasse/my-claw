@@ -181,8 +181,16 @@ export function sessionDir(sessionId: string): string {
   return join(SESSIONS_DIR, sanitizeSessionId(sessionId));
 }
 
+/**
+ * The file whose presence *is* the fact "this directory is a session".
+ *
+ * Two walks key off it to tell a session directory from a directory that merely contains
+ * sessions (`migrate.ts`, `store.ts`), so it is one constant rather than three spellings.
+ */
+export const ENTRIES_FILE = "entries.jsonl";
+
 export function entriesPath(sessionId: string): string {
-  return join(sessionDir(sessionId), "entries.jsonl");
+  return join(sessionDir(sessionId), ENTRIES_FILE);
 }
 
 /**

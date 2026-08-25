@@ -1024,6 +1024,42 @@ Restent optionnels : les lots 9 (queues persistables) et 10 (snapshots), le cham
 de `SessionData` que `manager.ts` lit encore pour ses compteurs, et les boutons de l'app pour
 les branches et l'undo, les lots 7 et 8 n'ayant livré que les commandes.
 
+### Un répertoire remplace le fichier plat : les deux moitiés de « trouver une session »
+
+Mesuré en prod sur 0.4.53, après une migration pourtant propre (69 migrées, 3 sautées,
+0 échec) : **aucune conversation n'était plus joignable depuis le tiroir de l'app.**
+
+« Trouver une session sur le disque » se fait à deux endroits, et un seul avait appris le
+nouveau format. `legacySessionIds` (`migrate.ts`) s'était donné le garde-fou et l'avait même
+nommé — *un répertoire migré est aussi un répertoire, qui contient `meta.json`* — mais
+`scanSessionFiles` (`store.ts`) cherchait toujours des `*.json` en descendant partout. Comme
+la migration archive le vrai `<id>.json`, le seul `.json` restant sous une conversation était
+son propre `meta.json` : le parcours rendait `<id>/meta`, un id qui ne désigne rien. Une
+conversation réelle, zéro. Et comme un threadId est le dernier segment d'un id, les neuf
+fantômes se réduisaient au même : `"meta"`.
+
+Trois conséquences du même oubli, corrigées ensemble :
+
+1. **La liste.** `scanSessions` s'arrête sur un répertoire qui contient `entries.jsonl` et rend
+   ce répertoire. Le nom du fichier est une constante partagée (`ENTRIES_FILE`) plutôt que trois
+   orthographes. Une session peut être des deux formes à la fois tant que `persist` écrit encore
+   un fichier plat à côté, donc les ids sont dédupliqués sur la plus récente des deux dates.
+2. **Le chargement.** `loadSession` lisait le fichier plat, donc rendait `null` pour toute
+   session migrée — et `getOrCreateWithMeta` en déduisait « pas de session » et en fabriquait
+   une neuve : mêmes entrées sur le disque, mais titre, modèle, fenêtre et approbations aux
+   valeurs par défaut, que le `persist` suivant écrivait par-dessus `meta.json`. Il lit
+   maintenant le répertoire quand le plat a disparu (`sessionFromMeta`, l'inverse de `metaOf`).
+   La migration reçoit `loadLegacySession`, qui ne lit que le plat : sinon la passe pourrait
+   relire sa propre sortie.
+3. **La purge.** `pruneOldSessions` supprimait chaque `*.json` rendu par le parcours, c'est-à-dire
+   `<id>/meta.json` tout seul pour une session `cron/*` inactive depuis 30 jours : un log
+   d'entrées sans réglages, assez présent pour être listé, trop cassé pour être ouvert. Elle
+   supprime le répertoire entier.
+
+La leçon n'est pas « il manquait un garde-fou ». Il était écrit, à quatre lignes de là, avec le
+mode de panne en commentaire. Ce qui manquait, c'est qu'un fait aussi structurant que *« une
+session est un répertoire »* était encodé deux fois, dans deux parcours indépendants.
+
 | Fichier | Rôle | Tests |
 |---|---|---|
 | `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |
