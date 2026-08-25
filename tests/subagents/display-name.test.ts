@@ -171,11 +171,13 @@ test("a hostile display name lands in sessions/subagent and stays listable", asy
 
     assert.match(id, /^subagent\/pwned-agent-[0-9a-f]{4}$/);
 
-    // The file is a direct child of sessions/subagent, not a tree hanging off it.
+    // A direct child of sessions/subagent, not a tree hanging off it. A conversation is a
+    // directory since the storage switch, so what must not appear is a *nested* one.
     const entries = await readdir(join(MY_CLAW_DIR, "sessions", "subagent"), { withFileTypes: true });
-    const file = entries.find((e) => e.name === `${id.slice("subagent/".length)}.json`);
-    assert.ok(file, `expected ${id} as a file in sessions/subagent`);
-    assert.ok(file.isFile());
+    const own = entries.find((e) => e.name === id.slice("subagent/".length));
+    assert.ok(own, `expected ${id} directly under sessions/subagent`);
+    assert.ok(own.isDirectory());
+    assert.ok(!entries.some((e) => e.name === "pwned"), "the display name must not create a path");
 
     // The two things that silently broke before: the uniqueness scan and the roster.
     assert.ok((await reg.listExistingIds()).has(id));

@@ -8,7 +8,11 @@ import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { sessionDir, openSessionLog, type SessionLog, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../src/sessions/log.ts";
 import { setSessionLogResolver, resetSessionLogResolver } from "../../src/sessions/log-access.ts";
-import { saveSession, type SessionData, type SessionMessage, type SessionCommandEntry, type SessionFailureEntry } from "../../src/sessions/store.ts";
+import { type LegacySessionData, type SessionMessage, type SessionCommandEntry, type SessionFailureEntry } from "../../src/sessions/store.ts";
+import { metaOf, writeMeta } from "../../src/sessions/meta.ts";
+import { MY_CLAW_DIR } from "../../src/core/config.ts";
+import { writeJsonFileAtomically } from "../../src/utils/atomic-write.ts";
+import { join } from "node:path";
 import { splitAttachmentBlock, stripLocationBlock } from "../../src/agent/preprocess.ts";
 import type { ChatLocation } from "../../src/channels/types.ts";
 import type { SessionAttachment } from "../../src/sessions/store.ts";
@@ -261,15 +265,24 @@ export function appendMessages(
 }
 
 /**
- * Creates a session with its log. Combines saveSession + setupSessionLog + appendMessages.
- * Returns the log and a cleanup function.
- *
- * Use this instead of saveSession in tests that read history() or anything that goes through
- * the log. The session file is still written for tests that check session metadata.
+ * Writes the flat `<id>.json` a pre-switch install had. Production no longer writes this shape --
+ * the migration is the only thing that reads it -- so the writer lives here, with the tests that
+ * need a legacy file on disk.
  */
-export async function saveSessionWithLog(sessionId: string, data: SessionData): Promise<SessionLogSetup> {
-  await saveSession(sessionId, data);
+export async function writeLegacySessionFile(sessionId: string, data: LegacySessionData): Promise<void> {
+  const safe = sessionId.replace(/\.\./g, "_").replace(/\0/g, "");
+  await writeJsonFileAtomically(join(MY_CLAW_DIR, "sessions", `${safe}.json`), data, true);
+}
+
+/**
+ * Creates a session the way the storage expects it: settings in the directory, turns in the log.
+ *
+ * Takes the legacy shape because that is how the fixtures are written -- a list of messages is a
+ * readable way to describe a conversation -- and converts it, exactly as the migration does.
+ */
+export async function saveSessionWithLog(sessionId: string, data: LegacySessionData): Promise<SessionLogSetup> {
   const { log, cleanup } = await setupSessionLog(sessionId);
   appendMessages(log, data.messages, data.commands, data.failures);
+  await writeMeta(sessionId, metaOf(data, log.leaf()));
   return { log, cleanup };
 }

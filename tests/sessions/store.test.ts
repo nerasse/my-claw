@@ -1,12 +1,13 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { readFile, rm, mkdir, writeFile, stat, utimes } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { loadSession, saveSession, deleteSession, pruneOldSessions, listSessionIdsByPrefix, archiveSession, dropLeadingOrphanToolMessages, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { loadSession, loadLegacySession, deleteSession, pruneOldSessions, listSessionIdsByPrefix, archiveSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
+import { writeLegacySessionFile } from "../helpers/session-log.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 
-function makeSession(id: string): SessionData {
+function makeSession(id: string): LegacySessionData {
   return {
     id,
     platform: "telegram",
@@ -68,8 +69,8 @@ describe("session store", () => {
     session.modelOverride = "gpt-4";
     session.tokenUsage = { promptTokens: 100, completionTokens: 50, totalTokens: 150, apiCalls: 3 };
 
-    await saveSession("test-store-roundtrip", session);
-    const loaded = await loadSession("test-store-roundtrip");
+    await writeLegacySessionFile("test-store-roundtrip", session);
+    const loaded = await loadLegacySession("test-store-roundtrip");
 
     expect(loaded).not.toBeNull();
     expect(loaded!.id).toBe("test-store-roundtrip");
@@ -83,22 +84,22 @@ describe("session store", () => {
   test("save overwrites existing session", async () => {
     const session1 = makeSession("test-store-overwrite");
     session1.messages = [{ role: "user", content: "first", timestamp: new Date().toISOString() }];
-    await saveSession("test-store-overwrite", session1);
+    await writeLegacySessionFile("test-store-overwrite", session1);
 
     const session2 = makeSession("test-store-overwrite");
     session2.messages = [
       { role: "user", content: "second", timestamp: new Date().toISOString() },
       { role: "assistant", content: "reply", timestamp: new Date().toISOString() },
     ];
-    await saveSession("test-store-overwrite", session2);
+    await writeLegacySessionFile("test-store-overwrite", session2);
 
-    const loaded = await loadSession("test-store-overwrite");
+    const loaded = await loadLegacySession("test-store-overwrite");
     expect(loaded!.messages.length).toBe(2);
     expect(loaded!.messages[0]!.content).toBe("second");
   });
 
   test("delete removes session file", async () => {
-    await saveSession("test-store-delete", makeSession("test-store-delete"));
+    await writeLegacySessionFile("test-store-delete", makeSession("test-store-delete"));
     const before = await loadSession("test-store-delete");
     expect(before).not.toBeNull();
 
@@ -108,7 +109,7 @@ describe("session store", () => {
   });
 
   test("delete removes the empty parent directory of a nested session id", async () => {
-    await saveSession("cron/job-abc/run-1", makeSession("cron/job-abc/run-1"));
+    await writeLegacySessionFile("cron/job-abc/run-1", makeSession("cron/job-abc/run-1"));
     const dir = join(SESSIONS_DIR, "cron", "job-abc");
     expect(await stat(dir).then(() => true).catch(() => false)).toBe(true);
 
@@ -117,8 +118,8 @@ describe("session store", () => {
   });
 
   test("delete keeps a parent directory that still holds siblings", async () => {
-    await saveSession("cron/job-def/run-1", makeSession("cron/job-def/run-1"));
-    await saveSession("cron/job-def/run-2", makeSession("cron/job-def/run-2"));
+    await writeLegacySessionFile("cron/job-def/run-1", makeSession("cron/job-def/run-1"));
+    await writeLegacySessionFile("cron/job-def/run-2", makeSession("cron/job-def/run-2"));
 
     await deleteSession("cron/job-def/run-1");
     const dir = join(SESSIONS_DIR, "cron", "job-def");
@@ -134,7 +135,7 @@ describe("session store", () => {
 
   test("sanitizeSessionId prevents path traversal", async () => {
     const session = makeSession("test-store-traversal");
-    await saveSession("../../etc/test-store-traversal", session);
+    await writeLegacySessionFile("../../etc/test-store-traversal", session);
     // Sanitizer replaces .. with _ — file lands in sessions/_/_/etc/ not /etc/
     const safe = "_/_/etc/test-store-traversal";
     const path = join(SESSIONS_DIR, `${safe}.json`);
@@ -151,7 +152,7 @@ describe("session store", () => {
 
   test("atomic write uses tmp file", async () => {
     const session = makeSession("test-store-atomic");
-    await saveSession("test-store-atomic", session);
+    await writeLegacySessionFile("test-store-atomic", session);
     // Verify no .tmp file remains
     const tmpPath = join(SESSIONS_DIR, "test-store-atomic.json.tmp");
     const tmpExists = await stat(tmpPath).then(() => true).catch(() => false);
@@ -165,7 +166,7 @@ describe("session store", () => {
 
   test("session with unicode ID works", async () => {
     const session = makeSession("test-store-unicode");
-    await saveSession("test-store-unicode", session);
+    await writeLegacySessionFile("test-store-unicode", session);
     const loaded = await loadSession("test-store-unicode");
     expect(loaded).not.toBeNull();
     expect(loaded!.id).toBe("test-store-unicode");
@@ -179,8 +180,8 @@ describe("session store", () => {
       { role: "tool", toolCallId: "tc1", content: "file1.txt\nfile2.txt", timestamp: new Date().toISOString() },
       { role: "assistant", content: "Found two files.", timestamp: new Date().toISOString() },
     ];
-    await saveSession("test-store-roundtrip", session);
-    const loaded = await loadSession("test-store-roundtrip");
+    await writeLegacySessionFile("test-store-roundtrip", session);
+    const loaded = await loadLegacySession("test-store-roundtrip");
     expect(loaded!.messages.length).toBe(4);
     const toolMsg = loaded!.messages[2]!;
     expect(toolMsg.role).toBe("tool");
@@ -195,29 +196,6 @@ describe("session store", () => {
   });
 });
 
-describe("trim boundary repair (orphan tool messages)", () => {
-  const ts = new Date().toISOString();
-  const U = (c: string): SessionMessage => ({ role: "user", content: c, timestamp: ts });
-  const A = (c: string, ids?: string[]): SessionMessage => ({ role: "assistant", content: c, timestamp: ts, ...(ids ? { toolCalls: ids.map((id) => ({ id, name: "x", arguments: "{}" })) } : {}) });
-  const T = (id: string): SessionMessage => ({ role: "tool", toolCallId: id, content: "res", timestamp: ts });
-
-  test("dropLeadingOrphanToolMessages strips leading tool messages", () => {
-    const out = dropLeadingOrphanToolMessages([T("a"), T("b"), U("hi"), A("ok")]);
-    expect(out.map((m) => m.role)).toEqual(["user", "assistant"]);
-  });
-
-  test("keeps a clean head untouched", () => {
-    const msgs = [U("hi"), A("ok")];
-    expect(dropLeadingOrphanToolMessages(msgs)).toBe(msgs);
-  });
-
-  test("a window cut inside a parallel tool block never starts on an orphan tool", () => {
-    // A block of parallel tool calls; slicing the last 2 would start on a tool result.
-    const full = [U("q"), A("", ["t1", "t2"]), T("t1"), T("t2"), A("done")];
-    const trimmed = dropLeadingOrphanToolMessages(full.slice(-2));
-    expect(trimmed[0]!.role).not.toBe("tool");
-  });
-});
 
 /**
  * The storage switch made a session a directory. Both halves of "find a session on disk" had to
@@ -297,7 +275,6 @@ describe("a migrated session is a directory, not a file", () => {
     expect(session!.modelOverride).toBe("anthropic/claude-opus-5");
     expect(session!.contextOverride).toBe(512000);
     expect(session!.workspace).toBe("dev");
-    expect(session!.messages).toEqual([]);
     // Directory bookkeeping is not part of the session.
     expect(session as unknown as Record<string, unknown>).not.toHaveProperty("storageVersion");
     expect(session as unknown as Record<string, unknown>).not.toHaveProperty("leafId");
@@ -367,14 +344,14 @@ describe("an empty conversation is still a session", () => {
     expect(ghost).toBeNull();
   });
 
-  test("a session that does load always has messages to count", async () => {
+  test("a directory with settings and no log still loads as a session", async () => {
     await writeSettingsOnly("thread-count");
 
     const session = await loadSession(`${PREFIX}thread-count`);
 
-    // `SessionManager.cache` does exactly this, and it must never throw.
+    // It used to read as absent, and `getOrCreateWithMeta` handed back a new one over the top.
     expect(session).not.toBeNull();
-    expect(session!.messages.length).toBe(0);
+    expect(session!.id).toBe(`${PREFIX}thread-count`);
   });
 });
 

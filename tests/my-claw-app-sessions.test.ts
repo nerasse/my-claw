@@ -1,21 +1,24 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { recordSessionSubAgentState, saveSession, deleteSession, loadSession, loadLegacySession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
+import { deleteSession, loadSession, FAILURE_TEXT_LIMIT, type LegacySessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
+import { sessionLogOf } from "../src/sessions/log-access.ts";
+import { promptOf } from "../src/sessions/projection.ts";
+import type { Entry } from "../src/sessions/log.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
 import { join } from "node:path";
-import { saveSessionWithLog, type SessionLogSetup } from "./helpers/session-log.ts";
+import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { FailureEntry, CommandEntry } from "../src/sessions/log.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
 
 const DEVICE = "dev-test";
 const THREAD = "thread-1";
 
-function session(id: string, messages: SessionData["messages"]): SessionData {
+function session(id: string, messages: LegacySessionData["messages"]): LegacySessionData {
   return {
     id,
     platform: "my-claw-app",
@@ -180,34 +183,6 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(card.spawn?.status, "complete");
   });
 
-  test("records a spawn lifecycle on its matching tool call and keeps terminal state sticky", () => {
-    const current = session(sessionId, [{
-      role: "assistant",
-      content: "",
-      timestamp: "2026-01-01T00:00:02.000Z",
-      toolCalls: [{ id: "spawn-call", name: "spawn", arguments: "{}" }],
-    }]);
-    assert.equal(recordSessionSubAgentState(current, {
-      subagentId: "subagent/researcher-2",
-      toolCallId: "spawn-call",
-      displayName: "researcher",
-      agentType: "research",
-      mode: "run",
-      status: "running",
-    }), true);
-    assert.equal(recordSessionSubAgentState(current, {
-      subagentId: "subagent/researcher-2",
-      resultLength: 4,
-      status: "complete",
-    }), true);
-    assert.equal(recordSessionSubAgentState(current, {
-      subagentId: "subagent/researcher-2",
-      status: "error",
-      error: "late duplicate",
-    }), false);
-    assert.equal(current.messages[0]?.role === "assistant" ? current.messages[0].toolCalls?.[0]?.spawn?.status : undefined, "complete");
-  });
-
   test("a replayed card names the tool, not the MCP wrapper the SDK wraps it in", async () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       {
@@ -230,7 +205,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 
   test("pages backwards through a long conversation without repeating or dropping a turn", async () => {
-    const messages: SessionData["messages"] = [];
+    const messages: LegacySessionData["messages"] = [];
     for (let i = 0; i < 12; i++) {
       messages.push({ role: "user", content: `q${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
     }
@@ -256,7 +231,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
    * message vanish from a thread he had just written in.
    */
   test("a page starts at a turn, so a long turn never pushes its own question off the screen", async () => {
-    const messages: SessionData["messages"] = [
+    const messages: LegacySessionData["messages"] = [
       { role: "user", content: "la question", timestamp: "2026-01-01T00:00:00.000Z" },
     ];
     for (let i = 1; i <= 8; i++) {
@@ -274,7 +249,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   test("the walk back is bounded: only a pathological turn still starts mid-flight", async () => {
     const base = Date.parse("2026-01-01T00:00:00.000Z");
     const stamp = (i: number): string => new Date(base + i * 1000).toISOString();
-    const messages: SessionData["messages"] = [{ role: "user", content: "la question", timestamp: stamp(0) }];
+    const messages: LegacySessionData["messages"] = [{ role: "user", content: "la question", timestamp: stamp(0) }];
     for (let i = 1; i <= 450; i++) {
       messages.push({ role: "assistant", content: `a${i}`, timestamp: stamp(i) });
     }
@@ -798,7 +773,7 @@ describe("MyClawAppSessionStoreImpl.remove cascade", () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), async (id) => {
       seen.push(id);
     });
-    await saveSession(sessionId, session(sessionId, []));
+    await writeLegacySessionFile(sessionId, session(sessionId, []));
     await store.remove(DEVICE, THREAD);
 
     assert.deepEqual(seen, [sessionId]);
@@ -810,7 +785,7 @@ describe("MyClawAppSessionStoreImpl.remove cascade", () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), async () => {
       order.push("cascade");
     });
-    await saveSession(sessionId, session(sessionId, []));
+    await writeLegacySessionFile(sessionId, session(sessionId, []));
     await store.remove(DEVICE, THREAD);
     order.push("after");
     assert.deepEqual(order, ["cascade", "after"]);
@@ -818,7 +793,7 @@ describe("MyClawAppSessionStoreImpl.remove cascade", () => {
 
   test("without a hook, removing still works", async () => {
     store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
-    await saveSession(sessionId, session(sessionId, []));
+    await writeLegacySessionFile(sessionId, session(sessionId, []));
     await store.remove(DEVICE, THREAD);
     assert.equal(await loadSession(sessionId), null);
   });
@@ -838,7 +813,7 @@ describe("MyClawAppSessionStoreImpl pins", () => {
     for (const threadId of threads) {
       const sessionId = store.resolveSessionId(DEVICE, threadId);
       await deleteSession(sessionId);
-      await saveSession(sessionId, session(sessionId, [
+      await writeLegacySessionFile(sessionId, session(sessionId, [
         { role: "user", content: threadId, timestamp: "2026-01-01T00:00:01.000Z" },
       ]));
     }
@@ -970,7 +945,7 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
     store = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
     sessionId = `my-claw-app/thread/${DEVICE}/${THREAD}`;
     await deleteSession(sessionId);
-    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "hi", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    await writeLegacySessionFile(sessionId, session(sessionId, [{ role: "user", content: "hi", timestamp: "2026-01-01T00:00:01.000Z" }]));
   });
 
   test("nested.toggle disables and re-enables, persisted on the session", async () => {
@@ -1040,11 +1015,11 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     ]));
     await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted 120 messages.", "summary text");
 
-    // The journal is the legacy copy of what the entry log already holds, so it is the legacy file
-    // that carries it. What matters below is the reload: the command comes back from the log.
-    const stored = await loadLegacySession(sessionId);
-    assert.equal(stored?.messages.length, 2, "the journal must never reach the prompt");
-    assert.equal(stored?.commands?.length, 1);
+    // The journal is an entry like any other, and the prompt projection leaves it out: a slash
+    // command the owner ran is not something the agent said.
+    const log = await sessionLogOf(sessionId);
+    assert.equal(log.entries().filter((e: Entry) => e.type === "command").length, 1);
+    assert.equal(promptOf(log.entries(), log.leaf()).length, 2, "the journal must never reach the prompt");
 
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "assistant"]);
@@ -1194,7 +1169,7 @@ describe("MyClawAppSessionStoreImpl replay ids", () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
     logSetup.log.append({ type: "user", prompt: true, text: "salut" });
     await logSetup.log.flush();
-    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined, "send-9");
+    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined);
 
     const { entries } = await store.history(DEVICE, THREAD);
     const ids = entries.map((e) => e.id);
@@ -1330,8 +1305,8 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
 
   test("the listing marks a conversation holding unsent text, and only that one", async () => {
     const other = store.resolveSessionId(DEVICE, "thread-2");
-    await saveSession(sessionId, session(sessionId, []));
-    await saveSession(other, session(other, []));
+    await writeLegacySessionFile(sessionId, session(sessionId, []));
+    await writeLegacySessionFile(other, session(other, []));
     try {
       await store.setDraft(DEVICE, THREAD, "pas encore envoye");
 
@@ -1346,7 +1321,7 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
   });
 
   test("the newest page carries the draft, a page reaching backwards does not", async () => {
-    await saveSession(sessionId, session(sessionId, [
+    await writeLegacySessionFile(sessionId, session(sessionId, [
       { role: "user", content: "premiere", timestamp: "2026-01-01T00:00:01.000Z" },
       { role: "assistant", content: "reponse", timestamp: "2026-01-01T00:00:02.000Z" },
       { role: "user", content: "seconde", timestamp: "2026-01-01T00:00:03.000Z" },
@@ -1370,7 +1345,7 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
   });
 
   test("a draft never enters the session file, so no prompt can ever read it", async () => {
-    await saveSession(sessionId, session(sessionId, [{ role: "user", content: "envoye", timestamp: "2026-01-01T00:00:01.000Z" }]));
+    await writeLegacySessionFile(sessionId, session(sessionId, [{ role: "user", content: "envoye", timestamp: "2026-01-01T00:00:01.000Z" }]));
     await store.setDraft(DEVICE, THREAD, "SECRET-DRAFT-SENTINEL");
     await drafts.flush();
 

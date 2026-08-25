@@ -4,14 +4,14 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
+import { setupSessionLog, appendMessages, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { saveSession, deleteSession, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import type { SessionLog } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "my-claw-app/thread/owner-1/t-vision";
@@ -38,7 +38,7 @@ function visionConfig(): MyClawConfig {
   };
 }
 
-function sessionMeta(): SessionData {
+function sessionMeta(): LegacySessionData {
   const now = new Date().toISOString();
   return { id: SESSION_ID, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
@@ -61,7 +61,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, sessionMeta());
+  await writeLegacySessionFile(SESSION_ID, sessionMeta());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;

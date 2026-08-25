@@ -1,17 +1,17 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
+import { setupSessionLog, appendMessages, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { contextEntries } from "../../src/sessions/projection.ts";
-import type { MyClawConfig } from "../../src/core/config.ts";
+import { contextEntries, promptOf } from "../../src/sessions/projection.ts";
+import { resolveContextPruning, type MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { promptSideChat, sessionChatMessages } from "../../src/agent/context-pruning.ts";
+import { pruneOldToolResults, promptSidePruned } from "../../src/agent/context-pruning.ts";
 import { estimateMessagesTokens } from "../../src/llm/tokens.ts";
-import { saveSession, deleteSession, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import type { SessionLog, CompactionEntry } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "test-context";
@@ -28,7 +28,7 @@ function msg(id: string, text: string): UnifiedMessage {
   return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 
-function sessionMeta(id: string = SESSION_ID): SessionData {
+function sessionMeta(id: string = SESSION_ID): LegacySessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
@@ -63,7 +63,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, sessionMeta());
+  await writeLegacySessionFile(SESSION_ID, sessionMeta());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;
@@ -189,13 +189,23 @@ test("bridge: the gate measures the pruned prompt, not the history behind it", a
 });
 
 /** Anthropic never prunes -- its cache is a prefix -- so measuring it as pruned would under-read. */
-test("bridge: the anthropic backend is measured whole, since its prompt is sent whole", () => {
+test("bridge: the anthropic backend is measured whole, since its prompt is sent whole", async () => {
   const config = prunedConfig(2_000);
-  const raw = estimateMessagesTokens(sessionChatMessages(history(10)));
-  const pruned = estimateMessagesTokens(promptSideChat(history(10), config));
-  const anthropic = estimateMessagesTokens(promptSideChat(history(10), config, "anthropic"));
-  assert.ok(pruned < raw / 2, `pruning is what the prompt does: ${raw} -> ${pruned}`);
-  assert.equal(anthropic, raw, "nothing is pruned for a backend that sends the whole prompt");
+  // On the live path: the prompt is projected from the log, and pruning is applied to that.
+  const setup = await setupSessionLog("ctx/prune-shape");
+  try {
+    appendMessages(setup.log, history(10));
+    const chat = promptOf(setup.log.entries(), setup.log.leaf());
+    const raw = estimateMessagesTokens(chat);
+    const pruned = estimateMessagesTokens(pruneOldToolResults([...chat], resolveContextPruning(config)));
+
+    assert.ok(pruned < raw / 2, `pruning is what the prompt does: ${raw} -> ${pruned}`);
+    assert.ok(promptSidePruned(config, undefined), "the home loop prunes before it sends");
+    assert.ok(!promptSidePruned(config, "anthropic"), "a backend that sends the prompt whole does not");
+  } finally {
+    setup.cleanup();
+    await deleteSession("ctx/prune-shape");
+  }
 });
 
 test("bridge: no auto-compaction below the threshold", async () => {

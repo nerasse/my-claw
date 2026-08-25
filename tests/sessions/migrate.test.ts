@@ -6,31 +6,31 @@ import { migrateSessions, legacySessionIds } from "../../src/sessions/migrate.ts
 import { openSessionLog, entriesPath, sessionDir } from "../../src/sessions/log.ts";
 import { readMeta, metaPath, metaOf, STORAGE_VERSION, UnsupportedStorageVersionError } from "../../src/sessions/meta.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
-import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
+import type { LegacySessionData, SessionMessage } from "../../src/sessions/store.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 const ARCHIVES_DIR = join(MY_CLAW_DIR, "sessions-archive");
 
 const at = (n: number) => new Date(1_800_000_000_000 + n * 1000).toISOString();
 
-function data(id: string, messages: SessionMessage[], extra: Partial<SessionData> = {}): SessionData {
+function data(id: string, messages: SessionMessage[], extra: Partial<LegacySessionData> = {}): LegacySessionData {
   return {
     id, platform: "my-claw-app", chatType: "thread",
     createdAt: at(0), lastActiveAt: at(9), messages, ...extra,
-  } as SessionData;
+  } as LegacySessionData;
 }
 
 /** Writes the legacy file the migration is supposed to find. */
-async function writeLegacy(session: SessionData): Promise<void> {
+async function writeLegacy(session: LegacySessionData): Promise<void> {
   const path = join(SESSIONS_DIR, `${session.id}.json`);
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, JSON.stringify(session), "utf-8");
 }
 
 /** The read the pass is handed: the real one, minus the manager. */
-const readLegacy = async (sessionId: string): Promise<SessionData | null> => {
+const readLegacy = async (sessionId: string): Promise<LegacySessionData | null> => {
   try {
-    return JSON.parse(await readFile(join(SESSIONS_DIR, `${sessionId}.json`), "utf-8")) as SessionData;
+    return JSON.parse(await readFile(join(SESSIONS_DIR, `${sessionId}.json`), "utf-8")) as LegacySessionData;
   } catch {
     return null;
   }
@@ -146,7 +146,7 @@ describe("migrateSessions", () => {
     await writeLegacy(data("t1", [userMsg("q", 1)], {
       title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true, pinRank: 0,
       scopeOverride: { tools: ["bash"] }, scopeEffort: "high", invokedBy: "other",
-    } as Partial<SessionData>));
+    } as Partial<LegacySessionData>));
     await migrateSessions(readLegacy);
 
     const meta = await readMeta("t1");

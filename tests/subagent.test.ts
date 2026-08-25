@@ -273,8 +273,9 @@ test("SubAgentRunner kill and reset", async () => {
     const resetResult = await runner.reset(id2, "matrix/room/!caller:test");
     assert.ok(resetResult.includes("reset"));
     const session = await loadSession(id2);
-    assert.ok(session);
-    assert.equal(session?.messages.length, 0);
+    assert.ok(session, "the sub-agent keeps its identity across a reset");
+    // The conversation itself: the reset archives the whole directory, so the log restarts empty.
+    assert.equal((await openSessionLog(id2)).entries().length, 0);
 
     await deleteSession(id2);
   } finally {

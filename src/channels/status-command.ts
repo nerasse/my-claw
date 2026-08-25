@@ -4,7 +4,7 @@ import { chatModel } from "../llm/chat-model.ts";
 import { leafModelId, resolveLlmConfig } from "../llm/resolver.ts";
 import { promptSidePruned, pruneOldToolResults } from "../agent/context-pruning.ts";
 import { resolveContextPruning } from "../core/config.ts";
-import type { SessionData, SessionMessage } from "../sessions/store.ts";
+import type { SessionData } from "../sessions/store.ts";
 import { agentTypeOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf } from "../sessions/projection.ts";
@@ -133,6 +133,8 @@ interface StatusData {
   measured?: number;
   estimated: number;
   occupied: number;
+  /** Turns in the log. `session.messages` used to stand in for this, and had been empty for weeks. */
+  entryCount: number;
   autoCompactOn: boolean;
   autoCompactThresholdPct: number;
   autoCompactThresholdTokens: number;
@@ -183,8 +185,10 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
   // Read prompt from the log (the source of truth), not session.messages
   let prompt: ChatMessage[] = [];
   let promptLength = 0;
+  let entryCount = 0;
   if (p.session) {
     const log = await sessionLogOf(p.session.id);
+    entryCount = log.entries().length;
     prompt = promptOf(log.entries(), log.leaf());
     promptLength = prompt.length;
   }
@@ -209,6 +213,7 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
   return {
     sessionId: p.sessionId,
     session: p.session ?? null,
+    entryCount,
     displayModel,
     ...(tagName ? { tag: tagName } : {}),
     ...(p.session?.modelOverride
@@ -246,7 +251,7 @@ function formatStatusText(d: StatusData): string {
   lines.push(`  platform      ${session.platform} - ${session.chatType}`);
   lines.push(`  created       ${session.createdAt.slice(0, 16).replace("T", " ")} (${ago(session.createdAt)})`);
   lines.push(`  last active   ${session.lastActiveAt.slice(0, 16).replace("T", " ")} (${ago(session.lastActiveAt)})`);
-  lines.push(`  messages      ${session.messages.length}`);
+  lines.push(`  entries       ${d.entryCount}`);
   if (session.meta) {
     lines.push(`  sub-agent     ${session.meta.displayName} (${session.meta.type}, ${session.meta.visibility})`);
     lines.push(`  spawned by    \`${session.meta.parentSessionId}\``);
@@ -333,7 +338,7 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
           chatType: session.chatType,
           createdAt: session.createdAt,
           lastActiveAt: session.lastActiveAt,
-          messages: session.messages.length,
+          messages: d.entryCount,
           ...(session.meta
             ? {
                 subAgent: {

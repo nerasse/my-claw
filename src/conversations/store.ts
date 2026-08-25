@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
-import type { SessionData } from "../sessions/store.ts";
+import type { SessionData, LegacySessionData } from "../sessions/store.ts";
 import type { Entry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 
@@ -429,7 +429,7 @@ export function indexSessionEntries(session: SessionData, entries: readonly Entr
   }
 }
 
-export function indexSessionArchive(session: SessionData): number {
+export function indexSessionArchive(session: LegacySessionData): number {
   try {
     const address = sessionAddress(session);
     let indexed = 0;
@@ -580,7 +580,7 @@ export async function backfillConversationArchive(): Promise<number> {
   let indexed = 0;
   for (const path of paths) {
     try {
-      const session = JSON.parse(await readFile(path, "utf8")) as SessionData;
+      const session = JSON.parse(await readFile(path, "utf8")) as LegacySessionData;
       if (session?.id && Array.isArray(session.messages)) indexed += indexSessionArchive(session);
     } catch {
       // A corrupt or partially-written historical session must not block startup.

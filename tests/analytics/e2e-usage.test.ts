@@ -7,7 +7,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { getSessionModelUsage } from "../../src/analytics/usage-db.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -31,7 +31,7 @@ function createMessage(text = "hello"): UnifiedMessage {
   };
 }
 
-function createSession(): SessionData {
+function createSession(): LegacySessionData {
   return {
     id: "telegram/dm/u1",
     platform: "my-claw-app",

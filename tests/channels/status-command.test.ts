@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { handleStatusCommand, statusReport } from "../../src/channels/status-command.ts";
@@ -31,7 +31,7 @@ const config = {
   llm: { defaultModel: "claude-opus-5", models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }] },
 } as unknown as MyClawConfig;
 
-function session(id: string, over: Partial<SessionData> = {}): SessionData {
+function session(id: string, over: Partial<LegacySessionData> = {}): LegacySessionData {
   return {
     id,
     platform: "matrix",
@@ -293,7 +293,7 @@ test("the same history on the home loop keeps the estimate as a floor", async ()
   } as unknown as MyClawConfig;
   const sessionId = "matrix/room/!home:test";
   // Occupancy now comes from the log, so we build a session with 400 messages to populate it
-  const messages: SessionData["messages"] = Array.from({ length: 400 }, (_, i) => ({
+  const messages: LegacySessionData["messages"] = Array.from({ length: 400 }, (_, i) => ({
     role: "user" as const,
     content: "x".repeat(4000),
     timestamp: new Date(Date.now() + i * 1000).toISOString(),

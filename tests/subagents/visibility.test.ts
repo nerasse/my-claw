@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { attributionParent, type SessionData, type SubAgentMeta } from "../../src/sessions/store.ts";
+import { attributionParent, type LegacySessionData, type SubAgentMeta } from "../../src/sessions/store.ts";
 
-function session(over: Partial<SessionData> = {}): SessionData {
+function session(over: Partial<LegacySessionData> = {}): LegacySessionData {
   return {
     id: "subagent/digger-c3d4",
     platform: "matrix",

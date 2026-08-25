@@ -3,10 +3,9 @@ import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
-import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
-import { ENTRIES_FILE, META_FILE, holdsSession } from "./log.ts";
+import { ENTRIES_FILE, META_FILE, holdsSession, sessionDir } from "./log.ts";
 import { readMeta, sessionFromMeta } from "./meta.ts";
 import type { ChatLocation } from "../channels/types.ts";
 
@@ -105,17 +104,6 @@ export type SessionMessage =
     }
   | { role: "tool"; toolCallId: string; content: string; timestamp: string };
 
-/**
- * Slicing history to a fixed tail (keep the last N) can cut inside a tool block, leaving the
- * kept head starting with orphan `tool` messages whose owning assistant `tool_calls` were
- * dropped. OpenAI-compatible APIs reject that with HTTP 400, wedging the session on every
- * subsequent turn. Dropping the leading orphan tool messages restores a valid boundary.
- */
-export function dropLeadingOrphanToolMessages(messages: SessionMessage[]): SessionMessage[] {
-  let start = 0;
-  while (start < messages.length && messages[start]!.role === "tool") start++;
-  return start === 0 ? messages : messages.slice(start);
-}
 
 /**
  * One slash command and the answer the channel showed for it. Commands never reach the router,
@@ -168,20 +156,6 @@ export function clearSessionDirty(session: SessionData): void {
   dirtySessions.delete(session);
 }
 
-/**
- * Appends to a conversation's command journal.
- *
- * Nothing is dropped: a conversation keeps everything it was told, and the owner asked for the
- * caps to go. The file is rewritten in full on every turn, so the cost of a long journal is disk
- * and nothing else.
- */
-export function recordSessionCommand(session: SessionData, entry: SessionCommandEntry): void {
-  markSessionDirty(session);
-  const journal = session.commands ?? [];
-  journal.push(entry);
-  session.commands = journal;
-}
-
 /** Long enough to carry an API error with its hint, short enough to stay a bubble. */
 export const FAILURE_TEXT_LIMIT = 500;
 
@@ -189,23 +163,6 @@ export interface SessionFailureEntry {
   /** What the owner was shown when the run died, capped at `FAILURE_TEXT_LIMIT`. */
   error: string;
   timestamp: string;
-}
-
-/**
- * Appends to a conversation's failure journal.
- *
- * Its own journal rather than an assistant message, because on the home loop `session.messages`
- * *is* the prompt: a stored "run failed: API Error 529" would come back as something the agent
- * itself had said. This side is display-only, so the error survives a reopened thread without ever
- * reaching a model.
- */
-export function recordSessionFailure(session: SessionData, error: string): void {
-  const text = error.trim();
-  if (!text) return;
-  markSessionDirty(session);
-  const journal = session.failures ?? [];
-  journal.push({ error: text.slice(0, FAILURE_TEXT_LIMIT), timestamp: new Date().toISOString() });
-  session.failures = journal;
 }
 
 export interface SubAgentMeta {
@@ -316,63 +273,24 @@ export interface TokenUsage {
   cacheWriteTokens?: number;
 }
 
-/**
- * Updates the display-only sub-agent state on the parent assistant tool call. The spawn event has
- * the model's tool call id, while terminal events only have the sub-agent id, so both are accepted.
- * A terminal state is sticky: a late duplicate or a lifecycle event from an already settled child
- * must not re-open the spinner in history.
- */
-export function recordSessionSubAgentState(session: SessionData, update: SessionSubAgentStateUpdate): boolean {
-  let target: { id: string; name: string; arguments: string; durationMs?: number; spawn?: SessionSubAgentState } | undefined;
-  for (let i = session.messages.length - 1; i >= 0 && !target; i--) {
-    const message = session.messages[i];
-    if (message?.role !== "assistant") continue;
-    for (const call of message.toolCalls ?? []) {
-      if ((update.toolCallId && call.id === update.toolCallId) || call.spawn?.subagentId === update.subagentId) {
-        target = call;
-        break;
-      }
-    }
-  }
-  if (!target) return false;
-  const current = target.spawn;
-  if (current && current.status !== "running") return false;
-  markSessionDirty(session);
-  const now = new Date().toISOString();
-  target.spawn = {
-    subagentId: update.subagentId,
-    displayName: update.displayName ?? current?.displayName ?? update.subagentId,
-    agentType: update.agentType ?? current?.agentType ?? "unknown",
-    mode: update.mode ?? current?.mode ?? "run",
-    action: update.action ?? current?.action ?? "spawn",
-    status: update.status,
-    startedAt: current?.startedAt ?? now,
-    ...(update.resultLength !== undefined ? { resultLength: update.resultLength } : current?.resultLength !== undefined ? { resultLength: current.resultLength } : {}),
-    ...(update.error !== undefined ? { error: update.error } : current?.error !== undefined ? { error: current.error } : {}),
-    ...(update.status === "running" ? {} : { finishedAt: current?.finishedAt ?? now }),
-  };
-  return true;
-}
 
+/**
+ * A conversation's settings. Not its content: that is the entry log, `<id>/entries.jsonl`.
+ *
+ * `messages`, `commands` and `failures` used to live here. They survived only through the flat
+ * `<id>.json`, and by the time it stopped being read they meant nothing: nothing had appended to
+ * `messages` since the storage switch, and the journals were copies of entries the log already
+ * held. A field with a live type and no live meaning is a trap -- it made
+ * `recordSessionSubAgentState` and five calls to `indexSessionArchive` into silent no-ops -- so it
+ * is gone rather than kept empty. `LegacySessionData` carries the old shape, for reading the files
+ * the migration still has to convert.
+ */
 export interface SessionData {
   id: string;
   platform: string;
   chatType: string;
   createdAt: string;
   lastActiveAt: string;
-  messages: SessionMessage[];
-  /**
-   * Slash commands run on this conversation and their answers, in order. Not part of the
-   * prompt and not part of `messages`: this is what the owner saw, kept so a reopened thread
-   * shows it again. Dies with the session file, like everything else here.
-   */
-  commands?: SessionCommandEntry[];
-  /**
-   * Runs that died on this conversation, in order. Display-only and never part of a prompt: the
-   * mirror keeps the question a failed run was given, this keeps why it got no answer, so a
-   * reopened thread shows both instead of a message that looks ignored.
-   */
-  failures?: SessionFailureEntry[];
   /**
    * Name the owner gave this conversation. Absent means the list falls back to the opening
    * words of the first turn, which is a summary of how a thread started rather than of what it
@@ -500,6 +418,16 @@ export interface SessionData {
   memoryRecallOff?: boolean;
 }
 
+/**
+ * A session as the flat `<id>.json` held it. Nothing writes this shape any more; the migration
+ * reads it, and the search backfill reads the copies already sitting in `sessions-archive/`.
+ */
+export interface LegacySessionData extends SessionData {
+  messages: SessionMessage[];
+  commands?: SessionCommandEntry[];
+  failures?: SessionFailureEntry[];
+}
+
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 const ARCHIVES_DIR = join(MY_CLAW_DIR, "sessions-archive");
 
@@ -548,29 +476,40 @@ export function subagentSessionToThread(sessionId: string): string | null {
  */
 export function subagentThreadToSession(threadId: string): string | null {
   if (!/^sub-[0-9a-f]{16}$/.test(threadId)) return null;
-  let names: string[];
-  try {
-    names = readdirSync(join(SESSIONS_DIR, "subagent"));
-  } catch {
-    return null;
-  }
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const sessionId = `subagent/${name.slice(0, -5)}`;
-    if (subagentSessionToThread(sessionId) === threadId) return sessionId;
+  for (const id of subagentSessionIdsSync()) {
+    if (subagentSessionToThread(id) === threadId) return id;
   }
   return null;
+}
+
+/**
+ * The sub-agent ids on disk, synchronously. A sub-agent is a directory now, and was a
+ * `<id>.json` before the storage switch, so both count -- and a name that is both is one id.
+ */
+export function subagentSessionIdsSync(): string[] {
+  let names: Array<{ name: string; isDirectory: () => boolean; isFile: () => boolean }>;
+  try {
+    names = readdirSync(join(SESSIONS_DIR, "subagent"), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const ids = new Set<string>();
+  for (const entry of names) {
+    if (entry.isDirectory()) ids.add(`subagent/${entry.name}`);
+    else if (entry.isFile() && entry.name.endsWith(".json")) ids.add(`subagent/${entry.name.slice(0, -5)}`);
+  }
+  return [...ids];
 }
 
 /**
  * The legacy flat file, and only it. For the boot migration, whose whole job is to read the file
  * the new format replaces: falling back to the directory would let it read its own output.
  */
-export async function loadLegacySession(sessionId: string): Promise<SessionData | null> {
+export async function loadLegacySession(sessionId: string): Promise<LegacySessionData | null> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     const raw = await readFile(path, "utf-8");
-    const parsed = JSON.parse(raw) as SessionData;
+    const parsed = JSON.parse(raw) as LegacySessionData;
     // The cast was taken on trust, and a `.json` under `sessions/` is not necessarily a session:
     // `<id>/meta.json` is one path away, and parsing it yields settings with no `messages`, which
     // crashed the first caller to touch `.length` -- and with it the process. A file that is not a
@@ -604,13 +543,14 @@ export async function loadLegacySession(sessionId: string): Promise<SessionData 
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
   const meta = await readMeta(sessionId);
   if (meta) return sessionFromMeta(meta);
-  return loadLegacySession(sessionId);
+  // A conversation whose migration failed keeps its legacy file for a retry, so it still has to
+  // open. Only the settings come across: its content is converted by the migration, not here.
+  const legacy = await loadLegacySession(sessionId);
+  if (!legacy) return null;
+  const { messages: _messages, commands: _commands, failures: _failures, ...settings } = legacy;
+  return settings;
 }
 
-export async function saveSession(sessionId: string, data: SessionData): Promise<void> {
-  const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
-  await writeJsonFileAtomically(path, data, true);
-}
 
 export async function deleteSessionFile(sessionId: string): Promise<void> {
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
@@ -758,6 +698,19 @@ export async function listSessionIdsByPrefix(prefix: string, limit = 50): Promis
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([id]) => id);
+}
+
+/**
+ * Removes everything a conversation owns: the directory, the legacy file, and its archives.
+ *
+ * `deleteSessionFile` alone stopped being a delete at the storage switch. It removes `<id>.json`,
+ * and the conversation is `<id>/entries.jsonl`: `kill_agent` reported a deletion and the sub-agent
+ * came back on the next read, settings and history intact.
+ */
+export async function deleteStoredSession(sessionId: string): Promise<void> {
+  await deleteSessionFile(sessionId);
+  await rm(sessionDir(sessionId), { recursive: true, force: true }).catch(() => {});
+  await deleteSessionArchives(sessionId);
 }
 
 /** Remove every archive snapshot of a session (used by hard delete). */

@@ -1,7 +1,6 @@
 import type { UnifiedMessage } from "../channels/types.ts";
 import {
   loadSession,
-  saveSession,
   deleteSession as deleteSessionFile,
   deleteSessionArchives,
   archiveSession,
@@ -30,7 +29,6 @@ const AUTOSAVE_INTERVAL_MS = 2000;
 export class SessionManager {
   private sessions: LruMap<string, SessionData>;
   /** Message count at each session's last write: what tells a dirty session from a clean one. */
-  private savedCounts = new Map<string, number>();
   private autosaveTimer?: ReturnType<typeof setInterval>;
   /**
    * Eviction writes still in flight. The evicted entry leaves the map before its file is
@@ -55,7 +53,6 @@ export class SessionManager {
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
       hooks.emit("session:evicted", { sessionId: key });
-      this.savedCounts.delete(key);
       // The queued appends are drained before the handle goes, or the last entries of an evicted
       // conversation would be dropped on the floor. Nothing waits on this: the writes are already
       // ordered among themselves, and the next open re-reads the file.
@@ -65,7 +62,7 @@ export class SessionManager {
         void evictedLog.flush().catch(() => {});
       }
       void this.queueWrite(key, async () => {
-        await saveSession(key, value);
+        await this.writeSettings(key, value);
       }).catch((err) => {
         void log("error", "session eviction save failed", { sessionId: key, error: String(err) });
       });
@@ -104,7 +101,6 @@ export class SessionManager {
       chatType,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
-      messages: [],
       ...(workspace ? { workspace } : {}),
     };
   }
@@ -157,7 +153,7 @@ export class SessionManager {
     if (session) {
       session.lastActiveAt = new Date().toISOString();
       this.cache(sessionId, session);
-      hooks.emit("session:loaded", { sessionId, messageCount: session.messages.length });
+      hooks.emit("session:loaded", { sessionId });
       return session;
     }
 
@@ -167,10 +163,8 @@ export class SessionManager {
     return session;
   }
 
-  /** Caches a session that matches its file, so the autosave only writes what a run changed. */
   private cache(sessionId: string, session: SessionData): void {
     this.sessions.set(sessionId, session);
-    this.savedCounts.set(sessionId, session.messages.length);
   }
 
   /**
@@ -180,7 +174,6 @@ export class SessionManager {
    */
   adopt(session: SessionData): void {
     this.sessions.set(session.id, session);
-    this.savedCounts.set(session.id, session.messages.length);
   }
 
   /**
@@ -190,7 +183,6 @@ export class SessionManager {
    */
   drop(sessionId: string): void {
     this.sessions.delete(sessionId);
-    this.savedCounts.delete(sessionId);
     this.pendingWrites.delete(sessionId);
     this.logs.delete(sessionId);
   }
@@ -276,7 +268,6 @@ export class SessionManager {
   /** Hard delete: drain queued writes, evict from cache, then drop the session file and archives. */
   async deleteSession(sessionId: string): Promise<void> {
     this.sessions.delete(sessionId);
-    this.savedCounts.delete(sessionId);
     const pending = this.pendingWrites.get(sessionId);
     if (pending) await pending.catch(() => {});
     this.pendingWrites.delete(sessionId);
@@ -313,7 +304,6 @@ export class SessionManager {
       await openLog.flush().catch(() => {});
     }
     this.sessions.delete(sessionId);
-    this.savedCounts.delete(sessionId);
     return archiveSession(sessionId);
   }
 
@@ -329,24 +319,13 @@ export class SessionManager {
     return sweepOrphanToolOutput(sessionId, openLog.entries());
   }
 
-  clearHistory(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      const previousMessageCount = session.messages.length;
-      session.messages = [];
-      // The boundary indexes an array that no longer exists. Kept, it would describe a prompt
-      // window inside an empty history.
-      delete session.promptBase;
-      session.lastActiveAt = new Date().toISOString();
-      hooks.emit("session:cleared", { sessionId, previousMessageCount });
-    }
-  }
 
-  getInfo(sessionId: string): { messageCount: number; createdAt: string; lastActiveAt: string } | null {
+
+  /** What the cache holds for a session, or null when it holds nothing. */
+  getInfo(sessionId: string): { createdAt: string; lastActiveAt: string } | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     return {
-      messageCount: session.messages.length,
       createdAt: session.createdAt,
       lastActiveAt: session.lastActiveAt,
     };
@@ -380,21 +359,14 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     await this.queueWrite(sessionId, async () => {
-      const messageCount = session.messages.length;
       // Cleared before the write, not after: a mutation landing while the file is being written
       // must leave the session dirty for the next tick rather than be marked as saved.
       clearSessionDirty(session);
-      await saveSession(sessionId, session);
-      // The settings half, always, because it is the half that gets read back -- see `loadSession`.
-      // Small and written in full, which is affordable precisely because the history is no longer
-      // in it: this is the write that used to serialise 12 MB to record that a title had changed.
-      //
-      // Gated on the log, it was skipped exactly when no run had opened one, which is every
-      // settings-only change in a fresh process: renaming a thread reached the flat file and not
-      // the directory, so the read that prefers the directory would hand back the old name.
+      // The settings, and only them. The conversation is the entry log, written as it happens; the
+      // flat `<id>.json` this used to rewrite alongside held a copy of the settings and an empty
+      // `messages`, so it was a second store of the same facts with nothing of its own to say.
       await this.writeSettings(sessionId, session);
-      if (this.sessions.get(sessionId) === session) this.savedCounts.set(sessionId, messageCount);
-      hooks.emit("session:persisted", { sessionId, messageCount });
+      hooks.emit("session:persisted", { sessionId });
     });
   }
 
@@ -423,7 +395,7 @@ export class SessionManager {
     for (const sessionId of [...this.sessions.keys()]) {
       const session = this.sessions.get(sessionId);
       if (!session) continue;
-      if (this.savedCounts.get(sessionId) === session.messages.length && !isSessionDirty(session)) continue;
+      if (!isSessionDirty(session)) continue;
       try {
         await this.persist(sessionId);
       } catch (err) {

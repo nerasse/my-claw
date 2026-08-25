@@ -11,7 +11,7 @@ import { hooks } from "../src/hooks/index.ts";
 import type { HookEventMap } from "../src/hooks/index.ts";
 import { handleCompactCommand } from "../src/channels/compact-command.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
-import type { SessionData } from "../src/sessions/store.ts";
+import type { LegacySessionData } from "../src/sessions/store.ts";
 import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
@@ -37,7 +37,7 @@ function makeConfig(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
-function makeSession(id: string): SessionData {
+function makeSession(id: string): LegacySessionData {
   return {
     id,
     platform: "my-claw-app",
@@ -53,7 +53,7 @@ function makeSession(id: string): SessionData {
  * Creates a session with log entries. Long enough for the summarizer to have
  * something to compact: below `MIN_MESSAGES_TO_COMPACT` it refuses.
  */
-async function makeSessionWithLog(id: string): Promise<{ session: SessionData; setup: SessionLogSetup }> {
+async function makeSessionWithLog(id: string): Promise<{ session: LegacySessionData; setup: SessionLogSetup }> {
   const session = makeSession(id);
   const setup = await setupSessionLog(id);
   // Write 14 turns (7 user + 7 assistant)

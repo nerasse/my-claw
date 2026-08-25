@@ -9,7 +9,7 @@ import { PERMISSIVE_WORLD, resetAvailabilityWorld, setAvailabilityWorld } from "
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 function mixedConfig(): MyClawConfig {
   return {
@@ -34,7 +34,7 @@ function msg(id: string): UnifiedMessage {
   return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
 }
 
-function session(id: string, modelOverride?: string): SessionData {
+function session(id: string, modelOverride?: string): LegacySessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [], modelOverride };
 }
@@ -55,7 +55,7 @@ test("dispatcher routes runs to the home engine with the session's resolved mode
   const config = mixedConfig();
   const calls: Array<string | undefined> = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push(modelId);
       return "home";
     },
@@ -84,7 +84,7 @@ test("setApprovalHandler reaches the home engine", () => {
 test("dispatcher routes by the agent's configured model, not only the session's", async () => {
   const calls: Array<string | undefined> = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push(modelId);
       return "home";
     },
@@ -127,7 +127,7 @@ test("an outage on a non-default provider reroutes the run once and never touche
   const calls: RunCall[] = [];
   let first = true;
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push({ backend: "home", modelId });
       if (modelId === undefined && first) {
         first = false;
@@ -164,7 +164,7 @@ test("an ordered tag route falls through candidates and preserves the tag refere
   };
   const calls: Array<{ modelId?: string; override?: unknown }> = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string, override?: unknown) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string, override?: unknown) => {
       calls.push({ modelId, override });
       if (modelId === "claude-sonnet-5") throw outageError(503);
       return `home:${modelId}`;
@@ -191,7 +191,7 @@ test("an ordered route can explicitly fall back to the global default", async ()
   config.llm.models!.push({ id: "claude-opus-5", label: "Opus", provider: "anthropic" });
   const calls: string[] = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push(modelId ?? "default");
       if (modelId !== "mimo") throw outageError(503);
       return "global";
@@ -212,7 +212,7 @@ test("a route never replays after streaming output has started", async () => {
   const calls: string[] = [];
   const home = {
     handleMessageStreaming: async (
-      _m: UnifiedMessage, _s: SessionData, onToken: (token: string) => Promise<void>,
+      _m: UnifiedMessage, _s: LegacySessionData, onToken: (token: string) => Promise<void>,
       _onTool?: unknown, _signal?: AbortSignal, _switch?: unknown, modelId?: string,
     ) => {
       calls.push(modelId ?? "default");
@@ -229,7 +229,7 @@ test("a 4xx refuses without rerouting", async () => {
   const config = mixedConfig();
   const calls: RunCall[] = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push({ backend: "home", modelId });
       throw outageError(403);
     },
@@ -250,7 +250,7 @@ test("an outage during streaming reroutes once with the [fallback] prefix", asyn
   let first = true;
   const home = {
     handleMessageStreaming: async (
-      _m: UnifiedMessage, _s: SessionData,
+      _m: UnifiedMessage, _s: LegacySessionData,
       onToken: (t: string) => Promise<void>,
       _o?: unknown, _sig?: AbortSignal, _sw?: unknown, modelId?: string,
     ) => {
@@ -311,7 +311,7 @@ test("a deleted tag survives the stale-override check and falls back at resoluti
 test("a pinned route survives the stale-override check", async () => {
   const calls: Array<string | undefined> = [];
   const home = {
-    handleMessage: async (_m: UnifiedMessage, _s: SessionData, _sig?: AbortSignal, modelId?: string) => {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
       calls.push(modelId);
       return "home";
     },
@@ -360,7 +360,7 @@ test("a fallback is announced once per run, whatever resolves inside it", async 
   pinned.agents.orchestrator = { llm: { defaultModel: "claude-sonnet-5", defaultProvider: "anthropic" } };
   // The backend resolves again on its own, exactly like the real engine does.
   const home = {
-    handleMessage: async (message: UnifiedMessage, session: SessionData) => {
+    handleMessage: async (message: UnifiedMessage, session: LegacySessionData) => {
       const dup = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, {
         home: { handleMessage: async () => "inner" } as unknown as AgentBridge,
       });

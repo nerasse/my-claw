@@ -1,11 +1,11 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { compactSession, summaryBodyOf } from "../src/sessions/compaction.ts";
-import { saveSession, type SessionData, type SessionMessage } from "../src/sessions/store.ts";
+import { type LegacySessionData, type SessionMessage } from "../src/sessions/store.ts";
 import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
-import { setupSessionLog, appendMessages } from "./helpers/session-log.ts";
+import { setupSessionLog, appendMessages, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
 import { contextEntries } from "../src/sessions/projection.ts";
 
@@ -19,7 +19,7 @@ function makeMessages(count: number): SessionMessage[] {
   } as const));
 }
 
-function sessionMeta(): SessionData {
+function sessionMeta(): LegacySessionData {
   return {
     id: SESSION_ID,
     platform: "my-claw-app",
@@ -58,12 +58,12 @@ function makeConfig(): MyClawConfig {
 
 let log: SessionLog;
 let cleanupLog: () => void;
-let session: SessionData;
+let session: LegacySessionData;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
   session = sessionMeta();
-  await saveSession(SESSION_ID, session);
+  await writeLegacySessionFile(SESSION_ID, session);
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;
@@ -275,10 +275,10 @@ function agentScopedConfig(): MyClawConfig {
   } as unknown as MyClawConfig;
 }
 
-async function summarizerHost(sessionId: string, sessionOver: Partial<SessionData>): Promise<string[]> {
+async function summarizerHost(sessionId: string, sessionOver: Partial<LegacySessionData>): Promise<string[]> {
   await deleteSession(sessionId);
   const now = new Date().toISOString();
-  const testSession: SessionData = {
+  const testSession: LegacySessionData = {
     id: sessionId,
     platform: "my-claw-app",
     chatType: "dm",
@@ -287,7 +287,7 @@ async function summarizerHost(sessionId: string, sessionOver: Partial<SessionDat
     messages: [],
     ...sessionOver,
   };
-  await saveSession(sessionId, testSession);
+  await writeLegacySessionFile(sessionId, testSession);
 
   const setup = await setupSessionLog(sessionId);
   const testLog = setup.log;

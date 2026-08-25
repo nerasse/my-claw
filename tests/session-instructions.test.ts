@@ -9,7 +9,7 @@ import { SkillRegistry } from "../src/skills/registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
-import type { SessionData } from "../src/sessions/store.ts";
+import type { LegacySessionData } from "../src/sessions/store.ts";
 
 let base: string;
 
@@ -25,7 +25,7 @@ function configFor(): MyClawConfig {
   };
 }
 
-function sessionFor(extra: Partial<SessionData> = {}): SessionData {
+function sessionFor(extra: Partial<LegacySessionData> = {}): LegacySessionData {
   return {
     id: "my-claw-app/dm/u1",
     platform: "my-claw-app",
@@ -37,7 +37,7 @@ function sessionFor(extra: Partial<SessionData> = {}): SessionData {
   };
 }
 
-function params(session: SessionData | null) {
+function params(session: LegacySessionData | null) {
   return {
     session,
     sessionId: "my-claw-app/dm/u1",

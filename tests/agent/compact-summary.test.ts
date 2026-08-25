@@ -11,7 +11,7 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 import { saveSessionWithLog, type SessionLogSetup } from "../helpers/session-log.ts";
 import { deleteSession } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 let logSetup: SessionLogSetup | undefined;
 
@@ -36,9 +36,9 @@ function config(): MyClawConfig {
 const SESSION_ID = "my-claw-app/thread/neras/compact";
 
 /** Create session with log entries. Long enough for the summarizer to have a middle to replace. */
-async function sessionWithLog(): Promise<SessionData> {
+async function sessionWithLog(): Promise<LegacySessionData> {
   const now = new Date().toISOString();
-  const data: SessionData = {
+  const data: LegacySessionData = {
     id: SESSION_ID,
     platform: "my-claw-app",
     chatType: "dm",
@@ -147,7 +147,7 @@ test("a session too short to compact says so before reaching the wire", async ()
   try {
     // Create session with empty log
     const now = new Date().toISOString();
-    const data: SessionData = {
+    const data: LegacySessionData = {
       id: SESSION_ID,
       platform: "my-claw-app",
       chatType: "dm",

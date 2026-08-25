@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog } from "../helpers/session-log.ts";
+import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { MessageRouter } from "../../src/core/router.ts";
 import { SubAgentRunner } from "../../src/subagents/runner.ts";
 import { SubAgentRegistry } from "../../src/subagents/registry.ts";
@@ -12,7 +12,7 @@ import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { openSessionLog, type SessionLog } from "../../src/sessions/log.ts";
 import type { UserEntry, PhaseEntry } from "../../src/sessions/log.ts";
-import { saveSession, deleteSession, loadSession, subagentSessionToThread, type SessionData } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, subagentSessionToThread, type LegacySessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { AgentBackend } from "../../src/agent/backend.ts";
@@ -29,7 +29,7 @@ const config: MyClawConfig = {
 const voiceManager = new VoiceManager(config);
 const sttPipeline = new SttPipeline(voiceManager);
 
-function subSession(id: string, over: { visibility?: "global" | "private"; parentSessionId?: string } = {}): SessionData {
+function subSession(id: string, over: { visibility?: "global" | "private"; parentSessionId?: string } = {}): LegacySessionData {
   return {
     id,
     platform: "my-claw-app",
@@ -94,7 +94,7 @@ afterEach(() => {
 
 test("the router refuses to run a sub-agent session when no sender is wired", async () => {
   const id = "subagent/digger-a1b2";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const agent = trapBackend();
   const router = new MessageRouter(new SessionManager(), agent, config);
   try {
@@ -117,7 +117,7 @@ test("a normal conversation still reaches the engine", async () => {
 
 test("a sub-agent thread is delegated to the sender, with the run stoppable while it lasts", async () => {
   const id = "subagent/digger-c3d4";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const agent = trapBackend();
   const router = new MessageRouter(new SessionManager(), agent, config);
   let sawSignal: AbortSignal | undefined;
@@ -142,7 +142,7 @@ test("a sub-agent thread is delegated to the sender, with the run stoppable whil
 
 test("the app's sink reaches the sub-agent: tokens stream and the run is queued per agent", async () => {
   const id = "subagent/streamer-e5f6";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
@@ -194,7 +194,7 @@ test("the app's sink reaches the sub-agent: tokens stream and the run is queued 
 
 test("a parent-driven send stays non-streaming", async () => {
   const id = "subagent/quiet-a7b8";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
@@ -221,8 +221,8 @@ test("a parent-driven send stays non-streaming", async () => {
 test("kill and reset from the app obey the same rule, and differ in what survives", async () => {
   const mine = "subagent/killable-c1d2";
   const theirs = "subagent/theirs-e3f4";
-  await saveSession(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
-  await saveSession(theirs, subSession(theirs, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
+  await writeLegacySessionFile(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
+  await writeLegacySessionFile(theirs, subSession(theirs, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const owner = "my-claw-app/thread/owner/main";
 
@@ -256,9 +256,9 @@ test("the declared parent conversation is what authorizes a private sub-agent", 
   const mine = "subagent/mine-b1c2";
   const other = "subagent/other-d3e4";
   const shared = "subagent/shared-f5a6";
-  await saveSession(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
-  await saveSession(other, subSession(other, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
-  await saveSession(shared, subSession(shared, { visibility: "global", parentSessionId: "telegram/dm/someone" }));
+  await writeLegacySessionFile(mine, subSession(mine, { visibility: "private", parentSessionId: "my-claw-app/thread/owner/main" }));
+  await writeLegacySessionFile(other, subSession(other, { visibility: "private", parentSessionId: "telegram/dm/someone" }));
+  await writeLegacySessionFile(shared, subSession(shared, { visibility: "global", parentSessionId: "telegram/dm/someone" }));
 
   const agent = trapBackend();
   const router = new MessageRouter(new SessionManager(), agent, config);
@@ -313,7 +313,7 @@ test("the declared parent conversation is what authorizes a private sub-agent", 
  */
 test("a message sent while the sub-agent runs is injected, streamed, and switches the bubble", async () => {
   const id = "subagent/steerable-9a1b";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
@@ -408,7 +408,7 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
 
 test("a message sent while the parent drives the sub-agent is absorbed by that run", async () => {
   const id = "subagent/parentbusy-c3d4";
-  await saveSession(id, subSession(id));
+  await writeLegacySessionFile(id, subSession(id));
   const setup = await setupSessionLog(id);
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const reg = new SubAgentRegistry();
@@ -584,7 +584,7 @@ test("deleteChildrenOf removes the private children of a conversation, and nothi
     [shared, "global", parent],
     [foreign, "private", other],
   ] as const) {
-    await saveSession(id, subSession(id, { visibility, parentSessionId }));
+    await writeLegacySessionFile(id, subSession(id, { visibility, parentSessionId }));
   }
 
   try {
@@ -605,8 +605,8 @@ test("deleteChildrenOf spares a child whose run is still in flight", async () =>
   const parent = "my-claw-app/thread/owner/main";
   const busy = "subagent/busy-0005";
   const idle = "subagent/idle-0006";
-  await saveSession(busy, subSession(busy, { visibility: "private", parentSessionId: parent }));
-  await saveSession(idle, subSession(idle, { visibility: "private", parentSessionId: parent }));
+  await writeLegacySessionFile(busy, subSession(busy, { visibility: "private", parentSessionId: parent }));
+  await writeLegacySessionFile(idle, subSession(idle, { visibility: "private", parentSessionId: parent }));
 
   const busyRegistry = { isRunning: (id: string) => id === busy };
   try {

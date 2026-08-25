@@ -4,7 +4,7 @@ import { entriesOf, importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
 import type { Entry } from "../../src/sessions/log.ts";
-import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
+import type { LegacySessionData, SessionMessage } from "../../src/sessions/store.ts";
 
 // The log appends fire-and-forget, and the harness clears sessions/ between tests: without its
 // directory every write logs a failure it deliberately swallows.
@@ -12,15 +12,15 @@ beforeEach(() => mkdirSync(sessionDir("import-test"), { recursive: true }));
 
 const at = (n: number) => new Date(1_800_000_000_000 + n * 1000).toISOString();
 
-function session(messages: SessionMessage[], extra: Partial<SessionData> = {}): SessionData {
+function session(messages: SessionMessage[], extra: Partial<LegacySessionData> = {}): LegacySessionData {
   return {
     id: "s1", platform: "my-claw-app", chatType: "thread",
     createdAt: at(0), lastActiveAt: at(99), messages, ...extra,
-  } as SessionData;
+  } as LegacySessionData;
 }
 
 /** Appends the import into a real log, which is what gives the entries their ids and chain. */
-async function intoLog(data: SessionData): Promise<{ log: SessionLog; entries: readonly Entry[] }> {
+async function intoLog(data: LegacySessionData): Promise<{ log: SessionLog; entries: readonly Entry[] }> {
   const { entries: imported, boundaryIndex } = importSession(data);
   const log = new SessionLog("import-test", [], null);
   const written: Entry[] = [];

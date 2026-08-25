@@ -16,7 +16,7 @@ import { log } from "../utils/logger.ts";
 import { openSessionLog, sessionDir, holdsSession } from "./log.ts";
 import { importSession } from "./import.ts";
 import { metaOf, writeMeta } from "./meta.ts";
-import type { SessionData } from "./store.ts";
+import type { LegacySessionData } from "./store.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 const ARCHIVES_DIR = join(MY_CLAW_DIR, "sessions-archive");
@@ -91,7 +91,7 @@ export interface MigrationResult {
  * which reopens as a conversation whose title is missing -- recoverable. The reverse order would
  * leave settings pointing at a leaf that was never written.
  */
-export async function migrateSession(sessionId: string, session: SessionData): Promise<void> {
+export async function migrateSession(sessionId: string, session: LegacySessionData): Promise<void> {
   await mkdir(sessionDir(sessionId), { recursive: true });
   const { entries: imported, boundaryIndex } = importSession(session);
 
@@ -127,7 +127,7 @@ async function archiveLegacy(sessionId: string): Promise<void> {
  * whole boot down over one unreadable conversation would be the worse failure by far.
  */
 export async function migrateSessions(
-  read: (sessionId: string) => Promise<SessionData | null>,
+  read: (sessionId: string) => Promise<LegacySessionData | null>,
 ): Promise<MigrationResult> {
   const ids = await legacySessionIds();
   const result: MigrationResult = { migrated: 0, skipped: 0, failed: 0 };

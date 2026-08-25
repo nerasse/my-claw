@@ -44,7 +44,7 @@ test("SessionManager: a read right after an eviction sees the evicted turns", as
   const victim = "test/evict/victim";
 
   const session = await manager.getOrCreateWithMeta(victim, "telegram", "dm");
-  session.messages.push({ role: "user", content: "the turn that must survive", timestamp: new Date().toISOString() });
+  session.title = "the setting that must survive";
 
   // Push it out of the cache. The eviction write is async: reading the file before it lands
   // used to return the pre-eviction copy, and the next run wrote that truncated history back.
@@ -55,8 +55,7 @@ test("SessionManager: a read right after an eviction sees the evicted turns", as
 
   const reloaded = await manager.read(victim);
   assert.ok(reloaded, "victim should be readable from disk");
-  assert.equal(reloaded.messages.length, 1);
-  assert.equal(reloaded.messages[0]?.content, "the turn that must survive");
+  assert.equal(reloaded.title, "the setting that must survive");
 });
 
 test("SessionManager: peek loads session into cache", async () => {
@@ -66,12 +65,3 @@ test("SessionManager: peek loads session into cache", async () => {
   assert.equal(result, null);
 });
 
-test("SessionManager: clearHistory works on cached session", async () => {
-  const manager = new SessionManager();
-  const session = await manager.getOrCreateWithMeta("test/clear", "telegram", "dm");
-  session.messages.push({ role: "user", content: "hello", timestamp: new Date().toISOString() });
-  assert.equal(session.messages.length, 1);
-
-  manager.clearHistory("test/clear");
-  assert.equal(session.messages.length, 0);
-});

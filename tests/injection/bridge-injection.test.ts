@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { rm } from "node:fs/promises";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog } from "../helpers/session-log.ts";
+import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { genPpmImage } from "../helpers/gen-test-image.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -12,7 +12,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "test-injection";
@@ -26,7 +26,7 @@ const config: MyClawConfig = {
 function msg(id: string, text: string): UnifiedMessage {
   return { id, platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
-function session(id: string = SESSION_ID): SessionData {
+function session(id: string = SESSION_ID): LegacySessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
@@ -50,7 +50,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, session());
+  await writeLegacySessionFile(SESSION_ID, session());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;
@@ -131,7 +131,7 @@ test("a message arriving during the final answer keeps the run going (onTurnSwit
 test("a sub-agent run drains its mailbox when one is open (the runner owns opening it)", async () => {
   const subId = "subagent/digger-a1b2";
   await deleteSession(subId);
-  await saveSession(subId, session(subId));
+  await writeLegacySessionFile(subId, session(subId));
   const subSetup = await setupSessionLog(subId);
   const subLog = subSetup.log;
 

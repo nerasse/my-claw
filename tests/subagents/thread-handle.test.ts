@@ -7,16 +7,16 @@ import {
   subagentSessionToThread,
   subagentThreadToSession,
   cronSessionToThread,
-  saveSession,
   deleteSession,
   pruneOldSessions,
-  type SessionData,
+  type LegacySessionData,
 } from "../../src/sessions/store.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
+import { writeLegacySessionFile } from "../helpers/session-log.ts";
 
 const SUBAGENT_DIR = join(MY_CLAW_DIR, "sessions", "subagent");
 
-function session(id: string): SessionData {
+function session(id: string): LegacySessionData {
   return {
     id,
     platform: "telegram",
@@ -62,7 +62,7 @@ test("a handle round-trips through the directory, including a hostile name", asy
   await mkdir(SUBAGENT_DIR, { recursive: true });
   const ids = ["subagent/research-a1b2", "subagent/調査-c3d4", "subagent/writer-a1b2"];
   try {
-    for (const id of ids) await saveSession(id, session(id));
+    for (const id of ids) await writeLegacySessionFile(id, session(id));
     for (const id of ids) {
       const handle = subagentSessionToThread(id)!;
       assert.equal(subagentThreadToSession(handle), id);
@@ -74,7 +74,7 @@ test("a handle round-trips through the directory, including a hostile name", asy
 
 test("a handle for an agent that is gone resolves to nothing", async () => {
   const id = "subagent/vanished-9f9f";
-  await saveSession(id, session(id));
+  await writeLegacySessionFile(id, session(id));
   const handle = subagentSessionToThread(id)!;
   assert.equal(subagentThreadToSession(handle), id);
   await deleteSession(id);
@@ -89,7 +89,7 @@ test("a malformed handle is rejected without touching the directory", () => {
 
 test("resolveSessionId maps a handle to the sub-agent, and a stale one to an empty conversation", async () => {
   const id = "subagent/mapped-1a2b";
-  await saveSession(id, session(id));
+  await writeLegacySessionFile(id, session(id));
   try {
     const handle = subagentSessionToThread(id)!;
     const resolved = SessionManager.resolveSessionId("my-claw-app", "dm", "owner", "owner", {

@@ -1,7 +1,7 @@
 /**
  * A stored session, read as a log -- docs/session-log.md annexe A.
  *
- * Pure: a `SessionData` in, entries out, no I/O. The one-shot pass that writes them to disk is a
+ * Pure: a `LegacySessionData` in, entries out, no I/O. The one-shot pass that writes them to disk is a
  * separate concern; keeping the mapping pure is what lets the whole of it be checked against real
  * sessions without touching them.
  *
@@ -13,7 +13,7 @@
  */
 
 import type { Entry, Provisioned } from "./log.ts";
-import type { SessionData, SessionMessage } from "./store.ts";
+import type { LegacySessionData, SessionMessage } from "./store.ts";
 import { summaryBodyOf } from "./compaction.ts";
 
 /** Ordered payloads, ready to be appended in this order. Ids, seq and parentId are the log's job. */
@@ -75,7 +75,7 @@ function parseArguments(raw: string): Record<string, unknown> {
  * timestamp older than every message lands at the front rather than nowhere, which is where a
  * command that outlived the turns it was typed on used to become unreachable.
  */
-export function entriesOf(session: SessionData): ImportedEntry[] {
+export function entriesOf(session: LegacySessionData): ImportedEntry[] {
   return importSession(session).entries;
 }
 
@@ -93,7 +93,7 @@ export interface ImportedSession {
   boundaryIndex: number;
 }
 
-export function importSession(session: SessionData): ImportedSession {
+export function importSession(session: LegacySessionData): ImportedSession {
   const out: ImportedEntry[] = [];
   /** First entry each message produced, so an index into `messages` can become one into `out`. */
   const startOfMessage: number[] = [];

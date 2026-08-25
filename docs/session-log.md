@@ -1170,6 +1170,53 @@ le basculement, seul `manager.ts` le vide et compte. `commands` et `failures` so
 affirmaient ces round-trips : ils affirment désormais la même intention sur un champ vivant,
 ou visent explicitement `loadLegacySession` quand c'est bien la forme legacy qui est en jeu.
 
+### Le fichier plat est parti, et avec lui tout ce qui le lisait
+
+Le `<id>.json` ne pesait plus que **8 Ko sur dix conversations** (médiane 596 octets) contre
+58,6 Mo de logs : son `messages` était vide. Le garder ne coûtait donc rien en I/O — le gain de la
+refonte était déjà acquis. Ce qu'il coûtait, c'est **un second store des mêmes faits**, et un champ
+au type vivant sans sens vivant.
+
+Ce piège s'est refermé trois fois : `recordSessionSubAgentState` parcourait `session.messages`,
+`indexSessionArchive(session)` était appelé cinq fois depuis `runner.ts`, et le garde-fou de
+`flushDirty` comparait `savedCounts` à `messages.length`. Trois no-ops silencieux, dont un qui a
+fait disparaître la recherche sur les sous-agents.
+
+`persist` n'écrit plus que les réglages. `SessionData` perd `messages`, `commands` et `failures` ;
+`LegacySessionData` porte l'ancienne forme, pour la migration et pour le backfill de recherche qui
+lit les copies déjà présentes dans `sessions-archive/`. `saveSession` n'existe plus.
+
+**Ce que le retrait a mis au jour, et qui était cassé sans que rien ne le dise** — chaque endroit
+qui répondait à « quelles sessions existent ? » en cherchant des `*.json` :
+
+- `runner.list` globait `sessions/subagent/*.json` : **le tiroir des sous-agents était vide** dès
+  que le fichier plat n'était plus écrit. Il passe par le parcours partagé.
+- `registry.listExistingIds` faisait le même glob : la génération d'id ne voyait aucun id pris.
+- `subagentThreadToSession` idem, donc un thread de sous-agent ne se résolvait plus.
+- `kill_agent` appelait `deleteSessionFile`, qui retire `<id>.json` et laisse `<id>/entries.jsonl` :
+  il annonçait une suppression et le sous-agent revenait entier à la lecture suivante. C'est le
+  même défaut que `/reset`, et `deleteStoredSession` le corrige au même endroit pour les deux.
+- `clearHistory` vidait un tableau mort et n'était appelé que par des tests. `getInfo` inventait un
+  compteur. Les deux partent.
+- La chaîne `toChatMessages → sessionChatMessages → dropLeadingOrphanToolMessages` n'avait plus
+  aucun appelant en production — `promptSideChat`, écrit deux jours plus tôt, n'était appelé que
+  par un test. La réparation d'orphelins qu'elle portait est devenue structurelle :
+  `alignEntryTailBoundary` recule sur les entrées d'outil, donc une frontière de compaction ne peut
+  pas tomber sur un résultat d'outil (couvert par `compaction.test.ts`).
+
+Trois compteurs de surface (`/status`, la liste des runs cron, l'état renvoyé à l'app) lisaient
+`messages.length`. Ils comptent maintenant les entrées du log. **Le champ de protocole garde son
+nom `messages`** : un APK déjà installé le lit sous ce nom et ne se met pas à jour au rythme du
+serveur, donc renommer pour la cosmétique casserait des clients.
+
+**Ce qui n'est pas fait, et pourquoi.** `ToolEntry.spawn` existe, `display.ts` le rend, `import.ts`
+le remplit depuis une session d'avant la refonte — mais rien ne l'alimente pour une conversation
+neuve, parce que `call.spawn` n'est jamais assigné. La persistance du cycle de vie des sous-agents
+n'a donc jamais fonctionné depuis le basculement. Le code qui prétendait le faire est retiré, ce
+qui rend le trou visible ; le combler demande de décider comment l'état terminal rejoint l'entrée
+d'outil, qui est écrite après lui. Et la règle « un état terminal est collant » que son test
+encodait est perdue avec lui : elle devra être réécrite sur le log.
+
 | Fichier | Rôle | Tests |
 |---|---|---|
 | `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |

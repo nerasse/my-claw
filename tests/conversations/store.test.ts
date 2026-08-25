@@ -13,7 +13,7 @@ import {
   searchConversationArchive,
 } from "../../src/conversations/store.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 let dbPath = "";
 let sequence = 0;
@@ -33,7 +33,7 @@ function message(overrides: Partial<UnifiedMessage>): UnifiedMessage {
   };
 }
 
-function session(overrides: Partial<SessionData>): SessionData {
+function session(overrides: Partial<LegacySessionData>): LegacySessionData {
   return {
     id: "subagent/research-1",
     platform: "my-claw-app",

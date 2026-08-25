@@ -1,14 +1,14 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog } from "../helpers/session-log.ts";
+import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import type { SessionLog, ToolEntry } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "test-truncated-tool-calls";
@@ -25,7 +25,7 @@ const config: MyClawConfig = {
 function createMessage(): UnifiedMessage {
   return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
 }
-function createSession(): SessionData {
+function createSession(): LegacySessionData {
   return { id: SESSION_ID, platform: "my-claw-app", chatType: "dm", createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(), messages: [] };
 }
 
@@ -34,7 +34,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, createSession());
+  await writeLegacySessionFile(SESSION_ID, createSession());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;

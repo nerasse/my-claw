@@ -4,7 +4,7 @@ import { importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
 import type { Entry } from "../../src/sessions/log.ts";
-import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
+import type { LegacySessionData, SessionMessage } from "../../src/sessions/store.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 
 /**
@@ -26,12 +26,12 @@ beforeEach(() => mkdirSync(sessionDir(SESSION_ID), { recursive: true }));
 
 const at = (n: number) => new Date(1_800_000_000_000 + n * 1000).toISOString();
 
-function session(messages: SessionMessage[], extra: Partial<SessionData> = {}): SessionData {
-  return { id: SESSION_ID, platform: "my-claw-app", chatType: "thread", createdAt: at(0), lastActiveAt: at(99), messages, ...extra } as SessionData;
+function session(messages: SessionMessage[], extra: Partial<LegacySessionData> = {}): LegacySessionData {
+  return { id: SESSION_ID, platform: "my-claw-app", chatType: "thread", createdAt: at(0), lastActiveAt: at(99), messages, ...extra } as LegacySessionData;
 }
 
 /** The new path, end to end: stored session, imported, appended to a real log, projected. */
-async function projected(data: SessionData): Promise<ChatMessage[]> {
+async function projected(data: LegacySessionData): Promise<ChatMessage[]> {
   const { entries: imported, boundaryIndex } = importSession(data);
   const log = new SessionLog(SESSION_ID, [], null);
   log.appendAll(imported, (entries: Entry[]) => {

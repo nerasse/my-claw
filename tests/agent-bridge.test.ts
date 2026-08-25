@@ -8,7 +8,7 @@ import { SkillRegistry } from "../src/skills/registry.ts";
 import type { SessionLog } from "../src/sessions/log.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
-import type { SessionData } from "../src/sessions/store.ts";
+import type { LegacySessionData } from "../src/sessions/store.ts";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -34,7 +34,7 @@ function createMessage(): UnifiedMessage {
 
 const SESSION_ID = "test-bridge";
 
-function createSession(): SessionData {
+function createSession(): LegacySessionData {
   return {
     id: SESSION_ID,
     platform: "my-claw-app",

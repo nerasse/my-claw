@@ -208,16 +208,14 @@ export function metaOf(session: SessionData, leafId: string | null, previous?: S
 /**
  * The inverse of `metaOf`: the stored session a directory describes.
  *
- * `messages` comes back empty because nothing feeds it any more -- the conversation is the entry
- * log, and every flat file still on disk already holds `[]`. `storageVersion` and `leafId` are
- * dropped rather than carried: they describe the directory, not the session, and `logOf` reads the
- * leaf from the meta itself.
+ * `storageVersion` and `leafId` are dropped rather than carried: they describe the directory, not
+ * the session, and `logOf` reads the leaf from the meta itself.
  */
 export function sessionFromMeta(meta: SessionMeta): SessionData {
   const settings: Partial<SessionMeta> = { ...meta };
   delete settings.storageVersion;
   delete settings.leafId;
-  return { ...(settings as Omit<SessionMeta, "storageVersion" | "leafId">), messages: [] };
+  return settings as Omit<SessionMeta, "storageVersion" | "leafId">;
 }
 
 export async function writeMeta(sessionId: string, meta: SessionMeta): Promise<void> {

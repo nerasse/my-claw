@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { recordSessionCommand, recordSessionFailure, FAILURE_TEXT_LIMIT } from "../../sessions/store.ts";
+import { FAILURE_TEXT_LIMIT } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
@@ -42,7 +42,7 @@ export interface MyClawAppSessionStore {
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
    */
-  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void>;
+  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void>;
   /**
    * Journals a run that died and the error the owner was shown, so a reopened thread still says
    * why the question got no answer. No-op on a thread that has no session yet.
@@ -471,26 +471,22 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
-    // Empty errors are not journalled (matches recordSessionFailure behavior)
+    // An empty error is not journalled: there is nothing to show and nothing to explain.
     const text = error.trim();
     if (!text) return;
-    const capped = text.slice(0, FAILURE_TEXT_LIMIT);
-    // Write to the log (the source of truth) and to session.failures (for legacy compat)
     const log = await sessionLogOf(sessionId);
     log.append<FailureEntry>({
       type: "failure",
       prompt: false,
-      error: capped,
+      error: text.slice(0, FAILURE_TEXT_LIMIT),
     });
-    recordSessionFailure(session, error);
     await this.sessionManager.persist(sessionId);
   }
 
-  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void> {
+  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string): Promise<void> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
-    // Write to the log (the source of truth) and to session.commands (for legacy compat)
     const log = await sessionLogOf(sessionId);
     log.append<CommandEntry>({
       type: "command",
@@ -498,13 +494,6 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       input,
       output,
       ...(details ? { details } : {}),
-    });
-    recordSessionCommand(session, {
-      input,
-      output,
-      timestamp: new Date().toISOString(),
-      ...(details ? { details } : {}),
-      ...(sourceId ? { sourceId } : {}),
     });
     await this.sessionManager.persist(sessionId);
   }

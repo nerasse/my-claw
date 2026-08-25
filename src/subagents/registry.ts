@@ -1,6 +1,6 @@
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
+import { subagentSessionIdsSync } from "../sessions/store.ts";
 
 const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
 const SUBAGENT_DIR = join(SESSIONS_DIR, "subagent");
@@ -45,18 +45,9 @@ export class SubAgentRegistry {
   }
 
   async listExistingIds(): Promise<Set<string>> {
-    const set = new Set<string>();
-    try {
-      const entries = await readdir(SUBAGENT_DIR, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isFile() && entry.name.endsWith(".json")) {
-          set.add(`subagent/${entry.name.slice(0, -5)}`);
-        }
-      }
-    } catch {
-      // directory does not exist
-    }
-    return set;
+    // Through the shared walk: a sub-agent is a directory now, and globbing `*.json` here found
+    // none of them, so every generated id collided with one already taken.
+    return new Set(subagentSessionIdsSync());
   }
 
   async enqueue<T>(id: string, task: () => Promise<T>): Promise<T> {

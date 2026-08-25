@@ -2005,6 +2005,11 @@ export interface MyClawAppStatusPayload {
     chatType: string;
     createdAt: string;
     lastActiveAt: string;
+    /**
+     * Turns in the conversation. Named `messages` because a shipped APK reads it under that name
+     * and does not update on the server's cadence; it counts log entries, `session.messages`
+     * having been an empty array since the storage switch.
+     */
     messages: number;
     subAgent?: {
       displayName: string;

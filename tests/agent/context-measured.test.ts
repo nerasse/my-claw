@@ -7,13 +7,13 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 function msg(): UnifiedMessage {
   return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "neras", chatType: "dm", text: "hi", attachments: [], isForwarded: false, raw: {} };
 }
 
-function session(): SessionData {
+function session(): LegacySessionData {
   const now = new Date().toISOString();
   return { id: "my-claw-app/thread/neras/projet", platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }

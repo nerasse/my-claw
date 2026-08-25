@@ -189,10 +189,9 @@ export interface HookEventMap {
 
   // === SESSION LIFECYCLE ===
   "session:created": { sessionId: string; platform: string; chatType: string; workspace?: string };
-  "session:loaded": { sessionId: string; messageCount: number };
+  "session:loaded": { sessionId: string };
   "session:workspace": { sessionId: string; workspace?: string };
-  "session:persisted": { sessionId: string; messageCount: number };
-  "session:cleared": { sessionId: string; previousMessageCount: number };
+  "session:persisted": { sessionId: string };
   "session:archived": { sessionId: string; archivePath: string };
   "session:deleted": { sessionId: string };
   "session:evicted": { sessionId: string };

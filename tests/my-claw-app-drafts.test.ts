@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DraftStore, DRAFT_TEXT_LIMIT } from "../src/channels/my-claw-app/drafts.ts";
 import { hooks } from "../src/hooks/index.ts";
-import { saveSession, deleteSession, type SessionData } from "../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData } from "../src/sessions/store.ts";
+import { writeLegacySessionFile } from "./helpers/session-log.ts";
 
 const OWNER = "dev-drafts";
 
@@ -13,7 +14,7 @@ function sessionIdFor(thread: string): string {
   return `my-claw-app/thread/${OWNER}/${thread}`;
 }
 
-function session(id: string): SessionData {
+function session(id: string): LegacySessionData {
   return {
     id,
     platform: "my-claw-app",
@@ -76,7 +77,7 @@ describe("DraftStore", () => {
 
   test("what was flushed is what a fresh store reads back", async () => {
     const id = sessionIdFor("t1");
-    await saveSession(id, session(id));
+    await writeLegacySessionFile(id, session(id));
     try {
       await store.set(id, "survit au redemarrage");
       await store.flush();
@@ -117,7 +118,7 @@ describe("DraftStore", () => {
   test("the boot sweep drops an orphan older than the ttl and keeps a live conversation", async () => {
     const live = sessionIdFor("live");
     const orphan = sessionIdFor("orphan");
-    await saveSession(live, session(live));
+    await writeLegacySessionFile(live, session(live));
     try {
       const old = Date.now() - 8 * 24 * 60 * 60 * 1000;
       const seeded = { version: 1, drafts: { [live]: { text: "vivant", ts: old }, [orphan]: { text: "orphelin", ts: old } } };

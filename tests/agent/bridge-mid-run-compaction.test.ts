@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog } from "../helpers/session-log.ts";
+import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
@@ -9,7 +9,7 @@ import { runRegistry } from "../../src/core/run-registry.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { saveSession, deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import { contextEntries } from "../../src/sessions/projection.ts";
 import type { Entry, CompactionEntry } from "../../src/sessions/log.ts";
 import type { SessionLog } from "../../src/sessions/log.ts";
@@ -50,7 +50,7 @@ function message(): UnifiedMessage {
   return { id: "m1", platform: "my-claw-app", userId: "u1", chatId: "c1", chatType: "dm", text: "go", attachments: [], isForwarded: false, raw: {} };
 }
 
-function session(id: string = SESSION_ID): SessionData {
+function session(id: string = SESSION_ID): LegacySessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }
@@ -86,7 +86,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, session());
+  await writeLegacySessionFile(SESSION_ID, session());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;
@@ -103,7 +103,7 @@ afterEach(() => {
  * (it keeps a head and a tail, so bulk alone is not enough). The summarizer is told apart by its
  * own system prompt.
  */
-async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; sess: SessionData; log: SessionLog }> {
+async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; sess: LegacySessionData; log: SessionLog }> {
   runRegistry.clear();
   const sess = session();
   const bridge = new AgentBridge(config(), registry(), new SkillRegistry());
@@ -208,7 +208,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
   const subId = "subagent/general-a1";
   await deleteSession(subId);
   const now = new Date().toISOString();
-  const sess: SessionData = {
+  const sess: LegacySessionData = {
     id: subId,
     platform: "my-claw-app",
     chatType: "dm",
@@ -219,7 +219,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
     // toolset, which the filler tool is not part of.
     meta: { displayName: "worker", type: "general", parentSessionId: "telegram/dm/u1", visibility: "private", createdAt: now },
   };
-  await saveSession(subId, sess);
+  await writeLegacySessionFile(subId, sess);
   const subSetup = await setupSessionLog(subId);
   const subLog = subSetup.log;
 
@@ -263,7 +263,7 @@ test("a cron run is compacted mid-flight too", async () => {
   const cronId = "cron/job-1/1700000000000";
   await deleteSession(cronId);
   const now = new Date().toISOString();
-  const sess: SessionData = {
+  const sess: LegacySessionData = {
     id: cronId,
     platform: "cron",
     chatType: "dm",
@@ -271,7 +271,7 @@ test("a cron run is compacted mid-flight too", async () => {
     lastActiveAt: now,
     messages: [],
   };
-  await saveSession(cronId, sess);
+  await writeLegacySessionFile(cronId, sess);
   const cronSetup = await setupSessionLog(cronId);
   const cronLog = cronSetup.log;
 

@@ -1,10 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { ToolApprovalManager } from "../../src/agent/approvals.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 import type { ApprovalDecision, ToolApprovalRequest } from "../../src/channels/types.ts";
 
-function createSession(): SessionData {
+function createSession(): LegacySessionData {
   return {
     id: "test",
     platform: "my-claw-app",

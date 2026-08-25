@@ -2,7 +2,7 @@ import { test, describe, expect } from "bun:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { SessionManager } from "../../src/sessions/manager.ts";
-import { deleteSession, loadSession, loadLegacySession, recordSessionCommand, markSessionDirty } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, markSessionDirty } from "../../src/sessions/store.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { openSessionLog, type UserEntry, type ToolEntry } from "../../src/sessions/log.ts";
@@ -72,7 +72,6 @@ test("getOrCreate: creates new session if none exists", async () => {
     assert.equal(session.id, sid);
     assert.equal(session.platform, "my-claw-app");
     assert.equal(session.chatType, "dm");
-    assert.equal(session.messages.length, 0);
   } finally {
     await deleteSession(sid);
   }
@@ -90,34 +89,15 @@ test("getOrCreate: returns same session object on second call", async () => {
   }
 });
 
-test("clearHistory: empties messages array", async () => {
-  const sid = `test/manager/${Date.now()}/clear`;
-  const manager = new SessionManager();
-  try {
-    const session = await manager.getOrCreateWithMeta(sid, "telegram", "dm");
-    session.messages.push({ role: "user", content: "hi", timestamp: new Date().toISOString() });
-    assert.equal(session.messages.length, 1);
 
-    manager.clearHistory(sid);
-    assert.equal(session.messages.length, 0);
-  } finally {
-    await deleteSession(sid);
-  }
-});
-
-test("getInfo: returns message count and timestamps", async () => {
+test("getInfo: returns the timestamps of what the cache holds", async () => {
   const sid = `test/manager/${Date.now()}/info`;
   const manager = new SessionManager();
   try {
-    const session = await manager.getOrCreateWithMeta(sid, "telegram", "dm");
-    session.messages.push(
-      { role: "user", content: "a", timestamp: new Date().toISOString() },
-      { role: "assistant", content: "b", timestamp: new Date().toISOString() },
-    );
+    await manager.getOrCreateWithMeta(sid, "telegram", "dm");
 
     const info = manager.getInfo(sid);
     assert.ok(info);
-    assert.equal(info.messageCount, 2);
     assert.equal(typeof info.createdAt, "string");
     assert.equal(typeof info.lastActiveAt, "string");
   } finally {
@@ -263,15 +243,14 @@ test("flushDirty writes a session mutated in place without a new message", async
     await manager.persist(sessionId);
 
     // No append and no new message: nothing but an in-place mutation makes this session dirty.
-    recordSessionCommand(session, { input: "/status", output: "all good", timestamp: new Date().toISOString() });
+    // The in-place mutation that makes a session dirty without a new turn.
+    session.title = "renommee en place";
+    markSessionDirty(session);
     await manager.flushDirty();
 
-    // Read from disk, not from the cache the mutation happened in. The journal is the legacy copy
-    // -- the app reads slash commands back from the entry log -- so the legacy file is where it
-    // lands, and reaching it at all is what proves the flush happened.
-    const onDisk = await loadLegacySession(sessionId);
-    assert.equal(onDisk?.commands?.length, 1);
-    assert.equal(onDisk?.commands?.[0]?.input, "/status");
+    // Read from disk, not from the cache the mutation happened in.
+    const onDisk = await loadSession(sessionId);
+    assert.equal(onDisk?.title, "renommee en place");
   } finally {
     await deleteSession(sessionId);
   }
@@ -282,7 +261,7 @@ test("flushDirty skips a session nothing touched", async () => {
   const sessionId = "my-claw-app/thread/owner/clean-session";
   try {
     const session = await manager.getOrCreate(sessionId, createMessage({ threadId: "clean-session" }));
-    session.messages.push({ role: "user", content: "go", timestamp: new Date().toISOString() });
+    session.title = "go";
     await manager.persist(sessionId);
 
     let writes = 0;

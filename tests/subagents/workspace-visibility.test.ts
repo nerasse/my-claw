@@ -6,8 +6,9 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { saveSession, deleteSession, loadSession, type SessionData, type SubAgentMeta } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, type LegacySessionData, type SubAgentMeta } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
+import { writeLegacySessionFile } from "../helpers/session-log.ts";
 
 /**
  * The rule under test is docs/subagent-visibility.md: a `workspace` sub-agent is reachable from
@@ -31,7 +32,7 @@ function runner(): SubAgentRunner {
 
 /** A conversation, which is what a caller session id resolves to. */
 async function chat(id: string, workspace?: string): Promise<void> {
-  const session: SessionData = {
+  const session: LegacySessionData = {
     id,
     platform: "my-claw-app",
     chatType: "dm",
@@ -40,11 +41,11 @@ async function chat(id: string, workspace?: string): Promise<void> {
     messages: [],
     ...(workspace ? { workspace } : {}),
   };
-  await saveSession(id, session);
+  await writeLegacySessionFile(id, session);
 }
 
 async function subAgent(id: string, meta: Partial<SubAgentMeta>): Promise<void> {
-  const session: SessionData = {
+  const session: LegacySessionData = {
     id,
     platform: "my-claw-app",
     chatType: "dm",
@@ -60,7 +61,7 @@ async function subAgent(id: string, meta: Partial<SubAgentMeta>): Promise<void> 
       ...meta,
     },
   };
-  await saveSession(id, session);
+  await writeLegacySessionFile(id, session);
 }
 
 const ids = [

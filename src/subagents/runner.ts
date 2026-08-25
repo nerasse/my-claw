@@ -1,7 +1,6 @@
-import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { MyClawConfig } from "../core/config.ts";
-import { MY_CLAW_DIR, resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyForDir } from "../core/config.ts";
+import { resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyForDir } from "../core/config.ts";
 import { resolveRunModel, type RunModel, type RunModelRequest } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
@@ -13,8 +12,9 @@ import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, Too
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import { loadSession, saveSession, deleteSession, archiveSession, recordSubAgentCaller } from "../sessions/store.ts";
+import { loadSession, deleteStoredSession, archiveSession, recordSubAgentCaller, subagentSessionIdsSync } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
+import { metaOf, writeMeta } from "../sessions/meta.ts";
 import type { UserEntry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
@@ -143,13 +143,18 @@ export class SubAgentRunner {
     indexSessionEntries(session, (await sessionLogOf(id)).entries());
   }
 
+  /**
+   * Writes the settings half. The manager owns it in production -- `index.ts` injects one before
+   * anything can route a message -- and without it the settings still have to land where readers
+   * look, which is the directory, not a flat file nothing reads any more.
+   */
   private async persistSession(id: string, session: SessionData): Promise<void> {
     if (this.sessionManager) {
       this.sessionManager.adopt(session);
       await this.sessionManager.persist(id);
-    } else {
-      await saveSession(id, session);
+      return;
     }
+    await writeMeta(id, metaOf(session, (await sessionLogOf(id)).leaf()));
   }
 
   canSpawn(depth: number): boolean {
@@ -385,9 +390,9 @@ export class SubAgentRunner {
     }
     await this.stopTracked(id);
     if (this.sessionManager) await this.sessionManager.deleteSession(id);
-    else await deleteSession(id);
+    else await deleteStoredSession(id);
     // Cache parity: the adopted session must not survive the kill. The manager delete also drains
-    // queued writes before removing the file, so a late autosave cannot resurrect the agent.
+    // queued writes before removing the directory, so a late autosave cannot resurrect the agent.
     const parentSessionId = session.meta.parentSessionId || callerSessionId;
     hooks.emit("subagent:killed", {
       id,
@@ -404,12 +409,7 @@ export class SubAgentRunner {
     }
     await this.stopTracked(id);
     const current = this.sessionManager ? await this.sessionManager.peek(id) ?? session : session;
-    if (this.sessionManager) {
-      this.sessionManager.adopt(current);
-      await this.sessionManager.persist(id);
-    } else {
-      await saveSession(id, current);
-    }
+    await this.persistSession(id, current);
     // Through the manager when there is one: it owns the open log, and a reset that leaves that log
     // cached hands the fresh conversation the old leaf and a handle to a file that has moved.
     if (this.sessionManager) await this.sessionManager.archiveConversation(id);
@@ -417,12 +417,7 @@ export class SubAgentRunner {
     // The workspace survives a reset like the rest of the identity: a sub-agent pinned to a
     // project must not silently come back in the default one.
     const fresh = this.createSession(id, current.platform, current.chatType, current.meta, current.workspace);
-    if (this.sessionManager) {
-      this.sessionManager.adopt(fresh);
-      await this.sessionManager.persist(id);
-    } else {
-      await saveSession(id, fresh);
-    }
+    await this.persistSession(id, fresh);
     // The cache must hold the fresh session, not the archived one.
     const parentSessionId = session.meta.parentSessionId || callerSessionId;
     hooks.emit("subagent:reset", {
@@ -463,16 +458,14 @@ export class SubAgentRunner {
   }
 
   async list(registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentInfo[]> {
-    const dir = join(MY_CLAW_DIR, "sessions", "subagent");
     const out: SubAgentInfo[] = [];
     // Resolved once for the whole scan rather than per entry: the caller does not change between
-    // two files, and a read per sub-agent would make listing quadratic in disk reads.
+    // two sub-agents, and a read per sub-agent would make listing quadratic in disk reads.
     const caller = await this.resolveCaller(callerSessionId);
     try {
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-        const id = `subagent/${entry.name.slice(0, -5)}`;
+      // The shared walk, not a glob: a sub-agent is a directory since the storage switch, and
+      // looking for `*.json` here listed none of them at all.
+      for (const id of subagentSessionIdsSync()) {
         const session = await loadSession(id);
         if (!session?.meta) continue;
         if (!isReachableFrom(session.meta, caller)) continue;
@@ -501,23 +494,19 @@ export class SubAgentRunner {
    * conversation: a private agent is reachable from its parent alone, so a deleted parent leaves
    * it an unreachable orphan. Global agents survive on purpose -- they are shared workers another
    * conversation may still drive, and the roster of any conversation still lists them for a
-   * deliberate kill. A running agent is skipped: its run would resurrect the file via saveSession.
+   * deliberate kill. A running agent is skipped: its run would write its settings back.
    */
   async deleteChildrenOf(parentSessionId: string, registry: { isRunning: (id: string) => boolean }): Promise<number> {
-    const dir = join(MY_CLAW_DIR, "sessions", "subagent");
     let removed = 0;
     try {
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-        const id = `subagent/${entry.name.slice(0, -5)}`;
+      for (const id of subagentSessionIdsSync()) {
         const session = await loadSession(id);
         if (!session?.meta) continue;
         if (session.meta.visibility !== "private") continue;
         if (session.meta.parentSessionId !== parentSessionId) continue;
         if (registry.isRunning(id) || this.activeRuns.has(id)) continue;
         if (this.sessionManager) await this.sessionManager.deleteSession(id);
-        else await deleteSession(id);
+        else await deleteStoredSession(id);
         removed += 1;
       }
     } catch {
@@ -758,7 +747,6 @@ export class SubAgentRunner {
       chatType,
       createdAt: new Date().toISOString(),
       lastActiveAt: new Date().toISOString(),
-      messages: [],
       meta,
       ...(workspace ? { workspace } : {}),
     };

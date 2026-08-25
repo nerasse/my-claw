@@ -1,11 +1,12 @@
 import { readFile, stat } from "node:fs/promises";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
-import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, recordSessionSubAgentState, loadSession, loadLegacySession, type SessionSubAgentStatus } from "./sessions/store.ts";
+import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
+import type { CommandEntry } from "./sessions/log.ts";
 import { setSessionLogResolver } from "./sessions/log-access.ts";
-import { join, dirname, isAbsolute, resolve } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
@@ -126,7 +127,6 @@ import { reloadAgents, editableAgentTierDirs, type AgentDirs } from "./agents/re
 import { McpManager } from "./mcp/manager.ts";
 import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
-import { recreateChannelAdapter } from "./channels/recreate.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmComplete } from "./llm/transport.ts";
@@ -776,55 +776,6 @@ async function main() {
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
 
-    // Spawn lifecycle is display-only, but it is persisted on the parent tool call before the live
-    // frame is allowed to disappear. A reload in the narrow window between `spawn.end` and the
-    // outer `chat.tool` result therefore replays the terminal state instead of resurrecting a
-    // running spinner.
-    const pendingSubAgentHistory = new Map<string, Promise<void>>();
-    const persistSubAgentState = (event: {
-      id: string;
-      parentSessionId: string;
-      toolCallId?: string;
-      displayName?: string;
-      type?: string;
-      mode?: string;
-      action?: "spawn" | "send";
-      resultLength?: number;
-      error?: unknown;
-      status: SessionSubAgentStatus;
-    }): void => {
-      if (!event.parentSessionId) return;
-      const previous = pendingSubAgentHistory.get(event.parentSessionId) ?? Promise.resolve();
-      const write = previous.catch(() => {}).then(async () => {
-        const session = await sessionManager.peek(event.parentSessionId);
-        if (!session) return;
-        const changed = recordSessionSubAgentState(session, {
-          subagentId: event.id,
-          status: event.status,
-          ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
-          ...(event.displayName ? { displayName: event.displayName } : {}),
-          ...(event.type ? { agentType: event.type } : {}),
-          ...(event.mode ? { mode: event.mode } : {}),
-          ...(event.action ? { action: event.action } : {}),
-          ...(event.resultLength !== undefined ? { resultLength: event.resultLength } : {}),
-          ...(event.error !== undefined ? { error: String(event.error) } : {}),
-        });
-        if (changed) await sessionManager.persist(session.id);
-      });
-      const tracked = write.finally(() => {
-        if (pendingSubAgentHistory.get(event.parentSessionId) === tracked) pendingSubAgentHistory.delete(event.parentSessionId);
-      });
-      pendingSubAgentHistory.set(event.parentSessionId, tracked);
-      void tracked.catch((error) => {
-        void log("warn", "sub-agent lifecycle history update failed", { sessionId: event.parentSessionId, subagentId: event.id, error: String(error) });
-      });
-    };
-    hooks.on("subagent:spawn", (event) => persistSubAgentState({ ...event, status: "running" }));
-    hooks.on("subagent:complete", (event) => persistSubAgentState({ ...event, status: "complete" }));
-    hooks.on("subagent:error", (event) => persistSubAgentState({ ...event, status: "error" }));
-    hooks.on("subagent:aborted", (event) => persistSubAgentState({ ...event, status: "aborted" }));
-    hooks.on("subagent:killed", (event) => persistSubAgentState({ ...event, status: "aborted" }));
-    hooks.on("subagent:reset", (event) => persistSubAgentState({ ...event, status: "aborted" }));
     myClawAppRef = myClawApp;
     noticeSenders.set("my-claw-app", (chatId, text, threadId) => myClawApp.send(chatId, { text, notice: true, threadId }));
 
@@ -2032,10 +1983,13 @@ async function main() {
           const threadId = cronSessionToThread(sessionId);
           if (!threadId || !Number.isFinite(runTs)) continue;
           const session = await sessionManager.peek(sessionId);
+          // From the log, like the thread list does. The name stays `messageCount` because a
+          // shipped client reads it under that name.
+          const runEntries = session ? (await sessionManager.logOf(sessionId)).entries().length : 0;
           runs.push({
             threadId,
             runAt: runTs,
-            messageCount: session?.messages.length ?? 0,
+            messageCount: runEntries,
             title: session?.title?.trim() || `${job.name} · ${new Date(runTs).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
           });
         }
@@ -2183,11 +2137,13 @@ async function main() {
                 outcomes.push({ sessionId: target, threadId: appThread, ok: false, error: "conversation is gone" });
                 continue;
               }
-              targetSession.commands = [...(targetSession.commands ?? []), {
+              const targetLog = await sessionManager.logOf(target);
+              targetLog.append<CommandEntry>({
+                type: "command",
+                prompt: false,
                 input: `handoff from ${label}`,
                 output: body,
-                timestamp: new Date().toISOString(),
-              }];
+              });
               await sessionManager.persist(target);
               myClawApp.send(target.split("/")[2] ?? "", { text: body, notice: true, threadId: appThread });
               outcomes.push({ sessionId: target, threadId: appThread, ok: true });
@@ -2224,7 +2180,7 @@ async function main() {
             ? {
                 session: {
                   id: session.id,
-                  messages: session.messages.length,
+                  messages: (await sessionManager.logOf(session.id)).entries().length,
                   lastActiveAt: session.lastActiveAt,
                   ...(session.modelOverride ? { model: session.modelOverride } : {}),
                 },
@@ -2245,7 +2201,6 @@ async function main() {
     // A compaction moves the boundary with no turn behind it, so nothing would move the figure
     // until the next run: a thread the owner just compacted would keep showing it full.
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
-    hooks.on("session:cleared", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
 
     // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`
     // so every window of the parent conversation gains/updates/loses the row live instead of

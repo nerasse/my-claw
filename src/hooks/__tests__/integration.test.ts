@@ -35,7 +35,7 @@ describe("integration: session lifecycle", () => {
     const manager = new SessionManager();
     const sid = uniqId("s");
     const session = await manager.getOrCreateWithMeta(sid, "my-claw-app", "dm");
-    session.messages.push({ role: "user", content: "test", timestamp: new Date().toISOString() });
+    session.title = "test";
     await manager.persist(sid);
     const manager2 = new SessionManager();
     const createdSpy = mock(() => {});

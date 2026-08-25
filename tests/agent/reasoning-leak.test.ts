@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
+import { setupSessionLog, appendMessages, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -8,7 +8,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { saveSession, deleteSession, type SessionData, type SessionMessage } from "../../src/sessions/store.ts";
+import { deleteSession, type LegacySessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import type { SessionLog, PhaseEntry, UserEntry } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "test-reasoning-leak";
@@ -57,7 +57,7 @@ function createMessage(): UnifiedMessage {
   };
 }
 
-function baseSession(): SessionData {
+function baseSession(): LegacySessionData {
   return {
     id: SESSION_ID,
     platform: "my-claw-app",
@@ -86,7 +86,7 @@ let cleanupLog: () => void;
 
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
-  await saveSession(SESSION_ID, baseSession());
+  await writeLegacySessionFile(SESSION_ID, baseSession());
   const setup = await setupSessionLog(SESSION_ID);
   log = setup.log;
   cleanupLog = setup.cleanup;

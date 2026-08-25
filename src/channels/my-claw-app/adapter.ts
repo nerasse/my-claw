@@ -1421,13 +1421,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     output: string,
     renderedAsPage: boolean,
     details: string | undefined,
-    sourceId: string,
   ): Promise<void> {
     if (renderedAsPage) return;
     const redacted = redactCommandArgs(command, args);
     const input = redacted ? `/${command} ${redacted}` : `/${command}`;
     try {
-      await this.store.recordCommand(owner, threadId, input, output, details, sourceId);
+      // No source id: the entry's own id is what a page merges on, and it replaces it outright.
+      await this.store.recordCommand(owner, threadId, input, output, details);
     } catch (err) {
       void myClawAppLog("error", "command journal failed", { owner, threadId, command, error: String(err) });
     }
@@ -1494,7 +1494,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
               ...(compose !== undefined ? { compose } : {}),
               ...(newThreadId ? { newThreadId } : {}),
             });
-            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id);
+            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details);
           }
           return;
         } catch (err) {
@@ -1502,7 +1502,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
           const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
           this.broadcast(owner, { type: "chat.command.result", threadId, replyToId: frame.id, text: failure });
-          await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id);
+          await this.journalCommand(owner, threadId, command, args, failure, false, undefined);
           return;
         }
       }

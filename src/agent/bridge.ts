@@ -11,8 +11,8 @@ import {
 } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
-import type { SessionData, SessionMessage, SessionAttachment } from "../sessions/store.ts";
-import { dropLeadingOrphanToolMessages, attributionParent, markSessionDirty } from "../sessions/store.ts";
+import type { SessionData, SessionAttachment } from "../sessions/store.ts";
+import { attributionParent, markSessionDirty } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf, contextEntries } from "../sessions/projection.ts";
 import type { Entry } from "../sessions/log.ts";
@@ -21,7 +21,6 @@ import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
-import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
 import { resolveRunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -29,7 +28,7 @@ import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt, measurementFor } from "../llm/context-window.ts";
-import { pruneOldToolResults, promptSideChat, promptSidePruned, sessionChatMessages, spillToolOutput } from "./context-pruning.ts";
+import { pruneOldToolResults, promptSidePruned, spillToolOutput } from "./context-pruning.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -1340,7 +1339,5 @@ export class AgentBridge implements AgentBackend {
     return attached;
   }
 
-  private toChatMessages(messages: SessionMessage[]): ChatMessage[] {
-    return sessionChatMessages(messages);
-  }
+
 }

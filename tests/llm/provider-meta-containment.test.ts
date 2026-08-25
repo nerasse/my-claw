@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { __testing as anthropic } from "../../src/llm/anthropic.ts";
-import { sessionChatMessages } from "../../src/agent/context-pruning.ts";
+import { promptOf } from "../../src/sessions/projection.ts";
+import { setupSessionLog, appendMessages } from "../helpers/session-log.ts";
+import { deleteSession } from "../../src/sessions/store.ts";
 import type { ChatMessage, ProviderMeta } from "../../src/llm/provider.ts";
 import { estimateMessagesTokens } from "../../src/llm/tokens.ts";
 import type { SessionMessage } from "../../src/sessions/store.ts";
@@ -27,15 +29,23 @@ describe("provider metadata containment", () => {
     expect(Object.keys(persisted)).not.toContain("providerMeta");
   });
 
-  test("replaying a session into a prompt cannot produce it", () => {
-    const out = sessionChatMessages([
-      { role: "user", content: "go", timestamp: "t" },
-      { role: "assistant", content: "answer", timestamp: "t", reasoning: "thought", toolCalls: [{ id: "c1", name: "bash", arguments: "{}" }] },
-      { role: "tool", toolCallId: "c1", content: "out", timestamp: "t" },
-    ]);
-    expect(JSON.stringify(out)).not.toContain("providerMeta");
-    // The display-only reasoning text must not leak either; same fence, older rule.
-    expect(JSON.stringify(out)).not.toContain("thought");
+  test("replaying a session into a prompt cannot produce it", async () => {
+    // The live replay: entries in, prompt out. `promptOf` is the only thing that builds one.
+    const setup = await setupSessionLog("meta/containment");
+    try {
+      appendMessages(setup.log, [
+        { role: "user", content: "go", timestamp: "t" },
+        { role: "assistant", content: "answer", timestamp: "t", reasoning: "thought", toolCalls: [{ id: "c1", name: "bash", arguments: "{}" }] },
+        { role: "tool", toolCallId: "c1", content: "out", timestamp: "t" },
+      ]);
+      const out = promptOf(setup.log.entries(), setup.log.leaf());
+      expect(JSON.stringify(out)).not.toContain("providerMeta");
+      // The display-only reasoning text must not leak either; same fence, older rule.
+      expect(JSON.stringify(out)).not.toContain("thought");
+    } finally {
+      setup.cleanup();
+      await deleteSession("meta/containment");
+    }
   });
 
   test("the Anthropic transport drops it: that protocol has no such item", () => {

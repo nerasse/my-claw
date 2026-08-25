@@ -9,7 +9,7 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import type { Tool } from "../../src/tools/types.ts";
 import type { Skill } from "../../src/skills/types.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import type { SessionData } from "../../src/sessions/store.ts";
+import type { LegacySessionData } from "../../src/sessions/store.ts";
 
 // These tests cover the wiring, not the resolvers: tests/config.test.ts already pins the resolution
 // table. What can only be caught here is a backend that resolves a scope and then forgets to use it,
@@ -27,7 +27,7 @@ function msg(text: string, platform: UnifiedMessage["platform"] = "my-claw-app")
   return { id: `m-${Math.random()}`, platform, userId: "u1", chatId: "c1", chatType: "dm", text, attachments: [], isForwarded: false, raw: {} };
 }
 
-function session(id: string): SessionData {
+function session(id: string): LegacySessionData {
   const now = new Date().toISOString();
   return { id, platform: "my-claw-app", chatType: "dm", createdAt: now, lastActiveAt: now, messages: [] };
 }

@@ -17,7 +17,7 @@ import {
   type PhaseEntry,
 } from "../../src/sessions/log.ts";
 import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
-import type { SessionData, SessionAttachment } from "../../src/sessions/store.ts";
+import type { LegacySessionData, SessionAttachment } from "../../src/sessions/store.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
@@ -26,7 +26,7 @@ function freshId(): string {
   return `test-branch-${process.pid}-${counter++}`;
 }
 
-function createMockSession(sessionId: string): SessionData {
+function createMockSession(sessionId: string): LegacySessionData {
   return {
     id: sessionId,
     platform: "my-claw-app",
