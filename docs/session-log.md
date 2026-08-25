@@ -478,7 +478,9 @@ partir du leaf, remonter `parentId`, `reverse()`. `leafId === null` → chemin v
 4. Projeter : `user` → `{role:"user"}`, `phase` → `{role:"assistant"}` (les phases d'un
    même `runId` fusionnées en un message avec ses `tool_calls`), `tool` →
    `{role:"tool", tool_call_id}`, `compaction` → le tour user porteur du résumé.
-5. `sealDanglingToolCalls` reste appliqué au démarrage de run, sur le résultat.
+5. Rien à réparer en sortie : une entrée `tool` n'est écrite qu'une fois l'appel réglé,
+   donc un `tool_call` sans réponse ne peut pas exister. `sealDanglingToolCalls` disparaît
+   avec le lot 3b-iv.
 
 `promptMessages()` et `promptBase` disparaissent. **Décision arrêtée : remplacement
 direct au lot 3**, pas de cache dérivé — ce serait exactement le double usage qu'on
@@ -634,18 +636,18 @@ Nouveau thread, `entries.jsonl` = copie du chemin avec `parentId` ré-chaînés,
 **Les pièces jointes sont un choix explicite, jamais un partage.** Les uploads sont par
 thread (`files/my-claw-app/<threadId>/`) et `history()` les résout via
 `files.list(owner, threadId)`. Partager les fichiers entre deux threads voudrait dire
-qu'un `unlink` d'un côté casse l'autre silencieusement. Donc feuille d'action :
+qu'un `unlink` d'un côté casse l'autre silencieusement.
 
-```
-Forker cette conversation
-  Pièces jointes du chemin : 14 fichiers, 38 MB
-  ○ Copier          le nouveau thread est autonome
-  ○ Ne pas copier   les bulles gardent le texte, les fichiers sont marqués absents
-```
+**Livré : la copie est systématique, sans feuille d'action.** La spec prévoyait de demander
+copier ou non ; le lot 7 a tranché pour toujours copier. Un fork est une session à part
+entière, avec sa propre suppression : deux sessions qui pointent le même fichier signifient
+qu'en supprimer une mutile l'autre, c'est-à-dire l'invariant central de la refonte cassé par
+la porte de derrière. Le coût est quelques octets déjà écrits par le propriétaire, et
+seulement pour le préfixe copié. Une question qui n'a qu'une bonne réponse ne se pose pas.
 
-Pas de hardlink non plus, même raison. Copie franche ou rien. Le mode « sans » réutilise
-un chemin déjà géré et testé (`historyAttachments` rend un attachement flaggé quand le
-fichier a disparu). Le choix est mémorisé dans `forkedFrom.attachments`.
+Pas de hardlink non plus, même raison. Un fichier source déjà manquant ne fait pas échouer le
+fork : l'entrée garde son chemin mort, exactement comme elle l'avait dans la source.
+`forkedFrom` porte `sessionId` et `entryId`, d'où et depuis quel point exactement.
 
 ### `/branches` — voir et changer de branche
 
@@ -702,8 +704,17 @@ Avec l'arbre, `/undo` **est déjà** une navigation de branche :
 ```
 
 Pas de pointeur `revert`, pas de masquage, **pas de `cleanup`, pas de suppression**. Là où
-opencode détruit les messages au prochain prompt, on garde la branche : le redo reste
-possible indéfiniment et la branche est visible dans `/branches`.
+opencode détruit les messages au prochain prompt, on garde la branche : elle reste visible
+dans `/branches` et atteignable indéfiniment.
+
+**Décision arrêtée : `/redo` refuse dès qu'un tour a été écrit depuis le `/undo`**, et nomme
+le numéro de branche à utiliser. `/redo` est l'inverse immédiat de `/undo`, et cette relation
+ne tient que tant que rien n'a été écrit entre les deux : après, la branche abandonnée est une
+branche parmi d'autres, et naviguer entre des branches quelconques est le travail de
+`/branches`. Faire autrement téléporterait le propriétaire loin de ce qu'il vient d'écrire,
+c'est-à-dire la même surprise coûteuse que `/branches` refuse pendant un run. Rien n'est
+retiré au passage, seulement un raccourci qui a cessé d'être univoque. La détection se fait
+sur le leaf attendu mémorisé dans `meta.undo`, jamais sur des timestamps.
 
 | | leaf après | texte au composer | branche abandonnée |
 |---|---|---|---|
@@ -844,12 +855,12 @@ maintenant, il disparaît avec la cause.
 | **3b-i** | ~~`SessionManager.logOf`, cycle de vie (éviction, delete, flushAll), `meta.json` écrit~~ **livré `b8e5cb1`** | — | 2 |
 | **3b-ii** | ~~`RunRecorder` : un run écrit en entrées, `providerMeta` persisté, rewind non destructif~~ **livré `979465d`** | — | 3a |
 | **3b-iii** | ~~Accès au log depuis un run (`sessions/log-access.ts`)~~ **livré `ebcac59`** | — | 3b-i |
-| **3b-iv** | Câblage : `bridge.ts` appelle le recorder, `promptOf` remplace `promptMessages`, `session.messages` retiré | 1 j | 3b-iii, 6 |
-| **4** | Frame `session.sync {since, leaf}`, `appendEntries` côté app, suppression de `carried`, plafond 500 entrées | 1 j | 3 |
+| **3b-iv** | ~~Câblage : `bridge.ts` appelle le recorder, `promptOf` remplace `promptMessages`~~ **livré `0d326c6`** | — | 3b-iii, 6 |
+| **4** | ~~Frame `session.sync {since, leaf}`, sync côté app, suppression de `carried`, plafond 500 entrées~~ **livré `4128363`, app `0615cb1`** | — | 3 |
 | **5** | ~~Magasin de sorties d'outils + GC des orphelins~~ **livré `dc45495`** | — | 2 |
 | **6** | ~~Import one-shot `.json` → `<id>/entries.jsonl` + `meta.json` (les 3 familles)~~ **livré `6253c15`, `7616080`, `3334ff4`** | — | 2 |
-| **7** | `/branches`, `/fork` (+ feuille d'action pièces jointes), `/retry` | 1,5 j | 4 |
-| **8** | `/undo`, `/redo` (abort du run en cours) | 0,5 j | 7 |
+| **7** | ~~`/branches`, `/fork`, `/retry`~~ **livré `5813d4c`** | — | 4 |
+| **8** | ~~`/undo`, `/redo` (abort du run en cours)~~ **livré `ec72154`** | — | 7 |
 | **9** | Queues persistées (mailbox durable) | 0,5 j | 2 |
 | **10** | Snapshots fichiers multi-dépôts + restauration proposée dans `/undo` | 1,5 j | 8 |
 
@@ -960,6 +971,19 @@ secondes.
 `storageVersion: 1` posé sur chaque `meta.json`. Ouverture avec une version supérieure au
 binaire → refus d'ouvrir, jamais de lecture optimiste (`harness.md` §7.3).
 
+## La migration ne se rembobine pas toute seule
+
+Elle est idempotente mais à sens unique. Une fois `<id>.json` archivé, un binaire antérieur
+au lot 3b-iv ne trouve plus rien à lire et ouvre des conversations vides : les données sont
+intactes dans `sessions-archive/`, mais seul un `mv` les y ramène.
+
+Ce qui rend le point sérieux à la mise en production, c'est le rollback automatique. Le timer
+de mise à jour redéploie la version précédente quand la santé ne revient pas, et cette
+version-là est justement celle qui ne sait pas lire ce que la nouvelle vient d'écrire. Un
+rollback après migration ne perd rien, mais montre un historique vide jusqu'à restauration
+manuelle. Prendre une copie de `~/.my-claw/sessions/` avant la première montée de version coûte
+quelques secondes et rend la question théorique.
+
 ---
 
 # Annexe B — Décisions arrêtées
@@ -969,9 +993,10 @@ binaire → refus d'ouvrir, jamais de lecture optimiste (`harness.md` §7.3).
 | 1 | `promptOf` remplace `promptMessages` dès le lot 3, pas de cache dérivé | arrêté |
 | 2 | `providerMeta` persisté sur `PhaseEntry` (nouveau : ne l'est pas aujourd'hui) | arrêté |
 | 3 | Migration des trois familles ; **cron gardé**, 25/job ; commentaires corrigés (`e02d68b`) | arrêté |
-| 4 | Fork : feuille d'action copier/ne pas copier, **jamais de partage inter-session**, pas de hardlink | arrêté |
+| 4 | Fork : pièces jointes **toujours copiées**, jamais de partage inter-session, pas de hardlink | arrêté (lot 7) |
 | 5 | Changement de branche : reseed serveur | arrêté |
-| 6 | `/undo` **abort** le run en cours | arrêté |
+| 6 | `/undo` **abort** le run en cours ; `/branches` et `/retry` **refusent** à la place | arrêté (lot 7) |
+| 6b | `/redo` refuse dès qu'un tour a été écrit depuis le `/undo`, et nomme la branche | arrêté (lot 8) |
 | 7 | `/branches`, `/fork`, `/retry`, `/undo`, `/redo` + `META_COMMAND_PATTERN` | arrêté |
 | 8 | Sorties d'outils : **pas de TTL**, durée de vie = l'entrée, GC des orphelins seuls | arrêté |
 | 9 | Snapshots : retenus, **un shadow par dépôt**, profondeur 3, workspace only, restauration proposée | arrêté |
@@ -988,10 +1013,16 @@ enlève 94 % du volume ; le reste est du texte.
 
 ## Ce qui tourne aujourd'hui
 
-Les entrées, les projections et la migration sont livrées et testées. **Rien ne les lit
-encore en production** : `store.ts`, `bridge.ts` et `sessions.ts` sont intacts, le
-comportement est inchangé. Le disque, lui, a changé : au boot, chaque `<id>.json` devient
-un `<id>/` et l'ancien fichier part dans `sessions-archive/`.
+Le chemin critique est livré : lots 1 à 8. Le log **est** l'historique. `promptOf` fait le
+prompt, `displayOf` fait l'écran, un run s'écrit par le `RunRecorder`, et l'arbre est
+accessible au propriétaire par `/branches`, `/fork`, `/retry`, `/undo` et `/redo`.
+`promptMessages`, `sealDanglingToolCalls`, `prePushed` et `messageCountBeforeLoop` n'existent
+plus. Au boot, chaque `<id>.json` devient un `<id>/` et l'ancien fichier part dans
+`sessions-archive/`.
+
+Restent optionnels : les lots 9 (queues persistables) et 10 (snapshots), le champ `messages`
+de `SessionData` que `manager.ts` lit encore pour ses compteurs, et les boutons de l'app pour
+les branches et l'undo, les lots 7 et 8 n'ayant livré que les commandes.
 
 | Fichier | Rôle | Tests |
 |---|---|---|
@@ -1034,15 +1065,30 @@ référence croisée ne peut donc être résolue ni avant (l'id n'existe pas) ni
 ligne est écrite). D'où `appendAll(payloads, patch)`, qui assigne ids et chaînage de tout
 un lot, laisse résoudre, puis écrit.
 
-## Ce qui reste, et dans quel ordre
+## Ce que la bascule a trouvé
 
-Le lot 3b (bascule du bridge) est le premier changement de comportement. Il touche 68
-sites sur 14 fichiers et n'est pas décomposable en états intermédiaires cohérents : tant
-que `session.messages` et le log coexistent, c'est exactement le double usage que la
-refonte supprime, payé deux fois. Il se fait donc d'un bloc, vérifié par la suite
-existante plus une passe à blanc comparant `promptOf` à `promptMessages` sur le store réel
-— la même méthode que le lot 6, et la dernière fois qu'elle est disponible : une fois la
-bascule faite, `promptMessages` n'existe plus pour servir de témoin.
+Quatre défauts, dont trois auraient tourné en production sans se voir.
+
+**L'auto-compaction était morte.** Son seuil mesurait `session.messages.length`, un tableau
+que plus rien n'alimente : jamais atteint, jamais déclenchée. Le symptôme n'apparaît qu'en
+faisant exploser une fenêtre de contexte, longtemps après la cause.
+
+**`/status` affichait zéro.** Deux appelants de `promptMessages` hors des sites recensés.
+Lire le log a rendu `statusReport` asynchrone, ce qui est le vrai coût du changement.
+
+**Le rewind repassait par-dessus une question du propriétaire.** Le recorder rembobinait à
+un leaf fixé à sa construction : un run qui échouait après avoir absorbé un message de
+steering effaçait ce message. C'est la régression déjà corrigée une fois dans l'ancienne
+boucle, réintroduite par une autre porte. Le plancher avance désormais dans `user()`
+lui-même : l'invariant tient par construction et non parce qu'un appelant y pense.
+
+**Le chemin sous-agent écrivait le tour user deux fois**, une fois dans le runner et une
+fois dans le bridge.
+
+Ce qui a permis de les trouver plutôt que de les livrer : `prompt-conformance.test.ts`, dont
+les attentes sont écrites en littéraux et ne dépendent donc pas du chemin qu'elles vérifient.
+Un témoin qui compare deux implémentations meurt avec celle qu'il remplace ; un témoin qui
+énonce le résultat attendu survit à la bascule et c'est précisément là qu'il sert.
 
 Trou connu, assumé : `sourceId` n'est pas reporté sur l'id d'entrée à l'import. Le faire
 obligerait `append` à accepter un id imposé, ce qui casse « le log seul attribue les ids ».
@@ -1061,7 +1107,7 @@ testent donc pour de vrai, isolément. Ce qui reste est le câblage, mécanique.
 | 3b-i | Le manager possède le log : `logOf`, éviction, delete, `flushAll`, `meta.json` | livré `b8e5cb1` |
 | 3b-ii | `RunRecorder` : la forme d'un run en entrées | livré `979465d` |
 | 3b-iii | L'accès au log depuis un run (`sessionLogOf`) | livré `ebcac59` |
-| 3b-iv | Le câblage dans `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts` | **reste** |
+| 3b-iv | Le câblage dans `bridge.ts`, `compaction.ts`, `runner.ts`, `sessions.ts` | livré `0d326c6` |
 
 ## Pourquoi l'accès au log est passé devant
 
