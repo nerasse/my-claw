@@ -238,3 +238,33 @@ describe("promptOf: purity", () => {
     expect(JSON.stringify(entries)).toBe(snapshot);
   });
 });
+
+describe("a turn that says nothing and asks for nothing", () => {
+  // Mid-run steering rebuilds the prompt while a call is still running. The phase of a model that
+  // called a tool without a word of prose is empty, and its tool entry does not exist yet, so the
+  // turn carries no text and no tool call. Anthropic refuses the whole request for that ("text
+  // content blocks must be non-empty") and the retry reposts it, so one unsettled call used to
+  // take the conversation down instead of one turn.
+  test("is dropped: an unsettled call must not kill the conversation", () => {
+    const { entries, leaf } = chain([user("vas-y"), phase("")]);
+    expect(promptOf(entries, leaf)).toEqual([{ role: "user", content: "vas-y" }]);
+  });
+
+  test("the turns around it are untouched", () => {
+    const { entries, leaf } = chain([
+      user("vas-y"),
+      phase("je regarde", "r1"),
+      tool("c1", "r1"),
+      phase("", "r2"),
+      user("et maintenant ?"),
+    ]);
+    expect(promptOf(entries, leaf).map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
+  });
+
+  test("an empty phase whose call HAS settled is kept: the call is what it said", () => {
+    const { entries, leaf } = chain([user("liste"), phase(""), tool("c1")]);
+    const prompt = promptOf(entries, leaf);
+    expect(prompt.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    expect(prompt[1]).toMatchObject({ content: "", tool_calls: [{ id: "c1" }] });
+  });
+});

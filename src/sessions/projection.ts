@@ -112,6 +112,14 @@ export function promptOf(entries: readonly Entry[], leafId: string | null): Chat
     // provider left the turn in, and the earlier ones describe positions it has already moved past.
     const providerMeta = phases[phases.length - 1]?.providerMeta;
 
+    // A turn that says nothing and asks for nothing is not a turn. It happens for real: the model
+    // called a tool without writing any prose, so the phase is empty, and the call has not settled
+    // yet, so no tool entry derives a `tool_calls`. Mid-run steering rebuilds the prompt in exactly
+    // that window. Sending it costs the whole conversation rather than one turn -- Anthropic
+    // answers HTTP 400 "text content blocks must be non-empty", and a retry reposts the same
+    // prompt, so the run cannot recover. Dropping it loses nothing: there is nothing in it.
+    if (!text && tools.length === 0) continue;
+
     const assistant: ChatMessage = {
       role: "assistant",
       content: text,
@@ -145,8 +153,15 @@ export function promptOf(entries: readonly Entry[], leafId: string | null): Chat
  *
  * It cannot happen here: `tool_calls` above are *derived from the tool entries*, and a tool entry
  * is only written once the call has settled and has a result. A killed run leaves phases and no
- * tool entry, which projects to an assistant turn that asked for nothing. The prompt is legal by
- * construction.
+ * tool entry, which projects to an assistant turn that asked for nothing.
+ *
+ * That turn is dropped rather than sent, and the distinction matters: "asked for nothing" is legal
+ * only while it still *says* something. A phase with no prose -- the model called a tool without a
+ * word of commentary -- projects to a turn with no text and no tool call, which is not a legal
+ * assistant turn anywhere. Anthropic refuses the whole request ("text content blocks must be
+ * non-empty"), and since a retry reposts the same prompt the run cannot recover: one unsettled
+ * call took the conversation down. Mid-run steering hits that window every time, because injecting
+ * a message rebuilds the prompt while a call is still running.
  *
  * The price is on the screen, not in the prompt: a call still executing is in no entry, so a page
  * built from the log alone cannot draw its spinner. The live frames carry it while the socket is

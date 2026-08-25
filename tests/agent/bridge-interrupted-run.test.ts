@@ -46,10 +46,14 @@ afterEach(() => {
 });
 
 /**
- * With the new log system, tool entries are only written when the tool completes.
- * A run killed during tool execution leaves phases but no tool entries.
- * The projection produces an assistant turn with no tool_calls (not a dangling one).
- * This test verifies that a new run can proceed without issues after an interrupted run.
+ * Tool entries are only written when the tool completes, so a run killed during tool execution
+ * leaves phases and no tool entry. That cannot project to a dangling tool_call -- the calls are
+ * derived from the entries carrying the results.
+ *
+ * The turn it leaves says nothing and asks for nothing, and that turn is dropped rather than sent:
+ * Anthropic refuses a request holding one ("text content blocks must be non-empty") and the retry
+ * reposts the same prompt, so an unsettled call used to take the whole conversation down. This
+ * test verifies both halves: nothing dangling, nothing empty, and a new run proceeds.
  */
 test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", async () => {
   // Simulate an interrupted run: user turn + phase (the LLM requested a tool call)
@@ -58,14 +62,13 @@ test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", a
   log.append({ type: "phase", prompt: true, text: "", runId: "dead-run" } as any);
   await log.flush();
 
-  // The projection should show an assistant turn with no tool_calls
   const entries = log.entries();
   const prompt = promptOf(entries, log.leaf());
-  
-  // The assistant turn should have content (empty string) but no tool_calls
-  const assistant = prompt.find((m) => m.role === "assistant");
-  assert.ok(assistant, "assistant turn exists");
-  assert.equal("tool_calls" in assistant, false, "no dangling tool_calls");
+
+  // Nothing dangling, and nothing empty either: the turn carried no prose and its call never
+  // settled, so there is nothing left of it to send.
+  assert.equal(prompt.find((m) => m.role === "assistant"), undefined, "the empty turn is dropped");
+  assert.deepEqual(prompt.map((m) => m.role), ["user"]);
 
   // Now run the bridge - it should work without issues
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
