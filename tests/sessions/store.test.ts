@@ -406,3 +406,37 @@ describe("a session file named meta.json does not make its directory a session",
     expect(ids.sort()).toEqual([`${OWNER}/conv-a`, `${OWNER}/conv-b`, `${OWNER}/meta`]);
   });
 });
+
+/**
+ * The directory is the session, so it is what a read answers from. Two things had to be true at
+ * once: the directory is never the staler copy, and writing it does not erase the half the session
+ * does not own.
+ */
+describe("the directory is what gets read back", () => {
+  const ID = "my-claw-app/thread/dave/conv";
+  const DIR = join(SESSIONS_DIR, "my-claw-app", "thread", "dave", "conv");
+
+  afterAll(async () => {
+    await rm(join(SESSIONS_DIR, "my-claw-app"), { recursive: true, force: true }).catch(() => {});
+  });
+
+  test("the settings win over a flat copy that disagrees", async () => {
+    await mkdir(DIR, { recursive: true });
+    await writeFile(join(DIR, "entries.jsonl"), `{"id":"e1","seq":1,"ts":1,"type":"user","text":"hi","prompt":true}\n`, "utf-8");
+    await writeFile(join(DIR, "meta.json"), JSON.stringify({
+      id: ID, platform: "my-claw-app", chatType: "dm", createdAt: "a", lastActiveAt: "b",
+      storageVersion: 1, leafId: "e1",
+      title: "le vrai titre", modelOverride: "anthropic/claude-opus-5", contextOverride: 512000,
+    }), "utf-8");
+    // What 0.4.53 and 0.4.54 left beside it: the defaults of a session loaded as brand new.
+    await writeFile(join(SESSIONS_DIR, "my-claw-app", "thread", "dave", "conv.json"), JSON.stringify({
+      id: ID, platform: "my-claw-app", chatType: "dm", createdAt: "a", lastActiveAt: "b", messages: [],
+    }), "utf-8");
+
+    const session = await loadSession(ID);
+
+    expect(session?.title).toBe("le vrai titre");
+    expect(session?.modelOverride).toBe("anthropic/claude-opus-5");
+    expect(session?.contextOverride).toBe(512000);
+  });
+});

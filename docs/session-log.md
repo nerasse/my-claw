@@ -1109,6 +1109,37 @@ supprimer.
 Le coût est une lecture de fichier par répertoire sans log, c'est-à-dire seulement sur les
 répertoires écrits par 0.4.53 à 0.4.55 — `openSessionLog` garantit le log pour tous les suivants.
 
+### Le répertoire est ce qu'on relit
+
+Restait la question laissée ouverte : quand les deux formes coexistent, laquelle fait foi ?
+C'est le répertoire, et il a fallu rendre deux choses vraies en même temps.
+
+**Le répertoire ne doit jamais être la copie la plus vieille.** `persist` écrivait `meta.json`
+seulement si un log était ouvert — donc il le sautait exactement quand aucun run n'en avait
+ouvert : renommer un fil dans un process neuf atteignait le fichier plat et pas le répertoire.
+Il l'écrit maintenant toujours. Le curseur de branche est repris du fichier quand aucun log
+n'est ouvert, jamais remis à `null` : `null` veut dire « repartir de la fin du log », donc
+l'écrire sur une conversation garée sur une branche ancienne la ramènerait silencieusement au
+dernier tour. Et un `meta.json` illisible est laissé tel quel — le seul cas où refuser d'écrire
+est plus sûr qu'écrire, puisque `metaOf` laisserait tomber les champs qu'il ne connaît pas.
+
+**Écrire le répertoire ne doit pas effacer la moitié que la session ne possède pas.**
+`metaOf` reconstruit les réglages depuis la session, donc tout ce que `branch-commands` écrit
+directement dans le fichier disparaissait à l'écriture suivante. Mesuré sur 0.4.57 publiée : un
+seul `persist` après un `/fork` effaçait `forkedFrom` **et toutes les branches nommées**. Le
+`/fork`, le `/branches <nom>` et l'`/undo` ne survivaient donc que jusqu'au tour suivant. Un
+`Record<keyof SessionMeta, "session" | "carried">` dit maintenant qui écrit chaque clé, et une
+clé ajoutée à `SessionMeta` sans être classée **casse la compilation** au lieu d'être effacée
+au prochain write. Le report ne concerne que les clés `carried` : un réglage que le
+propriétaire efface reste effacé, il n'est pas ressuscité depuis l'ancien fichier.
+
+Ce que l'inversion rend visible, c'est que `messages`, `commands` et `failures` de `SessionData`
+ne survivaient que par le fichier plat. `messages` est mort — rien dans `src/` n'y ajoute depuis
+le basculement, seul `manager.ts` le vide et compte. `commands` et `failures` sont des copies
+« legacy compat » de ce que le log détient déjà, et c'est le log que l'app relit. Neuf tests
+affirmaient ces round-trips : ils affirment désormais la même intention sur un champ vivant,
+ou visent explicitement `loadLegacySession` quand c'est bien la forme legacy qui est en jeu.
+
 | Fichier | Rôle | Tests |
 |---|---|---|
 | `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |

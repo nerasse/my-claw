@@ -109,14 +109,71 @@ function defined<T extends object>(input: T): T {
 }
 
 /**
+ * Who writes each key of a stored meta.
+ *
+ * `metaOf` rebuilds the session-owned half from the session, so anything it does not rebuild is
+ * erased by the next write unless it is carried over. `branch-commands` writes the branch
+ * bookkeeping straight into the file, and measured on 0.4.57 a single persist after a `/fork`
+ * dropped `forkedFrom` and every named branch: they survived until the next turn.
+ *
+ * `Record<keyof SessionMeta, ...>` is the point. A field added to `SessionMeta` and to neither
+ * side stops the build, instead of being silently dropped on the next write.
+ */
+const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
+  id: "session",
+  platform: "session",
+  chatType: "session",
+  createdAt: "session",
+  lastActiveAt: "session",
+  storageVersion: "session",
+  leafId: "session",
+  title: "session",
+  archivedAt: "session",
+  pinRank: "session",
+  modelOverride: "session",
+  effortOverride: "session",
+  contextOverride: "session",
+  workspace: "session",
+  roomId: "session",
+  threadId: "session",
+  verbose: "session",
+  approvedTools: "session",
+  skillsOff: "session",
+  promptLayersOff: "session",
+  nestedDisabled: "session",
+  memoryRecallOff: "session",
+  meta: "session",
+  callers: "session",
+  tokenUsage: "session",
+  nestedAgents: "session",
+  lastPrompt: "session",
+  lastFixedTokens: "session",
+  branches: "carried",
+  forkedFrom: "carried",
+  undo: "carried",
+};
+
+/** The keys of a stored meta that the session has no opinion about, taken from what is on disk. */
+function carriedOver(previous: SessionMeta | null | undefined): Partial<SessionMeta> {
+  if (!previous) return {};
+  const carried: Record<string, unknown> = {};
+  for (const key of Object.keys(META_KEYS) as (keyof SessionMeta)[]) {
+    if (META_KEYS[key] !== "carried") continue;
+    if (previous[key] !== undefined) carried[key] = previous[key];
+  }
+  return carried as Partial<SessionMeta>;
+}
+
+/**
  * The settings half of a stored session.
  *
  * `scopeOverride`, `scopeEffort` and `invokedBy` are deliberately not here. They are run state:
  * the scheduler sets them from the job before each run, and a cron session outlives its run (the
  * app opens it as a chat), so a persisted copy would outlive the settings it was taken from.
  */
-export function metaOf(session: SessionData, leafId: string | null): SessionMeta {
+export function metaOf(session: SessionData, leafId: string | null, previous?: SessionMeta | null): SessionMeta {
   return defined({
+    ...carriedOver(previous),
     id: session.id,
     platform: session.platform,
     chatType: session.chatType,

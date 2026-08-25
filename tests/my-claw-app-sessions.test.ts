@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../src/sessions/manager.ts";
-import { recordSessionSubAgentState, saveSession, deleteSession, loadSession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
+import { recordSessionSubAgentState, saveSession, deleteSession, loadSession, loadLegacySession, FAILURE_TEXT_LIMIT, type SessionData } from "../src/sessions/store.ts";
 import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-claw-app/sessions.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -1040,7 +1040,9 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     ]));
     await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted 120 messages.", "summary text");
 
-    const stored = await loadSession(sessionId);
+    // The journal is the legacy copy of what the entry log already holds, so it is the legacy file
+    // that carries it. What matters below is the reload: the command comes back from the log.
+    const stored = await loadLegacySession(sessionId);
     assert.equal(stored?.messages.length, 2, "the journal must never reach the prompt");
     assert.equal(stored?.commands?.length, 1);
 

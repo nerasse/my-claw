@@ -271,7 +271,8 @@ test("a run that throws still writes what the session already holds", async () =
   const sessionManager = new SessionManager();
   const router = new MessageRouter(sessionManager, {
     async handleMessage(_message: UnifiedMessage, session: SessionData) {
-      session.messages.push({ role: "user", content: "la question", timestamp: new Date().toISOString() });
+      // A live field: the turn itself is appended to the entry log by the run, not to `messages`.
+      session.title = "la question";
       throw new Error("agent exploded");
     },
     async handleMessageStreaming() { throw new Error("unused"); },
@@ -284,8 +285,7 @@ test("a run that throws still writes what the session already holds", async () =
   const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "c1", "persist-on-error");
   try {
     const onDisk = await new SessionManager().read(sessionId);
-    assert.equal(onDisk?.messages.length, 1);
-    assert.equal(onDisk?.messages[0]!.content, "la question");
+    assert.equal(onDisk?.title, "la question");
   } finally {
     await sessionManager.deleteSession(sessionId);
   }

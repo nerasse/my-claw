@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { migrateSessions, legacySessionIds } from "../../src/sessions/migrate.ts";
 import { openSessionLog, entriesPath, sessionDir } from "../../src/sessions/log.ts";
-import { readMeta, metaPath, STORAGE_VERSION, UnsupportedStorageVersionError } from "../../src/sessions/meta.ts";
+import { readMeta, metaPath, metaOf, STORAGE_VERSION, UnsupportedStorageVersionError } from "../../src/sessions/meta.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import type { SessionData, SessionMessage } from "../../src/sessions/store.ts";
 
@@ -219,5 +219,42 @@ describe("readMeta", () => {
     await mkdir(sessionDir("t1"), { recursive: true });
     await writeFile(metaPath("t1"), "{ not json", "utf-8");
     expect(await readMeta("t1")).toBeNull();
+  });
+});
+
+/**
+ * `metaOf` rebuilds the settings from the session, so anything written into the file by someone
+ * else is erased by the next persist unless it is carried across. Measured on 0.4.57: one persist
+ * after a `/fork` dropped `forkedFrom` and every named branch, so branch bookkeeping survived
+ * exactly until the next turn.
+ */
+describe("metaOf keeps what the session does not own", () => {
+  test("a fork origin, its named branches and its undo state survive a persist", () => {
+    const session = data("my-claw-app/thread/eve/conv", []);
+    const previous = {
+      ...metaOf(session, "e1"),
+      forkedFrom: { sessionId: "my-claw-app/thread/eve/other", entryId: "e9" },
+      branches: [{ leafId: "e1", label: "essai", ts: 1 }],
+      undo: { redoLeafId: "e2", expectedLeafId: "e1" },
+    };
+
+    const rewritten = metaOf({ ...session, title: "renommee" }, "e2", previous);
+
+    expect(rewritten.forkedFrom).toEqual({ sessionId: "my-claw-app/thread/eve/other", entryId: "e9" });
+    expect(rewritten.branches).toHaveLength(1);
+    expect(rewritten.undo).toEqual({ redoLeafId: "e2", expectedLeafId: "e1" });
+    // And the session still owns its own half.
+    expect(rewritten.title).toBe("renommee");
+    expect(rewritten.leafId).toBe("e2");
+  });
+
+  test("a settings field the owner cleared is really cleared, not resurrected from the old file", () => {
+    const session = data("my-claw-app/thread/eve/conv", []);
+    const previous = metaOf({ ...session, title: "ancien", pinRank: 3 }, "e1");
+
+    const rewritten = metaOf(session, "e1", previous);
+
+    expect(rewritten.title).toBeUndefined();
+    expect(rewritten.pinRank).toBeUndefined();
   });
 });

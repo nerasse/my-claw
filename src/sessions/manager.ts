@@ -330,6 +330,30 @@ export class SessionManager {
     };
   }
 
+  /**
+   * Writes the settings half, resolving the branch cursor without ever inventing one.
+   *
+   * The open log knows the leaf. With no log open, the stored one is carried over rather than
+   * replaced by `null`: a `null` cursor means "start from the end of the log", so writing it over a
+   * conversation parked on an older branch would silently move it back to the newest turn.
+   *
+   * A meta that cannot be read is left alone. It is the only case where refusing to write is
+   * safer than writing: a directory from a newer binary holds fields this build does not know,
+   * and `metaOf` would drop every one of them.
+   */
+  private async writeSettings(sessionId: string, session: SessionData): Promise<void> {
+    const stored = await readMeta(sessionId).catch((err) => {
+      void log("warn", "session meta: unreadable, settings left as they are", { sessionId, error: String(err) });
+      return undefined;
+    });
+    if (stored === undefined) return;
+    const openLog = this.logs.get(sessionId);
+    const leaf = openLog ? openLog.leaf() : stored?.leafId ?? null;
+    await writeMeta(sessionId, metaOf(session, leaf, stored)).catch((err) => {
+      void log("error", "session meta: write failed", { sessionId, error: String(err) });
+    });
+  }
+
   async persist(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -339,15 +363,14 @@ export class SessionManager {
       // must leave the session dirty for the next tick rather than be marked as saved.
       clearSessionDirty(session);
       await saveSession(sessionId, session);
-      // The settings half, whenever the session has a log to name a cursor in. Small and written
-      // in full, which is affordable precisely because the history is no longer in it: this is the
-      // write that used to serialise 12 MB to record that a title had changed.
-      const openLog = this.logs.get(sessionId);
-      if (openLog) {
-        await writeMeta(sessionId, metaOf(session, openLog.leaf())).catch((err) => {
-          void log("error", "session meta: write failed", { sessionId, error: String(err) });
-        });
-      }
+      // The settings half, always, because it is the half that gets read back -- see `loadSession`.
+      // Small and written in full, which is affordable precisely because the history is no longer
+      // in it: this is the write that used to serialise 12 MB to record that a title had changed.
+      //
+      // Gated on the log, it was skipped exactly when no run had opened one, which is every
+      // settings-only change in a fresh process: renaming a thread reached the flat file and not
+      // the directory, so the read that prefers the directory would hand back the old name.
+      await this.writeSettings(sessionId, session);
       if (this.sessions.get(sessionId) === session) this.savedCounts.set(sessionId, messageCount);
       hooks.emit("session:persisted", { sessionId, messageCount });
     });

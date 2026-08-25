@@ -588,23 +588,23 @@ export async function loadLegacySession(sessionId: string): Promise<SessionData 
 }
 
 /**
- * A stored session, from wherever it lives: the flat file, or the directory that replaced it.
+ * A stored session. The directory is the session; the flat file is what it replaced.
  *
- * The migration archives `<id>.json`, so for every migrated conversation the flat read returns
- * nothing. Without the second half, `getOrCreateWithMeta` treats that as "no such session" and
- * hands back a *new* one: same entries on disk, but default title, default model, default context
- * window, no approvals -- and the next `persist` writes those defaults over `meta.json`. The
- * settings are in the directory the whole time, which is what `meta.ts` means by "losing it
- * silently would reopen a conversation with its title, its model and its approvals gone".
+ * The migration archives `<id>.json`, so for a migrated conversation the flat file is gone and only
+ * the directory answers. Reading the flat file first was wrong in the case where both exist: it is
+ * rewritten in full on every persist while `metaOf` holds the settings, so a conversation that had
+ * once been loaded as a fresh session -- what 0.4.53 and 0.4.54 did to every migrated one -- kept
+ * handing back those defaults from the flat copy while its real title, model and window sat in the
+ * directory. The directory wins, and `persist` writes it unconditionally so it is never the staler
+ * of the two.
  *
- * A directory from a newer binary throws rather than reading as absent, for that same reason: a
- * fresh session would be persisted straight over settings we could not parse.
+ * A directory from a newer binary throws rather than reading as absent: a fresh session would then
+ * be persisted straight over settings we could not parse.
  */
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
-  const flat = await loadLegacySession(sessionId);
-  if (flat) return flat;
   const meta = await readMeta(sessionId);
-  return meta ? sessionFromMeta(meta) : null;
+  if (meta) return sessionFromMeta(meta);
+  return loadLegacySession(sessionId);
 }
 
 export async function saveSession(sessionId: string, data: SessionData): Promise<void> {

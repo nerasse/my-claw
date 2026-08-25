@@ -2,7 +2,7 @@ import { test, describe, expect } from "bun:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { SessionManager } from "../../src/sessions/manager.ts";
-import { deleteSession, loadSession, recordSessionCommand } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, loadLegacySession, recordSessionCommand, markSessionDirty } from "../../src/sessions/store.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { openSessionLog, type UserEntry, type ToolEntry } from "../../src/sessions/log.ts";
@@ -135,13 +135,16 @@ test("persist: saves to disk and new manager loads it back", async () => {
   try {
     const mgr1 = new SessionManager();
     const session = await mgr1.getOrCreateWithMeta(sid, "matrix", "group");
-    session.messages.push({ role: "user", content: "persisted", timestamp: new Date().toISOString() });
+    // A settings field, not `messages`: the conversation lives in the entry log, and nothing in
+    // src/ has appended to `session.messages` since the storage switch.
+    session.title = "persisted";
+    session.modelOverride = "anthropic/claude-opus-5";
     await mgr1.persist(sid);
 
     const mgr2 = new SessionManager();
     const loaded = await mgr2.getOrCreateWithMeta(sid, "matrix", "group");
-    assert.equal(loaded.messages.length, 1);
-    assert.equal(loaded.messages[0]!.content, "persisted");
+    assert.equal(loaded.title, "persisted");
+    assert.equal(loaded.modelOverride, "anthropic/claude-opus-5");
   } finally {
     await deleteSession(sid);
   }
@@ -155,7 +158,7 @@ test("restart simulation: a fresh manager reloads the session without resetting 
     const mgr1 = new SessionManager();
     const original = await mgr1.getOrCreateWithMeta(sid, "matrix", "group");
     const createdAt = original.createdAt;
-    original.messages.push({ role: "user", content: "before restart", timestamp: new Date().toISOString() });
+    original.title = "before restart";
     await mgr1.persist(sid);
 
     // Simulate a process restart: brand-new manager, empty in-memory cache.
@@ -163,8 +166,7 @@ test("restart simulation: a fresh manager reloads the session without resetting 
     const reloaded = await mgr2.getOrCreateWithMeta(sid, "matrix", "group");
 
     assert.equal(reloaded.createdAt, createdAt, "createdAt must survive a restart (no history reset)");
-    assert.equal(reloaded.messages.length, 1);
-    assert.equal(reloaded.messages[0]!.content, "before restart");
+    assert.equal(reloaded.title, "before restart");
   } finally {
     await deleteSession(sid);
   }
@@ -179,16 +181,15 @@ test("read: a turn in flight comes back from memory, not from the stale file", a
   try {
     const mgr = new SessionManager();
     const session = await mgr.getOrCreateWithMeta(sid, "my-claw-app", "dm");
-    session.messages.push({ role: "user", content: "premiere question", timestamp: new Date().toISOString() });
+    session.title = "premiere question";
     await mgr.persist(sid);
-    session.messages.push({ role: "user", content: "en cours", timestamp: new Date().toISOString() });
+    session.title = "en cours";
 
     const live = await mgr.read(sid);
-    assert.equal(live?.messages.length, 2);
-    assert.equal(live?.messages[1]!.content, "en cours");
+    assert.equal(live?.title, "en cours");
 
     const onDisk = await new SessionManager().read(sid);
-    assert.equal(onDisk?.messages.length, 1, "the file is one turn behind, which is the point");
+    assert.equal(onDisk?.title, "premiere question", "the file is one turn behind, which is the point");
   } finally {
     await deleteSession(sid);
   }
@@ -206,13 +207,15 @@ test("flushDirty: writes what a run appended, and only that", async () => {
   try {
     const mgr = new SessionManager();
     const a = await mgr.getOrCreateWithMeta(moved, "my-claw-app", "dm");
-    a.messages.push({ role: "user", content: "question", timestamp: new Date().toISOString() });
+    // Marked the way src/ marks it: `messages` is no longer what makes a session dirty.
+    a.title = "question";
+    markSessionDirty(a);
     await mgr.getOrCreateWithMeta(still, "my-claw-app", "dm");
 
     await mgr.flushDirty();
 
     const reader = new SessionManager();
-    assert.equal((await reader.read(moved))?.messages.length, 1);
+    assert.equal((await reader.read(moved))?.title, "question");
     // An empty conversation nobody wrote in must not leave a file behind.
     assert.equal(await reader.read(still), null);
   } finally {
@@ -228,13 +231,12 @@ test("flushAll: a restart keeps what was only in memory", async () => {
   try {
     const mgr = new SessionManager();
     const session = await mgr.getOrCreateWithMeta(sid, "my-claw-app", "dm");
-    session.messages.push({ role: "user", content: "jamais persiste", timestamp: new Date().toISOString() });
     session.title = "nommee pendant le run";
+    markSessionDirty(session);
 
     await mgr.flushAll();
 
     const reloaded = await new SessionManager().read(sid);
-    assert.equal(reloaded?.messages.length, 1);
     assert.equal(reloaded?.title, "nommee pendant le run");
   } finally {
     await deleteSession(sid);
@@ -257,15 +259,17 @@ test("flushDirty writes a session mutated in place without a new message", async
   const sessionId = "my-claw-app/thread/owner/dirty-inplace";
   try {
     const session = await manager.getOrCreate(sessionId, createMessage({ threadId: "dirty-inplace" }));
-    session.messages.push({ role: "user", content: "go", timestamp: new Date().toISOString() });
+    session.title = "go";
     await manager.persist(sessionId);
 
-    // No append: the count is exactly what the last write recorded.
+    // No append and no new message: nothing but an in-place mutation makes this session dirty.
     recordSessionCommand(session, { input: "/status", output: "all good", timestamp: new Date().toISOString() });
     await manager.flushDirty();
 
-    // Read from disk, not from the cache the mutation happened in.
-    const onDisk = await loadSession(sessionId);
+    // Read from disk, not from the cache the mutation happened in. The journal is the legacy copy
+    // -- the app reads slash commands back from the entry log -- so the legacy file is where it
+    // lands, and reaching it at all is what proves the flush happened.
+    const onDisk = await loadLegacySession(sessionId);
     assert.equal(onDisk?.commands?.length, 1);
     assert.equal(onDisk?.commands?.[0]?.input, "/status");
   } finally {
@@ -347,13 +351,18 @@ describe("SessionManager: the log half", () => {
     expect(raw["messages"]).toBeUndefined();
   });
 
-  test("a session with no log yet persists without a meta", async () => {
-    // Every session goes through persist, including ones nothing ever opened a log for.
+  test("a session with no log yet still gets its settings written", async () => {
+    // Gated on an open log, this write was skipped exactly when no run had opened one: renaming a
+    // thread in a fresh process reached the flat file and not the directory, and the directory is
+    // what gets read back. The cursor is null because there is no log to name a leaf in, which is
+    // also what "start from the end" means.
     const manager = new SessionManager();
     const id = "log-manager/nolog";
-    await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    const session = await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    session.title = "renommee sans run";
     await manager.persist(id);
-    expect(await readMeta(id)).toBeNull();
+
+    expect(await readMeta(id)).toMatchObject({ title: "renommee sans run", leafId: null });
   });
 
   test("flushAll drains what the appends left in flight", async () => {
