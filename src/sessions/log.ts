@@ -193,8 +193,20 @@ export const META_FILE = "meta.json";
  * `<id>/meta` as a conversation of its own. Loading that hands back the parsed `meta.json`, which
  * has no `messages` -- the crash loop measured on 0.4.55.
  */
-export function holdsSession(names: readonly string[]): boolean {
-  return names.includes(ENTRIES_FILE) || names.includes(META_FILE);
+export async function holdsSession(dir: string, names: readonly string[]): Promise<boolean> {
+  if (names.includes(ENTRIES_FILE)) return true;
+  if (!names.includes(META_FILE)) return false;
+  // The settings have to count on their own, for a directory written before the log was created
+  // with it. But `<owner>/meta.json` is a *session* file that merely happens to be named
+  // `meta.json` -- what writing in the ghost conversation of 0.4.53 persisted -- and it sits among
+  // that owner's conversations. Only settings carry `storageVersion`, and reading an owner's
+  // directory as a session would hide every conversation inside it.
+  try {
+    const parsed = JSON.parse(await readFile(join(dir, META_FILE), "utf-8")) as { storageVersion?: unknown };
+    return typeof parsed.storageVersion === "number";
+  } catch {
+    return false;
+  }
 }
 
 export function entriesPath(sessionId: string): string {

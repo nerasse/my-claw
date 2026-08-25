@@ -38,7 +38,7 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
   // A session id can nest (`cron/<jobId>/<runId>`), so a directory is walked rather than skipped.
   // But a migrated session is *also* a directory, holding `meta.json`: walked blindly it yields
   // `<id>/meta` as a session that does not exist, which the pass then counts as a failure forever.
-  if (holdsSession(entries.map((entry) => entry.name))) return [];
+  if (await holdsSession(dir, entries.map((entry) => entry.name))) return [];
 
   const ids: string[] = [];
   for (const entry of entries) {
@@ -60,8 +60,9 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
  * the flat file `persist` had rewritten, and left `<id>/meta` behind as a legacy id to fail on.
  */
 async function alreadyMigrated(sessionId: string): Promise<boolean> {
-  const names = await readdir(sessionDir(sessionId)).catch(() => null);
-  return names !== null && holdsSession(names);
+  const dir = sessionDir(sessionId);
+  const names = await readdir(dir).catch(() => null);
+  return names !== null && await holdsSession(dir, names);
 }
 
 export interface MigrationResult {

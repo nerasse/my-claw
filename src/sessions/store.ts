@@ -708,7 +708,7 @@ async function scanSessions(dir: string, prefix = ""): Promise<Map<string, numbe
     found.set(id, Math.max(found.get(id) ?? 0, mtimeMs));
   };
 
-  if (holdsSession(entries.map((entry) => entry.name))) {
+  if (await holdsSession(dir, entries.map((entry) => entry.name))) {
     // The log is the session's clock: `meta.json` also moves when only a title changes. An empty
     // conversation has no log yet on a directory written before that was guaranteed, so its
     // settings stand in rather than dropping the conversation from the listing.

@@ -1091,6 +1091,24 @@ Trois changements, du plus structurel au plus défensif :
 Ce qui aurait attrapé ça plus tôt : le cas vide. Les deux correctifs précédents ont été testés
 sur des conversations qui avaient des entrées.
 
+#### Et un fichier nommé `meta.json` n'est pas forcément des réglages
+
+Le critère « une moitié suffit » avait lui-même un trou, trouvé avant déploiement en se demandant
+ce qu'avait produit un **clic suivi d'un message** dans la conversation fantôme de 0.4.53 : cela
+persiste `<owner>/meta.json`, un fichier **de session** qui se trouve porter le nom d'un fichier
+de réglages, posé un cran au-dessus des conversations. La règle « un répertoire contenant
+`meta.json` est une session » lisait donc le répertoire du propriétaire comme une conversation, et
+**cachait toutes les vraies** — pire que le défaut qu'on corrigeait.
+
+`holdsSession` lit maintenant le fichier quand le log est absent : seuls des réglages portent
+`storageVersion`. Une session ordinaire n'en a pas, donc `<owner>/meta.json` reste une session
+parmi les autres, que la migration convertit en répertoire comme n'importe quelle autre. Le
+message que le propriétaire y a écrit est conservé, sous un thread nommé `meta` qu'il peut
+supprimer.
+
+Le coût est une lecture de fichier par répertoire sans log, c'est-à-dire seulement sur les
+répertoires écrits par 0.4.53 à 0.4.55 — `openSessionLog` garantit le log pour tous les suivants.
+
 | Fichier | Rôle | Tests |
 |---|---|---|
 | `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |

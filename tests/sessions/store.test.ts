@@ -377,3 +377,32 @@ describe("an empty conversation is still a session", () => {
     expect(session!.messages.length).toBe(0);
   });
 });
+
+/**
+ * `<owner>/meta.json` is a session *file* that happens to be named like a settings file. Writing
+ * in the ghost conversation 0.4.53 offered persisted exactly that, one directory above the
+ * conversations, so a rule of "a directory holding meta.json is a session" read the owner's own
+ * directory as one conversation and hid every real one inside it.
+ */
+describe("a session file named meta.json does not make its directory a session", () => {
+  const OWNER = "my-claw-app/thread/bob";
+  const DIR = join(SESSIONS_DIR, "my-claw-app", "thread", "bob");
+
+  afterAll(async () => {
+    await rm(join(SESSIONS_DIR, "my-claw-app"), { recursive: true, force: true }).catch(() => {});
+  });
+
+  test("the owner's conversations survive a conversation called meta", async () => {
+    for (const name of ["conv-a", "conv-b"]) {
+      await mkdir(join(DIR, name), { recursive: true });
+      await writeFile(join(DIR, name, "entries.jsonl"), `{"id":"e1","seq":1,"ts":1,"type":"user","text":"hi","prompt":true}\n`, "utf-8");
+      await writeFile(join(DIR, name, "meta.json"), JSON.stringify({ id: `${OWNER}/${name}`, platform: "my-claw-app", chatType: "dm", createdAt: "x", lastActiveAt: "x", storageVersion: 1, leafId: "e1" }), "utf-8");
+    }
+    // What the click persisted: a real session, with a real turn in it, named `meta`.
+    await writeFile(join(DIR, "meta.json"), JSON.stringify(makeSession(`${OWNER}/meta`)), "utf-8");
+
+    const ids = await listSessionIdsByPrefix(OWNER, Number.MAX_SAFE_INTEGER);
+
+    expect(ids.sort()).toEqual([`${OWNER}/conv-a`, `${OWNER}/conv-b`, `${OWNER}/meta`]);
+  });
+});
