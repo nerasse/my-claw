@@ -64,39 +64,45 @@ const MAX_TURN_LOOKBACK = 400;
  * Turns a sync delta's `spawn_state` entries into the cards they revise.
  *
  * A delta is what the client has not seen, and a state entry on its own is not something it can
- * draw: the card it annotates may have arrived pages ago, when the child was still running. So each
- * one is replaced by its tool entry, whole. The client keys cards on the call id, so the same card
- * arriving twice updates in place instead of appearing twice -- and `displayOf` fills in the state
- * from the fold over the entire log, which is what makes the resent card current rather than a copy
- * of what was already shown.
+ * draw: the card it annotates may have arrived pages ago, when the child was still running. Such a
+ * state becomes its tool entry, whole -- the client replaces a card by id, and `displayOf` fills in
+ * the state from the fold over the entire log, so what it gets back is current rather than a copy
+ * of what it already had.
  *
- * Once per card, at the position of the state that revised it. A state whose call never settled is
- * dropped: there is no card yet, and the live frames are still carrying that one.
+ * **Only when the delta does not already carry that card.** This is where a first version was
+ * wrong, and it shipped: `spawn` awaits its child, so the states are written *before* the tool
+ * entry and arrive first in the same delta. Materialising the card on the state and then letting
+ * the real entry through emitted it twice, and the client keeps both -- it replaces by id against
+ * what it already holds, not within one delta. The card came back doubled on every reload.
+ *
+ * So a tool entry always passes through at its own position, and a state only stands in for a card
+ * that is absent. A state whose call never settled is dropped: there is no card yet, and the live
+ * frames are still carrying that one.
  */
 export function withSpawnCards(delta: readonly Entry[], all: readonly Entry[]): Entry[] {
   if (!delta.some((entry) => entry.type === "spawn_state")) return [...delta];
+
+  // The cards the delta already carries. Their state travels with them, at their own position:
+  // nothing has to stand in for them, and standing in is what doubled them.
+  const present = new Set<string>();
+  for (const entry of delta) if (entry.type === "tool") present.add(entry.callId);
 
   // Indexed once. Scanning the log per state entry is linear in a conversation that only grows,
   // and a delta is capped at 500: measured at 28 ms on a 4 667-entry session, against 0.1 ms here.
   const cards = new Map<string, Entry>();
   for (const entry of all) if (entry.type === "tool" && !cards.has(entry.callId)) cards.set(entry.callId, entry);
 
-  const emitted = new Set<string>();
   const out: Entry[] = [];
   for (const entry of delta) {
-    if (entry.type === "tool") {
-      emitted.add(entry.callId);
-      out.push(entry);
-      continue;
-    }
     if (entry.type !== "spawn_state") {
       out.push(entry);
       continue;
     }
-    if (emitted.has(entry.callId)) continue;
+    if (present.has(entry.callId)) continue;
     const card = cards.get(entry.callId);
     if (!card) continue;
-    emitted.add(entry.callId);
+    // Once per card, however many states revised it in this delta.
+    present.add(entry.callId);
     out.push(card);
   }
   return out;

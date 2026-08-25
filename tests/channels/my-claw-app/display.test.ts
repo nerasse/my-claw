@@ -169,15 +169,38 @@ describe("withSpawnCards: what a delta can draw", () => {
     expect(delta).toEqual([all[0]!]);
   });
 
-  test("a card in the delta is not sent twice", () => {
-    const entries = chain([
-      tool("c1", { name: "spawn" }),
+  test("a card in the delta is not sent twice, whichever side its states fall on", () => {
+    // The order production actually writes: `spawn` awaits its child, so both states are appended
+    // *before* the tool entry. Standing in for the card on the first state and then letting the
+    // real entry through sent it twice, and the client keeps both -- it replaces by id against what
+    // it already holds, not within one delta. Shipped in 0.4.61, doubled on every reload.
+    const before = chain([
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" },
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
+      tool("c1", { name: "spawn" }),
     ]);
-    expect(withSpawnCards(entries, entries)).toEqual([entries[0]!]);
+    expect(withSpawnCards(before, before)).toEqual([before[2]!]);
+
+    // And the other way round, for a state that lands after the call settled.
+    const after = chain([
+      tool("c2", { name: "spawn" }),
+      { type: "spawn_state", prompt: false, callId: "c2", subagentId: "s", status: "complete" },
+    ]);
+    expect(withSpawnCards(after, after)).toEqual([after[0]!]);
   });
 
-  test("two states on one card send it once", () => {
+  test("the card keeps its own position, it is not hoisted onto its state", () => {
+    // Substituting in place would move a settled card ahead of the turn that produced it.
+    const all = chain([
+      user("q"),
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
+      phase("j'y vais"),
+      tool("c1", { name: "spawn" }),
+    ]);
+    expect(withSpawnCards(all, all)).toEqual([all[0]!, all[2]!, all[3]!]);
+  });
+
+  test("two states on one absent card send it once", () => {
     const all = chain([
       tool("c1", { name: "spawn" }),
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" },

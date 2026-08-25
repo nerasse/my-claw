@@ -575,12 +575,21 @@ terminal** non plus. Dans les deux cas ce serait une ligne qu'aucun lecteur ne d
 
 Un delta est ce que le client n'a pas vu, et un `spawn_state` seul n'est pas dessinable :
 la carte qu'il annote a pu arriver il y a des pages, quand l'enfant tournait encore.
-`withSpawnCards` le remplace donc par **son entrée `tool`, entière**. Le client indexe les
-cartes sur l'id d'appel, donc la même carte qui revient se met à jour au lieu d'apparaître
-deux fois — et `displayOf` y pose l'état replié sur le log **entier**, ce qui fait de cette
-carte renvoyée une carte à jour et non une copie de ce qui était déjà affiché. Une carte
-par delta, à la position de l'état qui l'a révisée. Un état dont l'appel n'a jamais abouti
-est jeté : il n'y a pas encore de carte, et les frames live portent celle-là.
+`withSpawnCards` remplace **un tel état** par son entrée `tool`, entière — le client
+remplace une carte par id, et `displayOf` y pose l'état replié sur le log **entier**, donc
+ce qu'il récupère est à jour et non une copie de ce qu'il avait déjà.
+
+**Seulement quand le delta ne porte pas déjà cette carte.** C'est le point où la première
+version s'est trompée, et elle est partie en prod (0.4.61) : `spawn` **attend** son enfant,
+donc les états sont écrits *avant* l'entrée d'outil et arrivent d'abord dans le même delta.
+Substituer la carte sur l'état puis laisser passer l'entrée réelle l'envoyait deux fois — et
+le client garde les deux, parce qu'il remplace par id contre ce qu'il détient déjà, pas à
+l'intérieur d'un delta. La carte revenait en double à chaque rechargement.
+
+Donc : une entrée `tool` passe toujours **à sa propre position**, et un état ne se substitue
+qu'à une carte absente. Hisser la carte à la place de son état la ferait aussi remonter avant
+le tour qui l'a produite. Un état dont l'appel n'a jamais abouti est jeté : il n'y a pas
+encore de carte, et les frames live portent celle-là.
 
 Même raison pour la pagination : le pli se fait sur `log.entries()`, jamais sur la fenêtre.
 Un enfant lancé cinquante entrées plus haut se règle ici, et replier la page seule laisse
@@ -1344,6 +1353,19 @@ repliée en cache.
 de prod le portent, toutes issues d'`import.ts`. L'audit initial concluait « zéro donnée » et se
 trompait — le champ est **legacy et figé**, pas vide, et le retirer aurait effacé de l'historique
 affiché. Il reste donc en lecture, comme plancher du pli.
+
+**La carte en double, et pourquoi les tests ne l'ont pas vue.** 0.4.61 renvoyait la carte deux
+fois à chaque rechargement. La cause tient en une phrase : `spawn` **attend** son enfant, donc
+les deux `spawn_state` sont écrits *avant* l'entrée d'outil et arrivent d'abord dans le même
+delta — `withSpawnCards` se substituait sur le premier état, puis laissait passer l'entrée
+réelle. Mes tests couvraient l'ordre inverse, celui que j'avais supposé avant de lire
+`runner.ts:255-264`. C'est deux fois la même erreur dans la même journée : **tester la géométrie
+imaginée plutôt que celle que le code écrit.** Le test porte désormais les deux ordres, et un
+test d'intégration rejoue un rechargement complet dans l'ordre réel.
+
+À retenir sur le protocole : le client remplace une carte par id **contre ce qu'il détient
+déjà** (`chat.ts:511`), pas à l'intérieur d'un delta. Deux exemplaires dans une même trame
+passent tous les deux.
 
 **Vérifié sur les vraies données** (copie du store, 70 sessions, 17 190 entrées) : 26 cartes
 repliées, toutes `complete`, toutes venant du legacy inline ; aucun `spawn_state` n'atteint un

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
 import { join } from "node:path";
 import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
-import type { FailureEntry, CommandEntry } from "../src/sessions/log.ts";
+import type { FailureEntry, CommandEntry, ToolEntry } from "../src/sessions/log.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
 import { appendSpawnState } from "../src/sessions/spawn-state.ts";
 
@@ -1493,6 +1493,33 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
     assert.equal(card.spawn?.status, "complete");
     assert.equal(card.spawn?.displayName, "dup-audit");
     assert.equal(card.spawn?.resultLength, 4096);
+  });
+
+  test("a full reload draws the card once, states first", async () => {
+    // The shape a real conversation has on disk, and the one 0.4.61 got wrong: `spawn` awaits its
+    // child, so `running` and `complete` are both appended before the tool entry. A fresh sync
+    // carries all three, and the card must come out of it exactly once.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "lance un audit", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    appendSpawnState(logSetup.log, {
+      subagentId: "subagent/auditor", status: "running", toolCallId: "call-1",
+      displayName: "verif", agentType: "research", mode: "run", action: "spawn",
+    });
+    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 12 });
+    logSetup.log.append<ToolEntry>({
+      type: "tool", prompt: true, callId: "call-1", name: "spawn", args: {},
+      output: "started", truncated: false, ok: true, runId: "r1",
+    });
+
+    const page = await store.sync(DEVICE, THREAD);
+    const cards = page.entries.filter((e) => (e as { role: string }).role === "tool");
+    assert.equal(cards.length, 1);
+    assert.equal((cards[0] as { id: string }).id, "t-call-1");
+    assert.equal((cards[0] as { spawn?: { status: string } }).spawn?.status, "complete");
+    // And the card stays where it was written, after the turn that asked for it.
+    assert.equal(page.entries.length, 2);
+    assert.equal((page.entries[0] as { role: string }).role, "user");
   });
 
   test("a child still running syncs nothing on its own", async () => {
