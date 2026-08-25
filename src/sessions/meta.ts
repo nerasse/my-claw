@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
-import { sessionDir } from "./log.ts";
+import { sessionDir, META_FILE } from "./log.ts";
 import type { SessionData } from "./store.ts";
 
 /**
@@ -100,7 +100,7 @@ export interface SessionMeta {
 }
 
 export function metaPath(sessionId: string): string {
-  return join(sessionDir(sessionId), "meta.json");
+  return join(sessionDir(sessionId), META_FILE);
 }
 
 /** Drops a key whose value is undefined, so the written object has no `"x": null` noise. */

@@ -1060,6 +1060,37 @@ La leçon n'est pas « il manquait un garde-fou ». Il était écrit, à quatre 
 mode de panne en commentaire. Ce qui manquait, c'est qu'un fait aussi structurant que *« une
 session est un répertoire »* était encodé deux fois, dans deux parcours indépendants.
 
+#### Et une conversation vide n'est pas « pas une conversation »
+
+Le correctif ci-dessus a unifié le test, mais sur le mauvais critère, et 0.4.55 a **crash-loopé**
+en prod. Une conversation vide se migre en `appendAll([])`, qui n'écrit aucune ligne : le
+répertoire n'avait donc pas d'`entries.jsonl`. Un test portant sur le log seul la lisait comme
+« pas une session », descendait dedans, et proposait `<id>/meta`. Charger cet id rend le
+`meta.json` analysé, qui n'a pas de `messages` — et le premier `.length` dessus a emporté le
+process : `SessionManager.cache` (`manager.ts:172`), atteint par `peek`, atteint par
+`pinnedSessionIds`. **Épingler une conversation suffisait à tuer le serveur**, que systemd
+relançait, jusqu'à la prochaine tentative. Cinq boucles mesurées entre 12:14 et 12:17 UTC.
+
+Le même critère faisait aussi re-migrer cette conversation à chaque boot : `alreadyMigrated`
+portait sur `entries.jsonl`, donc répondait « non » indéfiniment, et la passe réarchivait le
+fichier plat que `persist` venait de réécrire.
+
+Trois changements, du plus structurel au plus défensif :
+
+- `holdsSession(names)` est le seul endroit qui décide si un répertoire *est* une session, et
+  **une moitié suffit** : le log ou les réglages. `ENTRIES_FILE` et `META_FILE` n'ont plus qu'une
+  seule orthographe, dans `log.ts`, qui possède la disposition du répertoire.
+- `openSessionLog` crée `entries.jsonl` vide en même temps que le répertoire, au lieu d'attendre
+  le premier append. L'invariant « un répertoire de session contient son log » devient vrai dès
+  l'existence du répertoire, donc la forme « réglages sans log » ne se reproduit plus.
+- `loadLegacySession` vérifie que ce qu'il a analysé est bien une session (`messages` est un
+  tableau) au lieu de faire confiance à son `as SessionData`. Un `.json` sous `sessions/` n'est
+  pas nécessairement une session : `<id>/meta.json` est à un segment de là. Un fichier qui n'est
+  pas une session se lit comme pas de session, et une lecture douteuse cesse d'être un crash.
+
+Ce qui aurait attrapé ça plus tôt : le cas vide. Les deux correctifs précédents ont été testés
+sur des conversations qui avaient des entrées.
+
 | Fichier | Rôle | Tests |
 |---|---|---|
 | `sessions/log.ts` | l'entrée, `append`, `appendAll`, `branch`, `since`, `pathOf` | 32 |

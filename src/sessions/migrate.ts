@@ -9,11 +9,11 @@
  * one is proven, and `sessions-archive/` is already where a session goes when it is replaced.
  */
 
-import { readdir, rename, stat, mkdir } from "node:fs/promises";
+import { readdir, rename, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
-import { openSessionLog, sessionDir, entriesPath, ENTRIES_FILE } from "./log.ts";
+import { openSessionLog, sessionDir, holdsSession } from "./log.ts";
 import { importSession } from "./import.ts";
 import { metaOf, writeMeta } from "./meta.ts";
 import type { SessionData } from "./store.ts";
@@ -38,7 +38,7 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
   // A session id can nest (`cron/<jobId>/<runId>`), so a directory is walked rather than skipped.
   // But a migrated session is *also* a directory, holding `meta.json`: walked blindly it yields
   // `<id>/meta` as a session that does not exist, which the pass then counts as a failure forever.
-  if (entries.some((entry) => entry.name === ENTRIES_FILE)) return [];
+  if (holdsSession(entries.map((entry) => entry.name))) return [];
 
   const ids: string[] = [];
   for (const entry of entries) {
@@ -52,9 +52,16 @@ export async function legacySessionIds(dir = SESSIONS_DIR, prefix = ""): Promise
   return ids;
 }
 
-/** True once `<id>/entries.jsonl` exists: the session has already been through here. */
+/**
+ * True once `<id>/` holds a session: the pass has already been here.
+ *
+ * Keyed on either half, not on the log alone. An empty conversation produced a directory with
+ * settings and no log, so this read "not migrated" every boot: the pass re-migrated it, archived
+ * the flat file `persist` had rewritten, and left `<id>/meta` behind as a legacy id to fail on.
+ */
 async function alreadyMigrated(sessionId: string): Promise<boolean> {
-  return (await stat(entriesPath(sessionId)).catch(() => null)) !== null;
+  const names = await readdir(sessionDir(sessionId)).catch(() => null);
+  return names !== null && holdsSession(names);
 }
 
 export interface MigrationResult {

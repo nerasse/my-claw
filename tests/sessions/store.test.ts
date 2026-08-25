@@ -318,3 +318,62 @@ describe("a migrated session is a directory, not a file", () => {
     expect(await stat(dir).catch(() => null)).toBeNull();
   });
 });
+
+/**
+ * The crash loop of 0.4.55, reproduced.
+ *
+ * An empty conversation migrated to a directory with settings and no log. Every walk keyed on the
+ * log alone, so all of them read it as "not a session": the listing offered `<id>/meta`, `peek`
+ * loaded the parsed `meta.json` as if it were a session, and the first `.length` on its absent
+ * `messages` took the process down. Pinning a thread was enough to trigger it.
+ */
+describe("an empty conversation is still a session", () => {
+  const PREFIX = "my-claw-app/thread/empty-owner/";
+  const DIR = join(SESSIONS_DIR, "my-claw-app", "thread", "empty-owner");
+
+  afterAll(async () => {
+    await rm(join(SESSIONS_DIR, "my-claw-app"), { recursive: true, force: true }).catch(() => {});
+  });
+
+  /** What the migration wrote for a session whose `messages` was empty: no `entries.jsonl`. */
+  async function writeSettingsOnly(threadId: string): Promise<void> {
+    const dir = join(DIR, threadId);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "meta.json"), JSON.stringify({
+      id: `${PREFIX}${threadId}`,
+      platform: "my-claw-app",
+      chatType: "dm",
+      createdAt: "2026-08-25T10:58:03.681Z",
+      lastActiveAt: "2026-08-25T10:58:03.681Z",
+      storageVersion: 1,
+      leafId: null,
+    }), "utf-8");
+  }
+
+  test("a directory with settings and no log lists as itself, not as its meta", async () => {
+    await writeSettingsOnly("thread-empty");
+
+    const ids = await listSessionIdsByPrefix(PREFIX, Number.MAX_SAFE_INTEGER);
+
+    expect(ids).toEqual([`${PREFIX}thread-empty`]);
+  });
+
+  test("loading a settings file as a session refuses instead of crashing the caller", async () => {
+    await writeSettingsOnly("thread-refuse");
+
+    // The id the broken listing handed to `peek`. `cache()` then read `.messages.length` on it.
+    const ghost = await loadSession(`${PREFIX}thread-refuse/meta`);
+
+    expect(ghost).toBeNull();
+  });
+
+  test("a session that does load always has messages to count", async () => {
+    await writeSettingsOnly("thread-count");
+
+    const session = await loadSession(`${PREFIX}thread-count`);
+
+    // `SessionManager.cache` does exactly this, and it must never throw.
+    expect(session).not.toBeNull();
+    expect(session!.messages.length).toBe(0);
+  });
+});

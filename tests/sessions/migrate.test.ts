@@ -64,6 +64,31 @@ describe("legacySessionIds", () => {
     await mkdir(sessionDir("my-claw-app/thread/neras/abc"), { recursive: true });
     expect(await legacySessionIds()).toEqual([]);
   });
+
+  /**
+   * The empty conversation that crash-looped 0.4.55. `appendAll([])` writes no file, so the
+   * migration left settings and no log; keyed on the log alone this read as "not a session", so
+   * the walk went inside and offered `<id>/meta`, whose `meta.json` then loaded as a session with
+   * no `messages`. It also meant the conversation was re-migrated on every single boot.
+   */
+  test("a migrated conversation with no log is not offered again, nor its meta as a session", async () => {
+    const id = "my-claw-app/thread/neras/empty";
+    await mkdir(sessionDir(id), { recursive: true });
+    await writeFile(metaPath(id), JSON.stringify({
+      id, platform: "my-claw-app", chatType: "dm",
+      createdAt: at(0), lastActiveAt: at(0), storageVersion: STORAGE_VERSION, leafId: null,
+    }), "utf-8");
+
+    expect(await legacySessionIds()).toEqual([]);
+  });
+
+  test("a conversation opened for the first time gets its log straight away", async () => {
+    const id = "my-claw-app/thread/neras/fresh";
+    await openSessionLog(id);
+    expect(await readFile(entriesPath(id), "utf-8")).toBe("");
+    // Which is what keeps the walk from ever seeing the settings-only shape again.
+    expect(await legacySessionIds()).toEqual([]);
+  });
 });
 
 describe("migrateSessions", () => {

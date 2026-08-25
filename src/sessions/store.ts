@@ -6,7 +6,7 @@ import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
-import { ENTRIES_FILE } from "./log.ts";
+import { ENTRIES_FILE, META_FILE, holdsSession } from "./log.ts";
 import { readMeta, sessionFromMeta } from "./meta.ts";
 import type { ChatLocation } from "../channels/types.ts";
 
@@ -570,7 +570,16 @@ export async function loadLegacySession(sessionId: string): Promise<SessionData 
   const path = join(SESSIONS_DIR, `${sanitizeSessionId(sessionId)}.json`);
   try {
     const raw = await readFile(path, "utf-8");
-    return JSON.parse(raw) as SessionData;
+    const parsed = JSON.parse(raw) as SessionData;
+    // The cast was taken on trust, and a `.json` under `sessions/` is not necessarily a session:
+    // `<id>/meta.json` is one path away, and parsing it yields settings with no `messages`, which
+    // crashed the first caller to touch `.length` -- and with it the process. A file that is not a
+    // session reads as no session.
+    if (!parsed || !Array.isArray(parsed.messages)) {
+      void log("warn", "not a session file, treating as empty", { sessionId, path });
+      return null;
+    }
+    return parsed;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     void log("warn", "corrupt session file, treating as empty", { sessionId, error: String(err) });
@@ -699,10 +708,12 @@ async function scanSessions(dir: string, prefix = ""): Promise<Map<string, numbe
     found.set(id, Math.max(found.get(id) ?? 0, mtimeMs));
   };
 
-  if (entries.some((entry) => entry.isFile() && entry.name === ENTRIES_FILE)) {
-    // The log is the session's clock: `meta.json` also moves when only a title changes.
-    const s = await stat(join(dir, ENTRIES_FILE)).catch(() => null);
-    if (s && prefix) record(prefix, s.mtimeMs);
+  if (holdsSession(entries.map((entry) => entry.name))) {
+    // The log is the session's clock: `meta.json` also moves when only a title changes. An empty
+    // conversation has no log yet on a directory written before that was guaranteed, so its
+    // settings stand in rather than dropping the conversation from the listing.
+    const clock = await stat(join(dir, ENTRIES_FILE)).catch(() => stat(join(dir, META_FILE)).catch(() => null));
+    if (clock && prefix) record(prefix, clock.mtimeMs);
     return found;
   }
 

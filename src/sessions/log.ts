@@ -181,13 +181,21 @@ export function sessionDir(sessionId: string): string {
   return join(SESSIONS_DIR, sanitizeSessionId(sessionId));
 }
 
-/**
- * The file whose presence *is* the fact "this directory is a session".
- *
- * Two walks key off it to tell a session directory from a directory that merely contains
- * sessions (`migrate.ts`, `store.ts`), so it is one constant rather than three spellings.
- */
 export const ENTRIES_FILE = "entries.jsonl";
+export const META_FILE = "meta.json";
+
+/**
+ * Whether a directory holding these names *is* a session, rather than a directory that merely
+ * contains sessions. Two walks depend on this (`migrate.ts`, `store.ts`), so it is one function.
+ *
+ * Either half is enough, and the reason is an empty conversation: it has settings and no log, so a
+ * test on `entries.jsonl` alone read it as "not a session", descended into it and offered
+ * `<id>/meta` as a conversation of its own. Loading that hands back the parsed `meta.json`, which
+ * has no `messages` -- the crash loop measured on 0.4.55.
+ */
+export function holdsSession(names: readonly string[]): boolean {
+  return names.includes(ENTRIES_FILE) || names.includes(META_FILE);
+}
 
 export function entriesPath(sessionId: string): string {
   return join(sessionDir(sessionId), ENTRIES_FILE);
@@ -427,6 +435,10 @@ export async function openSessionLog(sessionId: string, leafId?: string | null):
       void log("warn", "session log: unreadable file, starting empty", { sessionId, error: String(err) });
     }
     await mkdir(dirname(path), { recursive: true });
+    // Created empty rather than on the first append, so "a session directory holds its log" is
+    // true from the moment the directory exists. A conversation nobody ever wrote to used to be a
+    // directory with settings and no log, a shape every walk had to special-case.
+    await appendFile(path, "");
     return new SessionLog(sessionId, [], leafId ?? null);
   }
 
