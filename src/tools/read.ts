@@ -1,6 +1,6 @@
 import { readFile, access } from "node:fs/promises";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
-import { resolveWorkspacePath } from "./workspace.ts";
+import { resolveReadOnlyPath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 
@@ -19,7 +19,7 @@ export const readTool: Tool = {
   async execute(args): Promise<ToolResult> {
     let resolved: string;
     try {
-      resolved = resolveWorkspacePath(str(args, "path"), strOpt(args, "__workspaceDir"));
+      resolved = resolveReadOnlyPath(str(args, "path"), strOpt(args, "__workspaceDir"), strOpt(args, "__sessionId"));
     } catch (e) {
       return { success: false, output: "", error: String((e as Error).message) };
     }

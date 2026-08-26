@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { type Tool, type ToolResult, str, strOpt, bool, numOpt } from "./types.ts";
-import { resolveWorkspacePath } from "./workspace.ts";
+import { resolveReadOnlyPath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 
 const OUTPUT_LIMIT = 100_000;
@@ -110,9 +110,10 @@ export const searchTool: Tool = {
     }
 
     const wsDir = strOpt(args, "__workspaceDir");
+    const sessionId = strOpt(args, "__sessionId");
     let resolved: string;
     try {
-      resolved = resolveWorkspacePath(path, wsDir);
+      resolved = resolveReadOnlyPath(path, wsDir, sessionId);
     } catch (e) {
       return { success: false, output: "", error: String((e as Error).message) };
     }
