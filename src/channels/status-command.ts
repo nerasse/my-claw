@@ -193,7 +193,7 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
     promptLength = prompt.length;
   }
   const measured = p.session
-    ? p.session.lastPrompt?.tokens ?? (promptLength > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
+    ? measurementFor(p.session.lastPrompt, pruning)?.tokens ?? (promptLength > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
   const estimated = p.session ? estimateMessagesTokens(toChat(prompt)) : 0;
   // `measurementFor`: a size billed on the other prompt shape is not a floor for this one.
