@@ -169,23 +169,17 @@ function resolveRaw(opts: ResolveWindowOptions): { raw: number; rawSource: Conte
  * Exact prompt size billed on the last call, with the history it covered.
  *
  * `messageCount` counts session history entries, not the `ChatMessage` array actually sent: that
- * array is rebuilt every iteration from a system prompt plus injections plus pruning plus
- * trimming, so its length is not a stable index into anything. Session history only grows during a
- * run, which makes it the one count both sides can agree on.
+ * array is rebuilt every iteration from a system prompt plus injections plus trimming, so its
+ * length is not a stable index into anything. Session history only grows during a run, which makes
+ * it the one count both sides can agree on.
+ *
+ * The `pruned` field was removed: all prompts are now sent whole (docs/prompt-immutable.md),
+ * so there is only one shape and the field no longer serves a purpose. Old meta.json files
+ * may still carry it; it is ignored on read.
  */
 export interface MeasuredPrompt {
   tokens: number;
   messageCount: number;
-  /**
-   * Whether the prompt this covered had its old tool results pruned (`promptSidePruned`).
-   *
-   * The shape has to travel with the number: the same history measures 5.2x larger unpruned, so a
-   * measurement read across an engine switch describes a prompt that was never sent. Absent on a
-   * measurement stored before this field existed, which `measurementFor` treats as a mismatch
-   * against either shape -- the pure estimate is the safe reading, and one turn later the next call
-   * records a tagged one.
-   */
-  pruned?: boolean;
 }
 
 /**
@@ -198,10 +192,9 @@ export interface MeasuredPrompt {
 export function measuredPrompt(
   promptTokens: number,
   historyLength: number,
-  pruned?: boolean,
 ): MeasuredPrompt | undefined {
   if (promptTokens <= 0) return undefined;
-  return { tokens: promptTokens, messageCount: historyLength, ...(pruned === undefined ? {} : { pruned }) };
+  return { tokens: promptTokens, messageCount: historyLength };
 }
 
 /**
@@ -236,18 +229,4 @@ export function occupiedContextTokens<T>(
   return Math.max(estimated + fixed, measured.tokens + delta);
 }
 
-/**
- * The measurement, or nothing when it describes a prompt of a different shape.
- *
- * A billed size is only comparable to an estimate taken the same way. Pruning is prompt-side and
- * engine-dependent (`promptSidePruned`), so the same history measures 5.2x larger on Anthropic than
- * on a pruning engine, and a measurement carried across that switch describes a prompt that was
- * never sent. Replayed on the session that surfaced this: an Anthropic-side size used as the floor
- * of a pruning-engine gate read 216 percent of the window where the honest reading is 9.1 percent,
- * a 23x over-read that would compact a conversation using a tenth of its window. A mismatch drops
- * back to the pure estimate, which is the reading that was already correct for the new shape.
- */
-export function measurementFor(measured: MeasuredPrompt | undefined, pruned: boolean): MeasuredPrompt | undefined {
-  if (!measured) return undefined;
-  return measured.pruned === pruned ? measured : undefined;
-}
+

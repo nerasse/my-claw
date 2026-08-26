@@ -1,9 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
-import { leafModelId, resolveLlmConfig } from "../llm/resolver.ts";
-import { promptSidePruned, pruneOldToolResults } from "../agent/context-pruning.ts";
-import { resolveContextPruning } from "../core/config.ts";
+import { leafModelId } from "../llm/resolver.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { agentTypeOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
@@ -20,23 +18,10 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
-import { resolveModelContextWindow, occupiedContextTokens, measurementFor } from "../llm/context-window.ts";
+import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type { MyClawAppStatusPayload } from "./my-claw-app/types.ts";
-
-/**
- * The engine a model resolves to, or undefined when the model is gone from the catalogue. Only
- * used to answer "does this prompt get pruned": a model whose provider vanished must not take a
- * read-only diagnostic down with it.
- */
-function backendOf(config: MyClawConfig, modelId: string): string | undefined {
-  try {
-    return resolveLlmConfig(config.llm, modelId).backend;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * `/status` -- one screen, always the whole thing. See docs/status-command.md.
@@ -165,23 +150,6 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
   if (window.cappedFrom) contextNotes.push(`capped from ${window.cappedFrom.toLocaleString("en-US")}`);
   if (window.overridden) contextNotes.push("session override: full");
 
-  // Two numbers, deliberately side by side: the measured one is exact, the estimate is what
-  // actually decides when compaction fires. A wide gap means the trigger is mis-tuned.
-  // The session's own figure first: it is the one the compaction gate uses, so showing anything
-  // else here would let the two lines below contradict each other. Analytics is the fallback for
-  // sessions that predate the field, but only while there is a history for it to describe: on an
-  // empty one the last recorded call is not in this context any more, and reporting it as a share
-  // of the window would be a straight falsehood.
-  //
-  // The estimate goes through the same helper the gate uses, and for the same reason: the loop
-  // prunes old tool results out of the prompt before every call, so measuring the unpruned history
-  // counts tokens that are never sent. That gap read 8.7x here and fired thirty compactions on a
-  // session at nine percent of its window. Two numbers for one thing must not disagree.
-  const backend = backendOf(p.config, currentModel);
-  const pruning = promptSidePruned(p.config, backend);
-  const pruningOpts = resolveContextPruning(p.config);
-  const toChat = (msgs: readonly ChatMessage[]): ChatMessage[] => pruning ? pruneOldToolResults([...msgs], pruningOpts) : [...msgs];
-
   // Read prompt from the log (the source of truth), not session.messages
   let prompt: ChatMessage[] = [];
   let promptLength = 0;
@@ -193,15 +161,14 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
     promptLength = prompt.length;
   }
   const measured = p.session
-    ? measurementFor(p.session.lastPrompt, pruning)?.tokens ?? (promptLength > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
+    ? p.session.lastPrompt?.tokens ?? (promptLength > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)
     : undefined;
-  const estimated = p.session ? estimateMessagesTokens(toChat(prompt)) : 0;
-  // `measurementFor`: a size billed on the other prompt shape is not a floor for this one.
+  const estimated = p.session ? estimateMessagesTokens(prompt) : 0;
   const occupied = p.session
     ? occupiedContextTokens(
         prompt,
-        toChat,
-        measurementFor(p.session.lastPrompt, pruning),
+        (msgs) => [...msgs],
+        p.session.lastPrompt,
         p.session.lastFixedTokens ?? 0,
       )
     : 0;

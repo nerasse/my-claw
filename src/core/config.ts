@@ -590,9 +590,8 @@ export interface McpServerConfig {
   enabled?: boolean;
 }
 
-/** Context weight management (pruning + auto-compaction). See `docs/context-pruning.md`. */
+/** Context weight management. See `docs/prompt-immutable.md`. */
 export interface ContextConfig {
-  pruning?: ContextPruningConfig;
   autoCompact?: AutoCompactConfig;
   // Ceiling applied to every resolved context window, active without configuration. Very long
   // contexts degrade attention and bill linearly, so the window a provider allows is not
@@ -603,22 +602,11 @@ export interface ContextConfig {
   capExempt?: string[];
 }
 
-export interface ContextPruningConfig {
-  enabled?: boolean; // default true
-  // Tokens of tool output, newest first, that are never stubbed (default 40000). A window counted
-  // in turns cannot express this: five turns is a paragraph on one run and half a megabyte on the
-  // next, and what has to fit is a token budget.
-  protectTokens?: number;
-  headChars?: number; // chars of the original output kept in the stub, split head/tail (default 400)
-}
-
 export interface AutoCompactConfig {
   enabled?: boolean; // default true
   thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
 }
 
-export const DEFAULT_PRUNING_PROTECT_TOKENS = 40_000;
-export const DEFAULT_PRUNING_HEAD_CHARS = 400;
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
 export const DEFAULT_CONTEXT_CAP = 512_000;
 
@@ -635,20 +623,6 @@ export function resolveContextCap(config: MyClawConfig, agent?: AgentToolType | 
   if (cap === undefined) return DEFAULT_CONTEXT_CAP;
   if (!Number.isFinite(cap) || cap <= 0) return undefined;
   return Math.floor(cap);
-}
-
-export function contextPruningEnabled(config: MyClawConfig): boolean {
-  return config.context?.pruning?.enabled !== false;
-}
-
-export function resolveContextPruning(config: MyClawConfig): { protectTokens: number; headChars: number } {
-  const p = config.context?.pruning;
-  const turns = p?.protectTokens;
-  const head = p?.headChars;
-  return {
-    protectTokens: typeof turns === "number" && Number.isFinite(turns) && turns > 0 ? Math.floor(turns) : DEFAULT_PRUNING_PROTECT_TOKENS,
-    headChars: typeof head === "number" && Number.isFinite(head) && head >= 0 ? Math.floor(head) : DEFAULT_PRUNING_HEAD_CHARS,
-  };
 }
 
 export function autoCompactEnabled(config: MyClawConfig): boolean {

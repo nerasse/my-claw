@@ -30,6 +30,9 @@ import { sessionDir, type Entry } from "./log.ts";
  */
 export const SPILL_THRESHOLD = 50_000;
 
+/** Chars of the original output kept in the stub, split between head and tail. */
+const EXTRACT_CHARS = 400;
+
 export function toolOutputDir(sessionId: string): string {
   return join(sessionDir(sessionId), "tool-output");
 }
@@ -59,11 +62,39 @@ export interface SpilledOutput {
 }
 
 /**
+ * What replaces the middle of a large tool result.
+ *
+ * Names the file so recovering the detail is a read, not a re-execution. The wording is deliberate:
+ * "do not re-run the tool" stops the model from issuing the same command to recover what is already
+ * on disk. See docs/prompt-immutable.md.
+ */
+function spillMarker(elidedChars: number, path: string): string {
+  return `\n[... ${elidedChars} chars elided. Full output: ${path} - read that file, do not re-run the tool ...]\n`;
+}
+
+/**
+ * Head and tail, never head alone: a command's verdict is on its last line, not its first.
+ *
+ * Returns the content unchanged if it fits within extractChars: the marker only appears when
+ * there is something to elide.
+ */
+function stub(content: string, extractChars: number, path: string): string {
+  if (content.length <= extractChars) return content;
+  const head = Math.ceil(extractChars / 2);
+  const tail = Math.floor(extractChars / 2);
+  const elided = content.length - head - tail;
+  return content.slice(0, head) + spillMarker(elided, path) + content.slice(content.length - tail);
+}
+
+/**
  * Splits an output between the entry and the file, writing the file when there is one.
  *
  * Awaited rather than fired off, unlike an entry append: the entry that names this file is written
  * right after, and an entry pointing at a file that does not exist yet is the one state the "see
  * all" button cannot recover from.
+ *
+ * When spilled, the entry carries a stub (head + marker + tail) that names the file, so the model
+ * can `read` it instead of re-running the tool. See docs/prompt-immutable.md.
  */
 export async function spillToolOutput(sessionId: string, callId: string, output: string, threshold = SPILL_THRESHOLD): Promise<SpilledOutput> {
   if (output.length <= threshold) return { output, truncated: false };
@@ -77,7 +108,9 @@ export async function spillToolOutput(sessionId: string, callId: string, output:
     void log("error", "tool output: could not spill, keeping the extract only", { sessionId, callId, error: String(err) });
     return { output: output.slice(0, threshold), truncated: true };
   }
-  return { output: output.slice(0, threshold), outputPath: path, truncated: true };
+  // The model sees head + marker + tail, with the path to the full file.
+  // This is written once at production time and never rewritten (docs/prompt-immutable.md).
+  return { output: stub(output, EXTRACT_CHARS, path), outputPath: path, truncated: true };
 }
 
 /** The whole output of one call, or null when nothing was spilled for it. */

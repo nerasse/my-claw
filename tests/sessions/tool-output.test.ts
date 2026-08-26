@@ -40,12 +40,27 @@ describe("spillToolOutput", () => {
   });
 
   test("a long output is split: an extract in the entry, the whole of it on disk", async () => {
-    const output = "x".repeat(25) + "FIN";
+    // Build output larger than EXTRACT_CHARS (400) to test the stub with marker
+    const output = "x".repeat(300) + "MIDDLE" + "y".repeat(300);
     const result = await spillToolOutput(SESSION, "c1", output, 10);
-    expect(result.output).toHaveLength(10);
+    // The stub is head (200) + marker + tail (200), so around 400 + marker length
+    expect(result.output.length).toBeLessThan(output.length);
+    expect(result.output).toContain("elided");
+    expect(result.output).toContain(toolOutputPath(SESSION, "c1"));
+    expect(result.output).toContain("read that file");
     expect(result.truncated).toBe(true);
     expect(result.outputPath).toBe(toolOutputPath(SESSION, "c1"));
     expect(await readToolOutput(SESSION, "c1")).toBe(output);
+  });
+
+  test("a small output above threshold but below EXTRACT_CHARS keeps full content inline", async () => {
+    const output = "x".repeat(25) + "FIN";
+    const result = await spillToolOutput(SESSION, "c2", output, 10);
+    // Output is 28 chars, below EXTRACT_CHARS (400), so no stubbing
+    expect(result.output).toBe(output);
+    expect(result.truncated).toBe(true);
+    expect(result.outputPath).toBe(toolOutputPath(SESSION, "c2"));
+    expect(await readToolOutput(SESSION, "c2")).toBe(output);
   });
 
   test("the real threshold is well above what a card shows", async () => {

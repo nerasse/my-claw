@@ -4,8 +4,6 @@ import {
   resolveInjectionBudgetBonus,
   nestedAgentsEnabled,
   resolveNestedAgentsMaxBytes,
-  contextPruningEnabled,
-  resolveContextPruning,
   autoCompactEnabled,
   resolveAutoCompactThreshold,
 } from "../core/config.ts";
@@ -27,8 +25,7 @@ import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
-import { resolveContextWindow, occupiedContextTokens, measuredPrompt, measurementFor } from "../llm/context-window.ts";
-import { pruneOldToolResults, promptSidePruned, spillToolOutput } from "./context-pruning.ts";
+import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
@@ -81,16 +78,12 @@ function accumulateUsage(
   session: SessionData,
   usage?: LlmUsage,
   historyLength?: number,
-  pruned?: boolean,
 ): void {
   if (!usage) return;
-  // The billed prompt size, tied to the history it covered and to the shape it was sent in, so the
-  // compaction gate can stop guessing it from chars/4. Without the shape the number outlives the
-  // prompt it describes: the same history bills 5.2x more unpruned, so an Anthropic-side size read
-  // as the floor of a pruning-engine gate put a session at 216 percent of a window it was using
-  // 9.1 percent of. See docs/context-window.md.
+  // The billed prompt size, tied to the history it covered, so the compaction gate can stop
+  // guessing it from chars/4. See docs/context-window.md.
   if (historyLength !== undefined) {
-    session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength, pruned) ?? session.lastPrompt;
+    session.lastPrompt = measuredPrompt(usage.promptTokens, historyLength) ?? session.lastPrompt;
   }
   markSessionDirty(session);
   if (!session.tokenUsage) {
@@ -479,25 +472,6 @@ export class AgentBridge implements AgentBackend {
             midRunCompactRetryAt = currentEntryCount + MID_RUN_COMPACT_RETRY_TURNS;
           }
         }
-        // Prompt-side only: session.messages keeps the full outputs. Re-applied every
-        // iteration so the protected window slides along long runs.
-        // Never on the Anthropic transport: its cache is a prefix, so rewriting an older tool
-        // result invalidates every cached block after it. At the measured 96 % cache-read ratio
-        // that trades a few thousand pruned tokens for a full prompt re-read.
-        // Not because anything prunes server-side there: `context_management.clear_thinking` goes
-        // out with `keep: "all"` (llm/anthropic.ts), which clears nothing. The prompt really is
-        // whole on this path, which is why the occupancy reading has to be told which shape it is
-        // looking at -- see `promptSidePruned`.
-        if (llmConfig.backend !== "anthropic" && contextPruningEnabled(this.config)) {
-          // The sending path, so this is the one that spills: what leaves the stub has to be
-          // somewhere the agent can read it back, or the elision is a loss and the model goes and
-          // re-runs the tool to recover it.
-          const pruned = pruneOldToolResults(chatMessages, { ...resolveContextPruning(this.config), spill: spillToolOutput });
-          if (pruned !== chatMessages) {
-            chatMessages.length = 0;
-            chatMessages.push(...pruned);
-          }
-        }
         const trimmed = trimToContextWindow(chatMessages, this.contextWindow(session, llmConfig, agentToolType).effective, toolSchemaTokens);
         if (trimmed !== chatMessages) {
           chatMessages.length = 0;
@@ -543,7 +517,7 @@ export class AgentBridge implements AgentBackend {
           // Prompt-side length, the same units `occupiedContextTokens` pairs it with: measuring the
           // whole history against a billed number that only covered the window after the boundary
           // would read as a measurement of turns the model never saw.
-          accumulateUsage(session, response.usage, promptOf(entries.entries(), entries.leaf()).length, promptSidePruned(this.config, llmConfig.backend));
+          accumulateUsage(session, response.usage, promptOf(entries.entries(), entries.leaf()).length);
           // The measurement for this turn has landed. On this transport it is the earliest it can
           // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
           if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
@@ -1193,12 +1167,11 @@ export class AgentBridge implements AgentBackend {
     const window = this.contextWindow(session, llmConfig, agent);
     const threshold = resolveAutoCompactThreshold(this.config);
     const prompt = promptOf(entries.entries(), entries.leaf());
-    const pruned = promptSidePruned(this.config, llmConfig.backend);
     const fixed = session.lastFixedTokens ?? 0;
     const occupied = occupiedContextTokens(
       prompt,
-      (msgs) => pruned ? pruneOldToolResults([...msgs], resolveContextPruning(this.config)) : [...msgs],
-      measurementFor(session.lastPrompt, pruned),
+      (msgs) => [...msgs],
+      session.lastPrompt,
       fixed,
     );
     return {
@@ -1207,10 +1180,7 @@ export class AgentBridge implements AgentBackend {
         sessionId: session.id,
         occupiedTokens: occupied,
         measured: session.lastPrompt?.tokens,
-        // Logged so a reading that fell back to the pure estimate says so instead of looking like
-        // a measurement that agreed with it.
-        measuredShapeMatches: measurementFor(session.lastPrompt, pruned) !== undefined,
-        promptPruned: pruned,
+        hasMeasurement: session.lastPrompt !== undefined,
         fixedTokens: fixed,
         contextLimit: window.effective,
         rawContextLimit: window.raw,

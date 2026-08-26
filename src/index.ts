@@ -131,9 +131,7 @@ import { backfillConversationArchive } from "./conversations/store.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmComplete } from "./llm/transport.ts";
-import { occupiedContextTokens, measurementFor } from "./llm/context-window.ts";
-import { promptSidePruned, pruneOldToolResults, sweepSpilledToolOutput } from "./agent/context-pruning.ts";
-import { resolveContextPruning } from "./core/config.ts";
+import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
@@ -262,7 +260,6 @@ async function main() {
   pruneOldRecords();
   void pruneOldLogs();
   void pruneOldSessions();
-  sweepSpilledToolOutput();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   await snapshotProtected(workspacePath, { origin: "boot" });
@@ -842,14 +839,6 @@ async function main() {
         threadId,
         sessionScope: "per-user",
       });
-    /** The engine a model resolves to; undefined when it left the catalogue. Only decides pruning. */
-    const backendOfModel = (modelId: string): string | undefined => {
-      try {
-        return resolveLlmConfig(config.llm, modelId).backend;
-      } catch {
-        return undefined;
-      }
-    };
     /** A model's own full window, for the app's ceiling list (never offered above it). */
     const contextWindowOf = (modelId: string): number | undefined => {
       try {
@@ -895,21 +884,15 @@ async function main() {
           ...(session?.contextOverride === undefined ? {} : { choice: session.contextOverride }),
           // The occupancy the compaction gate reads, not a second estimate of it: the chat header
           // shows a share of the window, and two numbers for one thing would disagree by a turn.
-          // The prompt is read from the log (the source of truth), and pruning is applied if enabled.
           ...(session
             ? await (async () => {
                 const log = await sessionLogOf(session.id);
                 const prompt = promptOf(log.entries(), log.leaf());
-                const backend = backendOfModel(model);
-                const pruning = promptSidePruned(config, backend);
-                const pruningOpts = resolveContextPruning(config);
-                const toChat = (msgs: readonly ChatMessage[]): ChatMessage[] =>
-                  pruning ? pruneOldToolResults([...msgs], pruningOpts) : [...msgs];
                 return {
                   used: occupiedContextTokens(
                     prompt,
-                    toChat,
-                    measurementFor(session.lastPrompt, pruning),
+                    (msgs) => [...msgs],
+                    session.lastPrompt,
                     session.lastFixedTokens ?? 0,
                   ),
                 };

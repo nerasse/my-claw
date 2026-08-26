@@ -310,16 +310,14 @@ test("the same history on the home loop keeps the estimate as a floor", async ()
   expect(status.context.occupied).toBe(status.context.estimated);
 });
 
-test("measured is undefined when lastPrompt shape does not match current pruning", async () => {
-  // A session with a measurement taken on an unpruned prompt
-  const sessionId = "matrix/room/!prune-mismatch:test";
+test("measured is present when lastPrompt exists", async () => {
+  const sessionId = "matrix/room/!measured:test";
   const sess = session(sessionId, {
-    lastPrompt: { tokens: 50_000, messageCount: 10, pruned: false },
+    lastPrompt: { tokens: 50_000, messageCount: 10 },
   });
   await saveSessionWithLog(sessionId, sess);
 
-  // The config resolves to a pruning engine (Anthropic-style)
-  const pruningConfig = {
+  const measureConfig = {
     llm: {
       defaultModel: "claude-opus-5",
       models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }],
@@ -327,39 +325,11 @@ test("measured is undefined when lastPrompt shape does not match current pruning
   } as unknown as MyClawConfig;
 
   const { status } = await statusReport({
-    config: pruningConfig,
+    config: measureConfig,
     sessionId: sess.id,
     session: sess,
     liveRuns: [],
   });
 
-  // The measurement was taken on an unpruned prompt, but the current model prunes.
-  // The measurement should NOT be used, so measured should be undefined (no call recorded yet).
-  // This prevents showing a percentage that is meaningless after a model change.
-  expect(status.context.measured).toBeUndefined();
-});
-
-test("measured is present when lastPrompt shape matches current pruning", async () => {
-  const sessionId = "matrix/room/!prune-match:test";
-  const sess = session(sessionId, {
-    lastPrompt: { tokens: 50_000, messageCount: 10, pruned: true },
-  });
-  await saveSessionWithLog(sessionId, sess);
-
-  const pruningConfig = {
-    llm: {
-      defaultModel: "claude-opus-5",
-      models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }],
-    },
-  } as unknown as MyClawConfig;
-
-  const { status } = await statusReport({
-    config: pruningConfig,
-    sessionId: sess.id,
-    session: sess,
-    liveRuns: [],
-  });
-
-  // The measurement shape matches: it should be used
   expect(status.context.measured?.tokens).toBe(50_000);
 });

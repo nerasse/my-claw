@@ -6,11 +6,9 @@ import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { contextEntries, promptOf } from "../../src/sessions/projection.ts";
-import { resolveContextPruning, type MyClawConfig } from "../../src/core/config.ts";
+import { contextEntries } from "../../src/sessions/projection.ts";
+import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { pruneOldToolResults, promptSidePruned } from "../../src/agent/context-pruning.ts";
-import { estimateMessagesTokens } from "../../src/llm/tokens.ts";
 import { deleteSession, type LegacySessionData, type SessionMessage } from "../../src/sessions/store.ts";
 import type { SessionLog, CompactionEntry } from "../../src/sessions/log.ts";
 
@@ -38,12 +36,6 @@ function llm(message: object): never {
 }
 
 const BIG = "y".repeat(5000);
-
-function prunedConfig(protectTokens: number): MyClawConfig {
-  const config = baseConfig();
-  config.context = { pruning: { protectTokens } };
-  return config;
-}
 
 // History with `turns` past tool exchanges (user + assistant tool_call + tool result + assistant text).
 function history(turns: number): SessionMessage[] {
@@ -97,28 +89,6 @@ async function runAndCaptureRequest(config: MyClawConfig, priorMessages: Session
   }
 }
 
-test("bridge: old tool results are pruned from the prompt, session keeps full content", async () => {
-  const priorMessages = history(8);
-  const bodies = await runAndCaptureRequest(prunedConfig(3_000), priorMessages);
-  const sent = bodies[0]!.messages.filter((m) => m.role === "tool") as Array<{ content: string }>;
-  assert.equal(sent.length, 8);
-  assert.ok(sent[0]!.content.includes("elided"), "oldest tool result stubbed in the prompt");
-  assert.ok(sent[7]!.content === BIG, "recent tool result intact in the prompt");
-  // Check log entries - tool outputs are stored unmodified
-  await log.flush();
-  const entries = log.entries();
-  const toolEntries = entries.filter((e) => e.type === "tool");
-  assert.ok(toolEntries.every((e) => e.type === "tool" && e.output === BIG), "log stores full tool output");
-});
-
-test("bridge: context.pruning.enabled=false sends full history", async () => {
-  const config = baseConfig();
-  config.context = { pruning: { enabled: false } };
-  const bodies = await runAndCaptureRequest(config, history(8));
-  const sent = bodies[0]!.messages.filter((m) => m.role === "tool") as Array<{ content: string }>;
-  assert.ok(sent.every((m) => m.content === BIG), "nothing stubbed when disabled");
-});
-
 test("bridge: auto-compaction triggers above the threshold and shrinks the prompt, not the history", async () => {
   const config = baseConfig();
   config.llm.limit = { context: 2000 };
@@ -158,54 +128,6 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
   const compactionEntry = context.find((e): e is CompactionEntry => e.type === "compaction");
   assert.ok(compactionEntry, "compaction entry present");
   assert.ok(context.length < entriesBefore, `context shrank (${entriesBefore} entries -> ${context.length} in context)`);
-});
-
-test("bridge: the gate measures the pruned prompt, not the history behind it", async () => {
-  const config = prunedConfig(2_000);
-  config.llm.limit = { context: 16_000 };
-  const priorMessages = history(10);
-
-  appendMessages(log, priorMessages);
-  await log.flush();
-
-  runRegistry.clear();
-  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
-  const { signal, end } = runRegistry.startRoot(SESSION_ID);
-  let compactionCalls = 0;
-  const mock = mockFetch(async (_u, init) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ content: string }> };
-    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("compaction agent")) {
-      compactionCalls += 1;
-      return llm({ content: "Summary that should never have been asked for on this conversation." });
-    }
-    return llm({ content: "final answer" });
-  });
-  try {
-    await bridge.handleMessage(msg("m1", "continue"), sessionMeta(), signal);
-  } finally {
-    mock.restore(); end(); runRegistry.clear();
-  }
-  assert.equal(compactionCalls, 0, "the pruned prompt is under the threshold, nothing to summarize");
-});
-
-/** Anthropic never prunes -- its cache is a prefix -- so measuring it as pruned would under-read. */
-test("bridge: the anthropic backend is measured whole, since its prompt is sent whole", async () => {
-  const config = prunedConfig(2_000);
-  // On the live path: the prompt is projected from the log, and pruning is applied to that.
-  const setup = await setupSessionLog("ctx/prune-shape");
-  try {
-    appendMessages(setup.log, history(10));
-    const chat = promptOf(setup.log.entries(), setup.log.leaf());
-    const raw = estimateMessagesTokens(chat);
-    const pruned = estimateMessagesTokens(pruneOldToolResults([...chat], resolveContextPruning(config)));
-
-    assert.ok(pruned < raw / 2, `pruning is what the prompt does: ${raw} -> ${pruned}`);
-    assert.ok(promptSidePruned(config, undefined), "the home loop prunes before it sends");
-    assert.ok(!promptSidePruned(config, "anthropic"), "a backend that sends the prompt whole does not");
-  } finally {
-    setup.cleanup();
-    await deleteSession("ctx/prune-shape");
-  }
 });
 
 test("bridge: no auto-compaction below the threshold", async () => {
