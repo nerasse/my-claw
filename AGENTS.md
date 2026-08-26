@@ -121,7 +121,6 @@ src/
 │   ├── dispatcher.ts      # BackendDispatcher: routes each run to the home loop for its resolved model
 │   ├── bridge.ts          # LLM agent orchestration (home OpenAI-compatible loop)
 │   ├── iteration-budget.ts # Per-agent iteration budget (consume/refund/remaining)
-│   ├── context-pruning.ts # Prunes old tool results from the prompt (home loop)
 │   ├── tool-status.ts     # Tool call formatting (verbose/compact with timing)
 │   ├── approvals.ts
 │   ├── blacklist.ts
@@ -169,10 +168,22 @@ src/
 │   ├── codex.ts           # Codex Responses transport for the home loop
 │   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
 │   └── claude-auth.ts     # Claude subscription token store
-├── sessions/
+├── sessions/              # The log is the whole history -- docs/session-log.md
+│   ├── log.ts             # Append-only entries: the one source of truth for a conversation
+│   ├── log-access.ts      # How a run reaches its conversation's entries -- annexe D
+│   ├── projection.ts      # The log, read as a prompt (built once, never rewritten)
+│   ├── meta.ts            # Everything about a session that is not the conversation
+│   ├── tool-output.ts     # Where a tool's full output lives -- docs/prompt-immutable.md
+│   ├── spawn-state.ts     # A sub-agent's lifecycle, folded back onto its card
+│   ├── import.ts          # A stored session, read as a log -- annexe A
+│   ├── migrate.ts         # One pass, at boot, from `<id>.json` to `<id>/` -- annexe A
 │   ├── manager.ts         # LRU-cached session manager (max 100, autosave + flush) -- docs/session-durability.md
 │   ├── store.ts           # Session persistence (JSON files)
 │   └── compaction.ts      # Session context compaction (LLM summarization)
+├── conversations/
+│   └── store.ts           # SQLite archive of every message, all channels -- docs/conversation-search.md
+├── notifications/
+│   └── push.ts            # UnifiedPush (self-hosted ntfy), no Firebase -- docs/notifications.md
 ├── analytics/
 │   └── usage-db.ts        # SQLite analytics (per-API-call token tracking)
 ├── approvals/
@@ -190,7 +201,7 @@ src/
 │   ├── registry.ts
 │   ├── workspace.ts       # Workspace path resolution
 │   ├── bash.ts, read.ts, write.ts, apply-patch.ts, fetch.ts, search.ts, ls.ts, memory.ts
-│   ├── web-search.ts
+│   ├── web-search.ts, conversation-search.ts
 │   ├── browser/           # Browser tools: state, navigation, actions, lowlevel, delegate
 │   ├── plugins.ts         # PluginLoader: external tool plugins
 │   ├── skills.ts          # Skill management tools
