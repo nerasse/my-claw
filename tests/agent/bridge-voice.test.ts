@@ -68,6 +68,15 @@ afterEach(() => {
   runRegistry.clear();
 });
 
+/**
+ * 20ms on an idle box, 5008ms on CI the day two runs of the same commit shared the runner: this
+ * test is not slow, it gets starved. The default 5s budget is what breaks, and the abort does not
+ * stop there -- a timed-out body restores its mocks with its own requests still in flight, so the
+ * next test's mocked fetch is the one that goes red (`fetch: successful GET returns body`, same
+ * run). Same cause as RATE_LIMIT_TEST_TIMEOUT_MS in tests/e2e/pipeline.test.ts.
+ */
+const STARVED_RUNNER_TIMEOUT_MS = 30_000;
+
 describe("AgentBridge voice integration", () => {
   test("preprocesses audio attachments and adds echo", async () => {
     const config = createConfig();
@@ -110,7 +119,7 @@ describe("AgentBridge voice integration", () => {
     const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
     expect(userEntry).toBeDefined();
     expect(userEntry!.text).toContain("[Audio]:");
-  });
+  }, STARVED_RUNNER_TIMEOUT_MS);
 
   test("flags inbound audio correctly", async () => {
     const config = createConfig();

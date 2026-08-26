@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { fetchTool, htmlToText, processFetchBody, isJsRenderedShell } from "../../src/tools/fetch.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
+/**
+ * Every call here is mocked, so the work is microseconds. The budget is not about this file: it
+ * went red on CI as collateral, right after a starved test in another file timed out and restored
+ * its mocks with requests still in flight. Kept high enough that only a genuine hang trips it.
+ */
+const STARVED_RUNNER_TIMEOUT_MS = 30_000;
+
 test("fetch: successful GET returns body", async () => {
   const mock = mockFetch(async () => new Response("ok body", { status: 200 }));
   try {
@@ -12,7 +19,7 @@ test("fetch: successful GET returns body", async () => {
   } finally {
     mock.restore();
   }
-});
+}, STARVED_RUNNER_TIMEOUT_MS);
 
 test("fetch: HTTP 404 returns success false", async () => {
   const mock = mockFetch(async () => new Response("not found", { status: 404 }));
