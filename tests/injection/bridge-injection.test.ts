@@ -231,10 +231,12 @@ test("an injected turn is persisted with the sender's own id", async () => {
     
     await log.flush();
     const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
-    // sourceId is on the UnifiedMessage, stored as sourceId on the UserEntry
+    // The UnifiedMessage id is reused as the UserEntry id, not stored as a second sourceId field.
     // Check that we have 2 user entries
     assert.equal(userEntries.length, 2);
+    assert.equal(userEntries[0]!.id, "orig");
     assert.equal(userEntries[0]!.text, "first question");
+    assert.equal(userEntries[1]!.id, "steer-1");
     assert.equal(userEntries[1]!.text, "and also this");
   } finally {
     mock.restore();

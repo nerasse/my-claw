@@ -32,6 +32,15 @@ describe("newRunId", () => {
 });
 
 describe("RunRecorder: one model turn", () => {
+  test("a user turn keeps the id of the bubble it was streamed beside", async () => {
+    const recorder = new RunRecorder(entries);
+    const user = recorder.user({ id: "bubble-user", text: "question" });
+    await entries.flush();
+
+    expect(user.id).toBe("bubble-user");
+    expect((await openSessionLog(SESSION)).entries()[0]!.id).toBe("bubble-user");
+  });
+
   test("a turn with no phases is its own only phase", async () => {
     const recorder = new RunRecorder(entries);
     const phases = recorder.turn({ content: "salut", reasoning: "je reflechis" });

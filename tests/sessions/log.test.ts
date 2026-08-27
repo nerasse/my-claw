@@ -45,6 +45,17 @@ describe("session log: append and read back", () => {
     expect(stored.seq).toBe(1);
   });
 
+  test("a supplied bubble id is kept and cannot be reused", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const first = log.append<UserEntry>({ type: "user", prompt: true, text: "question" }, "bubble-1");
+
+    expect(first.id).toBe("bubble-1");
+    expect(() => log.append<UserEntry>({ type: "user", prompt: true, text: "duplicate" }, "bubble-1"))
+      .toThrow("Entry id already exists: bubble-1");
+    await log.flush();
+  });
+
   test("every payload type round-trips unchanged", async () => {
     const id = freshId();
     const log = await openSessionLog(id);

@@ -122,6 +122,8 @@ export class RunRecorder {
    * The floor moves here, not in a separate call, so the invariant holds by construction.
    */
   user(input: {
+    /** The channel bubble id, when this turn was already drawn before persistence. */
+    id?: string;
     text: string;
     attachments?: SessionAttachment[];
     location?: ChatLocation;
@@ -136,7 +138,7 @@ export class RunRecorder {
       ...(input.location ? { location: input.location } : {}),
       ...(input.transcripts && Object.keys(input.transcripts).length > 0 ? { transcripts: input.transcripts } : {}),
       ...(input.from ? { from: input.from } : {}),
-    });
+    }, input.id);
     this.startLeaf = entry.id;
     return entry;
   }

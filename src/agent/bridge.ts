@@ -394,6 +394,9 @@ export class AgentBridge implements AgentBackend {
       // first turn. Skip it here to avoid a duplicate.
       if (!userEntryWritten) {
         recorder.user({
+          // The app has already drawn this bubble from chat.send. Reuse that id so a later sync
+          // replaces it instead of appending a second copy.
+          id: message.id,
           text: transformedContent,
           ...(images.length > 0 ? { attachments: images } : {}),
           ...(message.location ? { location: message.location } : {}),
@@ -885,6 +888,8 @@ export class AgentBridge implements AgentBackend {
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
     // recorder.user() advances startLeaf automatically, so rewind() cannot erase this turn
     recorder.user({
+      // An injected app message already has a bubble open under its chat.send id.
+      id: injected.id,
       text: transformedContent,
       ...(injected.location ? { location: injected.location } : {}),
     });

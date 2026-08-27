@@ -6,7 +6,8 @@ Références auditées : `~/dev/pi-mono` (earendil-works, pi 0.84.3) et `~/dev/o
 (anomalyco/opencode, branche `dev`, HEAD `71d08e94d`). Toutes les affirmations sur ces
 deux dépôts sont référencées fichier:ligne et ont été vérifiées.
 
-Décisions arrêtées avec l'owner le 2026-08-24. Rien de ce document n'est implémenté.
+Décisions arrêtées avec l'owner le 2026-08-24. Les lots marqués « livré » dans la Partie 9
+sont implémentés ; ce document conserve la conception et les décisions qui les encadrent.
 
 ---
 
@@ -264,9 +265,9 @@ répertoire remplace le fichier plat.
 ## 2.2 L'entrée
 
 ```ts
-/** Assignés au commit par le store, jamais par l'appelant. */
+/** Assignés par le store, sauf lorsqu'un canal doit conserver l'id d'une bulle déjà affichée. */
 interface EntryBase {
-  id: string;               // UUIDv7 : triable par temps, stable, = l'id de la bulle
+  id: string;               // UUIDv7 en général, ou id du canal ; stable, = l'id de la bulle
   seq: number;              // monotone par session, ordre d'écriture dans le fichier
   parentId: string | null;  // le leaf de la session au moment de l'append
   ts: number;               // Unix ms
@@ -314,6 +315,15 @@ interface UserEntry extends EntryBase {
   transcripts?: Record<string, string>;
   /** Renseigné quand le tour vient d'un autre agent (send piloté, hand-back). */
   from?: { sessionId: string; label: string };
+}
+
+interface CommandEntry extends EntryBase {
+  type: "command"; prompt: false;
+  input: string;
+  output: string;
+  details?: string;
+  /** Id du chat.send ; l'affichage dérive `cmd-<sourceId>` pour la réponse. */
+  sourceId?: string;
 }
 
 interface PhaseEntry extends EntryBase {
@@ -420,8 +430,8 @@ de run, ils vivent dans l'objet en mémoire (et le scheduler les repose à chaqu
 
 ```ts
 class SessionLog {
-  append<T extends Entry>(e: Provisioned<T>): T;   // assigne id/seq/parentId/ts
-  branch(leafId: string | null): void;             // déplace le curseur
+  append<T extends Entry>(e: Provisioned<T>, id?: string): T; // id du canal ou id généré
+  branch(leafId: string | null): void;                       // déplace le curseur
   entries(): readonly Entry[];                     // le fichier, en ordre d'écriture
   leaf(): string | null;
   since(entryId: string | null): Entry[];          // throw UnknownCursor si inconnu
@@ -430,11 +440,12 @@ class SessionLog {
 
 `append` fait trois choses : `parentId = this.leafId`, `appendFileSync` d'une ligne,
 `this.leafId = e.id`. Le curseur suit toujours la dernière entrée écrite, sauf après un
-`branch()` explicite.
+`branch()` explicite. Pour un tour reçu par `chat.send`, le canal passe son id au second
+argument ; le log le réutilise et refuse s'il existe déjà. Sinon il génère un UUIDv7.
 
 `Provisioned<T>` = `Omit<T, "id" | "seq" | "parentId" | "ts">`. L'appelant ne fabrique
-jamais un id : c'est ce qui garantit que l'id de la bulle live et l'id de l'entrée sont
-le même.
+pas d'id interne : le seul id imposé est celui d'une bulle déjà ouverte par le canal, ce qui
+garantit que l'id de la bulle live et l'id de l'entrée restent le même.
 
 ## 2.6 Lecture
 
@@ -731,7 +742,9 @@ n'emporte plus rien.
 ```
 
 Nouveau thread, `entries.jsonl` = copie du chemin avec `parentId` ré-chaînés,
-`meta.json` porte `forkedFrom`. Le thread source n'est pas touché.
+`meta.json` porte `forkedFrom`. Le thread source n'est pas touché. Les ids sont régénérés,
+et chaque `CompactionEntry.firstKeptEntryId` est remappé vers l'entrée correspondante du fork ;
+sinon la projection repasserait toute la branche au modèle.
 
 **Les pièces jointes sont un choix explicite, jamais un partage.** Les uploads sont par
 thread (`files/my-claw-app/<threadId>/`) et `history()` les résout via
@@ -1059,8 +1072,9 @@ pour chaque ~/.my-claw/sessions/**/<id>.json :
   déplacer <id>.json vers sessions-archive/<id>/<ts>.json
 ```
 
-Le `sourceId` disparaît en devenant l'id de l'entrée : c'est la migration qui règle
-définitivement la dédup de bulle.
+Pour un tour `user`, le `sourceId` devient l'id de l'entrée : c'est la migration qui règle
+définitivement la dédup de bulle. Pour une commande, l'entrée garde `sourceId`, car elle produit
+deux bulles : `<sourceId>` pour la saisie et `cmd-<sourceId>` pour la réponse.
 
 Les sessions cron sont migrées comme les autres : elles **ne sont pas** supprimées après
 run, `pruneSessions` en garde 25 par job (`scheduler.ts:126`).
@@ -1401,8 +1415,8 @@ du plancher » au lieu d'une tranche entre deux index, et les deux cas se confon
 **Une entrée qui doit en nommer une autre a besoin d'un instant qui n'existait pas.**
 `append` sérialise sa ligne immédiatement et aucune entrée n'est jamais réécrite : une
 référence croisée ne peut donc être résolue ni avant (l'id n'existe pas) ni après (la
-ligne est écrite). D'où `appendAll(payloads, patch)`, qui assigne ids et chaînage de tout
-un lot, laisse résoudre, puis écrit.
+ligne est écrite). D'où `appendAll(payloads, patch)`, qui attribue les ids manquants, conserve ceux fournis par un canal
+et assigne le chaînage de tout un lot, laisse résoudre, puis écrit.
 
 ## Ce que la bascule a trouvé
 
@@ -1429,9 +1443,11 @@ les attentes sont écrites en littéraux et ne dépendent donc pas du chemin qu'
 Un témoin qui compare deux implémentations meurt avec celle qu'il remplace ; un témoin qui
 énonce le résultat attendu survit à la bascule et c'est précisément là qu'il sert.
 
-Trou connu, assumé : `sourceId` n'est pas reporté sur l'id d'entrée à l'import. Le faire
-obligerait `append` à accepter un id imposé, ce qui casse « le log seul attribue les ids ».
-Le seul cas où ça compte est un thread ouvert sur un appareil à l'instant de la migration.
+Correction appliquée après la bascule : `append` accepte un id fourni par le canal quand une
+bulle existe déjà, avec rejet d'un doublon dans le log. `appendAll` conserve ces ids lors de
+l'import legacy ; les tours `user` réutilisent donc leur `chat.send` id, et les commandes
+conservent leur `sourceId`. Lors d'un fork, les ids internes sont régénérés et les références de
+compaction sont remappées dans le même lot avant l'écriture.
 
 ---
 

@@ -35,7 +35,7 @@ export type EntryType =
   | "note"
   | "spawn_state";
 
-/** Assigned by the log at append time, never by the caller -- that is what keeps ids stable. */
+/** Assigned by the log, except when a channel reuses the id of a bubble already on screen. */
 interface EntryBase {
   id: string;
   seq: number;
@@ -110,6 +110,8 @@ export interface CommandEntry extends EntryBase {
   input: string;
   output: string;
   details?: string;
+  /** The app's chat.send id, used to replay both command bubbles under their live ids. */
+  sourceId?: string;
 }
 
 export interface FailureEntry extends EntryBase {
@@ -377,10 +379,12 @@ export class SessionLog {
    */
   append<T extends Entry>(input: Provisioned<T>, id?: string): T {
     const now = Date.now();
+    // A caller-provided id is one already on screen: the channel minted it when it opened the
+    // bubble this entry holds the text of, so the two are one identity -- docs/bubble-identity.md.
+    // Reusing one would make the tree ambiguous and let a retried send attach to an older turn.
+    if (id !== undefined && this.get(id)) throw new Error(`Entry id already exists: ${id}`);
     const entry = {
       ...input,
-      // A caller-provided id is one already on screen: the channel minted it when it opened the
-      // bubble this entry holds the text of, so the two are one identity -- docs/bubble-identity.md.
       id: id ?? newEntryId(now),
       seq: this.nextSeq++,
       parentId: this.leafId,
@@ -423,13 +427,20 @@ export class SessionLog {
    * last month must keep last month's dates, and an id sorts by the time it encodes, so the id is
    * built from that timestamp too rather than from the clock of the migration.
    */
-  appendAll(inputs: ReadonlyArray<Provisioned & { ts?: number }>, patch?: (entries: Entry[]) => void): Entry[] {
+  appendAll(
+    inputs: ReadonlyArray<Provisioned & { id?: string; ts?: number }>,
+    patch?: (entries: Entry[]) => void,
+  ): Entry[] {
     const now = Date.now();
     const entries: Entry[] = [];
+    const ids = new Set(this.list.map((entry) => entry.id));
     let parentId = this.leafId;
     for (const input of inputs) {
       const ts = input.ts ?? now;
-      const entry = { ...input, id: newEntryId(ts), seq: this.nextSeq++, parentId, ts } as unknown as Entry;
+      const id = input.id ?? newEntryId(ts);
+      if (ids.has(id)) throw new Error(`Entry id already exists: ${id}`);
+      ids.add(id);
+      const entry = { ...input, id, seq: this.nextSeq++, parentId, ts } as unknown as Entry;
       entries.push(entry);
       parentId = entry.id;
     }

@@ -1244,23 +1244,23 @@ page-owned outright.
 
 That merge needs the two sides to agree on identity, which is what these carry:
 
-- **`sourceId` on the mirrored user turn** — the `chat.send` id, which *is* the bubble id on the
-  device. `history()` replays the turn under it, so the question of the run in flight is recognised
-  instead of duplicated. Display-only, like `reasoning`: both replay paths build their messages
-  field by field and one test per path proves it never reaches a model.
-- **`sourceId` on the command journal entry** — same idea for the two bubbles a command produces:
-  the input replays under the send id, the answer under `cmd-<send id>`, which is the id the app
-  gives that bubble live (placeholder included, so a `/compact` that was placeheld is the same
-  bubble before and after).
-- **Every persisted user turn carries it, not just the opening one.** Two paths used to break the
-  chain and produced the same visible bug, a question shown twice for up to 30 s: a steered turn
-  (`injectUserTurn`) was pushed with no `sourceId` at all, and `runner.send` substituted an id of
-  its own making. Both deduped correctly *inside* the session -- the bridge matches the pre-push on
-  that id -- while being invisible to the page, which is the only reader that matters here. A
-  human send now gets its own id back; a model-driven send keeps a forged one on purpose, since its
-  bubble lives in the parent thread and two sends in one parent turn would otherwise share a single
-  id and collapse into one turn. The reuse is refused outright if the session already carries that
-  id, so no caller can rewrite an older turn by repeating an id.
+- **The mirrored user turn keeps the `chat.send` id as its entry id** — that is the bubble id on
+  the device. `history()` replays the turn under it, so the question of the run in flight is
+  recognised instead of duplicated. The legacy `sourceId` field is consumed during import; it is
+  not a second identity on `UserEntry`.
+- **`sourceId` stays on the command journal entry** — a command produces two bubbles: the input
+  replays under the send id, the answer under `cmd-<send id>`, which is the id the app gives that
+  bubble live (placeholder included, so a `/compact` that was placeheld is the same bubble before
+  and after).
+- **Every human-driven persisted user turn carries its own id, not just the opening one.** Two
+  paths used to break the chain and produced the same visible bug, a question shown twice for up to
+  30 s: a steered turn (`injectUserTurn`) was pushed without the `chat.send` id, and `runner.send`
+  substituted an id of its own making. Both deduped correctly *inside* the session -- the bridge
+  matches the pre-push on that id -- while being invisible to the page, which is the only reader
+  that matters here. A human send now gets its own id back; a model-driven send keeps a generated
+  id on purpose, since its bubble lives in the parent thread and two sends in one parent turn would
+  otherwise share a single id and collapse into one turn. The reuse is refused outright if the
+  session already carries that id, so no caller can rewrite an older turn by repeating an id.
 - **The failure rollback stops at the last steered turn.** A run that throws trims what it appended
   (`messageCountBeforeLoop`), and that mark used to be set before the loop and after a compaction
   but never after an injection. A run failing after absorbing a steering message therefore answered

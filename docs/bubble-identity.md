@@ -16,6 +16,11 @@ workaround stops being load-bearing and an end-of-run sync becomes possible.
 A user turn already worked this way -- the entry keeps the id the device sent -- which is exactly
 why a mirrored question never doubled. This extends the same rule to what the agent writes.
 
+Commands are the one deliberate two-bubble exception. One `CommandEntry` keeps the `sourceId`
+of the `chat.send`; the display projection derives the input bubble as `<sourceId>` and the answer
+as `cmd-<sourceId>`. A replay therefore replaces both live command bubbles instead of appending
+another pair. Legacy command entries without `sourceId` use their own entry id as the fallback.
+
 ## Identity first, then the stream, then the log
 
 The order is the one OpenCode and pi-mono both settled on: the message exists, with its id, before

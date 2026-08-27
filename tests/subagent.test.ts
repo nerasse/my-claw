@@ -684,6 +684,10 @@ test("a human send keeps its own message id, a model-driven one does not", async
     const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
     // The init task + 4 sends = 5 user entries
     assert.equal(userEntries.length, 5);
+    // Human-driven sends own the bubbles the app already drew. Model-driven sends stay generated
+    // because their visible identity belongs to the parent tool card.
+    assert.equal(userEntries[1]!.id, "bubble-1");
+    assert.equal(userEntries[2]!.id, "bubble-2");
     // All ids are unique
     const ids = userEntries.map((e) => e.id);
     assert.equal(new Set(ids).size, ids.length, "each send creates a distinct entry");

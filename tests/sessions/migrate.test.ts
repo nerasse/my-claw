@@ -36,7 +36,8 @@ const readLegacy = async (sessionId: string): Promise<LegacySessionData | null> 
   }
 };
 
-const userMsg = (content: string, n: number): SessionMessage => ({ role: "user", content, timestamp: at(n) });
+const userMsg = (content: string, n: number, extra: Record<string, unknown> = {}): SessionMessage =>
+  ({ role: "user", content, timestamp: at(n), ...extra }) as SessionMessage;
 const assistantMsg = (content: string, n: number, extra: Record<string, unknown> = {}): SessionMessage =>
   ({ role: "assistant", content, timestamp: at(n), ...extra }) as SessionMessage;
 
@@ -104,6 +105,22 @@ describe("migrateSessions", () => {
     expect(await readLegacy("t1")).toBeNull();
     const archived = await readdir(join(ARCHIVES_DIR, "t1"));
     expect(archived).toHaveLength(1);
+  });
+
+  test("source ids survive migration for users and command bubbles", async () => {
+    await writeLegacy(data("t1", [userMsg("question", 1, { sourceId: "send-user" })], {
+      commands: [{ input: "/status", output: "ok", timestamp: at(2), sourceId: "send-command" }],
+    }));
+    await migrateSessions(readLegacy);
+
+    const entries = (await openSessionLog("t1")).entries();
+    const user = entries.find((entry) => entry.type === "user");
+    const command = entries.find((entry) => entry.type === "command");
+    // UserEntry has no second sourceId field: the live chat.send id is its log identity.
+    expect(user?.id).toBe("send-user");
+    // Commands produce two display bubbles, so their source id stays on the journal entry and
+    // displayOf derives `send-command` and `cmd-send-command` from it.
+    expect(command?.sourceId).toBe("send-command");
   });
 
   test("running it twice changes nothing", async () => {

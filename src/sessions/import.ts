@@ -16,8 +16,9 @@ import type { Entry, Provisioned } from "./log.ts";
 import type { LegacySessionData, SessionMessage } from "./store.ts";
 import { summaryBodyOf } from "./compaction.ts";
 
-/** Ordered payloads, ready to be appended in this order. Ids, seq and parentId are the log's job. */
-export type ImportedEntry = Provisioned<Entry> & { ts: number };
+/** Ordered payloads, ready to be appended in this order. Seq and parentId are the log's job;
+ * a legacy user source id is retained so it can remain the live bubble's identity. */
+export type ImportedEntry = Provisioned<Entry> & { id?: string; ts: number };
 
 /**
  * Milliseconds from a stored ISO timestamp.
@@ -105,7 +106,15 @@ export function importSession(session: LegacySessionData): ImportedSession {
     const ts = msOf(command.timestamp, clock);
     asides.push({
       ts,
-      entries: [{ type: "command", prompt: false, input: command.input, output: command.output, ...(command.details ? { details: command.details } : {}), ts }],
+      entries: [{
+        type: "command",
+        prompt: false,
+        input: command.input,
+        output: command.output,
+        ...(command.details ? { details: command.details } : {}),
+        ...(command.sourceId ? { sourceId: command.sourceId } : {}),
+        ts,
+      }],
     });
   }
   for (const failure of session.failures ?? []) {
@@ -160,6 +169,7 @@ export function importSession(session: LegacySessionData): ImportedSession {
         type: "user",
         prompt: true,
         text: message.content,
+        ...(message.sourceId ? { id: message.sourceId } : {}),
         ...(message.attachments ? { attachments: message.attachments } : {}),
         ...(message.location ? { location: message.location } : {}),
         ts,

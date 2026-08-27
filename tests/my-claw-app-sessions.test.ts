@@ -1032,6 +1032,16 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     assert.equal(answer.details, "summary text");
   });
 
+  test("a command replay uses the live bubble ids", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    await store.recordCommand(DEVICE, THREAD, "/compact", "fait", undefined, "send-1");
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.deepEqual(entries.slice(-2).map((entry) => entry.id), ["send-1", "cmd-send-1"]);
+  });
+
   test("a command lands where it was typed, not at the end of the page", async () => {
     // Create session then write entries in the order we want them displayed
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
@@ -1170,12 +1180,12 @@ describe("MyClawAppSessionStoreImpl replay ids", () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
     logSetup.log.append({ type: "user", prompt: true, text: "salut" });
     await logSetup.log.flush();
-    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined);
+    await store.recordCommand(DEVICE, THREAD, "/compact", "Compacted.", undefined, "send-9");
 
     const { entries } = await store.history(DEVICE, THREAD);
     const ids = entries.map((e) => e.id);
-    // Check command entries have the expected id pattern
-    assert.ok(ids.some((id) => id.includes("send-9") || id.includes("-in")), "the command bubble includes send id or -in suffix");
+    assert.ok(ids.includes("send-9"), "the command input reuses the send id");
+    assert.ok(ids.includes("cmd-send-9"), "the command output reuses the derived result id");
   });
 });
 

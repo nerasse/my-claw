@@ -223,11 +223,17 @@ describe("withSpawnCards: what a delta can draw", () => {
 
 describe("displayOf: what is shown and never sent", () => {
   test("a command draws the two bubbles the device drew live", () => {
-    const entries = chain([{ type: "command", prompt: false, input: "/compact", output: "fait", details: "900 tokens" }]);
+    const entries = chain([{ type: "command", prompt: false, input: "/compact", output: "fait", details: "900 tokens", sourceId: "send-1" }]);
     const drawn = show(entries);
-    expect(drawn[0]).toMatchObject({ role: "user", text: "/compact" });
-    expect(drawn[1]).toMatchObject({ role: "assistant", text: "fait", command: true, details: "900 tokens" });
+    expect(drawn[0]).toMatchObject({ id: "send-1", role: "user", text: "/compact" });
+    expect(drawn[1]).toMatchObject({ id: "cmd-send-1", role: "assistant", text: "fait", command: true, details: "900 tokens" });
     expect(drawn[0]!.id).not.toBe(drawn[1]!.id);
+  });
+
+  test("an old command without a source id keeps a stable fallback", () => {
+    const entry = chain([{ type: "command", prompt: false, input: "/status", output: "ok" }])[0]!;
+    const drawn = show([entry]);
+    expect(drawn.map((item) => item.id)).toEqual([entry.id, `cmd-${entry.id}`]);
   });
 
   test("a dead run replays as the error the owner was shown", () => {

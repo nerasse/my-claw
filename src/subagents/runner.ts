@@ -326,14 +326,18 @@ export class SubAgentRunner {
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
       // Write user turn to the log. A crash before the first bridge turn must still show the question.
       const entryLog = await sessionLogOf(id);
+      // A human app send owns the child-thread bubble, so its chat.send id must be reused by the
+      // persisted entry. Test and non-app callers can reuse a message id, in which case the log
+      // keeps its own identity rather than creating a duplicate id in the tree.
+      const sourceId = toolCallId === undefined && !entryLog.get(parentMessage.id) ? parentMessage.id : undefined;
       entryLog.append<UserEntry>({
         type: "user",
         prompt: true,
         text: userContent,
         ...(parentMessage.location ? { location: parentMessage.location } : {}),
-        // When a model drives the send, record where it came from
+        // When a model drives the send, record where it came from.
         ...(toolCallId ? { from: { sessionId: callerSessionId, label: "send" } } : {}),
-      });
+      }, sourceId);
       await entryLog.flush();
 
       // A global agent can be driven from a chat other than its creator, so this run's tokens

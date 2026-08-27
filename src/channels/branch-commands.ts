@@ -9,7 +9,7 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SessionLog, UserEntry, Entry, Provisioned } from "../sessions/log.ts";
+import type { SessionLog, UserEntry, Entry, Provisioned, CompactionEntry } from "../sessions/log.ts";
 import { leavesOf, pathOf, openSessionLog } from "../sessions/log.ts";
 import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type UndoState } from "../sessions/meta.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
@@ -446,8 +446,19 @@ export async function handleForkCommand(
     return rest as Provisioned & { ts?: number };
   });
 
-  // Append all entries at once with proper chaining
-  newLog.appendAll(provisioned);
+  // Append all entries at once with proper chaining. The source ids cannot survive the fork because
+  // they would point at the source tree; remap every cross-entry compaction reference while the
+  // new ids are still in memory, before appendAll writes a single byte.
+  newLog.appendAll(provisioned, (written) => {
+    const oldToNew = new Map(clonedPath.map((entry, index) => [entry.id, written[index]!.id]));
+    for (let index = 0; index < written.length; index++) {
+      const source = clonedPath[index]!;
+      const target = written[index]!;
+      if (source.type !== "compaction" || target.type !== "compaction") continue;
+      const mapped = oldToNew.get((source as CompactionEntry).firstKeptEntryId);
+      if (mapped) target.firstKeptEntryId = mapped;
+    }
+  });
   await newLog.flush();
 
   // Create and persist the new session

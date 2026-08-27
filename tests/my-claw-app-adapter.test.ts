@@ -203,10 +203,10 @@ class FakeSessionStore {
     return { entries: all, leaf: head, head };
   }
 
-  journal: Array<{ threadId: string; input: string; output: string; details?: string }> = [];
+  journal: Array<{ threadId: string; input: string; output: string; details?: string; sourceId?: string }> = [];
 
-  async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string): Promise<void> {
-    this.journal.push({ threadId, input, output, ...(details ? { details } : {}) });
+  async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void> {
+    this.journal.push({ threadId, input, output, ...(details ? { details } : {}), ...(sourceId ? { sourceId } : {}) });
   }
 
   failures: Array<{ threadId: string; error: string }> = [];
@@ -3154,7 +3154,7 @@ describe("command frames", () => {
   test("a command and its answer are journaled, so a reopened thread still shows them", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "j1", text: "/compact", threadId: "t1" }));
     await nextFrame(client);
-    assert.deepEqual(store.journal, [{ threadId: "t1", input: "/compact", output: "compact done" }]);
+    assert.deepEqual(store.journal, [{ threadId: "t1", input: "/compact", output: "compact done", sourceId: "j1" }]);
   });
 
   test("the journal never keeps a credential", async () => {

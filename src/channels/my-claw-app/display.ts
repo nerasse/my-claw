@@ -202,10 +202,13 @@ export function displayOf(
     }
 
     if (entry.type === "command") {
-      // Two bubbles, the same two the device drew live: what was typed, and the answer under it.
-      out.push({ id: `${entry.id}-in`, role: "user", text: entry.input, ts });
+      // A command entry has one log id but produces two bubbles. Prefer the chat.send id so both
+      // replayed bubbles match the live input and `cmd-<send id>` result; old entries keep the
+      // generated-id fallback.
+      const sourceId = entry.sourceId || entry.id;
+      out.push({ id: sourceId, role: "user", text: entry.input, ts });
       out.push({
-        id: `${entry.id}-out`,
+        id: `cmd-${sourceId}`,
         role: "assistant",
         text: entry.output,
         ts,

@@ -15,7 +15,9 @@ import {
   type SessionLog,
   type UserEntry,
   type PhaseEntry,
+  type CompactionEntry,
 } from "../../src/sessions/log.ts";
+import { contextEntries } from "../../src/sessions/projection.ts";
 import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
 import type { LegacySessionData, SessionAttachment } from "../../src/sessions/store.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
@@ -294,6 +296,43 @@ describe("branch-commands: /fork", () => {
     // Verify content is preserved
     expect((newEntries[0] as UserEntry).text).toBe("Question 1");
     expect((newEntries[2] as UserEntry).text).toBe("Question 2");
+  });
+
+  test("fork remaps a compaction boundary to the copied entry", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "old" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "old answer", runId: "r1" });
+    const kept = log.append<UserEntry>({ type: "user", prompt: true, text: "kept" });
+    const tail = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "tail", runId: "r2" });
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "old summary",
+      firstKeptEntryId: kept.id,
+      tokensBefore: 900,
+      count: 2,
+    });
+    await log.flush();
+
+    const manager = new SessionManager();
+    const ctx = await createContext(id, log, { sessionManager: manager });
+    const result = await handleForkCommand(ctx, "");
+    const newLog = await openSessionLog(ctx.resolveNewSessionId(result.newThreadId!));
+    const boundary = newLog.entries().find((entry): entry is CompactionEntry => entry.type === "compaction");
+    const copiedKept = newLog.entries().find((entry): entry is UserEntry => entry.type === "user" && entry.text === "kept");
+    const copiedTail = newLog.entries().find((entry): entry is PhaseEntry => entry.type === "phase" && entry.text === "tail");
+
+    expect(boundary).toBeDefined();
+    expect(copiedKept).toBeDefined();
+    expect(copiedTail).toBeDefined();
+    expect(boundary!.firstKeptEntryId).toBe(copiedKept!.id);
+    expect(boundary!.firstKeptEntryId).not.toBe(kept.id);
+    expect(contextEntries(newLog.entries(), newLog.leaf()).map((entry) => entry.id)).toEqual([
+      boundary!.id,
+      copiedKept!.id,
+      copiedTail!.id,
+    ]);
   });
 
   test("fork does not modify the source session", async () => {
