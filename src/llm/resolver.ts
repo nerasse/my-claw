@@ -206,6 +206,7 @@ function resolveFromMerged(
       apiKey: resolveApiKey(provider, merged.apiKey),
       vision: merged.vision,
       limit: merged.limit,
+      ...resolveTimeout(merged, undefined),
     };
   }
 
@@ -242,6 +243,7 @@ function resolveFromMerged(
       effortLevels: model?.supportedEffortLevels,
       fallbackModel: provider.fallbackModel,
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
+      ...resolveTimeout(merged, model),
     };
   }
 
@@ -258,6 +260,7 @@ function resolveFromMerged(
       vision: model?.vision ?? merged.vision,
       limit: model?.limit ?? merged.limit,
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
+      ...resolveTimeout(merged, model),
     };
   }
 
@@ -275,7 +278,34 @@ function resolveFromMerged(
     promptCache: provider.promptCache,
     reasoningReplay: provider.reasoningReplay,
     reasoningField: model?.reasoningField,
+    ...resolveTimeout(merged, model),
   };
+}
+
+/**
+ * The request budget for a run: the model's own declaration, else the global fallback, else
+ * nothing (which leaves the transport on its own default). `0` is a value, not an absence: it
+ * disarms our timer and hands the wall to the owner's Stop -- docs/llm-timeout.md.
+ *
+ * Deliberately not read from the provider entry: a proxy like LiteLLM fronts several backends of
+ * very different speeds, so a ceiling declared there would be honest for one of its models and
+ * wrong for the rest.
+ */
+function resolveTimeout(
+  merged: LlmConfig,
+  model: LlmModelConfig | undefined,
+): { timeoutMs?: number; timeoutFrom?: "model" | "global" } {
+  const own = declaredTimeout(model?.timeoutMs);
+  if (own !== undefined) return { timeoutMs: own, timeoutFrom: "model" };
+  const global = declaredTimeout(merged.timeoutMs);
+  if (global !== undefined) return { timeoutMs: global, timeoutFrom: "global" };
+  return {};
+}
+
+/** A declared budget, floored, or undefined when there is nothing to read. `0` is a value. */
+function declaredTimeout(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
 }
 
 /**

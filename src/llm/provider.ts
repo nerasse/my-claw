@@ -5,18 +5,12 @@ import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
+import { OPENAI_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
 const LLM_RETRY_BASE_MS = 500;
 const LLM_RETRY_MAX_MS = 30_000;
 const LLM_RETRY_JITTER = 0.15;
-const LLM_TIMEOUT_MS = 120_000;
-/**
- * Silence, not duration. The old budget covered the whole stream, so a reasoning model still
- * writing at five minutes was cut off mid-answer, and nothing retries once tokens have shipped.
- * What has to be caught is a connection that stopped producing, which this timer measures.
- */
-const LLM_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
 
@@ -84,6 +78,20 @@ export function countsTowardBreaker(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;
   if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return false;
   return true;
+}
+
+/**
+ * Milliseconds this run may go without a byte. Silence, not duration: on the streaming path the
+ * timer is re-armed at every token, so a reasoning model still writing at five minutes is never
+ * cut off, while a connection that stopped producing is. On the non-streaming path nothing arrives
+ * before the end, so the same budget is the total wall.
+ *
+ * Read from the run's own config, because 120 s is generous for a hosted endpoint and short for a
+ * local model whose prefill on a long prompt is measured in minutes. `0` means no timer at all
+ * and hands the wall to the owner's Stop -- docs/llm-timeout.md.
+ */
+function timeoutBudget(config: ResolvedLlmConfig): number {
+  return requestTimeoutMs(config, OPENAI_TIMEOUT_MS);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -625,11 +633,21 @@ export async function chatCompletion(
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
+  const budget = timeoutBudget(config);
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    // Our own wall, told apart from every other abort by this flag rather than by the shape of the
+    // error: a `DOMException: AbortError` is what a dead socket raises too, and treating the two
+    // alike is what made a timeout retryable and breaker-worthy (docs/llm-timeout.md).
+    let timedOut = false;
+    const timeout = budget > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, budget)
+      : undefined;
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
@@ -676,8 +694,11 @@ export async function chatCompletion(
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
-      if (err instanceof DOMException && err.name === "AbortError") {
-        lastErr = new Error(`LLM request timed out after ${LLM_TIMEOUT_MS}ms`);
+      // A wall we chose is neither a transient fault nor evidence that the endpoint is down:
+      // replaying the same prompt on the same machine cannot be faster, and it tripled the load
+      // on the box that was already too slow to answer once.
+      if (timedOut) {
+        throw new Error(`LLM request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
         const delay = retryDelay(attempt);
@@ -688,7 +709,7 @@ export async function chatCompletion(
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
       throw lastErr;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 
@@ -727,14 +748,24 @@ export async function chatCompletionStream(
 
   let lastErr: unknown;
   let tokensDelivered = false;
+  const budget = timeoutBudget(config);
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     const controller = new AbortController();
-    let timeout = setTimeout(() => controller.abort(), LLM_STREAM_IDLE_TIMEOUT_MS);
+    let timedOut = false;
+    const arm = (): ReturnType<typeof setTimeout> | undefined =>
+      budget > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, budget)
+        : undefined;
+    let timeout = arm();
     const keepAlive = (): void => {
+      if (timeout === undefined) return;
       clearTimeout(timeout);
-      timeout = setTimeout(() => controller.abort(), LLM_STREAM_IDLE_TIMEOUT_MS);
+      timeout = arm();
     };
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
@@ -886,8 +917,8 @@ export async function chatCompletionStream(
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
-      if (err instanceof DOMException && err.name === "AbortError") {
-        lastErr = new Error(`LLM stream stalled for ${LLM_STREAM_IDLE_TIMEOUT_MS}ms`);
+      if (timedOut) {
+        throw new Error(`LLM stream stalled for ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && isTransientError(err)) {
         const delay = retryDelay(attempt);
@@ -898,7 +929,7 @@ export async function chatCompletionStream(
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
       throw lastErr;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 

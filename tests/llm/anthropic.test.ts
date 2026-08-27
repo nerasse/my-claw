@@ -312,6 +312,29 @@ test("the thinking token count is never reported to the sink, only the text is",
   assert.equal(result.usage?.completionTokens, 20);
 });
 
+test("the stream re-arms the request timeout on every line, thinking included", async () => {
+  // The wall is silence and not duration (docs/llm-timeout.md). Extended thinking sends `ping` and
+  // `thinking_delta` for minutes before the first output token: fed from the text deltas only, a
+  // ten-minute budget would cut a model that had been talking the whole time.
+  let beats = 0;
+  await processStream(
+    sse([
+      { type: "message_start", message: { usage: { input_tokens: 10 } } },
+      { type: "ping" },
+      { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "still here" } },
+      { type: "content_block_delta", delta: { type: "text_delta", text: "4" } },
+    ]),
+    undefined,
+    undefined,
+    undefined,
+    () => {
+      beats += 1;
+    },
+  );
+
+  assert.ok(beats >= 4, `expected one beat per line, got ${beats}`);
+});
+
 test("the final turn carries the conversation cache breakpoint, not the middle ones", () => {
   const messages: ChatMessage[] = [
     { role: "system", content: "sys" },

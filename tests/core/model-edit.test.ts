@@ -118,6 +118,31 @@ describe("upsertModel", () => {
     expect((await upsertModel({ id: "a", provider: "litellm", limit: { context: 1.5 } })).ok).toBe(false);
   });
 
+  test("stores a request timeout, zero included", async () => {
+    await writeConfigFile();
+    expect((await upsertModel({ id: "slow", provider: "litellm", timeoutMs: 900_000 })).ok).toBe(true);
+    expect((await readConfigFile()).llm.models[1].timeoutMs).toBe(900_000);
+
+    // The value the feature exists for: `0` removes the wall, so a truthiness check anywhere on
+    // the write path would drop it and silently restore the transport default.
+    expect((await upsertModel({ id: "slow", provider: "litellm", timeoutMs: 0 })).ok).toBe(true);
+    expect((await readConfigFile()).llm.models[1].timeoutMs).toBe(0);
+  });
+
+  test("refuses a timeout that is not zero or a positive integer", async () => {
+    await writeConfigFile();
+    expect((await upsertModel({ id: "a", provider: "litellm", timeoutMs: -1 })).ok).toBe(false);
+    expect((await upsertModel({ id: "a", provider: "litellm", timeoutMs: 1.5 })).ok).toBe(false);
+    expect((await upsertModel({ id: "a", provider: "litellm", timeoutMs: Number.NaN })).ok).toBe(false);
+    expect((await readConfigFile()).llm.models).toHaveLength(1);
+  });
+
+  test("an absent timeout is not written, so the model keeps following the default", async () => {
+    await writeConfigFile();
+    await upsertModel({ id: "plain", provider: "litellm" });
+    expect(Object.keys((await readConfigFile()).llm.models[1])).not.toContain("timeoutMs");
+  });
+
   test("refuses an effort rung the API does not publish", async () => {
     await writeConfigFile();
     const result = await upsertModel({

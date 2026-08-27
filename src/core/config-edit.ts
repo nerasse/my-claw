@@ -950,6 +950,8 @@ export interface ModelDeclaration {
   supportsEffort?: boolean;
   supportedEffortLevels?: EffortLevel[];
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
+  /** Milliseconds allowed with no byte back. `0` disarms the timer -- docs/llm-timeout.md. */
+  timeoutMs?: number;
 }
 
 /** `@` is the endpoint separator of the reference grammar, so an id may not contain one. */
@@ -959,6 +961,17 @@ const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const
 function positiveInt(value: number | undefined, field: string): string | null {
   if (value === undefined) return null;
   if (!Number.isInteger(value) || value <= 0) return `${field} must be a positive integer, got ${value}`;
+  return null;
+}
+
+/**
+ * Same check, with zero allowed, because on a timeout `0` is a decision and not an empty field: it
+ * means "no wall of ours, Stop is the only one" (docs/llm-timeout.md). Reusing `positiveInt` here
+ * would refuse the one value the feature exists to express.
+ */
+function nonNegativeInt(value: number | undefined, field: string): string | null {
+  if (value === undefined) return null;
+  if (!Number.isInteger(value) || value < 0) return `${field} must be zero or a positive integer, got ${value}`;
   return null;
 }
 
@@ -986,6 +999,8 @@ function modelDeclarationError(entry: ModelDeclaration, providers: Record<string
   }
   const windowError = positiveInt(entry.limit?.context, "limit.context") ?? positiveInt(entry.limit?.output, "limit.output");
   if (windowError) return windowError;
+  const timeoutError = nonNegativeInt(entry.timeoutMs, "timeoutMs");
+  if (timeoutError) return timeoutError;
   const unknown = (entry.supportedEffortLevels ?? []).find((level) => !(EFFORT_LEVELS as readonly string[]).includes(level));
   if (unknown) return `Unknown effort level: ${unknown}`;
   if (entry.thinkingTypes !== undefined) {
@@ -1034,6 +1049,9 @@ export async function upsertModel(entry: ModelDeclaration): Promise<ConfigEditRe
   if (entry.limit?.context) limit["context"] = entry.limit.context;
   if (entry.limit?.output) limit["output"] = entry.limit.output;
   if (Object.keys(limit).length > 0) stored["limit"] = limit;
+  // Not `if (entry.timeoutMs)`: `0` is the value that disarms the timer, and truthiness would
+  // silently drop it and leave the transport default in place.
+  if (entry.timeoutMs !== undefined) stored["timeoutMs"] = entry.timeoutMs;
 
   const models = modelsAt(read.data);
   const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === entry.id);

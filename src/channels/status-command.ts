@@ -1,7 +1,8 @@
-import type { MyClawConfig } from "../core/config.ts";
+import type { AgentLlmConfig, MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
-import { leafModelId } from "../llm/resolver.ts";
+import { leafModelId, resolveAgentLlmConfig } from "../llm/resolver.ts";
+import { describeTimeout, transportTimeoutDefault } from "../llm/request-timeout.ts";
 import type { SessionData } from "../sessions/store.ts";
 import { agentTypeOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
@@ -115,6 +116,8 @@ interface StatusData {
   live: string;
   contextLimit: number;
   contextNotes: string[];
+  /** The request wall in force, already spelled with its provenance. */
+  timeout: string;
   measured?: number;
   estimated: number;
   occupied: number;
@@ -131,6 +134,28 @@ interface StatusData {
   rollup: UsageSummary | null;
   delegated: PricedRow[];
   verboseOff: boolean;
+}
+
+/**
+ * The wall one request runs under, spelled for the report. Resolved through the same chain as a
+ * run, because the transport default depends on the backend the model lands on and only the
+ * resolver knows which one that is.
+ *
+ * A broken declaration (unknown provider, tag cycle) makes the resolver throw, and `/status` is
+ * the screen the owner opens *because* something is broken: the line degrades to "unknown"
+ * instead of taking the whole report down with it.
+ */
+function describeRequestTimeout(
+  config: MyClawConfig,
+  agentLlm: AgentLlmConfig | undefined,
+  modelOverride: string | undefined,
+): string {
+  try {
+    const resolved = resolveAgentLlmConfig(agentLlm, config.llm, modelOverride);
+    return describeTimeout(resolved, transportTimeoutDefault(resolved.backend));
+  } catch {
+    return "unknown (model does not resolve)";
+  }
 }
 
 async function collectStatusData(p: StatusParams): Promise<StatusData> {
@@ -172,6 +197,7 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
         p.session.lastFixedTokens ?? 0,
       )
     : 0;
+  const timeout = describeRequestTimeout(p.config, configured, p.session?.modelOverride);
   const autoCompactOn = autoCompactEnabled(p.config);
   const threshold = resolveAutoCompactThreshold(p.config);
   const own = p.session ? priceRows(getSessionModelUsage(p.sessionId, "own"), p.pricing) : [];
@@ -189,6 +215,7 @@ async function collectStatusData(p: StatusParams): Promise<StatusData> {
     live,
     contextLimit: window.effective,
     contextNotes,
+    timeout,
     ...(measured ? { measured } : {}),
     estimated,
     occupied,
@@ -231,6 +258,7 @@ function formatStatusText(d: StatusData): string {
   if (session.effortOverride) lines.push(`  effort        ${session.effortOverride}`);
   if (isSelfHosted(d.displayModel)) lines.push("  billing       self-hosted, no marginal cost");
   lines.push(`  context limit ${short(d.contextLimit)} (${d.contextNotes.join(", ")})`);
+  lines.push(`  request wall  ${d.timeout}`);
 
   const limit = d.contextLimit;
   lines.push("");
@@ -326,6 +354,7 @@ function statusPayload(d: StatusData): MyClawAppStatusPayload {
       selfHosted: isSelfHosted(d.displayModel),
       contextLimit: limit,
       contextNotes: d.contextNotes,
+      timeout: d.timeout,
     },
     context: {
       ...(d.measured ? { measured: { tokens: d.measured, pctOfLimit: (d.measured / limit) * 100 } } : {}),

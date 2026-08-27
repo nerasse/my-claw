@@ -217,6 +217,11 @@ export interface LlmModelConfig {
     // declared or discovered, so /status can attribute a surprising number. See
     // docs/context-window.md.
     contextFrom?: "models.dev" | "openrouter" | "openrouter-endpoint";
+    // How long a request to this model may go without a single byte back, in milliseconds. The
+    // machine behind the model is what decides this -- a local llama.cpp spends minutes in prefill
+    // on a long prompt -- so it is declared per model and never per provider (a proxy fronts
+    // several backends). `0` disarms our timer entirely. See docs/llm-timeout.md.
+    timeoutMs?: number;
   }
 
   export interface LlmConfig {
@@ -230,6 +235,9 @@ export interface LlmModelConfig {
     output?: number;
   };
   models?: LlmModelConfig[];
+  // Fallback request timeout for every model that declares none, in milliseconds. Absent leaves
+  // each transport on its own default. See docs/llm-timeout.md.
+  timeoutMs?: number;
   // Global default reasoning effort applied when a model/session does not set its own.
   effort?: EffortLevel;
   // Model id to reroute a run to when the resolved model cannot take image input. Provider
@@ -333,6 +341,12 @@ export interface ResolvedLlmConfig {
   reasoningReplay?: boolean;
   // The message field this model wants its reasoning handed back in, from the model row.
   reasoningField?: ReasoningField;
+  // Milliseconds allowed with no byte received, resolved from the model row then the global
+  // fallback. Absent means the transport's own default applies; `0` means no timer at all.
+  // See docs/llm-timeout.md.
+  timeoutMs?: number;
+  // Which of the two declarations answered, so a timed-out run can name the one to edit.
+  timeoutFrom?: "model" | "global";
 }
 
 export interface AgentLlmConfig {

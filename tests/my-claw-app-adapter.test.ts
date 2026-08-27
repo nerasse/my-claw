@@ -2240,6 +2240,40 @@ describe("model frames", () => {
     }
   });
 
+  test("a timeout of zero survives the round trip instead of reading as unset", async () => {
+    // `0` is the declaration that removes the server's wall, so any truthiness check between the
+    // form and the config file silently puts the transport default back.
+    store = new FakeSessionStore();
+    const editable = new MyClawAppAdapter(createConfig(), store as never);
+    const written: Array<Record<string, unknown>> = [];
+    const declared: Array<{ id: string; label: string; timeoutMs?: number }> = [{ id: "fast-1", label: "Fast" }];
+    editable.onModelController({
+      list: () => ({ models: declared, defaultModel: "fast-1", unavailable: [] }),
+      endpoints: async () => [],
+      current: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      upsert: async (entry) => {
+        written.push(entry as unknown as Record<string, unknown>);
+        declared.push({ id: entry.id, label: entry.label ?? entry.id, ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }) });
+      },
+    });
+    await editable.start();
+    try {
+      const c = await connectClient(editable.port);
+      c.ws.send(JSON.stringify({ type: "models.upsert", id: "litellm/local", provider: "litellm", timeoutMs: 0 }));
+      const frame = await nextFrame(c);
+      assert.equal(frame["type"], "model.list.result");
+      assert.equal(written[0]!["timeoutMs"], 0);
+      const listed = (frame["models"] as Array<{ id: string; timeoutMs?: number }>).find((m) => m.id === "litellm/local");
+      assert.equal(listed?.timeoutMs, 0);
+      c.ws.close();
+    } finally {
+      await editable.stop();
+    }
+  });
+
   test("models.upsert is refused when the controller cannot write config", async () => {
     // The read-only controller of this suite has no upsert: a refusal, never a silent success.
     client.ws.send(JSON.stringify({ type: "models.upsert", id: "litellm/new" }));
@@ -3218,6 +3252,7 @@ describe("command frames", () => {
       selfHosted: false,
       contextLimit: 512_000,
       contextNotes: ["declared", "capped from 1,000,000"],
+      timeout: "600s (default)",
     },
     context: {
       measured: { tokens: 12_345, pctOfLimit: 2.4 },

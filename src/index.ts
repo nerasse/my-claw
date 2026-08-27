@@ -973,6 +973,11 @@ async function main() {
             // its delete button as a reset when the provider serves the id too.
             ...(declared.has(m.id) ? { declared: true } : {}),
             ...(discovered.has(m.id) ? { discovered: true } : {}),
+            // The request budget this model declares, so the form shows what is stored rather than
+            // an empty field over a real setting. `0` is a value here (docs/llm-timeout.md).
+            ...(config.llm.models?.find((model) => model.id === m.id)?.timeoutMs === undefined
+              ? {}
+              : { timeoutMs: config.llm.models.find((model) => model.id === m.id)!.timeoutMs! }),
           })),
           defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
         };
@@ -994,6 +999,7 @@ async function main() {
           ...(entry.context === undefined && entry.output === undefined
             ? {}
             : { limit: { ...(entry.context === undefined ? {} : { context: entry.context }), ...(entry.output === undefined ? {} : { output: entry.output }) } }),
+          ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }),
         });
         if (!result.ok) throw new Error(result.error);
         await applyModelEdit(`modèle ${entry.id}`);

@@ -743,6 +743,12 @@ export interface MyClawAppModelUpsert {
   effortLevels?: string[];
   thinkingAdaptive?: boolean;
   thinkingEnabled?: boolean;
+  /**
+   * Milliseconds this model may go without sending a byte. `0` means no timer at all, so the
+   * owner's Stop is the only wall: a value, not an absence, and it survives the round trip for
+   * that reason. See docs/llm-timeout.md.
+   */
+  timeoutMs?: number;
 }
 
 /** Deletes a declaration. For an id discovery also serves, this is the reset to its answer. */
@@ -1472,6 +1478,12 @@ export interface MyClawAppModelOption {
   effortLevels?: string[];
   /** The model's own full context window, so the app can offer ceilings under it and no higher. */
   context?: number;
+  /**
+   * The request budget this model declares, in milliseconds, absent when it declares none (the
+   * transport default then applies). Carried so the declaration form shows what is stored instead
+   * of an empty field over a real setting. See docs/llm-timeout.md.
+   */
+  timeoutMs?: number;
   /** For a tag entry: the first candidate's effort, so a config flow can name what applies. */
   effort?: string;
   /** Whether the model accepts image input; the fallback picker only offers vision-capable ones. */
@@ -2037,6 +2049,12 @@ export interface MyClawAppStatusPayload {
     contextLimit: number;
     /** Why the window is what it is ("declared", "capped from …", …). */
     contextNotes: string[];
+    /**
+     * The wall in force for one request and where it comes from, already spelled: `120s (default)`,
+     * `900s (model)`, `none (Stop only)`. Rendered, not computed, because the transport default is
+     * a server constant and the app has no business holding a copy -- docs/llm-timeout.md.
+     */
+    timeout: string;
   };
   context: {
     /** The provider's count on the last call; undefined until a call is recorded. */

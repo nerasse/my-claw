@@ -164,6 +164,60 @@ test("a session that asked for the full window is not capped, and the override i
   expect(out).toMatch(/threshold 80% = 800k/);
 });
 
+test("the request wall is reported with where the number comes from", async () => {
+  // A run that died on a timeout has to be traceable to the declaration that set it: a number
+  // without its provenance sends the owner editing the wrong one.
+  const sessionId = "matrix/room/!wall:test";
+  const plain = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(plain).toMatch(/request wall\s+120s \(default\)/);
+
+  // Declared providers on purpose: a model row is a new-format notion, and the legacy branch of
+  // the resolver reads none of the catalogue's fields.
+  const declared = {
+    llm: {
+      defaultProvider: "anthropic",
+      providers: { anthropic: { type: "anthropic", group: "Claude" } },
+      defaultModel: "claude-opus-5",
+      timeoutMs: 60_000,
+      models: [{ id: "claude-opus-5", label: "Opus 5", provider: "anthropic", timeoutMs: 900_000, limit: { context: 1_000_000 } }],
+    },
+  } as unknown as MyClawConfig;
+  const own = await handleStatusCommand({ config: declared, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(own).toMatch(/request wall\s+900s \(model\)/);
+
+  const global = {
+    llm: { defaultModel: "claude-opus-5", timeoutMs: 60_000, models: [{ id: "claude-opus-5", label: "Opus 5" }] },
+  } as unknown as MyClawConfig;
+  const inherited = await handleStatusCommand({ config: global, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(inherited).toMatch(/request wall\s+60s \(global\)/);
+});
+
+test("no wall at all is spelled out, and travels in the payload the app draws", async () => {
+  const sessionId = "matrix/room/!nowall:test";
+  const unbounded = {
+    llm: {
+      defaultProvider: "anthropic",
+      providers: { anthropic: { type: "anthropic", group: "Claude" } },
+      defaultModel: "claude-opus-5",
+      models: [{ id: "claude-opus-5", label: "Opus 5", provider: "anthropic", timeoutMs: 0 }],
+    },
+  } as unknown as MyClawConfig;
+  const report = await statusReport({ config: unbounded, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(report.text).toMatch(/request wall\s+none \(Stop only\)/);
+  expect(report.status.model.timeout).toBe("none (Stop only)");
+});
+
+test("a model that does not resolve degrades the wall line instead of failing the report", async () => {
+  // /status is the screen opened *because* something is broken: a throw here would hide every
+  // other number the owner came for.
+  const sessionId = "matrix/room/!brokenwall:test";
+  const broken = {
+    llm: { defaultModel: "ghost/model", providers: {}, models: [{ id: "ghost/model", provider: "nowhere" }] },
+  } as unknown as MyClawConfig;
+  const out = await handleStatusCommand({ config: broken, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  expect(out).toContain("request wall  unknown (model does not resolve)");
+});
+
 test("a sub-agent session reports its visibility and who spawned it", async () => {
   const id = "subagent/digger-bbbb";
   const out = await handleStatusCommand({

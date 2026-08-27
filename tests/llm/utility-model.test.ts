@@ -62,6 +62,31 @@ test("the default answers when nothing is pinned, whatever declaration order say
   assert.equal(resolveUtilityLlmConfig(preferred).model, "litellm/tiny-local");
 });
 
+test("the request wall follows the model that receives the call", () => {
+  // Compaction is the call most likely to hit a wall: the non-streaming path, on the largest prompt
+  // the conversation ever built. It inherits the setting rather than carrying a constant, and it is
+  // the *borrowed* model's wall that applies when the pin has no HTTP transport -- carrying twenty
+  // minutes borrowed from a local box onto a hosted model would hide a wedged endpoint.
+  setAvailabilityWorld(() => world());
+  const declared: LlmConfig = {
+    ...house,
+    timeoutMs: 60_000,
+    models: [
+      { id: "litellm/tiny-local", label: "Tiny", provider: "litellm", apiId: "tiny-local", timeoutMs: 900_000 },
+      { id: "anthropic/claude-opus-5", label: "Opus 5", provider: "anthropic", apiId: "claude-opus-5" },
+    ],
+  };
+
+  const pinned = resolveUtilityLlmConfig(declared, "litellm/tiny-local");
+  assert.equal(pinned.timeoutMs, 900_000);
+  assert.equal(pinned.timeoutFrom, "model");
+
+  const global = resolveUtilityLlmConfig(declared);
+  assert.equal(global.model, "anthropic/claude-opus-5");
+  assert.equal(global.timeoutMs, 60_000);
+  assert.equal(global.timeoutFrom, "global");
+});
+
 test("an agent's own model is honoured over the global default", () => {
   setAvailabilityWorld(() => world());
   const resolved = resolveUtilityAgentLlmConfig({ defaultModel: "litellm/tiny-local" }, house);

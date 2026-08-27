@@ -6,8 +6,8 @@ import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from "./provider.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
+import { CODEX_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
-const CODEX_TIMEOUT_MS = 300_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 800;
@@ -198,6 +198,12 @@ async function processStream(
   onToken: ((token: string) => Promise<void> | void) | undefined,
   reasoningSink: ReasoningSink | undefined,
   self: ReplayIdentity,
+  /**
+   * Called on every line the stream produces, to re-arm the request timeout. The budget is silence
+   * and not duration (docs/llm-timeout.md), and it is fed here rather than from the text deltas
+   * because a `reasoning_summary` event or a keep-alive is a byte received all the same.
+   */
+  keepAlive?: () => void,
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -236,6 +242,7 @@ async function processStream(
   };
 
   for await (const line of readLines(body)) {
+    keepAlive?.();
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (!data || data === "[DONE]") continue;
@@ -426,12 +433,28 @@ async function runCodex(
 
   let lastErr: unknown;
   let tokensDelivered = false;
+  // The model's own declaration when it has one, else this transport's default -- a subscription
+  // backend that thinks for minutes before answering (docs/llm-timeout.md).
+  const budget = requestTimeoutMs(config, CODEX_TIMEOUT_MS);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     const { accessToken, accountId } = await getCodexAccessToken(signal);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), CODEX_TIMEOUT_MS);
+    let timedOut = false;
+    const arm = (): ReturnType<typeof setTimeout> | undefined =>
+      budget > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, budget)
+        : undefined;
+    let timeout = arm();
+    const keepAlive = (): void => {
+      if (timeout === undefined) return;
+      clearTimeout(timeout);
+      timeout = arm();
+    };
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
@@ -473,12 +496,13 @@ async function runCodex(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, self);
+      return await processStream(response.body, wrappedOnToken, reasoningSink, self, keepAlive);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
-      if (err instanceof DOMException && err.name === "AbortError") {
-        lastErr = new Error(`Codex request timed out after ${CODEX_TIMEOUT_MS}ms`);
+      // Our own wall: not retried, and not counted against the endpoint (docs/llm-timeout.md).
+      if (timedOut) {
+        throw new Error(`Codex request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
@@ -489,7 +513,7 @@ async function runCodex(
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
       throw lastErr;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 

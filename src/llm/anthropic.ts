@@ -10,9 +10,9 @@ import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ThinkingBlock, ToolCall } from "./provider.ts";
+import { ANTHROPIC_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-const ANTHROPIC_TIMEOUT_MS = 600_000;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 800;
@@ -421,6 +421,12 @@ async function processStream(
   onToken: ((token: string) => Promise<void> | void) | undefined,
   reasoningSink?: ReasoningSink,
   self?: ReplayIdentity,
+  /**
+   * Called on every line the stream produces, to re-arm the request timeout. The budget is silence
+   * and not duration (docs/llm-timeout.md): extended thinking sends `ping` and `thinking_delta`
+   * for minutes before a single output token, and every one of them is a byte received.
+   */
+  keepAlive?: () => void,
 ): Promise<LlmResponse> {
   let content = "";
   let reasoning = "";
@@ -438,6 +444,7 @@ async function processStream(
   const thinkingBlocks = new Map<number, ThinkingBlock>();
 
   for await (const line of readLines(body)) {
+    keepAlive?.();
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trim();
     if (!data) continue;
@@ -728,6 +735,9 @@ async function runAnthropic(
 
   let lastErr: unknown;
   let tokensDelivered = false;
+  // The model's own declaration when it has one, else this transport's default -- extended
+  // thinking on this backend runs far longer than a chat completion (docs/llm-timeout.md).
+  const budget = requestTimeoutMs(config, ANTHROPIC_TIMEOUT_MS);
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
@@ -735,7 +745,20 @@ async function runAnthropic(
     if (!token) throw new Error("No Claude subscription token. Run /claude login to mint one.");
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ANTHROPIC_TIMEOUT_MS);
+    let timedOut = false;
+    const arm = (): ReturnType<typeof setTimeout> | undefined =>
+      budget > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+          }, budget)
+        : undefined;
+    let timeout = arm();
+    const keepAlive = (): void => {
+      if (timeout === undefined) return;
+      clearTimeout(timeout);
+      timeout = arm();
+    };
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
@@ -759,7 +782,9 @@ async function runAnthropic(
           "x-stainless-retry-count": String(attempt - 1),
           "x-stainless-runtime": "node",
           "x-stainless-runtime-version": CLI_RELEASE.nodeVersion,
-          "x-stainless-timeout": String(ANTHROPIC_TIMEOUT_MS / 1000),
+          // Announcing a wall we do not apply is worse than announcing none, so the header
+          // carries the effective budget and is omitted when there is no timer at all.
+          ...(budget > 0 ? { "x-stainless-timeout": String(budget / 1000) } : {}),
           ...config.headers,
         },
         body: payload,
@@ -797,12 +822,13 @@ async function runAnthropic(
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, replayIdentity(config));
+      return await processStream(response.body, wrappedOnToken, reasoningSink, replayIdentity(config), keepAlive);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
-      if (err instanceof DOMException && err.name === "AbortError") {
-        lastErr = new Error(`Anthropic request timed out after ${ANTHROPIC_TIMEOUT_MS}ms`);
+      // Our own wall: not retried, and not counted against the endpoint (docs/llm-timeout.md).
+      if (timedOut) {
+        throw new Error(`Anthropic request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
@@ -813,7 +839,7 @@ async function runAnthropic(
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
       throw lastErr;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
   }
 
