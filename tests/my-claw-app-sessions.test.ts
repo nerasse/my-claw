@@ -988,6 +988,15 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
   });
 });
 
+/**
+ * 205 journal writes, each one an append and a flush to disk. Fast on an idle box, past the default
+ * 5 s the day two runs of the same commit share the runner: it went red on the main push of 0.4.69
+ * while the tag run of the identical tree passed every test. Same cause and same remedy as
+ * STARVED_RUNNER_TIMEOUT_MS in tests/agent/bridge-voice.test.ts -- the budget of the starved test,
+ * never the global one.
+ */
+const STARVED_RUNNER_TIMEOUT_MS = 30_000;
+
 describe("MyClawAppSessionStoreImpl command journal", () => {
   let manager: SessionManager;
   let store: MyClawAppSessionStoreImpl;
@@ -1130,7 +1139,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     const cmdEntries = log.entries().filter((e) => e.type === "command");
     assert.equal(cmdEntries.length, 205);
     assert.equal((cmdEntries[0] as CommandEntry).input, "/status 0");
-  });
+  }, STARVED_RUNNER_TIMEOUT_MS);
 
   test("the journal dies with the conversation", async () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
