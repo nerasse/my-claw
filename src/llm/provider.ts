@@ -5,7 +5,7 @@ import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
-import { OPENAI_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
+import { OPENAI_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
 const LLM_RETRY_BASE_MS = 500;
@@ -651,7 +651,7 @@ export async function chatCompletion(
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, { method: "POST", headers, body, signal: fetchSignal });
+      const response = await fetch(url, llmFetchInit({ method: "POST", headers, body, signal: fetchSignal }));
 
         if (!response.ok) {
           const detail = await readErrorBody(response);
@@ -770,7 +770,7 @@ export async function chatCompletionStream(
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, { method: "POST", headers, body, signal: fetchSignal });
+      const response = await fetch(url, llmFetchInit({ method: "POST", headers, body, signal: fetchSignal }));
 
       if (!response.ok) {
         const detail = await readErrorBody(response);

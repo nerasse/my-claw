@@ -17,6 +17,25 @@ export const CODEX_TIMEOUT_MS = 300_000;
 export const ANTHROPIC_TIMEOUT_MS = 600_000;
 
 /**
+ * A fetch init with the platform's own wall disarmed.
+ *
+ * Bun's `fetch` holds a timeout of its own: measured on 1.3.13, exactly 300 s per request, and it
+ * applies both to the wait for response headers -- which is all a long prefill is -- and to a body
+ * that stops producing. It raises `TimeoutError: The operation timed out.`, and `timeout: false` is
+ * what removes it.
+ *
+ * Left on, it caps every budget declared above it: a model set to 900 s was cut at 300 s, so the
+ * setting was a lie and the error named a wall nobody configured. The budget of docs/llm-timeout.md
+ * is the only wall, which means the platform must not hold a shorter one.
+ *
+ * The option is real but absent from `bun-types` 1.3, hence the local widening rather than a cast
+ * at each call site.
+ */
+export function llmFetchInit(init: RequestInit): RequestInit & { timeout: false } {
+  return { ...init, timeout: false };
+}
+
+/**
  * The default of the transport a resolved config will run on. Only a reporting surface needs it:
  * a transport already knows its own constant and passes it in, while `/status` does not, since
  * which of the three answers applies is exactly what it is trying to tell the owner.

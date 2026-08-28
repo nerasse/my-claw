@@ -84,6 +84,29 @@ an error message and `/status` can say *why* the wall is what it is instead of o
 This is why one field covers both paths. The alternative, two numbers, would ask the owner to
 model the difference between prefill and inter-token silence to set a timeout.
 
+## The wall under the wall
+
+A budget declared here is only real if no layer below holds a shorter one. Bun's `fetch` does:
+**300 s per request**, and it was cutting runs that had a 9 000 s budget on paper.
+
+Measured on Bun 1.3.13, against a local server, because the behaviour is not documented where it
+matters:
+
+| what the server did | verdict |
+|---|---|
+| sent headers, then nothing | `TimeoutError: The operation timed out.` at 300 s |
+| delayed the response itself by 420 s (a long prefill) | same error, at 300 s |
+| same, on a socket a previous request had opened 120 s earlier | 300 s after the *request*, so the clock is per request |
+| same, with `timeout: false` | headers at 420 s, no error |
+
+Both phases count: waiting for the response headers, which is all a long prefill is from the
+client's side, and a body that stops producing. So every LLM fetch goes out through `llmFetchInit`,
+which disarms it. Our timer is then the only wall, which is the entire point of the setting.
+
+The symptom this fixed, and what to recognise if it comes back: the run dies with a `TimeoutError`
+whose message is `The operation timed out.` and whose stack is empty. Ours never looks like that --
+it names the value and its provenance, as below.
+
 ## Our own timeout is not an incident
 
 Three things followed from `AbortError` being indistinguishable from a network fault, and all

@@ -6,7 +6,7 @@ import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from "./provider.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
-import { CODEX_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
+import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
@@ -458,7 +458,7 @@ async function runCodex(
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(url, llmFetchInit({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -472,7 +472,7 @@ async function runCodex(
         },
         body: payload,
         signal: fetchSignal,
-      });
+      }));
 
       if (!response.ok) {
         const detail = (await response.text().catch(() => "")).slice(0, 500);

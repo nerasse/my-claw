@@ -10,7 +10,7 @@ import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ThinkingBlock, ToolCall } from "./provider.ts";
-import { ANTHROPIC_TIMEOUT_MS, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
+import { ANTHROPIC_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
@@ -762,7 +762,7 @@ async function runAnthropic(
     const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
 
     try {
-      const response = await fetch(url, {
+      const response = await fetch(url, llmFetchInit({
         method: "POST",
         headers: {
           // x-api-key is never sent beside a bearer token.
@@ -789,7 +789,7 @@ async function runAnthropic(
         },
         body: payload,
         signal: fetchSignal,
-      });
+      }));
 
       if (!response.ok) {
         const detail = (await response.text().catch(() => "")).slice(0, 500);
