@@ -158,7 +158,8 @@ export class BackendDispatcher implements AgentBackend {
   }
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
-    return this.runWithFallback(message, session, (backend, modelId, modelOverride) => backend.handleMessage(message, session, signal, modelId, modelOverride));
+    return this.runWithFallback(message, session, (backend, modelId, modelOverride, replay) =>
+      backend.handleMessage(message, session, signal, modelId, modelOverride, replay));
   }
 
   handleMessageStreaming(
@@ -191,8 +192,8 @@ export class BackendDispatcher implements AgentBackend {
     return this.runWithFallback(
       message,
       session,
-      (backend, resolvedModelId, modelOverride) =>
-        backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, guardedReasoning, guardedToolStart, modelOverride),
+      (backend, resolvedModelId, modelOverride, replay) =>
+        backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, guardedReasoning, guardedToolStart, modelOverride, replay),
       {
         anyOutputStarted: () => outputStarted,
         // The streaming channel shows the note live; the returned text (persisted as the
@@ -214,7 +215,7 @@ export class BackendDispatcher implements AgentBackend {
   private async runWithFallback(
     message: UnifiedMessage,
     session: SessionData,
-    run: (backend: AgentBackend, modelId?: string, modelOverride?: RunModelOverride) => Promise<string>,
+    run: (backend: AgentBackend, modelId?: string, modelOverride?: RunModelOverride, userEntryWritten?: boolean) => Promise<string>,
     options: { anyOutputStarted?: () => boolean; onFallbackNote?: (note: string) => Promise<void> } = {},
   ): Promise<string> {
     const { resolved, defaultResolved, globalDefaultResolved } = this.resolvePair(message, session);
@@ -252,9 +253,20 @@ export class BackendDispatcher implements AgentBackend {
       };
     };
 
-    const runCandidate = async (modelId: string | undefined, override: RunModelOverride | undefined, resolvedConfig: ResolvedLlmConfig): Promise<string> => {
+    const runCandidate = async (
+      modelId: string | undefined,
+      override: RunModelOverride | undefined,
+      resolvedConfig: ResolvedLlmConfig,
+      /**
+       * A replay, so the first attempt already wrote the owner's turn to the log. Without this the
+       * second run appends it again under the same bubble id, the log refuses a duplicate id, and
+       * the reroute dies in ten milliseconds reporting `Entry id already exists` -- an error about
+       * our own bookkeeping, standing where the provider outage that caused the reroute should be.
+       */
+      replay = false,
+    ): Promise<string> => {
       if (modelId) attempted.add(modelId);
-      return run(this.engineFor(resolvedConfig), modelId, override);
+      return run(this.engineFor(resolvedConfig), modelId, override, replay);
     };
     const fail = (error: unknown): never => {
       if (route && notes.length > 0 && !options.onFallbackNote) {
@@ -344,7 +356,7 @@ export class BackendDispatcher implements AgentBackend {
         try {
           currentModel = nextModel!;
           currentProvider = targetConfig.provider;
-          result = await runCandidate(nextModel, nextOverride, targetConfig);
+          result = await runCandidate(nextModel, nextOverride, targetConfig, true);
           return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
         } catch (nextError) {
           error = nextError;

@@ -51,6 +51,22 @@ exactly this shape of problem, keyed by session id: the root run and each sub-ag
 own streamer, and the recorder reads the sink of the session it is writing to. Without the key, a
 sub-agent's bubbles would be handed to its parent's phases.
 
+## The reroute replays the run, not the bookkeeping
+
+One id, one entry, is enforced by the log itself: `append` refuses an id it already holds, because
+reusing one makes the tree ambiguous and lets a retried send attach to an older turn.
+
+A model fallback (`dispatcher.runWithFallback`) replays the whole run on another model. The owner's
+turn is already in the log by then, written by the attempt that just failed, and under the id the
+client minted -- so the replay walked straight into that refusal. Every fallback died ten
+milliseconds in, reporting `Entry id already exists` where the provider outage that caused the
+reroute should have been. It was measured on every reroute in production, and it was invisible in
+the suite because the dispatcher tests hand it a bridge that keeps no log.
+
+The replay therefore carries `userEntryWritten`, the same flag the sub-agent runner already used
+for the same reason: the turn is recorded once, by whoever received it, and a run that is a second
+attempt at an existing turn does not re-record it.
+
 ## When the counts disagree
 
 The recorder pairs ids to phases by position, and **only when there are exactly as many of one as

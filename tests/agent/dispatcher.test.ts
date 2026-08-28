@@ -275,6 +275,46 @@ test("an outage during streaming reroutes once with the [fallback] prefix", asyn
   ]);
 });
 
+// The reroute replays the whole run, and the owner's turn is already in the log from the first
+// attempt. Without this flag the replay appends it again under the same bubble id, the log refuses
+// the duplicate, and the fallback dies in ten milliseconds on `Entry id already exists` -- the
+// error the owner reads instead of the outage that caused the reroute. Measured in production on
+// every single fallback, and invisible here until the flag itself was asserted: this suite hands
+// the dispatcher a bridge that keeps no log.
+test("the replayed run is told the owner's turn was already recorded", async () => {
+  const config = mixedConfig();
+  const written: string[] = [];
+  const flags: Array<boolean | undefined> = [];
+  let first = true;
+  const home = {
+    handleMessageStreaming: async (
+      m: UnifiedMessage, _s: LegacySessionData,
+      onToken: (t: string) => Promise<void>,
+      _o?: unknown, _sig?: AbortSignal, _sw?: unknown, modelId?: string,
+      _r?: unknown, _ts?: unknown, _mo?: unknown, userEntryWritten?: boolean,
+    ) => {
+      flags.push(userEntryWritten);
+      // The log's own rule, stood up here: one id, one entry, and a second append throws.
+      if (!userEntryWritten) {
+        if (written.includes(m.id)) throw new Error(`Entry id already exists: ${m.id}`);
+        written.push(m.id);
+      }
+      if (modelId === undefined && first) {
+        first = false;
+        throw outageError(429);
+      }
+      await onToken("answered");
+      return "answered";
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+
+  const text = await dispatcher.handleMessageStreaming(msg("m1"), session("s1", "claude-sonnet-5"), async () => {});
+  assert.ok(text.includes("answered"), text);
+  assert.deepEqual(flags, [false, true]);
+  assert.deepEqual(written, ["m1"], "the turn is written once, by the attempt that received it");
+});
+
 // A pin that cannot run must not take the engine with it: the model falls back to the global
 // default, and the engine runs the model that actually runs, not the one that was pinned.
 test("a stale anthropic pin falls back to the default model, and the engine follows it", async () => {
