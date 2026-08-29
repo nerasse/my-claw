@@ -26,6 +26,7 @@ import {
   type PairingDenial,
 } from "../../src/channels/my-claw-app/pairing.ts";
 import { pairRedirect } from "../../src/channels/my-claw-app/web.ts";
+import { PairingSockets, type PairSocketData } from "../../src/channels/my-claw-app/pair-socket.ts";
 import {
   createGrant,
   redeemGrant,
@@ -272,6 +273,33 @@ describe("pairing", () => {
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) return;
     expect(claimed.delivery.token).toBe("the-token");
+  });
+
+  test("a native pairing socket that claims a CLI ticket receives its token, not a grant", async () => {
+    await writeConfigFile();
+    const ticket = createTicket(PAIRING_ON, {
+      deviceId: "app-xyz",
+      owner: "neras",
+      name: "Pixel",
+      token: "the-token",
+    });
+
+    // A real WS is not needed: the message handler only touches ws.data and ws.send.
+    const sent: Array<Record<string, unknown>> = [];
+    const ws = {
+      data: { pairing: true, deviceId: "", owner: "", lastSeen: Date.now() } as PairSocketData,
+      send: (raw: string) => sent.push(JSON.parse(raw) as Record<string, unknown>),
+      close: () => {},
+    } as unknown as import("bun").ServerWebSocket<PairSocketData>;
+
+    const sockets = new PairingSockets(() => PAIRING_ON);
+    sockets.message(ws, JSON.stringify({ type: "pair.hello", kind: "native" }));
+    sockets.message(ws, JSON.stringify({ type: "pair.claim", code: ticket.code }));
+
+    const granted = sent.find(f => f.type === "pair.granted") as Record<string, unknown> | undefined;
+    expect(granted).toBeDefined();
+    expect(granted?.token).toBe("the-token");
+    expect(granted?.grant).toBeUndefined();
   });
 
   test("a challenge outlives the socket, and the approval waits for the page to come back", async () => {

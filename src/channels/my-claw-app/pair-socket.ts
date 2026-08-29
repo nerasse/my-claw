@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
+import type { PairingKind } from "./pairing.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import {
   claim,
@@ -36,6 +37,8 @@ export interface PairSocketData {
   /** Host and scheme the browser used, so the QR points back at the page it is shown on. */
   host?: string;
   secure?: boolean;
+  /** What the client announced in pair.hello, so a claim knows which credential to hand out. */
+  kind?: PairingKind;
   /** Present so the shape stays compatible with the chat socket data. */
   deviceId: string;
   owner: string;
@@ -68,6 +71,7 @@ export class PairingSockets {
 
     if (frame.type === "pair.hello") {
       const kind = frame.kind === "native" ? "native" : "web";
+      ws.data.kind = kind;
       if (typeof frame.userAgent === "string") ws.data.userAgent = frame.userAgent.slice(0, 200);
       // A refused resume is not an error worth showing: the challenge simply outlived its
       // usefulness, and the page gets a new one on the same socket.
@@ -77,7 +81,11 @@ export class PairingSockets {
     }
 
     if (frame.type === "pair.claim" && typeof frame.code === "string") {
-      const claimed = claim(frame.code, "web");
+      // The ticket was minted by the CLI, but what the client gets depends on who is asking: a
+      // browser takes a grant (its assets are fetched with a cookie), a native client takes the
+      // token itself. A client that never sent pair.hello is treated as a browser, the previous
+      // behaviour.
+      const claimed = claim(frame.code, ws.data.kind ?? "web");
       if (!claimed.ok) {
         send(ws, { type: "pair.denied", reason: claimed.reason });
         return;
