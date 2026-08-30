@@ -136,27 +136,6 @@ function durationFrom(details: string[]): number | undefined {
   return undefined;
 }
 
-/**
- * The transcript is written into the turn as `[Audio]: "..."` so the model reads words rather
- * than a file. Replayed as-is it would print that marker in the bubble, where the live message
- * showed the sentence under its player. Pulled back out here, a reopened thread renders the
- * same thing it did when it was sent.
- */
-function splitTranscript(text: string): { text: string; spoken: string[] } {
-  const paragraphs = text.split("\n\n");
-  const spoken: string[] = [];
-  const rest: string[] = [];
-  for (const paragraph of paragraphs) {
-    // Only the quoted form: a failed take reads `[Audio]: [Transcription failed: ...]`, and that
-    // is a fact about the turn the owner needs to keep seeing.
-    const match = /^\[Audio(?: \d+)?\]: "([\s\S]*)"$/.exec(paragraph.trim());
-    if (match) spoken.push(match[1]!);
-    else rest.push(paragraph);
-  }
-  if (spoken.length === 0) return { text, spoken };
-  return { text: rest.join("\n\n").trim(), spoken };
-}
-
 function historyAttachments(entries: ReturnType<typeof splitAttachmentBlock>["attachments"], files: SessionFile[]): MyClawAppHistoryAttachment[] {
   const byId = new Map(files.map((file) => [file.id, file]));
   const out: MyClawAppHistoryAttachment[] = [];
