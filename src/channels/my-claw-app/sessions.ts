@@ -254,6 +254,7 @@ function sessionAttachmentsToHistory(
 function makeResolvers(files: SessionFile[]): DisplayResolvers {
   return {
     attachmentsOf: (attachments) => sessionAttachmentsToHistory(attachments, files),
+    attachmentsOfBlock: (entries) => historyAttachments(entries, files),
     mediaOf: (refs) => mediaRefAttachments(refs, files),
   };
 }
@@ -353,7 +354,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
     // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
     // and a card whose state entry fell outside the window would replay as a spinner for good.
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()));
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -428,7 +429,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     );
     const stored = needsFiles ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries));
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored);
 
     return {
       entries,

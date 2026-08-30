@@ -12,9 +12,12 @@
  * channel. `sessions/` does not depend on `channels/`.
  */
 
+import { basename } from "node:path";
 import { extractMediaRefs, stripMediaRefs } from "../../utils/media.ts";
+import { splitAttachmentBlock, stripLocationBlock, type AttachmentBlockEntry } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { toolCardId } from "./types.ts";
+import { parseStoredName, type SessionFile } from "./files.ts";
 import type { Entry } from "../../sessions/log.ts";
 import type { SessionAttachment, SessionSubAgentState } from "../../sessions/store.ts";
 import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry } from "./types.ts";
@@ -28,6 +31,8 @@ import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry } from "./types.
 export interface DisplayResolvers {
   /** Files the owner attached to a question, already structured on the entry. */
   attachmentsOf(attachments: SessionAttachment[]): MyClawAppHistoryAttachment[];
+  /** Files read back out of the `[Attachments]` block the stored turn keeps. */
+  attachmentsOfBlock(entries: AttachmentBlockEntry[]): MyClawAppHistoryAttachment[];
   /** Files the agent named with a `MEDIA:` ref in its own text. */
   mediaOf(refs: Array<{ path: string }>): MyClawAppHistoryAttachment[];
 }
@@ -113,6 +118,51 @@ function tsOf(entry: Entry): string {
   return new Date(entry.ts).toISOString();
 }
 
+/** `1234 ms` in the block details. The recorder measured it; the server never decodes the file. */
+function durationFrom(details: string[]): number | undefined {
+  for (const detail of details) {
+    const match = /^(\d+) ms$/.exec(detail.trim());
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+/**
+ * The transcript is written into the turn as `[Audio]: "..."` so the model reads words rather
+ * than a file. Replayed as-is it would print that marker in the bubble, where the live message
+ * showed the sentence under its player. Pulled back out here, a reopened thread renders the
+ * same thing it did when it was sent.
+ */
+function splitTranscript(text: string): string {
+  const paragraphs = text.split("\n\n");
+  const rest: string[] = [];
+  for (const paragraph of paragraphs) {
+    // Only the quoted form: a failed take reads `[Audio]: [Transcription failed: ...]`, and that
+    // is a fact about the turn the owner needs to keep seeing.
+    if (/^\[Audio(?: \d+)?\]: "[\s\S]*"$/.exec(paragraph.trim())) continue;
+    rest.push(paragraph);
+  }
+  return rest.join("\n\n").trim();
+}
+
+/**
+ * The recorder keys transcripts by server path (that is what it transcribed); the app knows its
+ * recordings by attachment id. The id sits in the stored file name, so the mapping is a parse.
+ */
+function transcriptsById(
+  transcripts: Record<string, string>,
+  files: SessionFile[],
+): Record<string, string> {
+  const byName = new Map(files.map((file) => [file.storedName, file.id]));
+  const out: Record<string, string> = {};
+  for (const [path, text] of Object.entries(transcripts)) {
+    const name = basename(path);
+    const id = byName.get(name) ?? parseStoredName(name)?.id;
+    if (id) out[id] = text;
+  }
+  return out;
+}
+
 /**
  * Entries in, bubbles out.
  *
@@ -125,6 +175,7 @@ export function displayOf(
   resolvers: DisplayResolvers,
   outputLimit: number,
   spawn?: ReadonlyMap<string, SessionSubAgentState>,
+  files: SessionFile[] = [],
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
@@ -132,16 +183,29 @@ export function displayOf(
     const ts = tsOf(entry);
 
     if (entry.type === "user") {
-      const attachments = entry.attachments ? resolvers.attachmentsOf(entry.attachments) : [];
+      // A stored turn keeps the LLM-facing rendering (the `[Audio]:` marker and the `[Attachments]`
+      // block of server paths) because that is what the model must read; the screen strips it back
+      // out. The block is the complete listing (audio, video, files), so it wins over the
+      // structured `entry.attachments`, which carries only the images the provider needs.
+      const block = splitAttachmentBlock(entry.text);
+      const stripped = stripLocationBlock(block.text);
+      const text = splitTranscript(stripped);
+      const attachments =
+        block.attachments.length > 0
+          ? resolvers.attachmentsOfBlock(block.attachments)
+          : entry.attachments
+            ? resolvers.attachmentsOf(entry.attachments)
+            : [];
+      const transcripts = entry.transcripts ? transcriptsById(entry.transcripts, files) : undefined;
       out.push({
         // The entry's own id, which is the id the live bubble already had. That is what makes a
         // page mergeable with what a device shows instead of duplicating the question of a run in
         // flight, and it replaces `sourceId` outright -- docs/session-log.md annexe A.
         id: entry.id,
         role: "user",
-        text: entry.text,
+        text,
         ts,
-        ...(entry.transcripts && Object.keys(entry.transcripts).length > 0 ? { transcripts: entry.transcripts } : {}),
+        ...(transcripts && Object.keys(transcripts).length > 0 ? { transcripts } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(entry.location ? { location: entry.location } : {}),
       });

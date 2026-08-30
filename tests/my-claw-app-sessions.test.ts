@@ -405,10 +405,11 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const turn = entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
-    // Transcripts are keyed by path (matching how the recorder stores them)
-    assert.deepEqual(turn.transcripts, { [audioPath]: "rappelle-moi demain" });
+    // The device knows its recordings by attachment id: the path-keyed storage form is remapped.
+    assert.deepEqual(turn.transcripts, { [saved.id]: "rappelle-moi demain" });
     assert.equal(turn.attachments?.length, 1);
     assert.equal(turn.attachments![0]!.type, "audio");
+    assert.equal(turn.attachments![0]!.id, saved.id);
   });
 
   test("a replayed location keeps structured data and hides the model-only block", async () => {
@@ -461,13 +462,14 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const turn = (await store.history(DEVICE, THREAD)).entries[0]!;
     if (turn.role !== "user") throw new Error("expected a user entry");
 
-    // Transcripts keyed by path
+    // Each recording keeps its own words, keyed by the id the app knows it by.
     assert.deepEqual(turn.transcripts, {
-      [firstPath]: "premier bout",
-      [secondPath]: "deuxieme bout",
+      [first.id]: "premier bout",
+      [second.id]: "deuxieme bout",
     });
     // Both recordings should be in the attachments
     assert.equal(turn.attachments?.length, 2);
+    assert.deepEqual(turn.attachments!.map((a) => a.id), [first.id, second.id]);
   });
 
   test("a caption sent with a voice note survives the transcript split", async () => {

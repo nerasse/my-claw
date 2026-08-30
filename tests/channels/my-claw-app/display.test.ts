@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { displayOf, pageOf, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
+import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
 
 let seq = 0;
 function chain(bodies: Array<Provisioned<Entry>>): Entry[] {
@@ -27,10 +28,11 @@ const tool = (callId: string, extra: Record<string, unknown> = {}) =>
 /** The two resolvers, stubbed: what they return is the file store's business, not this module's. */
 const resolvers: DisplayResolvers = {
   attachmentsOf: (attachments) => attachments.map((a, i) => ({ id: `att-${i}`, type: "image", name: a.path, size: 1 })),
+  attachmentsOfBlock: (entries) => entries.map((e, i) => ({ id: `blk-${i}`, type: e.type as "image", filename: e.source, sizeBytes: 1 })),
   mediaOf: (refs) => refs.map((r, i) => ({ id: `media-${i}`, type: "file", name: r.path, size: 1 })),
 };
 
-const show = (entries: readonly Entry[], limit = 1000) => displayOf(entries, resolvers, limit);
+const show = (entries: readonly Entry[], limit = 1000, files: SessionFile[] = []) => displayOf(entries, resolvers, limit, undefined, files);
 
 describe("displayOf: one entry, one bubble", () => {
   test("an exchange draws in the order it happened", () => {
@@ -218,6 +220,46 @@ describe("withSpawnCards: what a delta can draw", () => {
   test("a delta with no state entry is handed back untouched", () => {
     const entries = chain([user("q"), phase("a")]);
     expect(withSpawnCards(entries, entries)).toEqual(entries);
+  });
+});
+
+describe("displayOf: user turns read back the storage form", () => {
+  test("a stored voice note loses its [Audio] marker and keeps its words on the attachment", () => {
+    const entries = chain([user(`regarde ca\n\n[Audio]: "rappelle-moi demain"\n\n[Attachments]\n- audio: /home/neras/.my-claw/files/my-claw-app/neras/thr/0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a (12710 ms)`, { transcripts: { "/home/neras/.my-claw/files/my-claw-app/neras/thr/0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a": "rappelle-moi demain" } })]);
+    const drawn = show(entries, 1000, [
+      { id: "0f23058a-8e46-4d55-8967-fd6e5953f6aa", filename: "voice.m4a", storedName: "0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a", type: "audio", mimeType: "audio/mp4", sizeBytes: 4, ts: "2026-01-01" },
+    ]);
+    const userEntry = drawn[0]!;
+    expect(userEntry.role).toBe("user");
+    if (userEntry.role !== "user") throw new Error("expected a user entry");
+    expect(userEntry.text).toBe("regarde ca");
+    expect(userEntry.attachments).toHaveLength(1);
+    // The id is the file store's business (attachmentsOfBlock); here the entry reaches the resolver.
+    expect(userEntry.transcripts).toEqual({ "0f23058a-8e46-4d55-8967-fd6e5953f6aa": "rappelle-moi demain" });
+  });
+
+  test("a failed transcription keeps the fact the owner needs to see", () => {
+    const entries = chain([user(`[Audio]: [Transcription failed: boom]`)]);
+    const drawn = show(entries);
+    if (drawn[0]!.role !== "user") throw new Error("expected a user entry");
+    expect(drawn[0]!.text).toContain("[Transcription failed");
+  });
+
+  test("an image turn loses the [Attachments] block of server paths", () => {
+    const entries = chain([user(`regarde\n\n[Attachments]\n- image: /srv/data/img.png (image/png, 3 bytes, img.png)`)]);
+    const drawn = show(entries)[0]!;
+    if (drawn.role !== "user") throw new Error("expected a user entry");
+    expect(drawn.text).toBe("regarde");
+    expect(drawn.attachments).toHaveLength(1);
+    expect(drawn.attachments![0]!.filename).toContain("img.png");
+  });
+
+  test("a plain user turn is untouched", () => {
+    const entries = chain([user("bonjour")]);
+    const drawn = show(entries)[0]!;
+    if (drawn.role !== "user") throw new Error("expected a user entry");
+    expect(drawn.text).toBe("bonjour");
+    expect(drawn.attachments).toBeUndefined();
   });
 });
 
