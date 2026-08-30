@@ -2100,6 +2100,17 @@ describe("model frames", () => {
     assert.equal(frame["defaultModel"], "fast-1");
   });
 
+  test("pushModelList broadcasts the catalog to every socket of the owner, unasked", async () => {
+    // The app holds its own copy of the catalogue; a login re-discovers the provider and the
+    // server-side picker moves, but the device only learns about it when it asks again. The push
+    // is what makes the new models appear without a manual refresh.
+    adapter.pushModelList(DEVICE_ID);
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.list.result");
+    assert.equal((frame["models"] as Array<{ id: string }>).length, 2);
+    assert.equal(frame["defaultModel"], "fast-1");
+  });
+
   test("model.refresh re-runs discovery, then sends the listing before the outcome", async () => {
     const refreshed = new MyClawAppAdapter(createConfig(), store as never);
     let discoveries = 0;

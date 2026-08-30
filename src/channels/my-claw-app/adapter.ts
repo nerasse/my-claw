@@ -596,6 +596,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.broadcast(owner, { type: "chat.send.acked", threadId, replyToId });
   }
 
+  /**
+   * Pushes the current model catalogue to every device of an owner, unasked. A login or logout
+   * re-runs discovery, which only re-projects the in-memory picker: the app keeps the catalogue
+   * it already holds until something asks again, so the ChatGPT models appear as "refresh needed"
+   * instead of showing up with their efforts. Same frame `model.list` answers, so the app applies
+   * it through the path it already has. Never throws: a push that cannot reach a device must not
+   * fail the auth change.
+   */
+  pushModelList(owner: string): void {
+    if (!this.models) return;
+    try {
+      this.broadcast(owner, { type: "model.list.result", ...this.models.list() });
+    } catch (err) {
+      void myClawAppLog("debug", "model list push failed", { owner, error: String(err) });
+    }
+  }
+
   /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
   onStop(stop: (sessionId: string) => boolean): void {
     this.stopRun = stop;

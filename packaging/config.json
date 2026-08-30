@@ -20,33 +20,19 @@
     }
   },
   "llm": {
-    "defaultProvider": "fireworks",
-    "defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo",
-    "vision": true,
-    "providers": {
-      "fireworks": {
-        "type": "openai",
-        "baseUrl": "https://api.fireworks.ai/inference/v1",
-        "apiKeyEnv": "FIREWORKS_API_KEY",
-        "discover": true
-      }
-    },
-    "models": [
-      {
-        "id": "accounts/fireworks/models/kimi-k2p6-turbo",
-        "label": "Kimi K2.6 Turbo",
-        "provider": "fireworks"
-      }
-    ],
-    "limit": {
-      "context": 128000,
-      "output": 8192
-    }
+    "providers": {},
+    "models": []
   },
   "agents": {
-    "orchestrator": { "maxIterations": 90 },
-    "general": { "maxIterations": 50 },
-    "research": { "maxIterations": 50 }
+    "orchestrator": {
+      "maxIterations": 90
+    },
+    "general": {
+      "maxIterations": 50
+    },
+    "research": {
+      "maxIterations": 50
+    }
   },
   "voice": {
     "mode": "auto",

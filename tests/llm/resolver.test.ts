@@ -40,6 +40,14 @@ test("resolveLlmConfig returns default model when no override", () => {
   assert.deepEqual(resolved.limit, { context: 262000, output: 64000 });
 });
 
+test("an empty llm config resolves to a clean error, never an implicit vendor", () => {
+  // The install template ships providers:{} / models:[]. isNewFormat is true there, so the
+  // legacy Fireworks fallback must not fire: the first send answers with the error the owner can
+  // read, instead of silently calling a vendor nobody configured.
+  const config: LlmConfig = { providers: {}, models: [] };
+  assert.throws(() => resolveLlmConfig(config, undefined), /Provider "default" not found in config/);
+});
+
 test("resolveLlmConfig resolves provider by model override", () => {
   const resolved = resolveLlmConfig(newFormatConfig, "llama-3.3-70b");
   assert.equal(resolved.baseUrl, "https://api.groq.com/openai/v1");

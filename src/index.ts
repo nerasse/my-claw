@@ -465,6 +465,17 @@ async function main() {
     // stale auth sample, and a logout must stop offering them immediately.
     await sampleSubscriptionAuth();
     await modelCatalog.refresh();
+    // The refresh re-projects the server-side picker, but nothing told the app: it keeps the
+    // catalogue it already holds (no ChatGPT model, no effort levels) until it asks again, which
+    // is what a manual "refresh" button papered over. Push the fresh list to every owner.
+    const appConfig = config.channels["my-claw-app"];
+    if (myClawAppRef && appConfig) {
+      const owners = new Set<string>();
+      for (const [deviceId, entry] of Object.entries(appConfig.devices ?? {})) {
+        owners.add(entry.owner ?? deviceId);
+      }
+      for (const owner of owners) myClawAppRef.pushModelList(owner);
+    }
   };
 
   const voiceManager = new VoiceManager(config);
