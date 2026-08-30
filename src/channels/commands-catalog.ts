@@ -20,6 +20,7 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "model", description: "Show or change current model, or an agent default: /model <agent>" },
   { command: "models", description: "List available models" },
   { command: "effort", description: "Show or set reasoning effort" },
+  { command: "cap", description: "Show or set the context window: /cap <tokens|full>" },
   { command: "compact", description: "Compact session context" },
   { command: "reload", description: "Reload skills from disk" },
   { command: "verbose", description: "Toggle verbose tool output" },

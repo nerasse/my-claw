@@ -15,10 +15,12 @@ import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstr
 import { handleAgentModelCommand } from "../agent-model-commands.ts";
 import { handleStatusCommand, statusReport } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
+import { formatContextInfo, contextChoiceFor } from "../context-menu.ts";
 import { getHelpText } from "../commands-catalog.ts";
 import { effectiveEffort } from "../../llm/resolver.ts";
 import { handleCompactCommand } from "../compact-command.ts";
 import { chatModel } from "../../llm/chat-model.ts";
+import type { ContextOverride } from "../../llm/context-window.ts";
 import { parseEffortArg, formatEffort } from "../model-picker.ts";
 import { runRegistry } from "../../core/run-registry.ts";
 import { loadJobs } from "../../cron/store.ts";
@@ -152,6 +154,17 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         }
         if (args) {
           // Same normalisation as the other channels: /effort HIGH is high, not a rejection.
+          // The words default/inherit/reset are the deliberate clear: the session hands its
+          // effort back to the tag pin or the scope's default, like "default (inherit)" in the
+          // picker. The frame `model.effort.set` clears with an empty level instead.
+          if (["default", "inherit", "reset"].includes(args.trim().toLowerCase())) {
+            const session =
+              existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+            delete session.effortOverride;
+            session.lastActiveAt = new Date().toISOString();
+            await deps.sessionManager.persist(sessionId);
+            return `Effort reset to default.`;
+          }
           const level = parseEffortArg(args, levels);
           if (!level) return `Unknown effort: ${args}. Options: ${levels.join(", ")}.`;
           const session =
@@ -162,6 +175,34 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           return `Effort set to ${level}`;
         }
         return `Effort — current: ${formatEffort(effort)}. Options: ${levels.join(", ")}.`;
+      }
+
+      case "cap": {
+        // The conversation's window: the model's own, or a ceiling this chat picked.
+        // /cap full hands it back to the model's window; /cap <n> lowers it.
+        if (!args) {
+          return `${formatContextInfo(deps.config, currentModel, existing?.contextOverride)}\nOptions: full (model window), ${[512_000, 256_000, 128_000, 64_000].join(", ")} tokens.`;
+        }
+        const normalized = args.trim().toLowerCase();
+        let choice: ContextOverride;
+        if (normalized === "full") {
+          choice = "full";
+        } else {
+          const tokens = Number(args.trim());
+          if (!Number.isInteger(tokens) || tokens <= 0) {
+            return `Unknown cap: ${args}. Use full or a positive token count.`;
+          }
+          choice = tokens;
+        }
+        const session =
+          existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        // Same clamp as the picker: a conversation may lower the window, never lift it above
+        // what the model can hold.
+        const raw = contextChoiceFor(deps.config, currentModel, undefined).raw;
+        session.contextOverride = choice === "full" ? "full" : Math.min(choice, raw);
+        session.lastActiveAt = new Date().toISOString();
+        await deps.sessionManager.persist(sessionId);
+        return `Cap set to ${session.contextOverride} tokens` + (session.contextOverride === "full" ? " (model window)" : "");
       }
 
       case "verbose": {

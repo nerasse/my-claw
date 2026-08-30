@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMyClawAppCommandHandler, instructionsText } from "../src/channels/my-claw-app/commands.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
-import type { ModelPicker } from "../src/channels/model-picker.ts";
+import { ModelPicker } from "../src/channels/model-picker.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 
 describe("/instructions on the app channel", () => {
@@ -81,5 +81,61 @@ describe("/status on the app channel", () => {
     const report = output as { text: string; status?: { model: { current: string } } };
     expect(report.status?.model.current).toBe("claude-opus-5");
     expect(report.text).toContain("claude-opus-5");
+  });
+});
+
+describe("/effort and /cap on the app channel", () => {
+  const effortConfig = {
+    llm: {
+      defaultModel: "claude-opus-5",
+      models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 }, supportsEffort: true, supportedEffortLevels: ["low", "medium", "high"] }],
+    },
+  } as unknown as MyClawConfig;
+
+  function makeHandler() {
+    const picker = new ModelPicker(
+      [{ id: "claude-opus-5", label: "Opus 5" }],
+      { enabled: true, levels: ["low", "medium", "high"] },
+    );
+    return createMyClawAppCommandHandler({
+      config: effortConfig,
+      sessionManager: new SessionManager(),
+      modelPicker: picker,
+    });
+  }
+
+  test("/effort without args reports the current effort and the levels", async () => {
+    const handler = makeHandler();
+    const output = await handler("neras", "t1", "effort", "");
+    expect(output).toContain("current:");
+    expect(output).toContain("low, medium, high");
+  });
+
+  test("/effort with a level pins it, and /effort reset clears it", async () => {
+    const handler = makeHandler();
+    const set = await handler("neras", "t1", "effort", "high");
+    expect(set).toBe("Effort set to high");
+    const cleared = await handler("neras", "t1", "effort", "reset");
+    expect(cleared).toContain("reset");
+  });
+
+  test("/cap without args reports the window", async () => {
+    const handler = makeHandler();
+    const output = await handler("neras", "t1", "cap", "");
+    expect(output).toContain("Context");
+  });
+
+  test("/cap full resets the window and /cap <tokens> lowers it", async () => {
+    const handler = makeHandler();
+    const set = await handler("neras", "t1", "cap", "128000");
+    expect(set).toBe("Cap set to 128000 tokens");
+    const full = await handler("neras", "t1", "cap", "full");
+    expect(full).toBe("Cap set to full tokens (model window)");
+  });
+
+  test("/cap refuses a non-positive token count", async () => {
+    const handler = makeHandler();
+    const output = await handler("neras", "t1", "cap", "-5");
+    expect(output).toContain("Unknown cap");
   });
 });

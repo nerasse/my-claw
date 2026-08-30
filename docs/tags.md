@@ -68,7 +68,10 @@ for that attempt. The next route candidate may have a different cap.
 
 Because each selected candidate may own both pins, a config flow that stages a tag (agent default,
 global default, a job) offers **neither** the effort step nor the window step for that tag: the
-candidate's own values win for the attempt. See docs/context-window.md.
+candidate's own values win for the attempt. The chat is the exception by design: a session
+override sits above the tag (`/effort <level>`, `/cap <tokens|full>`), so it is offered there,
+and the picker's "default (inherit)" / "full" rows are how the override is removed. See
+docs/context-window.md.
 
 ## Where tags live
 

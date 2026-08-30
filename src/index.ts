@@ -1069,6 +1069,15 @@ async function main() {
         const session =
           (await sessionManager.peek(sessionId)) ??
           (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        // An empty level is the deliberate clear: the session hands its effort back to the tag pin
+        // or the scope's default. Without it, "default (inherit)" in the picker could only
+        // descend once, and every later click landed on invalid effort level.
+        if (level === "") {
+          delete session.effortOverride;
+          session.lastActiveAt = new Date().toISOString();
+          await sessionManager.persist(sessionId);
+          return resolveModelState(owner, threadId);
+        }
         const activeModel = (await resolveModelState(owner, threadId)).model;
         const levels = modelPicker.effortLevelsFor(activeModel);
         if (!levels.includes(level as never)) throw new Error(`invalid effort level: ${level}`);
