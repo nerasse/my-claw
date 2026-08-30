@@ -168,7 +168,7 @@ Valeurs minimales pour démarrer + rester à jour :
 
 ```dotenv
 # LLM : la clé du provider que vous allez utiliser (voir §7.2). Exemple :
-FIREWORKS_API_KEY=...          # OU LITELLM_API_KEY / OPENROUTER_API_KEY / GROQ_API_KEY / COMMANDCODE_KEY / OPENCODE_GO_KEY
+LITELLM_API_KEY=...          # OU OPENROUTER_API_KEY / GROQ_API_KEY / COMMANDCODE_KEY / OPENCODE_GO_KEY
 # Updates :
 FORGEJO_URL=https://git.kssimi.fr
 FORGEJO_TOKEN=ton_token_forgejo
