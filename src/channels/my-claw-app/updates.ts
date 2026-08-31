@@ -89,6 +89,7 @@ export async function latestAppUpdate(force = false): Promise<AppUpdateInfo> {
   if (!force && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
   const value = await fetchLatest();
   cached = { at: Date.now(), value };
+  void myClawAppLog("info", "app update check", { ok: value.ok, version: value.ok ? value.version : undefined, size: value.ok ? value.apkSize : undefined, error: value.ok ? undefined : value.error });
   return value;
 }
 
@@ -104,7 +105,13 @@ export function resetAppUpdateCache(): void {
 export async function streamAppApk(info: AppUpdateOk): Promise<Response> {
   const version = info.version;
   const apkUrl = `${forgeBase()}/claw/${APP_REPO}/releases/download/v${version}/my-claw-app-v${version}.apk`;
-  const upstream = await fetch(apkUrl, { headers: authHeaders(apkUrl) });
+  // A freshly published asset can briefly answer 404 behind the proxy (release.sh and the
+  // registry race). One retry after a half second is enough; a stable 404 stays a 502.
+  let upstream = await fetch(apkUrl, { headers: authHeaders(apkUrl) });
+  if (upstream.status === 404) {
+    await new Promise(r => setTimeout(r, 500));
+    upstream = await fetch(apkUrl, { headers: authHeaders(apkUrl) });
+  }
   if (!upstream.ok || !upstream.body) {
     void myClawAppLog("warn", "app update apk upstream failed", { status: upstream.status });
     return new Response("upstream failed", { status: 502 });
