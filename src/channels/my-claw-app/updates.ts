@@ -104,7 +104,10 @@ export function resetAppUpdateCache(): void {
  */
 export async function streamAppApk(info: AppUpdateOk): Promise<Response> {
   const version = info.version;
-  const apkUrl = `${forgeBase()}/claw/${APP_REPO}/releases/download/v${version}/my-claw-app-v${version}.apk`;
+  // APP_REPO already carries the owner (claw/my-claw-app): the download path is /<owner>/<repo>,
+  // so the URL is forge/claw/my-claw-app/... — a second claw/ prefix was the 404 behind every
+  // 502 this relay ever produced.
+  const apkUrl = `${forgeBase()}/${APP_REPO}/releases/download/v${version}/my-claw-app-v${version}.apk`;
   // A freshly published asset can briefly answer 404 behind the proxy (release.sh and the
   // registry race). One retry after a half second is enough; a stable 404 stays a 502.
   let upstream = await fetch(apkUrl, { headers: authHeaders(apkUrl) });

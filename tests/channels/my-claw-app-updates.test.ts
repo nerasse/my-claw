@@ -139,7 +139,11 @@ describe("latestAppUpdate", () => {
 
 describe("streamAppApk", () => {
   test("streams the body with the archive content type", async () => {
-    const fetchMock = mockFetch(async () => new Response("PK\x03\x04fake-bytes", { status: 200 }));
+    const seen: string[] = [];
+    const fetchMock = mockFetch(async (input) => {
+      seen.push(String(input));
+      return new Response("PK\x03\x04fake-bytes", { status: 200 });
+    });
     try {
       const res = await streamAppApk({ ok: true, version: "0.5.55", apkSize: 11, publishedAt: "" });
       expect(res.status).toBe(200);
@@ -149,6 +153,11 @@ describe("streamAppApk", () => {
     } finally {
       fetchMock.restore();
     }
+    // The exact download path: one owner segment, not two. APP_REPO already carries claw/,
+    // so a second claw/ prefix is a 404 that no mock would ever see.
+    expect(seen).toEqual([
+      `${FORGE}/claw/my-claw-app/releases/download/v0.5.55/my-claw-app-v0.5.55.apk`,
+    ]);
   });
 
   test("turns an upstream failure into 502", async () => {
