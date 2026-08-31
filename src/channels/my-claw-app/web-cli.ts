@@ -2,6 +2,7 @@ import { lstat, mkdtemp, mkdir, readdir, readlink, rename, rm, stat, symlink, un
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../core/config.ts";
+import { authHeaders, forgeBase } from "./forge.ts";
 
 /**
  * `myclaw web`: installs the web client bundle the channel serves.
@@ -9,6 +10,9 @@ import { MY_CLAW_DIR } from "../../core/config.ts";
  * The app and the server release independently, so the bundle is an artifact the server pulls
  * rather than something it carries. Versions live side by side and `current` is a symlink, which
  * makes a rollback a rename and never a re-download.
+ *
+ * Forgejo credentials live in ./forge.ts: the token travels to the configured forge and nowhere
+ * else (a private release asset answers an anonymous GET with a 404, not a 401).
  */
 
 const USAGE = `usage: myclaw web <command>
@@ -22,32 +26,10 @@ const USAGE = `usage: myclaw web <command>
 const WEB_DIR = (): string => join(MY_CLAW_DIR, "web");
 const CURRENT = (): string => join(WEB_DIR(), "current");
 
-const DEFAULT_FORGE = "https://git.kssimi.fr";
-
 const DEFAULT_SOURCE = (version: string): string =>
-  `${(process.env["FORGEJO_URL"] ?? DEFAULT_FORGE).replace(/\/+$/, "")}/claw/my-claw-app/releases/download/${version}/dist-web.tar.gz`;
+  `${forgeBase()}/claw/my-claw-app/releases/download/${version}/dist-web.tar.gz`;
 
-/**
- * The release repository is private, and a private release asset answers an anonymous GET with a
- * 404 rather than a 401: `myclaw web install <version>` could therefore never work, and said
- * "download failed: HTTP 404" as if the version did not exist.
- *
- * The token only ever travels to the forge itself. A `--from` pointing anywhere else is a plain
- * download: handing a credential to whatever host was passed on the command line is how a mirror
- * ends up holding the keys to the repository.
- */
-export function authHeaders(source: string): Record<string, string> {
-  const token = process.env["FORGEJO_TOKEN"];
-  if (!token) return {};
-  try {
-    const target = new URL(source);
-    const forge = new URL(process.env["FORGEJO_URL"] ?? DEFAULT_FORGE);
-    if (target.host !== forge.host || target.protocol !== forge.protocol) return {};
-    return { Authorization: `token ${token}` };
-  } catch {
-    return {};
-  }
-}
+export { authHeaders } from "./forge.ts";
 
 async function exists(path: string): Promise<boolean> {
   try {

@@ -20,6 +20,7 @@ import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
 import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
 import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
 import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
+import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
 import { closeApprovalStore } from "../src/approvals/store.ts";
 
@@ -73,6 +74,9 @@ beforeEach(() => {
   resetWebSessions();
   // The lastSeen throttle would silently skip the write a later test asserts on.
   resetDeviceSeenCache();
+  // The five-minute forge cache is module state: a later file would read the previous file's
+  // release info without ever touching its own mock.
+  resetAppUpdateCache();
   // Endpoint lists are keyed by model id and cached for fifteen minutes, including the empty list
   // a failed lookup leaves: a later file would read another file's mock, or no call at all.
   clearOpenRouterCache();

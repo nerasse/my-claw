@@ -15,6 +15,9 @@ import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron/store.ts";
 
+import { mockFetch } from "./helpers/mock-fetch.ts";
+import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
+
 const execFileAsync = promisify(execFile);
 
 const DEVICE_ID = "test-device";
@@ -3723,6 +3726,74 @@ describe("command frames", () => {
       assert.equal(body.activeRun, true);
     } finally {
       handle.end();
+    }
+  });
+
+  test("GET /app-update answers the paired device with the latest release", async () => {
+    process.env["FORGEJO_TOKEN"] = "secret";
+    process.env["FORGEJO_URL"] = "https://git.example.test";
+    resetAppUpdateCache();
+    // The mock must only swallow the forge call. The test's own request to the local adapter
+    // would otherwise be answered by the mock with a release list.
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = mockFetch(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1")) return realFetch(input as string, init);
+      return Response.json([{
+        tag_name: "v0.5.55",
+        draft: false,
+        prerelease: false,
+        published_at: "2026-08-30T12:00:00Z",
+        assets: [{ name: "my-claw-app-v0.5.55.apk", size: 45438191 }],
+      }]);
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${adapter.port}/app-update?device=${DEVICE_ID}&token=${TOKEN}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { ok: boolean; version?: string };
+      assert.equal(body.ok, true);
+      assert.equal(body.version, "0.5.55");
+    } finally {
+      fetchMock.restore();
+      delete process.env["FORGEJO_TOKEN"];
+      delete process.env["FORGEJO_URL"];
+      resetAppUpdateCache();
+    }
+  });
+
+  test("GET /app-update refuses unpaired devices", async () => {
+    const res = await fetch(`http://127.0.0.1:${adapter.port}/app-update?device=unknown-device&token=${TOKEN}`);
+    assert.equal(res.status, 401);
+  });
+
+  test("GET /app-update/apk streams the apk to the paired device", async () => {
+    process.env["FORGEJO_TOKEN"] = "secret";
+    process.env["FORGEJO_URL"] = "https://git.example.test";
+    resetAppUpdateCache();
+    const realFetch = globalThis.fetch.bind(globalThis);
+    const fetchMock = mockFetch(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1")) return realFetch(input as string, init);
+      if (url.includes("/api/v1/repos")) {
+        return Response.json([{
+          tag_name: "v0.5.55",
+          draft: false,
+          prerelease: false,
+          published_at: "2026-08-30T12:00:00Z",
+          assets: [{ name: "my-claw-app-v0.5.55.apk", size: 11 }],
+        }]);
+      }
+      return new Response("PK\x03\x04fake-apk", { status: 200 });
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${adapter.port}/app-update/apk?device=${DEVICE_ID}&token=${TOKEN}`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-type"), "application/vnd.android.package-archive");
+    } finally {
+      fetchMock.restore();
+      delete process.env["FORGEJO_TOKEN"];
+      delete process.env["FORGEJO_URL"];
+      resetAppUpdateCache();
     }
   });
 });

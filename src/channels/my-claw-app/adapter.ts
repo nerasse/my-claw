@@ -17,6 +17,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
+import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
 import { newEntryId } from "../../sessions/log.ts";
@@ -832,6 +833,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (url.pathname === "/health") {
       if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
       return Response.json({ activeRun: runRegistry.hasAny() });
+    }
+
+    if (url.pathname === "/app-update") {
+      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
+      return Response.json(await latestAppUpdate());
+    }
+
+    if (url.pathname === "/app-update/apk" && req.method === "GET") {
+      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
+      const info = await latestAppUpdate();
+      if (!info.ok) return new Response(info.error, { status: 404 });
+      return streamAppApk(info);
     }
 
     const secure = requestIsSecure(this.config, url, req.headers, server.requestIP(req)?.address);
