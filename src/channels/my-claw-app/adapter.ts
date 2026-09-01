@@ -17,6 +17,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
+import { questionManager, type PendingQuestion } from "../../questions/manager.ts";
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
@@ -45,6 +46,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
   MyClawAppApprovalHistory,
+  MyClawAppQuestionAsk,
+  MyClawAppQuestionReply,
   MyClawAppAttachmentMeta,
   MyClawAppChatHistory,
   MyClawAppChatMessage,
@@ -274,6 +277,29 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
+    // The manager's broadcast path is this adapter: a run that asks without a channel would wait
+    // forever, so the tool checks hasSurface() and the handler is set before the server opens.
+    questionManager.setHandler((question) => {
+      const frame: MyClawAppQuestionAsk = {
+        type: "question.ask",
+        id: question.id,
+        threadId: question.threadId,
+        questions: question.questions.map((q) => ({
+          header: q.header,
+          question: q.question,
+          options: q.options.map((o) => ({
+            label: o.label,
+            ...(o.description ? { description: o.description } : {}),
+          })),
+          ...(q.multiple ? { multiple: true } : {}),
+          ...(q.custom === false ? { custom: false } : {}),
+        })),
+        ...(question.replyToId ? { replyToId: question.replyToId } : {}),
+        ts: new Date().toISOString(),
+      };
+      this.live.recordQuestion(question.owner, question.threadId, question.id, frame);
+      this.broadcast(question.owner, frame);
+    });
     this.server = Bun.serve({
       port: this.config.port ?? 8080,
       fetch: (req, server) => this.handleFetch(req, server),
@@ -326,6 +352,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       pending.resolve("deny");
     }
     this.pendingApprovals.clear();
+    // A shutdown cancels every pending question: the run is going away anyway, and a sheet with
+    // no run behind it is a button that answers nothing.
+    for (const question of questionManager.list()) {
+      questionManager.cancel(question.id);
+      this.broadcast(question.owner, {
+        type: "question.resolved",
+        id: question.id,
+        threadId: question.threadId,
+        reason: "canceled",
+      });
+    }
+    questionManager.setHandler(undefined);
     this.server?.stop(true);
     this.server = undefined;
     // Before the exit and after the sockets are gone, so nothing can append behind the write. The
@@ -1116,6 +1154,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "approval.response":
         this.resolveApproval(frame);
         break;
+      case "question.reply":
+        this.resolveQuestion(frame);
+        break;
       case "approval.history":
         this.handleApprovalHistory(ws, frame);
         break;
@@ -1485,6 +1526,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
+  /** The session id behind this socket's thread, or undefined when it cannot resolve. */
+  private sessionOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string): string {
+    return this.store.resolveSessionId(ws.data.owner, threadId);
+  }
+
+  /** The open question of this socket's thread, if any; throws when the session is unknown. */
+  private questionOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string): PendingQuestion | undefined {
+    const sessionId = this.sessionOf(ws, threadId);
+    if (!sessionId) return undefined;
+    return questionManager.ofSession(sessionId);
+  }
+
   private async emitChatSend(
     ws: ServerWebSocket<MyClawAppSessionData>,
     frame: MyClawAppChatSend,
@@ -1498,6 +1551,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!text && refs.length === 0 && !hasLocation) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
+
+    // Typing instead of answering cancels the question: the message is the answer, and it
+    // reaches the run as the next user turn through the normal mailbox. The sheet closes
+    // everywhere; the tool reports the cancel and the run proceeds with the typed message in
+    // context -- which is the exact steering the owner meant when he jumped the question.
+    const pendingQuestion = (() => {
+      try {
+        return this.questionOf(ws, threadId);
+      } catch {
+        return undefined;
+      }
+    })();
+    if (pendingQuestion && !text.startsWith("/")) {
+      const canceled = questionManager.cancel(pendingQuestion.id);
+      if (canceled) {
+        this.live.resolveQuestion(pendingQuestion.owner, pendingQuestion.threadId, pendingQuestion.id);
+        this.broadcast(pendingQuestion.owner, {
+          type: "question.resolved",
+          id: pendingQuestion.id,
+          threadId: pendingQuestion.threadId,
+          reason: "canceled",
+        });
+      }
+    }
+
     // Awaited, and before the mirrored bubble: the other window would otherwise draw the message
     // while its own composer still held the same text, showing it twice for a frame. Memory work
     // only, the disk write is on its own timer.
@@ -1960,11 +2038,37 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.refuse(ws, "chat", "invalid threadId", { threadId: frame.threadId });
       return;
     }
+    const sessionId = this.store.resolveSessionId(ws.data.owner, threadId);
+
+    // A Stop while a question is pending cancels the question, not the run: the tool returns
+    // "User canceled the questions" and the agent carries on with whatever it has. The second
+    // Stop is a real stop. This is the one override the owner asked for -- a question is a run
+    // waiting on a person, and killing the run because he pressed the button he uses to stop is
+    // the one case where Stop would throw away the whole answer.
+    const question = questionManager.ofSession(sessionId);
+    if (question) {
+      const canceled = questionManager.cancel(question.id);
+      if (canceled) {
+        this.live.resolveQuestion(question.owner, question.threadId, question.id);
+        this.broadcast(question.owner, {
+          type: "question.resolved",
+          id: question.id,
+          threadId: question.threadId,
+          reason: "canceled",
+        });
+      }
+      this.sendFrame(ws, {
+        type: "chat.command.result",
+        threadId,
+        text: "Question canceled.",
+      });
+      return;
+    }
+
     if (!this.stopRun) {
       await this.refuse(ws, "chat", "stop unavailable");
       return;
     }
-    const sessionId = this.store.resolveSessionId(ws.data.owner, threadId);
     const stopped = this.stopRun(sessionId);
     // Same words as the /stop command, so the app and the chat agree on what happened.
     this.sendFrame(ws, {
@@ -2323,6 +2427,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       reason: "answered-elsewhere",
     });
     pending.resolve(decision);
+  }
+
+  /** The owner answered a question sheet: one frame, all answers, resolved exactly once. */
+  private resolveQuestion(frame: MyClawAppQuestionReply): void {
+    const question = questionManager.reply(frame.id, frame.answers);
+    if (!question) return;
+    this.live.resolveQuestion(question.owner, question.threadId, frame.id);
+    // The owner's other windows are showing the same sheet: close it there too.
+    this.broadcast(question.owner, {
+      type: "question.resolved",
+      id: frame.id,
+      threadId: question.threadId,
+      reason: "answered",
+    });
   }
 
   private handleApprovalHistory(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppApprovalHistory): void {

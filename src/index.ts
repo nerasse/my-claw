@@ -107,6 +107,8 @@ import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { createDelegateBrowserTool } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
+import { createQuestionTool } from "./tools/question.ts";
+import { questionManager } from "./questions/manager.ts";
 import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler } from "./cron/scheduler.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "./cron/store.ts";
@@ -734,6 +736,25 @@ async function main() {
       body: `Job failed: ${cleanNotificationText(String(error)).slice(0, 200)}`,
       url: `myclaw://job/${jobId}`,
     });
+  });
+
+  // A question the run is waiting on: the owner left the app open on another thread, or it is
+  // in the background, or closed. The push is the only way the question reaches him; a device
+  // already looking at the very thread sees the sheet itself and gets no double noise.
+  questionManager.setNotifier((question) => {
+    const threadId = question.threadId || "default";
+    const first = question.questions[0];
+    const label = first?.header?.trim() || first?.question?.trim() || "Question";
+    void threadTitle(question.sessionId, label).then((title) =>
+      publishNotification(
+        {
+          title,
+          body: cleanNotificationText(label).slice(0, 160),
+          url: `myclaw://thread/${threadId}`,
+        },
+        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
+      ),
+    );
   });
 
   toolRegistry.register(createCronTool(cronScheduler, {
@@ -2691,7 +2712,7 @@ async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<vo
 }
 
 function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
-  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool()]) {
+  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool()]) {
     registry.register(tool);
   }
 }

@@ -68,6 +68,8 @@ interface Journal {
   clipped: Set<string>;
   /** Pending approval requests, by frame id: a question still waiting for its answer. */
   approvals: Map<string, MyClawAppServerFrame>;
+  /** Pending question sheets, by frame id: the run is waiting on the owner. */
+  questions: Map<string, MyClawAppServerFrame>;
 }
 
 export class LiveTurnJournal {
@@ -84,6 +86,7 @@ export class LiveTurnJournal {
       outputBytes: 0,
       clipped: new Set(),
       approvals: new Map(),
+      questions: new Map(),
     });
   }
 
@@ -157,6 +160,18 @@ export class LiveTurnJournal {
     this.journals.get(this.key(owner, threadId))?.approvals.delete(id);
   }
 
+  /** A question sheet was asked for: it stands until answered or canceled. */
+  recordQuestion(owner: string, threadId: string, id: string, frame: MyClawAppServerFrame): void {
+    const journal = this.journals.get(this.key(owner, threadId));
+    if (!journal) return;
+    journal.questions.set(id, frame);
+  }
+
+  /** Answered or canceled: replaying it would ask a question that has no answer left. */
+  resolveQuestion(owner: string, threadId: string, id: string): void {
+    this.journals.get(this.key(owner, threadId))?.questions.delete(id);
+  }
+
   /**
    * What a window that missed the turn needs, in the order it was sent. The pending approvals come
    * last: the sheet belongs on top of the thread it interrupted, not before it.
@@ -167,7 +182,7 @@ export class LiveTurnJournal {
     const frames = journal.frames.map((frame) =>
       isToolOutput(frame) && journal.clipped.has(frame.id) ? { ...frame, clipped: true } : frame,
     );
-    return [...frames, ...journal.approvals.values()];
+    return [...frames, ...journal.approvals.values(), ...journal.questions.values()];
   }
 
   /** Test seam: how many frames a thread is holding. */

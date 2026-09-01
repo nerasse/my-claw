@@ -17,6 +17,7 @@ import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron
 
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
+import { questionManager } from "../src/questions/manager.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -4426,5 +4427,113 @@ describe("notifications", () => {
     } finally {
       await bare.stop();
     }
+  });
+});
+
+describe("question frames", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let messages: Array<{ text: string; threadId: string }>;
+  const sessionIdOf = (thread: string) => `my-claw-app/thread/${DEVICE_ID}/${thread}`;
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    messages = [];
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    adapter.onMessage(async (msg: UnifiedMessage) => {
+      messages.push({ text: msg.text, threadId: msg.threadId ?? "" });
+    });
+    await adapter.start();
+    client = await connectClient(adapter.port);
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+  });
+
+  test("question.ask is broadcast and question.reply closes it everywhere", async () => {
+    const ask = questionManager.ask({
+      sessionId: sessionIdOf("t-ask"),
+      owner: DEVICE_ID,
+      threadId: "t-ask",
+      questions: [{ header: "Langue", question: "FR ou EN ?", options: [{ label: "fr" }] }],
+    });
+    const asked = await nextFrame(client);
+    assert.equal(asked["type"], "question.ask");
+    assert.equal(asked["threadId"], "t-ask");
+    const id = asked["id"] as string;
+
+    client.ws.send(JSON.stringify({ type: "question.reply", id, answers: [["fr"]] }));
+    const resolved = await nextFrame(client);
+    assert.equal(resolved["type"], "question.resolved");
+    assert.equal(resolved["reason"], "answered");
+    const outcome = await ask;
+    assert.deepEqual(outcome, { kind: "answered", answers: [["fr"]] });
+  });
+
+  test("chat.send while a question is pending cancels it and routes the message", async () => {
+    const ask = questionManager.ask({
+      sessionId: sessionIdOf("t-send"),
+      owner: DEVICE_ID,
+      threadId: "t-send",
+      questions: [{ header: "h", question: "q", options: [{ label: "a" }] }],
+    });
+    const asked = await nextFrame(client);
+    assert.equal(asked["type"], "question.ask");
+
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "q1", text: "finalement non", threadId: "t-send" }));
+    const resolved = await nextFrame(client);
+    assert.equal(resolved["type"], "question.resolved");
+    assert.equal(resolved["reason"], "canceled");
+    const outcome = await ask;
+    assert.deepEqual(outcome, { kind: "canceled" });
+    // The message reaches the agent normally.
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(messages, [{ text: "finalement non", threadId: "t-send" }]);
+  });
+
+  test("a slash command does not cancel a pending question", async () => {
+    const ask = questionManager.ask({
+      sessionId: sessionIdOf("t-cmd"),
+      owner: DEVICE_ID,
+      threadId: "t-cmd",
+      questions: [{ header: "h", question: "q", options: [{ label: "a" }] }],
+    });
+    const asked = await nextFrame(client);
+    assert.equal(asked["type"], "question.ask");
+    // Without a command handler the frame falls through to the agent; either way the question
+    // must stay pending -- a slash command is not steering.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "q2", text: "/status", threadId: "t-cmd" }));
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(questionManager.ofSession(sessionIdOf("t-cmd")), "question still pending");
+    // Cancel and settle so the test does not leak a pending ask into the next one.
+    questionManager.cancel(asked["id"] as string);
+    assert.deepEqual(await ask, { kind: "canceled" });
+  });
+
+  test("chat.stop while a question is pending cancels it without stopping the run", async () => {
+    let stopped = false;
+    adapter.onStop(() => {
+      stopped = true;
+      return true;
+    });
+    const ask = questionManager.ask({
+      sessionId: sessionIdOf("t-stop"),
+      owner: DEVICE_ID,
+      threadId: "t-stop",
+      questions: [{ header: "h", question: "q", options: [{ label: "a" }] }],
+    });
+    const asked = await nextFrame(client);
+    assert.equal(asked["type"], "question.ask");
+
+    client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-stop" }));
+    const resolved = await nextFrame(client);
+    assert.equal(resolved["type"], "question.resolved");
+    assert.equal(resolved["reason"], "canceled");
+    assert.equal(stopped, false, "a question cancel must not abort the run");
+    const outcome = await ask;
+    assert.deepEqual(outcome, { kind: "canceled" });
   });
 });

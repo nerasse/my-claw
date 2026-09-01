@@ -195,6 +195,45 @@ export interface MyClawAppApprovalResponse {
   decision: "allow-once" | "allow-session" | "deny";
 }
 
+export interface MyClawAppQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface MyClawAppQuestionInfo {
+  header: string;
+  question: string;
+  options: MyClawAppQuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+
+/** A `question` tool call asking the owner: one sheet, N questions, answered as a batch. */
+export interface MyClawAppQuestionAsk {
+  type: "question.ask";
+  id: string;
+  threadId: string;
+  questions: MyClawAppQuestionInfo[];
+  /** The card the tool call sits on; not every run has one. */
+  replyToId?: string;
+  ts: string;
+}
+
+/** The owner answered: one array of selected labels per question, in order. */
+export interface MyClawAppQuestionReply {
+  type: "question.reply";
+  id: string;
+  answers: string[][];
+}
+
+/** The question is closed without an answer: stopped, or a message typed instead. */
+export interface MyClawAppQuestionResolved {
+  type: "question.resolved";
+  id: string;
+  threadId: string;
+  reason: "answered" | "canceled";
+}
+
 export interface MyClawAppApprovalHistory {
   type: "approval.history";
   /** Absent = every conversation of this owner. */
@@ -823,6 +862,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
   | MyClawAppApprovalHistory
+  | MyClawAppQuestionReply
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
   | MyClawAppDiagReport
@@ -2586,6 +2626,8 @@ export type MyClawAppServerFrame =
   | MyClawAppApprovalRequest
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult
+  | MyClawAppQuestionAsk
+  | MyClawAppQuestionResolved
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult
   | MyClawAppDraftChanged

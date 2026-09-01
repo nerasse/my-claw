@@ -48,13 +48,22 @@ test("an unknown disabled name is a harmless no-op", () => {
 test("an agent name the chain does not know falls back to the sub-agent set, not the full one", () => {
   // The cast is the point: file-defined agents will hand this method names that no union covers,
   // and a typo must not be the difference between a sandboxed agent and a privileged one.
-  const r = registry(["read", "write", "bash", "spawn", "memory", "manage_skills"]);
+  const r = registry(["read", "write", "bash", "spawn", "memory", "manage_skills", "question"]);
   const names = r.getForAgent("reviewer" as AgentToolType).map((t) => t.name);
   assert.ok(names.includes("read"));
   assert.ok(names.includes("bash"), "an unknown agent still gets the general baseline");
-  for (const escalation of ["spawn", "memory", "manage_skills"]) {
+  for (const escalation of ["spawn", "memory", "manage_skills", "question"]) {
     assert.ok(!names.includes(escalation), `an unknown agent must not receive ${escalation}`);
   }
+});
+
+test("question is main-only: never offered to sub-agents or cron", () => {
+  const r = registry(["question", "read", "bash"]);
+  // An agent file with base general: the union baseline applies, minus the excluded set.
+  assert.ok(r.getForAgent("main").some((t) => t.name === "question"));
+  assert.ok(!r.getForAgent("general").some((t) => t.name === "question"));
+  assert.ok(!r.getForAgent("cron").some((t) => t.name === "question"));
+  assert.ok(!r.getForAgent("research").some((t) => t.name === "question"));
 });
 
 function baseConfig(): MyClawConfig {

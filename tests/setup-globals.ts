@@ -23,6 +23,7 @@ import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
 import { closeApprovalStore } from "../src/approvals/store.ts";
+import { questionManager } from "../src/questions/manager.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -47,6 +48,9 @@ beforeEach(() => {
   // Session ids are reused across files ("s1", "sess-A"), so a leaked controller makes
   // isRunning() true and leaves a mailbox accepting injections.
   runRegistry.clear();
+  // Session ids are reused across files ("s1", "sess-A"): a leaked pending question would
+  // block the same session's next ask or be answered by a later file's reply.
+  questionManager.clear();
   // A stored push endpoint would keep deliver()ing to it and a stored foreground state would
   // skip notifications for a whole file.
   void resetPushState();

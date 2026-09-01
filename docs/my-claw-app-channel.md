@@ -386,6 +386,7 @@ the first answer wins.
 { "type": "tags.list" }
 { "type": "tags.upsert", "name": "opus", "model": "claude-opus-4-8", "effort": "xhigh", "contextCap": 50000 }
 { "type": "tags.delete", "name": "opus" }
+{"type": "question.reply", "id": "que_...", "answers": [["fr"], ["1", "2"]] }
 { "type": "ping" }
 ```
 
@@ -677,6 +678,8 @@ runs fresh like any other message.
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }
 { "type": "approval.resolved", "id": "uuid", "threadId": "projet", "reason": "expired|cancelled|answered-elsewhere" }
 { "type": "approval.history.result", "threadId": "projet", "entries": [{ "id": "uuid", "toolName": "write", "args": "{...}", "outcome": "allow-session", "requestedAt": "iso", "decidedAt": "iso", "durationMs": 1200, "auto": false }], "stats": { "total": 1, "allowed": 1, "denied": 0, "expired": 0 } }
+{ "type": "question.ask", "id": "que_...", "threadId": "projet", "replyToId": "tc-...", "questions": [{ "header": "Langue", "question": "FR ou EN ?", "options": [{ "label": "fr" }, { "label": "en" }], "multiple": false, "custom": true }], "ts": "iso" }
+{ "type": "question.resolved", "id": "que_...", "threadId": "projet", "reason": "answered|canceled" }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
@@ -1042,6 +1045,36 @@ saw: a call covered by an earlier `allow-session` runs with nothing on screen an
 with `auto: true`. `expired` and `cancelled` are kept apart from `deny` on purpose -- neither is
 a decision the owner made, and reading them as a refusal would blame him for a machine event.
 `approval.history` reads it back, scoped to the asking device's owner and capped at 200 rows.
+
+### Ask questions (`question` tool)
+
+The `question` tool ([src/tools/question.ts](../tools/question.ts) on the server, rendered as a
+sheet by the app) asks the owner, choice by choice, and blocks the run until answered. It is
+main-only: sub-agents and cron never get it (registry exclusions), so a question is always a
+conversation between the orchestrator and its owner. There is no timeout: a question the owner
+has not answered is a run waiting on a person, and the run stays current until he answers,
+stops, or types.
+
+```
+{ "type": "question.ask", "id": "que_...", "threadId": "projet", "questions": [...] }
+{ "type": "question.reply", "id": "que_...", "answers": [["fr"], ["1", "2"]] }
+{ "type": "question.resolved", "id": "que_...", "threadId": "projet", "reason": "answered|canceled" }
+```
+
+- The ask is broadcast to every window of the owner (replayed to a window that reconnects via
+  the live-turn journal, like approvals), and a push notification is raised for devices that are
+  not already foreground on the thread -- with the device's own alias in the tray.
+- `question.reply` answers every question at once (one array of selected labels per question, in
+  order); the first answer wins, the other windows close their sheet via `question.resolved`.
+- **Stop cancels the question, not the run.** A `chat.stop` while a question is pending resolves
+  it as `canceled`, the tool reports "User canceled the questions", and the run carries on with
+  whatever it has. A second Stop (no question pending) is the usual stop.
+- **Typing cancels the question too.** A `chat.send` (a plain message, not a slash command)
+  while a question is pending resolves it as `canceled`, then routes the message normally: it
+  reaches the run's mailbox and is injected as the next user turn. The owner's words are the
+  steering; the question sheet is dismissed everywhere.
+- The settle writes one tool entry like any other: reopening the thread shows the questions and
+  the answers (or the cancel) on the card, not a second ask.
 
 ### Reasoning
 
