@@ -77,6 +77,7 @@ import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing } from "./llm/pricing.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
+import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
@@ -2062,6 +2063,7 @@ async function main() {
       mcpStatus: () => mcpManager.status(),
       listSubAgents: (sessionId) => subAgentRunner.list(subAgentRegistry, sessionId),
       pricing,
+      undoPrompt: askUndoMode,
     }));
 
     myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));

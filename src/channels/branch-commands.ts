@@ -15,6 +15,9 @@ import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type Un
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
+import { latestSnapshot, snapshotsRoot } from "../snapshots/store.ts";
+import { diffSnapshots, restoreDepot, type DepotDiff } from "../snapshots/capture.ts";
+import { undoManager, type UndoMode } from "./my-claw-app/undo.ts";
 
 /** The outcome of a branch command: what to send back, and what side effects happened. */
 export interface BranchCommandResult {
@@ -43,6 +46,41 @@ export interface BranchCommandContext {
   persist: () => Promise<void>;
   /** Generates a sessionId for a new threadId (for fork). */
   resolveNewSessionId: (newThreadId: string) => string;
+  /** The workspace this conversation runs in. */
+  workspaceDir?: string;
+  /**
+   * When set, `/undo` without an argument asks the owner which mode instead of acting: the app
+   * opens a sheet, the handler resolves with the chosen mode, or null when it was dismissed.
+   */
+  undoPrompt?: (input: {
+    sessionId: string;
+    owner: string;
+    threadId: string;
+    diff: DepotDiff[];
+    turnPreview: string;
+  }) => Promise<UndoMode | null>;
+}
+
+/**
+ * Wires the undo prompt for the my-claw-app channel: `/undo` without an argument opens the
+ * app's sheet instead of acting. The adapter broadcasts the sheet frame; the owner's
+ * `undo.choose` frame resolves it. Returns null when the sheet was dismissed.
+ */
+export async function askUndoMode(deps: {
+  sessionId: string;
+  owner: string;
+  threadId: string;
+  diff: DepotDiff[];
+  turnPreview: string;
+}): Promise<UndoMode | null> {
+  const outcome = await undoManager.prompt({
+    sessionId: deps.sessionId,
+    owner: deps.owner,
+    threadId: deps.threadId,
+    diff: deps.diff,
+    turnPreview: deps.turnPreview,
+  });
+  return outcome.kind === "chosen" ? outcome.mode : null;
 }
 
 /**
@@ -164,23 +202,72 @@ export async function handleRetryCommand(
 /**
  * `/undo` — abort the run (if any), rewind before the last user turn, enable `/redo`.
  *
- * Unlike `/retry` and `/branches`, `/undo` aborts a running turn. The reasoning: `/undo`
- * targets the turn that is running, so killing it is part of the ask. `/retry` and `/branches`
- * do not imply that intent — silently discarding work in progress would be a costly surprise.
+ * Two modes, one command:
+ * - `/undo soft` — conversation only (branch the log, restore nothing else). This is the
+ *   historical behaviour, and the mode that never touches the disk.
+ * - `/undo hard` — conversation plus files: restores the workspace to the snapshot taken at
+ *   the start of the run that produced the undone turn (docs/session-log.md §7).
+ * - `/undo` (no argument) — asks the owner which mode, via the app's undo sheet. The command
+ *   waits on the owner's choice before doing anything.
+ *
+ * Unlike `/retry` and `/branches`, `/undo` aborts a running turn in every mode. The reasoning:
+ * `/undo` targets the turn that is running, so killing it is part of the ask. `/retry` and
+ * `/branches` do not imply that intent — silently discarding work in progress would be a costly
+ * surprise.
  */
 export async function handleUndoCommand(
   ctx: BranchCommandContext,
-  _args: string,
+  args: string,
 ): Promise<BranchCommandResult> {
   // Abort if a run is in progress — this is the key difference with /retry.
   if (ctx.isRunning()) {
     await ctx.abortRun();
   }
 
+  // The mode is validated before the turn check: a typo is answered wherever the command
+  // lands, even on an empty conversation.
+  const argTrimmed = args.trim();
+  if (argTrimmed && argTrimmed !== "soft" && argTrimmed !== "hard") {
+    return { text: "Usage: /undo [soft|hard] — sans argument, choix dans l'app." };
+  }
+
   const path = ctx.log.path();
   const userTurn = findNthUserFromEnd(path, 1);
   if (!userTurn) {
     return { text: "Rien à annuler : aucun tour utilisateur." };
+  }
+
+  const preview = userTurn.text.slice(0, 50) + (userTurn.text.length > 50 ? "..." : "");
+  let mode: UndoMode = "soft";
+  const ask = argTrimmed === "";
+  if (argTrimmed === "hard" || argTrimmed === "soft") {
+    mode = argTrimmed;
+  }
+
+  // The file diff, computed before the branch moves: it describes the run whose turn is undone.
+  const snapshot = await latestSnapshot(ctx.sessionId);
+  let diff: DepotDiff[] = [];
+  if (snapshot?.before && snapshot.after) {
+    try {
+      diff = await diffSnapshots(snapshot.before, snapshot.after, snapshotsRoot());
+    } catch {
+      diff = [];
+    }
+  }
+
+  // No argument and the app can show a sheet: ask instead of acting.
+  if (ask && ctx.undoPrompt) {
+    const chosen = await ctx.undoPrompt({
+      sessionId: ctx.sessionId,
+      owner: ctx.owner,
+      threadId: ctx.threadId,
+      diff,
+      turnPreview: preview,
+    });
+    if (chosen === null) {
+      return { text: "Undo annulé." };
+    }
+    mode = chosen;
   }
 
   // Capture the current leaf before moving — this is what /redo will return to.
@@ -204,9 +291,27 @@ export async function handleUndoCommand(
   ctx.session.lastActiveAt = meta.lastActiveAt;
   await writeMeta(ctx.sessionId, meta);
 
-  const preview = userTurn.text.slice(0, 50) + (userTurn.text.length > 50 ? "..." : "");
+  // Hard mode: restore the files to the snapshot taken before the run that wrote this turn.
+  let filesNote = "";
+  if (mode === "hard") {
+    if (!snapshot || snapshot.before.depots.length === 0) {
+      filesNote = "\nAucun snapshot de fichiers à restaurer (workspace sans dépôt git ou capture impossible).";
+    } else {
+      try {
+        for (const depot of snapshot.before.depots) {
+          await restoreDepot(depot, snapshotsRoot());
+        }
+        filesNote = diff.length > 0
+          ? `\nFichiers restaurés (${diff.map((d) => d.root.split("/").pop() || d.root).join(", ")}).`
+          : "\nAucune modification de fichier à restaurer.";
+      } catch (err) {
+        filesNote = `\nRestauration des fichiers échouée: ${String(err)}`;
+      }
+    }
+  }
+
   return {
-    text: `Undo: conversation rembobinée avant "${preview}". /redo pour revenir.`,
+    text: `Undo: conversation rembobinée avant "${preview}". /redo pour revenir.${filesNote}`,
     reset: "branch-switch",
     compose: userTurn.text,
   };

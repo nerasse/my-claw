@@ -356,3 +356,12 @@ export type MyClawAppCommandHandler = (
   command: string,
   args: string,
 ) => Promise<string | MyClawAppCommandOutput | undefined>;
+
+/** The undo sheet's prompt: asks the owner which mode, resolves with the choice (null = dismissed). */
+export type MyClawAppUndoPromptHandler = (input: {
+  sessionId: string;
+  owner: string;
+  threadId: string;
+  diff: Array<{ root: string; additions: number; deletions: number }>;
+  turnPreview: string;
+}) => Promise<"soft" | "hard" | null>;

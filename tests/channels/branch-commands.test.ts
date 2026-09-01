@@ -661,6 +661,83 @@ describe("branch-commands: /undo", () => {
     expect(branchesResult.text).toContain("1 branche");
     expect(branchesResult.text).toContain("Question");
   });
+
+  test("undo soft keeps files untouched and reports no restore", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleUndoCommand(ctx, "soft");
+
+    expect(result.reset).toBe("branch-switch");
+    expect(result.text).not.toContain("Fichiers restaurés");
+  });
+
+  test("undo hard with no snapshot reports it", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleUndoCommand(ctx, "hard");
+
+    expect(result.text).toContain("Aucun snapshot");
+  });
+
+  test("undo without argument asks and uses the chosen mode", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    let asked = false;
+    const ctx = await createContext(id, log);
+    const withPrompt: BranchCommandContext = {
+      ...ctx,
+      undoPrompt: async (input) => {
+        asked = true;
+        expect(input.turnPreview).toContain("Question");
+        return "soft";
+      },
+    };
+    const result = await handleUndoCommand(withPrompt, "");
+
+    expect(asked).toBe(true);
+    expect(result.reset).toBe("branch-switch");
+  });
+
+  test("undo without argument and dismissed returns cancel text", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const withPrompt: BranchCommandContext = {
+      ...ctx,
+      undoPrompt: async () => null,
+    };
+    const result = await handleUndoCommand(withPrompt, "");
+
+    expect(result.text).toContain("Undo annulé");
+    expect(result.reset).toBeUndefined();
+  });
+
+  test("undo with invalid argument returns usage", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const ctx = await createContext(id, log);
+
+    const result = await handleUndoCommand(ctx, "bogus");
+    expect(result.text).toContain("Usage");
+  });
 });
 
 describe("branch-commands: /redo", () => {

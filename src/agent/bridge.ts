@@ -46,6 +46,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
+import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
 import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
@@ -330,6 +331,18 @@ export class AgentBridge implements AgentBackend {
     const entries = await sessionLogOf(session.id);
     const recorder = new RunRecorder(entries);
     const contextCount = contextEntries(entries.entries(), entries.leaf()).length;
+
+    // The workspace state before this run starts writing. Keeping the snapshot is what makes
+    // `/undo hard` able to restore files; the recording is best-effort and must never take the
+    // run down with a capture failure (a non-git workspace with huge untracked files can be slow,
+    // a read-only one can throw).
+    const { workspaceDir } = this.workspaceFor(session);
+    let runSnapshotId: string | undefined;
+    try {
+      runSnapshotId = (await recordRunStart(session.id, workspaceDir)).runId;
+    } catch (err) {
+      void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
+    }
 
     void log("info", "agent run started", {
       ...runLogData(message, session),
@@ -865,6 +878,14 @@ export class AgentBridge implements AgentBackend {
       throw err;
     } finally {
       runNode?.exit();
+      // Snapshot the after-state for the diff: only a snapshot that was taken is worth completing.
+      if (runSnapshotId) {
+        try {
+          await recordRunEnd(session.id, runSnapshotId, workspaceDir);
+        } catch (err) {
+          void log("warn", "snapshot capture failed at run end", { sessionId: session.id, error: String(err) });
+        }
+      }
       await this.preprocessor.cleanupTempFiles(message.id);
     }
   }

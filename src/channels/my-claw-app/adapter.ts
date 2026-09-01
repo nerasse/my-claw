@@ -18,6 +18,7 @@ import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { questionManager, type PendingQuestion } from "../../questions/manager.ts";
+import { undoManager } from "./undo.ts";
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
@@ -48,6 +49,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppApprovalResponse,
   MyClawAppApprovalHistory,
   MyClawAppQuestionReply,
+  MyClawAppUndoChoose,
+  MyClawAppUndoCancel,
   MyClawAppAttachmentMeta,
   MyClawAppChatHistory,
   MyClawAppChatMessage,
@@ -252,6 +255,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private configEditor?: MyClawAppConfigController;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
+  /** Set by the host: broadcasts `undo.prompt` and waits for the owner's `undo.choose`. */
   private subagents?: MyClawAppSubAgentsController;
   /** Serializes roster snapshots per parent so a slower lifecycle read cannot publish stale state. */
   private rosterPushes = new Map<string, Promise<void>>();
@@ -283,6 +287,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const frame = questionAskFrame(question);
       this.live.recordQuestion(question.owner, question.threadId, question.id, frame);
       this.broadcast(question.owner, frame);
+    });
+    // The undo sheet: a `/undo` without an argument asks the owner which mode. Same shape as the
+    // question flow (broadcast the prompt, await the owner's choose) but deliberately without the
+    // live-journal treatment: the sheet is short-lived -- the command itself awaits the choice,
+    // whereas a question can wait on a run for minutes.
+    undoManager.setHandler((undo) => {
+      this.broadcast(undo.owner, {
+        type: "undo.prompt",
+        id: undo.id,
+        threadId: undo.threadId,
+        turnPreview: undo.turnPreview,
+        diff: undo.diff,
+        ts: new Date(undo.requestedAt).toISOString(),
+      });
     });
     this.server = Bun.serve({
       port: this.config.port ?? 8080,
@@ -1148,6 +1166,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "question.reply":
         this.resolveQuestion(frame);
+        break;
+      case "undo.choose":
+        this.resolveUndo(frame);
+        break;
+      case "undo.cancel":
+        this.cancelUndo(frame);
         break;
       case "approval.history":
         this.handleApprovalHistory(ws, frame);
@@ -2432,6 +2456,31 @@ export class MyClawAppAdapter implements ChannelAdapter {
       id: frame.id,
       threadId: question.threadId,
       reason: "answered",
+    });
+  }
+
+  /** The owner picked a mode in the undo sheet. */
+  private resolveUndo(frame: MyClawAppUndoChoose): void {
+    const undo = undoManager.choose(frame.id, frame.mode);
+    if (!undo) return;
+    // The owner's other windows are showing the same sheet: close it there too.
+    this.broadcast(undo.owner, {
+      type: "undo.resolved",
+      id: frame.id,
+      threadId: undo.threadId,
+      reason: "chosen",
+    });
+  }
+
+  /** The owner dismissed the sheet: the prompt resolves as canceled, nothing runs. */
+  private cancelUndo(frame: MyClawAppUndoCancel): void {
+    const undo = undoManager.cancel(frame.id);
+    if (!undo) return;
+    this.broadcast(undo.owner, {
+      type: "undo.resolved",
+      id: frame.id,
+      threadId: undo.threadId,
+      reason: "canceled",
     });
   }
 

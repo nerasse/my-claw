@@ -249,6 +249,40 @@ export interface MyClawAppQuestionResolved {
   reason: "answered" | "canceled";
 }
 
+/** A `/undo` without an argument: the server asks which mode instead of guessing. */
+export interface MyClawAppUndoPrompt {
+  type: "undo.prompt";
+  /** Pending undo id; echoed back in `undo.choose`. */
+  id: string;
+  threadId: string;
+  /** The user turn being undone, clipped for the sheet. */
+  turnPreview: string;
+  /** Precomputed file diff, per depot. Empty = nothing to restore, the sheet says so. */
+  diff: Array<{ root: string; additions: number; deletions: number }>;
+  ts: string;
+}
+
+/** The owner picked a mode in the undo sheet. */
+export interface MyClawAppUndoChoose {
+  type: "undo.choose";
+  id: string;
+  mode: "soft" | "hard";
+}
+
+/** The owner dismissed the undo sheet: the prompt resolves as canceled, nothing happens. */
+export interface MyClawAppUndoCancel {
+  type: "undo.cancel";
+  id: string;
+}
+
+/** The undo sheet was dismissed, or the pending request expired. */
+export interface MyClawAppUndoResolved {
+  type: "undo.resolved";
+  id: string;
+  threadId: string;
+  reason: "chosen" | "canceled";
+}
+
 export interface MyClawAppApprovalHistory {
   type: "approval.history";
   /** Absent = every conversation of this owner. */
@@ -878,6 +912,8 @@ export type MyClawAppClientFrame =
   | MyClawAppApprovalResponse
   | MyClawAppApprovalHistory
   | MyClawAppQuestionReply
+  | MyClawAppUndoChoose
+  | MyClawAppUndoCancel
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
   | MyClawAppDiagReport
@@ -2644,6 +2680,8 @@ export type MyClawAppServerFrame =
   | MyClawAppQuestionAsk
   | MyClawAppQuestionPending
   | MyClawAppQuestionResolved
+  | MyClawAppUndoPrompt
+  | MyClawAppUndoResolved
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult
   | MyClawAppDraftChanged

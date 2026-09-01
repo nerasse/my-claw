@@ -26,6 +26,7 @@ import { runRegistry } from "../../core/run-registry.ts";
 import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
+import type { UndoMode } from "./undo.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
 import {
   handleRetryCommand,
@@ -61,6 +62,18 @@ export interface MyClawAppCommandDeps {
   mcpStatus?: () => import("../../mcp/manager.ts").McpServerStatus[];
   listSubAgents?: (sessionId: string) => Promise<import("../../subagents/types.ts").SubAgentInfo[]>;
   pricing?: import("../../llm/pricing.ts").ModelPricing;
+  /**
+   * `/undo` without an argument asks the owner which mode via the app sheet. The adapter wires
+   * it: it broadcasts `undo.prompt` and awaits `undo.choose`. Absent on a surface that cannot
+   * show a sheet (then `/undo` defaults to soft).
+   */
+  undoPrompt?: (input: {
+    sessionId: string;
+    owner: string;
+    threadId: string;
+    diff: Array<{ root: string; additions: number; deletions: number }>;
+    turnPreview: string;
+  }) => Promise<UndoMode | null>;
 }
 
 /**
@@ -340,6 +353,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
             await deps.sessionManager.persist(sessionId);
           },
           resolveNewSessionId: (newThreadId: string) => sessionIdFor(owner, newThreadId),
+          ...(deps.undoPrompt ? { undoPrompt: deps.undoPrompt } : {}),
         };
         if (command === "branches") {
           const result = await handleBranchesCommand(ctx, args);
@@ -352,6 +366,9 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
             : result.text;
         }
         if (command === "undo") {
+          // /undo [soft|hard] executes directly. /undo without an argument asks the app:
+          // it needs the workspace and the diff, both supplied by this handler. The ask is
+          // injected only when the caller (index.ts) wired the prompt handler.
           const result = await handleUndoCommand(ctx, args);
           return result.reset
             ? { text: result.text, reset: result.reset, compose: result.compose }
