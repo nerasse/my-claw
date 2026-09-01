@@ -3,7 +3,7 @@
  *
  * Mirrors opencode's question tool: an array of questions, each with a short header, a
  * question, options (label + description), `multiple` (any number of choices) and `custom`
- * (a free-form answer is offered in the sheet). The answers come back as an array of arrays
+ * (a free-form answer is offered on the card). The answers come back as an array of arrays
  * of labels, one per question, in the order asked.
  *
  * The distinction that matters here: **cancel is an outcome, not an error.** The owner may

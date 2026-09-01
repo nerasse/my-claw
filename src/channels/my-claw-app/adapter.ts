@@ -21,6 +21,7 @@ import { questionManager, type PendingQuestion } from "../../questions/manager.t
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
+import { questionAskFrame, questionPendingFrame } from "./questions.ts";
 import { newEntryId } from "../../sessions/log.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
 import { touchDevice } from "./devices.ts";
@@ -46,7 +47,6 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
   MyClawAppApprovalHistory,
-  MyClawAppQuestionAsk,
   MyClawAppQuestionReply,
   MyClawAppAttachmentMeta,
   MyClawAppChatHistory,
@@ -280,23 +280,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // The manager's broadcast path is this adapter: a run that asks without a channel would wait
     // forever, so the tool checks hasSurface() and the handler is set before the server opens.
     questionManager.setHandler((question) => {
-      const frame: MyClawAppQuestionAsk = {
-        type: "question.ask",
-        id: question.id,
-        threadId: question.threadId,
-        questions: question.questions.map((q) => ({
-          header: q.header,
-          question: q.question,
-          options: q.options.map((o) => ({
-            label: o.label,
-            ...(o.description ? { description: o.description } : {}),
-          })),
-          ...(q.multiple ? { multiple: true } : {}),
-          ...(q.custom === false ? { custom: false } : {}),
-        })),
-        ...(question.replyToId ? { replyToId: question.replyToId } : {}),
-        ts: new Date().toISOString(),
-      };
+      const frame = questionAskFrame(question);
       this.live.recordQuestion(question.owner, question.threadId, question.id, frame);
       this.broadcast(question.owner, frame);
     });
@@ -352,7 +336,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       pending.resolve("deny");
     }
     this.pendingApprovals.clear();
-    // A shutdown cancels every pending question: the run is going away anyway, and a sheet with
+    // A shutdown cancels every pending question: the run is going away anyway, and a card with
     // no run behind it is a button that answers nothing.
     for (const question of questionManager.list()) {
       questionManager.cancel(question.id);
@@ -1049,6 +1033,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ...(this.locationResolver?.capabilities() ?? { enabled: false, address: false, provider: "geoapify" as const }),
     };
     this.sendFrame(ws, locationCapabilities);
+    // A pending question outlives the socket it was asked on: nothing pushed while a device was
+    // down is replayed, and the run is still blocked on the answer. The whole list is sent, and
+    // an empty one is just as meaningful -- it is what clears a card left over by a server that
+    // died holding a question.
+    this.sendFrame(
+      ws,
+      questionPendingFrame(questionManager.list().filter((question) => question.owner === ws.data.owner)),
+    );
     // The device needs the VAPID public key before it can register with its distributor;
     // sent at connect so the app can register on startup without another round-trip.
     void this.notifications?.info().then((vapidPublicKey) => {
@@ -1553,7 +1545,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
 
     // Typing instead of answering cancels the question: the message is the answer, and it
-    // reaches the run as the next user turn through the normal mailbox. The sheet closes
+    // reaches the run as the next user turn through the normal mailbox. The card is dropped
     // everywhere; the tool reports the cancel and the run proceeds with the typed message in
     // context -- which is the exact steering the owner meant when he jumped the question.
     const pendingQuestion = (() => {
@@ -2429,12 +2421,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
     pending.resolve(decision);
   }
 
-  /** The owner answered a question sheet: one frame, all answers, resolved exactly once. */
+  /** The owner answered a question card: one frame, all answers, resolved exactly once. */
   private resolveQuestion(frame: MyClawAppQuestionReply): void {
     const question = questionManager.reply(frame.id, frame.answers);
     if (!question) return;
     this.live.resolveQuestion(question.owner, question.threadId, frame.id);
-    // The owner's other windows are showing the same sheet: close it there too.
+    // The owner's other windows are showing the same card: drop it there too.
     this.broadcast(question.owner, {
       type: "question.resolved",
       id: frame.id,

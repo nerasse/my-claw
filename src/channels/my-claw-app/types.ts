@@ -226,6 +226,21 @@ export interface MyClawAppQuestionReply {
   answers: string[][];
 }
 
+/** One pending question, as `question.pending` carries it: an ask without the frame envelope. */
+export type MyClawAppQuestionPendingEntry = Omit<MyClawAppQuestionAsk, "type">;
+
+/**
+ * Every question of this owner still waiting for an answer, sent at connect.
+ *
+ * Authoritative and idempotent: the client replaces its whole pending set with `entries`. An ask
+ * broadcast while the socket was down is therefore not lost, and a card left behind by a server
+ * that died holding a question is cleared by the empty list that follows the restart.
+ */
+export interface MyClawAppQuestionPending {
+  type: "question.pending";
+  entries: MyClawAppQuestionPendingEntry[];
+}
+
 /** The question is closed without an answer: stopped, or a message typed instead. */
 export interface MyClawAppQuestionResolved {
   type: "question.resolved";
@@ -2627,6 +2642,7 @@ export type MyClawAppServerFrame =
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult
   | MyClawAppQuestionAsk
+  | MyClawAppQuestionPending
   | MyClawAppQuestionResolved
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult

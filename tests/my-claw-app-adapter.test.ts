@@ -39,7 +39,14 @@ interface WsClient {
   closed: { code: number; reason: string } | null;
 }
 
-function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveLocationCapabilities = false, receiveHello = false): Promise<WsClient> {
+function connectClient(
+  port: number,
+  device = DEVICE_ID,
+  token = TOKEN,
+  receiveLocationCapabilities = false,
+  receiveHello = false,
+  receiveQuestionPending = false,
+): Promise<WsClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
     const client: WsClient = { ws, frames: [], closed: null };
@@ -64,6 +71,7 @@ function connectClient(port: number, device = DEVICE_ID, token = TOKEN, receiveL
         const frame = JSON.parse(raw) as { type?: unknown };
         if (!receiveLocationCapabilities && frame.type === "location.capabilities") return;
         if (!receiveHello && frame.type === "hello") return;
+        if (!receiveQuestionPending && frame.type === "question.pending") return;
         client.frames.push(frame);
       } catch {
         client.frames.push(raw);
@@ -4509,6 +4517,41 @@ describe("question frames", () => {
     await new Promise((r) => setTimeout(r, 150));
     assert.ok(questionManager.ofSession(sessionIdOf("t-cmd")), "question still pending");
     // Cancel and settle so the test does not leak a pending ask into the next one.
+    questionManager.cancel(asked["id"] as string);
+    assert.deepEqual(await ask, { kind: "canceled" });
+  });
+
+  test("a connecting device is handed every question still waiting", async () => {
+    // Nothing pending: the list is still sent, and it is empty. That empty list is what clears a
+    // card a client kept from a server that died holding the question.
+    const fresh = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, false, true);
+    const empty = await nextFrame(fresh);
+    assert.equal(empty["type"], "question.pending");
+    assert.deepEqual(empty["entries"], []);
+    fresh.ws.close();
+
+    const ask = questionManager.ask({
+      sessionId: sessionIdOf("t-seed"),
+      owner: DEVICE_ID,
+      threadId: "t-seed",
+      questions: [{ header: "h", question: "q", options: [{ label: "a" }] }],
+      replyToId: "call-1",
+    });
+    const asked = await nextFrame(client);
+    assert.equal(asked["type"], "question.ask");
+    // The card id, not the model's raw call id: the app draws the form inside that tool card.
+    assert.equal(asked["replyToId"], "t-call-1");
+
+    const late = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, false, true);
+    const pending = await nextFrame(late);
+    assert.equal(pending["type"], "question.pending");
+    const entries = pending["entries"] as Array<Record<string, unknown>>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!["id"], asked["id"]);
+    assert.equal(entries[0]!["threadId"], "t-seed");
+    assert.equal(entries[0]!["replyToId"], "t-call-1");
+    late.ws.close();
+
     questionManager.cancel(asked["id"] as string);
     assert.deepEqual(await ask, { kind: "canceled" });
   });

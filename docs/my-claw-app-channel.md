@@ -1048,33 +1048,46 @@ a decision the owner made, and reading them as a refusal would blame him for a m
 
 ### Ask questions (`question` tool)
 
-The `question` tool ([src/tools/question.ts](../tools/question.ts) on the server, rendered as a
-sheet by the app) asks the owner, choice by choice, and blocks the run until answered. It is
-main-only: sub-agents and cron never get it (registry exclusions), so a question is always a
-conversation between the orchestrator and its owner. There is no timeout: a question the owner
-has not answered is a run waiting on a person, and the run stays current until he answers,
-stops, or types.
+The `question` tool ([src/tools/question.ts](../tools/question.ts) on the server) asks the owner
+and blocks the run until answered. It is main-only: sub-agents and cron never get it (registry
+exclusions), so a question is always a conversation between the orchestrator and its owner. There
+is no timeout: a question the owner has not answered is a run waiting on a person, and the run
+stays current until he answers, stops, or types.
 
 ```
-{ "type": "question.ask", "id": "que_...", "threadId": "projet", "questions": [...] }
+{ "type": "question.ask", "id": "que_...", "threadId": "projet", "replyToId": "t-call_1", "questions": [...] }
+{ "type": "question.pending", "entries": [ { "id": "que_...", "threadId": "projet", ... } ] }
 { "type": "question.reply", "id": "que_...", "answers": [["fr"], ["1", "2"]] }
 { "type": "question.resolved", "id": "que_...", "threadId": "projet", "reason": "answered|canceled" }
 ```
 
-- The ask is broadcast to every window of the owner (replayed to a window that reconnects via
+- **The form is drawn in the conversation, not over it.** `replyToId` is the *card* id
+  (`toolCardId(callId)`, i.e. `t-<callId>`, never the model's raw call id): the app draws the
+  questions inside the running `question` tool card, which is exactly where the run stopped. A
+  question is a reason to go and read something -- the thread above, a file, another conversation
+  -- so it must not be a modal. The app keeps the answers in a store, not in the card, because the
+  list unmounts rows that scroll off.
+- **`question.pending` is sent to every socket at connect**, and is authoritative: the client
+  replaces its whole pending set with it. Nothing pushed while a socket was down is replayed, so
+  this is what an app that was killed, asleep or offline is told; and the empty list is just as
+  meaningful, it is what clears a card kept from a server that died holding a question.
+- The ask is broadcast to every window of the owner (and replayed to a window that reconnects via
   the live-turn journal, like approvals), and a push notification is raised for devices that are
   not already foreground on the thread -- with the device's own alias in the tray.
 - `question.reply` answers every question at once (one array of selected labels per question, in
-  order); the first answer wins, the other windows close their sheet via `question.resolved`.
+  order); the first answer wins, the other windows drop their card via `question.resolved`. A
+  question left blank is sent as an empty array: unanswered is an answer, and blocking the batch
+  on it is how an owner gets stuck.
 - **Stop cancels the question, not the run.** A `chat.stop` while a question is pending resolves
   it as `canceled`, the tool reports "User canceled the questions", and the run carries on with
   whatever it has. A second Stop (no question pending) is the usual stop.
 - **Typing cancels the question too.** A `chat.send` (a plain message, not a slash command)
   while a question is pending resolves it as `canceled`, then routes the message normally: it
   reaches the run's mailbox and is injected as the next user turn. The owner's words are the
-  steering; the question sheet is dismissed everywhere.
-- The settle writes one tool entry like any other: reopening the thread shows the questions and
-  the answers (or the cancel) on the card, not a second ask.
+  steering; the question card is dropped everywhere.
+- The settle writes one tool entry like any other: the same card then renders what was asked and
+  what was picked (or the cancel), so reopening the thread reads as the exchange it was. No second
+  card, and no state to reconcile.
 
 ### Reasoning
 

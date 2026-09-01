@@ -3,7 +3,8 @@
  *
  * The tool blocks until an answer arrives: the LLM turn cannot proceed without the user's
  * choices, so a question is a long-lived pending object the channel (my-claw-app) broadcasts
- * and the owner answers from a sheet. The design mirrors the approval flow --
+ * and the owner answers from a card drawn in the conversation. The design mirrors the approval
+ * flow --
  * docs/my-claw-app-channel.md -- with two deliberate differences:
  *
  * - No timeout. opencode's question never expires either: a question the owner has not
@@ -77,7 +78,7 @@ export class QuestionManager {
 
   /** Asks and blocks until an answer or a cancel. Never resolves on its own.
    *  `signal` is the run's abort: the pending entry is dropped on abort (the tool then reports
-   *  the abort), so a killed run never leaves a sheet with no run behind it. */
+   *  the abort), so a killed run never leaves a card with no run behind it. */
   ask(input: {
     sessionId: string;
     owner: string;
@@ -117,9 +118,9 @@ export class QuestionManager {
         input.signal?.addEventListener("abort", onAbort, { once: true });
       }
     });
-    // The channel sees it only after it is answerable: the broadcast is the moment a sheet can
+    // The channel sees it only after it is answerable: the broadcast is the moment a card can
     // open. A run that was already aborted must not broadcast: the promise above resolved as
-    // canceled, and a sheet with no run behind it is a button that answers nothing.
+    // canceled, and a card with no run behind it is a button that answers nothing.
     if (!closed) {
       this.handler?.(question);
       this.notifier?.(question);
@@ -153,7 +154,7 @@ export class QuestionManager {
     return undefined;
   }
 
-  /** Everything a window asks for when it connects, so a reloaded app still sees the sheet. */
+  /** Everything a window is handed when it connects, so a reloaded app still sees the card. */
   list(): PendingQuestion[] {
     return Array.from(this.pending.values(), ({ question }) => question);
   }
