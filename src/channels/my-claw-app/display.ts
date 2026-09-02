@@ -66,14 +66,37 @@ export function pageOf(
 const MAX_TURN_LOOKBACK = 400;
 
 /**
+ * Whether `displayId` is one of the ids `displayOf` gives this entry.
+ *
+ * The inverse of the id assignment in `displayOf`, and it lives in the same file for that
+ * reason: paging asks by the id the *client* holds, so every shape the client can hold has to
+ * resolve back to its entry. A tool card is keyed by its model call id (`t-<callId>`), a
+ * command produces two bubbles (`<sourceId>` and `cmd-<sourceId>`), everything else carries the
+ * entry id. Miss one and paging dies on a thread whose oldest held bubble happens to be of that
+ * kind -- which is what shipped in 0.4.83: the client's `t-<callId>` matched nothing, the page
+ * came back empty, and the app read that as the top of the conversation.
+ */
+function carriesDisplayId(entry: Entry, displayId: string): boolean {
+  if (entry.id === displayId) return true;
+  if (entry.type === "tool") return toolCardId(entry.callId) === displayId;
+  if (entry.type === "command") {
+    const sourceId = entry.sourceId || entry.id;
+    return sourceId === displayId || `cmd-${sourceId}` === displayId;
+  }
+  return false;
+}
+
+/**
  * The page just before the entry `beforeId` -- the id-based counterpart of `pageOf`.
  *
  * The window ends right before the referenced entry (exclusive), which is the client's own
  * oldest held item: its id travels back as the cursor, so nothing has to stay true about counts
- * between requests -- the count drifts when the session grows, the id does not. A tool card is
- * keyed by its model call id, and the log carries that alongside the entry id, so both forms
- * resolve. An unknown id (compaction dropped the turn, a branch left the path) returns an empty
- * page with no more below: the client stops rather than repeating itself.
+ * between requests -- the count drifts when the session grows, the id does not.
+ *
+ * An id this branch no longer holds (compaction dropped the turn, a fork left it behind) falls
+ * back to the count cursor the client sends alongside it. Never to an empty page: "no entries,
+ * nothing older" is indistinguishable from the top of the conversation, so the client stops for
+ * good on one unresolvable id. Degrading to an approximate cursor is recoverable, dying is not.
  */
 export function pageBefore(
   path: readonly Entry[],
@@ -85,13 +108,12 @@ export function pageBefore(
   const total = path.length;
   let end = -1;
   for (let i = total - 1; i >= 0; i -= 1) {
-    const entry = path[i]!;
-    if (entry.id === beforeId || (entry.type === "tool" && entry.callId === beforeId)) {
+    if (carriesDisplayId(path[i]!, beforeId)) {
       end = i;
       break;
     }
   }
-  if (end < 0) return { window: [], hasMore: false, nextBefore: fallbackBefore };
+  if (end < 0) return pageOf(path, limit, fallbackBefore, lookback);
   const rawStart = Math.max(end - Math.max(limit, 0), 0);
   const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
   let start = rawStart;

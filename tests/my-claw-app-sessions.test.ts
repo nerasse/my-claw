@@ -253,16 +253,21 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       },
       { role: "tool", toolCallId: "call-1", content: "HTTP 200 OK", timestamp: "2026-01-01T00:00:03.000Z" },
     ]));
-    const page = await store.history(DEVICE, THREAD, 5, 0, "call-1");
+    // The id the client actually holds on a card is `t-<callId>` (toolCardId), not the raw call
+    // id: paging asked with the raw one matched nothing, came back empty, and the app read that
+    // as the top of the conversation. Both shapes resolve here, and the prefixed one is the one
+    // that must.
+    const card = await store.history(DEVICE, THREAD, 5, 0, "t-call-1");
     // The window ends right before the tool result entry: the question and the call it carried
     // are still on the page -- only the settled card itself is the held edge.
-    assert.deepEqual(page.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q", "je regarde"]);
-    assert.equal(page.hasMore, false);
+    assert.deepEqual(card.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q", "je regarde"]);
+    assert.equal(card.hasMore, false);
 
-    // An id the branch no longer holds (compaction, a fork) stops the reader instead of looping.
-    const unknown = await store.history(DEVICE, THREAD, 5, 0, "gone-forever");
-    assert.deepEqual(unknown.entries, []);
-    assert.equal(unknown.hasMore, false);
+    // An id the branch no longer holds (compaction dropped the turn, a fork left it behind)
+    // falls back to the count cursor sent alongside it. Never an empty page: the app cannot
+    // tell that apart from the top of the conversation and would stop paging for good.
+    const unknown = await store.history(DEVICE, THREAD, 2, 1, "gone-forever");
+    assert.ok(unknown.entries.length > 0, "an unresolvable id must not kill paging");
   });
 
   test("a fresh sync serves the newest page with its paging cursor; a delta never does", async () => {
@@ -298,6 +303,37 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     // The cursor counts entries before the window, and the window starts exactly there.
     const first = windowed.entries[0]!;
     assert.equal(first.role === "tool" ? "" : first.text, `big${windowed.nextBefore}`);
+    // A whole window is never "truncated": that flag sends the client asking for a forward
+    // delta, and the turn alignment below can legitimately push the window past the limit.
+    assert.equal(windowed.truncated, undefined);
+  });
+
+  test("the window a thread opens on starts at a question, not inside the work of a run", async () => {
+    // One agentic turn is easily 300 entries. Cut flat at the limit, an opened thread began on
+    // a tool card whose question sat above the window: a run that came from nowhere, which is
+    // exactly what the owner reported seeing at the top of a long conversation.
+    const messages: LegacySessionData["messages"] = [
+      { role: "user", content: "la question du tour", timestamp: "2026-01-01T00:00:00.000Z" },
+    ];
+    for (let i = 0; i < 40; i++) {
+      messages.push({
+        role: "assistant",
+        content: `je travaille ${i}`,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        toolCalls: [{ id: `c-${i}`, name: "bash", arguments: "{}", durationMs: 1 }],
+      });
+      messages.push({ role: "tool", toolCallId: `c-${i}`, content: "ok", timestamp: "2026-01-01T00:00:02.000Z" });
+    }
+    const turnThread = store.resolveSessionId(DEVICE, "thread-turn");
+    sessionId = turnThread;
+    logSetup = await saveSessionWithLog(turnThread, session(turnThread, messages));
+
+    // A window far smaller than the turn: it still opens on the question that started it.
+    const opened = await store.sync(DEVICE, "thread-turn", null, undefined, 10);
+    const first = opened.entries[0]!;
+    assert.equal(first.role, "user");
+    assert.equal(first.role === "user" ? first.text : "", "la question du tour");
+    assert.equal(opened.truncated, undefined);
   });
 
   /**

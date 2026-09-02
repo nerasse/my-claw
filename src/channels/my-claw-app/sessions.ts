@@ -389,9 +389,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // the delta path leaves the client's own cursor standing, so only the replaced window gets one.
     let freshWindow = false;
     if (reset === "branch-switch" || since === undefined || since === null) {
-      // Fresh page: return the path from the server's leaf, up to the limit
-      const path = pathOf(allEntries, serverLeaf);
-      delta = path.slice(-effectiveLimit);
+      // Fresh page: the newest window of the branch, aligned on a turn like a history page is.
+      // A flat slice cuts wherever the count falls, and one agentic turn is easily 300 entries:
+      // an opened thread then starts on a tool card whose question sits above the window, which
+      // reads as a run that came from nowhere.
+      delta = pageOf(pathOf(allEntries, serverLeaf), effectiveLimit, 0).window;
       if (since === undefined || since === null) reset = undefined; // Not a reset, just a fresh open
       freshWindow = true;
     } else {
@@ -402,8 +404,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       } catch (err) {
         if (err instanceof UnknownCursorError) {
           reset = "unknown-cursor";
-          const path = pathOf(allEntries, serverLeaf);
-          delta = path.slice(-effectiveLimit);
+          delta = pageOf(pathOf(allEntries, serverLeaf), effectiveLimit, 0).window;
           freshWindow = true;
         } else {
           throw err;
@@ -411,8 +412,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       }
     }
 
-    // Check if we need to truncate
-    const truncated = delta.length > effectiveLimit;
+    // Only a delta can be truncated. A fresh window is a whole page by construction, and the
+    // turn alignment above can push it past the limit: flagging that as truncated would send the
+    // client asking for a forward delta it already holds, instead of paging backwards.
+    const truncated = !freshWindow && delta.length > effectiveLimit;
     if (truncated) delta = delta.slice(-effectiveLimit);
     const windowLength = delta.length;
 
