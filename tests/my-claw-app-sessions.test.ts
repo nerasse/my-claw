@@ -226,6 +226,80 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(oldest.hasMore, false);
   });
 
+  test("pages by the id of the oldest held item, which is exact where the count drifts", async () => {
+    const messages: LegacySessionData["messages"] = [];
+    for (let i = 0; i < 12; i++) {
+      messages.push({ role: "user", content: `q${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+    }
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
+
+    const newest = await store.history(DEVICE, THREAD, 5);
+    // The client asks for the page right before its oldest held item, by that item's id.
+    const beforeId = newest.entries[0]!.id;
+    const older = await store.history(DEVICE, THREAD, 5, 0, beforeId);
+    // The window ends right before the held id: the five turns that precede it.
+    assert.deepEqual(older.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q2", "q3", "q4", "q5", "q6"]);
+    assert.equal(older.hasMore, true);
+    assert.equal(older.nextBefore, 10);
+
+    // A tool card resolves by its call id too, since that is the id the client holds on cards.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "q", timestamp: "2026-01-01T00:00:00.000Z" },
+      {
+        role: "assistant",
+        content: "je regarde",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        toolCalls: [{ id: "call-1", name: "fetch", arguments: '{"url":"https://x.dev"}', durationMs: 10 }],
+      },
+      { role: "tool", toolCallId: "call-1", content: "HTTP 200 OK", timestamp: "2026-01-01T00:00:03.000Z" },
+    ]));
+    const page = await store.history(DEVICE, THREAD, 5, 0, "call-1");
+    // The window ends right before the tool result entry: the question and the call it carried
+    // are still on the page -- only the settled card itself is the held edge.
+    assert.deepEqual(page.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q", "je regarde"]);
+    assert.equal(page.hasMore, false);
+
+    // An id the branch no longer holds (compaction, a fork) stops the reader instead of looping.
+    const unknown = await store.history(DEVICE, THREAD, 5, 0, "gone-forever");
+    assert.deepEqual(unknown.entries, []);
+    assert.equal(unknown.hasMore, false);
+  });
+
+  test("a fresh sync serves the newest page with its paging cursor; a delta never does", async () => {
+    const messages: LegacySessionData["messages"] = [];
+    for (let i = 0; i < 12; i++) {
+      messages.push({ role: "user", content: `q${i}`, timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z` });
+    }
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
+
+    // Fresh open: the whole branch fits, so nothing is older -- the cursor says so.
+    const fresh = await store.sync(DEVICE, THREAD);
+    assert.equal(fresh.hasMore, false);
+    assert.equal(fresh.nextBefore, 0);
+
+    // A delta keeps the client's own cursor standing: no fields at all.
+    const delta = await store.sync(DEVICE, THREAD, fresh.entries[0]!.id);
+    assert.equal(delta.hasMore, undefined);
+    assert.equal(delta.nextBefore, undefined);
+
+    // Past the sync limit, the fresh window is the newest 500 and the cursor says there is more.
+    // Own thread: the bulk save must land on a file nothing else wrote, or the count is off by
+    // whatever the previous test left behind.
+    const bigThread = store.resolveSessionId(DEVICE, "thread-big");
+    sessionId = bigThread;
+    const big: LegacySessionData["messages"] = [];
+    for (let i = 0; i < 640; i++) {
+      big.push({ role: "user", content: `big${i}`, timestamp: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z` });
+    }
+    logSetup = await saveSessionWithLog(bigThread, session(bigThread, big));
+    const windowed = await store.sync(DEVICE, "thread-big", null, undefined, 500);
+    assert.equal(windowed.hasMore, true);
+    assert.equal(windowed.entries.length, 500);
+    // The cursor counts entries before the window, and the window starts exactly there.
+    const first = windowed.entries[0]!;
+    assert.equal(first.role === "tool" ? "" : first.text, `big${windowed.nextBefore}`);
+  });
+
   /**
    * One agentic turn is easily fifty tool results. Counted flat, the newest page began inside
    * the work and the question that started it sat on the page above: the owner saw his own

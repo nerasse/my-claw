@@ -66,6 +66,40 @@ export function pageOf(
 const MAX_TURN_LOOKBACK = 400;
 
 /**
+ * The page just before the entry `beforeId` -- the id-based counterpart of `pageOf`.
+ *
+ * The window ends right before the referenced entry (exclusive), which is the client's own
+ * oldest held item: its id travels back as the cursor, so nothing has to stay true about counts
+ * between requests -- the count drifts when the session grows, the id does not. A tool card is
+ * keyed by its model call id, and the log carries that alongside the entry id, so both forms
+ * resolve. An unknown id (compaction dropped the turn, a branch left the path) returns an empty
+ * page with no more below: the client stops rather than repeating itself.
+ */
+export function pageBefore(
+  path: readonly Entry[],
+  beforeId: string,
+  limit: number,
+  fallbackBefore: number,
+  lookback = MAX_TURN_LOOKBACK,
+): { window: Entry[]; hasMore: boolean; nextBefore: number } {
+  const total = path.length;
+  let end = -1;
+  for (let i = total - 1; i >= 0; i -= 1) {
+    const entry = path[i]!;
+    if (entry.id === beforeId || (entry.type === "tool" && entry.callId === beforeId)) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return { window: [], hasMore: false, nextBefore: fallbackBefore };
+  const rawStart = Math.max(end - Math.max(limit, 0), 0);
+  const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
+  let start = rawStart;
+  while (start > floor && path[start]!.type !== "user") start -= 1;
+  return { window: path.slice(start, end), hasMore: start > 0, nextBefore: total - start };
+}
+
+/**
  * Turns a sync delta's `spawn_state` entries into the cards they revise.
  *
  * A delta is what the client has not seen, and a state entry on its own is not something it can

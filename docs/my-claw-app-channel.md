@@ -910,15 +910,24 @@ reply can be traced back to its run. Verbosity is `logging.level` in config (hot
 `chat.history` is also the ack for `session.delete` (empty messages list).
 
 History is paged backwards. `session.history` takes `before`, a count of messages back
-from the newest one; absent or `0` is the newest page, which the app uses to replace the
-thread. The reply carries `hasMore` and `nextBefore`, and the app sends `nextBefore` back
-as `before` to walk further. The cursor is an offset rather than a message id because a
-session is append-only: what sits before a given point never changes. It comes from the
+from the newest one, or `beforeId`, the id of the client's oldest held item; absent or `0` is
+the newest page, which the app uses to replace the thread. The reply carries `hasMore` and
+`nextBefore`, and the app sends the oldest held item's id back as `beforeId` to walk further
+(`before` and `beforeId` are both sent; the server answers the id where supported). The id
+cursor stays exact when the session grows between two loads and when the app unloads its
+oldest items past its in-memory cap; the count cursor drifts in both cases. It comes from the
 server because the app cannot derive it -- one stored message can become two bubbles (an
 assistant turn plus its tool card) and a `role:"tool"` message becomes none of its own, so
 the entry count says nothing about how far back the app now is. A cursor past the start of
 the session is an empty page with `hasMore: false`, not an error. A server that answers
 neither field is one that predates this, and the app simply never asks for an older page.
+
+A thread is opened and resumed with `session.sync`, and its answer carries the paging cursor
+with the window that replaces the client's thread: a fresh window (no `since`, or a reset)
+includes `hasMore` and `nextBefore`, so the reader at the top knows there is older work and
+where to ask -- the delta answer never does, it leaves the cursor the client already holds
+standing. Without those fields on the fresh window (0.4.82 and older), the app's `hasMore`
+stayed false and lazy loading never fired.
 
 A page is a count of messages but a conversation is read in turns, so the slice is grown
 backwards to the user message that opened the turn it starts in. One agentic turn is easily

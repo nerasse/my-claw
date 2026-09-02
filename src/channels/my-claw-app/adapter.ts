@@ -2199,7 +2199,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before);
+      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before, frame.beforeId);
       const result: MyClawAppChatHistory = {
         type: "chat.history",
         threadId,
@@ -2210,6 +2210,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // Echoed so the app can tell an older page, which it prepends, from the newest one,
         // which replaces the thread. The two arrive on the same frame type.
         ...(frame.before ? { before: frame.before } : {}),
+        // Same for the id cursor: the client only trusts a page its cursor was honoured for,
+        // and an unknown cursor (compaction, a branch) returns an empty page to stop it.
+        ...(frame.beforeId ? { beforeId: frame.beforeId } : {}),
         // Always sent, both ways: the app makes this page authoritative over its own run flag, so
         // an omitted false would leave a stale one standing after a run ended during a disconnect.
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
@@ -2240,6 +2243,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         head: page.head,
         ...(page.reset ? { reset: page.reset } : {}),
         ...(page.truncated ? { truncated: page.truncated } : {}),
+        ...(page.hasMore !== undefined && page.nextBefore !== undefined
+          ? { hasMore: page.hasMore, nextBefore: page.nextBefore }
+          : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
       };
       this.sendFrame(ws, result);

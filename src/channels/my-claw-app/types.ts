@@ -98,6 +98,13 @@ export interface MyClawAppSessionHistory {
    * nothing has to be stable across the split into bubbles the app performs on top.
    */
   before?: number;
+  /**
+   * The entry id just before which the older page starts: the client's oldest held item (a tool
+   * card may carry its call id instead). Preferred over `before` where supported, because it
+   * stays exact when the session grows between loads and when the client trims its oldest items
+   * -- docs/session-log.md, and the app's own history paging.
+   */
+  beforeId?: string;
 }
 
 /**
@@ -1423,6 +1430,8 @@ export interface MyClawAppChatHistory {
   messages: MyClawAppHistoryEntry[];
   /** Echo of the request cursor: absent or 0 is the newest page, which replaces the thread. */
   before?: number;
+  /** Echo of the request id cursor; absent means the server did not honour `beforeId`. */
+  beforeId?: string;
   /** Whether anything remains before this page, so the app stops asking at the top. */
   hasMore?: boolean;
   /** What to send as `before` to get the page just older than this one. */
@@ -1464,6 +1473,14 @@ export interface MyClawAppSessionSyncResult {
   reset?: "unknown-cursor" | "branch-switch";
   /** Whether entries were truncated by the limit. */
   truncated?: boolean;
+  /**
+   * Whether anything remains before the window just served. Only on a full page (fresh open or
+   * reset, not truncated): that is when the client replaces its held thread and needs a paging
+   * cursor -- the delta path leaves the client's own cursor standing.
+   */
+  hasMore?: boolean;
+  /** What the client requests next to get the page just older than the window. */
+  nextBefore?: number;
 }
 
 /**

@@ -5,7 +5,7 @@ import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, displayOf, runFold, withSpawnCards, type DisplayResolvers } from "./display.ts";
+import { pageOf, pageBefore, displayOf, runFold, withSpawnCards, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -25,12 +25,16 @@ export interface MyClawAppSyncPage {
   head: string | null;
   reset?: "unknown-cursor" | "branch-switch";
   truncated?: boolean;
+  /** Whether anything remains before the newest window just served (fresh page only). */
+  hasMore?: boolean;
+  /** Count of entries before that window; the client's next `history` cursor. */
+  nextBefore?: number;
 }
 
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
-  history(owner: string, threadId: string, limit?: number, before?: number): Promise<MyClawAppHistoryPage>;
+  history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string): Promise<MyClawAppHistoryPage>;
   /**
    * Returns entries since the client's cursor, plus the current leaf and head.
    * When the cursor is unknown or the branch diverges, returns a fresh page with `reset` set.
@@ -307,7 +311,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return summaries;
   }
 
-  async history(owner: string, threadId: string, limit = HISTORY_LIMIT, before = 0): Promise<MyClawAppHistoryPage> {
+  async history(owner: string, threadId: string, limit = HISTORY_LIMIT, before = 0, beforeId?: string): Promise<MyClawAppHistoryPage> {
     // Reading the file here would replay a thread as it stood before the current turn started,
     // and the app replaces what is on screen with what this returns: the question just sent and
     // the cards already streamed would vanish until the run ends.
@@ -323,8 +327,13 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const path = pathOf(log.entries(), log.leaf());
     if (path.length === 0) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
 
-    // Pagination: pageOf aligns on turn boundaries
-    const { window, hasMore, nextBefore } = pageOf(path, limit, before);
+    // Pagination: pageOf aligns on turn boundaries. `beforeId` is the client's oldest held
+    // entry (or a tool call id, which the client owns on tool cards): the page ends right before
+    // it, so the cursor survives session growth and client-side trimming -- the count-based
+    // `before` drifts when new entries land between two requests.
+    const { window, hasMore, nextBefore } = beforeId
+      ? pageBefore(path, beforeId, limit, before)
+      : pageOf(path, limit, before);
 
     // List thread files for attachment resolution
     const needsFiles = window.some((e: Entry) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")));
@@ -375,11 +384,16 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     }
 
     let delta: Entry[];
+    // True when the answer replaces the client's held thread (fresh open or a reset): this is
+    // the newest page, so it also carries the paging cursor the client needs to walk back -
+    // the delta path leaves the client's own cursor standing, so only the replaced window gets one.
+    let freshWindow = false;
     if (reset === "branch-switch" || since === undefined || since === null) {
       // Fresh page: return the path from the server's leaf, up to the limit
       const path = pathOf(allEntries, serverLeaf);
       delta = path.slice(-effectiveLimit);
       if (since === undefined || since === null) reset = undefined; // Not a reset, just a fresh open
+      freshWindow = true;
     } else {
       // Try to get delta since the cursor
       try {
@@ -390,6 +404,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
           reset = "unknown-cursor";
           const path = pathOf(allEntries, serverLeaf);
           delta = path.slice(-effectiveLimit);
+          freshWindow = true;
         } else {
           throw err;
         }
@@ -399,6 +414,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // Check if we need to truncate
     const truncated = delta.length > effectiveLimit;
     if (truncated) delta = delta.slice(-effectiveLimit);
+    const windowLength = delta.length;
 
     // A state entry the client cannot draw becomes the card it revised, before anything else looks
     // at the delta -- including the attachment scan, which now sees a tool entry rather than an
@@ -417,12 +433,20 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const runs = runFold(pathOf(allEntries, serverLeaf));
     const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored, runs);
 
+    const branchLength = pathOf(allEntries, serverLeaf).length;
     return {
       entries,
       leaf: serverLeaf,
       head,
       ...(reset ? { reset } : {}),
       ...(truncated ? { truncated } : {}),
+      // The window that replaces the client's held thread is the newest page: it carries the
+      // paging cursor so the client knows older work exists and where to ask for it --
+      // docs/session-log.md. A delta leaves the client's own cursor standing, or it would march
+      // ahead of what the client actually holds.
+      ...(freshWindow && !truncated
+        ? { hasMore: windowLength < branchLength, nextBefore: branchLength - windowLength }
+        : {}),
     };
   }
 

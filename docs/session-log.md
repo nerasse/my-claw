@@ -532,9 +532,19 @@ logique devient une ligne dans `displayOf`.
 `HISTORY_LIMIT` reste à 50 mais compte enfin la bonne chose : mesuré sur `4d5775e7`,
 50 messages = 1,5 tour ; 50 entrées alignées = 3 tours entiers.
 
-**Côté app, plafond ~500 entrées en mémoire par thread.** Le delta accumule sinon
-indéfiniment, et une session de 3695 entrées sur un téléphone finirait par ramer. Au-delà,
-les plus anciennes sont relâchées et redemandées au scroll.
+**Côté app, l'unloading des plus anciennes entrées est effectif.** Le delta accumule sinon
+indéfiniment, et une session de 12 000 entrées sur un téléphone finirait par ramer. Au-delà
+de 6 000 items détenus, les plus anciens sont relâchés (redescendus à 4 000) — mais seulement
+quand le lecteur est sur le message le plus récent : rien de visible ne disparaît. La
+pagination demande alors par **id du plus ancien item détenu** (`beforeId`), si bien que la
+page relâchée revient au scroll, exacte même après la croissance de la session entre deux
+chargements (le compteur `before` dérive, l'id non).
+
+Le curseur de pagination est **posé à l'ouverture par `session.sync`** : la page fraîche
+(ouverture ou reset) porte `hasMore` / `nextBefore`, le delta n'en porte pas (le curseur du
+client reste debout). C'est ce qui a rendu le lazy loading muet en 0.6.21 : l'ouverture passée
+sur `session.sync` en 0615cb1, le résultat de sync ne posait jamais le curseur et `hasMore`
+restait faux pour toujours.
 
 ## 3.5 `spawnStates` — l'état d'un sous-agent, replié sur sa carte
 
