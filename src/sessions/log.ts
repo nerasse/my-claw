@@ -112,6 +112,11 @@ export interface CommandEntry extends EntryBase {
   details?: string;
   /** The app's chat.send id, used to replay both command bubbles under their live ids. */
   sourceId?: string;
+  /**
+   * Quiet commands (undo, retry, branches) never show their input line: the entry replays as
+   * the result bubble only, live and on every refresh. `display.ts` renders this, nothing else.
+   */
+  quiet?: boolean;
 }
 
 export interface FailureEntry extends EntryBase {

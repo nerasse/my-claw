@@ -12,6 +12,13 @@ export interface CommandInfo {
    * declared here so the menu, the help text and the interception can never drift apart.
    */
   channels?: readonly string[];
+  /**
+   * The typed input is not echoed: the command is pure navigation (undo, retry, branches), its
+   * input line is noise, only the result bubble is worth seeing. Quiet commands skip the live
+   * echo, the "Running ..." notice and the replayed input bubble -- the output alone is the
+   * whole story, live and on every later refresh.
+   */
+  quiet?: boolean;
 }
 
 export const COMMANDS: readonly CommandInfo[] = [
@@ -34,11 +41,11 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "agents", description: "List agent types and live sub-agents" },
   { command: "mcp", description: "List MCP servers, optionally for one agent" },
   { command: "instructions", description: "Dump the composed system prompt" },
-  { command: "branches", description: "List branches, switch: /branches [n], name: /branches name <n> <label>", channels: ["my-claw-app"] },
-  { command: "retry", description: "Retry from before the last user turn: /retry [n]", channels: ["my-claw-app"] },
-  { command: "fork", description: "Fork conversation to a new thread: /fork [entryId]", channels: ["my-claw-app"] },
-  { command: "undo", description: "Undo last turn (aborts running), /redo to revert", channels: ["my-claw-app"] },
-  { command: "redo", description: "Redo after /undo (only if no new turn was written)", channels: ["my-claw-app"] },
+  { command: "branches", description: "List branches, switch: /branches [n], name: /branches name <n> <label>", channels: ["my-claw-app"], quiet: true },
+  { command: "retry", description: "Retry from before the last user turn: /retry [n]", channels: ["my-claw-app"], quiet: true },
+  { command: "fork", description: "Fork conversation to a new thread: /fork [entryId]", channels: ["my-claw-app"], quiet: true },
+  { command: "undo", description: "Undo last turn (aborts running), /redo to revert", channels: ["my-claw-app"], quiet: true },
+  { command: "redo", description: "Redo after /undo (only if no new turn was written)", channels: ["my-claw-app"], quiet: true },
   { command: "help", description: "List available commands" },
 ];
 

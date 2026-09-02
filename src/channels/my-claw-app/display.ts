@@ -268,9 +268,12 @@ export function displayOf(
     if (entry.type === "command") {
       // A command entry has one log id but produces two bubbles. Prefer the chat.send id so both
       // replayed bubbles match the live input and `cmd-<send id>` result; old entries keep the
-      // generated-id fallback.
+      // generated-id fallback. A quiet command (undo, retry, branches) replays its result only:
+      // the input line was never shown live, so it must not reappear on a refresh.
       const sourceId = entry.sourceId || entry.id;
-      out.push({ id: sourceId, role: "user", text: entry.input, ts });
+      if (!entry.quiet) {
+        out.push({ id: sourceId, role: "user", text: entry.input, ts });
+      }
       out.push({
         id: `cmd-${sourceId}`,
         role: "assistant",

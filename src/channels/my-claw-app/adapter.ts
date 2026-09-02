@@ -1529,6 +1529,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     renderedAsPage: boolean,
     details: string | undefined,
     sourceId: string,
+    quiet = false,
   ): Promise<void> {
     if (renderedAsPage) return;
     const redacted = redactCommandArgs(command, args);
@@ -1536,7 +1537,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     try {
       // The entry has its own log identity. The source id is the chat.send id the app already
       // used for the command and its answer, so replay can replace both live bubbles.
-      await this.store.recordCommand(owner, threadId, input, output, details, sourceId);
+      await this.store.recordCommand(owner, threadId, input, output, details, sourceId, quiet);
     } catch (err) {
       void myClawAppLog("error", "command journal failed", { owner, threadId, command, error: String(err) });
     }
@@ -1603,22 +1604,28 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // is intercepted: an unknown /word is a question like any other and must reach the agent.
     if (text && refs.length === 0 && !hasLocation && this.commandHandler) {
       const command = /^\/([a-z-]+)/i.exec(text)?.[1];
-      if (command && APP_COMMANDS.some((c) => c.command === command)) {
+      const commandInfo = command ? APP_COMMANDS.find((c) => c.command === command) : undefined;
+      if (command && commandInfo) {
         const args = text.slice(command.length + 1).trim();
         // A command is a prompt too: the other windows show what was typed, then its answer.
-        this.echoUserMessage(ws, threadId, frame, text, []);
+        // A quiet command (undo, retry, branches) is the opposite: the input is navigation
+        // noise, only the result bubble is worth showing, live and on every refresh.
+        const quiet = commandInfo.quiet === true;
+        if (!quiet) this.echoUserMessage(ws, threadId, frame, text, []);
         // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
         // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
         // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
         // first wins, and the result replaces the notice when both were sent.
-        const pending = setTimeout(() => {
-          this.broadcast(owner, {
-            type: "chat.command.pending",
-            threadId,
-            replyToId: frame.id,
-            text: `Running /${command}...`,
-          });
-        }, COMMAND_PENDING_NOTICE_MS);
+        const pending = quiet
+          ? undefined
+          : setTimeout(() => {
+              this.broadcast(owner, {
+                type: "chat.command.pending",
+                threadId,
+                replyToId: frame.id,
+                text: `Running /${command}...`,
+              });
+            }, COMMAND_PENDING_NOTICE_MS);
         try {
           const output = await this.commandHandler(owner, threadId, command, args);
           clearTimeout(pending);
@@ -1639,16 +1646,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
               ...(reset ? { reset } : {}),
               ...(compose !== undefined ? { compose } : {}),
               ...(newThreadId ? { newThreadId } : {}),
+              ...(quiet ? { dropInput: true } : {}),
             });
-            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id);
+            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id, quiet);
           }
           return;
         } catch (err) {
           clearTimeout(pending);
           void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
           const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
-          this.broadcast(owner, { type: "chat.command.result", threadId, replyToId: frame.id, text: failure });
-          await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id);
+          this.broadcast(owner, {
+            type: "chat.command.result",
+            threadId,
+            replyToId: frame.id,
+            text: failure,
+            ...(quiet ? { dropInput: true } : {}),
+          });
+          await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id, quiet);
           return;
         }
       }

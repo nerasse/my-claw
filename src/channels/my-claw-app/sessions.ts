@@ -43,7 +43,7 @@ export interface MyClawAppSessionStore {
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
    */
-  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void>;
+  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet?: boolean): Promise<void>;
   /**
    * Journals a run that died and the error the owner was shown, so a reopened thread still says
    * why the question got no answer. No-op on a thread that has no session yet.
@@ -471,7 +471,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     await this.sessionManager.persist(sessionId);
   }
 
-  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void> {
+  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet = false): Promise<void> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
@@ -483,6 +483,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       output,
       ...(details ? { details } : {}),
       ...(sourceId ? { sourceId } : {}),
+      ...(quiet ? { quiet } : {}),
     });
     await this.sessionManager.persist(sessionId);
   }

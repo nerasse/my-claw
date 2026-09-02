@@ -2059,6 +2059,12 @@ export interface MyClawAppCommandResult {
   compose?: string;
   /** The new threadId to navigate to (for fork). */
   newThreadId?: string;
+  /**
+   * The command's input bubble is noise (undo, retry, branches): the app must drop the
+   * optimistic bubble it drew at send, so only the result remains -- live and on refresh,
+   * where the server replays the quiet entry as the result bubble alone.
+   */
+  dropInput?: boolean;
 }
 
 /**

@@ -272,6 +272,13 @@ describe("displayOf: what is shown and never sent", () => {
     expect(drawn[0]!.id).not.toBe(drawn[1]!.id);
   });
 
+  test("a quiet command replays the result bubble only", () => {
+    const entries = chain([{ type: "command", prompt: false, input: "/undo", output: "Undo: conversation rembobinée", sourceId: "send-1", quiet: true }]);
+    const drawn = show(entries);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ id: "cmd-send-1", role: "assistant", text: "Undo: conversation rembobinée", command: true });
+  });
+
   test("an old command without a source id keeps a stable fallback", () => {
     const entry = chain([{ type: "command", prompt: false, input: "/status", output: "ok" }])[0]!;
     const drawn = show([entry]);
