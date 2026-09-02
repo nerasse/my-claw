@@ -173,6 +173,16 @@ class FakeSessionStore {
   /** Card id -> the output the session would hand back in full. Absent means "not found". */
   toolOutputs = new Map<string, string>();
 
+  /** `<fromId>..<untilId>` -> the items a folded row stands for. Absent means "not found". */
+  runRanges = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
+  runItemsCalls: Array<{ fromId: string; untilId: string }> = [];
+
+  async runItems(_deviceId: string, _threadId: string, fromId: string, untilId: string) {
+    this.runItemsCalls.push({ fromId, untilId });
+    const entries = this.runRanges.get(`${fromId}..${untilId}`);
+    return entries ? { entries, found: true } : { entries: [], found: false };
+  }
+
   async toolOutput(_deviceId: string, _threadId: string, cardId: string): Promise<string | null> {
     return this.toolOutputs.get(cardId) ?? null;
   }
@@ -1363,6 +1373,38 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.type, "chat.tool.full.result");
     assert.equal(frame.found, false);
     assert.equal(frame.output, "");
+  });
+
+  test("session.run.items hands back the work a folded row stood for", async () => {
+    store.runRanges.set("run-e1..e9", [
+      { id: "e1", role: "assistant", text: "etape", ts: "t1" },
+      { id: "e9", role: "assistant", text: "fin", ts: "t2" },
+    ]);
+    client.ws.send(JSON.stringify({ type: "session.run.items", threadId: "a", fromId: "run-e1", untilId: "e9" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; fromId: string; found: boolean; messages: unknown[] };
+    assert.equal(frame.type, "chat.run.items");
+    assert.equal(frame.threadId, "a");
+    // Echoed in the form the client sent, because that is the row it has to replace.
+    assert.equal(frame.fromId, "run-e1");
+    assert.equal(frame.found, true);
+    assert.equal(frame.messages.length, 2);
+    assert.deepEqual(store.runItemsCalls.at(-1), { fromId: "run-e1", untilId: "e9" });
+  });
+
+  test("session.run.items says so when the branch no longer holds the range", async () => {
+    // The group then stays collapsed and says it, rather than emptying itself in silence.
+    client.ws.send(JSON.stringify({ type: "session.run.items", threadId: "a", fromId: "run-gone", untilId: "e9" }));
+    const frame = (await nextFrame(client)) as { type: string; found: boolean; messages: unknown[] };
+    assert.equal(frame.type, "chat.run.items");
+    assert.equal(frame.found, false);
+    assert.deepEqual(frame.messages, []);
+  });
+
+  test("session.run.items without a range is refused rather than guessed", async () => {
+    client.ws.send(JSON.stringify({ type: "session.run.items", threadId: "a", fromId: "run-e1" }));
+    const frame = (await nextFrame(client)) as { type: string; scope: string };
+    assert.equal(frame.type, "error");
+    assert.equal(frame.scope, "session");
   });
 
   test("session.history carries the cursor through and echoes it back with hasMore", async () => {

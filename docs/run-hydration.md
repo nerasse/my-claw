@@ -184,8 +184,12 @@ continuent d'arriver item par item.
 
    L'ouverture plafonne à x7 parce que le run **en cours** n'est jamais replié : ses 73 items
    pèsent 155 des 182 KB restants. Une fois le run terminé, la même page tombe à ~27 KB.
-2. **Serveur, l'hydratation.** `session.run.items` / `chat.run.items` dans `adapter.ts` et
-   `sessions.ts`.
+2. **Serveur, l'hydratation.** — *livré*. `session.run.items` / `chat.run.items` dans
+   `adapter.ts`, `runItems()` dans `sessions.ts`. Borné par la plage que la ligne porte
+   (`fromId`/`untilId`), plafond `RUN_ITEMS_LIMIT` (1000 entrées) pour la requête que personne
+   n'a mintée. Vérifié sur la vraie session : page repliée + items hydratés = la page pleine,
+   **id pour id**, sur trois pages (594 KB -> 86 KB, 818 KB -> 6,7 KB, 1 094 KB -> 68 KB), et
+   ~140 ms pour ouvrir un groupe, l'ordre de grandeur d'une page d'historique.
 3. **App, le rendu.** `fold: true` sur les requêtes, état d'hydratation dans le store,
    `RunGroup` qui demande à l'ouverture, squelette, échec, `buildRows` simplifié + fusion de
    deux résumés adjacents du même run. À corriger au passage : `buildRows` traite le dernier

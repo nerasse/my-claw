@@ -76,6 +76,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionSync,
   MyClawAppSessionSyncResult,
   MyClawAppToolFull,
+  MyClawAppSessionRunItems,
   MyClawAppSessionList,
   MyClawAppSessionListResult,
   MyClawAppSessionRename,
@@ -1446,6 +1447,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.sync":
         this.detach(this.handleSessionSync(ws, frame), "handleSessionSync");
         break;
+      case "session.run.items":
+        this.detach(this.handleRunItems(ws, frame), "handleRunItems");
+        break;
       case "chat.tool.full":
         this.detach(this.handleToolFull(ws, frame), "handleToolFull");
         break;
@@ -2265,6 +2269,36 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * than with an empty string: the app then keeps what it already has instead of blanking the
    * block under the reader's eyes.
    */
+  /**
+   * The items a folded run row stands for -- docs/run-hydration.md. The other half of the fold:
+   * the page carried a header, and this is what the reader who opened the group pays for.
+   */
+  private async handleRunItems(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionRunItems): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId || !frame.fromId || !frame.untilId) {
+      await this.refuse(ws, "session", "invalid run range", {
+        threadId: frame.threadId,
+        fromId: frame.fromId,
+        untilId: frame.untilId,
+      });
+      return;
+    }
+    try {
+      const page = await this.store.runItems(ws.data.owner, threadId, frame.fromId, frame.untilId);
+      this.sendFrame(ws, {
+        type: "chat.run.items",
+        threadId,
+        // Echoed exactly as asked: that is the row the client has to replace, and it holds the
+        // prefixed form.
+        fromId: frame.fromId,
+        messages: page.entries,
+        found: page.found,
+      });
+    } catch (err) {
+      await this.refuse(ws, "session", "run items failed", { threadId, fromId: frame.fromId, error: String(err) });
+    }
+  }
+
   private async handleToolFull(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppToolFull): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId);
     if (!threadId || !frame.id) {

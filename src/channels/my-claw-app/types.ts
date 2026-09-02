@@ -153,6 +153,23 @@ export interface MyClawAppToolFull {
   id: string;
 }
 
+/**
+ * Asks for the items a folded run row stands for -- docs/run-hydration.md.
+ *
+ * The other half of the fold, and the same trade `chat.tool.full` already makes: the page carries
+ * a header, the reader who opens the group pays for its work. Bounded by the two ids the row
+ * itself carries, not by a run id: a run cut by a page boundary folds into one row per page, and
+ * answering with the whole run would splice items the client already holds.
+ */
+export interface MyClawAppSessionRunItems {
+  type: "session.run.items";
+  threadId: string;
+  /** The row id (`run-<entryId>`) or the bare entry id: the first item the row stands for. */
+  fromId: string;
+  /** The row's `lastId`: the final item it stands for, included. */
+  untilId: string;
+}
+
 export interface MyClawAppSessionArchive {
   type: "session.archive";
   threadId: string;
@@ -922,6 +939,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionHistory
   | MyClawAppSessionSync
   | MyClawAppToolFull
+  | MyClawAppSessionRunItems
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
@@ -1538,6 +1556,24 @@ export interface MyClawAppChatToolFull {
   threadId: string;
   id: string;
   output: string;
+  found: boolean;
+}
+
+/**
+ * The answer to `session.run.items`: the work a folded row stood for, in the same shapes a page
+ * of history uses, so the client splices them in place of the row and renders nothing new.
+ *
+ * `found` false is a range the current branch no longer holds: a compaction dropped the turn, or
+ * a rewind moved to another branch. The group then says so and stays collapsed rather than
+ * emptying itself in silence. It is also the answer to a range wider than any page, which no row
+ * this server minted can ask for.
+ */
+export interface MyClawAppChatRunItems {
+  type: "chat.run.items";
+  threadId: string;
+  /** Echoed exactly as asked, because that is the row the client has to replace. */
+  fromId: string;
+  messages: MyClawAppHistoryEntry[];
   found: boolean;
 }
 
@@ -2755,6 +2791,7 @@ export type MyClawAppServerFrame =
   | MyClawAppToolStart
   | MyClawAppToolDelta
   | MyClawAppChatToolFull
+  | MyClawAppChatRunItems
   | MyClawAppSpawnStart
   | MyClawAppSpawnEnd
   | MyClawAppApprovalRequest

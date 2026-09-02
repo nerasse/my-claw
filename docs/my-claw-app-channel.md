@@ -937,6 +937,15 @@ than announced once on the connection: an older app never sets it and receives e
 always received, and there is no hello to race with the first page. The row's id is
 `run-<first folded entry id>`, and it is a valid `beforeId` cursor like any other row.
 
+`session.run.items` is the other half of the fold: it takes `fromId` (the row id, or the bare
+entry id) and `untilId` (the row's `lastId`) and answers `chat.run.items` with the items that
+range covers, in the same shapes `chat.history` uses, plus `found`. A range, not a run id: a run
+cut by a page boundary folds into one row per page, so answering with the whole run would splice
+items the client already holds. `found: false` is a range the current branch no longer carries (a
+compaction dropped the turn, a rewind changed branch) or one wider than any page this server
+mints; the group then says so and stays collapsed rather than emptying itself. The clip on tool
+output applies exactly as on a history page, so `chat.tool.full` remains the way to the rest.
+
 A page is a count of messages but a conversation is read in turns, so the slice is grown
 backwards to the user message that opened the turn it starts in. One agentic turn is easily
 fifty tool results: cut at the count, the newest page began inside the work and left the

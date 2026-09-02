@@ -31,6 +31,13 @@ export interface MyClawAppSyncPage {
   nextBefore?: number;
 }
 
+/** The return value of `runItems`: the work a folded row stood for -- docs/run-hydration.md. */
+export interface MyClawAppRunItemsPage {
+  entries: MyClawAppHistoryEntry[];
+  /** False when the current branch no longer holds the range, or when it is implausibly wide. */
+  found: boolean;
+}
+
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
@@ -40,6 +47,11 @@ export interface MyClawAppSessionStore {
    * When the cursor is unknown or the branch diverges, returns a fresh page with `reset` set.
    */
   sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number, fold?: boolean): Promise<MyClawAppSyncPage>;
+  /**
+   * The items a folded run row stands for -- docs/run-hydration.md. `found` false is a range the
+   * current branch no longer holds.
+   */
+  runItems(owner: string, threadId: string, fromId: string, untilId: string): Promise<MyClawAppRunItemsPage>;
   /** One tool card's output in full; null when the session no longer holds the call. */
   toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
@@ -94,6 +106,22 @@ export function sanitizeThreadId(raw: string): string | null {
 const HISTORY_LIMIT = 50;
 /** Maximum entries returned by sync, per docs/session-log.md §3.4 and §4.1. */
 const SYNC_LIMIT = 500;
+/**
+ * Widest range hydration will answer. A folded row never spans more than the page it was cut
+ * from, and a page is `SYNC_LIMIT` plus the turn-alignment walk, so this is generous for anything
+ * this server minted. It exists for the request that was not: two ids far apart would otherwise
+ * serve tens of megabytes off a single frame.
+ */
+const RUN_ITEMS_LIMIT = 1000;
+
+/**
+ * The bare entry id behind a row id. `run-<id>` is what the client holds on a folded row, and
+ * `toolOutput` already takes `t-<callId>` the same way: the wire accepts what the client has
+ * rather than making it strip prefixes it did not invent.
+ */
+function bareEntryId(raw: string): string {
+  return raw.startsWith("run-") ? raw.slice(4) : raw;
+}
 /**
  * How far back the newest page may reach to start on a question rather than mid-work. One
  * agentic turn is easily two hundred messages, and a page that starts inside one reads as a
@@ -473,6 +501,48 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         ? { hasMore: windowLength < branchLength, nextBefore: branchLength - windowLength }
         : {}),
     };
+  }
+
+  /**
+   * The work a folded row stood for, fetched when the reader opens the group.
+   *
+   * The other half of the fold, and the same trade `toolOutput` already makes: the page carries a
+   * header, whoever opens it pays for the items. Addressed by the range the row itself carries and
+   * not by a run id, because a run cut by a page boundary folds into one row per page -- answering
+   * with the whole run would hand back items the client already holds and splice them twice.
+   *
+   * `found` false rather than a partial answer when the range is gone (a compaction dropped the
+   * turn, a rewind moved to another branch): the group then says so and stays collapsed, which is
+   * recoverable. Silently emptying itself is not.
+   */
+  async runItems(owner: string, threadId: string, fromId: string, untilId: string): Promise<MyClawAppRunItemsPage> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) return { entries: [], found: false };
+
+    const log = await sessionLogOf(sessionId);
+    const path = pathOf(log.entries(), log.leaf());
+    // The row id or the bare entry id, like `toolOutput` takes `t-<callId>` or the call id: the
+    // client holds `run-<id>` on the row and a bare id in `lastId`, and should not have to know
+    // which of the two the wire wants.
+    const from = bareEntryId(fromId);
+    const until = bareEntryId(untilId);
+    const start = path.findIndex((entry) => entry.id === from);
+    const end = path.findIndex((entry) => entry.id === until);
+    if (start < 0 || end < start) return { entries: [], found: false };
+    // No row this server minted spans more than a page. A wider range is a client asking for the
+    // session in one frame, and answering it would serve tens of megabytes off one request.
+    if (end - start + 1 > RUN_ITEMS_LIMIT) return { entries: [], found: false };
+
+    const window = path.slice(start, end + 1);
+    const needsFiles = window.some((e: Entry) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")));
+    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    const resolvers = makeResolvers(stored);
+    // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
+    // may have settled long after it, and the run meta must be the one the header already shows.
+    const runs = runFold(path);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs);
+    return { entries, found: true };
   }
 
   /**

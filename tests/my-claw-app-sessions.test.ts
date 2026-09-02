@@ -391,6 +391,70 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.deepEqual(synced.entries.map((e) => e.role), ["user", "user", "run"]);
   });
 
+  /** The other half of the fold: what the reader gets when the collapsed group is opened. */
+  test("hydration hands back exactly the range the row stood for", async () => {
+    const hydrateThread = store.resolveSessionId(DEVICE, "thread-hydrate");
+    sessionId = hydrateThread;
+    logSetup = await saveSessionWithLog(hydrateThread, session(hydrateThread, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "fais le travail" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    for (let i = 0; i < 12; i++) {
+      logSetup.log.append({ type: "phase", prompt: true, text: `etape ${i}`, runId: start.id });
+      logSetup.log.append({
+        type: "tool", prompt: true, callId: `call-${i}`, name: "bash",
+        args: { command: "ls" }, output: `sortie ${i}`, truncated: false, ok: true, runId: start.id,
+      });
+    }
+    const answer = logSetup.log.append({ type: "phase", prompt: true, text: "voila", runId: start.id });
+    logSetup.log.append({ type: "run_end", prompt: false, reason: "done" });
+
+    const folded = await store.history(DEVICE, "thread-hydrate", undefined, 0, undefined, true);
+    const summary = folded.entries.find((e) => e.role === "run");
+    assert.ok(summary && summary.role === "run", "the run must have folded");
+    // The answer is hoisted: it is on the page, not in the fold.
+    assert.equal(folded.entries.some((e) => e.id === answer.id), true);
+
+    const hydrated = await store.runItems(DEVICE, "thread-hydrate", summary.id, summary.lastId);
+    assert.equal(hydrated.found, true);
+    // Exactly what the row claimed, in the same shapes a page uses.
+    assert.equal(hydrated.entries.length, summary.itemCount);
+    assert.equal(hydrated.entries.filter((e) => e.role === "tool").length, summary.toolCount);
+    // And nothing the page already carried: not the question, not the answer.
+    assert.equal(hydrated.entries.some((e) => e.id === answer.id), false);
+    assert.equal(hydrated.entries.some((e) => e.role === "user"), false);
+    // The run meta travels with the items, so the group renders them under the same header.
+    assert.equal(hydrated.entries[0]!.run?.id, start.id);
+
+    // The bare entry id works as well as the row id: the client holds both forms.
+    const bare = await store.runItems(DEVICE, "thread-hydrate", summary.id.slice(4), summary.lastId);
+    assert.deepEqual(bare.entries.map((e) => e.id), hydrated.entries.map((e) => e.id));
+
+    // Splicing the items back where the row was rebuilds the unfolded page, item for item.
+    const whole = await store.history(DEVICE, "thread-hydrate");
+    const spliced = folded.entries.flatMap((e) => (e.role === "run" ? hydrated.entries : [e]));
+    assert.deepEqual(spliced.map((e) => e.id), whole.entries.map((e) => e.id));
+  });
+
+  test("a range the branch no longer holds is refused, not half-answered", async () => {
+    const goneThread = store.resolveSessionId(DEVICE, "thread-gone");
+    sessionId = goneThread;
+    logSetup = await saveSessionWithLog(goneThread, session(goneThread, [
+      { role: "user", content: "salut", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const real = logSetup.log.append({ type: "user", prompt: true, text: "encore" });
+
+    const missing = await store.runItems(DEVICE, "thread-gone", "run-01a0-not-here", real.id);
+    assert.equal(missing.found, false);
+    assert.deepEqual(missing.entries, []);
+
+    // Backwards is not a range either.
+    const first = (await store.history(DEVICE, "thread-gone")).entries[0]!;
+    const backwards = await store.runItems(DEVICE, "thread-gone", real.id, first.id);
+    assert.equal(backwards.found, false);
+  });
+
   test("a run still going is never folded away from the client watching it", async () => {
     const liveThread = store.resolveSessionId(DEVICE, "thread-fold-live");
     sessionId = liveThread;
