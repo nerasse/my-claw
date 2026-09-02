@@ -120,3 +120,10 @@ La déduction est une heuristique structurelle, la plus proche possible de la v�
 - **Les préférences existantes ne sont pas détournées** : `expandTools` /
   `expandReasoning` ne forcent pas l'ouverture des groupes ; elles ne s'appliquent
   qu'au contenu d'un groupe déplié (et au run en cours, qui est à plat).
+
+## La suite
+
+Ce document décrit le pli **à l'écran** : le serveur envoie tout le travail d'un run et
+l'app le cache. Mesuré, ça fait 1 068 KB envoyés pour 13 lignes affichées.
+`docs/run-hydration.md` (spec) prolonge le pli **jusqu'au fil** : un run terminé assez gros
+voyage comme un résumé, son contenu n'est demandé qu'à l'ouverture du groupe.
