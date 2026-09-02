@@ -5,7 +5,7 @@ import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, runFold, withSpawnCards, type DisplayResolvers } from "./display.ts";
+import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -34,12 +34,12 @@ export interface MyClawAppSyncPage {
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
-  history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string): Promise<MyClawAppHistoryPage>;
+  history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string, fold?: boolean): Promise<MyClawAppHistoryPage>;
   /**
    * Returns entries since the client's cursor, plus the current leaf and head.
    * When the cursor is unknown or the branch diverges, returns a fresh page with `reset` set.
    */
-  sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number): Promise<MyClawAppSyncPage>;
+  sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number, fold?: boolean): Promise<MyClawAppSyncPage>;
   /** One tool card's output in full; null when the session no longer holds the call. */
   toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
@@ -311,7 +311,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return summaries;
   }
 
-  async history(owner: string, threadId: string, limit = HISTORY_LIMIT, before = 0, beforeId?: string): Promise<MyClawAppHistoryPage> {
+  async history(
+    owner: string,
+    threadId: string,
+    limit = HISTORY_LIMIT,
+    before = 0,
+    beforeId?: string,
+    fold = false,
+  ): Promise<MyClawAppHistoryPage> {
     // Reading the file here would replay a thread as it stood before the current turn started,
     // and the app replaces what is on screen with what this returns: the question just sent and
     // the cards already streamed would vanish until the run ends.
@@ -345,7 +352,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The run fold comes from the same whole-branch walk, so a page that starts mid-run still
     // tags its entries with the run they belong to (docs/run-grouping.md).
     const runs = runFold(path);
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs);
+    // A finished run travels as its header when the client asked for that -- docs/run-hydration.md.
+    // The plan is computed against the whole branch and not against the window, because the rule
+    // is containment: a run the page boundary cut keeps its items.
+    const plan = fold ? runFoldPlan(path, window, runs) : undefined;
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs, plan);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -359,6 +370,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     since?: string | null,
     clientLeaf?: string,
     limit = SYNC_LIMIT,
+    fold = false,
   ): Promise<MyClawAppSyncPage> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.read(sessionId);
@@ -422,6 +434,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // A state entry the client cannot draw becomes the card it revised, before anything else looks
     // at the delta -- including the attachment scan, which now sees a tool entry rather than an
     // annotation.
+    // The window as it was *before* that substitution is what the fold reasons about: an injected
+    // card comes from another position on the branch, and folding it into a group here would put
+    // it outside the range the summary claims -- hydration would then never hand it back.
+    const foldWindow = delta;
     delta = withSpawnCards(delta, allEntries);
 
     // Resolve attachments for display
@@ -433,10 +449,16 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The run fold covers the whole current branch, so entries of a delta that starts mid-run
     // still carry their run: the client folds them under the right header even when the
     // `run_start` marker itself predates the cursor.
-    const runs = runFold(pathOf(allEntries, serverLeaf));
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored, runs);
+    const path = pathOf(allEntries, serverLeaf);
+    const runs = runFold(path);
+    // Only the window that replaces the client's thread folds. A delta is work the client is
+    // watching arrive, item by item, and its runs are usually the ones still running -- which
+    // never fold anyway. Folding a delta would also have to reason about what the client already
+    // holds, since the run it continues is half on screen.
+    const plan = fold && freshWindow ? runFoldPlan(path, foldWindow, runs) : undefined;
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored, runs, plan);
 
-    const branchLength = pathOf(allEntries, serverLeaf).length;
+    const branchLength = path.length;
     return {
       entries,
       leaf: serverLeaf,

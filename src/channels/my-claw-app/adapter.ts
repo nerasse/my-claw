@@ -2199,7 +2199,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before, frame.beforeId);
+      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before, frame.beforeId, frame.fold);
       const result: MyClawAppChatHistory = {
         type: "chat.history",
         threadId,
@@ -2234,7 +2234,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit);
+      const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit, frame.fold);
       const result: MyClawAppSessionSyncResult = {
         type: "session.sync.result",
         threadId,

@@ -20,7 +20,12 @@ import { toolCardId } from "./types.ts";
 import { parseStoredName, type SessionFile } from "./files.ts";
 import type { Entry } from "../../sessions/log.ts";
 import type { SessionAttachment, SessionSubAgentState } from "../../sessions/store.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppRunMeta } from "./types.ts";
+import type {
+  MyClawAppHistoryAttachment,
+  MyClawAppHistoryEntry,
+  MyClawAppRunMeta,
+  MyClawAppRunSummaryEntry,
+} from "./types.ts";
 
 /**
  * How the two kinds of attachment become the ones the app draws.
@@ -78,6 +83,10 @@ const MAX_TURN_LOOKBACK = 400;
  */
 function carriesDisplayId(entry: Entry, displayId: string): boolean {
   if (entry.id === displayId) return true;
+  // A folded group travels as one row, `run-<id>`, where the id is the first entry it stands
+  // for. The page above it therefore ends exactly there -- and a run cut into segments by an
+  // injection has one such row per segment, which keying on the run id could not express.
+  if (displayId.startsWith("run-") && entry.id === displayId.slice(4)) return true;
   if (entry.type === "tool") return toolCardId(entry.callId) === displayId;
   if (entry.type === "command") {
     const sourceId = entry.sourceId || entry.id;
@@ -207,6 +216,189 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
   return out;
 }
 
+/**
+ * Which runs of this window travel as a header instead of as their work -- docs/run-hydration.md.
+ *
+ * The measurement that motivates it: opening a real 12 034-entry session moved 1 124 KB, of which
+ * 18 KB was prose a reader could see (1,6 %). The rest was tool output inside finished runs the
+ * app draws collapsed -- fetched, parsed and held so that a fold could hide it. Sending the header
+ * alone puts that page at 21 KB, and `session.run.items` fetches the work if the reader opens it.
+ *
+ * What is folded is a **segment**: consecutive work of one terminal run, inside this page. Not a
+ * whole run, and that is deliberate on both counts.
+ *
+ * - **Terminal only.** A running run is what the live frames are appending to; folding the thing
+ *   currently being watched would fight the stream.
+ * - **Hoisted bubbles cut it**, exactly as `runRows.ts` cuts a group in the app: the owner's
+ *   injected turns, commands, compaction boundaries, and the run's own final answer stay on
+ *   screen. Fold those away and a reopened conversation is a list of questions with collapsed
+ *   headers and nothing under them.
+ * - **The page boundary cuts it too.** A run spanning three pages folds into one row per page.
+ *   The first version required the run to sit wholly inside the window, to avoid emitting the
+ *   same row id twice -- but measured on the real session that refused to fold anything on the
+ *   deep pages, which are the heavy ones (607 rows sent where the app drew 46). Keying each row
+ *   on the first entry it stands for makes the ids distinct by construction, so the restriction
+ *   bought nothing. The app merges two adjacent summaries of the same run into one group.
+ *
+ * Below `minItems` the fold is not worth a round trip: on the measured session, runs of 1-3 items
+ * are 63 % of the runs and 3,2 % of the bytes, while runs of 31+ are 21 % of the runs and 86 % of
+ * the bytes. Small segments stay whole and stay instant.
+ */
+export interface RunFoldPlan {
+  /** Keyed by the entry the summary stands at: the first one it folds. */
+  summaries: Map<string, MyClawAppRunSummaryEntry>;
+  /** Entries that travel folded, and so must not be rendered. */
+  folded: Set<string>;
+}
+
+export function runFoldPlan(
+  path: readonly Entry[],
+  window: readonly Entry[],
+  runs: ReadonlyMap<string, MyClawAppRunMeta>,
+  minItems = RUN_FOLD_MIN_ITEMS,
+): RunFoldPlan {
+  const plan: RunFoldPlan = { summaries: new Map(), folded: new Set() };
+  if (window.length === 0) return plan;
+
+  // One pass over the branch: per run, which entry is its answer. Over the branch and not over
+  // the page, because a run whose work is on this page can have answered on the next one -- and
+  // an entry that is the last of the window is not thereby an answer.
+  const seen = new Map<string, RunAcc>();
+  for (const entry of path) {
+    const meta = runs.get(entry.id);
+    if (!meta) continue;
+    let acc = seen.get(meta.id);
+    if (!acc) {
+      acc = { meta };
+      seen.set(meta.id, acc);
+    }
+    if (rowsOf(entry) === 0) continue;
+    // The run's answer is its last bubble, when that bubble is prose the agent wrote. A run whose
+    // last entry is a tool card died before answering, and then nothing is hoisted out.
+    acc.answerId = isAgentProse(entry) ? entry.id : undefined;
+  }
+
+  // Then one pass over the page, folding runs of consecutive work. A hoisted bubble cuts the
+  // group in two rather than travelling inside it, which is what keeps a folded conversation
+  // readable: question, header, answer.
+  let group: Entry[] = [];
+  let groupRun: RunAcc | null = null;
+  const flush = () => {
+    if (groupRun && group.length > 0) {
+      const rows = group.reduce((n, entry) => n + rowsOf(entry), 0);
+      if (rows >= minItems) {
+        const first = group[0]!;
+        const last = group[group.length - 1]!;
+        const tools = group.filter((entry) => entry.type === "tool");
+        const firstTool = tools[0];
+        plan.summaries.set(first.id, {
+          id: `run-${first.id}`,
+          role: "run",
+          // Where the work stood, not where the run opened: a run cut into segments has a header
+          // per segment, and they must sort in the order the reader met them.
+          ts: new Date(first.ts).toISOString(),
+          run: groupRun.meta,
+          toolCount: tools.length,
+          ...(firstTool?.type === "tool" ? { firstTool: toolDisplayName(firstTool.name) } : {}),
+          itemCount: rows,
+          lastId: last.id,
+        });
+        for (const entry of group) plan.folded.add(entry.id);
+      }
+    }
+    group = [];
+    groupRun = null;
+  };
+
+  for (const entry of window) {
+    const meta = runs.get(entry.id);
+    const acc = meta ? seen.get(meta.id) : undefined;
+    const foldable =
+      acc !== undefined &&
+      acc.meta.status !== "running" &&
+      entry.id !== acc.answerId &&
+      !isHoisted(entry);
+    // An entry that draws nothing is transparent: it neither opens a group -- the summary has to
+    // stand on a row the client can point a cursor at -- nor breaks one, which the `run_start`
+    // marker sitting at the head of every run would otherwise do to all of them.
+    if (rowsOf(entry) === 0) {
+      if (foldable && groupRun) group.push(entry);
+      continue;
+    }
+    if (!foldable) {
+      flush();
+      continue;
+    }
+    if (groupRun && groupRun.meta.id !== acc.meta.id) flush();
+    groupRun = acc;
+    group.push(entry);
+  }
+  flush();
+  return plan;
+}
+
+interface RunAcc {
+  meta: MyClawAppRunMeta;
+  /** The run's final bubble, hoisted out of the fold so the answer stays on screen. */
+  answerId?: string;
+}
+
+/**
+ * Bubbles that never travel folded, mirroring `isHoisted` in the app's `runRows.ts`.
+ *
+ * The owner's own turns (an injection splits the group around it, so the answer to a question
+ * stays readable), command output and the model-change notices (the agent did not write them),
+ * and compaction boundaries (a divider across the thread, not a bubble). Everything else -- tool
+ * cards, thinking phases, interim prose -- is the run's work and folds with it.
+ *
+ * This rule used to live in the app alone, and it stays there for what the app draws live. It has
+ * to exist here too because the server is what decides not to send something, and the two are
+ * kept honest by the same names: fold a hoisted bubble away and a reopened conversation becomes a
+ * list of questions with collapsed headers and no answers under them.
+ */
+function isHoisted(entry: Entry): boolean {
+  return (
+    entry.type === "user" ||
+    entry.type === "command" ||
+    entry.type === "compaction" ||
+    entry.type === "model_change"
+  );
+}
+
+/** Prose the agent wrote: what the last bubble of a run has to be for it to be its answer. */
+function isAgentProse(entry: Entry): boolean {
+  return entry.type === "phase" || entry.type === "failure" || entry.type === "note";
+}
+
+/**
+ * Where folding starts paying. Under it the header costs more than the work it hides, and a reader
+ * who opens a three-item run should not wait on a round trip to see three lines.
+ */
+export const RUN_FOLD_MIN_ITEMS = 8;
+
+/**
+ * How many bubbles this entry becomes -- the same arithmetic `displayOf` does, so the placeholder
+ * a folded group draws is the size of what will actually arrive.
+ *
+ * Worth being exact about: measured on the real session, counting entries rather than rows claimed
+ * 528 items for a run that renders 386, because a turn writes a `phase` per tool call and the ones
+ * that only thought before calling carry nothing to draw. A skeleton a third too long is a
+ * scrollbar that jumps when the items land.
+ */
+function rowsOf(entry: Entry): number {
+  // Bookkeeping: the run markers and the spawn annotations reach no screen.
+  if (entry.type === "run_start" || entry.type === "run_end" || entry.type === "spawn_state") return 0;
+  if (entry.type === "phase") {
+    // Mirrors the drop in `displayOf`: no words, no media (a `MEDIA:` ref lives in the text), no
+    // thought. Anything else is a bubble.
+    const empty = !entry.text.trim() && !entry.reasoning?.trim() && !entry.reasoningTokens;
+    return empty ? 0 : 1;
+  }
+  // A command draws its input and its answer, unless it was quiet -- then the answer alone.
+  if (entry.type === "command") return entry.quiet ? 1 : 2;
+  return 1;
+}
+
 /** `1234 ms` in the block details. The recorder measured it; the server never decodes the file. */
 function durationFrom(details: string[]): number | undefined {
   for (const detail of details) {
@@ -266,11 +458,19 @@ export function displayOf(
   spawn?: ReadonlyMap<string, SessionSubAgentState>,
   files: SessionFile[] = [],
   runs?: ReadonlyMap<string, MyClawAppRunMeta>,
+  fold?: RunFoldPlan,
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
   for (const entry of entries) {
     const ts = tsOf(entry);
+
+    // A folded run stands at its own marker: the header goes out here, and the work it hides is
+    // skipped below. The marker was already the entry that rendered to nothing, so the summary
+    // lands exactly where the run's first item would have been.
+    const summary = fold?.summaries.get(entry.id);
+    if (summary) out.push(summary);
+    if (fold?.folded.has(entry.id)) continue;
 
     // The run markers are bookkeeping, not bubbles: the work between them carries the run meta
     // and the client folds it. Leaking them as empty rows is what a replay would do otherwise.

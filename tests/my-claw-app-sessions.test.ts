@@ -6,6 +6,7 @@ import { MAX_TITLE_LENGTH, MyClawAppSessionStoreImpl } from "../src/channels/my-
 import { sessionLogOf } from "../src/sessions/log-access.ts";
 import { promptOf } from "../src/sessions/projection.ts";
 import type { Entry } from "../src/sessions/log.ts";
+import type { MyClawAppHistoryEntry } from "../src/channels/my-claw-app/types.ts";
 import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-claw-app/files.ts";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +19,30 @@ import { appendSpawnState } from "../src/sessions/spawn-state.ts";
 
 const DEVICE = "dev-test";
 const THREAD = "thread-1";
+
+/**
+ * The words a replayed row shows, whatever kind it is: a tool card is named, a folded run stands
+ * for work rather than for prose. Narrowing in place would make every assertion enumerate the
+ * union, which is how these tests read before the run summary existed.
+ */
+function textOf(entry: MyClawAppHistoryEntry): string {
+  if (entry.role === "tool") return entry.name;
+  if (entry.role === "run") return `run:${entry.run.status}`;
+  return entry.text;
+}
+
+/** The same, for the tests that assert on the error a dead run left behind. */
+function textOrErrorOf(entry: MyClawAppHistoryEntry): string {
+  if (entry.role === "tool") return "tool";
+  if (entry.role === "run") return `run:${entry.run.status}`;
+  return entry.error ?? entry.text;
+}
+
+/** A row that carries prose, asserted rather than assumed. */
+function proseOf(entry: MyClawAppHistoryEntry) {
+  if (entry.role === "tool" || entry.role === "run") throw new Error(`expected a text entry, got ${entry.role}`);
+  return entry;
+}
 
 function session(id: string, messages: LegacySessionData["messages"]): LegacySessionData {
   return {
@@ -73,14 +98,12 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     // Nothing is hidden: the turns the summary stands for are replayed in full above it.
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "user"]);
 
-    const boundary = entries[2]!;
-    if (boundary.role === "tool") throw new Error("expected a text entry");
+    const boundary = proseOf(entries[2]!);
     assert.equal(boundary.summaryOf, 2);
     // The scaffolding is addressed to the model: "respond to the message below" has no reader here.
     assert.equal(boundary.text, "Prior work: the two turns above.");
 
-    const ordinary = entries[3]!;
-    if (ordinary.role === "tool") throw new Error("expected a text entry");
+    const ordinary = proseOf(entries[3]!);
     assert.equal(ordinary.summaryOf, undefined);
     assert.equal(ordinary.text, "la suite");
   });
@@ -213,16 +236,16 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, messages));
 
     const newest = await store.history(DEVICE, THREAD, 5);
-    assert.deepEqual(newest.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q7", "q8", "q9", "q10", "q11"]);
+    assert.deepEqual(newest.entries.map(textOf), ["q7", "q8", "q9", "q10", "q11"]);
     assert.equal(newest.hasMore, true);
 
     const older = await store.history(DEVICE, THREAD, 5, 5);
-    assert.deepEqual(older.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q2", "q3", "q4", "q5", "q6"]);
+    assert.deepEqual(older.entries.map(textOf), ["q2", "q3", "q4", "q5", "q6"]);
     assert.equal(older.hasMore, true);
 
     // The last page is short and says so: the app must stop asking rather than loop on empties.
     const oldest = await store.history(DEVICE, THREAD, 5, 10);
-    assert.deepEqual(oldest.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q0", "q1"]);
+    assert.deepEqual(oldest.entries.map(textOf), ["q0", "q1"]);
     assert.equal(oldest.hasMore, false);
   });
 
@@ -238,7 +261,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const beforeId = newest.entries[0]!.id;
     const older = await store.history(DEVICE, THREAD, 5, 0, beforeId);
     // The window ends right before the held id: the five turns that precede it.
-    assert.deepEqual(older.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q2", "q3", "q4", "q5", "q6"]);
+    assert.deepEqual(older.entries.map(textOf), ["q2", "q3", "q4", "q5", "q6"]);
     assert.equal(older.hasMore, true);
     assert.equal(older.nextBefore, 10);
 
@@ -260,7 +283,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const card = await store.history(DEVICE, THREAD, 5, 0, "t-call-1");
     // The window ends right before the tool result entry: the question and the call it carried
     // are still on the page -- only the settled card itself is the held edge.
-    assert.deepEqual(card.entries.map((e) => (e.role === "tool" ? e.name : e.text)), ["q", "je regarde"]);
+    assert.deepEqual(card.entries.map(textOf), ["q", "je regarde"]);
     assert.equal(card.hasMore, false);
 
     // An id the branch no longer holds (compaction dropped the turn, a fork left it behind)
@@ -302,10 +325,90 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(windowed.entries.length, 500);
     // The cursor counts entries before the window, and the window starts exactly there.
     const first = windowed.entries[0]!;
-    assert.equal(first.role === "tool" ? "" : first.text, `big${windowed.nextBefore}`);
+    assert.equal(textOf(first), `big${windowed.nextBefore}`);
     // A whole window is never "truncated": that flag sends the client asking for a forward
     // delta, and the turn alignment below can legitimately push the window past the limit.
     assert.equal(windowed.truncated, undefined);
+  });
+
+  /**
+   * The fold, end to end -- docs/run-hydration.md. Measured on a real 12 034-entry session, the
+   * page an app opens on moved 1 124 KB of which 18 KB was prose a reader could see; a finished
+   * run sent as its header puts that at 21 KB.
+   */
+  test("a finished run travels as its header, and only for a client that asked", async () => {
+    const foldThread = store.resolveSessionId(DEVICE, "thread-fold");
+    sessionId = foldThread;
+    logSetup = await saveSessionWithLog(foldThread, session(foldThread, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+
+    // A finished run, written the way the run-recorder writes one.
+    logSetup.log.append({ type: "user", prompt: true, text: "fais le travail" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    const work: Entry[] = [];
+    for (let i = 0; i < 12; i++) {
+      work.push(logSetup.log.append({ type: "phase", prompt: true, text: `etape ${i}`, runId: start.id }));
+      work.push(logSetup.log.append({
+        type: "tool", prompt: true, callId: `call-${i}`, name: "bash",
+        args: { command: "ls" }, output: "x".repeat(2000), truncated: false, ok: true, runId: start.id,
+      }));
+    }
+    logSetup.log.append({ type: "run_end", prompt: false, reason: "done" });
+
+    // What an app that never asked receives: every item, as today.
+    const whole = await store.history(DEVICE, "thread-fold");
+    assert.equal(whole.entries.filter((e) => e.role === "tool").length, 12);
+    assert.equal(whole.entries.some((e) => e.role === "run"), false);
+
+    // What an app that asked receives: the question, then one row for the run.
+    const folded = await store.history(DEVICE, "thread-fold", undefined, 0, undefined, true);
+    assert.deepEqual(folded.entries.map((e) => e.role), ["user", "user", "run"]);
+    const summary = folded.entries[2]!;
+    assert.equal(summary.role === "run" ? summary.toolCount : 0, 12);
+    assert.equal(summary.role === "run" ? summary.run.status : "", "done");
+    // Keyed on the first entry it stands for, not on the run: an injection can cut one run into
+    // several folded segments, and each needs an id of its own.
+    assert.equal(summary.id, `run-${work[0]!.id}`);
+
+    // The point of the exercise.
+    assert.ok(
+      JSON.stringify(folded.entries).length * 10 < JSON.stringify(whole.entries).length,
+      "a folded page must be an order of magnitude smaller than the work it stands for",
+    );
+
+    // And the paging cursor the app now holds still walks back past the run: `run-<id>` resolves
+    // to the run's first entry, so the page above it is everything that came before the work --
+    // never an empty page, which the app reads as the top of the conversation.
+    const older = await store.history(DEVICE, "thread-fold", 50, 0, summary.id, true);
+    assert.ok(older.entries.length > 0, "a summary cursor must not return an empty page");
+    assert.equal(older.entries.some((e) => e.role === "tool" || e.role === "run"), false);
+    const first = older.entries[0]!;
+    assert.equal(first.role === "user" ? first.text : "", "tour precedent");
+
+    // The same on the frame an opening app actually sends.
+    const synced = await store.sync(DEVICE, "thread-fold", null, undefined, 500, true);
+    assert.deepEqual(synced.entries.map((e) => e.role), ["user", "user", "run"]);
+  });
+
+  test("a run still going is never folded away from the client watching it", async () => {
+    const liveThread = store.resolveSessionId(DEVICE, "thread-fold-live");
+    sessionId = liveThread;
+    logSetup = await saveSessionWithLog(liveThread, session(liveThread, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "fais le travail" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    for (let i = 0; i < 12; i++) {
+      logSetup.log.append({
+        type: "tool", prompt: true, callId: `call-${i}`, name: "bash",
+        args: { command: "ls" }, output: "ok", truncated: false, ok: true, runId: start.id,
+      });
+    }
+    // No run_end: this is the turn in flight.
+    const page = await store.history(DEVICE, "thread-fold-live", undefined, 0, undefined, true);
+    assert.equal(page.entries.filter((e) => e.role === "tool").length, 12);
+    assert.equal(page.entries.some((e) => e.role === "run"), false);
   });
 
   test("the window a thread opens on starts at a question, not inside the work of a run", async () => {
@@ -1145,9 +1248,8 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
 
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "assistant"]);
-    const answer = entries[3]!;
-    if (answer.role === "tool") throw new Error("expected a text entry");
-    assert.equal(entries[2]!.role === "tool" ? "" : entries[2]!.text, "/compact");
+    const answer = proseOf(entries[3]!);
+    assert.equal(textOf(entries[2]!), "/compact");
     assert.equal(answer.text, "Compacted 120 messages.");
     assert.equal(answer.command, true);
     assert.equal(answer.details, "summary text");
@@ -1173,7 +1275,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    assert.deepEqual(entries.map((e) => (e.role === "tool" ? "tool" : e.text)), ["un", "/status", "context 12%", "deux"]);
+    assert.deepEqual(entries.map(textOf), ["un", "/status", "context 12%", "deux"]);
   });
 
   test("each page carries its own commands, and only once", async () => {
@@ -1192,7 +1294,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     const newest = await store.history(DEVICE, THREAD, 2);
     const older = await store.history(DEVICE, THREAD, 2, newest.nextBefore);
     const text = (page: Awaited<ReturnType<typeof store.history>>) =>
-      page.entries.map((e) => (e.role === "tool" ? "tool" : e.text));
+      page.entries.map(textOf);
     assert.deepEqual(text(newest), ["trois", "quatre", "/compact", "Compacted."]);
     assert.deepEqual(text(older), ["un", "deux", "/stop", "Stopped."]);
   });
@@ -1208,7 +1310,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     const page = await store.history(DEVICE, THREAD);
     assert.equal(page.hasMore, false);
     assert.deepEqual(
-      page.entries.map((e) => (e.role === "tool" ? "tool" : e.text)),
+      page.entries.map(textOf),
       ["/compact", "Compacted.", "apres", "ok"],
     );
   });
@@ -1223,7 +1325,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    const inputs = entries.filter((e) => e.role === "user").map((e) => (e.role === "tool" ? "" : e.text));
+    const inputs = entries.filter((e) => e.role === "user").map(textOf);
     // Nothing is hidden: a journal entry belongs to exactly one page, so a page that showed only
     // the last twenty put the rest out of reach for good.
     assert.equal(inputs.length, 31, "one real message plus the whole journal");
@@ -1336,8 +1438,7 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     // Failure is written to the log, not the prompt messages
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant"]);
-    const failed = entries[1]!;
-    if (failed.role === "tool") throw new Error("expected a text entry");
+    const failed = proseOf(entries[1]!);
     assert.equal(failed.error, "API Error: 529 Overloaded");
     assert.equal(failed.text, "");
   });
@@ -1353,7 +1454,7 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    const texts = entries.map((e) => (e.role === "tool" ? "tool" : e.error ?? e.text));
+    const texts = entries.map(textOrErrorOf);
     assert.deepEqual(texts, ["salut", "first died", "/status", "context 12%", "second died", "salut"]);  
   });
 
@@ -1400,8 +1501,7 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
     await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    const reply = entries[1]!;
-    if (reply.role === "tool") throw new Error("expected a text entry");
+    const reply = proseOf(entries[1]!);
     assert.equal(reply.reasoningTokens, 12_300);
     assert.equal(reply.reasoning, undefined);
   });
@@ -1412,8 +1512,7 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
     await logSetup.log.flush();
 
     const { entries } = await store.history(DEVICE, THREAD);
-    const reply = entries[0]!;
-    if (reply.role === "tool") throw new Error("expected a text entry");
+    const reply = proseOf(entries[0]!);
     assert.equal(reply.reasoningTokens, undefined);
   });
 });

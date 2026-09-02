@@ -30,25 +30,47 @@ groupe, exactement comme `chat.tool.full` hydrate déjà une sortie clippée.
 
 ```ts
 interface MyClawAppRunSummaryEntry {
-  id: string;              // `run-<runId>` : l'id de ligne que le client détient
+  /** `run-<id de la première entrée repliée>` : l'id de ligne que le client détient. */
+  id: string;
   role: "run";
-  runId: string;
-  status: "done" | "aborted" | "error";
-  startTs: string;
-  endTs: string;
+  ts: string;               // le ts de cette première entrée : la ligne se trie où le travail était
+  run: MyClawAppRunMeta;    // { id, status, startTs, endTs } -- la forme que l'app rend déjà
   /** Ce que l'en-tête affiche, et rien de plus -- RunGroup.tsx. */
   toolCount: number;
   firstTool?: string;
-  /** Items repliés : ce que l'hydratation rendra. Sert aussi au squelette de chargement. */
+  /** Lignes repliées (pas entrées) : squelette de chargement à la bonne taille. */
   itemCount: number;
-  ts: string;              // = startTs, pour que le tri par ts reste homogène
+  /** Dernière entrée couverte : borne exacte pour l'hydratation. */
+  lastId: string;
 }
 ```
+
+**Ce qu'on replie est un segment, pas un run.** Clé sur la première entrée couverte et non sur
+le runId, pour trois raisons trouvées à l'implémentation :
+
+1. Une injection de l'owner en plein run coupe le groupe en deux (règle `isHoisted` de
+   `runRows.ts`) : deux en-têtes pour un même run, que `run-<runId>` ne saurait distinguer.
+2. Une frontière de page coupe aussi. La première version exigeait le run entier dans la
+   fenêtre pour éviter d'émettre deux fois le même id ; mesuré sur la vraie session, ça ne
+   repliait **rien** sur les pages profondes, qui sont les lourdes (607 lignes envoyées là où
+   l'app en dessinait 46). Clé sur la première entrée → ids distincts par construction, la
+   restriction ne protégeait de rien.
+3. Un résumé est alors un `beforeId` valide comme n'importe quelle ligne : `carriesDisplayId`
+   résout `run-<X>` vers l'entrée X.
+
+Côté app (lot 3) : deux résumés adjacents du même run se fusionnent en un seul groupe.
 
 Ce que le résumé **ne remplace pas** et qui continue de voyager en clair : les bulles
 hoistées (tours de l'owner, commandes, notices, bornes de compaction) et la réponse finale
 du run. C'est déjà la règle de `buildRows`, et c'est ce qui garde la conversation lisible
 une fois tout replié : question, réponse, et un en-tête entre les deux.
+
+Ce point n'est pas cosmétique : une première implémentation repliait tout le run, réponse
+comprise. Résultat mesuré sur la vraie session : une conversation rouverte n'était plus
+qu'une suite de questions avec des en-têtes repliés et **rien dessous**. La règle de hoisting
+est donc portée telle quelle côté serveur (`isHoisted` dans `display.ts`, mêmes noms qu'en
+face), et un test de parité sur la session réelle vérifie que rien de ce que l'app dessine
+hors groupe n'est avalé par un pli.
 
 ## Le seuil : les petits runs voyagent entiers
 
@@ -80,21 +102,24 @@ de groupe. Le chemin « run en cours » reste inchangé (rien n'est replié pend
 
 ## Wire
 
-Demande (à l'ouverture d'un groupe replié) :
+Demande (à l'ouverture d'un groupe replié), bornée par les deux ids que la ligne porte :
 
 ```json
-{ "type": "session.run.items", "threadId": "projet", "runId": "01a0..." }
+{ "type": "session.run.items", "threadId": "projet", "fromId": "01a0...", "untilId": "01a0..." }
 ```
 
 Réponse :
 
 ```json
-{ "type": "chat.run.items", "threadId": "projet", "runId": "01a0...",
+{ "type": "chat.run.items", "threadId": "projet", "fromId": "01a0...",
   "messages": [ /* les items repliés, mêmes formes que chat.history */ ],
   "found": true }
 ```
 
-`found: false` quand le run n'est plus sur la branche courante (compaction, fork) : le
+La plage, et pas le runId : un run coupé par une frontière de page se replie en une ligne par
+page, et répondre « tout le run » ferait spliquer chez le client des items qu'il détient déjà.
+
+`found: false` quand la plage n'est plus sur la branche courante (compaction, fork) : le
 groupe affiche « contenu indisponible » et reste replié, il ne se vide pas en silence.
 
 Pas de pagination sur cette réponse : un run est borné par construction, et le plus gros
@@ -116,12 +141,17 @@ continuent d'arriver item par item.
 
 ## Interactions à ne pas casser
 
-- **Pagination `beforeId`.** Si la plus vieille ligne détenue est un résumé, le curseur
-  vaut `run-<runId>` : `carriesDisplayId` doit le résoudre vers la **première entrée du
-  run** sur le chemin. Sinon la pagination remeurt exactement comme en 0.4.83.
-- **Deltas de sync.** Un delta peut réviser une carte (`spawn_state` qui se règle) qui vit
-  dans un run non hydraté : le remplacement par id ne trouve rien et doit être un no-op
+- **Pagination `beforeId`.** Si la plus vieille ligne détenue est un résumé, le curseur vaut
+  `run-<id de la première entrée repliée>` : `carriesDisplayId` le résout vers cette entrée.
+  Sinon la pagination remeurt exactement comme en 0.4.83. Couvert par un test dédié.
+- **Deltas de sync.** Un delta n'est jamais replié : c'est du travail que le client regarde
+  arriver item par item, et le pli ne s'applique qu'à la fenêtre qui remplace son fil
+  (`freshWindow`). Un delta peut par ailleurs réviser une carte (`spawn_state` qui se règle)
+  vivant dans un run non hydraté : le remplacement par id ne trouve rien et doit être un no-op
   silencieux, pas une insertion en fin de fil.
+- **Run en cours.** Jamais replié, quelle que soit sa taille : c'est ce à quoi les frames live
+  ajoutent. Un run laissé ouvert par un crash reste donc entier lui aussi, ce qui est le bon
+  compromis (c'est la queue du fil, une seule).
 - **Trim.** Voir plus haut : déshydrater avant de dropper.
 - **Branches / undo.** Un rewind change la branche : les résumés de l'ancienne branche
   partent avec le reset, rien de spécial.
@@ -131,20 +161,36 @@ continuent d'arriver item par item.
 
 - **Vieille app / serveur neuf** : elle ne connaît pas `role: "run"`. `parseServerFrame`
   est une whitelist de *types de frame*, pas d'entrées : un résumé passerait et serait rendu
-  comme une bulle vide. Le résumé n'est donc envoyé que si le client l'a annoncé, par un
-  champ `caps` sur `device.hello` (`{"runSummaries": true}`). Sans annonce, le serveur
-  envoie tout, comme aujourd'hui.
+  comme une bulle vide. Le résumé n'est donc envoyé que si le client l'a demandé.
+  **Écart avec la spec initiale** : pas de `caps` sur `device.hello`, parce qu'il n'existe
+  aucune frame `device.hello` (le `hello` va du serveur vers le client). C'est un booléen
+  `fold` **par requête**, sur `session.history` et `session.sync`. Plus simple : rien à tenir
+  au niveau connexion, aucune course entre une annonce et la première page, et le client peut
+  redemander une page entière quand il en a besoin (après un trim, par exemple).
 - **App neuve / vieux serveur** : aucun résumé n'arrive, l'app fait ce qu'elle fait
   aujourd'hui. Aucun des deux sens ne casse.
 
 ## Lots
 
-1. **Serveur, le pli.** La règle de hoisting et le seuil dans `display.ts`, le résumé dans
-   `displayOf` derrière la capability, `carriesDisplayId` qui résout `run-<runId>`.
+1. **Serveur, le pli.** — *livré*. `runFoldPlan` + `isHoisted` + le seuil dans `display.ts`,
+   le résumé dans `displayOf` derrière le drapeau `fold`, `carriesDisplayId` qui résout
+   `run-<id>`. Mesuré sur la session réelle (12 034 entrées) :
+
+   | Page | Aujourd'hui | Replié | |
+   |---|---|---|---|
+   | Ouverture | 582 items, 1 282 KB | 94 lignes, 182 KB | x7,0 |
+   | Un cran de scroll | 607 items, 1 556 KB | 45 lignes, 68 KB | **x23** |
+   | Deux crans | 298 items, 783 KB | 2 lignes, 0,4 KB | **x2000** |
+
+   L'ouverture plafonne à x7 parce que le run **en cours** n'est jamais replié : ses 73 items
+   pèsent 155 des 182 KB restants. Une fois le run terminé, la même page tombe à ~27 KB.
 2. **Serveur, l'hydratation.** `session.run.items` / `chat.run.items` dans `adapter.ts` et
    `sessions.ts`.
-3. **App, le rendu.** `caps` sur le hello, état d'hydratation dans le store, `RunGroup` qui
-   demande à l'ouverture, squelette, échec, `buildRows` simplifié.
+3. **App, le rendu.** `fold: true` sur les requêtes, état d'hydratation dans le store,
+   `RunGroup` qui demande à l'ouverture, squelette, échec, `buildRows` simplifié + fusion de
+   deux résumés adjacents du même run. À corriger au passage : `buildRows` traite le dernier
+   item d'une page comme la réponse du run simplement parce que sa liste s'arrête là ; le
+   serveur, qui voit toute la branche, sait que le run continue à la page suivante.
 4. **App, le trim.** Déshydrater plutôt que dropper.
 
 Chaque lot est livrable seul : après le 1, l'app neuve ignore les résumés qu'elle n'a pas

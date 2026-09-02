@@ -328,7 +328,7 @@ the first answer wins.
 { "type": "commands.list" }
 { "type": "files.list", "threadId": "projet" }
 { "type": "files.delete", "threadId": "projet", "id": "uuid" }
-{ "type": "session.history", "threadId": "projet", "limit": 50, "before": 50 }
+{ "type": "session.history", "threadId": "projet", "limit": 50, "before": 50, "fold": true }
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
@@ -928,6 +928,14 @@ includes `hasMore` and `nextBefore`, so the reader at the top knows there is old
 where to ask -- the delta answer never does, it leaves the cursor the client already holds
 standing. Without those fields on the fresh window (0.4.82 and older), the app's `hasMore`
 stayed false and lazy loading never fired.
+
+Both frames also take `fold`. A client that sets it accepts a finished run's work as a single
+`role: "run"` row standing where the work stood, and fetches the items only if the reader opens
+the group -- docs/run-hydration.md. Measured on a 12 034-entry session: an opened window drops
+from 1 282 KB to 182 KB, a scroll step from 1 556 KB to 68 KB. It is asked per request rather
+than announced once on the connection: an older app never sets it and receives exactly what it
+always received, and there is no hello to race with the first page. The row's id is
+`run-<first folded entry id>`, and it is a valid `beforeId` cursor like any other row.
 
 A page is a count of messages but a conversation is read in turns, so the slice is grown
 backwards to the user message that opened the turn it starts in. One agentic turn is easily

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, pageOf, runFold, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { displayOf, pageOf, pageBefore, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
 
@@ -65,7 +65,7 @@ describe("displayOf: one entry, one bubble", () => {
     ]);
     for (const entry of entries) (entry as { ts: number }).ts = 1_800_000_000_000;
     const drawn = show(entries);
-    expect(drawn.map((e) => ("text" in e ? e.text : e.name))).toEqual(["q", "/status", "ok", "", "apres"]);
+    expect(drawn.map((e) => (e.role === "tool" ? e.name : e.role === "run" ? "run" : e.text))).toEqual(["q", "/status", "ok", "", "apres"]);
   });
 });
 
@@ -425,5 +425,274 @@ describe("displayOf with run meta", () => {
     const runs = runFold(entries);
     const shown = show(entries, 1000, [], runs);
     expect(shown[2]!.run?.id).toBe(entries[1]!.id);
+  });
+});
+
+describe("runFoldPlan: a finished run travels as its header", () => {
+  /** A run of `n` tool calls, wrapped in its markers, after the question that caused it. */
+  const withRun = (n: number, end: "done" | "aborted" | "error" | null = "done") =>
+    chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: n }, (_, i) => tool(`c${i}`)),
+      ...(end ? [runEnd(end)] : []),
+    ]);
+
+  const foldedShow = (path: Entry[], window: Entry[] = path, minItems?: number) => {
+    const runs = runFold(path);
+    return displayOf(window, resolvers, 1000, undefined, [], runs, runFoldPlan(path, window, runs, minItems));
+  };
+
+  test("the work is replaced by one row, where the run stood", () => {
+    const path = withRun(10);
+    const shown = foldedShow(path);
+    // The question, then the run as a single row. The ten cards do not travel.
+    expect(shown.map((e) => e.role)).toEqual(["user", "run"]);
+    // Keyed on the first entry it stands for: a run cut into segments has one row per segment,
+    // and the run id could not tell them apart.
+    expect(shown[1]!.id).toBe(`run-${path[2]!.id}`);
+  });
+
+  test("the header carries what it draws, and the counts are the run's", () => {
+    const path = withRun(10);
+    const summary = foldedShow(path)[1]!;
+    expect(summary).toMatchObject({
+      role: "run",
+      toolCount: 10,
+      itemCount: 10,
+      firstTool: "bash",
+      run: { id: path[1]!.id, status: "done" },
+    });
+    // The row stands where the work stood, so segments sort in the order the reader met them.
+    expect(summary.ts).toBe(new Date(path[2]!.ts).toISOString());
+  });
+
+  test("itemCount is the number of rows that will arrive, not of entries", () => {
+    // A turn writes a phase per tool call, and the ones that only thought carry nothing to draw.
+    // Counting entries claimed 528 items for a run rendering 386 on the measured session: the
+    // skeleton would be a third too long and the scrollbar would jump when the items land.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => [phase(""), tool(`c${i}`)]).flat(),
+      runEnd(),
+    ]);
+    const runs = runFold(path);
+    const rendered = displayOf(path, resolvers, 1000, undefined, [], runs).filter((e) => e.run).length;
+    const summary = foldedShow(path)[1]!;
+    expect(summary.role === "run" ? summary.itemCount : -1).toBe(rendered);
+    expect(rendered).toBe(9);
+  });
+
+  test("nothing folds unless asked", () => {
+    // The same page without a plan: this is what an app that did not ask still receives.
+    const path = withRun(10);
+    const runs = runFold(path);
+    expect(displayOf(path, resolvers, 1000, undefined, [], runs).map((e) => e.role)).toEqual([
+      "user", ...Array.from({ length: 10 }, () => "tool" as const),
+    ]);
+  });
+
+  test("a small run stays whole", () => {
+    // Under the threshold the header costs more than the work it hides, and opening it would
+    // buy a round trip to see three lines.
+    const path = withRun(3);
+    expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "tool", "tool", "tool"]);
+  });
+
+  test("a run still going is never folded", () => {
+    // It is what the live frames are appending to: folding it would fight the stream.
+    const path = withRun(10, null);
+    expect(foldedShow(path).filter((e) => e.role === "tool")).toHaveLength(10);
+  });
+
+  test("an aborted run folds like a finished one, and says so", () => {
+    const path = withRun(10, "aborted");
+    expect(foldedShow(path)[1]).toMatchObject({ role: "run", run: { status: "aborted" } });
+  });
+
+  test("a run the page boundary cut folds on both pages, with distinct rows", () => {
+    // Requiring the run to sit wholly inside the window refused to fold anything on the deep
+    // pages, which are the heavy ones. Keying each row on the first entry it stands for makes the
+    // two ids distinct by construction, so there is nothing left to protect against.
+    const path = withRun(20);
+    const lower = path.slice(0, 12);
+    const upper = path.slice(12);
+    const a = foldedShow(path, lower);
+    const b = foldedShow(path, upper);
+    expect(a.filter((e) => e.role === "run")).toHaveLength(1);
+    expect(b.filter((e) => e.role === "run")).toHaveLength(1);
+    expect(a.find((e) => e.role === "run")!.id).not.toBe(b.find((e) => e.role === "run")!.id);
+    // Between them they still stand for every card, once.
+    const rows = [a, b].flat().filter((e) => e.role === "run") as Array<{ itemCount: number }>;
+    expect(rows.reduce((n, r) => n + r.itemCount, 0)).toBe(20);
+  });
+
+  test("a folded row is bounded, so hydration can ask for an exact range", () => {
+    const path = withRun(10);
+    const summary = foldedShow(path)[1]!;
+    expect(summary.role === "run" ? summary.lastId : "").toBe(path[path.length - 2]!.id);
+  });
+
+  test("a run whose end marker is on the next page still folds", () => {
+    // `run_end` renders to nothing and the status comes from the whole-branch fold, so its
+    // absence from the window costs the reader nothing.
+    const path = withRun(10);
+    const window = path.slice(0, path.length - 1);
+    expect(foldedShow(path, window)[1]).toMatchObject({ role: "run", run: { status: "done" } });
+  });
+
+  test("a state entry folded into its card does not unfold the run", () => {
+    // `withSpawnCards` drops a `spawn_state` whose card is already in the delta, so the window
+    // no longer holds every entry of the run. Requiring it would unfold every run that spawned.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      { type: "spawn_state", prompt: false, callId: "c0", state: { status: "running" } } as unknown as Provisioned<Entry>,
+      runEnd(),
+    ]);
+    const window = path.filter((e) => e.type !== "spawn_state");
+    expect(foldedShow(path, window).map((e) => e.role)).toEqual(["user", "run"]);
+  });
+
+  test("the run's answer stays on screen, outside the fold", () => {
+    // The whole point of hoisting: fold the answer away and a reopened conversation is a list of
+    // questions with collapsed headers and nothing under them.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      phase("voila ce que j'ai trouve"),
+      runEnd(),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "assistant"]);
+    expect(shown[2]).toMatchObject({ text: "voila ce que j'ai trouve" });
+  });
+
+  test("a run that died before answering keeps everything in the fold", () => {
+    // Its last entry is a tool card, so there is no answer to hoist.
+    const path = chain([
+      user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd("aborted"),
+    ]);
+    expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "run"]);
+  });
+
+  test("a turn the owner injected mid-run cuts the fold in two", () => {
+    // The steering message splits the group around it, so the work before and after it stay
+    // separately readable -- and each half gets its own header, which is why a summary cannot be
+    // keyed by run id.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`a${i}`)),
+      user("plutot comme ca"),
+      ...Array.from({ length: 9 }, (_, i) => tool(`b${i}`)),
+      phase("fait"),
+      runEnd(),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "user", "run", "assistant"]);
+    expect(shown[1]!.id).not.toBe(shown[3]!.id);
+    // Both headers name the same run: they are two segments of one turn.
+    expect(shown[1]!.run!.id).toBe(shown[3]!.run!.id);
+  });
+
+  test("a command bubble inside a run stays visible", () => {
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`a${i}`)),
+      { type: "command", prompt: false, input: "/status", output: "context 12%" } as unknown as Provisioned<Entry>,
+      ...Array.from({ length: 9 }, (_, i) => tool(`b${i}`)),
+      runEnd(),
+    ]);
+    // The two bubbles a command draws, between the two halves of the work.
+    expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "run", "user", "assistant", "run"]);
+  });
+
+  test("a segment too small to fold keeps its items while the big one folds", () => {
+    const path = chain([
+      user("q"),
+      runStart(),
+      tool("a0"), tool("a1"),
+      user("attends"),
+      ...Array.from({ length: 9 }, (_, i) => tool(`b${i}`)),
+      runEnd(),
+    ]);
+    expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "tool", "tool", "user", "run"]);
+  });
+
+  test("what lives outside a run is untouched", () => {
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      runEnd(),
+      phase("after the run"),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "assistant"]);
+    expect(shown[2]!.id).toBe(path[path.length - 1]!.id);
+  });
+
+  test("two finished runs fold into two distinct rows", () => {
+    const path = chain([
+      user("q1"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`a${i}`)), runEnd(),
+      user("q2"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`b${i}`)), runEnd(),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "user", "run"]);
+    expect(shown[1]!.id).not.toBe(shown[3]!.id);
+  });
+
+  test("the fold is what makes the page small", () => {
+    // The measurement the whole thing exists for, in miniature: the same window, both ways.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 20 }, (_, i) => tool(`c${i}`, { output: "x".repeat(4000) })),
+      runEnd(),
+    ]);
+    const runs = runFold(path);
+    const whole = JSON.stringify(displayOf(path, resolvers, 4000, undefined, [], runs)).length;
+    const folded = JSON.stringify(foldedShow(path)).length;
+    expect(folded * 20).toBeLessThan(whole);
+  });
+});
+
+describe("pageBefore: a folded run as the cursor", () => {
+  test("`run-<id>` pages back from the first entry the fold stands for", () => {
+    // The client's oldest held row can be a summary. If its id resolves to nothing the page comes
+    // back empty, the app reads that as the top of the conversation, and paging dies for good --
+    // which is exactly what shipped in 0.4.83 with `t-<callId>`.
+    const path = chain([
+      user("older"), phase("answer"),
+      user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd(),
+    ]);
+    const firstFolded = path[4]!; // the first tool: what the summary stands on
+    const { window, hasMore } = pageBefore(path, `run-${firstFolded.id}`, 10, 0);
+    // Everything above the work, and none of it.
+    expect(window.map((e) => e.id)).toEqual(path.slice(0, 4).map((e) => e.id));
+    expect(window.some((e) => e.type === "tool")).toBe(false);
+    expect(hasMore).toBe(false);
+  });
+
+  test("the cursor of a summary is the id the fold actually emitted", () => {
+    const path = chain([user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd()]);
+    const runs = runFold(path);
+    const summary = displayOf(path, resolvers, 1000, undefined, [], runs, runFoldPlan(path, path, runs))[1]!;
+    // Held id in, entries out: the round trip the app makes on scroll. Never an empty page.
+    const { window } = pageBefore(path, summary.id, 10, 0);
+    expect(window.length).toBeGreaterThan(0);
+    expect(window.some((e) => e.type === "tool")).toBe(false);
+    expect(window[0]!.id).toBe(path[0]!.id);
+  });
+
+  test("an id no branch holds still falls back rather than emptying the page", () => {
+    const path = chain([user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd()]);
+    const { window } = pageBefore(path, "run-nope", 5, 0);
+    expect(window.length).toBeGreaterThan(0);
   });
 });

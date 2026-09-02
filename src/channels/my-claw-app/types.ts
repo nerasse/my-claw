@@ -105,6 +105,13 @@ export interface MyClawAppSessionHistory {
    * -- docs/session-log.md, and the app's own history paging.
    */
   beforeId?: string;
+  /**
+   * Whether a finished run may travel as a summary rather than as its items --
+   * docs/run-hydration.md. Per request rather than announced once on the connection: the client
+   * asks for what it is about to draw, an older client never sets it and gets what it always
+   * got, and there is no hello to race with the first page.
+   */
+  fold?: boolean;
 }
 
 /**
@@ -125,6 +132,12 @@ export interface MyClawAppSessionSync {
   leaf?: string;
   /** Maximum entries to return. Defaults to SYNC_LIMIT (500), capped there. */
   limit?: number;
+  /**
+   * Whether a finished run may travel as a summary rather than as its items --
+   * docs/run-hydration.md. Only the fresh window folds: a delta is work the client is watching
+   * arrive, item by item.
+   */
+  fold?: boolean;
 }
 
 /**
@@ -1132,6 +1145,35 @@ export interface MyClawAppRunMeta {
   endTs?: string;
 }
 
+/**
+ * A finished run's work, standing in for the items it folds -- docs/run-hydration.md.
+ *
+ * Sent in place of the folded items, at the position the first of them held, and only to a
+ * client that asked for it (`fold` on the request). Everything the collapsed header draws is
+ * here and nothing else: the items themselves are fetched with `session.run.items` when the
+ * reader opens the group. Measured on a 12 034-entry session, this is what turns a 1 068 KB
+ * page into a 21 KB one.
+ */
+export interface MyClawAppRunSummaryEntry {
+  /** `run-<runId>`: the row id the client holds, and the paging cursor it sends back. */
+  id: string;
+  role: "run";
+  ts: string;
+  run: MyClawAppRunMeta;
+  /** Tool calls in the whole run, whatever this page holds of it: the header counts them. */
+  toolCount: number;
+  /** Display name of the run's first tool, for the header line. */
+  firstTool?: string;
+  /** Folded rows, so the group can draw a skeleton the size of what is coming. */
+  itemCount: number;
+  /**
+   * The last entry this row stands for. With `id`, it bounds exactly what hydration must return:
+   * a run cut by a page boundary folds into one row per page, and without the bound the server
+   * would hand back the whole run and the client would splice items it already holds.
+   */
+  lastId: string;
+}
+
 export type MyClawAppHistoryEntry =
   | {
       id: string;
@@ -1168,7 +1210,8 @@ export type MyClawAppHistoryEntry =
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
     }
-  | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry & { run?: MyClawAppRunMeta });
+  | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry & { run?: MyClawAppRunMeta })
+  | MyClawAppRunSummaryEntry;
 
 /** One page of replayed history, and whether anything sits before it. */
 export interface MyClawAppHistoryPage {
