@@ -23,7 +23,7 @@ import type { SessionLog } from "../../src/sessions/log.ts";
 const FILLER = "z".repeat(6_000);
 const SUMMARY = `Prior work: the agent ran the filler tool several times and gathered its output. ${"detail ".repeat(20)}`;
 /** Entries a run of this shape keeps when no summary ever lands: the hard trim alone. */
-const UNCOMPACTED_ENTRIES = 26;
+const UNCOMPACTED_ENTRIES = 28;
 
 function config(): MyClawConfig {
   return {
@@ -195,7 +195,8 @@ test("a summarization that produced nothing is not retried on the next iteration
   // Every iteration is over the threshold from now on, and each one could have paid for a summary.
   assert.ok(attempts >= 1);
   assert.ok(attempts <= Math.ceil((entries.length + 1) / 10), `backed off, got ${attempts} attempts over ${rounds} rounds`);
-  // Nothing was rewritten, so the run kept its history and the hard trim stayed in charge.
+  // Nothing was rewritten, so the run kept its history and the hard trim stayed in charge. The two
+  // run markers ride along as bookkeeping (docs/run-grouping.md), which is why the constant is 28.
   assert.equal(entries.length, UNCOMPACTED_ENTRIES, `history untouched, got ${entries.length} entries`);
 });
 

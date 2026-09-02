@@ -80,7 +80,9 @@ test("AgentBridge returns plain LLM response", async () => {
     const entries = sharedLog.entries();
     assert.equal(entries.filter(e => e.prompt).length, 2);
     assert.equal(entries[0]!.type, "user");
-    assert.equal(entries[1]!.type, "phase");
+    // The run markers sit between the trigger turn and the work (docs/run-grouping.md).
+    assert.equal(entries[1]!.type, "run_start");
+    assert.equal(entries[2]!.type, "phase");
   } finally {
     fetchMock.restore();
   }

@@ -1110,6 +1110,21 @@ export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
   ts: string;
 }
 
+/**
+ * The run an entry belongs to -- docs/run-grouping.md.
+ *
+ * Computed server-side by folding the branch between `run_start` and `run_end` markers, so a
+ * client groups a finished run's work under one collapsed header without ever seeing the markers.
+ * `running` means the run is still in flight (or its end was lost to a crash).
+ */
+export interface MyClawAppRunMeta {
+  /** The id of the `run_start` entry that opened this run. */
+  id: string;
+  status: "running" | "done" | "aborted" | "error";
+  startTs: string;
+  endTs?: string;
+}
+
 export type MyClawAppHistoryEntry =
   | {
       id: string;
@@ -1143,8 +1158,10 @@ export type MyClawAppHistoryEntry =
        * addressed to the model, and the turns it stands for are replayed above it in full.
        */
       summaryOf?: number;
+      /** The run this entry belongs to, when it sits inside one. */
+      run?: MyClawAppRunMeta;
     }
-  | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry);
+  | ({ role: "tool"; ts: string } & MyClawAppToolCallEntry & { run?: MyClawAppRunMeta });
 
 /** One page of replayed history, and whether anything sits before it. */
 export interface MyClawAppHistoryPage {

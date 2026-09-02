@@ -303,6 +303,8 @@ seul. C'est la distinction `CustomEntry` / `CustomMessageEntry` de pi, général
 | `note` | `false` | le `note` du hand-back sous-agent |
 | `spawn_state` | `false` | le spinner du sous-agent ; le modèle lit son résultat dans `tool` |
 | `queued` | `false` | devient `user` quand il est drainé |
+| `run_start` | `false` | ouvre un run ; tout ce qui suit jusqu'à `run_end` est son travail (§3.6, docs/run-grouping.md) |
+| `run_end` | `false` | ferme un run, avec `reason: done \| aborted \| error` |
 
 ## 2.3 Charges utiles
 

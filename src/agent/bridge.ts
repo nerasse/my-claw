@@ -416,6 +416,10 @@ export class AgentBridge implements AgentBackend {
           ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
         });
       }
+      // The trigger turn is on the log: whatever this run writes from here on is its work, and
+      // the marker lets a reopened thread fold that work until the matching runEnd -- the line
+      // between the question and the work is exactly where a reader draws it.
+      recorder.runStart();
 
       const openaiTools = toOpenAiToolDefinitions(tools);
 
@@ -640,6 +644,7 @@ export class AgentBridge implements AgentBackend {
             sessionTokenUsage: session.tokenUsage,
             stagnation: stagnation.report(),
           });
+          recorder.runEnd("done");
           return transformedResponse;
         }
 
@@ -856,8 +861,12 @@ export class AgentBridge implements AgentBackend {
           toolExecutions,
           durationMs: Date.now() - startedAt,
         });
+        recorder.runEnd("aborted");
         throw new AbortedError();
       }
+      // The run's own end called before the cursor moves: the dead branch keeps its markers, so
+      // opening it from the branch picker shows the error state instead of an eternal spinner.
+      recorder.runEnd("error");
       await recorder.rewind();
       hooks.emit("agent:run:error", {
         messageId: message.id,
@@ -1030,6 +1039,7 @@ export class AgentBridge implements AgentBackend {
       durationMs,
     });
 
+    recorder.runEnd("done");
     return finalText;
   }
 

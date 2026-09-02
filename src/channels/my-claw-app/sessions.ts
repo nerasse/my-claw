@@ -5,7 +5,7 @@ import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, displayOf, withSpawnCards, type DisplayResolvers } from "./display.ts";
+import { pageOf, displayOf, runFold, withSpawnCards, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -333,7 +333,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
     // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
     // and a card whose state entry fell outside the window would replay as a spinner for good.
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored);
+    // The run fold comes from the same whole-branch walk, so a page that starts mid-run still
+    // tags its entries with the run they belong to (docs/run-grouping.md).
+    const runs = runFold(path);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -408,7 +411,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     );
     const stored = needsFiles ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored);
+    // The run fold covers the whole current branch, so entries of a delta that starts mid-run
+    // still carry their run: the client folds them under the right header even when the
+    // `run_start` marker itself predates the cursor.
+    const runs = runFold(pathOf(allEntries, serverLeaf));
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored, runs);
 
     return {
       entries,

@@ -106,6 +106,22 @@ export class RunRecorder {
   }
 
   /**
+   * Marks the opening of this run under the trigger turn just written.
+   *
+   * Everything logged from here to `runEnd` is one run's work -- docs/run-grouping.md. The marker
+   * is the floor the app folds a finished run under, and the absence of its `run_end` pair is what
+   * tells a reopened thread that the run is still in flight.
+   */
+  runStart(): Entry {
+    return this.entries.append({ type: "run_start", prompt: false });
+  }
+
+  /** Marks the closing of this run and why it ended. */
+  runEnd(reason: "done" | "aborted" | "error"): Entry {
+    return this.entries.append({ type: "run_end", prompt: false, reason });
+  }
+
+  /**
    * Starts a new model turn.
    *
    * Called before each API call, so the phases of one call stay together and two calls stay apart.

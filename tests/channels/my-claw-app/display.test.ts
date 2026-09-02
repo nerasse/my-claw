@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, pageOf, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { displayOf, pageOf, runFold, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
 
@@ -32,7 +32,11 @@ const resolvers: DisplayResolvers = {
   mediaOf: (refs) => refs.map((r, i) => ({ id: `media-${i}`, type: "file", name: r.path, size: 1 })),
 };
 
-const show = (entries: readonly Entry[], limit = 1000, files: SessionFile[] = []) => displayOf(entries, resolvers, limit, undefined, files);
+const show = (entries: readonly Entry[], limit = 1000, files: SessionFile[] = [], runs?: Map<string, import("../../../src/channels/my-claw-app/types.ts").MyClawAppRunMeta>) =>
+  displayOf(entries, resolvers, limit, undefined, files, runs);
+
+const runStart = (extra: Record<string, unknown> = {}) => ({ type: "run_start", prompt: false, ...extra }) as Provisioned<Entry>;
+const runEnd = (reason: "done" | "aborted" | "error" = "done") => ({ type: "run_end", prompt: false, reason }) as Provisioned<Entry>;
 
 describe("displayOf: one entry, one bubble", () => {
   test("an exchange draws in the order it happened", () => {
@@ -344,5 +348,82 @@ describe("pageOf", () => {
     const { window } = pageOf(path, 5, 0, 3);
     expect(window[0]!.type).toBe("phase");
     expect(window).toHaveLength(8);
+  });
+});
+
+describe("runFold: the branch read as runs", () => {
+
+  test("work between the markers belongs to the run they delimit", () => {
+    const entries = chain([user("q"), runStart(), phase("thinking", { reasoning: "hmm" }), tool("c1"), runEnd(), phase("next")]);
+    const runs = runFold(entries);
+    expect(runs.get(entries[2]!.id)).toMatchObject({ status: "done" });
+    expect(runs.get(entries[3]!.id)?.id).toBe(entries[1]!.id);
+    // Past the run_end there is no run anymore.
+    expect(runs.get(entries[5]!.id)).toBeUndefined();
+  });
+
+  test("two runs are distinct groups", () => {
+    const entries = chain([user("q1"), runStart(), tool("c1"), runEnd(), user("q2"), runStart(), tool("c2"), runEnd()]);
+    const runs = runFold(entries);
+    const first = runs.get(entries[2]!.id)!;
+    const second = runs.get(entries[6]!.id)!;
+    expect(first.id).not.toBe(second.id);
+    expect([first.status, second.status]).toEqual(["done", "done"]);
+  });
+
+  test("the reason of the end marker is the run's status", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runEnd("error")]);
+    expect(runFold(entries).get(entries[2]!.id)?.status).toBe("error");
+    const aborted = chain([user("q"), runStart(), phase("half"), runEnd("aborted")]);
+    expect(runFold(aborted).get(aborted[2]!.id)?.status).toBe("aborted");
+  });
+
+  test("a user turn inside the run (injection) belongs to it", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), user("steer"), phase("answer"), runEnd()]);
+    const runs = runFold(entries);
+    expect(runs.get(entries[3]!.id)?.id).toBe(entries[1]!.id);
+    expect(runs.get(entries[4]!.id)?.id).toBe(entries[1]!.id);
+  });
+
+  test("a trailing run with no end stays running", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), phase("still working")]);
+    expect(runFold(entries).get(entries[3]!.id)?.status).toBe("running");
+  });
+
+  test("a run_end without an open run is ignored", () => {
+    const entries = chain([user("q"), runEnd(), phase("orphan")]);
+    expect(runFold(entries).get(entries[2]!.id)).toBeUndefined();
+  });
+
+  test("the markers themselves carry their own meta, keyed by their id", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runEnd()]);
+    const meta = runFold(entries).get(entries[1]!.id)!;
+    expect(meta.status).toBe("done");
+    expect(meta.startTs).toBe(new Date(entries[1]!.ts).toISOString());
+  });
+});
+
+describe("displayOf with run meta", () => {
+  test("the markers are not bubbles", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runEnd(), phase("answer")]);
+    const shown = show(entries);
+    expect(shown.map((e) => e.id)).toEqual([entries[0]!.id, "t-c1", entries[4]!.id]);
+  });
+
+  test("each kept bubble carries its run", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runEnd(), phase("answer")]);
+    const runs = runFold(entries);
+    const shown = show(entries, 1000, [], runs);
+    expect(shown[1]!.run).toMatchObject({ status: "done" });
+    expect(shown[1]!.run?.id).toBe(entries[1]!.id);
+    expect(shown[0]!.run).toBeUndefined();
+    expect(shown[2]!.run).toBeUndefined();
+  });
+
+  test("an injection user bubble inside a run keeps its run too", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), user("steer"), phase("answer"), runEnd()]);
+    const runs = runFold(entries);
+    const shown = show(entries, 1000, [], runs);
+    expect(shown[2]!.run?.id).toBe(entries[1]!.id);
   });
 });

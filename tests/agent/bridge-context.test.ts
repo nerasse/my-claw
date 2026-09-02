@@ -144,8 +144,8 @@ test("bridge: no auto-compaction below the threshold", async () => {
   
   await log.flush();
   const entriesAfter = log.entries().length;
-  // +2: the new user entry and the final assistant phase entry
-  assert.equal(entriesAfter, entriesBefore + 2);
+  // +4: the new user entry, its run markers (one each side of the work) and the final phase
+  assert.equal(entriesAfter, entriesBefore + 4);
 });
 
 test("bridge: context.autoCompact.enabled=false never compacts", async () => {

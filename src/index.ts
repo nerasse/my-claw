@@ -4,6 +4,7 @@ import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagen
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
+import { migrateRunMarkers } from "./sessions/migrate-run-markers.ts";
 import type { CommandEntry } from "./sessions/log.ts";
 import { setSessionLogResolver } from "./sessions/log-access.ts";
 import { recordSpawnLifecycle } from "./sessions/spawn-state.ts";
@@ -637,6 +638,11 @@ async function main() {
   // for the 68 sessions on this install, and it is a one-off -- a session that already has its
   // directory is skipped, so every later boot pays a directory scan and nothing else.
   await migrateSessions(loadLegacySession);
+
+  // Same window, same reason: the run markers of a session written before they existed are added
+  // before any reader opens it, so no code ever meets a half-migrated file. One-off as well -- a
+  // session that already carries a marker is skipped.
+  await migrateRunMarkers();
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();

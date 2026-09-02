@@ -20,7 +20,7 @@ import { toolCardId } from "./types.ts";
 import { parseStoredName, type SessionFile } from "./files.ts";
 import type { Entry } from "../../sessions/log.ts";
 import type { SessionAttachment, SessionSubAgentState } from "../../sessions/store.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppRunMeta } from "./types.ts";
 
 /**
  * How the two kinds of attachment become the ones the app draws.
@@ -118,6 +118,39 @@ function tsOf(entry: Entry): string {
   return new Date(entry.ts).toISOString();
 }
 
+/**
+ * Walks a branch in order, tagging every entry with the run it belongs to -- docs/run-grouping.md.
+ *
+ * A `run_start` opens a run, the matching `run_end` closes it with its reason, and everything in
+ * between (phases, tools, injected turns) belongs to it. The fold is keyed by entry id so the
+ * client can group any window of a page or delta without holding the markers themselves, which
+ * stay inside the log where the wire never needs them.
+ *
+ * A trailing run with no `run_end` stays `running`: the caller decides its terminality from the
+ * run registry (`activeRun`), because a crash can leave exactly this shape in a file.
+ */
+export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
+  const out = new Map<string, MyClawAppRunMeta>();
+  let current: MyClawAppRunMeta | null = null;
+  for (const entry of path) {
+    if (entry.type === "run_start") {
+      current = { id: entry.id, status: "running", startTs: tsOf(entry) };
+      out.set(entry.id, current);
+      continue;
+    }
+    if (entry.type === "run_end") {
+      if (current) {
+        current.status = entry.reason;
+        current.endTs = tsOf(entry);
+      }
+      current = null;
+      continue;
+    }
+    if (current) out.set(entry.id, current);
+  }
+  return out;
+}
+
 /** `1234 ms` in the block details. The recorder measured it; the server never decodes the file. */
 function durationFrom(details: string[]): number | undefined {
   for (const detail of details) {
@@ -176,11 +209,20 @@ export function displayOf(
   outputLimit: number,
   spawn?: ReadonlyMap<string, SessionSubAgentState>,
   files: SessionFile[] = [],
+  runs?: ReadonlyMap<string, MyClawAppRunMeta>,
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
   for (const entry of entries) {
     const ts = tsOf(entry);
+
+    // The run markers are bookkeeping, not bubbles: the work between them carries the run meta
+    // and the client folds it. Leaking them as empty rows is what a replay would do otherwise.
+    if (entry.type === "run_start" || entry.type === "run_end") continue;
+
+    const run = runs?.get(entry.id);
+    const withRun = <T extends MyClawAppHistoryEntry>(item: T): T =>
+      run ? { ...item, run } : item;
 
     if (entry.type === "user") {
       // A stored turn keeps the LLM-facing rendering (the `[Audio]:` marker and the `[Attachments]`
@@ -197,7 +239,7 @@ export function displayOf(
             ? resolvers.attachmentsOf(entry.attachments)
             : [];
       const transcripts = entry.transcripts ? transcriptsById(entry.transcripts, files) : undefined;
-      out.push({
+      out.push(withRun({
         // The entry's own id, which is the id the live bubble already had. That is what makes a
         // page mergeable with what a device shows instead of duplicating the question of a run in
         // flight, and it replaces `sourceId` outright -- docs/session-log.md annexe A.
@@ -208,7 +250,7 @@ export function displayOf(
         ...(transcripts && Object.keys(transcripts).length > 0 ? { transcripts } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(entry.location ? { location: entry.location } : {}),
-      });
+      }));
       continue;
     }
 
@@ -221,7 +263,7 @@ export function displayOf(
       // saw was that thought: dropping it is what made a reopened thread jump from the question
       // straight to a tool card. A phase with nothing at all is not a bubble.
       if (!text && media.length === 0 && !entry.reasoning?.trim() && !entry.reasoningTokens) continue;
-      out.push({
+      out.push(withRun({
         id: entry.id,
         role: "assistant",
         text,
@@ -229,7 +271,7 @@ export function displayOf(
         ...(media.length > 0 ? { attachments: media } : {}),
         ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
         ...(entry.reasoningTokens ? { reasoningTokens: entry.reasoningTokens } : {}),
-      });
+      }));
       continue;
     }
 
@@ -242,7 +284,7 @@ export function displayOf(
       const output = entry.output;
       const truncated = entry.truncated || output.length > outputLimit;
       const state = spawn?.get(entry.callId) ?? entry.spawn;
-      out.push({
+      out.push(withRun({
         // Keyed on the model's own call id, so this card and the live one are one card. They used
         // to differ, and a tool finishing after a reload appended a second card beside the first.
         id: toolCardId(entry.callId) ?? entry.id,
@@ -261,7 +303,7 @@ export function displayOf(
         // a `running` state on a settled card is the honest reading of a background child.
         ...(state ? { spawn: state } : {}),
         ts,
-      });
+      }));
       continue;
     }
 
@@ -272,23 +314,23 @@ export function displayOf(
       // the input line was never shown live, so it must not reappear on a refresh.
       const sourceId = entry.sourceId || entry.id;
       if (!entry.quiet) {
-        out.push({ id: sourceId, role: "user", text: entry.input, ts });
+        out.push(withRun({ id: sourceId, role: "user", text: entry.input, ts }));
       }
-      out.push({
+      out.push(withRun({
         id: `cmd-${sourceId}`,
         role: "assistant",
         text: entry.output,
         ts,
         command: true,
         ...(entry.details ? { details: entry.details } : {}),
-      });
+      }));
       continue;
     }
 
     if (entry.type === "failure") {
       // The error bubble the owner saw live, under the question it never answered. A question with
       // nothing under it reads as a message the agent ignored.
-      out.push({ id: entry.id, role: "assistant", text: "", ts, error: entry.error });
+      out.push(withRun({ id: entry.id, role: "assistant", text: "", ts, error: entry.error }));
       continue;
     }
 
@@ -296,18 +338,18 @@ export function displayOf(
       // Stored as a user turn because that is the role the prompt needs it in; drawn as a boundary
       // because replayed as a user turn it reads as a wall of `[Prior context summarized]` in the
       // owner's own voice. The turns it stands for are still above it, in full.
-      out.push({ id: entry.id, role: "user", text: entry.summary, ts, summaryOf: entry.count });
+      out.push(withRun({ id: entry.id, role: "user", text: entry.summary, ts, summaryOf: entry.count }));
       continue;
     }
 
     if (entry.type === "note") {
-      out.push({ id: entry.id, role: "assistant", text: entry.text, ts });
+      out.push(withRun({ id: entry.id, role: "assistant", text: entry.text, ts }));
       continue;
     }
 
     if (entry.type === "model_change") {
       const label = [entry.model, entry.effort].filter(Boolean).join(" ");
-      out.push({ id: entry.id, role: "assistant", text: label, ts, command: true });
+      out.push(withRun({ id: entry.id, role: "assistant", text: label, ts, command: true }));
     }
   }
 

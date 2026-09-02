@@ -33,7 +33,9 @@ export type EntryType =
   | "compaction"
   | "model_change"
   | "note"
-  | "spawn_state";
+  | "spawn_state"
+  | "run_start"
+  | "run_end";
 
 /** Assigned by the log, except when a channel reuses the id of a bubble already on screen. */
 interface EntryBase {
@@ -180,6 +182,26 @@ export interface SpawnStateEntry extends EntryBase {
   error?: string;
 }
 
+/**
+ * A run opened. Written once, right after the trigger turn -- docs/run-grouping.md.
+ *
+ * Everything written between this entry and the matching `run_end` is one run's work, which is
+ * what lets the app fold the tool cards, thinking phases and intermediate traffic of a finished
+ * run under one collapsed header while it answers. Never part of a prompt: the model reads the
+ * work, not the bookkeeping.
+ */
+export interface RunStartEntry extends EntryBase {
+  type: "run_start";
+  prompt: false;
+}
+
+/** A run closed, and why. `done` is a normal ending, `error` a failed one, `aborted` a Stop. */
+export interface RunEndEntry extends EntryBase {
+  type: "run_end";
+  prompt: false;
+  reason: "done" | "aborted" | "error";
+}
+
 export type Entry =
   | UserEntry
   | PhaseEntry
@@ -189,7 +211,9 @@ export type Entry =
   | CompactionEntry
   | ModelChangeEntry
   | NoteEntry
-  | SpawnStateEntry;
+  | SpawnStateEntry
+  | RunStartEntry
+  | RunEndEntry;
 
 /**
  * What a caller hands to `append`: the payload, without anything the log itself decides.
@@ -278,7 +302,7 @@ export function newEntryId(now = Date.now()): string {
  * line alone. The whole point of the format is that damage is bounded to a line instead of taking
  * the conversation with it, the way a half-written 12 MB JSON object did.
  */
-function parseEntryLine(line: string, sessionId: string, lineNumber: number): Entry | null {
+export function parseEntryLine(line: string, sessionId: string, lineNumber: number): Entry | null {
   if (!line.trim()) return null;
   try {
     const parsed = JSON.parse(line) as Entry;
@@ -328,7 +352,10 @@ export function pathOf(entries: readonly Entry[], leafId: string | null): Entry[
 export function leavesOf(entries: readonly Entry[]): Entry[] {
   const parents = new Set<string>();
   for (const entry of entries) if (entry.parentId) parents.add(entry.parentId);
-  return entries.filter((entry) => !parents.has(entry.id));
+  // The run markers are bookkeeping, not conversation points: a trailing `run_end` is a childless
+  // entry by construction (the next turn is what would chain under it), and listing it as a
+  // branch would offer an empty row in the picker.
+  return entries.filter((entry) => !parents.has(entry.id) && entry.type !== "run_start" && entry.type !== "run_end");
 }
 
 /**

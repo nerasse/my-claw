@@ -669,7 +669,7 @@ runs fresh like any other message.
 { "type": "chat.stream.done", "id": "uuid", "threadId": "projet" }
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
-{ "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
+{ "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "run": { "id": "r-...", "status": "running|done|aborted|error", "startTs": "iso", "endTs": "iso" }, "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
 { "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "pinRank": 0, "activeRun": true, "workspace": "default", "hasDraft": true }] }
 { "type": "draft.changed", "threadId": "projet", "text": "ce qui est tape ailleurs", "ts": 1755690000000 }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
