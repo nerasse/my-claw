@@ -62,6 +62,18 @@ export interface RecordedToolCall {
   durationMs?: number;
 }
 
+/**
+ * The entry that was written, and what the caller should put in the live prompt for it.
+ *
+ * Two views of one output, decided in a single place (`spillToolOutput`): the entry is what every
+ * later run replays and is kept small, the message is what the run that made the call still gets
+ * to see. Handing the caller a string it has to re-derive is how the two drift apart.
+ */
+export interface RecordedTool {
+  entry: ToolEntry;
+  message: string;
+}
+
 function parseArguments(raw: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw);
@@ -206,9 +218,9 @@ export class RunRecorder {
    * Awaits the spill, unlike the append itself: the entry names a file, and an entry pointing at a
    * file that does not exist yet is the one state the card's see-all button cannot recover from.
    */
-  async tool(call: RecordedToolCall): Promise<ToolEntry> {
+  async tool(call: RecordedToolCall): Promise<RecordedTool> {
     const spilled = await spillToolOutput(this.entries.sessionId, call.callId, call.output);
-    return this.entries.append<ToolEntry>({
+    const entry = this.entries.append<ToolEntry>({
       type: "tool",
       prompt: true,
       callId: call.callId,
@@ -224,6 +236,7 @@ export class RunRecorder {
       // carry the lifecycle -- src/sessions/spawn-state.ts.
       runId: this.currentRunId,
     });
+    return { entry, message: spilled.message };
   }
 
   /** A slash command and the answer the owner was shown. Never part of a prompt. */

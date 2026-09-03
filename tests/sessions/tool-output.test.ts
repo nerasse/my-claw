@@ -8,6 +8,7 @@ import {
   toolOutputDir,
   toolOutputPath,
   SPILL_THRESHOLD,
+  MESSAGE_CEILING_CHARS,
 } from "../../src/sessions/tool-output.ts";
 import { sessionDir, type Entry } from "../../src/sessions/log.ts";
 
@@ -28,7 +29,7 @@ const toolEntry = (callId: string): Entry =>
 describe("spillToolOutput", () => {
   test("a short output stays in the entry", async () => {
     const result = await spillToolOutput(SESSION, "c1", "court");
-    expect(result).toEqual({ output: "court", truncated: false });
+    expect(result).toEqual({ output: "court", message: "court", truncated: false });
     // And nothing is created for it: a directory per conversation that never spilled is noise.
     await expect(readdir(toolOutputDir(SESSION))).rejects.toThrow();
   });
@@ -40,33 +41,47 @@ describe("spillToolOutput", () => {
   });
 
   test("a long output is split: an extract in the entry, the whole of it on disk", async () => {
-    // Build output larger than EXTRACT_CHARS (400) to test the stub with marker
-    const output = "x".repeat(300) + "MIDDLE" + "y".repeat(300);
+    const output = "x".repeat(20_000) + "MIDDLE" + "y".repeat(20_000);
     const result = await spillToolOutput(SESSION, "c1", output, 10);
-    // The stub is head (200) + marker + tail (200), so around 400 + marker length
     expect(result.output.length).toBeLessThan(output.length);
     expect(result.output).toContain("elided");
     expect(result.output).toContain(toolOutputPath(SESSION, "c1"));
     expect(result.output).toContain("read that file");
+    // Head and tail, never head alone: the verdict of a command is on its last line.
+    expect(result.output.startsWith("x")).toBe(true);
+    expect(result.output.endsWith("y")).toBe(true);
     expect(result.truncated).toBe(true);
     expect(result.outputPath).toBe(toolOutputPath(SESSION, "c1"));
     expect(await readToolOutput(SESSION, "c1")).toBe(output);
   });
 
-  test("a small output above threshold but below EXTRACT_CHARS keeps full content inline", async () => {
+  test("the run that made the call keeps far more than the entry does", async () => {
+    // Two views of one output, and the archive is neither of them: the entry is what every later
+    // run replays, the message is what the run that asked still gets to work with.
+    const output = "x".repeat(MESSAGE_CEILING_CHARS * 2);
+    const result = await spillToolOutput(SESSION, "c3", output, 10);
+    expect(result.output.length).toBeLessThan(result.message.length);
+    expect(result.message.length).toBeGreaterThan(MESSAGE_CEILING_CHARS - 1);
+    expect(result.message).toContain("read that file");
+    expect(await readToolOutput(SESSION, "c3")).toBe(output);
+  });
+
+  test("a small output above threshold but below the extract keeps full content inline", async () => {
     const output = "x".repeat(25) + "FIN";
     const result = await spillToolOutput(SESSION, "c2", output, 10);
-    // Output is 28 chars, below EXTRACT_CHARS (400), so no stubbing
+    // Nothing to elide, so no marker: a stub is only worth its cost when it replaces something.
     expect(result.output).toBe(output);
+    expect(result.message).toBe(output);
     expect(result.truncated).toBe(true);
     expect(result.outputPath).toBe(toolOutputPath(SESSION, "c2"));
     expect(await readToolOutput(SESSION, "c2")).toBe(output);
   });
 
-  test("the real threshold is well above what a card shows", async () => {
-    // The point is not to match the card but to keep the log readable: a JSONL line is parsed
-    // whole, so a megabyte inline would be paid on every read of that conversation, forever.
+  test("the entry is the cheap view and the message the generous one", async () => {
+    // A JSONL line is parsed whole, so what the entry keeps is paid on every read of that
+    // conversation, forever; what the message keeps is paid by one run.
     expect(SPILL_THRESHOLD).toBeGreaterThan(4000);
+    expect(MESSAGE_CEILING_CHARS).toBeGreaterThan(SPILL_THRESHOLD);
   });
 
   test("a call id cannot walk out of the session", async () => {
@@ -92,8 +107,10 @@ describe("spillToolOutput", () => {
     await mkdir(join(sessionDir(SESSION), ".."), { recursive: true });
     await writeFile(sessionDir(SESSION), "not a directory", "utf-8");
     const result = await spillToolOutput(SESSION, "c1", "z".repeat(20), 5);
-    expect(result).toEqual({ output: "zzzzz", truncated: true });
+    expect(result).toEqual({ output: "zzzzz", message: "z".repeat(20), truncated: true });
+    // Neither view may name a path: there is no file at the end of it.
     expect(result.outputPath).toBeUndefined();
+    expect(result.message).not.toContain("read that file");
   });
 });
 

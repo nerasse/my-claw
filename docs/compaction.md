@@ -28,9 +28,9 @@ La frontière est ajoutée **après** les tours qu'elle couvre, et la projection
 Aucune donnée ne bouge : c'est une relecture. Même géométrie que pi, et la raison est la même — un
 journal append-only n'a pas de place pour une réécriture.
 
-## 2. Le tail : un budget en tokens
+## 2. Le tail : un budget en tokens, mis à l'échelle de la fenêtre
 
-`context.autoCompact.tailTokens`, défaut **20 000**.
+`context.autoCompact.tailTokens`, défaut **48 000**, et c'est un **plafond**.
 
 C'était `TAIL_KEEP = 4` **entrées**. Une entrée est une unité de log, pas un tour : quatre d'entre
 elles, c'est couramment un demi-tour d'agent sans le message qui l'a déclenché, et le modèle
@@ -42,6 +42,38 @@ point.
 pas comparables — c'est une sélection filtrée de messages sur tout l'historique, sans aucune sortie
 d'outil, et le chiffre est une copie du défaut serveur de `/responses/compact`
 (`compact_remote_v2.rs:74`).
+
+### Pourquoi un plafond et pas une constante
+
+Ce que le tail dépense vraiment, c'est **l'intervalle entre deux compactions** : le seuil moins le
+plancher qu'une compaction laisse derrière elle (tail + résumé). Le même nombre ne coûte pas la
+même chose selon la fenêtre où il atterrit.
+
+| fenêtre | seuil | tail | travail neuf par cycle |
+|---|---|---|---|
+| 128k | 102k | 20 000 | 78k |
+| 128k | 102k | *48 000* | *50k, soit 1,6× plus de compactions* |
+| 512k (le cap) | 410k | 48 000 | 357k, contre 385k à 20 000 |
+
+Sur 512k, 48 000 coûte 7 % d'intervalle pour 2,4× plus de verbatim : gratuit. Sur 128k, il double
+presque le nombre d'appels de résumé, et chacun relit tout l'historique.
+
+D'où :
+
+```
+tail = clamp(seuil × 0,12, 20 000, tailTokens)
+```
+
+128k → 20 000 · 300k → 28 800 · **512k → 48 000** · 1M → 48 000.
+
+Le plancher cède à son tour à la moitié du seuil, parce qu'un plancher n'est pas une garantie : sur
+une fenêtre assez étroite, 20 000 est *plus* que le seuil, toute la conversation tient dans son
+propre tail, `planCompaction` ne trouve jamais rien à compacter et l'historique finit jeté par
+`trimToContextWindow` au lieu d'être résumé. C'est une panne silencieuse, et c'est celle qu'un
+`tailTokens` absolu introduisait.
+
+La valeur configurée reste le plafond en toutes circonstances, plancher compris : demander moins de
+20 000 est une réponse délibérée à une fenêtre étroite.
 
 Deux invariants :
 
@@ -213,8 +245,10 @@ celui qui l'a demandée a généralement quitté l'écran.
 
 - **Élaguer les vieux résultats d'outils** (le consensus n°1 de la communauté : 68 % des tokens
   d'une session, claude-code#17428). Ça réécrit le prompt et contredit `docs/prompt-immutable.md`,
-  décision mesurée sur 14 jours de trafic. La borne est posée **à la production** (`SPILL_THRESHOLD`,
-  `sessions/tool-output.ts`), ce qui garde le préfixe stable et le cache chaud.
+  décision mesurée sur 14 jours de trafic. La borne est posée **à la production**
+  (`SPILL_THRESHOLD = 16 000`, extrait de 6 000 en tête + queue, `sessions/tool-output.ts`), ce qui
+  garde le préfixe stable et le cache chaud, et enlève quand même 36 % du poids des sorties d'outils
+  à tout historique rejoué. Une compaction a donc moins à résumer sans que rien n'ait été réécrit.
 - **Compaction remote** (codex `/responses/compact`) : réservée à la famille OpenAI-Responses, et le
   résumé revient en blob chiffré opaque, illisible si le modèle change. Anti-portable sur un parc
   multi-provider.
@@ -233,12 +267,13 @@ celui qui l'a demandée a généralement quitté l'écran.
 | `llm/overflow.ts` | reconnaître un débordement, quelle que soit la forme |
 | `agent/bridge.ts` | les trois portes, le rebuild, la spéculation en fin de run |
 | `channels/compact-command.ts` | `/compact` : hold, signal, notification |
-| `core/config.ts` | seuil, tail, spéculation |
+| `core/config.ts` | seuil, tail (plafond et mise à l'échelle), spéculation |
+| `sessions/tool-output.ts` | ce qu'une sortie d'outil pèse dans un historique rejoué |
 
 Tests : `tests/compaction-reference.test.ts` (le contrat, cas par cas),
 `tests/agent/bridge-compaction-recovery.test.ts` (overflow et spéculation de bout en bout),
 `tests/compaction.test.ts`, `tests/compact-hold.test.ts`, `tests/agent/compact-summary.test.ts`,
 `tests/agent/bridge-mid-run-compaction.test.ts`.
 
-Les fixtures déclarent un `tailTokens` étroit : au défaut de 20 000, une douzaine de messages courts
+Les fixtures déclarent un `tailTokens` étroit : au défaut de 48 000, une douzaine de messages courts
 tient entière dans le tail et il n'y a rien à résumer.

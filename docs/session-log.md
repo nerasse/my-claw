@@ -1351,7 +1351,7 @@ encodait est perdue avec lui : elle devra être réécrite sur le log. **Livré 
 | `sessions/import.ts` | `SessionData` → entrées, pur | 28 |
 | `sessions/meta.ts` | la moitié réglages, `storageVersion` | (couvert par migrate) |
 | `sessions/migrate.ts` | la passe one-shot, idempotente | 15 |
-| `sessions/tool-output.ts` | spill au-delà de 50 KB, lecture, GC des orphelins | 14 |
+| `sessions/tool-output.ts` | spill au-delà de 16 000 caractères, lecture, GC des orphelins | 14 |
 | `sessions/spawn-state.ts` | `spawnStates`, `cardOf`, `appendSpawnState`, `recordSpawnLifecycle` | 16 |
 | `channels/my-claw-app/display.ts` | `displayOf`, `pageOf`, `withSpawnCards` | 30 |
 | `tests/sessions/prompt-conformance.test.ts` | le prompt gelé en littéraux, sans témoin | 15 |

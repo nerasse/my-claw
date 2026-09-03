@@ -114,27 +114,27 @@ describe("RunRecorder: provider state", () => {
 describe("RunRecorder: tools", () => {
   test("a settled call becomes an entry carrying its result", async () => {
     const recorder = new RunRecorder(entries);
-    const entry = await recorder.tool(call("c1", { durationMs: 12 }));
+    const { entry } = await recorder.tool(call("c1", { durationMs: 12 }));
     expect(entry).toMatchObject({ type: "tool", callId: "c1", name: "bash", args: { command: "ls" }, output: "ok", ok: true, durationMs: 12 });
   });
 
   test("a tool belongs to the turn that asked for it", async () => {
     const recorder = new RunRecorder(entries);
     const [phase] = recorder.turn({ content: "je regarde" });
-    const entry = await recorder.tool(call("c1"));
+    const { entry } = await recorder.tool(call("c1"));
     expect(entry.runId).toBe(phase!.runId);
   });
 
   test("half-written arguments are kept raw rather than lost", async () => {
     // A turn cut on `length` stops mid-serialization. The card must show what was attempted.
     const recorder = new RunRecorder(entries);
-    const entry = await recorder.tool(call("c1", { arguments: '{"path":"x.ts","content":"half of' }));
+    const { entry } = await recorder.tool(call("c1", { arguments: '{"path":"x.ts","content":"half of' }));
     expect(entry.args).toEqual({ raw: '{"path":"x.ts","content":"half of' });
   });
 
   test("a long output goes beside the entry, which names it", async () => {
     const recorder = new RunRecorder(entries);
-    const entry = await recorder.tool(call("c1", { output: "x".repeat(60_000) }));
+    const { entry } = await recorder.tool(call("c1", { output: "x".repeat(60_000) }));
     expect(entry.truncated).toBe(true);
     expect(entry.outputPath).toBeDefined();
     expect(await readToolOutput(SESSION, "c1")).toHaveLength(60_000);
@@ -144,13 +144,13 @@ describe("RunRecorder: tools", () => {
     // The one state the card's see-all button cannot recover from is an entry pointing at a file
     // that is not there yet, which is why this await is not optional.
     const recorder = new RunRecorder(entries);
-    const entry = await recorder.tool(call("c1", { output: "y".repeat(60_000) }));
+    const { entry } = await recorder.tool(call("c1", { output: "y".repeat(60_000) }));
     expect(await readToolOutput(SESSION, entry.callId)).not.toBeNull();
   });
 
   test("a failed call is still an entry", async () => {
     const recorder = new RunRecorder(entries);
-    const entry = await recorder.tool(call("c1", { ok: false, output: "Error: nope" }));
+    const { entry } = await recorder.tool(call("c1", { ok: false, output: "Error: nope" }));
     expect(entry).toMatchObject({ ok: false, output: "Error: nope" });
   });
 });

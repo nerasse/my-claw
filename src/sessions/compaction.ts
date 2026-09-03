@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
-import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveCompactionTailTokens } from "../core/config.ts";
+import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCompactionTailTokens } from "../core/config.ts";
+import { resolveModelContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { llmComplete } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
@@ -368,6 +369,26 @@ export async function commitCompaction(log: SessionLog, plan: CompactionPlan, su
   await log.flush();
 }
 
+/**
+ * The verbatim tail this session may keep, scaled to the window it actually runs in.
+ *
+ * Resolved from the session rather than handed down by the caller so `/compact` and the automatic
+ * gates cannot end up computing two different tails for one conversation. The model is the one the
+ * session runs (agent pin and tag included), the same resolution the summarizer uses.
+ */
+export function tailBudgetFor(config: MyClawConfig, session: SessionData): number {
+  const agent = agentTypeOf(session);
+  const runModel = tryResolveRunModel(
+    config,
+    { agent, ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
+    availabilityWorld(),
+  );
+  const modelId = runModel?.model ?? session.modelOverride ?? config.llm?.defaultModel ?? config.llm?.model;
+  if (!modelId) return resolveCompactionTailTokens(config);
+  const window = resolveModelContextWindow(config, modelId, session.contextOverride, agent);
+  return resolveCompactionTailTokens(config, window.effective * resolveAutoCompactThreshold(config, window.effective));
+}
+
 export async function compactSession(
   config: MyClawConfig,
   session: SessionData,
@@ -375,7 +396,7 @@ export async function compactSession(
   signal?: AbortSignal,
 ): Promise<CompactionResult> {
   const log = await sessionLogOf(session.id);
-  const planned = planCompaction(log, resolveCompactionTailTokens(config));
+  const planned = planCompaction(log, tailBudgetFor(config, session));
   hooks.emit("session:compact:start", {
     sessionId: session.id,
     messageCount: planned.ok ? planned.plan.entries.length : planned.count,

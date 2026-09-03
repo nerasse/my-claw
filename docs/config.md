@@ -756,7 +756,7 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 ```json
 "context": {
   "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
-  "autoCompact": { "enabled": true, "tailTokens": 20000, "speculative": true },
+  "autoCompact": { "enabled": true, "tailTokens": 48000, "speculative": true },
   "cap": 512000,
   "capExempt": ["claude-*", "Qwen3.6-*"]
 }
@@ -780,9 +780,15 @@ hot-reloadable.
     dynamic: the window minus a `max(15%, 16384)` reserve for the reply, capped at 0.8. So
     50% on a 32k window, 80% at 200k and beyond. A fixed ratio either strangles a small
     window or leaves 100k idle on a large one.
-  - `tailTokens` — how much recent history crosses the boundary verbatim, default 20 000
-    (the value pi and oh-my-pi converged on). The boundary never splits a tool block or a
-    turn, so the tail can overshoot by the size of the turn it had to keep whole.
+  - `tailTokens` — **ceiling** on the recent history that crosses the boundary verbatim,
+    default 48 000. The effective tail is `clamp(threshold × 0.12, 20 000, tailTokens)`, so
+    20 000 (the pi and oh-my-pi value) on a 128k window and the full ceiling on the 512k cap.
+    What a tail really spends is the interval between two compactions, and a flat number is
+    either wasteful at 512k or doubles the compaction rate at 128k. The floor itself gives way
+    to half the threshold on a very narrow window: a tail wider than the window means nothing
+    is ever compactable and the history gets dropped instead of summarised. The boundary never
+    splits a tool block or a turn, so the tail can overshoot by the size of the turn it had to
+    keep whole.
   - `speculative` — default true. Once occupancy enters the pre-threshold band, the summary
     is computed in the background at the end of a run and simply committed when the
     threshold is crossed, instead of stalling the next message for a minute. A stale one is

@@ -117,17 +117,62 @@ vivante désigne encore. Le premier part en entier, `SPILL_RETENTION_MS` et
 
 ## Le seuil devient la seule digue
 
-`SPILL_THRESHOLD = 50_000` caractères, soit ~12,5k tokens par sortie. Sans
+`SPILL_THRESHOLD` était à 50 000 caractères, soit ~12,5k tokens par sortie. Sans
 l'élagage qui repassait derrière, ce nombre pèse directement sur la fréquence de
 compaction : la conversation mesurée plus haut portait 162 entrées d'outils pour
 657k tokens projetés.
 
 Repères : codex borne à 10 000 tokens (`DEFAULT_MAX_OUTPUT_TOKENS`), opencode à
-2 000 lignes ou 50 KB. Baisser le seuil rapproche des deux et espace les
-compactions, au prix d'un extrait plus court — que le modèle peut de toute façon
-relire. **À décider avec des mesures, pas d'avance**, et c'est un réglage, pas
-une décision d'architecture : le seuil peut bouger sans que rien d'autre ne
-change, ce qui est précisément la propriété que cette refonte achète.
+2 000 lignes ou 50 KB. **À décider avec des mesures, pas d'avance**, et c'est un
+réglage, pas une décision d'architecture : le seuil peut bouger sans que rien
+d'autre ne change, ce qui est précisément la propriété que cette refonte achète.
+
+### Les mesures, et la réponse
+
+15 612 appels d'outils enregistrés, 74,4 M de caractères de sortie.
+
+| p50 | p75 | p90 | p95 | p98 | p99 |
+|---|---|---|---|---|---|
+| 1 101 | 3 766 | 13 489 | 26 337 | 37 884 | 60 052 |
+
+À 50 000, le seuil n'attrapait que **1,5 %** des sorties et laissait **97 %** des
+caractères en ligne pour toujours, alors que la masse est entre p90 et p95. Le p99
+à 60 052 n'est pas la distribution, c'est l'empreinte d'un plafond tête-seule de
+60 000 qui tournait *avant* le spill (voir plus bas).
+
+| seuil / extrait | en ligne | sorties tronquées |
+|---|---|---|
+| 50 000 / 400 | 100 % (référence) | 1,5 % |
+| 30 000 / 4 000 | 78 % | 4,5 % |
+| **16 000 / 6 000** | **64 %** | **8,7 %** |
+| 12 000 / 4 000 | 55 % | 10,8 % |
+
+Retenu : **`SPILL_THRESHOLD = 16_000`, `EXTRACT_CHARS = 6_000`**. 36 % du poids
+des sorties d'outils disparaît de tout historique rejoué, et une sortie élaguée
+montre 3k de tête et 3k de queue au lieu de 200 + 200.
+
+400 caractères n'était pas un extrait mais une suppression avec citation, et ça se
+mesure : **4 relectures de fichier spillé sur 15 612 appels**. Le chemin de
+recouvrement n'existait pas dans les faits.
+
+### Trois vues, un fichier
+
+Le coût d'un seuil bas est payé par le run *suivant*, jamais par celui qui a fait
+l'appel : `spillToolOutput` rend deux vues d'une même sortie.
+
+| vue | taille | qui la lit |
+|---|---|---|
+| fichier | **brut, complet** | `read` explicite, bouton « see all » |
+| `message` | 60 000 | le run qui a fait l'appel |
+| `output` (l'entrée) | 6 000 | tout run ultérieur, pour toujours |
+
+L'ordre est la correction principale. `capToolOutput` (60 000, tête seule) tournait
+dans `executeTool`, donc **avant** le spill : le fichier « complet » recevait la
+version déjà coupée. 65 des 113 fichiers archivés pesaient exactement 60 0xx
+octets, et le marqueur qui les désigne dit `read that file, do not re-run the
+tool`. On interdisait de refaire l'appel en promettant un fichier sans sa fin.
+Le plafond a disparu : c'est `spillToolOutput` qui borne, après avoir archivé, et
+en tête + queue — le verdict d'une commande est sur sa dernière ligne.
 
 ## Vérification
 

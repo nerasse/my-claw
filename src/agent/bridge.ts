@@ -143,15 +143,6 @@ function imageAttachmentsOf(message: UnifiedMessage): SessionAttachment[] {
 // broken tool). Every tool result is normalized to a non-empty, explicit string.
 const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
 
-// Defense in depth: no single tool result should be able to poison the whole session context.
-// Individual tools (fetch, read, ...) apply their own limits; this is the last-resort ceiling
-// for any output that slips through. ~60K chars ≈ 15K tokens.
-const MAX_TOOL_OUTPUT_CHARS = 60_000;
-
-function capToolOutput(content: string): string {
-  if (content.length <= MAX_TOOL_OUTPUT_CHARS) return content;
-  return `${content.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n\n[... truncated: ${content.length} chars total, ${MAX_TOOL_OUTPUT_CHARS} kept ...]`;
-}
 
 export class AgentBridge implements AgentBackend {
   private approvalManager: ToolApprovalManager;
@@ -907,9 +898,10 @@ export class AgentBridge implements AgentBackend {
           if (nestedAgents) {
             transformedResult += nestedAgents.collect(tc.name, tc.arguments);
           }
-          stagnation.observe(transformedResult);
-          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: transformedResult });
-          await recorder.tool({
+          // Recorded before the message is built, and the message comes back from the recording:
+          // the whole output is archived first, then the two views are cut from it. The other order
+          // is what once wrote a "full output" file that was itself truncated -- src/sessions/tool-output.ts.
+          const recorded = await recorder.tool({
             callId: tc.id,
             name: tc.name,
             arguments: JSON.stringify(tc.arguments),
@@ -917,6 +909,8 @@ export class AgentBridge implements AgentBackend {
             ok: result.success,
             ...(durationMs !== undefined ? { durationMs } : {}),
           });
+          stagnation.observe(recorded.message);
+          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: recorded.message });
         }
 
         if (onToolUse) {
@@ -1252,13 +1246,13 @@ export class AgentBridge implements AgentBackend {
       if (result.success) {
         return {
           success: true,
-          content: capToolOutput(result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT),
+          content: result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT,
         };
       }
       const detail = (result.error ?? result.output).trim();
       return {
         success: false,
-        content: capToolOutput(`Error: ${detail.length > 0 ? detail : "tool failed with no message"}`),
+        content: `Error: ${detail.length > 0 ? detail : "tool failed with no message"}`,
       };
     } catch (err) {
       if (isAbort(err, params.signal)) throw new AbortedError();

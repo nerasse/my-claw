@@ -12,7 +12,6 @@
  */
 
 import type { MyClawConfig } from "../core/config.ts";
-import { resolveCompactionTailTokens } from "../core/config.ts";
 import { log as logLine } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { sessionLogOf } from "./log-access.ts";
@@ -23,6 +22,7 @@ import {
   entriesPromptTokens,
   planCompaction,
   summarizeForCompaction,
+  tailBudgetFor,
   TAIL_BUDGET_TOKENS,
   type CompactionPlan,
   type CompactionResult,
@@ -146,7 +146,7 @@ export function startSpeculation(config: MyClawConfig, session: SessionData): vo
   const done = (async () => {
     try {
       const sessionLog = await sessionLogOf(sessionId);
-      const planned = planCompaction(sessionLog, resolveCompactionTailTokens(config));
+      const planned = planCompaction(sessionLog, tailBudgetFor(config, session));
       if (!planned.ok) {
         void logLine("debug", "speculative compaction not planned", { sessionId, reason: planned.reason });
         return;
@@ -196,7 +196,7 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
 
   const sessionLog = await sessionLogOf(session.id);
   const before = pathOf(sessionLog.entries(), sessionLog.leaf()).filter((e) => e.prompt).length;
-  if (!stillValid(entry.plan, sessionLog.entries(), sessionLog.leaf(), resolveCompactionTailTokens(config))) {
+  if (!stillValid(entry.plan, sessionLog.entries(), sessionLog.leaf(), tailBudgetFor(config, session))) {
     void logLine("info", "speculative compaction discarded, the branch moved", { sessionId: session.id });
     return undefined;
   }

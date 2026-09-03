@@ -316,7 +316,34 @@ test("the threshold leaves room for the answer on a narrow window and never fire
 });
 
 test("the verbatim tail is configurable and defaults to the field's value", () => {
-  assert.equal(resolveCompactionTailTokens(config({ context: {} } as Partial<MyClawConfig>)), 20_000);
+  assert.equal(resolveCompactionTailTokens(config({ context: {} } as Partial<MyClawConfig>)), 48_000);
   assert.equal(resolveCompactionTailTokens(config()), 60);
-  assert.equal(resolveCompactionTailTokens(config({ context: { autoCompact: { tailTokens: -5 } } } as Partial<MyClawConfig>)), 20_000);
+  assert.equal(resolveCompactionTailTokens(config({ context: { autoCompact: { tailTokens: -5 } } } as Partial<MyClawConfig>)), 48_000);
+});
+
+/**
+ * A flat tail is either wasteful or dangerous depending on the window it lands in, and the
+ * dangerous end is silent: a tail wider than the window means the whole conversation always fits
+ * in it, `planCompaction` never finds anything to compact, and the history is dropped by
+ * `trimToContextWindow` instead of being summarised.
+ */
+test("the tail is scaled to the window, between the field's floor and the configured ceiling", () => {
+  const plain = config({ context: {} } as Partial<MyClawConfig>);
+  // 512k capped, threshold 0.8: the ceiling, which is what this install actually runs.
+  assert.equal(resolveCompactionTailTokens(plain, 512_000 * 0.8), 48_000);
+  // 1M: still the ceiling. Raising the cap must not make the tail run away.
+  assert.equal(resolveCompactionTailTokens(plain, 1_000_000 * 0.8), 48_000);
+  // 128k, the narrowest model here: back to the floor pi and oh-my-pi both keep.
+  assert.equal(resolveCompactionTailTokens(plain, 128_000 * 0.8), 20_000);
+  // In between, it scales rather than stepping.
+  assert.equal(resolveCompactionTailTokens(plain, 300_000 * 0.8), 28_800);
+  // A tiny window cannot be handed a tail it has no room for: the floor gives way to half the
+  // threshold, or the conversation would fit in its own tail and never be compactable at all.
+  assert.equal(resolveCompactionTailTokens(plain, 8_000), 4_000);
+  assert.equal(resolveCompactionTailTokens(plain, 30_000), 15_000);
+  // The configured value is the ceiling, floor included: asking for less than the floor is a
+  // deliberate answer to a narrow window and the floor must not undo it.
+  assert.equal(resolveCompactionTailTokens(config(), 512_000 * 0.8), 60);
+  // Without a threshold nothing is guessed: the ceiling is returned as written.
+  assert.equal(resolveCompactionTailTokens(plain), 48_000);
 });

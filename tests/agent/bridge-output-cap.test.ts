@@ -10,6 +10,7 @@ import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { SessionLog, ToolEntry } from "../../src/sessions/log.ts";
+import { MESSAGE_CEILING_CHARS, readToolOutput, toolOutputPath } from "../../src/sessions/tool-output.ts";
 
 const SESSION_ID = "test-output-cap";
 
@@ -46,7 +47,7 @@ afterEach(() => {
   runRegistry.clear();
 });
 
-test("bridge: an oversized tool output is capped before entering the session", async () => {
+test("bridge: an oversized tool output is archived whole, and both views are cut from it", async () => {
   const registry = new ToolRegistry();
   const huge = "z".repeat(200_000);
   registry.register({
@@ -61,7 +62,9 @@ test("bridge: an oversized tool output is capped before entering the session", a
   const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   let call = 0;
-  const fetchMock = mockFetch(async () => {
+  const bodies: string[] = [];
+  const fetchMock = mockFetch(async (_input, init) => {
+    bodies.push(String(init?.body ?? ""));
     if (call++ === 0) {
       return new Response(
         JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "flood", arguments: "{}" } }] } }] }),
@@ -79,10 +82,24 @@ test("bridge: an oversized tool output is capped before entering the session", a
     const entries = log.entries();
     const toolEntry = entries.find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
     assert.ok(toolEntry, "tool result recorded");
-    assert.ok(toolEntry.output.length < huge.length, "output was capped");
     assert.ok(toolEntry.truncated, "marked as truncated");
-    // Note: with the new log system, large outputs are spilled to files, so the inline output is capped
-    assert.ok(toolEntry.output.length <= 60_000, "capped near the ceiling");
+
+    // The entry is the cheap view: a replayed history pays for the extract, not for the output.
+    assert.ok(toolEntry.output.length < 8_000, `entry stubbed, got ${toolEntry.output.length}`);
+    assert.ok(toolEntry.output.includes("read that file"), "the stub names the recovery path");
+
+    // The archive is the whole of it. A cut file cannot answer the marker that points at it, and
+    // it is exactly what a head-only cap ahead of the spill used to produce.
+    assert.equal(toolEntry.outputPath, toolOutputPath(SESSION_ID, "tc1"));
+    assert.equal((await readToolOutput(SESSION_ID, "tc1"))?.length, huge.length);
+
+    // The run that made the call still saw far more than the entry keeps, bounded by the ceiling.
+    assert.ok(bodies[1], "a second call was made with the tool result");
+    const toolMessage = (JSON.parse(bodies[1]) as { messages: Array<{ role: string; content: string }> })
+      .messages.find((m) => m.role === "tool");
+    assert.ok(toolMessage, "the tool result reached the prompt");
+    assert.ok(toolMessage.content.length > 50_000, `live view kept, got ${toolMessage.content.length}`);
+    assert.ok(toolMessage.content.length <= MESSAGE_CEILING_CHARS + 500, "live view bounded by the ceiling");
   } finally {
     fetchMock.restore();
     end();
