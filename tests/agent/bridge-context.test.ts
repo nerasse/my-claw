@@ -19,6 +19,9 @@ function baseConfig(): MyClawConfig {
     whitelist: ["u1"], blacklist: [], channels: {},
     llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
     agents: {}, memory: { enabled: false },
+    // The verbatim tail is a token budget: left at its 20k default these fixtures would fit in it
+    // whole, and a compaction with nothing to summarise is correctly refused.
+    context: { autoCompact: { tailTokens: 40 } },
   };
 }
 
@@ -105,7 +108,7 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
   let sawCompactionCall = false;
   const mock = mockFetch(async (_u, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
-    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("compaction agent")) {
+    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("You summarize a conversation")) {
       sawCompactionCall = true;
       return llm({ content: "Summary of the prior work: steps 0-9 executed bash and completed successfully." });
     }

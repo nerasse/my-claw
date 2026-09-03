@@ -756,7 +756,7 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 ```json
 "context": {
   "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
-  "autoCompact": { "enabled": true, "thresholdRatio": 0.8 },
+  "autoCompact": { "enabled": true, "tailTokens": 20000, "speculative": true },
   "cap": 512000,
   "capExempt": ["claude-*", "Qwen3.6-*"]
 }
@@ -770,11 +770,24 @@ hot-reloadable.
   `keepLastAssistantTurns` assistant turns (default 5) are replaced by their first
   `headChars` chars (default 200) plus a marker. The persisted session keeps full outputs;
   the agent can re-run a tool to recover anything pruned.
-- `autoCompact` — at run start (main agent only), if the occupied history exceeds
-  `thresholdRatio` (default 0.8) of the effective context window, the session is compacted
-  with the same LLM summarization as `/compact`. "Occupied" is the prompt size the provider
-  last billed plus an estimate of the turns since, not a plain `chars/4` count: the estimate
-  under-counts by roughly 2.3x on real traffic, which made the gate fire far too late.
+- `autoCompact` — when the occupied history crosses the threshold, the session is compacted
+  with the same LLM summarization as `/compact`. Checked at run start, between agentic
+  iterations, and again if the provider itself reports an overflow. "Occupied" is the prompt
+  size the provider last billed plus an estimate of the turns since, not a plain `chars/4`
+  count: the estimate under-counts by roughly 2.3x on real traffic, which made the gate fire
+  far too late. See `docs/compaction.md`.
+  - `thresholdRatio` — optional, honoured as-is when set. Without it the threshold is
+    dynamic: the window minus a `max(15%, 16384)` reserve for the reply, capped at 0.8. So
+    50% on a 32k window, 80% at 200k and beyond. A fixed ratio either strangles a small
+    window or leaves 100k idle on a large one.
+  - `tailTokens` — how much recent history crosses the boundary verbatim, default 20 000
+    (the value pi and oh-my-pi converged on). The boundary never splits a tool block or a
+    turn, so the tail can overshoot by the size of the turn it had to keep whole.
+  - `speculative` — default true. Once occupancy enters the pre-threshold band, the summary
+    is computed in the background at the end of a run and simply committed when the
+    threshold is crossed, instead of stalling the next message for a minute. A stale one is
+    discarded and recomputed; background calls are billed even when discarded, and recorded
+    under `caller: "compaction-speculative"`.
 - `cap` — ceiling applied to every resolved context window, **active at 512 000 without
   configuration**. A provider allowing 1M does not mean we agree to send 1M: long contexts
   degrade attention and bill linearly. Set `0` to disable the ceiling entirely. The cap never

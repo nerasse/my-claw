@@ -5,6 +5,7 @@ import {
   nestedAgentsEnabled,
   resolveNestedAgentsMaxBytes,
   autoCompactEnabled,
+  autoCompactSpeculative,
   resolveAutoCompactThreshold,
 } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
@@ -17,7 +18,7 @@ import type { Entry } from "../sessions/log.ts";
 import { RunRecorder } from "./run-recorder.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
-import type { ChatMessage, LlmResponse, LlmUsage } from "../llm/provider.ts";
+import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
@@ -28,6 +29,13 @@ import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
+import {
+  cancelSpeculation,
+  claimSpeculation,
+  inSpeculationBand,
+  startSpeculation,
+} from "../sessions/compaction-speculative.ts";
+import { isOverflowError, isSilentOverflow } from "../llm/overflow.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -45,7 +53,7 @@ import { StagnationMeter } from "./stagnation.ts";
 import { NestedAgentsCollector, recordNestedInjection } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
-import { AbortedError, isAbort } from "../core/aborted.ts";
+import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
@@ -371,7 +379,7 @@ export class AgentBridge implements AgentBackend {
       // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
       // the profile that fills a window, and it used to have nothing but the hard trim.
       if (autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(message, session, llmConfig, agentToolType, entries);
+        await this.maybeAutoCompact(message, session, llmConfig, agentToolType, entries, signal);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
@@ -457,8 +465,29 @@ export class AgentBridge implements AgentBackend {
       // hint attached to the inbound turn, the run has already seen it, and it never enters the
       // history the summary was made from.
       const rebuildPrompt = async (): Promise<void> => {
+        // `providerMeta` lives on the in-memory prompt and never in the log (docs/reasoning-replay.md),
+        // so rebuilding from the log drops the reasoning state of the run in progress. Dropping it is
+        // safe on Anthropic and Responses, but not everywhere: DeepSeek documents `reasoning_content`
+        // as required once tools are present and answers 400 without it, GLM and Kimi degrade and
+        // miss cache. The blobs are still in hand here -- they are only lost by rebuilding -- so they
+        // are carried across, keyed on the tool call id the log persisted for the same turn.
+        const carried = new Map<string, ProviderMeta>();
+        for (const msg of chatMessages) {
+          if (msg.role !== "assistant" || !msg.providerMeta) continue;
+          const id = "tool_calls" in msg ? msg.tool_calls?.[0]?.id : undefined;
+          if (id) carried.set(id, msg.providerMeta);
+        }
+
         chatMessages.length = 0;
         chatMessages.push({ role: "system", content: systemPrompt }, ...promptOf(entries.entries(), entries.leaf()));
+        if (carried.size > 0) {
+          for (const msg of chatMessages) {
+            if (msg.role !== "assistant" || msg.providerMeta) continue;
+            const id = "tool_calls" in msg ? msg.tool_calls?.[0]?.id : undefined;
+            const meta = id ? carried.get(id) : undefined;
+            if (meta) msg.providerMeta = meta;
+          }
+        }
         if (llmConfig.vision) await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
       };
 
@@ -472,6 +501,9 @@ export class AgentBridge implements AgentBackend {
       // History length the mid-run gate is allowed to try again at, moved forward only by an attempt
       // that changed nothing: the summarizer needs new turns to have anything new to say.
       let midRunCompactRetryAt = 0;
+      // One overflow recovery per run. The window we believe in is the input to the check, so a
+      // window that is simply wrong would otherwise compact, retry, overflow and compact forever.
+      let overflowRecovered = false;
       while (budget.consume()) {
         if (signal?.aborted) throw new AbortedError();
         // Mid-run steering: pick up any message that arrived during the previous tool round and
@@ -490,7 +522,7 @@ export class AgentBridge implements AgentBackend {
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
         const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;
         if (autoCompactEnabled(this.config) && currentEntryCount >= midRunCompactRetryAt) {
-          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration, entries);
+          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration, entries, signal);
           if (outcome === "compacted") {
             await rebuildPrompt();
           } else if (outcome === "skipped") {
@@ -514,22 +546,70 @@ export class AgentBridge implements AgentBackend {
           iteration,
         });
 
-        const response = onToken
-          ? await completeStream(
-              llmConfig,
-              chatMessages,
-              onToken,
-              openaiTools.length > 0 ? openaiTools : undefined,
-              signal,
-              reasoningSink,
-            )
-          : await complete(
-              llmConfig,
-              chatMessages,
-              openaiTools.length > 0 ? openaiTools : undefined,
-              signal,
-            );
+        /**
+         * The gate is an estimate, so it can be wrong in the direction that hurts: a tool result
+         * appended after the last check is enough to walk into a hard rejection with nothing having
+         * been summarised. Compacting on the provider's own verdict and retrying once is what turns
+         * that into a slow turn instead of a lost run -- and it is a *compaction*, so the beginning
+         * of the conversation is summarised rather than dropped by `trimToContextWindow`.
+         */
+        const recoverFromOverflow = async (why: Record<string, unknown>): Promise<boolean> => {
+          if (overflowRecovered || !autoCompactEnabled(this.config)) return false;
+          overflowRecovered = true;
+          void log("warn", "context overflow reported by the provider, compacting and retrying once", {
+            ...runLogData(message, session),
+            iteration,
+            ...why,
+          });
+          const outcome = await this.runCompaction(message, session, signal, { sessionId: session.id, iteration, reason: "overflow" });
+          if (outcome !== "compacted") return false;
+          await rebuildPrompt();
+          // Correction, not work: the iteration is given back so a run cannot spend its budget on
+          // recovering from a prompt it never got to answer.
+          budget.grant(1);
+          return true;
+        };
+
+        let response: LlmResponse;
+        try {
+          response = onToken
+            ? await completeStream(
+                llmConfig,
+                chatMessages,
+                onToken,
+                openaiTools.length > 0 ? openaiTools : undefined,
+                signal,
+                reasoningSink,
+              )
+            : await complete(
+                llmConfig,
+                chatMessages,
+                openaiTools.length > 0 ? openaiTools : undefined,
+                signal,
+              );
+        } catch (err) {
+          rethrowIfAborted(err, signal);
+          if (isOverflowError(err) && (await recoverFromOverflow({ error: errorLogData(err) }))) continue;
+          throw err;
+        }
         const llmDurationMs = Date.now() - llmStartedAt;
+
+        // The overflow nobody reported: an endpoint that accepts a prompt past its own window and
+        // answers anyway, or one that truncates server-side and calls it `length`. Checked before
+        // the empty-turn retry, which would otherwise repost the same oversized prompt.
+        if (
+          isSilentOverflow(
+            {
+              promptTokens: response.usage?.promptTokens,
+              cacheReadTokens: response.usage?.cacheReadTokens,
+              completionTokens: response.usage?.completionTokens,
+              ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+            },
+            this.contextWindow(session, llmConfig, agentToolType).effective,
+          )
+        ) {
+          if (await recoverFromOverflow({ silent: true, promptTokens: response.usage?.promptTokens, finishReason: response.finishReason })) continue;
+        }
 
         hooks.emit("llm:call:end", {
           model: llmConfig.model,
@@ -893,6 +973,16 @@ export class AgentBridge implements AgentBackend {
       throw err;
     } finally {
       runNode?.exit();
+      // The run is over and the owner is reading what it wrote: the one moment where a minute of
+      // summarizer time costs nothing. Only inside the band, and never while a run holds the
+      // session -- `runNode.exit()` above is what makes this the outside.
+      if (autoCompactSpeculative(this.config) && !signal?.aborted) {
+        const gate = this.contextGate(session, llmConfig, agentToolType, entries);
+        if (!gate.over && inSpeculationBand(gate.occupied, gate.thresholdTokens)) {
+          void log("info", "arming a speculative compaction", gate.data);
+          startSpeculation(this.config, session);
+        }
+      }
       // Snapshot the after-state for the diff: only a snapshot that was taken is worth completing.
       if (runSnapshotId) {
         try {
@@ -1206,9 +1296,9 @@ export class AgentBridge implements AgentBackend {
     llmConfig: ResolvedLlmConfig,
     agent: AgentToolType,
     entries: { entries: () => readonly Entry[]; leaf: () => string | null },
-  ): { over: boolean; data: Record<string, unknown> } {
+  ): { over: boolean; occupied: number; thresholdTokens: number; data: Record<string, unknown> } {
     const window = this.contextWindow(session, llmConfig, agent);
-    const threshold = resolveAutoCompactThreshold(this.config);
+    const threshold = resolveAutoCompactThreshold(this.config, window.effective);
     const prompt = promptOf(entries.entries(), entries.leaf());
     const fixed = session.lastFixedTokens ?? 0;
     const occupied = occupiedContextTokens(
@@ -1217,8 +1307,11 @@ export class AgentBridge implements AgentBackend {
       session.lastPrompt,
       fixed,
     );
+    const thresholdTokens = window.effective * threshold;
     return {
-      over: occupied > window.effective * threshold,
+      over: occupied > thresholdTokens,
+      occupied,
+      thresholdTokens,
       data: {
         sessionId: session.id,
         occupiedTokens: occupied,
@@ -1234,24 +1327,60 @@ export class AgentBridge implements AgentBackend {
     };
   }
 
+  /**
+   * Compact now, claiming the background summary when one is still good for this branch.
+   *
+   * The claim is the whole point of speculating: the crossing costs an append instead of a
+   * minute. A stale one is dropped inside `claimSpeculation`, which then reads as "nothing armed"
+   * and falls through to the blocking pass.
+   */
+  private async runCompaction(
+    message: UnifiedMessage,
+    session: SessionData,
+    signal: AbortSignal | undefined,
+    logData: Record<string, unknown>,
+  ): Promise<"skipped" | "compacted"> {
+    // A minute or two with nothing on the wire: the same mark a send held behind a `/compact`
+    // gets, lifted by the stream that follows it.
+    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
+    try {
+      const claimed = await claimSpeculation(this.config, session);
+      if (claimed?.ok) {
+        void log("info", "auto-compaction served from the background summary", {
+          ...logData,
+          beforeCount: claimed.beforeCount,
+          afterCount: claimed.afterCount,
+        });
+        return "compacted";
+      }
+      // Anything still in flight was planned against the branch this pass is about to rewrite.
+      cancelSpeculation(session.id);
+      const result = await compactSession(this.config, session, undefined, signal);
+      if (!result.ok) {
+        void log("warn", "auto-compaction skipped", { ...logData, reason: result.reason });
+        return "skipped";
+      }
+      void log("info", "auto-compaction done", {
+        ...logData,
+        beforeCount: result.beforeCount,
+        afterCount: result.afterCount,
+      });
+      return "compacted";
+    } catch (err) {
+      rethrowIfAborted(err, signal);
+      void log("error", "auto-compaction failed", { ...logData, error: errorLogData(err) });
+      return "skipped";
+    }
+  }
+
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }): Promise<void> {
+  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }, signal?: AbortSignal): Promise<void> {
     const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return;
 
     void log("info", "auto-compaction triggered", gate.data);
-    // Nothing travels while this runs, and the owner is looking at a message he just sent: the
-    // same mark a send held behind a `/compact` gets, lifted by the stream that follows it.
-    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
-    try {
-      const result = await compactSession(this.config, session);
-      if (!result.ok) {
-        void log("warn", "auto-compaction skipped", { sessionId: session.id, reason: result.reason });
-      }
-    } catch (err) {
-      void log("error", "auto-compaction failed", { sessionId: session.id, error: errorLogData(err) });
-    }
+    await this.runCompaction(message, session, signal, { sessionId: session.id });
   }
 
   /**
@@ -1275,31 +1404,13 @@ export class AgentBridge implements AgentBackend {
     agent: AgentToolType,
     iteration: number,
     entries: { entries: () => readonly Entry[]; leaf: () => string | null },
+    signal?: AbortSignal,
   ): Promise<"under" | "skipped" | "compacted"> {
     const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return "under";
 
     void log("info", "auto-compaction triggered mid-run", { ...gate.data, iteration });
-    // A minute or two with nothing on the wire, in the middle of an answer: the same mark a send
-    // held at run start gets, lifted by the stream that resumes after it.
-    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
-    try {
-      const result = await compactSession(this.config, session);
-      if (!result.ok) {
-        void log("warn", "mid-run auto-compaction skipped", { sessionId: session.id, iteration, reason: result.reason });
-        return "skipped";
-      }
-      void log("info", "mid-run auto-compaction done", {
-        sessionId: session.id,
-        iteration,
-        beforeCount: result.beforeCount,
-        afterCount: result.afterCount,
-      });
-      return "compacted";
-    } catch (err) {
-      void log("error", "mid-run auto-compaction failed", { sessionId: session.id, iteration, error: errorLogData(err) });
-      return "skipped";
-    }
+    return await this.runCompaction(message, session, signal, { sessionId: session.id, iteration });
   }
 
   /**

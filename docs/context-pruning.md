@@ -68,23 +68,26 @@ Mechanics:
 
 ### Stage 2 — Auto-compaction (rare, threshold-gated)
 
-- Checked once per run, at run start, main agent only (depth 0, non-cron). Run start is
-  the only moment the session is guaranteed idle — compacting mid-run would race the
-  tool loop; compacting post-run would race the next inbound message.
-- Trigger: estimated history tokens > `thresholdRatio` (default 0.8) of the model
-  context limit. 80% and not 100% because the estimation is a chars/4 heuristic
-  (±15%), the response needs output room, and the request must still succeed *before*
-  compaction can help — at 100% the API rejects first.
-- Reuses `compactSession` as-is (LLM summarization, head/tail kept, refusal detection).
-  A compaction failure is logged and never blocks the run.
-- `/compact` stays available for manual use.
+The design below is the original one, kept for the trace of the decision. It has since been
+rewritten and **`docs/compaction.md` is the current reference**; the summary of what moved:
+
+- Run start is no longer the only gate. It was chosen because the session is idle there, but a
+  single agentic run can fill a window on its own, and the gate can simply be wrong: the checks
+  are now run start, between iterations, and on a provider overflow verdict.
+- The threshold is dynamic rather than a fixed 0.8, the tail is a token budget rather than a
+  handful of entries, and the summary is usually computed before it is needed.
+- Compaction is no longer main-agent-only. A sub-agent session is short-lived but not
+  guaranteed short.
+
+What still holds: it is a soft gate over an estimate, a compaction failure is logged and never
+blocks a run, and `/compact` stays available for manual use.
 
 ### Configuration
 
 ```json
 "context": {
   "pruning": { "enabled": true, "protectTokens": 40000, "headChars": 400 },
-  "autoCompact": { "enabled": true, "thresholdRatio": 0.8 }
+  "autoCompact": { "enabled": true, "tailTokens": 20000, "speculative": true }
 }
 ```
 
@@ -167,16 +170,16 @@ Three changes, all in `src/tools/search.ts`:
   sit in the elided middle. That is what the spill file is for.
 - A spill file is readable by the agent's own `read` tool because it lives under
   `~/.my-claw/`, outside the workspace but on a path the marker states explicitly.
-- Auto-compaction estimates tokens with the same chars/4 heuristic as trimming; it is
-  a soft gate, `trimToContextWindow` remains the hard fallback at the limit.
-- Sub-agents inherit pruning (same bridge loop) but not auto-compaction (their
-  sessions are short-lived and reset).
+- Auto-compaction reads `occupiedContextTokens`, not a plain chars/4 count
+  (`docs/context-window.md`); it stays a soft gate, and `trimToContextWindow` remains the hard
+  fallback at the limit — now reached only after an overflow recovery has already failed.
+- Sub-agents inherit both stages.
 
 ## Where
 
 - `src/agent/context-pruning.ts` — pruning, spill write/sweep, `promptSideChat`
-- `src/agent/bridge.ts` — pruning applied each iteration; auto-compact check at run start
-- `src/sessions/compaction.ts` — unchanged, reused by the auto trigger
+- `src/agent/bridge.ts` — pruning applied each iteration; the auto-compact gates
+- `src/sessions/compaction*.ts` — the compaction itself, see `docs/compaction.md`
 - `src/core/config.ts` — `ContextConfig` types, defaults, resolvers
 - `src/core/config-watcher.ts` — `context` registered hot-reloadable
 - `src/agent/prompt/core-prompts.ts` — output-hygiene guidance line

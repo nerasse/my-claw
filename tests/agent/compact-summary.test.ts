@@ -30,6 +30,9 @@ function config(): MyClawConfig {
       models: [{ id: "test-model", label: "Test", provider: "test" }],
     },
     agents: {},
+    // These fixtures are a handful of short entries: the default 20k verbatim tail would swallow
+    // the whole conversation and leave the summarizer nothing to stand for.
+    context: { autoCompact: { tailTokens: 40 } },
   } as unknown as MyClawConfig;
 }
 

@@ -623,9 +623,25 @@ export interface ContextConfig {
 export interface AutoCompactConfig {
   enabled?: boolean; // default true
   thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
+  /** Compact in the background before the threshold, so the crossing costs nothing. Default true. */
+  speculative?: boolean;
+  /** Tokens of conversation kept verbatim past a boundary. Default 20000, the field's value. */
+  tailTokens?: number;
 }
 
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
+
+/**
+ * Room the threshold always leaves for the answer, whichever is larger.
+ *
+ * A flat ratio is wrong at both ends of the range this install spans. At 512k, 80% leaves 100k
+ * free, which is far more than any answer needs. At 32k it leaves 6.4k, which a single long answer
+ * plus its reasoning can overrun -- and an overrun there is a hard rejection, not a slow turn.
+ * oh-my-pi resolves it with `max(15% of the window, 16384)` and pi with a flat 16384 reserve; the
+ * proportional term is what keeps small windows honest.
+ */
+const AUTO_COMPACT_RESERVE_FLOOR = 16_384;
+const AUTO_COMPACT_RESERVE_RATIO = 0.15;
 export const DEFAULT_CONTEXT_CAP = 512_000;
 
 /**
@@ -647,10 +663,40 @@ export function autoCompactEnabled(config: MyClawConfig): boolean {
   return config.context?.autoCompact?.enabled !== false;
 }
 
-export function resolveAutoCompactThreshold(config: MyClawConfig): number {
+/**
+ * The fraction of the window that fires a compaction.
+ *
+ * A configured ratio is honoured as written -- "compact at 60%" has to mean 60%. Without one, the
+ * reserve above decides, and the result is clamped to never be *later* than the historical 0.8:
+ * the reserve exists to protect the answer on a narrow window, not to license running a 512k
+ * prompt to 85% before doing anything about it.
+ */
+export function resolveAutoCompactThreshold(config: MyClawConfig, windowTokens?: number): number {
   const r = config.context?.autoCompact?.thresholdRatio;
   // Above 1.0 the request would fail before compaction gets a chance to run.
-  return typeof r === "number" && Number.isFinite(r) && r > 0 && r <= 1 ? r : DEFAULT_AUTO_COMPACT_THRESHOLD;
+  if (typeof r === "number" && Number.isFinite(r) && r > 0 && r <= 1) return r;
+  if (!windowTokens || windowTokens <= 0) return DEFAULT_AUTO_COMPACT_THRESHOLD;
+  const reserve = Math.max(AUTO_COMPACT_RESERVE_FLOOR, Math.floor(windowTokens * AUTO_COMPACT_RESERVE_RATIO));
+  const fromReserve = (windowTokens - reserve) / windowTokens;
+  return Math.max(0.1, Math.min(DEFAULT_AUTO_COMPACT_THRESHOLD, fromReserve));
+}
+
+export function autoCompactSpeculative(config: MyClawConfig): boolean {
+  return autoCompactEnabled(config) && config.context?.autoCompact?.speculative !== false;
+}
+
+/**
+ * How much of the end of a conversation survives a compaction verbatim.
+ *
+ * 20000 is what pi and oh-my-pi both keep and what codex keeps of user messages. It is a knob
+ * rather than a constant because the right answer depends on the window: on a 512k cap there is
+ * room to keep more, and TRACE's finding (verbatim beats summary at tight budgets) argues for it.
+ */
+export const DEFAULT_COMPACTION_TAIL_TOKENS = 20_000;
+
+export function resolveCompactionTailTokens(config: MyClawConfig): number {
+  const t = config.context?.autoCompact?.tailTokens;
+  return typeof t === "number" && Number.isFinite(t) && t > 0 ? Math.floor(t) : DEFAULT_COMPACTION_TAIL_TOKENS;
 }
 
 /** Mid-run message injection (steering). See `docs/injection.md`. */

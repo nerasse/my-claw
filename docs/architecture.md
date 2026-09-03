@@ -12,7 +12,7 @@
 | Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Nested AGENTS.md | Complete — lazy per-tool discovery: the AGENTS.md chain from the git root down to a touched subtree is appended to the tool result (file tools via `path`, bash via `workdir`), scanned + byte-capped + deduped per run — see `docs/nested-agents.md` |
-| Context pruning + auto-compaction | Complete — prompt-side stubbing of tool results older than 5 assistant turns (session file untouched), auto LLM compaction at 80% of the model context at run start — see `docs/context-pruning.md` |
+| Context pruning + auto-compaction | Complete — prompt-side stubbing of tool results older than 5 assistant turns (session file untouched), auto LLM compaction on a dynamic threshold checked at run start, mid-run and on provider overflow, with a 20k verbatim tail and a speculative pre-threshold summary — see `docs/context-pruning.md` and `docs/compaction.md` |
 | `/compact` | Complete — one shared command over two engines (SDK session vs local summarizer), the session is held for the whole operation so no run can race it, `/stop` reaches it, the app shows it running — see `docs/compaction.md` |
 | Sub-agents | Complete — persistent sessions, FIFO queueing, 5 tools, 2 types |
 | Skills system | Complete — hybrid 3-tier (built-in/custom/workspace), progressive disclosure, multi-file, scripts |

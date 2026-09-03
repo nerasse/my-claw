@@ -33,6 +33,9 @@ function makeConfig(): MyClawConfig {
       models: [{ id: "test-model", label: "Test", provider: "test" }],
     },
     agents: {},
+    // The tail is a token budget now, and these fixtures are a dozen tiny messages: without a
+    // small budget the whole conversation fits in the tail and there is nothing to summarise.
+    context: { autoCompact: { tailTokens: 40 } },
     webSearch: { baseUrl: "", language: "en" },
   } as unknown as MyClawConfig;
 }

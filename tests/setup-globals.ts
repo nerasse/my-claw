@@ -24,6 +24,7 @@ import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
 import { closeApprovalStore } from "../src/approvals/store.ts";
 import { questionManager } from "../src/questions/manager.ts";
+import { resetSpeculations } from "../src/sessions/compaction-speculative.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -31,6 +32,9 @@ import { questionManager } from "../src/questions/manager.ts";
 // is either a pure cache (clearing it only forces recomputation) or per-run bookkeeping that
 // no test should inherit; nothing semantic is dropped.
 beforeEach(() => {
+  // An armed background summary outlives its session file: claimed by the next test that
+  // compacts, it commits a boundary naming an entry that conversation never had.
+  resetSpeculations();
   // Opened by the retry tests on purpose, then rejects unrelated LLM calls for 60s.
   resetCircuitBreaker();
   // Keyed on MY_CLAW_WORKSPACE, which tests move around; mtime equality is also blind to two

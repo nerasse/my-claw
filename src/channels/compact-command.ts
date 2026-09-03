@@ -10,6 +10,7 @@ import type { MyClawConfig } from "../core/config.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { hooks } from "../hooks/index.ts";
 import { compactSession } from "../sessions/compaction.ts";
+import { cancelSpeculation } from "../sessions/compaction-speculative.ts";
 import type { SessionData } from "../sessions/store.ts";
 
 export interface CompactCommandParams {
@@ -21,6 +22,8 @@ export interface CompactCommandParams {
   persist: () => Promise<void>;
   /** The app thread this came from, carried through to the completion notification. */
   threadId?: string;
+  /** Aborts the summarizer, so `/stop` reaches a compaction that has one to two minutes to run. */
+  signal?: AbortSignal;
 }
 
 export async function handleCompactCommand(p: CompactCommandParams): Promise<CompactOutcome> {
@@ -47,8 +50,11 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
     });
     return outcome;
   };
+  // A manual pass supersedes the background one: the owner asked for this summary, possibly with
+  // instructions the armed one was never given, and committing both would move the floor twice.
+  cancelSpeculation(p.session.id);
   try {
-    const result = await compactSession(p.config, p.session, p.instructions);
+    const result = await compactSession(p.config, p.session, p.instructions, p.signal);
     if (!result.ok) return finished({ text: result.reason ?? "Compaction failed.", ok: false });
     await p.persist();
     return finished({

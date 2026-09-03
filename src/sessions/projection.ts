@@ -73,7 +73,20 @@ export function contextEntries(entries: readonly Entry[], leafId: string | null)
  * OpenAI-compatible endpoint matches them by id but rejects a result whose call it never saw.
  */
 export function promptOf(entries: readonly Entry[], leafId: string | null): ChatMessage[] {
-  const context = contextEntries(entries, leafId);
+  return messagesOf(contextEntries(entries, leafId));
+}
+
+/**
+ * The same fold, over entries a caller has already resolved.
+ *
+ * `promptOf` resolves the branch first, and resolving means walking `parentId`. That walk cannot be
+ * repeated on a *slice* of the result: `contextEntries` drops what is shown and never sent, so the
+ * slice has holes where those entries were, and the walk stops at the first missing parent. The
+ * compaction tail is measured on exactly such a slice, and measuring it through `promptOf` read a
+ * 42-entry conversation as nine tokens -- which made every tail budget look satisfied and would
+ * have disabled compaction outright.
+ */
+export function messagesOf(context: readonly Entry[]): ChatMessage[] {
   const out: ChatMessage[] = [];
 
   for (let i = 0; i < context.length; i++) {

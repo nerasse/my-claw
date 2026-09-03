@@ -52,6 +52,9 @@ function makeConfig(): MyClawConfig {
       general: { llm: { defaultModel: "test-model" } },
       research: { llm: { defaultModel: "test-model" } },
     },
+    // The tail is a token budget now, and these fixtures are a dozen tiny messages: without a
+    // small budget the whole conversation fits in the tail and there is nothing to summarise.
+    context: { autoCompact: { tailTokens: 40 } },
     webSearch: { baseUrl: "", language: "fr" },
   };
 }
@@ -272,6 +275,7 @@ function agentScopedConfig(): MyClawConfig {
       ],
     },
     agents: { general: { llm: { defaultModel: "cheap-model" } }, cron: { llm: { defaultModel: "cheap-model" } } },
+    context: { autoCompact: { tailTokens: 40 } },
   } as unknown as MyClawConfig;
 }
 

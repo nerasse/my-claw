@@ -42,7 +42,7 @@ function config(): MyClawConfig {
     // every model, so the test does not depend on how a limit reaches the resolved config.
     // Pruning is off because it replaces old tool results in the prompt, which would hide the very
     // growth this gate exists to catch.
-    context: { cap: 20_000, pruning: { enabled: false } },
+    context: { cap: 20_000, pruning: { enabled: false }, autoCompact: { tailTokens: 40 } },
   } as unknown as MyClawConfig;
 }
 
@@ -113,7 +113,7 @@ async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; se
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Sent["messages"] extends never ? never : { messages: Sent["messages"] };
     const system = String(body.messages[0]?.content ?? "");
-    if (system.includes("context compaction agent")) {
+    if (system.includes("You summarize a conversation")) {
       sent.push({ kind: "compaction", messages: body.messages });
       return llmResponse({ content: opts.summary ?? "" }, 100);
     }
@@ -232,7 +232,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
-    if (String(body.messages[0]?.content ?? "").includes("context compaction agent")) {
+    if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
       return llmResponse({ content: SUMMARY }, promptTokens);
     }
@@ -284,7 +284,7 @@ test("a cron run is compacted mid-flight too", async () => {
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
-    if (String(body.messages[0]?.content ?? "").includes("context compaction agent")) {
+    if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
       return llmResponse({ content: SUMMARY }, promptTokens);
     }

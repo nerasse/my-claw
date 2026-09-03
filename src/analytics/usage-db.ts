@@ -86,7 +86,7 @@ export interface ApiCallRecord {
   model: string;
   baseUrl: string;
   streaming: boolean;
-  caller: "orchestrator" | "subagent" | "compaction" | "browser";
+  caller: "orchestrator" | "subagent" | "compaction" | "compaction-speculative" | "browser";
 
   promptTokens: number;
   completionTokens: number;
