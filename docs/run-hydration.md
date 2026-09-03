@@ -190,11 +190,21 @@ continuent d'arriver item par item.
    n'a mintée. Vérifié sur la vraie session : page repliée + items hydratés = la page pleine,
    **id pour id**, sur trois pages (594 KB -> 86 KB, 818 KB -> 6,7 KB, 1 094 KB -> 68 KB), et
    ~140 ms pour ouvrir un groupe, l'ordre de grandeur d'une page d'historique.
-3. **App, le rendu.** `fold: true` sur les requêtes, état d'hydratation dans le store,
-   `RunGroup` qui demande à l'ouverture, squelette, échec, `buildRows` simplifié + fusion de
-   deux résumés adjacents du même run. À corriger au passage : `buildRows` traite le dernier
-   item d'une page comme la réponse du run simplement parce que sa liste s'arrête là ; le
-   serveur, qui voit toute la branche, sait que le run continue à la page suivante.
+3. **App, le rendu.** — *livré* (`RunSummaryItem` dans `chat.ts`, `hydrateRun`, ligne
+   `folded` dans `runRows.ts` avec fusion des segments adjacents, `FoldedRunGroup`,
+   `core/runItems.ts`). `fold: true` est posé **dans les encodeurs** et non aux sites d'appel :
+   comprendre `role: 'run'` est une propriété du bundle, et six endroits demandent un sync,
+   deux une page — un seul oubli servirait un mégaoctet là où les autres servent des dizaines
+   de kilooctets.
+
+   Fausse alerte notée puis écartée : `buildRows` semblait traiter le dernier item d'une page
+   comme la réponse du run. En réalité l'app tient toujours un **suffixe** de la conversation,
+   jamais une tranche du milieu, donc la réponse d'un run détenu est toujours présente.
+   L'écart venait du comparateur de la mesure, qui lui passait une page isolée.
+
+   Vérifié en croisant les deux repos : la vraie page repliée du serveur (94 lignes, 7
+   résumés), passée dans le store et `buildRows` de l'app, donne 92 lignes dont 7 groupes
+   repliés ; tous les groupes ouverts, le fil est identique à la page non repliée, id pour id.
 4. **App, le trim.** Déshydrater plutôt que dropper.
 
 Chaque lot est livrable seul : après le 1, l'app neuve ignore les résumés qu'elle n'a pas
