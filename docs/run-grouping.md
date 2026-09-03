@@ -79,9 +79,26 @@ La FlatList porte des **rows**, pas des items bruts :
   produit jamais un header vide.
 
 `RunGroup` est un header repliable (chevron, nombre de tool calls, premier outil,
-durée, statut coloré en erreur/aborté), fermé par défaut à chaque montage : une
-session rouverte commence avec tout replié, l'état ouvert est éphémère et local au
-composant.
+durée, statut coloré en erreur/aborté), fermé par défaut : une session rouverte
+commence avec tout replié.
+
+Deux détails de contrôle, tous deux appris à l'usage :
+
+- **une barre en bas aussi**, dès 5 items ouverts. Un run fait facilement trois cents
+  cartes : avec le seul contrôle en haut, refermer un groupe oblige à remonter tout ce
+  qu'on vient de lire, exactement ce que le pli existe pour éviter. En dessous du seuil
+  le corps tient dans un écran, le header reste à portée, une seconde barre serait du
+  décor. Les deux barres sont identiques (même libellé, même action), seul le chevron
+  indique le sens du contenu ;
+- **l'état ouvert vit dans l'écran** (`ChatScreen`, un `Set` de run ids), pas dans le
+  composant. La row est remontée sous les doigts du lecteur : un groupe replié dont le
+  travail arrive est remplacé par un groupe d'items réels (docs/run-hydration.md), avec
+  une autre clé de liste, et un `useState` local refermait le groupe au moment où il se
+  remplissait. Le run id est la seule identité qui survit à ce remplacement, ce qui fait
+  aussi que les deux moitiés d'un run coupé par une injection s'ouvrent ensemble : c'est
+  un seul tour. L'écran n'étant pas remonté au changement de thread, le `Set` est vidé
+  sur `threadId` (sinon une row rouverte de mémoire afficherait un squelette que
+  personne ne remplit : le fetch part du tap, pas du rendu).
 
 ## Migration one-shot (au boot)
 
