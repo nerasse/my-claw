@@ -205,10 +205,40 @@ continuent d'arriver item par item.
    Vérifié en croisant les deux repos : la vraie page repliée du serveur (94 lignes, 7
    résumés), passée dans le store et `buildRows` de l'app, donne 92 lignes dont 7 groupes
    repliés ; tous les groupes ouverts, le fil est identique à la page non repliée, id pour id.
-4. **App, le trim.** Déshydrater plutôt que dropper.
+4. **App, le trim.** — *livré*. Deux étapes, la moins chère d'abord.
+
+   **Déshydrater** : un groupe que le lecteur avait ouvert redevient la ligne que le serveur
+   avait envoyée. Des centaines d'items redeviennent un, rien ne quitte le fil, et rouvrir le
+   groupe le récupère. La ligne est celle du serveur **gardée telle quelle**, jamais
+   reconstruite : elle porte les ids d'entrée exacts de sa plage, alors qu'une carte d'outil à
+   l'écran porte `t-<callId>` — reconstruire une plage depuis l'écran, c'est renvoyer les
+   mauvais ids, exactement le bug de 0.4.83.
+
+   **Dropper** : le reste (un run arrivé en live, des bulles libres). Là du contenu part, donc
+   c'est payé en disant au pager qu'il y a de nouveau du plus ancien.
+
+   Ce dernier point est **le piège**. Une conversation vivante qui dépasse le plafond a ouvert
+   sur une page dont le serveur n'avait rien de plus ancien : `hasMore` est faux. Dropper sans
+   y toucher, et le lecteur qui remonte ne demande rien et ne reçoit rien — le début de sa
+   propre conversation est perdu jusqu'à ce qu'il change de fil et revienne.
+
+   Le trim tourne aussi désormais sur le chemin **live** (`append`), pas seulement sur les
+   deltas de sync : un run qui streame pendant des heures ne passait par aucun point de trim
+   tant que la socket tenait. Le lecteur remonté dans l'historique n'est jamais tronqué sous
+   les pieds, live ou pas.
+
+   Corrigé au passage : `clearAll()` ne vidait ni `pages` ni `trimAllowed`, donc un curseur
+   survivait aux fils qui venaient de partir et un `trimAllowed` périmé décidait pour le
+   lecteur suivant si ses vieux messages pouvaient être lâchés.
+
+   Le mémo « déjà demandé » de `runItems.ts` a été supprimé : l'état vit sur la ligne
+   (`hydration`). Un mémo module-level aurait refusé de re-fetcher un groupe déshydraté — il se
+   serait ouvert sur un squelette qui ne se remplit jamais.
 
 Chaque lot est livrable seul : après le 1, l'app neuve ignore les résumés qu'elle n'a pas
-demandés ; après le 2, rien ne change tant que l'app n'annonce pas la capability.
+demandés ; après le 2, rien ne change tant que l'app ne met pas `fold`. Les quatre sont
+livrés ; il faut déployer les deux moitiés ensemble pour voir quoi que ce soit, une app neuve
+sur un vieux serveur ne reçoit simplement aucun résumé.
 
 ## Tests
 
