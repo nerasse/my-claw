@@ -12,9 +12,14 @@ loop), so it is byte-identical across all iterations of that run — an ideal ca
 
 Scope is deliberately narrow:
 
-- **OpenAI-compatible home loop only.** `claude-sdk` runs cache through the Claude SDK itself, and
-  both `claude-sdk` and `codex` are subscription auth (not billed per token) — caching there is a
-  no-op for us. The resolver never sets `promptCache` on those backends.
+- **OpenAI-compatible home loop only** for the `cache_control` breakpoints. The resolver never
+  sets `promptCache` on the subscription backends: the Anthropic transport marks its own
+  breakpoints, and Codex has no `cache_control` to translate into.
+
+  This once read "caching there is a no-op for us" because subscription auth is not billed per
+  token. That was wrong, and measurably so: a subscription quota is consumed in **tokens**, cached
+  or not. A cache miss on a subscription costs quota instead of money, which is why an August run
+  at 11.6% cache-read drained a Claude quota in an afternoon.
 - **Per-token proxies that honor `cache_control`.** Verified live: LiteLLM returns HTTP 200 with
   the field (and exposes `prompt_tokens_details`); OpenRouter accepts it. Endpoints that don't
   cache simply ignore the extra field.
@@ -60,3 +65,64 @@ and ignore the field. Either way the request stays valid.
   supports it.
 - Tested in `tests/llm/prompt-cache.test.ts` (breakpoint placement, string→part promotion, array
   last-part, empty-body skip, on/off request-body gating, resolver propagation).
+
+## The dialect follows the engine, not the provider
+
+`cache_control` is Anthropic's mechanism. OpenAI ignores it and keys its implicit prefix cache on
+a `prompt_cache_key` instead. Since the same engine is resold by several providers, the mechanism
+that works cannot be read off the provider entry: `gpt-5.6-luna` arrives through the ChatGPT
+subscription, OpenRouter and OpenCode Zen, and `claude-sonnet-5` through the Anthropic
+subscription, OpenRouter and CommandCode.
+
+`src/llm/cache-policy.ts` derives the dialect from the wire id (`apiModel ?? model`), reduced to
+its leaf so a provider path and an `@endpoint` pin cannot confuse it:
+
+| Dialect | Matched by | Treatment |
+|---|---|---|
+| `anthropic` | `claude`, `opus`, `sonnet`, `haiku` | `cache_control` breakpoints (unchanged) |
+| `openai` | `gpt`, `chatgpt`, `codex`, `o1`-`o4` | `prompt_cache_key` |
+| `implicit` | everything else | no hint; the engine caches its prefix on its own |
+
+`gpt-oss` is explicitly excluded from the OpenAI dialect: it carries the name but is open weights
+hosted by third parties, so it reaches none of OpenAI's cache infrastructure.
+
+Unrecognized is `implicit` by design. Sending no hint costs a little; sending the wrong one can
+cost a rejected request.
+
+## `prompt_cache_key`
+
+The key names the conversation, so the transport needs something the LLM layer never had: nothing
+below the bridge knows about sessions. `ResolvedLlmConfig.cacheKey` carries it, set by the caller
+that owns the conversation (`bridge.ts`, from `session.id`) rather than by the resolver, because it
+identifies the run and not the model. A sub-agent uses its own id on purpose: it has its own
+system prompt, so sharing the parent's key would point two different prefixes at one cache entry.
+
+Two places consume it:
+
+- **Codex** (`codex.ts`) always sends it. It is OpenAI's own API and the request sets `store: false`,
+  so nothing is kept server-side and without a key each iteration may land on a different cache
+  node. Measured before the key: 19-35% cache-read, against 94% on the Anthropic transport.
+- **OpenAI-compatible** (`provider.ts`) sends it only for the `openai` dialect, and only when the
+  provider opted into `promptCache` — that opt-in is precisely the owner stating the endpoint
+  tolerates cache hint fields.
+
+The anthropic and implicit dialects are untouched by this: they were at 91-97% cache-read in
+production when the key was introduced, and `tests/analytics/e2e-usage.test.ts` guards that a
+non-OpenAI engine still gets its breakpoints and no key.
+
+## Auditing it
+
+`api_calls` records `backend` and `cache_dialect` per call. Neither is derivable after the fact:
+a couple of hosts name a transport (`chatgpt.com/backend-api`) while every other one names a
+reseller that could be fronting any engine. An audit that grouped by base URL once concluded the
+opposite of the truth, which is why the columns exist.
+
+```sql
+SELECT backend, cache_dialect, model,
+       COUNT(*) AS calls,
+       ROUND(100.0 * SUM(cache_read_tokens) / NULLIF(SUM(prompt_tokens), 0), 1) AS hit_pct
+FROM api_calls
+WHERE timestamp > datetime('now', '-7 days')
+GROUP BY backend, cache_dialect, model
+ORDER BY SUM(prompt_tokens) DESC;
+```

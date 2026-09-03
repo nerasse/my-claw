@@ -133,3 +133,56 @@ describe("resolver promptCache propagation", () => {
     expect(resolved.promptCache).toBeUndefined();
   });
 });
+
+describe("prompt_cache_key by model family", () => {
+  const base = { baseUrl: "https://example.com", apiKey: "k" };
+
+  async function capture(config: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    try {
+      await chatCompletion({ ...base, ...config } as never, [
+        { role: "system", content: "SYS" },
+        { role: "user", content: "hi" },
+      ]);
+      return bodies[0]!;
+    } finally {
+      mock.restore();
+    }
+  }
+
+  test("an OpenAI engine resold on a compatible endpoint gets the key", async () => {
+    const body = await capture({ model: "openai/gpt-5.6-luna", promptCache: true, cacheKey: "sess-1" });
+    expect(body["prompt_cache_key"]).toBe("sess-1");
+  });
+
+  test("the wire id decides, not the run identity", async () => {
+    const body = await capture({ model: "tag:main", apiModel: "gpt-5.4", promptCache: true, cacheKey: "sess-2" });
+    expect(body["prompt_cache_key"]).toBe("sess-2");
+  });
+
+  // The regression guards: these three families are at 91-97% cache-read in production and
+  // nothing about their request may move.
+  test("an Anthropic engine keeps breakpoints and gets no key", async () => {
+    const body = await capture({ model: "anthropic/claude-sonnet-5", promptCache: true, cacheKey: "sess-3" });
+    expect(body["prompt_cache_key"]).toBeUndefined();
+    expect(JSON.stringify(body)).toContain("cache_control");
+  });
+
+  test("an implicit-cache engine keeps breakpoints and gets no key", async () => {
+    const body = await capture({ model: "deepseek/deepseek-v4-flash-vision-exp", promptCache: true, cacheKey: "sess-4" });
+    expect(body["prompt_cache_key"]).toBeUndefined();
+    expect(JSON.stringify(body)).toContain("cache_control");
+  });
+
+  test("no key without the provider opt-in, and none without a session", async () => {
+    expect((await capture({ model: "gpt-5.6-luna", promptCache: false, cacheKey: "s" }))["prompt_cache_key"]).toBeUndefined();
+    expect((await capture({ model: "gpt-5.6-luna", promptCache: true }))["prompt_cache_key"]).toBeUndefined();
+  });
+});

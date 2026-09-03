@@ -53,6 +53,14 @@ function getDb(): Database {
   ensureColumn(db, "api_calls", "cache_write_tokens", "INTEGER");
   ensureColumn(db, "api_calls", "upstream_api_base", "TEXT");
   ensureColumn(db, "api_calls", "proxy_cost_usd", "REAL");
+  // Which wire protocol answered. Not derivable from base_url after the fact: a couple of hosts
+  // name a transport (`chatgpt.com/backend-api`, the retired `claude-sdk`) while every other one
+  // names a reseller that could be fronting any engine, so auditing cache behaviour by URL
+  // misreads the data -- which is exactly how it was once misread.
+  ensureColumn(db, "api_calls", "backend", "TEXT");
+  // The dialect the request actually used, so a cache regression can be traced to the hint that
+  // was sent rather than inferred from the model name months later.
+  ensureColumn(db, "api_calls", "cache_dialect", "TEXT");
 
   // Must come after ensureColumn: an index on a column the table does not have yet would throw,
   // and inside the block above it would take the whole statement down with it.
@@ -97,6 +105,11 @@ export interface ApiCallRecord {
   proxyCostUsd?: number;
   upstreamApiBase?: string;
 
+  // The transport that ran the call and the prompt-cache dialect it spoke. Recorded rather than
+  // inferred: see the column comments in the schema.
+  backend?: string;
+  cacheDialect?: string;
+
   error?: string;
 }
 
@@ -110,11 +123,13 @@ export function recordApiCall(record: ApiCallRecord): void {
         INSERT INTO api_calls (
           session_id, parent_session_id, platform, model, base_url, streaming, caller,
           prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
-          tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, error
+          tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, backend,
+          cache_dialect, error
         ) VALUES (
           $session_id, $parent_session_id, $platform, $model, $base_url, $streaming, $caller,
           $prompt_tokens, $completion_tokens, $total_tokens, $cache_read_tokens, $cache_write_tokens,
-          $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $error
+          $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $backend,
+          $cache_dialect, $error
         )
       `);
     }
@@ -138,6 +153,8 @@ export function recordApiCall(record: ApiCallRecord): void {
       $duration_ms: record.durationMs ?? 0,
       $proxy_cost_usd: record.proxyCostUsd ?? null,
       $upstream_api_base: record.upstreamApiBase ?? null,
+      $backend: record.backend ?? null,
+      $cache_dialect: record.cacheDialect ?? null,
       $error: record.error ?? null,
     });
   } catch (err) {

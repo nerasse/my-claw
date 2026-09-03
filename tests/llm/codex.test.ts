@@ -120,3 +120,34 @@ test("codex transport surfaces a response.failed event as an error", async () =>
     sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }]));
   await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /server_error: boom/);
 });
+
+test("codex pins the implicit prefix cache to the conversation", async () => {
+  writeAuth();
+  let capturedInit: RequestInit | undefined;
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    capturedInit = init;
+    return sseResponse([{ type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }]);
+  });
+
+  await codexResponse({ ...config, cacheKey: "thread-42" }, [{ role: "user", content: "hi" }]);
+
+  const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
+  assert.equal(body.prompt_cache_key, "thread-42");
+  // The key is what makes store:false survivable: nothing is kept server-side, so the request
+  // itself has to say which cache it belongs to.
+  assert.equal(body.store, false);
+});
+
+test("codex omits the key when no conversation named one", async () => {
+  writeAuth();
+  let capturedInit: RequestInit | undefined;
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    capturedInit = init;
+    return sseResponse([{ type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }]);
+  });
+
+  await codexResponse(config, [{ role: "user", content: "hi" }]);
+
+  const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
+  assert.equal("prompt_cache_key" in body, false);
+});

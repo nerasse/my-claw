@@ -5,6 +5,7 @@ import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
+import { cacheDialectOf } from "./cache-policy.ts";
 import { OPENAI_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
@@ -419,6 +420,14 @@ const body: Record<string, unknown> = {
       ? applyPromptCache(messages, chatIdentity(config))
       : messages.map((m) => toWireMessage(m, chatIdentity(config))),
   };
+
+  // An OpenAI-family engine ignores the `cache_control` breakpoints above and keys its implicit
+  // prefix cache on this instead, whichever provider resells it. Gated on the same per-provider
+  // opt-in as the breakpoints: it is an extra top-level field, and the opt-in is precisely the
+  // owner stating this endpoint tolerates cache hints. See docs/prompt-caching.md.
+  if (config.promptCache && config.cacheKey && cacheDialectOf(config.apiModel ?? config.model) === "openai") {
+    body["prompt_cache_key"] = config.cacheKey;
+  }
 
   if (tools && tools.length > 0) {
     body["tools"] = tools;

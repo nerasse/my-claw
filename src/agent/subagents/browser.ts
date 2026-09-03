@@ -1,5 +1,6 @@
 import type { MyClawConfig, ResolvedLlmConfig } from "../../core/config.ts";
 import { recordApiCall } from "../../analytics/usage-db.ts";
+import { cacheAttributionOf } from "../../llm/cache-policy.ts";
 import type { Attachment } from "../../channels/types.ts";
 import { chatCompletion, type ChatMessage, type LlmResponse, type ToolCall } from "../../llm/provider.ts";
 import { trimToContextWindow, estimateTokens } from "../../llm/tokens.ts";
@@ -302,6 +303,7 @@ export class BrowserSubagent {
           durationMs: Date.now() - browserLlmStart,
           proxyCostUsd: response.proxyCostUsd,
           upstreamApiBase: response.upstreamApiBase,
+          ...cacheAttributionOf(llmConfig),
         });
       } catch (e) {
         return {
@@ -449,6 +451,7 @@ export class BrowserSubagent {
         durationMs: Date.now() - start,
         proxyCostUsd: response.proxyCostUsd,
         upstreamApiBase: response.upstreamApiBase,
+        ...cacheAttributionOf(llmConfig),
       });
       return (response.content ?? "").trim();
     } catch {

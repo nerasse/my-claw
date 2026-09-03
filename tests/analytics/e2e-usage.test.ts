@@ -229,3 +229,78 @@ test("E2E: a run through a tag records the model actually called, not the tag id
     fetchMock.restore();
   }
 });
+
+test("E2E: the conversation names the OpenAI prefix cache all the way to the wire", async () => {
+  // The whole point of the plumbing: nothing below the bridge knows the session, so if the id
+  // does not ride on the resolved config the key never reaches the request.
+  // promptCache lives on a provider entry, so the flat legacy `llm` shape cannot express it.
+  const gptConfig: MyClawConfig = {
+    ...config,
+    llm: {
+      defaultProvider: "proxy",
+      defaultModel: "gpt-5.6-luna",
+      providers: { proxy: { baseUrl: "https://example.com", promptCache: true } },
+      models: [{ id: "gpt-5.6-luna", label: "Luna", provider: "proxy" }],
+    },
+  };
+  const registry = new ToolRegistry();
+  const skillRegistry = new SkillRegistry();
+  const bridge = new AgentBridge(gptConfig, registry, skillRegistry);
+
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchMock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(init?.body as string));
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    const session = createSession();
+    await bridge.handleMessage(createMessage(), session);
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0]!["prompt_cache_key"], session.id);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("E2E: an implicit-cache engine is left exactly as it was", async () => {
+  // Guards the highest-volume path in production against the change above.
+  const registry = new ToolRegistry();
+  const skillRegistry = new SkillRegistry();
+  const bridge = new AgentBridge(
+    {
+      ...config,
+      llm: {
+        defaultProvider: "proxy",
+        defaultModel: "deepseek/deepseek-v4-flash",
+        providers: { proxy: { baseUrl: "https://example.com", promptCache: true } },
+        models: [{ id: "deepseek/deepseek-v4-flash", label: "DS", provider: "proxy" }],
+      },
+    },
+    registry,
+    skillRegistry,
+  );
+
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchMock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(init?.body as string));
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 } }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    await bridge.handleMessage(createMessage(), createSession());
+    assert.equal("prompt_cache_key" in bodies[0]!, false);
+    assert.ok(JSON.stringify(bodies[0]).includes("cache_control"));
+  } finally {
+    fetchMock.restore();
+  }
+});

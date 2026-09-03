@@ -416,6 +416,11 @@ async function runCodex(
     parallel_tool_calls: true,
   };
   if (responsesTools.length > 0) body["tools"] = responsesTools;
+  // Pins the implicit prefix cache to this conversation. With `store: false` nothing is kept
+  // server-side, so without a key every iteration is free to land on a different cache node and
+  // the stable prefix is re-read at full price -- measured at 72% cache-read where the Anthropic
+  // transport, which names its breakpoints, holds 94%. See docs/prompt-caching.md.
+  if (config.cacheKey) body["prompt_cache_key"] = config.cacheKey;
   if (config.effort) body["reasoning"] = { effort: config.effort, summary: "auto" };
   // The counterpart of `store: false`: nothing is kept server-side, so the encrypted thinking
   // state has to come back to us or it is lost between two tool iterations. Conditioned on the

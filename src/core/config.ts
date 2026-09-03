@@ -336,6 +336,10 @@ export interface ResolvedLlmConfig {
   // Send Anthropic-style `cache_control` breakpoints on the OpenAI-compatible request
   // (propagated from the provider's `promptCache`). See docs/prompt-caching.md.
   promptCache?: boolean;
+  // Stable per-conversation key for engines whose prefix cache is keyed rather than marked
+  // (OpenAI: `prompt_cache_key`). Set by the caller that owns the conversation, not by the
+  // resolver, because it identifies the run and not the model. See docs/prompt-caching.md.
+  cacheKey?: string;
   // Replay reasoning state across tool iterations (propagated from the provider's
   // `reasoningReplay`). Absent means on. See docs/reasoning-replay.md.
   reasoningReplay?: boolean;

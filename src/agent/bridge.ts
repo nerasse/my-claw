@@ -29,6 +29,7 @@ import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession } from "../sessions/compaction.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
+import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
@@ -297,9 +298,13 @@ export class AgentBridge implements AgentBackend {
       },
       availabilityWorld(),
     );
-    const llmConfig = this.llmOverride ?? (modelOverride?.contextCap !== undefined
+    const resolvedModel = this.llmOverride ?? (modelOverride?.contextCap !== undefined
       ? { ...runModel!, contextCapOverride: modelOverride.contextCap }
       : runModel!);
+    // The conversation is what the prefix cache is stable across, so the session names it. A
+    // sub-agent carries its own id on purpose: it has its own system prompt, so sharing the
+    // parent's key would point two different prefixes at one cache entry.
+    const llmConfig: ResolvedLlmConfig = { ...resolvedModel, cacheKey: resolvedModel.cacheKey ?? session.id };
     // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
     // orchestrator's run to a single notice even though it resolves here as well.
     if (runModel) announceModelFallback(runModel, message, agentToolType);
@@ -562,6 +567,7 @@ export class AgentBridge implements AgentBackend {
           durationMs: llmDurationMs,
           proxyCostUsd: response.proxyCostUsd,
           upstreamApiBase: response.upstreamApiBase,
+          ...cacheAttributionOf(llmConfig),
         });
 
         hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length), finishReason: response.finishReason, incomplete: response.incomplete });
@@ -1010,6 +1016,7 @@ export class AgentBridge implements AgentBackend {
       durationMs: summaryDurationMs,
       proxyCostUsd: summaryResponse.proxyCostUsd,
       upstreamApiBase: summaryResponse.upstreamApiBase,
+      ...cacheAttributionOf(llmConfig),
     });
 
     const rawFinalText = summaryResponse.content.trim() || "I reached the iteration limit and couldn't generate a summary.";
