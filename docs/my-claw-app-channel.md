@@ -1092,7 +1092,8 @@ stays current until he answers, stops, or types.
   questions inside the running `question` tool card, which is exactly where the run stopped. A
   question is a reason to go and read something -- the thread above, a file, another conversation
   -- so it must not be a modal. The app keeps the answers in a store, not in the card, because the
-  list unmounts rows that scroll off.
+  list unmounts rows that scroll off. One question per page and a recap that is the only place
+  Send lives; the shape, and the two it replaces, are in the app repo's `docs/question-form.md`.
 - **`question.pending` is sent to every socket at connect**, and is authoritative: the client
   replaces its whole pending set with it. Nothing pushed while a socket was down is replayed, so
   this is what an app that was killed, asleep or offline is told; and the empty list is just as
