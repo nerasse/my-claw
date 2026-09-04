@@ -134,7 +134,23 @@ d'hydratation : `idle` → `loading` → `ready` (items splicés à la place du 
 à son résumé plutôt que de le dropper : c'est la version bon marché de l'unloading.
 
 **Rendu.** `RunGroup` affiche l'en-tête depuis le résumé (aucun item requis), déclenche
-la demande à l'ouverture, montre un squelette de `itemCount` lignes pendant le chargement.
+la demande **tant qu'il est ouvert** (effet sur `open` + `summaries`, pas le `onPress`), montre
+un squelette de `itemCount` lignes pendant le chargement.
+
+La distinction n'est pas cosmétique. Le pli est mémorisé par l'écran, pas par la ligne, donc un
+groupe peut redevenir « ouvert sans travail » sans que personne ne le touche, de deux façons :
+
+- une **reconnexion** : `resume` redemande le fil, un `reset` (`unknown-cursor`, `branch-switch`)
+  remplace le thread et chaque ligne revient à `idle` ;
+- le **trim** : `dehydrateHeld` replie un groupe hydraté sur sa ligne pour rendre de la mémoire,
+  et la remet à `idle`.
+
+Dans les deux cas le lecteur n'a rien fermé : avec la demande sur le `onPress`, le corps restait
+sur un squelette **définitivement** (une pile de barres grises au milieu du fil, ce qu'un
+utilisateur lit comme un chargement cassé). `requestRunItems` est idempotent sur `hydration`, donc
+redemander à chaque redraw coûte une comparaison. Garde : « a group drawn open asks for its work,
+with no press behind it » et « a redraw that hands back a row without its work asks again »
+(`__tests__/RunGroup.test.tsx`).
 
 **Ce qui ne change pas.** Le live : un run en cours n'est jamais résumé, les frames
 continuent d'arriver item par item.
