@@ -11,7 +11,7 @@ import { AgentBridge } from "../agent/bridge.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
-import type { SessionData } from "../sessions/store.ts";
+import type { SessionAttachment, SessionData } from "../sessions/store.ts";
 import { loadSession, deleteStoredSession, archiveSession, recordSubAgentCaller, subagentSessionIdsSync } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { metaOf, writeMeta } from "../sessions/meta.ts";
@@ -45,6 +45,21 @@ export interface SubAgentStream {
 
 const MAX_CONCURRENT_RUNS = 3;
 const MAX_DEPTH = 2;
+
+/**
+ * The images of a send, in the shape the log stores and the prompt reads back.
+ *
+ * A sub-agent's turn used to name its attachments in prose and nowhere else, so a picture reached
+ * the model as a filesystem path: `attachImages` rebuilds the image blocks from this field on
+ * every request, and the `[Attachments]` block alone is text the model can only try to open with
+ * a tool. Everything else stays listed rather than carried, which is the state of the sub-agent
+ * media path -- docs/subagents.md.
+ */
+function imagesOf(attachments: Attachment[] | undefined): SessionAttachment[] {
+  return (attachments ?? [])
+    .filter((a) => a.type === "image" && a.path)
+    .map((a) => ({ type: "image" as const, path: a.path!, ...(a.mimeType ? { mimeType: a.mimeType } : {}) }));
+}
 
 /**
  * Who a caller is, for the visibility rule. The workspace is the caller conversation's own key
@@ -324,6 +339,7 @@ export class SubAgentRunner {
       }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
+      const images = imagesOf(attachments);
       // Write user turn to the log. A crash before the first bridge turn must still show the question.
       const entryLog = await sessionLogOf(id);
       // A human app send owns the child-thread bubble, so its chat.send id must be reused by the
@@ -334,6 +350,9 @@ export class SubAgentRunner {
         type: "user",
         prompt: true,
         text: userContent,
+        // The turn owns its pictures the same way a human's does: this is what the prompt reads
+        // back on every request, so the image stays visible past the turn it arrived on.
+        ...(images.length > 0 ? { attachments: images } : {}),
         ...(parentMessage.location ? { location: parentMessage.location } : {}),
         // When a model drives the send, record where it came from.
         ...(toolCallId ? { from: { sessionId: callerSessionId, label: "send" } } : {}),
@@ -365,7 +384,7 @@ export class SubAgentRunner {
       // while handling the spawn event, so asking any earlier always yields undefined.
       const runStream = stream ?? (tracked ? streamProvider?.(id) : undefined);
       try {
-        const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, runStream, undefined, userContent);
+        const result = await this.executeRunWithSession(session, session.meta.type, session.meta.workspaceDir, parentMessage, trackedSignal, undefined, runStream, undefined, userContent, images);
         if (tracked) hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId: callerSessionId });
         return result;
       } catch (err) {
@@ -623,6 +642,8 @@ export class SubAgentRunner {
     messageId?: string,
     /** User text for the subMessage. The runner already wrote the UserEntry to the log. */
     userText?: string,
+    /** Images of that turn, already on the entry: the run resolves its model knowing it has them. */
+    images?: SessionAttachment[],
   ): Promise<string> {
     const depth = 1;
     // Adopt the session into the shared cache before the run: the app channel's history/peek
@@ -685,7 +706,10 @@ export class SubAgentRunner {
       chatId: parentMessage.chatId,
       userId: parentMessage.userId,
       text: userText ?? "",
-      attachments: [],
+      // Not decoration: this is what makes the run resolve as one that carries images (vision
+      // reroute) and what makes the drop warn able to fire at all -- an empty array here was a
+      // sub-agent silently blind to every picture it was sent.
+      attachments: images ?? [],
       isForwarded: false,
       raw: null,
     };

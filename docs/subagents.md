@@ -71,7 +71,22 @@ Archives the current session to `sessions-archive/`, then recreates an empty ses
 ]
 ```
 
-Each attachment is rendered as `[Attachments]` in the user message context. The sub-agent sees the file paths and can `read` them if accessible.
+Every attachment is listed as an `[Attachments]` block in the turn's text, so the sub-agent sees the
+paths and can `read` them if accessible.
+
+**Images are carried, not just listed.** They are also written to the user entry as
+`attachments: [{ type: "image", path }]`, which is what `attachImages` (`src/agent/bridge.ts`)
+rebuilds into image blocks on every request. Two consequences worth stating:
+
+- The picture survives its own turn. Chat APIs are stateless, so an image is only visible while it
+  is resent; the entry is the source the prompt is rebuilt from, up to `MAX_HISTORY_IMAGES`.
+- The run resolves as one that carries images, so a model without vision reroutes to
+  `llm.visionFallback` and, failing that, warns that the image was dropped.
+
+Before this, the entry was written without the field and the run's message carried an empty
+attachment array: the picture reached the model as a filesystem path in prose, and the drop warning
+could not fire because it reads the same empty array. Everything that is not an image stays listed
+rather than carried, which is the current state of the sub-agent media path.
 
 ## Limits
 
