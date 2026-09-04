@@ -39,7 +39,13 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
   the app lists it as a temporary sub-agent and can open and drive it like any other. It is always
   `private`, so only the conversation that asked for it sees it, and it dies with that conversation
   (the app's delete cascades, see `docs/subagent-navigation.md`).
-- `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>.json`. Returns stable ID.
+- `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>.json`. The answer ends with
+  `[sub-agent id: subagent/<name>-<hex4>]`: the id is the only way back to that agent, and the caller
+  has no other source for it. A one-shot gets no such line, nothing is meant to drive it again.
+- A **session spawn whose first run fails** is undone: the session is deleted before the error is
+  rethrown. The caller holds an error and no id, so anything left on disk would be a roster entry
+  nobody can name, drive or kill. An aborted run is kept, the owner stopped it and its transcript
+  is the point.
 - `workspaceDir` — optional absolute path. All filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) resolve against this path instead of the global workspace.
 
 ### `send(id, message, attachments?)`
@@ -128,7 +134,7 @@ On boot, `SubAgentRegistry.load()` scans `sessions/subagent/`. All existing sub-
 ```
 User: "create a code-explorer"
 LLM → spawn("code-explorer", "research", "session", "explore src/")
-→ "Sub-agent 'subagent/code-explorer-a7b3' created."
+→ "Read src/, 42 files. [sub-agent id: subagent/code-explorer-a7b3]"
 
 User: "ask it to analyze core/"
 LLM → send("subagent/code-explorer-a7b3", "analyze core/")

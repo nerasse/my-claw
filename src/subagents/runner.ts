@@ -275,7 +275,16 @@ export class SubAgentRunner {
       hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
       const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream, task);
-      const result = await (enqueue ? enqueue(id, run) : run());
+      let result: string;
+      try {
+        result = await (enqueue ? enqueue(id, run) : run());
+      } catch (err) {
+        // The caller is handed an error and no id, so nobody can name this agent again: leaving it
+        // on disk means a roster entry that answers nothing and cannot be killed. An abort is the
+        // exception -- the owner stopped a live agent and its transcript is the point.
+        if (!isAbort(err, trackedSignal)) await this.discardFailedSpawn(id);
+        throw err;
+      }
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result };
     });
@@ -402,6 +411,20 @@ export class SubAgentRunner {
         await this.indexForSearch(id, session);
       }
     }));
+  }
+
+  /**
+   * Undo a session spawn whose very first run died: the agent was never usable, and its id never
+   * left the runner. Failing quietly here is deliberate, the caller is already carrying the run's
+   * own error and a stuck file is the lesser fault to report.
+   */
+  private async discardFailedSpawn(id: string): Promise<void> {
+    try {
+      if (this.sessionManager) await this.sessionManager.deleteSession(id);
+      else await deleteStoredSession(id);
+    } catch (err) {
+      void log("warn", "failed spawn left its session behind", { id, error: String(err) });
+    }
   }
 
   async kill(id: string, callerSessionId: string): Promise<string> {

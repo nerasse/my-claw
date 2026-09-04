@@ -23,7 +23,8 @@ export function createSpawnTool(
       const types = catalog.length > 0
         ? `Types:\n${catalog.map((a) => `- ${a.name}: ${a.description}`).join("\n")}\n`
         : "";
-      return "Spawn a sub-agent. mode='run' = one-shot (deleted after run). mode='session' = persistent on disk, reusable via send(). " +
+      return "Spawn a sub-agent. mode='run' = one-shot, answers once and is not meant to be driven again. " +
+        "mode='session' = persistent on disk: the answer ends with the id to reuse with send(). " +
         types +
         "Provide workspaceDir to isolate the sub-agent's filesystem. " +
         "visibility decides who can later list and drive it: 'global' (default, every conversation), " +
@@ -126,7 +127,12 @@ export function createSpawnTool(
           ...(toolCallId ? { toolCallId } : {}),
           ...(streamProvider ? { streamProvider } : {}),
         });
-        return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
+        if (result.startsWith("Error:")) return { success: false, output: result, error: result };
+        // A persistent sub-agent is only reachable by id, and the caller has no other way to learn
+        // it: without this line the one thing `send` requires has to be guessed, and a guess is a
+        // "sub-agent not found" every time. One-shots are left alone, nothing is meant to drive them.
+        const handle = mode === "session" && id ? `\n\n[sub-agent id: ${id}]` : "";
+        return { success: true, output: `${result}${handle}` };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);
         return { success: false, output: "", error: String(e) };
