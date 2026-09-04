@@ -31,6 +31,12 @@ export interface SubAgentInfo {
   visibility: "global" | "workspace" | "private";
   /** Which workspace a `workspace`-visible agent belongs to; absent means the default one. */
   workspaceKey?: string;
+  /**
+   * Where the agent's own tools resolve their paths, which is not `workspaceKey`: that one names
+   * the orchestrator it belongs to, this one the directory it writes in. Absent on an agent
+   * spawned before the field existed.
+   */
+  workspaceDir?: string;
   model?: string;
   createdAt: string;
 }

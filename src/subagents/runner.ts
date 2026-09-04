@@ -483,6 +483,7 @@ export class SubAgentRunner {
           status: registry.isRunning(id) ? "running" : "idle",
           visibility: session.meta.visibility,
           ...(session.meta.workspaceKey ? { workspaceKey: session.meta.workspaceKey } : {}),
+          ...(session.meta.workspaceDir ? { workspaceDir: session.meta.workspaceDir } : {}),
           ...(session.modelOverride ? { model: session.modelOverride } : {}),
           createdAt: session.meta.createdAt,
         });

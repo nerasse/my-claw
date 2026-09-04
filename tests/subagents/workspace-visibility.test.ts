@@ -90,6 +90,31 @@ test("a workspace sub-agent is listed by another conversation of the same worksp
   assert.equal(listed[0]!.workspaceKey, "alpha");
 });
 
+test("the roster reports the directory the agent works in, which is not its workspace key", async () => {
+  await chat("chat/alpha-1", "alpha");
+  // The pair that motivates the field: an agent scoped to the `alpha` orchestrator but pinned by
+  // `agents.<name>.workspace` to a directory of its own. Reporting the key alone answers the
+  // wrong question -- the owner wants to know where it writes.
+  await subAgent("subagent/ws-alpha", {
+    workspaceKey: "alpha",
+    workspaceDir: "/home/neras/dev/some-repo",
+    parentSessionId: "chat/alpha-1",
+  });
+
+  const listed = await runner().list(new SubAgentRegistry(), "chat/alpha-1");
+  assert.equal(listed[0]!.workspaceDir, "/home/neras/dev/some-repo");
+  assert.equal(listed[0]!.workspaceKey, "alpha");
+});
+
+test("an agent stored without a directory reports none rather than an empty one", async () => {
+  await chat("chat/alpha-1", "alpha");
+  await subAgent("subagent/ws-alpha", { workspaceKey: "alpha", parentSessionId: "chat/alpha-1" });
+
+  const listed = await runner().list(new SubAgentRegistry(), "chat/alpha-1");
+  assert.equal(listed[0]!.workspaceDir, undefined);
+  assert.ok(!("workspaceDir" in listed[0]!));
+});
+
 test("a workspace sub-agent is invisible to a conversation of another workspace", async () => {
   await chat("chat/alpha-1", "alpha");
   await chat("chat/beta-1", "beta");

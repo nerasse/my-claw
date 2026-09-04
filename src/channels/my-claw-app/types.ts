@@ -2535,6 +2535,8 @@ export interface MyClawAppSubAgentEntry {
   visibility: "global" | "workspace" | "private";
   /** Which workspace a `workspace`-visible agent is scoped to; absent means the default one. */
   workspaceKey?: string;
+  /** The directory the agent's tools work in, which `workspaceKey` does not name. */
+  workspaceDir?: string;
   model?: string;
   createdAt: string;
 }

@@ -435,7 +435,8 @@ control.
   the answer is not streamed live — it is written to the sub-agent's history and visible on the
   next `session.history` refresh. The composer stays a normal composer: there is no longer a
   "queued" state to describe.
-- `⋮` holds `copy id`, `open workspace`, `reset`, `kill`.
+- `⋮` holds the session actions a sub-agent shares with a conversation, then the ones that are its
+  own. See "The two session menus" below: the entries are built once, for both.
 
 Both destructive actions go through an `ActionSheet` confirmation with `danger: true`, and their
 wording states the asymmetry the code actually has:
@@ -546,6 +547,37 @@ App:
   included; and the roster is not on the stack behind a sub-agent.
 - A temporary row opens the one-shot's chat like a named row, and its header names the parent.
 - `kill` and `reset` each require the confirmation sheet; `kill` returns to the parent.
+
+## The two session menus
+
+A sub-agent is a real session, so nearly every action of the conversation `⋮` already resolves
+correctly on it: `handleModel`, `handleChatStop` and the `/status` command all go through
+`SessionManager.resolveSessionId`, which maps a sub-agent handle to its own session
+(`commands.ts:97`). They were simply never offered inside a sub-agent, so changing a busy agent's
+model or reading its context meant leaving the chat.
+
+The menus are therefore **not symmetric, and not written twice**. One builder emits the entries
+that belong to a session; each menu adds its own and drops what does not apply.
+
+| | Conversation | Sub-agent |
+| --- | --- | --- |
+| Model, Effort/window, Status, Instructions, Session files, Refresh, Stop, Copy transcript | shared builder | shared builder |
+| Pin, Archive, Rename, Change workspace | yes | **no** |
+| Copy id, Workspace, Clear memory, Delete | no | yes |
+
+What a sub-agent drops, it drops because the action would do nothing observable: a sub-agent is
+deliberately absent from the drawer (`selectThread` never records it as `lastThreadId`), so pinning
+or archiving one has no surface to act on. Offering an action that silently does nothing is worse
+than not offering it.
+
+The rule is the same one `enterThread` exists for: two hand-written lists of the same actions drift,
+and the drift is only found months later, one forgotten entry at a time.
+
+`Workspace` is the only genuinely new entry. It shows the directory the agent's tools work in and
+copies it -- the question `workspaceKey` does not answer, since that one names the orchestrator the
+agent belongs to. It rides on `workspaceDir` in `SubAgentInfo` and in the wire entry, read from
+`meta.workspaceDir`, which the spawn has always written. Absent on an agent spawned before the
+field existed, and the entry is then not offered.
 
 ## Decisions taken
 
