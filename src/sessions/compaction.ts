@@ -80,6 +80,15 @@ export interface CompactionResult {
   beforeCount: number;
   afterCount: number;
   summary?: string;
+  /**
+   * The boundary that was written, when one was.
+   *
+   * The id is the entry's, so a channel that draws the boundary live and the same channel
+   * replaying the history name the same thing and the device can drop the duplicate. `count` is
+   * the turns the summary stands for, which is what the boundary says and is not derivable from
+   * `beforeCount - afterCount` (the tail and the summary itself are in neither).
+   */
+  boundary?: { entryId: string; count: number };
 }
 
 /**
@@ -357,8 +366,8 @@ export async function summarizeForCompaction(
 }
 
 /** Append the boundary. The turns it stands for stay on disk and stay on screen. */
-export async function commitCompaction(log: SessionLog, plan: CompactionPlan, summary: string): Promise<void> {
-  log.append<CompactionEntry>({
+export async function commitCompaction(log: SessionLog, plan: CompactionPlan, summary: string): Promise<CompactionEntry> {
+  const entry = log.append<CompactionEntry>({
     type: "compaction",
     prompt: true,
     summary,
@@ -367,6 +376,7 @@ export async function commitCompaction(log: SessionLog, plan: CompactionPlan, su
     count: plan.middle.length,
   });
   await log.flush();
+  return entry;
 }
 
 /**
@@ -413,7 +423,7 @@ export async function compactSession(
     if (!summarized.ok) {
       return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
     }
-    await commitCompaction(log, plan, summarized.summary);
+    const boundary = await commitCompaction(log, plan, summarized.summary);
     session.lastActiveAt = new Date().toISOString();
     const afterCount = contextEntries(log.entries(), log.leaf()).length;
     hooks.emit("session:compact:end", {
@@ -422,7 +432,13 @@ export async function compactSession(
       afterCount,
       summaryLength: summarized.summary.length,
     });
-    return { ok: true, beforeCount, afterCount, summary: summarized.summary };
+    return {
+      ok: true,
+      beforeCount,
+      afterCount,
+      summary: summarized.summary,
+      boundary: { entryId: boundary.id, count: boundary.count },
+    };
   } catch (err) {
     // An abort is the owner stopping the run, not a compaction that failed on its own terms.
     rethrowIfAborted(err);

@@ -204,6 +204,24 @@ export interface HookEventMap {
   };
   "session:compact:error": { sessionId: string; reason: string };
   /**
+   * A boundary was appended by one of the automatic gates, and the conversation on screen should
+   * show it now rather than at the next history load.
+   *
+   * Carries the triggering message because that is what names the destination: an automatic
+   * compaction has no command behind it, so the channel and the thread can only come from the
+   * send that ran into the gate (same shape as `message:queued`).
+   *
+   * Deliberately not wired to any notification: a compaction the owner did not ask for is not an
+   * event he has to be told about, and a tray entry (or a ring) for it would be noise.
+   */
+  "session:compact:boundary": {
+    message: UnifiedMessage;
+    sessionId: string;
+    entryId: string;
+    summary: string;
+    count: number;
+  };
+  /**
    * A `/compact` the owner typed is over, whichever engine answered it. The three events above
    * live inside the local summarizer and the SDK engine never reaches them, so this is the only
    * one that fires on both paths, once per command, on success and on failure alike.

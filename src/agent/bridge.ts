@@ -28,7 +28,7 @@ import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import type { ToolCallResult } from "./tool-status.ts";
-import { compactSession } from "../sessions/compaction.ts";
+import { compactSession, type CompactionResult } from "../sessions/compaction.ts";
 import {
   cancelSpeculation,
   claimSpeculation,
@@ -1345,6 +1345,7 @@ export class AgentBridge implements AgentBackend {
           beforeCount: claimed.beforeCount,
           afterCount: claimed.afterCount,
         });
+        this.announceBoundary(message, session, claimed);
         return "compacted";
       }
       // Anything still in flight was planned against the branch this pass is about to rewrite.
@@ -1359,12 +1360,32 @@ export class AgentBridge implements AgentBackend {
         beforeCount: result.beforeCount,
         afterCount: result.afterCount,
       });
+      this.announceBoundary(message, session, result);
       return "compacted";
     } catch (err) {
       rethrowIfAborted(err, signal);
       void log("error", "auto-compaction failed", { ...logData, error: errorLogData(err) });
       return "skipped";
     }
+  }
+
+  /**
+   * Draw the boundary now, in the conversation the owner is looking at.
+   *
+   * `/compact` has always answered with a bubble of its own; an automatic pass had nothing, so a
+   * compaction mid-run was invisible until the next history load and the thread silently lost its
+   * middle. The frame is the same boundary the replayed history builds, keyed by the same entry
+   * id, so the device that already drew it ignores the duplicate.
+   */
+  private announceBoundary(message: UnifiedMessage, session: SessionData, result: CompactionResult): void {
+    if (!result.boundary || !result.summary) return;
+    hooks.emit("session:compact:boundary", {
+      message,
+      sessionId: session.id,
+      entryId: result.boundary.entryId,
+      summary: result.summary,
+      count: result.boundary.count,
+    });
   }
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard

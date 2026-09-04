@@ -184,6 +184,55 @@ test("the bubble is marked while a mid-run compaction runs", async () => {
   }
 });
 
+/**
+ * The boundary reaches the screen while the run is still going.
+ *
+ * `/compact` has always answered with a bubble of its own; an automatic pass announced nothing, so
+ * the rule only appeared at the next history load and a thread compacted mid-run looked like it
+ * had lost its middle for no stated reason. The id is the entry's, which is what makes the live
+ * boundary and the replayed one the same object rather than two rules for one cut.
+ */
+test("an automatic compaction announces its boundary, keyed by the entry it wrote", async () => {
+  const seen: Array<{ entryId: string; count: number; summary: string }> = [];
+  const onBoundary = (e: { entryId: string; count: number; summary: string }): void => {
+    seen.push({ entryId: e.entryId, count: e.count, summary: e.summary });
+  };
+  hooks.on("session:compact:boundary", onBoundary);
+  try {
+    const { log: sessionLog } = await run({ summary: SUMMARY });
+    assert.ok(seen.length >= 1, "the boundary was announced");
+
+    const written = sessionLog.entries().filter((e): e is CompactionEntry => e.type === "compaction");
+    assert.equal(seen.length, written.length, "one announcement per boundary, no more");
+    for (const [i, announced] of seen.entries()) {
+      const entry = written[i]!;
+      assert.equal(announced.entryId, entry.id, "the announcement names the entry the history replays");
+      assert.equal(announced.count, entry.count, "the turns it stands for");
+      assert.equal(announced.summary, entry.summary, "the same summary, not a second one");
+    }
+  } finally {
+    hooks.off("session:compact:boundary", onBoundary);
+  }
+});
+
+// A compaction the owner did not ask for is not an event he has to be told about. The one hook
+// that publishes a notification is `session:compact:finished`, and `/compact` is its only emitter.
+test("an automatic compaction stays silent: no notification, no ring", async () => {
+  const notified: string[] = [];
+  const onFinished = ({ sessionId }: { sessionId: string }): void => {
+    notified.push(sessionId);
+  };
+  hooks.on("session:compact:finished", onFinished);
+  try {
+    const { log: sessionLog } = await run({ summary: SUMMARY });
+    const compacted = sessionLog.entries().some((e) => e.type === "compaction");
+    assert.ok(compacted, "a compaction did happen");
+    assert.deepEqual(notified, [], "nothing was published to the tray");
+  } finally {
+    hooks.off("session:compact:finished", onFinished);
+  }
+});
+
 // A refused or empty summary must not be retried on every single iteration: the run would pay for
 // one summarization per tool round and never get anywhere.
 test("a summarization that produced nothing is not retried on the next iteration", async () => {

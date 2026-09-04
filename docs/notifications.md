@@ -91,9 +91,18 @@ Règles :
   actif). Le serveur **saute** la notification de run de session pour un device qui est au
   premier plan sur le thread concerné (la réponse défile déjà à l'écran). Les notifications de
   jobs ne sont jamais sautées.
-- **Compaction** : même règle de premier plan. Une compaction est la seule opération longue
-  sans stream derrière elle (une à deux minutes de silence, puis une seule frame de résultat),
-  donc sa fin est annoncée à tous les devices qui ne la regardent pas.
+- **Compaction demandée** (`/compact`) : même règle de premier plan. Une compaction est la seule
+  opération longue sans stream derrière elle (une à deux minutes de silence, puis une seule frame
+  de résultat), donc sa fin est annoncée à tous les devices qui ne la regardent pas.
+- **Compaction automatique** : **aucune notification, aucun son.** L'owner n'a rien demandé, donc
+  ce n'est pas un événement dont il doit être averti : une entrée de tray par franchissement de
+  seuil serait du bruit pur. C'est garanti par la structure, pas par une garde à maintenir :
+  `session:compact:finished` est le seul hook qui publie, et `compact-command.ts` est son seul
+  émetteur. Les portes automatiques passent par `session:compact:boundary`, qui ne sert qu'à
+  dessiner la frontière dans le thread (frame `chat.compaction`, `docs/my-claw-app-channel.md`).
+  Côté app, `playAlertSound` n'a que deux appelants, une question et une fin de run sur le thread
+  affiché : une compaction n'est ni l'une ni l'autre. Témoin : « an automatic compaction stays
+  silent: no notification, no ring » dans `tests/agent/bridge-mid-run-compaction.test.ts`.
 - Publication **best-effort** : un endpoint mort ou un push server injoignable ne fait jamais
   échouer le run (warn dans les logs seulement).
 

@@ -775,6 +775,24 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * A compaction boundary, drawn while the owner is watching the run that caused it.
+   *
+   * Broadcast, like any frame addressed to a conversation, and carrying the entry id so the
+   * device that already has it from a history load does not draw it twice. No notification and no
+   * ring ride along: an automatic compaction is not an event the owner has to be told about.
+   */
+  notifyCompaction(owner: string, threadId: string, boundary: { id: string; summary: string; count: number }): void {
+    this.broadcast(owner, {
+      type: "chat.compaction",
+      threadId,
+      id: boundary.id,
+      summary: boundary.summary,
+      count: boundary.count,
+      ts: new Date().toISOString(),
+    });
+  }
+
+  /**
    * Delivered to every socket of the owner, like any other frame addressed to a conversation.
    * Transcripts arrive keyed by the file they came from; the id in the path is what the device
    * knows its bubbles by, so the mapping happens here rather than in the agent.

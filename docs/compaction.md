@@ -75,6 +75,20 @@ propre tail, `planCompaction` ne trouve jamais rien à compacter et l'historique
 La valeur configurée reste le plafond en toutes circonstances, plancher compris : demander moins de
 20 000 est une réponse délibérée à une fenêtre étroite.
 
+### Ce que l'owner en voit
+
+La frontière est **annoncée** au moment où elle est écrite, frame `chat.compaction`
+(`docs/my-claw-app-channel.md`). Avant, seul `/compact` répondait quelque chose : les portes
+automatiques n'envoyaient rien, donc l'entrée existait sur disque et n'apparaissait qu'au
+prochain chargement d'historique. Une conversation compactée en plein run semblait avoir perdu
+son milieu sans rien dire.
+
+La frame porte l'id de **l'entrée**, celui sous lequel l'historique la rejoue, donc un device qui
+a les deux garde une seule règle. Les tours résumés ne disparaissent pas de l'écran : ils restent
+au-dessus de la règle, `count` ne dit que combien le prompt ne porte plus.
+
+Ni notification ni son : l'owner n'a pas demandé cette compaction (`docs/notifications.md`).
+
 Deux invariants :
 
 - la frontière ne tombe jamais dans un bloc d'outils ni au milieu d'un tour
@@ -267,6 +281,7 @@ celui qui l'a demandée a généralement quitté l'écran.
 | `llm/overflow.ts` | reconnaître un débordement, quelle que soit la forme |
 | `agent/bridge.ts` | les trois portes, le rebuild, la spéculation en fin de run |
 | `channels/compact-command.ts` | `/compact` : hold, signal, notification |
+| `channels/my-claw-app/adapter.ts` | `notifyCompaction` : la frontière dessinée pendant le run |
 | `core/config.ts` | seuil, tail (plafond et mise à l'échelle), spéculation |
 | `sessions/tool-output.ts` | ce qu'une sortie d'outil pèse dans un historique rejoué |
 

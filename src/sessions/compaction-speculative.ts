@@ -201,9 +201,15 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
     return undefined;
   }
 
-  await commitCompaction(sessionLog, entry.plan, entry.summary);
+  const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary);
   session.lastActiveAt = new Date().toISOString();
   const afterCount = contextEntries(sessionLog.entries(), sessionLog.leaf()).length;
   void logLine("info", "speculative compaction claimed", { sessionId: session.id, beforeCount: before, afterCount });
-  return { ok: true, beforeCount: before, afterCount, summary: entry.summary };
+  return {
+    ok: true,
+    beforeCount: before,
+    afterCount,
+    summary: entry.summary,
+    boundary: { entryId: boundary.id, count: boundary.count },
+  };
 }

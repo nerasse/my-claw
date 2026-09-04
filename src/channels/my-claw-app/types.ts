@@ -1312,6 +1312,31 @@ export interface MyClawAppChatUser {
   location?: ChatLocation;
 }
 
+/**
+ * A compaction just cut the prompt, drawn while the owner is looking at it.
+ *
+ * `/compact` has always answered with a bubble of its own, but an automatic pass had nothing on
+ * the wire: the boundary existed on disk and only surfaced at the next history load, so a thread
+ * compacted mid-run appeared to have lost its middle for no stated reason.
+ *
+ * Shaped like the boundary a replayed history builds, and carrying the *entry* id, so the device
+ * that drew it live and the same device reloading the thread name one thing and not two.
+ *
+ * Never accompanied by a notification or a ring, by design: a compaction the owner did not ask
+ * for is not an event he has to be told about (docs/notifications.md).
+ */
+export interface MyClawAppChatCompaction {
+  type: "chat.compaction";
+  threadId: string;
+  /** The `compaction` entry's id, which is what the history replays it under. */
+  id: string;
+  /** The summary the model was handed, folded under the rule in the app. */
+  summary: string;
+  /** Turns the summary stands for. They stay on disk and stay on screen, above the rule. */
+  count: number;
+  ts?: string;
+}
+
 export interface MyClawAppLocationCapabilities {
   type: "location.capabilities";
   enabled: boolean;
@@ -2776,6 +2801,7 @@ export interface MyClawAppDeviceRevokeResult {
 export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppChatUser
+  | MyClawAppChatCompaction
   | MyClawAppLocationCapabilities
   | MyClawAppLocationPreviewResult
   | MyClawAppChatLocation
