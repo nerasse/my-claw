@@ -133,7 +133,9 @@ chown -R root:root "${APP_DIR}"
 # Install config templates
 if [ ! -f /etc/my-claw/config.json ]; then
   cp "${PROJECT_DIR}/etc/config.json" /etc/my-claw/
-  chmod 644 /etc/my-claw/config.json
+  # 600 like the .env beside it: this file carries provider API keys and every paired device's
+  # token, and it was world-readable on a machine that runs an agent with a shell.
+  chmod 600 /etc/my-claw/config.json
   echo "Installed config template to /etc/my-claw/config.json"
 fi
 
@@ -146,7 +148,7 @@ fi
 # Install config in user home (where the app reads it)
 if [ ! -f "${TARGET_HOME}/.my-claw/config.json" ]; then
   cp "${PROJECT_DIR}/etc/config.json" "${TARGET_HOME}/.my-claw/"
-  chmod 644 "${TARGET_HOME}/.my-claw/config.json"
+  chmod 600 "${TARGET_HOME}/.my-claw/config.json"
   chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json"
 fi
 
