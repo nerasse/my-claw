@@ -7,6 +7,7 @@ import { createMyClawAppCommandHandler, instructionsText } from "../src/channels
 import { SessionManager } from "../src/sessions/manager.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
+import { hooks } from "../src/hooks/index.ts";
 
 describe("/instructions on the app channel", () => {
   async function dumpFile(body: string): Promise<string> {
@@ -137,5 +138,49 @@ describe("/effort and /cap on the app channel", () => {
     const handler = makeHandler();
     const output = await handler("neras", "t1", "cap", "-5");
     expect(output).toContain("Unknown cap");
+  });
+});
+
+describe("what a command writes down about itself", () => {
+  /**
+   * `/claude set-token <token>` hands over a live credential. The session journal masked it from
+   * the start; the orchestrator log and the `command:received` hook did not, so the token sat in
+   * a file kept for thirty days, readable through `logs.tail` and through the agent's own shell.
+   */
+  test("a credential never reaches the hook the plugins listen on", async () => {
+    const seen: string[] = [];
+    const listener = (payload: { args?: unknown }): void => {
+      seen.push(String(payload.args ?? ""));
+    };
+    hooks.on("command:received", listener);
+    const handler = createMyClawAppCommandHandler({
+      config: { llm: { defaultModel: "claude-opus-5", models: [] } } as unknown as MyClawConfig,
+      sessionManager: new SessionManager(),
+      modelPicker: new ModelPicker([], { enabled: false, levels: [] }),
+    });
+
+    await handler("neras", "t-secret", "claude", "set-token sk-ant-oat01-THE-SECRET");
+    hooks.off("command:received", listener);
+
+    expect(seen.join(" ")).not.toContain("sk-ant-oat01-THE-SECRET");
+    expect(seen.join(" ")).toContain("set-token [redacted]");
+  });
+
+  test("a command with nothing to hide is logged as typed", async () => {
+    const seen: string[] = [];
+    const listener = (payload: { args?: unknown }): void => {
+      seen.push(String(payload.args ?? ""));
+    };
+    hooks.on("command:received", listener);
+    const handler = createMyClawAppCommandHandler({
+      config: { llm: { defaultModel: "claude-opus-5", models: [] } } as unknown as MyClawConfig,
+      sessionManager: new SessionManager(),
+      modelPicker: new ModelPicker([], { enabled: false, levels: [] }),
+    });
+
+    await handler("neras", "t-plain", "claude", "status");
+    hooks.off("command:received", listener);
+
+    expect(seen).toContain("status");
   });
 });

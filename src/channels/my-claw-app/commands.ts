@@ -10,6 +10,7 @@ import type { AgentRegistry } from "../../agents/registry.ts";
 import type { ToolRegistry } from "../../tools/registry.ts";
 import type { ModelPicker } from "../model-picker.ts";
 import { handleAuthCommand } from "../auth-commands.ts";
+import { redactCommandArgs } from "../command-log.ts";
 import { handleConfigCommand } from "../config-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import { handleAgentModelCommand } from "../agent-model-commands.ts";
@@ -102,8 +103,13 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
   return async (owner, threadId, command, args) => {
     const sessionId = sessionIdFor(owner, threadId);
     const defaultModel = deps.config.llm.defaultModel ?? deps.config.llm.model ?? "";
-    hooks.emit("command:received", { command, args, platform: "my-claw-app", userId: owner });
-    void log("info", "command received", { platform: "my-claw-app", command, args, sessionId });
+    // Masked before either of these, not after: `/claude set-token <token>` is a live credential
+    // and this pair used to put it verbatim in orchestrator-<date>.log (kept 30 days, readable
+    // through `logs.tail` and through the agent's own shell) and hand it to every plugin on the
+    // hook. The session journal was already masking it, which is what made the gap easy to miss.
+    const loggedArgs = redactCommandArgs(command, args);
+    hooks.emit("command:received", { command, args: loggedArgs, platform: "my-claw-app", userId: owner });
+    void log("info", "command received", { platform: "my-claw-app", command, args: loggedArgs, sessionId });
 
     const existing = await deps.sessionManager.peek(sessionId);
     const currentModel = chatModel(deps.config, existing?.modelOverride);
