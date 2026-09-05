@@ -63,3 +63,32 @@ export interface BrowserDownloadResult {
   path: string;
   filename: string;
 }
+
+export interface BrowserFindResult {
+  query: string;
+  matches: number;
+  lines: string[];
+  url: string;
+}
+
+export interface BrowserResponseInfo {
+  id: number;
+  url: string;
+  status: number;
+  type: string;
+  method: string;
+}
+
+/** `total` counts everything recorded for the page, `responses` only what the filter kept and
+ *  the cap allowed: an agent that saw 3 of 90 must be able to tell that from a page with 3. */
+export interface BrowserResponseList {
+  total: number;
+  responses: BrowserResponseInfo[];
+}
+
+export interface BrowserResponseBody {
+  url: string;
+  status: number;
+  truncated: boolean;
+  body: string;
+}

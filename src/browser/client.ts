@@ -4,6 +4,9 @@ import type {
   BrowserClickAtResult,
   BrowserDownloadResult,
   BrowserEvalResult,
+  BrowserFindResult,
+  BrowserResponseBody,
+  BrowserResponseList,
   BrowserResult,
   BrowserScreenshot,
   BrowserSnapshot,
@@ -61,7 +64,17 @@ export class BrowserClient {
         signal: AbortSignal.timeout(this.timeoutFor(path)),
       });
     } catch (e) {
-      throw new Error(`Browser sidecar unreachable at ${this.sidecarUrl} (ECONNREFUSED): ${String(e)}`);
+      // A blown budget and a dead sidecar are different failures and lead to different fixes,
+      // but both land here: fetch rejects an AbortSignal.timeout the same way it rejects a
+      // refused connection. Reporting every one of them as ECONNREFUSED told an agent the
+      // browser had crashed whenever a slow call ran long, and it then reported that crash to
+      // the owner as fact.
+      if (e instanceof Error && e.name === "TimeoutError") {
+        throw new Error(
+          `Browser ${path} exceeded its ${this.timeoutFor(path)}ms budget. The sidecar is still up: split the work or raise the budget.`,
+        );
+      }
+      throw new Error(`Browser sidecar unreachable at ${this.sidecarUrl}: ${String(e)}`);
     }
     if (!res.ok) {
       let message = `HTTP ${res.status}`;
@@ -98,6 +111,18 @@ export class BrowserClient {
 
   async snapshot(pageId: string): Promise<BrowserSnapshot> {
     return this.call<BrowserSnapshot>("snapshot", { pageId });
+  }
+
+  async find(pageId: string, query: string): Promise<BrowserFindResult> {
+    return this.call<BrowserFindResult>("find", { pageId, query });
+  }
+
+  async responses(pageId: string, filter?: string): Promise<BrowserResponseList> {
+    return this.call<BrowserResponseList>("responses", { pageId, filter });
+  }
+
+  async responseBody(pageId: string, responseId: number): Promise<BrowserResponseBody> {
+    return this.call<BrowserResponseBody>("responseBody", { pageId, responseId });
   }
 
   async click(pageId: string, ref: number): Promise<void> {

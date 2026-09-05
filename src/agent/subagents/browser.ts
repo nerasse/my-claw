@@ -12,6 +12,9 @@ import { ToolRegistry } from "../../tools/registry.ts";
 import {
   createBrowserNavigateTool,
   createBrowserSnapshotTool,
+  createBrowserFindTool,
+  createBrowserNetworkTool,
+  createBrowserResponseTool,
   createBrowserClickTool,
   createBrowserTypeTool,
   createBrowserSelectOptionTool,
@@ -57,6 +60,9 @@ const BROWSER_PROMPT = `You are a web browsing assistant. Your job is to complet
 Available tools:
 - browser_navigate(url, new_tab?): Go to a URL. Reuses the CURRENT tab by default — it does NOT open a new tab each call. Pass new_tab=true only when you genuinely need a separate tab. Returns a fresh snapshot of the page.
 - browser_snapshot(): Re-read the page accessibility tree with ref numbers WITHOUT acting. navigate/click/type already return a fresh snapshot — do NOT call this after them; use it only when you need to re-check the page on its own.
+- browser_find(query): Search the current snapshot and get only the matching lines with their refs. On a long page, use this instead of re-snapshotting to locate one control or one value.
+- browser_network(filter?): List the JSON responses the page fetched for itself, newest first, each with an id.
+- browser_response(id): Read one of those bodies. On a dynamic site the data you want is nearly always here, already structured, and it survives redesigns and lazy loading that the DOM does not.
 - browser_click(ref): Click an element by its ref number. Returns a fresh snapshot.
 - browser_type(ref, text): Type text into a field by its ref number. Returns a fresh snapshot.
 - browser_select_option(ref, value): Choose a value in a dropdown, passing the ref OF THE DROPDOWN and the visible label of the option. Works for native <select> and for custom comboboxes whose options you cannot click directly. Always prefer this over clicking an option yourself.
@@ -201,6 +207,9 @@ export class BrowserSubagent {
     };
     this.toolRegistry.register(createBrowserNavigateTool(this.client, pageState));
     this.toolRegistry.register(createBrowserSnapshotTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserFindTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserNetworkTool(this.client, pageState));
+    this.toolRegistry.register(createBrowserResponseTool(this.client, pageState));
     this.toolRegistry.register(createBrowserClickTool(this.client, pageState));
     this.toolRegistry.register(createBrowserTypeTool(this.client, pageState));
     this.toolRegistry.register(createBrowserSelectOptionTool(this.client, pageState));

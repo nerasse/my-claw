@@ -13,6 +13,8 @@ import {
   idForPage,
   isConnected,
   popDownload,
+  recordedResponses,
+  RESPONSE_BODY_MAX,
   sessions,
   setDialogOverride,
 } from "./browser.mjs";
@@ -63,6 +65,58 @@ export const handlers = {
 
   async snapshot(body) {
     return await snapshotPage(getPage(body.pageId));
+  },
+
+  // The JSON the page fetched for itself, listed newest first. Answers "where does this data
+  // come from" without a single selector, which is the one strategy that survives a redesign.
+  async responses(body) {
+    const filter = body.filter ? String(body.filter).toLowerCase() : null;
+    getPage(body.pageId); // rejects an unknown or closed tab before reporting an empty log as fact
+    const seen = recordedResponses(body.pageId);
+    const matched = filter ? seen.filter((r) => r.url.toLowerCase().includes(filter)) : seen;
+    return {
+      total: seen.length,
+      responses: matched
+        .slice(-40)
+        .reverse()
+        .map(({ id, url, status, type, method }) => ({ id, url, status, type, method })),
+    };
+  },
+
+  // One recorded body, by the id `responses` gave. Read here rather than at capture time so a
+  // body that the page has since discarded fails loudly on the call that wanted it.
+  async responseBody(body) {
+    getPage(body.pageId);
+    const record = recordedResponses(body.pageId).find((r) => r.id === Number(body.responseId));
+    if (!record) throw new Error(`No recorded response ${body.responseId} on this page. Call responses first.`);
+    let text;
+    try {
+      text = await record.handle.text();
+    } catch (e) {
+      throw new Error(`Response ${record.id} (${record.url}) is no longer readable: ${String(e)}`);
+    }
+    return {
+      url: record.url,
+      status: record.status,
+      truncated: text.length > RESPONSE_BODY_MAX,
+      body: text.length > RESPONSE_BODY_MAX ? `${text.slice(0, RESPONSE_BODY_MAX)}...[truncated]` : text,
+    };
+  },
+
+  // Grep over the snapshot the agent already reasons about. Without it, looking for one control
+  // on a long page means pulling the whole tree again and paying for it in context.
+  async find(body) {
+    const query = String(body.query ?? "").toLowerCase();
+    if (!query) throw new Error("find needs a query");
+    const page = getPage(body.pageId);
+    const { raw } = await snapshotPage(page);
+    const hits = raw.split("\n").filter((line) => line.toLowerCase().includes(query));
+    return {
+      query: body.query,
+      matches: hits.length,
+      lines: hits.slice(0, 40),
+      url: page.url(),
+    };
   },
 
   async click(body) {

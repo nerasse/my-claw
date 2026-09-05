@@ -24,10 +24,32 @@ const dialogOverrides = new Map(); // pageId -> { accept, promptText }
 // for the file, so waiting on the event alone would miss downloads already completed.
 const pendingDownloads = new Map(); // pageId -> Download[]
 
+// What the page fetched, newest last. An SPA renders from JSON its own scripts asked for, so
+// the data an agent wants is usually one response away, already parsed and stable, while the
+// DOM holding it is virtualised and renamed at every deploy. Recorded passively for every page:
+// an agent that has to arm a listener before acting has already missed the response it wanted.
+const pageResponses = new Map(); // pageId -> ResponseRecord[]
+const RESPONSE_LOG_MAX = 150;
+const RESPONSE_BODY_MAX = 400000;
+
+// Only what an agent can actually read. Documents, media, fonts and styles are noise here, and
+// keeping their handles alive would pin their buffers in memory for the life of the tab.
+const RECORDED_TYPES = /^(application\/(json|.*\+json)|text\/(plain|csv))/i;
+
+export function recordedResponses(pageId) {
+  return pageResponses.get(pageId) ?? [];
+}
+
+export function forgetResponses(pageId) {
+  pageResponses.delete(pageId);
+}
+
 export function popDownload(pageId) {
   const queue = pendingDownloads.get(pageId);
   return queue?.length ? queue.shift() : null;
 }
+
+export { RESPONSE_BODY_MAX };
 
 export function isConnected() {
   return browser?.isConnected() ?? false;
@@ -99,6 +121,24 @@ export function idForPage(page) {
       queue.push(download);
       pendingDownloads.set(id, queue);
     });
+    page.on("response", (response) => {
+      const type = response.headers()["content-type"] ?? "";
+      if (!RECORDED_TYPES.test(type)) return;
+      const log = pageResponses.get(id) ?? [];
+      // The body is not read here: awaiting it inside the event handler would race the next
+      // navigation, which disposes the response and rejects the read. The handle is kept and
+      // the body is pulled on demand, where a failure can be reported to the caller.
+      log.push({
+        id: log.length ? log[log.length - 1].id + 1 : 1,
+        url: response.url(),
+        status: response.status(),
+        type,
+        method: response.request().method(),
+        handle: response,
+      });
+      if (log.length > RESPONSE_LOG_MAX) log.splice(0, log.length - RESPONSE_LOG_MAX);
+      pageResponses.set(id, log);
+    });
   }
   return id;
 }
@@ -131,4 +171,5 @@ export function dropPage(pageId) {
   allPages.delete(pageId);
   dialogOverrides.delete(pageId);
   pendingDownloads.delete(pageId);
+  pageResponses.delete(pageId);
 }

@@ -175,6 +175,58 @@ describe("BrowserClient", () => {
     }
   });
 
+  test("a call that outruns its budget says so, instead of reporting a browser that never died", async () => {
+    const handle = mockFetch(async () => {
+      // What fetch really throws on AbortSignal.timeout: same rejection path as a refused
+      // connection, which is how a slow call used to be reported as a crashed sidecar.
+      const e = new Error("The operation was aborted due to timeout");
+      e.name = "TimeoutError";
+      throw e;
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      let caught: string | undefined;
+      try {
+        await client.navigate("https://slow.test");
+      } catch (e) {
+        caught = String(e);
+      }
+      assert.ok(caught?.includes("budget"), `a timeout must be named as one, got: ${caught}`);
+      assert.ok(!caught?.includes("unreachable"), "a timeout is not an unreachable sidecar");
+      assert.ok(
+        !isBrowserInfraError(caught),
+        "a timeout must not be classified as infra: it triggers the browser-is-down handoff",
+      );
+    } finally {
+      handle.restore();
+    }
+  });
+
+  test("the reading endpoints are addressed by page, and a response body by the id its listing gave", async () => {
+    const m = mockSidecar({
+      session: { sessionId: "s1" },
+      navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
+      find: { query: "q", matches: 1, lines: ["row"], url: "https://a.test" },
+      responses: { total: 3, responses: [{ id: 2, url: "https://a.test/api", status: 200, type: "application/json", method: "GET" }] },
+      responseBody: { url: "https://a.test/api", status: 200, truncated: false, body: "{}" },
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      await client.navigate("https://a.test");
+      await client.find("p1", "needle");
+      await client.responses("p1", "api");
+      await client.responseBody("p1", 2);
+      const find = m.calls.find((c) => c.path === "find");
+      assert.deepStrictEqual(find?.body, { pageId: "p1", query: "needle" });
+      const list = m.calls.find((c) => c.path === "responses");
+      assert.deepStrictEqual(list?.body, { pageId: "p1", filter: "api" });
+      const read = m.calls.find((c) => c.path === "responseBody");
+      assert.deepStrictEqual(read?.body, { pageId: "p1", responseId: 2 });
+    } finally {
+      m.restore();
+    }
+  });
+
   test("a sidecar error body surfaces the server message (and stays non-infra for page timeouts)", async () => {
     const handle = mockFetch(async (input) => {
       const path = String(input).split("/").pop();

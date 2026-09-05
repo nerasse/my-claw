@@ -37,3 +37,8 @@ export {
   enqueueBrowserTask,
   createDelegateBrowserTool,
 } from "./delegate.ts";
+export {
+  createBrowserFindTool,
+  createBrowserNetworkTool,
+  createBrowserResponseTool,
+} from "./inspect.ts";

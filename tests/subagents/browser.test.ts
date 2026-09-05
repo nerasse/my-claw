@@ -70,9 +70,12 @@ describe("BrowserSubagent", () => {
       assert.ok(requestBody, "Request body should have been captured");
       const tools = (requestBody as Record<string, unknown>).tools as Array<Record<string, unknown>> | undefined;
       assert.ok(tools, "Tools should be present in request body");
-      assert.equal(tools.length, 20, "Should have 20 browser tools (19 + browser_done)");
+      assert.equal(tools.length, 23, "Should have 23 browser tools (22 + browser_done)");
       const names = tools.map((t) => (t.function as Record<string, unknown>).name);
       for (const expected of [
+        "browser_find",
+        "browser_network",
+        "browser_response",
         "browser_select_option",
         "browser_upload_file",
         "browser_press_key",
@@ -174,7 +177,7 @@ describe("BrowserSubagent", () => {
       const names = tools.map((t) => (t.function as Record<string, unknown>).name);
       assert.ok(names.includes("browser_eval"), "browser_eval must appear when allowed");
       assert.ok(names.includes("browser_cdp"), "browser_cdp must appear when allowed");
-      assert.equal(tools.length, 22, "the two gated tools add to the default set");
+      assert.equal(tools.length, 25, "the two gated tools add to the default set");
 
       const messages = body.messages as Array<{ role: string; content: string }>;
       const system = messages.find((m) => m.role === "system")?.content ?? "";
