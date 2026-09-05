@@ -127,3 +127,35 @@ Claude Code surface:
 `bash` stays unconfined by design: it is the escape hatch, and it is the only tool that does not go
 through `resolveWorkspacePath`. Tightening the file tools does not sandbox anything as long as it is
 there; that is a separate decision, not a side effect of this one.
+
+## fetch speaks http and https, and nothing else
+
+`fetch` used to hand any URL to the runtime's `fetch`, which speaks more schemes than the tool
+was ever meant to. `fetch("file:///home/neras/.my-claw/config.json")` returned the file. That is
+a filesystem read, outside the workspace, with no approval, and it was available to a `research`
+sub-agent whose whole point is that it has no filesystem tool. A hostile page reaches it without
+the model's help: a `302` to `file:///etc/passwd` is followed by the redirect loop, not typed by
+anyone.
+
+The scheme is now an allowlist (`http:`, `https:`), checked on the URL the model passes **and on
+every `Location`** along the way. `isPrivateUrl` refuses a foreign scheme too, so the browser
+tools that share that gate inherit the same answer. Local files have a tool already: `read`.
+
+### The address guard, and why a DNS failure now blocks
+
+`resolveAndCheckUrl` resolves the hostname and refuses private space. Three ranges were missing
+and one of them is the homelab's own: **`100.64.0.0/10`**, which is what Tailscale hands every
+node, plus `198.18/15` (benchmarking) and everything from `224.0.0.0` up (multicast and reserved).
+`64:ff9b::/96` carries an IPv4 loopback across a NAT64 translator.
+
+A lookup that throws used to be allowed through, on the reasoning that the fetch would fail
+anyway. It does not follow: the resolver that failed here is not the resolver inside `fetch`
+(different cache, different `/etc/hosts`, different timing), and the gap between the two answers
+is the whole of a rebinding attack. It fails closed.
+
+The cost is that the guard needs a resolver, and the default test suite must never need the
+network. `setHostResolver` is the seam, swapped through `tests/helpers/mock-dns.ts`: a test about
+the tool gets one public address for every name, a test about the guard supplies its own.
+
+What this still does not close: the name is resolved twice, once here and once by `fetch`, and Bun
+offers no way to pin the address between the two.
