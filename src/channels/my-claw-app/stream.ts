@@ -47,6 +47,11 @@ export class MyClawAppStreamer {
   /** Bubble ids not yet taken by the recorder, oldest first. */
   private unclaimed: string[] = [];
   private started = false;
+  /**
+   * Whether anything of this streamer ever reached a screen. Not the same as `started`, which is
+   * "a bubble is open right now" and goes back to false at every seal: this one never goes back.
+   */
+  private painted = false;
   private finished = false;
   private queue: Promise<void> = Promise.resolve();
 
@@ -211,6 +216,7 @@ export class MyClawAppStreamer {
 
   private async startSegment(): Promise<void> {
     this.started = true;
+    this.painted = true;
     await this.opts.send({
       type: "chat.stream.start",
       id: this.currentId(),
@@ -409,6 +415,15 @@ export class MyClawAppStreamer {
     if (this.finished) return;
     this.finished = true;
     const err = errorText?.trim();
+    // Nothing was ever painted and there is nothing to report: say nothing. `chat.stream.abort`
+    // for an id the app never saw is materialized there as an empty bubble carrying the error,
+    // which is how one `/stop` printed "Run aborted by user" once per message folded into the run:
+    // each of those messages has a streamer of its own, unused, because the run answered them in
+    // its own bubbles. An error is the exception -- with no bubble to carry it, that invented
+    // bubble is the only place the owner can read it before the next history load.
+    if (!this.painted && !err && this.pendingToolIds.length === 0 && this.spawnCardIds.size === 0) {
+      return;
+    }
     // A run can die with tool cards still open (the model asked, the stop cut it before the tool
     // answered, or a spawn was cut mid-run). The start frames opened those cards with `running:
     // true`; without a settle they would spin forever. Settle every pending tool card as a failed

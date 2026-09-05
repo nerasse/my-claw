@@ -32,7 +32,16 @@ it -- a fire-and-return design would have deleted it too early.
 
 When the run starts addressing an injected message, the bridge calls `onTurnSwitch(message)`. The output
 layer finalizes the current bubble and opens a fresh reply threaded to that message, so each message gets
-its own answer. The injected message's own (unused) streamer is a harmless no-op.
+its own answer. The injected message's own streamer is never used: the run paints in one it created
+itself, under the same id.
+
+That unused streamer was called a harmless no-op, and on the way out it was not. Every handler settles
+its streamer when its `route` throws, and a stop makes all of them throw at once with the same error, so
+one `/stop` sent an abort per folded message on top of the run's own. An abort for an id the app never
+saw is drawn there as an empty bubble carrying the error text: the owner got `Stopped.` followed by
+`Run aborted by user`, once per message he had sent during the run. A streamer that painted nothing and
+has nothing to report is now silent, and a stop reports nothing -- `docs/my-claw-app-channel.md`, "The
+failure journal".
 
 ### Done reaction at run end
 

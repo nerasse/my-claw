@@ -141,6 +141,32 @@ describe("MyClawAppStreamer media refs", () => {
     expect(aborts).toHaveLength(1);
   });
 
+  // One `/stop` used to print "Run aborted by user" once per message folded into the run: each of
+  // those messages carries a streamer of its own that never paints, because the run answers them
+  // in its own bubbles, and every one of them sent an abort the app turned into an empty bubble.
+  test("a streamer that never painted anything says nothing when the run is stopped", async () => {
+    const { streamer, frames } = collect();
+    await streamer.abort();
+    expect(frames).toHaveLength(0);
+  });
+
+  test("a run that dies before its first token still reports: that bubble is the only place it can", async () => {
+    const { streamer, frames } = collect();
+    await streamer.abort("LLM call failed: 401");
+    const aborts = frames.filter((f) => f.type === "chat.stream.abort") as { error?: string }[];
+    expect(aborts).toHaveLength(1);
+    expect(aborts[0]!.error).toBe("LLM call failed: 401");
+  });
+
+  test("a bubble that was painted is settled by the stop, silently", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("partial answer");
+    await streamer.abort();
+    const aborts = frames.filter((f) => f.type === "chat.stream.abort") as { error?: string }[];
+    expect(aborts).toHaveLength(1);
+    expect(aborts[0]!.error).toBeUndefined();
+  });
+
   test("finish settles cards left open by a silent stop instead of leaving the spinner", async () => {
     const { streamer, frames } = collect();
     await streamer.appendToolStart([{ id: "tu_1", name: "bash", arguments: { command: "sleep" } }]);

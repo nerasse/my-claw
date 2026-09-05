@@ -1248,6 +1248,17 @@ text the live bubble showed (`briefError`, 200 chars). Stored capped at `FAILURE
 - **Merged by timestamp, on one timeline with the commands**, under the question it never answered.
 - **Aborts are not journaled.** A `/stop` is the owner's own doing, and the mirror keeps whatever
   the run produced before it, so there is a real answer under the question already.
+- **And an abort carries no text on the wire either**, for the same reason and one more. A stop
+  settles every streamer of the session, and there are more of them than there are bubbles: a
+  message folded into a running turn (`docs/injection.md`) keeps a streamer of its own that
+  never paints, because the run answers it in *its* bubbles. Each of those unused streamers sent an
+  abort carrying `"Run aborted by user"`, and the app materializes an abort for an id it never saw
+  as an empty bubble holding the error. One `/stop` on a run with four folded messages printed
+  `Stopped.` and then that sentence four times. Two halves to the rule: a streamer that painted
+  nothing and has nothing to report sends nothing, and a stop is not something to report. What
+  remains is the failure that has nowhere else to go -- a run that died before its first token --
+  and that one still gets its invented bubble, which is the only place it can be read before the
+  next history load.
 - Deleted with the conversation, like the command journal: it is a field of the session.
 
 ## A prompt is mirrored to the owner's other windows

@@ -2409,8 +2409,10 @@ async function main() {
               await active.finish();
               hooks.emit("stream:finish", { platform: "my-claw-app", chatId: msg.chatId });
             } catch (err) {
-              const brief = briefError(err);
-              await active.abort(brief);
+              // A stop carries no text of its own. It is the owner's doing, the command that made it
+              // already answered him, and its message ("Run aborted by user") printed once per
+              // streamer the stop settles -- one for the run, one for every message folded into it.
+              await active.abort(isAbort(err) ? undefined : briefError(err));
               hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
               throw err;
             } finally {
