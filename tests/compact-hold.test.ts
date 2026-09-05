@@ -188,9 +188,11 @@ test("a compaction counts as work in flight for the app's activity probe", () =>
 });
 
 /**
- * The completion event the push wiring listens on. It has to fire for both engines and for
- * every end of the command: the notification exists precisely for the case where nobody is
- * looking at the thread, so an end that stays silent is an end nobody hears about.
+ * The event the header's context figure is refreshed on: a compaction moves the boundary with no
+ * turn behind it, so nothing else would move the gauge until the next run. It has to fire for
+ * both engines and for every end of the command, including the ones that summarized nothing --
+ * the gauge is wrong either way. It no longer publishes anything to the tray: a compaction is not
+ * an event the owner has to be told about, whoever started it (docs/notifications.md).
  */
 test("the end of a /compact is announced once, whatever the summarizer answered", async () => {
   const seen: HookEventMap["session:compact:finished"][] = [];

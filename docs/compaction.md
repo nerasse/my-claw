@@ -87,7 +87,40 @@ La frame porte l'id de **l'entrée**, celui sous lequel l'historique la rejoue, 
 a les deux garde une seule règle. Les tours résumés ne disparaissent pas de l'écran : ils restent
 au-dessus de la règle, `count` ne dit que combien le prompt ne porte plus.
 
-Ni notification ni son : l'owner n'a pas demandé cette compaction (`docs/notifications.md`).
+Ni notification ni son : une compaction est de l'entretien, pas un événement
+(`docs/notifications.md`).
+
+### Ce que l'owner voit pendant, et pas seulement après
+
+Une compaction, c'est une à deux minutes sans rien sur le fil. La seule chose qui l'a jamais
+montré était la bulle d'attente que `/compact` pose **localement**, sur la fenêtre qui a tapé la
+commande. Toutes les autres, et cette même fenêtre après un rechargement, voyaient un thread qui
+ne fait rien : d'où le réflexe de retaper `/compact` et de se faire répondre « a compaction is
+already running on this session ».
+
+C'est un **état**, pas un événement, et il est traité comme tel : frame `chat.compacting`
+(`{ threadId, since? }`), diffusée quand il bascule et **rejouée** à toute fenêtre qui ouvre ou
+recharge le thread pendant l'opération (`live-turn.ts`, `docs/live-turn-replay.md`). Elle porte
+l'instant de départ, pas un temps écoulé, pour qu'une fenêtre arrivée en retard compte à partir du
+même zéro. `since` absent veut dire terminé.
+
+Trois conséquences de conception :
+
+- **Le journal de tour la garde à part.** `/compact` est une commande, pas un run : il n'y a aucun
+  journal ouvert derrière elle et rien pour en ouvrir un. Elle a donc son propre emplacement dans
+  `LiveTurnJournal` plutôt qu'un faux run, et elle est rejouée même quand le thread n'a aucun tour
+  en vol.
+- **Le point de départ est le résumeur lui-même** (`session:compact:start`), pas la commande : les
+  portes automatiques s'annoncent donc exactement comme `/compact`. La spéculative, non : un résumé
+  qui ne sera peut-être jamais réclamé n'est pas une réécriture en cours.
+- **La fin est `session:compact:settled`**, émis dans un `finally`. `end` et `error` ne couvrent que
+  deux sorties sur cinq : session trop courte, résumeur qui n'a rien rendu et abort qui relance
+  l'exception laissaient le départ sans réponse, donc une bulle « compacting » collée à l'écran
+  jusqu'au prochain rechargement.
+
+Côté app, c'est la **même** bulle que la commande, dans le même emplacement d'attente
+(un par thread) : `/compact` et une porte automatique donnent le même écran, et l'avis « Running
+/compact... » que la commande envoie ensuite ne repasse pas par-dessus.
 
 Deux invariants :
 
@@ -250,8 +283,8 @@ Le coût est réel et assumé : l'appel de fond est facturé même jeté. Il est
 `channels/compact-command.ts`, partagé par tous les canaux. Prend la session pour toute l'opération
 (`runRegistry.beginCompaction`) : sans ce hold, un message arrivant une seconde plus tard ouvre un
 run sur le transcript pré-compaction et le résumé est perdu. Porte un `AbortSignal`, donc un `/stop`
-atteint un résumeur qui a une minute devant lui. Annonce sa fin (`docs/notifications.md`) parce que
-celui qui l'a demandée a généralement quitté l'écran.
+atteint un résumeur qui a une minute devant lui. Sa fin ne notifie rien (`docs/notifications.md`) :
+ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 
@@ -280,8 +313,9 @@ celui qui l'a demandée a généralement quitté l'écran.
 | `sessions/projection.ts` | `contextEntries` (la frontière), `messagesOf` (le fold) |
 | `llm/overflow.ts` | reconnaître un débordement, quelle que soit la forme |
 | `agent/bridge.ts` | les trois portes, le rebuild, la spéculation en fin de run |
-| `channels/compact-command.ts` | `/compact` : hold, signal, notification |
-| `channels/my-claw-app/adapter.ts` | `notifyCompaction` : la frontière dessinée pendant le run |
+| `channels/compact-command.ts` | `/compact` : hold, signal |
+| `channels/my-claw-app/adapter.ts` | `notifyCompaction` (la frontière), `notifyCompacting` (l'état) |
+| `channels/my-claw-app/live-turn.ts` | rejoue l'état à la fenêtre qui recharge en plein milieu |
 | `core/config.ts` | seuil, tail (plafond et mise à l'échelle), spéculation |
 | `sessions/tool-output.ts` | ce qu'une sortie d'outil pèse dans un historique rejoué |
 

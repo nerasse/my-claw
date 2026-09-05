@@ -54,6 +54,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppUndoChoose,
   MyClawAppUndoCancel,
   MyClawAppAttachmentMeta,
+  MyClawAppChatCompacting,
   MyClawAppChatHistory,
   MyClawAppChatMessage,
   MyClawAppChatSend,
@@ -697,6 +698,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const match = APP_THREAD_SESSION.exec(sessionId);
     if (!match) return;
     void this.notifyModelState(match[1]!, match[2]!);
+  }
+
+  /**
+   * A compaction started on this session, or settled. Broadcast for the windows that are watching
+   * and held for the ones that are not: the journal replays it to whoever opens or reloads the
+   * thread while it runs, which is the whole point -- the operation is minutes of silence, and
+   * before this the only surface that showed it was the device that typed `/compact`.
+   */
+  notifyCompacting(sessionId: string, since: number | undefined): void {
+    const match = APP_THREAD_SESSION.exec(sessionId);
+    if (!match) return;
+    const owner = match[1]!;
+    const threadId = match[2]!;
+    const frame: MyClawAppChatCompacting = {
+      type: "chat.compacting",
+      threadId,
+      ...(since === undefined ? {} : { since: new Date(since).toISOString() }),
+    };
+    if (since === undefined) this.live.clearCompacting(owner, threadId);
+    else this.live.markCompacting(owner, threadId, frame);
+    this.broadcast(owner, frame);
   }
 
   async notifyModelState(owner: string, threadId: string): Promise<void> {

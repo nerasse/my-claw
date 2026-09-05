@@ -75,6 +75,14 @@ interface Journal {
 export class LiveTurnJournal {
   private journals = new Map<string, Journal>();
 
+  /**
+   * A compaction in flight, held outside the journals because it is not part of a turn: `/compact`
+   * is a command, not a run, so there is no journal open for it and there is nothing to open one
+   * from. It is exactly the case this class exists for -- minutes of silence a reloading window
+   * cannot reconstruct from the store -- so it gets its own slot rather than a fake run.
+   */
+  private compactions = new Map<string, MyClawAppServerFrame>();
+
   private key(owner: string, threadId: string): string {
     return `${owner}\u0000${threadId}`;
   }
@@ -172,17 +180,32 @@ export class LiveTurnJournal {
     this.journals.get(this.key(owner, threadId))?.questions.delete(id);
   }
 
+  /** A compaction began on this thread: it stands until it settles, run or no run. */
+  markCompacting(owner: string, threadId: string, frame: MyClawAppServerFrame): void {
+    this.compactions.set(this.key(owner, threadId), frame);
+  }
+
+  /** Settled, whatever the outcome: a replay of it would show an operation that is over. */
+  clearCompacting(owner: string, threadId: string): void {
+    this.compactions.delete(this.key(owner, threadId));
+  }
+
   /**
    * What a window that missed the turn needs, in the order it was sent. The pending approvals come
    * last: the sheet belongs on top of the thread it interrupted, not before it.
    */
   replay(owner: string, threadId: string): MyClawAppServerFrame[] {
-    const journal = this.journals.get(this.key(owner, threadId));
-    if (!journal) return [];
+    const key = this.key(owner, threadId);
+    // A compaction outlives the run that triggered it and can exist without one at all, so it is
+    // replayed on its own: a window that reloads during a `/compact` has no journal to read.
+    const compacting = this.compactions.get(key);
+    const tail = compacting ? [compacting] : [];
+    const journal = this.journals.get(key);
+    if (!journal) return tail;
     const frames = journal.frames.map((frame) =>
       isToolOutput(frame) && journal.clipped.has(frame.id) ? { ...frame, clipped: true } : frame,
     );
-    return [...frames, ...journal.approvals.values(), ...journal.questions.values()];
+    return [...frames, ...tail, ...journal.approvals.values(), ...journal.questions.values()];
   }
 
   /** Test seam: how many frames a thread is holding. */

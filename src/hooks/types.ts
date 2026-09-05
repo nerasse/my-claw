@@ -204,6 +204,14 @@ export interface HookEventMap {
   };
   "session:compact:error": { sessionId: string; reason: string };
   /**
+   * The operation is over, whatever the outcome: rewritten, nothing to rewrite, failed, aborted.
+   * Emitted from a `finally`, which is the point of it -- `session:compact:end` and
+   * `session:compact:error` cover the two ends that have something to report, and the three that
+   * have nothing (no plan, no summary, an abort) used to end in silence. A listener that draws
+   * "compacting" from `session:compact:start` would hold it forever on those.
+   */
+  "session:compact:settled": { sessionId: string };
+  /**
    * A boundary was appended by one of the automatic gates, and the conversation on screen should
    * show it now rather than at the next history load.
    *

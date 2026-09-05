@@ -1987,6 +1987,46 @@ describe("MyClawAppAdapter owners", () => {
     }
   });
 
+  /**
+   * The operation is minutes of silence with nothing on the wire. The window that typed
+   * `/compact` had a placeholder; every other one, and that same one after a reload, saw a thread
+   * doing nothing -- so the owner typed `/compact` again and was told one was already running.
+   */
+  test("a compaction in flight reaches every window, and the one that arrives after it started", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    try {
+      const started = Date.now() - 42_000;
+      adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, started);
+      const live = await nextFrame(phone);
+      assert.equal(live["type"], "chat.compacting");
+      assert.equal(live["threadId"], "t-1");
+      // The instant it began, not an elapsed: a late window counts from the same zero.
+      assert.equal(live["since"], new Date(started).toISOString());
+
+      const late = await connectClient(adapter.port, "browser");
+      late.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
+      assert.equal((await nextFrame(late))["type"], "session.sync.result");
+      const replayed = await nextFrame(late);
+      assert.equal(replayed["type"], "chat.compacting");
+      assert.equal(replayed["since"], new Date(started).toISOString());
+
+      adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, undefined);
+      const over = await nextFrame(phone);
+      assert.equal(over["type"], "chat.compacting");
+      assert.equal(over["since"], undefined, "no start means it is over");
+
+      // And a window opening now is not shown an operation that has stopped.
+      const after = await connectClient(adapter.port, "browser");
+      after.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
+      assert.equal((await nextFrame(after))["type"], "session.sync.result");
+      await assert.rejects(() => nextFrame(after, 300));
+      late.ws.close();
+      after.ws.close();
+    } finally {
+      phone.ws.close();
+    }
+  });
+
   test("a device without an owner stays on its own namespace", async () => {
     const loner = await connectClient(adapter.port, "loner");
     const phone = await connectClient(adapter.port, "phone");

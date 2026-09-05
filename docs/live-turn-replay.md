@@ -70,6 +70,14 @@ An approval is not a streamer frame, so `confirmTool` records its `approval.requ
 the resolution removes it. A sheet is replayed only while its promise is still pending: replaying
 a question already answered would ask twice.
 
+A compaction in flight (`chat.compacting`) is held **outside** the journals, in a slot of its own.
+It is the same kind of hole -- minutes of silence a reloading window cannot reconstruct from the
+store -- but it is not part of a turn: `/compact` is a command, so there is no journal open for it
+and nothing to open one from. A fake run would have been the alternative, and it would have had to
+lie about a lifecycle. It is replayed after the turn's frames and before the pending sheets, and
+cleared when the operation settles, so a window that arrives late is never shown an operation that
+has already stopped.
+
 ## Bounds
 
 A journal is memory, so it is capped, and the cap is a design decision rather than a guard:

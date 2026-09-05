@@ -8,6 +8,7 @@ import { mockFetch } from "./helpers/mock-fetch.ts";
 import { setupSessionLog, appendMessages, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
 import { contextEntries } from "../src/sessions/projection.ts";
+import { hooks } from "../src/hooks/index.ts";
 
 const SESSION_ID = "test-compaction";
 
@@ -342,4 +343,83 @@ test("a cron session is summarized by the cron agent's model", async () => {
 test("a chat session still follows the orchestrator", async () => {
   const hosts = await summarizerHost("my-claw-app/dm/u1", { id: "my-claw-app/dm/u1" });
   assert.deepEqual(hosts, ["main.example.com"]);
+});
+
+/**
+ * Something on screen says "compacting" for as long as the operation runs, and the only event
+ * that can take it away is one that no exit path can skip. `end` and `error` cover two of the
+ * five ways out: a session too short, a summarizer that answered nothing, and an abort that
+ * rethrows all left the start unanswered -- and the bubble up until the next reload.
+ */
+async function settledEvents(run: () => Promise<unknown>): Promise<string[]> {
+  const seen: string[] = [];
+  const onStart = (): void => void seen.push("start");
+  const onSettled = (): void => void seen.push("settled");
+  hooks.on("session:compact:start", onStart);
+  hooks.on("session:compact:settled", onSettled);
+  try {
+    await run().catch(() => {});
+  } finally {
+    hooks.off("session:compact:start", onStart);
+    hooks.off("session:compact:settled", onSettled);
+  }
+  return seen;
+}
+
+test("a compaction that cannot even start settles", async () => {
+  appendMessages(log, makeMessages(5));
+  await log.flush();
+
+  assert.deepEqual(await settledEvents(() => compactSession(makeConfig(), session)), ["start", "settled"]);
+});
+
+test("a compaction the model fails settles", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const fetchMock = mockFetch(async () =>
+    new Response(JSON.stringify({ error: { message: "model overloaded" } }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    }) as never,
+  );
+  try {
+    assert.deepEqual(await settledEvents(() => compactSession(makeConfig(), session)), ["start", "settled"]);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a compaction the owner aborts settles on its way out", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const controller = new AbortController();
+  const fetchMock = mockFetch(async () => {
+    controller.abort();
+    throw Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+  });
+  try {
+    const seen = await settledEvents(() => compactSession(makeConfig(), session, undefined, controller.signal));
+    assert.deepEqual(seen, ["start", "settled"]);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a compaction that succeeds settles too", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const fetchMock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "A summary long enough to be kept as one." } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never,
+  );
+  try {
+    assert.deepEqual(await settledEvents(() => compactSession(makeConfig(), session)), ["start", "settled"]);
+  } finally {
+    fetchMock.restore();
+  }
 });

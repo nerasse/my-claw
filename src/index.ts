@@ -706,24 +706,6 @@ async function main() {
       ),
     );
   });
-  // A compaction is the one long operation with no stream behind it: minutes of silence, then a
-  // single result frame. The device that is looking at the thread sees that frame land, every
-  // other one is told (docs/notifications.md).
-  hooks.on("session:compact:finished", ({ sessionId, threadId, durationMs, ok, text }) => {
-    const thread = threadId ?? "default";
-    void threadTitle(sessionId, "Compaction").then((title) =>
-      publishNotification(
-        {
-          title,
-          body: ok
-            ? `Context compacted in ${formatDuration(durationMs)}`
-            : `Compaction did not run: ${cleanNotificationText(text).slice(0, 160)}`,
-          url: `myclaw://thread/${thread}`,
-        },
-        { skipDevice: (deviceId) => isForegroundOn(deviceId, thread) },
-      ),
-    );
-  });
   // Silent jobs suppress their output by design; a completion notification would be just as
   // noisy, so it is skipped with the delivery.
   hooks.on("cron:job:end", ({ jobId, jobName, success, silent }) => {
@@ -2253,6 +2235,13 @@ async function main() {
     // A compaction moves the boundary with no turn behind it, so nothing would move the figure
     // until the next run: a thread the owner just compacted would keep showing it full.
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+    // One to two minutes of silence, and until now the only surface that showed them was the
+    // placeholder bubble on the device that typed `/compact`: every other window, and that same
+    // window after a reload, saw a thread doing nothing. The state is raised by the summarizer
+    // itself, so the automatic gates announce themselves exactly like the command does, and the
+    // `settled` end is the one event no exit path can skip (docs/compaction.md).
+    hooks.on("session:compact:start", ({ sessionId }) => myClawApp.notifyCompacting(sessionId, Date.now()));
+    hooks.on("session:compact:settled", ({ sessionId }) => myClawApp.notifyCompacting(sessionId, undefined));
 
     // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`
     // so every window of the parent conversation gains/updates/loses the row live instead of

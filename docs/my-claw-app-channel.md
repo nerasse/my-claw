@@ -685,6 +685,7 @@ runs fresh like any other message.
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
 { "type": "chat.send.queued", "threadId": "projet", "replyToId": "uuid", "reason": "compaction" }
 { "type": "chat.compaction", "threadId": "projet", "id": "<the compaction entry's id>", "summary": "ce qui precede", "count": 813, "ts": "iso" }
+{ "type": "chat.compacting", "threadId": "projet", "since": "iso" }
 { "type": "chat.cleared", "threadId": "projet" }
 { "type": "voice.mode.result", "mode": "auto", "resolved": "cloud", "cloudAvailable": true }
 { "type": "update.result", "started": true, "version": "0.4.2", "reason": "busy|denied|failed", "detail": "sudo: a password is required" }
@@ -789,6 +790,15 @@ runs fresh like any other message.
   `count` only says how many the prompt no longer carries. No notification and no ring accompany
   it, by design (`docs/notifications.md`): a compaction the owner did not ask for is not an event
   he has to be told about.
+- `chat.compacting` is that same compaction while it is **running**, and it is a state, not an
+  event: broadcast when it flips, and replayed to a window that opens or reloads mid-operation
+  (`docs/live-turn-replay.md`). `since` is the instant it began -- a late window counts from the
+  same zero -- and its absence means it is over. The app draws it as the placeholder bubble
+  `/compact` already used, so a command and an automatic gate give the same screen; the
+  `chat.command.pending` notice the command sends afterwards does not talk over it. Silent like
+  the boundary. Without it, the minute or two the summarizer takes was visible only to the window
+  that typed the command: every other one, and that same one after a reload, showed a thread doing
+  nothing, and a second `/compact` was answered "a compaction is already running on this session".
 - `chat.cleared` says the server dropped the thread's history (a conversation deleted from
   another window); the app drops its copy on this frame rather than guessing from an empty history.
 - `model.list.result` / `model.result` feed the app's model picker and the per-thread

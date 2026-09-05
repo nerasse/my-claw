@@ -215,8 +215,10 @@ test("an automatic compaction announces its boundary, keyed by the entry it wrot
   }
 });
 
-// A compaction the owner did not ask for is not an event he has to be told about. The one hook
-// that publishes a notification is `session:compact:finished`, and `/compact` is its only emitter.
+// A compaction is not an event the owner has to be told about, and an automatic one least of all:
+// nothing publishes to the tray on any compaction path now. `session:compact:finished` stays the
+// command's own end -- `/compact` is its only emitter -- and it moves the context gauge, nothing
+// else. What the owner does see is the placeholder while it runs (`chat.compacting`).
 test("an automatic compaction stays silent: no notification, no ring", async () => {
   const notified: string[] = [];
   const onFinished = ({ sessionId }: { sessionId: string }): void => {

@@ -412,38 +412,44 @@ export async function compactSession(
     messageCount: planned.ok ? planned.plan.entries.length : planned.count,
   });
 
-  if (!planned.ok) {
-    return { ok: false, reason: planned.reason, beforeCount: planned.count, afterCount: planned.count };
-  }
-  const plan = planned.plan;
-  const beforeCount = plan.entries.length;
-
+  // Paired with the start above on every path, including the two that give up before summarizing
+  // and the abort that rethrows: whoever showed the operation must be told it is over.
   try {
-    const summarized = await summarizeForCompaction(config, session, plan, instructions, signal);
-    if (!summarized.ok) {
-      return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
+    if (!planned.ok) {
+      return { ok: false, reason: planned.reason, beforeCount: planned.count, afterCount: planned.count };
     }
-    const boundary = await commitCompaction(log, plan, summarized.summary);
-    session.lastActiveAt = new Date().toISOString();
-    const afterCount = contextEntries(log.entries(), log.leaf()).length;
-    hooks.emit("session:compact:end", {
-      sessionId: session.id,
-      beforeCount,
-      afterCount,
-      summaryLength: summarized.summary.length,
-    });
-    return {
-      ok: true,
-      beforeCount,
-      afterCount,
-      summary: summarized.summary,
-      boundary: { entryId: boundary.id, count: boundary.count },
-    };
-  } catch (err) {
-    // An abort is the owner stopping the run, not a compaction that failed on its own terms.
-    rethrowIfAborted(err);
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    hooks.emit("session:compact:error", { sessionId: session.id, reason: errorMsg });
-    return { ok: false, reason: `Compaction error: ${errorMsg}`, beforeCount, afterCount: beforeCount };
+    const plan = planned.plan;
+    const beforeCount = plan.entries.length;
+
+    try {
+      const summarized = await summarizeForCompaction(config, session, plan, instructions, signal);
+      if (!summarized.ok) {
+        return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
+      }
+      const boundary = await commitCompaction(log, plan, summarized.summary);
+      session.lastActiveAt = new Date().toISOString();
+      const afterCount = contextEntries(log.entries(), log.leaf()).length;
+      hooks.emit("session:compact:end", {
+        sessionId: session.id,
+        beforeCount,
+        afterCount,
+        summaryLength: summarized.summary.length,
+      });
+      return {
+        ok: true,
+        beforeCount,
+        afterCount,
+        summary: summarized.summary,
+        boundary: { entryId: boundary.id, count: boundary.count },
+      };
+    } catch (err) {
+      // An abort is the owner stopping the run, not a compaction that failed on its own terms.
+      rethrowIfAborted(err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      hooks.emit("session:compact:error", { sessionId: session.id, reason: errorMsg });
+      return { ok: false, reason: `Compaction error: ${errorMsg}`, beforeCount, afterCount: beforeCount };
+    }
+  } finally {
+    hooks.emit("session:compact:settled", { sessionId: session.id });
   }
 }

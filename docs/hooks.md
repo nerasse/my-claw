@@ -113,6 +113,10 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `session:archived` -- session file moved to archive
 - `session:evicted` -- LRU cache eviction
 - `session:compact:start/end/error` -- context compaction (local summarizer only)
+- `session:compact:settled` -- the summarizer stopped, whatever the outcome. Emitted from a
+  `finally`, so it is the one end no exit path skips: `end` and `error` cover two of the five
+  (a session too short, a summary that came back empty and an abort that rethrows are silent).
+  Whoever raised something on `start` must lower it on this one (`docs/compaction.md`)
 - `session:compact:finished` -- a `/compact` is over, both engines, success or not
 - `session:messages:trimmed` -- overflow trim to 50
 - `session:model:changed` -- /model command

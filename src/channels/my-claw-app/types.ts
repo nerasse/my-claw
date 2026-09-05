@@ -1338,6 +1338,26 @@ export interface MyClawAppChatCompaction {
   ts?: string;
 }
 
+/**
+ * A compaction is running on this thread, or has just stopped.
+ *
+ * The operation takes one to two minutes with nothing on the wire, and the only thing that ever
+ * showed it was the placeholder bubble `/compact` draws on the device that typed it. Every other
+ * window, and that same window after a reload, saw a thread doing nothing -- so the owner typed
+ * `/compact` again and was answered "a compaction is already running on this session".
+ *
+ * A state and not an event: it is broadcast when it flips, and replayed to a window that arrives
+ * mid-operation (`live-turn.ts`), which is why it carries the instant it began rather than an
+ * elapsed time. The automatic gates raise it too; the speculative pass deliberately does not,
+ * because a summary that may never be claimed is not a rewrite in progress (docs/compaction.md).
+ */
+export interface MyClawAppChatCompacting {
+  type: "chat.compacting";
+  threadId: string;
+  /** ISO instant the operation began. Absent means it is over. */
+  since?: string;
+}
+
 export interface MyClawAppLocationCapabilities {
   type: "location.capabilities";
   enabled: boolean;
@@ -2843,6 +2863,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppChatUser
   | MyClawAppChatCompaction
+  | MyClawAppChatCompacting
   | MyClawAppLocationCapabilities
   | MyClawAppLocationPreviewResult
   | MyClawAppChatLocation
