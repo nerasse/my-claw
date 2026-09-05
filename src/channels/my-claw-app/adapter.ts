@@ -1,5 +1,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import { basename } from "node:path";
+import { handleBrowserInfo } from "./browser-handlers.ts";
+import type { BrowserConfig } from "../../core/config.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalDecision,
@@ -254,6 +256,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private jobs?: MyClawAppJobsController;
   private notifications?: MyClawAppNotificationsController;
   private configEditor?: MyClawAppConfigController;
+  private browser?: BrowserConfig;
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   /** Set by the host: broadcasts `undo.prompt` and waits for the owner's `undo.choose`. */
@@ -600,6 +603,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onJobsController(controller: MyClawAppJobsController): void {
     this.jobs = controller;
+  }
+
+  /** The browser page reads config the channel never receives (sidecar, noVNC, units), so the
+   *  section is handed over at boot rather than rediscovered here. */
+  onBrowserConfig(browser: BrowserConfig): void {
+    this.browser = browser;
   }
 
   onNotificationsController(controller: MyClawAppNotificationsController): void {
@@ -1429,6 +1438,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
           type: "device.pair.result",
           ok: deny(frame.code, ws.data.deviceId),
         });
+        break;
+      case "browser.info":
+        this.detach(handleBrowserInfo({
+          browser: this.browser,
+          sendFrame: (target, f) => this.sendFrame(target, f),
+          refuse: (target, scope, message, data) => this.refuse(target, scope, message, data),
+        }, ws), "handleBrowserInfo");
         break;
       case "subagents.list":
         this.detach(this.handleSubAgentsList(ws, frame), "handleSubAgentsList");

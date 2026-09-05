@@ -109,6 +109,11 @@ export interface BrowserConfig {
   downloadDir?: string;
   // Per sidecar endpoint ("navigate", "upload", ...) plus "default", in milliseconds.
   timeoutsMs?: Record<string, number>;
+  // x11vnc's password file. Read back rather than copied here: the file is the one place the
+  // password lives, and a copy in this hot-reloaded config would drift the first time it rotates.
+  vncPasswordFile?: string;
+  // systemd units the browser page reports on, when they are not this repo's own names.
+  units?: string[];
 }
 
 export interface LlmProviderConfig {

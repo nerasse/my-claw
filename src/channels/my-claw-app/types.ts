@@ -930,6 +930,7 @@ export interface MyClawAppDeviceRevoke {
 }
 
 export type MyClawAppClientFrame =
+  | MyClawAppBrowserInfo
   | MyClawAppChatSend
   | MyClawAppLocationPreview
   | MyClawAppSessionList
@@ -1638,7 +1639,8 @@ export type MyClawAppErrorScope =
   | "subagents"
   | "notifications"
   | "tags"
-  | "providers";
+  | "providers"
+  | "browser";
 
 export interface MyClawAppError {
   type: "error";
@@ -2800,7 +2802,44 @@ export interface MyClawAppDeviceRevokeResult {
   error?: string;
 }
 
+/**
+ * What a human needs to take the browser over themselves. The VNC password is included: a paired
+ * device already runs the agent, and therefore already reads that file through any shell it asks
+ * for, so withholding it here would protect nothing and only send the owner to another machine.
+ * See docs/browser-page.md.
+ */
+export interface MyClawAppBrowserInfo {
+  type: "browser.info";
+}
+
+export interface MyClawAppBrowserService {
+  unit: string;
+  active: boolean;
+}
+
+export interface MyClawAppBrowserTab {
+  id: string;
+  title: string;
+  url: string;
+}
+
+export interface MyClawAppBrowserInfoResult {
+  type: "browser.info.result";
+  enabled: boolean;
+  /** noVNC in a browser, and the host a native VNC client dials on port 5900. */
+  webUrl?: string;
+  vncHost?: string;
+  vncPort: number;
+  /** Absent when x11vnc runs without one, which the page has to state rather than imply. */
+  password?: string;
+  services: MyClawAppBrowserService[];
+  tabs: MyClawAppBrowserTab[];
+  /** The tabs could not be read; the rest of the answer is still valid. */
+  tabsError?: string;
+}
+
 export type MyClawAppServerFrame =
+  | MyClawAppBrowserInfoResult
   | MyClawAppChatMessage
   | MyClawAppChatUser
   | MyClawAppChatCompaction

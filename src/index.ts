@@ -2120,6 +2120,8 @@ async function main() {
       );
     });
 
+    if (config.browser) myClawApp.onBrowserConfig(config.browser);
+
     myClawApp.onSubAgentsController({
       list: async (callerSessionId) => {
         const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);
