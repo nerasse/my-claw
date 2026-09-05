@@ -120,10 +120,27 @@ export function thumbnailFor(d: MyClawAppFilesDeps, owner: string, id: string, v
   return pending;
 }
 
+/**
+ * An HTTP header value is ISO-8859-1, so the name travels percent-encoded: OkHttp refuses a
+ * header outside that range outright, and the browser would hand over mojibake. Both clients
+ * encode, and this is the only place that undoes it -- without it `resume.pdf` with accents was
+ * stored, listed and downloaded as `r%C3%A9sum%C3%A9.pdf`. A value that is not valid encoding
+ * (a literal percent in the name) is kept as typed rather than dropped.
+ */
+function decodeUploadName(raw: string | null): string {
+  const value = (raw ?? "").trim();
+  if (!value) return "attachment";
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export async function handleUpload(d: MyClawAppFilesDeps, owner: string, req: Request): Promise<Response> {
   const threadId = req.headers.get("x-thread-id")?.trim() || "default";
   const safeThread = sanitizeThreadId(threadId);
-  const filename = (req.headers.get("x-filename") ?? "attachment").trim();
+  const filename = decodeUploadName(req.headers.get("x-filename"));
   const type = (req.headers.get("x-type") ?? "file").trim() as MyClawAppAttachmentRef["type"];
   if (!safeThread) {
     await myClawAppLog("warn", "upload rejected: bad threadId", { owner, threadId });
