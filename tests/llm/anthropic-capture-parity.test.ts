@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { __testing } from "../../src/llm/anthropic.ts";
+import { CLI_RELEASE, CLAUDE_USER_AGENT } from "../../src/llm/anthropic-release.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 
 const { buildBody } = __testing;
@@ -32,7 +33,7 @@ interface Capture {
 }
 
 const capture = JSON.parse(
-  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.206.json"), "utf8"),
+  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.261.json"), "utf8"),
 ) as Capture;
 
 const messages: ChatMessage[] = [
@@ -153,6 +154,25 @@ const SENT_HEADERS = new Set([
   "x-stainless-runtime-version",
   "x-stainless-timeout",
 ]);
+
+/**
+ * The identity a subscription request claims, checked against the capture rather than against a
+ * second copy of our own intent.
+ *
+ * Nothing used to compare these values: the parity test matched header *names* only, so the pin
+ * could rot indefinitely while every test stayed green. It did rot, and the failure surfaced in
+ * production as `HTTP 400 Claude Code 2.1.217 does not support this model; version 2.1.251 or
+ * newer is required`. Refreshing the capture without refreshing the pin, or the reverse, now
+ * fails here instead of on a live request.
+ */
+test("the pinned client identity is the captured client identity", () => {
+  const h = capture.request.headers;
+  assert.equal(CLAUDE_USER_AGENT, h["user-agent"]);
+  assert.equal(CLI_RELEASE.stainlessPackage, h["x-stainless-package-version"]);
+  assert.equal(CLI_RELEASE.nodeVersion, h["x-stainless-runtime-version"]);
+  // The billing header carries the same release, so a half-refresh contradicts itself in-band.
+  assert.ok(h["user-agent"]!.includes(CLI_RELEASE.version));
+});
 
 test("the beta list is the captured list, in the captured order", () => {
   assert.equal(SENT_HEADERS.has("anthropic-beta"), true);

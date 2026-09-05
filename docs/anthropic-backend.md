@@ -64,9 +64,19 @@ already the first line of every system prompt it sends, so presenting as
 `sdk-cli` is a description rather than a disguise.
 
 Nothing here is guessed from a community project. P0 captured the real client on
-this box (`claude` 2.1.206, the binary the SDK spawns) through a local logging
+this box (`claude` 2.1.261, the binary the SDK spawns) through a local logging
 proxy, and this is what it sends. Where a community implementation disagrees with
 the capture, the capture wins.
+
+The identity is pinned, so it goes stale on its own: Anthropic raises a floor and
+every request starts answering `HTTP 400 Claude Code <pinned> does not support
+this model; version <floor> or newer is required`. That happened with 2.1.217.
+Refreshing means `claude update`, re-capturing, and replacing the three values in
+`src/llm/anthropic-release.ts` **together** -- `tests/llm/anthropic-capture-parity.ts`
+compares them to the capture, so a half-refresh fails there rather than in
+production. Between 2.1.206 and 2.1.261 only two headers moved: the user-agent
+version and `x-stainless-package-version` (0.94.0 -> 0.112.1). The eight betas,
+their order, the three system blocks and the two 1h breakpoints were unchanged.
 
 `POST /v1/messages?beta=true` -- the query parameter is part of the shape.
 
@@ -82,13 +92,13 @@ anthropic-beta:                            oauth-2025-04-20,
                                            advisor-tool-2026-03-01,
                                            extended-cache-ttl-2025-04-11
 anthropic-dangerous-direct-browser-access: true
-user-agent:                                claude-cli/2.1.206 (external, sdk-cli)
+user-agent:                                claude-cli/2.1.261 (external, sdk-cli)
 x-app:                                     cli
 x-claude-code-session-id:                  <uuid, stable per process>
 x-stainless-arch:                          x64
 x-stainless-lang:                          js
 x-stainless-os:                            Linux
-x-stainless-package-version:               0.94.0
+x-stainless-package-version:               0.112.1
 x-stainless-retry-count:                   0
 x-stainless-runtime:                       node
 x-stainless-runtime-version:               v26.3.0

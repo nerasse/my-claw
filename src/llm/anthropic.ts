@@ -22,7 +22,7 @@ const RETRY_BASE_MS = 800;
  */
 const FALLBACK_OUTPUT_LIMIT = 128_000;
 
-// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.206.json.
+// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.261.json.
 const BETAS = [
   "oauth-2025-04-20",
   "interleaved-thinking-2025-05-14",

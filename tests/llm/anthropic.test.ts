@@ -29,15 +29,26 @@ function sse(events: unknown[]): ReadableStream<Uint8Array> {
   });
 }
 
-// Ground truth from docs/captures/claude-cli-2.1.206.json: driving the real CLI with this exact
-// prompt made it emit `cc_version=2.1.206.ca4`. This is the one assertion in the file that pins
+// Ground truth from the captures under docs/captures/: driving the real CLI with each of these
+// prompts made it emit exactly this suffix. These are the assertions in the file that pin
 // behaviour to an observed request rather than to our own reading of the CLI bundle.
+//
+// Two releases apart on purpose. The version is an input to the hash, so a single vector cannot
+// tell a correct implementation from one that happens to match on the release it was written
+// against -- and the shipped version moves every time Anthropic raises its floor.
 const CAPTURED_PROMPT = "Read the file /tmp/capture/hello.txt and tell me what is in it";
 const CAPTURED_VERSION = "2.1.206";
 const CAPTURED_SUFFIX = "ca4";
 
-test("billing suffix reproduces the captured request byte for byte", () => {
-  assert.equal(billingSuffix(CAPTURED_PROMPT, CAPTURED_VERSION), CAPTURED_SUFFIX);
+const VECTORS: ReadonlyArray<readonly [string, string, string]> = [
+  [CAPTURED_PROMPT, CAPTURED_VERSION, CAPTURED_SUFFIX],
+  ["Reponds juste: ok", "2.1.261", "10c"],
+];
+
+test("billing suffix reproduces every captured request byte for byte", () => {
+  for (const [prompt, version, suffix] of VECTORS) {
+    assert.equal(billingSuffix(prompt, version), suffix, `${version} -> ${suffix}`);
+  }
 });
 
 test("billing header has the captured shape and no cch", () => {

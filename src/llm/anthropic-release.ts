@@ -22,8 +22,8 @@
  * the same client.
  */
 export const CLI_RELEASE = {
-  version: process.env["ANTHROPIC_CLI_VERSION"] || "2.1.217",
-  stainlessPackage: "0.94.0",
+  version: process.env["ANTHROPIC_CLI_VERSION"] || "2.1.261",
+  stainlessPackage: "0.112.1",
   nodeVersion: "v26.3.0",
 } as const;
 
