@@ -288,6 +288,38 @@ ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 
+### Ce qu'une compaction affiche
+
+Une coupure se dit d'une seule façon, quelle que soit son origine : la règle en travers du fil,
+`Context compacted · N turns summarized`, avec le résumé replié dessous. `N` est le nombre de tours
+que le résumé couvre (`boundary.count`), pas un écart de messages : `beforeCount → afterCount`
+décrit le prompt, et l'écrire sous un fil qui affiche toujours tout se lit comme une perte.
+
+Ce n'était pas le cas. Le chemin automatique émettait `session:compact:boundary` ; `/compact`
+répondait par une bulle de commande portant le même résumé, et les deux ne se rencontraient jamais.
+En direct, un `/compact` ne montrait aucune règle ; après un rechargement la frontière stockée en
+dessinait une quand même, à côté de la bulle, si bien que **le même résumé apparaissait deux fois**
+et était stocké deux fois (mesuré : deux entrées voisines de 24 981 caractères chacune).
+
+Depuis :
+
+- `session:compact:boundary` est adressé par **id de session**, comme `:start` et `:settled`. Il
+  portait le message déclencheur, ce qui interdisait au chemin manuel de l'émettre : un `/compact`
+  n'a pas de message à nommer.
+- `compact-command.ts` l'émet **après** `persist()`, pour qu'une fenêtre qui recharge dans la
+  foulée trouve la frontière dans l'historique et pas seulement dans la trame.
+- Un `/compact` réussi **ne répond rien** : la règle est le rapport. Un échec répond, lui : aucune
+  règle ne parle pour lui.
+- `display.ts` laisse tomber la bulle historique d'un `/compact` **immédiatement précédé** d'une
+  entrée `compaction`. Cette paire-là seulement : un refus, ou un moteur qui a résumé sans écrire
+  de frontière, garde sa ligne, qui est sa seule trace.
+
+Côté app, un piège d'ordonnancement : le serveur envoie `chat.command.pending` au bout de 400 ms,
+et une compaction n'annonce son départ qu'une fois le log de session chargé, ce qui est plus long
+sur un fil long. La compaction hérite donc d'un placeholder qu'elle n'a pas créé. Comme un
+`/compact` réussi ne répond plus, elle doit pouvoir le refermer elle-même, sinon
+« Compacting the context... » reste à l'écran pour de bon.
+
 ## 7. Ce qu'on ne fait pas, et pourquoi
 
 - **Élaguer les vieux résultats d'outils** (le consensus n°1 de la communauté : 68 % des tokens
@@ -313,7 +345,7 @@ ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
 | `sessions/projection.ts` | `contextEntries` (la frontière), `messagesOf` (le fold) |
 | `llm/overflow.ts` | reconnaître un débordement, quelle que soit la forme |
 | `agent/bridge.ts` | les trois portes, le rebuild, la spéculation en fin de run |
-| `channels/compact-command.ts` | `/compact` : hold, signal |
+| `channels/compact-command.ts` | `/compact` : hold, signal, frontière annoncée |
 | `channels/my-claw-app/adapter.ts` | `notifyCompaction` (la frontière), `notifyCompacting` (l'état) |
 | `channels/my-claw-app/live-turn.ts` | rejoue l'état à la fenêtre qui recharge en plein milieu |
 | `core/config.ts` | seuil, tail (plafond et mise à l'échelle), spéculation |

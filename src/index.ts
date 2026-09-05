@@ -809,12 +809,11 @@ async function main() {
       myClawApp.notifyQueued(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id, "compaction");
     });
 
-    // The boundary an automatic compaction wrote, drawn now instead of at the next history load.
-    // `/compact` needs nothing here: it answers with its own bubble. No notification is published
-    // for it on purpose -- see the hook's own note.
-    hooks.on("session:compact:boundary", ({ message, entryId, summary, count }) => {
-      if (message.platform !== "my-claw-app") return;
-      myClawApp.notifyCompaction(message.chatId, message.threadId ?? DEFAULT_THREAD, { id: entryId, summary, count });
+    // The boundary a compaction wrote, automatic or typed, drawn now instead of at the next
+    // history load. A session that is not one of this channel's threads is skipped by the
+    // adapter. No notification is published for it on purpose -- see the hook's own note.
+    hooks.on("session:compact:boundary", ({ sessionId, entryId, summary, count }) => {
+      myClawApp.notifyCompaction(sessionId, { id: entryId, summary, count });
     });
 
     // A send that lands while a run is active is parked in the run's mailbox and drained at the

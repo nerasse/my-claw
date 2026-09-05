@@ -462,7 +462,10 @@ export function displayOf(
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
+  let previous: Entry | undefined;
   for (const entry of entries) {
+    const prior = previous;
+    previous = entry;
     const ts = tsOf(entry);
 
     // A folded run stands at its own marker: the header goes out here, and the work it hides is
@@ -571,6 +574,13 @@ export function displayOf(
       const sourceId = entry.sourceId || entry.id;
       if (!entry.quiet) {
         out.push(withRun({ id: sourceId, role: "user", text: entry.input, ts }));
+      }
+      // A `/compact` that wrote the boundary right above is already reported by it, in full and
+      // with the same summary: the two entries are adjacent and the bubble repeats the rule. Only
+      // that pair is dropped -- a refusal, or an engine that summarized without writing a
+      // boundary, has nothing else to speak for it and keeps its line.
+      if (prior?.type === "compaction" && entry.output.startsWith("Context compacted")) {
+        continue;
       }
       out.push(withRun({
         id: `cmd-${sourceId}`,

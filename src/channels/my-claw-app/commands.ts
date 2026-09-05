@@ -237,9 +237,11 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           persist: () => deps.sessionManager.persist(sessionId),
           threadId,
         });
-        // The summary travels apart from the outcome line: the app folds it away, the way it
-        // already folds a model's reasoning.
-        return outcome.summary ? { text: outcome.text, details: outcome.summary } : outcome.text;
+        // A successful compaction answers with nothing: the boundary rule the hook just drew is
+        // the whole report, and it is already in the history. A result bubble here would repeat
+        // it -- the same summary stored twice, side by side, once folded under the rule and once
+        // under the bubble. A failure has no rule to speak for it, so it still answers.
+        return outcome.ok ? undefined : outcome.text;
       }
 
       case "reload": {

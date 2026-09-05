@@ -57,6 +57,17 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
     const result = await compactSession(p.config, p.session, p.instructions, p.signal);
     if (!result.ok) return finished({ text: result.reason ?? "Compaction failed.", ok: false });
     await p.persist();
+    // Emitted after the session is written, so a window that reloads on the very next tick finds
+    // the boundary in the history it asks for rather than only in this frame. An automatic pass
+    // announces itself the same way, from the agent: one boundary, one shape, both origins.
+    if (result.boundary && result.summary) {
+      hooks.emit("session:compact:boundary", {
+        sessionId: p.session.id,
+        entryId: result.boundary.entryId,
+        summary: result.summary,
+        count: result.boundary.count,
+      });
+    }
     return finished({
       text: `Context compacted: ${result.beforeCount} → ${result.afterCount} messages.`,
       ok: true,

@@ -812,7 +812,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * device that already has it from a history load does not draw it twice. No notification and no
    * ring ride along: an automatic compaction is not an event the owner has to be told about.
    */
-  notifyCompaction(owner: string, threadId: string, boundary: { id: string; summary: string; count: number }): void {
+  notifyCompaction(sessionId: string, boundary: { id: string; summary: string; count: number }): void {
+    const match = APP_THREAD_SESSION.exec(sessionId);
+    if (!match) return;
+    const owner = match[1]!;
+    const threadId = match[2]!;
     this.broadcast(owner, {
       type: "chat.compaction",
       threadId,

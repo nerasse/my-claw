@@ -343,3 +343,54 @@ test("a message on a free session is not announced as parked", async () => {
   hooks.off("message:queued", collect);
   runRegistry.clear();
 });
+
+/**
+ * A `/compact` the owner typed draws the same boundary an automatic pass draws.
+ *
+ * It did not, and that was the whole defect: the manual path answered with a bubble carrying the
+ * summary, the automatic one emitted this hook, and the two never met. Live, a typed compaction
+ * showed no rule at all; after a reload the stored boundary drew one anyway, next to the bubble,
+ * so the same summary appeared twice. The hook is what makes live and reload agree.
+ */
+test("a /compact the owner typed announces its boundary, like an automatic pass", async () => {
+  const config = makeConfig();
+  const { session, setup } = await makeSessionWithLog("s-boundary");
+  const seen: Array<HookEventMap["session:compact:boundary"]> = [];
+  const collect = (payload: HookEventMap["session:compact:boundary"]): void => void seen.push(payload);
+  hooks.on("session:compact:boundary", collect);
+  const mock = mockFetch(async () => summaryResponse(SUMMARY));
+
+  try {
+    const outcome = await handleCompactCommand({ config, session, persist: async () => {} });
+    assert.equal(outcome.ok, true);
+    assert.equal(seen.length, 1);
+    // Addressed by session id: the channel that owns the thread picks it out, and a cron or
+    // sub-agent session it does not own is skipped instead of drawn in someone else's window.
+    assert.equal(seen[0]!.sessionId, "s-boundary");
+    assert.equal(seen[0]!.summary, SUMMARY);
+    assert.ok(seen[0]!.count > 0);
+    assert.ok(seen[0]!.entryId.length > 0);
+  } finally {
+    hooks.off("session:compact:boundary", collect);
+    mock.restore();
+    await setup.cleanup();
+  }
+});
+
+test("a compaction that never rewrote anything announces no boundary", async () => {
+  const config = makeConfig();
+  // Nothing to compact: below the floor the summarizer refuses, and a rule over an untouched
+  // history would claim a cut that did not happen.
+  const session = makeSession("s-nothing");
+  const seen: string[] = [];
+  const collect = ({ entryId }: HookEventMap["session:compact:boundary"]): void => void seen.push(entryId);
+  hooks.on("session:compact:boundary", collect);
+
+  try {
+    const outcome = await handleCompactCommand({ config, session, persist: async () => {} });
+    assert.equal(outcome.ok, false);
+    assert.deepEqual(seen, []);
+  } finally {
+    hooks.off("session:compact:boundary", collect);
+  }
+});

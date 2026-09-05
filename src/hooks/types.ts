@@ -215,15 +215,15 @@ export interface HookEventMap {
    * A boundary was appended by one of the automatic gates, and the conversation on screen should
    * show it now rather than at the next history load.
    *
-   * Carries the triggering message because that is what names the destination: an automatic
-   * compaction has no command behind it, so the channel and the thread can only come from the
-   * send that ran into the gate (same shape as `message:queued`).
+   * Addressed by session id, like `session:compact:start` and `:settled`, so a channel picks out
+   * the conversations it owns and skips the rest. It used to carry the triggering message instead,
+   * which is why only automatic passes could fire it: a `/compact` the owner typed has no such
+   * message, and it needs the boundary drawn just as much.
    *
    * Deliberately not wired to any notification: a compaction the owner did not ask for is not an
    * event he has to be told about, and a tray entry (or a ring) for it would be noise.
    */
   "session:compact:boundary": {
-    message: UnifiedMessage;
     sessionId: string;
     entryId: string;
     summary: string;

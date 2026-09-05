@@ -267,6 +267,9 @@ describe("displayOf: user turns read back the storage form", () => {
   });
 });
 
+const textOf = (item: import("../../../src/channels/my-claw-app/types.ts").MyClawAppHistoryEntry): string =>
+  "text" in item ? item.text : "";
+
 describe("displayOf: what is shown and never sent", () => {
   test("a command draws the two bubbles the device drew live", () => {
     const entries = chain([{ type: "command", prompt: false, input: "/compact", output: "fait", details: "900 tokens", sourceId: "send-1" }]);
@@ -274,6 +277,44 @@ describe("displayOf: what is shown and never sent", () => {
     expect(drawn[0]).toMatchObject({ id: "send-1", role: "user", text: "/compact" });
     expect(drawn[1]).toMatchObject({ id: "cmd-send-1", role: "assistant", text: "fait", command: true, details: "900 tokens" });
     expect(drawn[0]!.id).not.toBe(drawn[1]!.id);
+  });
+
+  test("a /compact that wrote the boundary above it does not repeat it as a bubble", () => {
+    // The pair as it is actually stored: the boundary entry, then the command entry right after,
+    // both carrying the same summary. Drawn whole it was the same text twice, back to back.
+    const entries = chain([
+      { type: "compaction", prompt: true, summary: "ce qui precede", count: 116, firstKeptEntryId: "e-keep", tokensBefore: 104039 },
+      { type: "command", prompt: false, input: "/compact", output: "Context compacted: 293 -> 178 messages.", details: "ce qui precede", sourceId: "send-1" },
+    ]);
+    const drawn = show(entries);
+    // The rule stands, and the line the owner typed stands: only the redundant report is gone.
+    expect(drawn.map(textOf)).toEqual(["ce qui precede", "/compact"]);
+    expect(drawn[0]).toMatchObject({ summaryOf: 116 });
+    expect(drawn.some((item) => "command" in item && item.command === true)).toBe(false);
+  });
+
+  test("a /compact that wrote no boundary keeps its bubble, it is the only trace", () => {
+    // An engine that summarized on its own leaves no compaction entry. Dropping this line too
+    // would erase the compaction from the thread entirely.
+    const entries = chain([
+      { type: "user", prompt: true, text: "avant" },
+      { type: "command", prompt: false, input: "/compact", output: "Context compacted (SDK session summarized).", sourceId: "send-1" },
+    ]);
+    const drawn = show(entries);
+    expect(drawn.map(textOf)).toEqual(["avant", "/compact", "Context compacted (SDK session summarized)."]);
+  });
+
+  test("a refused /compact keeps its reason, boundary above or not", () => {
+    const entries = chain([
+      { type: "compaction", prompt: true, summary: "ce qui precede", count: 12, firstKeptEntryId: "e-keep", tokensBefore: 4200 },
+      { type: "command", prompt: false, input: "/compact", output: "A compaction is already running on this session.", sourceId: "send-1" },
+    ]);
+    const drawn = show(entries);
+    expect(drawn.map(textOf)).toEqual([
+      "ce qui precede",
+      "/compact",
+      "A compaction is already running on this session.",
+    ]);
   });
 
   test("a quiet command replays the result bubble only", () => {

@@ -1345,7 +1345,7 @@ export class AgentBridge implements AgentBackend {
           beforeCount: claimed.beforeCount,
           afterCount: claimed.afterCount,
         });
-        this.announceBoundary(message, session, claimed);
+        this.announceBoundary(session, claimed);
         return "compacted";
       }
       // Anything still in flight was planned against the branch this pass is about to rewrite.
@@ -1360,7 +1360,7 @@ export class AgentBridge implements AgentBackend {
         beforeCount: result.beforeCount,
         afterCount: result.afterCount,
       });
-      this.announceBoundary(message, session, result);
+      this.announceBoundary(session, result);
       return "compacted";
     } catch (err) {
       rethrowIfAborted(err, signal);
@@ -1377,10 +1377,9 @@ export class AgentBridge implements AgentBackend {
    * middle. The frame is the same boundary the replayed history builds, keyed by the same entry
    * id, so the device that already drew it ignores the duplicate.
    */
-  private announceBoundary(message: UnifiedMessage, session: SessionData, result: CompactionResult): void {
+  private announceBoundary(session: SessionData, result: CompactionResult): void {
     if (!result.boundary || !result.summary) return;
     hooks.emit("session:compact:boundary", {
-      message,
       sessionId: session.id,
       entryId: result.boundary.entryId,
       summary: result.summary,

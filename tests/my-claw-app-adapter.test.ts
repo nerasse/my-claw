@@ -1966,13 +1966,13 @@ describe("MyClawAppAdapter owners", () => {
     }
   });
 
-  // The boundary of an automatic compaction: every window of the owner draws the rule at once,
-  // and it carries the entry id so a device that later reloads the thread has one rule, not two.
+  // The boundary of a compaction, automatic or typed: every window of the owner draws the rule at
+  // once, and it carries the entry id so a device that later reloads the thread has one, not two.
   test("a compaction boundary reaches every window of the owner", async () => {
     const phone = await connectClient(adapter.port, "phone");
     const browser = await connectClient(adapter.port, "browser");
     try {
-      adapter.notifyCompaction(OWNER, "t-1", { id: "e-42", summary: "ce qui precede", count: 813 });
+      adapter.notifyCompaction(`my-claw-app/thread/${OWNER}/t-1`, { id: "e-42", summary: "ce qui precede", count: 813 });
       for (const window of [phone, browser]) {
         const boundary = await nextFrame(window);
         assert.equal(boundary["type"], "chat.compaction");
