@@ -390,6 +390,15 @@ the first answer wins.
 { "type": "ping" }
 ```
 
+`ping` is answered with `{ "type": "pong" }`, and that answer is load-bearing for the browser
+client. A page cannot send a transport-level ping (the JS WebSocket API exposes none), so the web
+bridge used to infer death from `bufferedAmount` instead: a socket with no peer would supposedly
+stop draining. It does not. Fifteen bytes reach the kernel buffer of a socket whose other end went
+away with a NAT timeout or a VPN switch, the count is back to zero on the next tick, and the page
+reported `connected` for as long as it stayed open while every frame fell in a hole. The web
+bridge now counts unanswered pings and closes after two, which puts it back on the reconnect path.
+The pong is read by the socket layer and not forwarded: it answers the transport, not the app.
+
 On every WebSocket connection the server sends the capability gate before other optional greetings:
 
 ```json

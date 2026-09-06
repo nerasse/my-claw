@@ -341,6 +341,18 @@ export interface MyClawAppPing {
   type: "ping";
 }
 
+/**
+ * The answer to `ping`, and the only thing that proves the link is still two-way.
+ *
+ * The browser client has no transport-level ping (the JS API exposes none), so it watched
+ * `bufferedAmount` instead. That does not work: fifteen bytes reach the kernel buffer of a socket
+ * whose peer is long gone, the count returns to zero, and the page reported `connected` while
+ * every frame fell in a hole. Now the ping expects a reply, and two unanswered ones close it.
+ */
+export interface MyClawAppPong {
+  type: "pong";
+}
+
 /** One entry of the Tags page: a named alias for an ordered concrete model route. */
 export interface MyClawAppTagRouteCandidate {
   model: string;
@@ -2869,6 +2881,7 @@ export interface MyClawAppBrowserInfoResult {
 }
 
 export type MyClawAppServerFrame =
+  | MyClawAppPong
   | MyClawAppBrowserInfoResult
   | MyClawAppChatMessage
   | MyClawAppChatUser

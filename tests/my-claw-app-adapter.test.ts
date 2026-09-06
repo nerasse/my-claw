@@ -788,6 +788,14 @@ describe("MyClawAppAdapter", () => {
     reloaded.ws.close();
   });
 
+  test("a ping is answered, because that reply is the only proof the link is two-way", async () => {
+    // The browser has no transport-level ping and cannot see a dead peer any other way: fifteen
+    // bytes still reach the kernel buffer of a socket whose other end is gone, so watching
+    // bufferedAmount reported a healthy link forever while every frame fell in a hole.
+    client.ws.send(JSON.stringify({ type: "ping" }));
+    assert.equal((await nextFrame(client)).type, "pong");
+  });
+
   test("a pending approval is asked again to a window that reloaded", async () => {
     // The sheet is broadcast once. A window that reloads used to lose it, and the tool then waited
     // out its timeout and was denied without the owner ever seeing the question.

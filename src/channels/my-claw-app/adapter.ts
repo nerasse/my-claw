@@ -1231,7 +1231,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
         this.handleApprovalHistory(ws, frame);
         break;
       case "ping":
-        // Transport-level pings are answered by the server; nothing to reply to.
+        // Answered, because the browser client has no transport-level ping of its own and its
+        // fallback (watching bufferedAmount) cannot see a dead peer: fifteen bytes reach the
+        // kernel buffer of a socket whose other end is long gone. This reply is the only proof
+        // the link is still two-way.
+        this.sendFrame(ws, { type: "pong" });
         break;
       case "device.capabilities":
         // Accepted and ignored: capabilities gate the M3 device tools.
