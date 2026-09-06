@@ -59,6 +59,20 @@ export class SessionManager {
   });
   /** Opens in flight, so two callers asking at once share one read rather than racing it. */
   private opening = new Map<string, Promise<SessionLog>>();
+  /**
+   * Every log instance still referenced somewhere in the process, cache or not. Weak on purpose:
+   * this holds nothing alive, it only answers "is there already one".
+   *
+   * A run holds the log it opened for its whole duration and appends through that reference, so
+   * the cache above never sees it again until the run ends. Anything that opens two dozen other
+   * logs meanwhile (a reload asks for the cron runs, which opens one per run) evicts it, and the
+   * next `logOf` used to read the file back and resume at the leaf the meta last persisted, which
+   * is the leaf from before the run. Two instances, two leaves: the reload was served the thread
+   * as it stood before the question, the failure entry and the next turn attached to that old
+   * leaf, and the whole run, question included, became a dead branch. One instance per session
+   * per process is the invariant; the cache is only what keeps idle ones warm.
+   */
+  private liveLogs = new Map<string, WeakRef<SessionLog>>();
 
   constructor() {
     this.sessions = new LruMap<string, SessionData>(MAX_CACHED_SESSIONS, (key, value) => {
@@ -195,6 +209,12 @@ export class SessionManager {
     this.sessions.delete(sessionId);
     this.pendingWrites.delete(sessionId);
     this.logs.delete(sessionId);
+    this.liveLogs.delete(sessionId);
+  }
+
+  /** Test seam: whether the cache is keeping this log warm. The bound on memory is on the cache. */
+  hasCachedLog(sessionId: string): boolean {
+    return this.logs.has(sessionId);
   }
 
   async peek(sessionId: string): Promise<SessionData | null> {
@@ -246,6 +266,14 @@ export class SessionManager {
   async logOf(sessionId: string): Promise<SessionLog> {
     const cached = this.logs.get(sessionId);
     if (cached) return cached;
+    // Evicted from the cache but still held by a run: the same instance goes back in, never a
+    // second one read off the disk.
+    const alive = this.liveLogs.get(sessionId)?.deref();
+    if (alive) {
+      this.logs.set(sessionId, alive);
+      return alive;
+    }
+    this.liveLogs.delete(sessionId);
     const inFlight = this.opening.get(sessionId);
     if (inFlight) return inFlight;
 
@@ -257,6 +285,7 @@ export class SessionManager {
         return null;
       });
       const opened = await openSessionLog(sessionId, meta?.leafId ?? null);
+      this.liveLogs.set(sessionId, new WeakRef(opened));
       this.logs.set(sessionId, opened);
       return opened;
     })().finally(() => this.opening.delete(sessionId));
@@ -267,7 +296,7 @@ export class SessionManager {
 
   /** The open log of a session, without opening one. For a caller that must not do I/O. */
   peekLog(sessionId: string): SessionLog | undefined {
-    return this.logs.get(sessionId);
+    return this.logs.get(sessionId) ?? this.liveLogs.get(sessionId)?.deref();
   }
 
   /** Persisted session ids under a prefix, most recently active first. */
@@ -358,7 +387,8 @@ export class SessionManager {
       return undefined;
     });
     if (stored === undefined) return;
-    const openLog = this.logs.get(sessionId);
+    // The instance a run holds counts as open: its leaf is the truth, whatever the cache holds.
+    const openLog = this.logs.get(sessionId) ?? this.liveLogs.get(sessionId)?.deref();
     const leaf = openLog ? openLog.leaf() : stored?.leafId ?? null;
     // Mirrored on every write while the log is in hand, so a conversation list never has to open
     // one to know how long a conversation is or what to call it.

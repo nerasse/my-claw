@@ -454,6 +454,24 @@ garantit que l'id de la bulle live et l'id de l'entrée restent le même.
 Lire le fichier ligne par ligne, `JSON.parse` par ligne, ligne invalide sautée avec un
 `warn`. Une fois par ouverture (les sessions sont dans le LRU).
 
+**Une seule instance par session par processus.** Le cache des logs ouverts est un LRU de 24
+handles, mais un run tient la référence du log qu'il a ouvert pendant toute sa durée et écrit
+dedans sans repasser par le cache. Il suffit qu'autre chose ouvre deux douzaines de logs entre
+temps (un rechargement de page demande les runs cron, un log par run) pour que celui du run soit
+évincé. Le `logOf` suivant relisait alors le fichier et repartait de la feuille que la méta avait
+persistée en dernier, celle d'**avant** le run. Deux instances, deux feuilles : le sync du
+rechargement servait le fil tel qu'il était avant la question, l'entrée `failure` et le tour
+suivant s'accrochaient à la vieille feuille, et le run entier, question comprise, devenait une
+branche morte (observé le 2026-09-06 sur deux tours de l'owner). Le manager garde donc un
+`WeakRef` sur chaque instance vivante : évincé ou pas, `logOf` rend l'instance qu'un run tient
+encore, et n'en relit une du disque que quand plus personne ne la tient. `writeSettings` lit la
+feuille de cette instance-là. Le cache ne fait que garder au chaud les logs inactifs.
+
+Ce que ça ne couvre pas : un crash en plein run. La méta est écrite en fin de run, donc au
+redémarrage le log rouvre sur la feuille d'avant le run et ses entrées sont sur une branche
+morte. La topologie seule ne permet pas d'adopter la queue du fichier (un `/undo` laisse
+exactement la même forme). Connu, pas traité.
+
 ## 2.7 Sorties d'outils : pas d'horloge
 
 Au-delà de 50 KB, la sortie va dans `sessions/<id>/tool-output/<callId>` et l'entrée

@@ -79,8 +79,8 @@ test("SessionManager: open logs are bounded on their own, not only by the sessio
     log.append({ type: "user", prompt: true, text: `message ${i}` });
   }
 
-  assert.equal(manager.peekLog("test/logs/0"), undefined, "the oldest log must be closed");
-  assert.ok(manager.peekLog("test/logs/39"), "the newest log must still be open");
+  assert.equal(manager.hasCachedLog("test/logs/0"), false, "the oldest log must be out of the cache");
+  assert.ok(manager.hasCachedLog("test/logs/39"), "the newest log must still be cached");
 
   // Closed, not lost: reopening reads the file, and the entry written before eviction is there.
   const reopened = await manager.logOf("test/logs/0");
@@ -103,4 +103,51 @@ test("SessionManager: a listing's counts are mirrored into the meta, so nothing 
   const meta = await readMeta(id);
   assert.equal(meta?.promptCount, 2, "a failure is not part of a prompt");
   assert.equal(meta?.firstUserText, "bonjour");
+});
+
+test("SessionManager: a log a run still holds is the one handed out after its eviction, never a second instance", async () => {
+  // Reported: reload a page during a run and the thread comes back as it stood before the
+  // question. The run holds the log it opened and appends through that reference; the reload
+  // opened enough other logs (one per cron run) to evict it, and the sync then read a fresh
+  // instance off the disk, resuming at the leaf the meta last persisted -- from before the run.
+  // The failure entry and the next turn attached there, and the run became a dead branch.
+  const manager = new SessionManager();
+  const id = "test/live/held-by-a-run";
+  await manager.getOrCreateWithMeta(id, "telegram", "dm");
+  const held = await manager.logOf(id);
+  const question = held.append({ type: "user", prompt: true, text: "la question" });
+
+  for (let i = 0; i < 30; i++) {
+    await manager.getOrCreateWithMeta(`test/live/other-${i}`, "telegram", "dm");
+    await manager.logOf(`test/live/other-${i}`);
+  }
+  // The run keeps writing through the reference it holds, cache or no cache.
+  const work = held.append({ type: "phase", prompt: true, text: "du travail", runId: "run-x" } as never);
+
+  const again = await manager.logOf(id);
+  assert.equal(again, held, "the same instance, not one read back off the disk");
+  assert.equal(again.leaf(), work.id, "the leaf is where the run left it, not where the meta last saw it");
+  assert.equal(manager.peekLog(id), held);
+
+  // A caller with no reference of its own (the adapter recording a failure, the next turn) lands
+  // after the run's work, on the same branch.
+  const after = again.append({ type: "failure", prompt: false, error: "boom" } as never);
+  assert.equal(after.parentId, work.id);
+  assert.notEqual(after.parentId, question.parentId);
+});
+
+test("SessionManager: the persisted leaf follows the instance a run holds, even once the cache let it go", async () => {
+  const manager = new SessionManager();
+  const id = "test/live/persisted-leaf";
+  const session = await manager.getOrCreateWithMeta(id, "telegram", "dm");
+  const held = await manager.logOf(id);
+  held.append({ type: "user", prompt: true, text: "q" });
+  for (let i = 0; i < 30; i++) {
+    await manager.getOrCreateWithMeta(`test/live/churn-${i}`, "telegram", "dm");
+    await manager.logOf(`test/live/churn-${i}`);
+  }
+  const last = held.append({ type: "user", prompt: true, text: "q2" });
+  await manager.persist(session.id);
+  const meta = await readMeta(id);
+  assert.equal(meta?.leafId, last.id);
 });
