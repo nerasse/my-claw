@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
+import { hooks } from "../hooks/index.ts";
 
 const DB_PATH = join(MY_CLAW_DIR, "analytics.db");
 
@@ -159,10 +160,15 @@ export function recordApiCall(record: ApiCallRecord): void {
     });
   } catch (err) {
     void log("warn", "analytics recordApiCall failed", { error: String(err) });
+    return;
   }
+  // The one moment a conversation's spend moves: what follows the money (the status page) hangs
+  // on this rather than on each of the three call sites that write a row.
+  hooks.emit("analytics:call:recorded", { sessionId: record.sessionId, parentSessionId: record.parentSessionId ?? record.sessionId });
 }
 
-const RETENTION_DAYS = 90;
+/** How far back the analytics reach: rows older than this are swept at boot. */
+export const RETENTION_DAYS = 90;
 
 export function pruneOldRecords(): void {
   try {
@@ -232,6 +238,46 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
       .all(sessionId) as SessionModelRow[];
   } catch (err) {
     void log("warn", "analytics getSessionModelUsage failed", { error: String(err) });
+    return [];
+  }
+}
+
+/** One model as one delegated session used it, on the paying conversation's behalf. */
+export interface DelegatedModelRow extends SessionModelRow {
+  sessionId: string;
+}
+
+/**
+ * What the sessions a conversation drove have spent for it, per session and per model: the
+ * payer of a call is the parent recorded on its row, so a named sub-agent driven from two
+ * conversations shows each of them its own share and nothing of the other's.
+ */
+export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelRow[] {
+  try {
+    const d = getDb();
+    return d
+      .prepare(
+        `SELECT
+           session_id                      AS sessionId,
+           model,
+           base_url                        AS baseUrl,
+           MAX(upstream_api_base)          AS upstreamApiBase,
+           COUNT(*)                        AS calls,
+           COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
+           COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+           COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+           SUM(proxy_cost_usd)             AS proxyCostUsd,
+           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
+           MAX(timestamp)                  AS lastUsedAt
+         FROM api_calls
+         WHERE parent_session_id = ? AND session_id <> parent_session_id
+         GROUP BY session_id, model, base_url
+         ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
+      )
+      .all(parentSessionId) as DelegatedModelRow[];
+  } catch (err) {
+    void log("warn", "analytics getDelegatedModelUsage failed", { error: String(err) });
     return [];
   }
 }

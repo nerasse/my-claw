@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { cacheAttributionOf } from "../../src/llm/cache-policy.ts";
 
@@ -68,4 +69,30 @@ test("a call that names neither still records", () => {
   expect(rows).toHaveLength(1);
   expect(rows[0]!["backend"]).toBeNull();
   expect(rows[0]!["cache_dialect"]).toBeNull();
+});
+
+test("a recorded call announces itself, payer included: what follows the money hangs on this, not on the call sites", () => {
+  const heard: Array<{ sessionId: string; parentSessionId: string }> = [];
+  const listener = (ev: { sessionId: string; parentSessionId: string }): void => {
+    heard.push(ev);
+  };
+  hooks.on("analytics:call:recorded", listener);
+  try {
+    recordApiCall({
+      sessionId: "subagent/digger-hook", parentSessionId: "my-claw-app/thread/o/boss", platform: "my-claw-app", model: "m",
+      baseUrl: "https://x", streaming: false, caller: "subagent", promptTokens: 1, completionTokens: 1, totalTokens: 2,
+      toolCalls: 0, iteration: 1, durationMs: 1,
+    });
+    // A root records itself: the payer is never empty.
+    recordApiCall({
+      sessionId: "my-claw-app/thread/o/self", platform: "my-claw-app", model: "m", baseUrl: "https://x", streaming: false,
+      caller: "orchestrator", promptTokens: 1, completionTokens: 1, totalTokens: 2, toolCalls: 0, iteration: 1, durationMs: 1,
+    });
+  } finally {
+    hooks.off("analytics:call:recorded", listener);
+  }
+  expect(heard).toEqual([
+    { sessionId: "subagent/digger-hook", parentSessionId: "my-claw-app/thread/o/boss" },
+    { sessionId: "my-claw-app/thread/o/self", parentSessionId: "my-claw-app/thread/o/self" },
+  ]);
 });

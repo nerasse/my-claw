@@ -268,6 +268,8 @@ export interface HookEventMap {
    * different figures.
    */
   "session:context:measured": { sessionId: string };
+  /** A row landed in analytics: the spend of `sessionId`, billed to `parentSessionId` (itself for a root). */
+  "analytics:call:recorded": { sessionId: string; parentSessionId: string };
 
   // === MEMORY LIFECYCLE ===
   "memory:store": { id: number; category: string; decision: string };
