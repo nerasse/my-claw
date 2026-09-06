@@ -10,6 +10,7 @@ import {
   markJobRun,
   saveJobOutput,
   persistJobRunUpdates,
+  snapshotLifecycle,
 } from "./store.ts";
 import type { CronJob, CronDeliveryTarget } from "./types.ts";
 import { log } from "../utils/logger.ts";
@@ -68,11 +69,14 @@ export class CronScheduler {
     this.ticking = true;
     try {
       const allJobs = await loadJobs();
+      // Taken before anything runs: what the tick decides is what differs from this, and only
+      // that is written back. A pause the owner types while a long tick runs must not be undone.
+      const lifecycle = snapshotLifecycle(allJobs);
       const due = getDueJobs(allJobs);
       // getDueJobs may skip-ahead overdue jobs' nextRunAt even when none are due; persist that so
       // it is not recomputed forever. Merge-by-id keeps concurrent tool edits intact.
       if (due.length === 0) {
-        await persistJobRunUpdates(allJobs);
+        await persistJobRunUpdates(allJobs, lifecycle);
         return 0;
       }
 
@@ -96,7 +100,7 @@ export class CronScheduler {
           }
         }
       }
-      await persistJobRunUpdates(allJobs);
+      await persistJobRunUpdates(allJobs, lifecycle);
 
       let executed = 0;
       for (const job of due) {
@@ -126,7 +130,7 @@ export class CronScheduler {
         await this.pruneSessions(job.id);
       }
 
-      await persistJobRunUpdates(allJobs);
+      await persistJobRunUpdates(allJobs, lifecycle);
       return executed;
     } catch (err) {
       void log("error", "cron tick failed", { error: String(err) });

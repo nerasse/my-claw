@@ -290,7 +290,7 @@ export async function saveJobs(jobs: CronJob[]): Promise<void> {
  * cron tool meanwhile. Instead, re-load the current file and merge ONLY the scheduling/run fields
  * by id, so concurrent structural edits survive. Jobs removed concurrently are left removed.
  */
-export async function persistJobRunUpdates(updated: CronJob[]): Promise<void> {
+export async function persistJobRunUpdates(updated: CronJob[], lifecycleBefore?: LifecycleSnapshot): Promise<void> {
   const current = await loadJobs();
   const byId = new Map(current.map((j) => [j.id, j]));
   let changed = false;
@@ -302,12 +302,28 @@ export async function persistJobRunUpdates(updated: CronJob[]): Promise<void> {
     target.lastStatus = job.lastStatus;
     target.lastError = job.lastError;
     target.completedRuns = job.completedRuns;
-    target.state = job.state;
-    target.enabled = job.enabled;
-    target.pausedReason = job.pausedReason;
+    // Only when this tick moved them. Writing them unconditionally is what let a tick that had
+    // been running for a minute resurrect a job the owner paused while it ran: the tick's copy
+    // was loaded before the pause, and it won.
+    const before = lifecycleBefore?.get(job.id);
+    if (!before || before.state !== job.state || before.enabled !== job.enabled || before.pausedReason !== job.pausedReason) {
+      target.state = job.state;
+      target.enabled = job.enabled;
+      target.pausedReason = job.pausedReason;
+    }
     changed = true;
   }
   if (changed) await saveJobs(current);
+}
+
+/**
+ * The lifecycle fields as a tick found them, so the write can tell what the tick itself decided
+ * from what it merely read. Taken right after `loadJobs`, handed back to `persistJobRunUpdates`.
+ */
+export type LifecycleSnapshot = Map<string, { state: CronJob["state"]; enabled: boolean; pausedReason: string | undefined }>;
+
+export function snapshotLifecycle(jobs: CronJob[]): LifecycleSnapshot {
+  return new Map(jobs.map((job) => [job.id, { state: job.state, enabled: job.enabled, pausedReason: job.pausedReason }]));
 }
 
 export async function saveJobOutput(jobId: string, output: string): Promise<void> {

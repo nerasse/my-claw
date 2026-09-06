@@ -70,6 +70,18 @@ running silently in the default workspace. See `docs/multi-workspace.md`.
 
 Hermes uses `fcntl.flock` for cross-process tick isolation. MyClaw has one process. File locking is unnecessary.
 
+One process, but not one moment: a tick runs for as long as its jobs do (up to `cron.timeoutMs`),
+and the owner can pause, edit or remove a job through the tool while it runs. So the write at the
+end of a tick re-reads the file and merges by id rather than dumping the array it loaded.
+
+The scheduling and run fields (`nextRunAt`, `lastRunAt`, `lastStatus`, `lastError`,
+`completedRuns`) always belong to the tick. The lifecycle ones (`state`, `enabled`,
+`pausedReason`) only get written when **the tick itself moved them**, which is what
+`snapshotLifecycle` is taken for: a job paused while a long tick ran used to come back enabled,
+because the tick's copy predated the pause and won. A pause the tick decides -- an unreadable
+schedule, a workspace that left the config -- still lands, because that one really did change
+under the tick's hand.
+
 ### No pre-run scripts, no `context_from`
 
 These Hermes features enable conditional execution and job chaining. Deferred to v2. The 95% use case is a simple prompt on a timer.
