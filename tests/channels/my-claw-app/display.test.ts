@@ -403,6 +403,20 @@ describe("runFold: the branch read as runs", () => {
     expect(runs.get(entries[5]!.id)).toBeUndefined();
   });
 
+  test("the run is named by the id the wire announced it under, not by its marker's entry id", () => {
+    // `chat.run.start` carries the run context's correlation id; the marker stores the same one,
+    // so a live item and its persisted entry agree on the run without the app renaming anything.
+    const entries = chain([user("q"), runStart({ runId: "c0ffee42" }), tool("c1"), runEnd()]);
+    const runs = runFold(entries);
+    expect(runs.get(entries[2]!.id)?.id).toBe("c0ffee42");
+    expect(runs.get(entries[1]!.id)?.id).toBe("c0ffee42");
+  });
+
+  test("a marker written before runs carried their id names the run after its own entry", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runEnd()]);
+    expect(runFold(entries).get(entries[2]!.id)?.id).toBe(entries[1]!.id);
+  });
+
   test("two runs are distinct groups", () => {
     const entries = chain([user("q1"), runStart(), tool("c1"), runEnd(), user("q2"), runStart(), tool("c2"), runEnd()]);
     const runs = runFold(entries);

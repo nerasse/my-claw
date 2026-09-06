@@ -19,8 +19,17 @@ export interface BubbleSink {
 }
 
 export interface RunContext {
-  /** Short on purpose: it is meant to be read off a phone screen and typed back. */
+  /**
+   * This run's id, short on purpose: it is meant to be read off a phone screen and typed back. A
+   * sub-agent's run has its own (`withChildRunContext`), so two runs of one child inside one parent
+   * run are two runs on the child's thread, on the wire and in its log.
+   */
   runId: string;
+  /**
+   * The id of the inbound message everything here descends from; the same as `runId` on a root
+   * run. The logger stamps it, so one quoted id still pulls the whole tree out of the files.
+   */
+  rootRunId: string;
   platform?: string;
   sessionId?: string;
   /**
@@ -42,10 +51,22 @@ export function newRunId(): string {
  * bubble after the run returned); the router opens it for anything that reaches it directly,
  * like cron. Nesting would hand the same message two different ids.
  */
-export function withRunContext<T>(init: Omit<RunContext, "runId"> & { runId?: string }, fn: () => Promise<T>): Promise<T> {
+export function withRunContext<T>(init: Omit<RunContext, "runId" | "rootRunId"> & { runId?: string }, fn: () => Promise<T>): Promise<T> {
   const existing = storage.getStore();
   if (existing) return fn();
-  return storage.run({ ...init, runId: init.runId ?? newRunId() }, fn);
+  const runId = init.runId ?? newRunId();
+  return storage.run({ ...init, runId, rootRunId: runId }, fn);
+}
+
+/**
+ * A run of its own inside the run in flight: what a sub-agent gets. Everything else is inherited,
+ * the bubble sinks included (the same map, since the parent registers its child's sink before the
+ * child reads it). Outside any run it opens a root, so a caller never has to know which it is in.
+ */
+export function withChildRunContext<T>(fn: () => Promise<T>): Promise<T> {
+  const parent = storage.getStore();
+  if (!parent) return withRunContext({}, fn);
+  return storage.run({ ...parent, runId: newRunId() }, fn);
 }
 
 export function currentRun(): RunContext | undefined {

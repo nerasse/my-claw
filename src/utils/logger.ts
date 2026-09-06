@@ -1,7 +1,7 @@
 import { appendFile, mkdir, stat, readdir as fsReaddir, unlink as fsUnlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
-import { currentRunId } from "./run-context.ts";
+import { currentRun } from "./run-context.ts";
 
 const LOGS_DIR = join(MY_CLAW_DIR, "logs");
 const MAX_LOG_FILE_BYTES = 5 * 1024 * 1024;
@@ -182,13 +182,17 @@ function createScopedLogger(scope: LogScope, options: { console?: ConsoleMode } 
   return async (level: AppLogLevel, message: string, data?: unknown): Promise<void> => {
     if (!shouldWrite(level)) return;
     const timestamp = new Date().toISOString();
-    // `run` is what makes these files usable: every line of one inbound message shares it.
-    const run = currentRunId();
+    // `run` is what makes these files usable: every line of one inbound message shares it, the
+    // sub-agents it spawned included. `subRun` names the child's own run when the line is one.
+    const ctx = currentRun();
+    const run = ctx?.rootRunId;
+    const subRun = ctx && ctx.runId !== ctx.rootRunId ? ctx.runId : undefined;
     const payload = JSON.stringify({
       timestamp,
       scope,
       level,
       ...(run ? { run } : {}),
+      ...(subRun ? { subRun } : {}),
       message,
       ...(data === undefined ? {} : { data: normalizeLogData(data) }),
     }) + "\n";

@@ -3,7 +3,7 @@ import { readdir, readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { log, setLogLevelSource, getLogLevel } from "../../src/utils/logger.ts";
-import { withRunContext } from "../../src/utils/run-context.ts";
+import { withRunContext, withChildRunContext, currentRunId } from "../../src/utils/run-context.ts";
 
 const LOGS_DIR = join(MY_CLAW_DIR, "logs");
 
@@ -38,6 +38,26 @@ test("every line of a run carries the same correlation id", async () => {
   expect(inRun[0]!.run).toMatch(/^[0-9a-f]{8}$/);
   expect(inRun[1]!.run).toBe(inRun[0]!.run);
   expect(lines.find((l) => l.message === "outside any run")?.run).toBeUndefined();
+});
+
+test("a sub-agent's lines keep the root run id, and name their own run beside it", async () => {
+  // One quoted id pulls the whole tree out of the files, children included; `subRun` is what a
+  // bug report from a sub-agent's thread quotes.
+  await freshLogs();
+  let child = "";
+  await withRunContext({ platform: "my-claw-app" }, async () => {
+    await log("info", "parent step");
+    await withChildRunContext(async () => {
+      child = currentRunId()!;
+      await log("info", "child step");
+    });
+  });
+  const lines = (await readOrchestratorLog()).trim().split("\n").map((l) => JSON.parse(l) as { message: string; run?: string; subRun?: string });
+  const parent = lines.find((l) => l.message === "parent step")!;
+  const inChild = lines.find((l) => l.message === "child step")!;
+  expect(inChild.run).toBe(parent.run!);
+  expect(inChild.subRun).toBe(child);
+  expect(parent.subRun).toBeUndefined();
 });
 
 test("the configured level is a floor, read live so a hot reload applies at once", async () => {

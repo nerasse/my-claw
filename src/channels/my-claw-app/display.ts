@@ -216,7 +216,7 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
     const entry = path[i]!;
     if (entry.type === "run_start") {
       closeDead();
-      current = { id: entry.id, status: "running", startTs: tsOf(entry) };
+      current = { id: entry.runId ?? entry.id, status: "running", startTs: tsOf(entry) };
       out.set(entry.id, current);
       lastTs = tsOf(entry);
       continue;

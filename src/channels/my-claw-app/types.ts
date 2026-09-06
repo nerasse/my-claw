@@ -1171,7 +1171,10 @@ export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
  * `running` means the run is still in flight (or its end was lost to a crash).
  */
 export interface MyClawAppRunMeta {
-  /** The id of the `run_start` entry that opened this run. */
+  /**
+   * The run's id, the one `chat.run.start` announced it under (the run context's correlation id).
+   * A run recorded before 0.6.3 is named after its `run_start` entry instead.
+   */
   id: string;
   status: "running" | "done" | "aborted" | "error";
   startTs: string;
@@ -2310,6 +2313,19 @@ export interface MyClawAppChatQueued {
 }
 
 /**
+ * The transport receipt of a `chat.send`, to the socket that sent it and to it alone, before
+ * anything is done with the message. A socket a NAT timeout or a VPN switch killed stays OPEN for
+ * a browser, so a send can leave without arriving and nothing says so; the app waits for this
+ * and offers to send again a message it never got one for. Sending again is safe: an id already
+ * on the branch or parked in a run's mailbox is receipted and taken no further.
+ */
+export interface MyClawAppChatSendReceived {
+  type: "chat.send.received";
+  threadId: string;
+  id: string;
+}
+
+/**
  * Structured `/status` report for the app's fullscreen diagnostics page. The text form stays the
  * canonical rendering for the chat channels; this is the same report shaped as fields.
  */
@@ -2773,10 +2789,15 @@ export interface MyClawAppNotificationsInfo {
   vapidPublicKey: string;
 }
 
-/** The server's own version, sent once as the socket opens so the app can label its connection. */
+/**
+ * The server's own version, sent once as the socket opens so the app can label its connection.
+ * `receipts` says every `chat.send` is answered with `chat.send.received`: the app only waits for
+ * a receipt from a server that gives one.
+ */
 export interface MyClawAppHello {
   type: "hello";
   version: string;
+  receipts: true;
 }
 
 /** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
@@ -2958,6 +2979,7 @@ export type MyClawAppServerFrame =
   | MyClawAppCommandPending
   | MyClawAppCommandResult
   | MyClawAppChatQueued
+  | MyClawAppChatSendReceived
   | MyClawAppChatAcked
   | MyClawAppStatusResult
   | MyClawAppSessionInstructionsResult

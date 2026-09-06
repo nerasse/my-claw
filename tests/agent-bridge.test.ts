@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { setupSessionLog } from "./helpers/session-log.ts";
 import { AgentBridge } from "../src/agent/bridge.ts";
+import { withRunContext } from "../src/utils/run-context.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
 import type { SessionLog } from "../src/sessions/log.ts";
@@ -83,6 +84,25 @@ test("AgentBridge returns plain LLM response", async () => {
     // The run markers sit between the trigger turn and the work (docs/run-grouping.md).
     assert.equal(entries[1]!.type, "run_start");
     assert.equal(entries[2]!.type, "phase");
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("the run_start marker carries the run context's id, the one chat.run.start announces", async () => {
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const fetchMock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({ choices: [{ message: { content: "hi back" } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never,
+  );
+  try {
+    const session = createSession();
+    await withRunContext({ runId: "abcdef12", platform: "test" }, () => bridge.handleMessage(createMessage(), session));
+    await sharedLog.flush();
+    const marker = sharedLog.entries().find((e) => e.type === "run_start");
+    assert.equal(marker?.type === "run_start" ? marker.runId : undefined, "abcdef12");
   } finally {
     fetchMock.restore();
   }

@@ -38,8 +38,17 @@ tour suivant. Une injection (message de pilotage, réponse à une question) est 
 ## Le fold serveur (`runFold`)
 
 `displayOf` reçoit un pli du log complet : pour chaque entrée entre un `run_start` et
-son `run_end`, le champ `run: { id, status, startTs, endTs? }` (l'`id` est celui du
-`run_start`). Un run sans `run_end` à la fin du log reste `running` ; le serveur passe
+son `run_end`, le champ `run: { id, status, startTs, endTs? }`. L'`id` est celui que le fil a
+annoncé en direct : `run_start` porte `runId`, l'id de corrélation du contexte de run
+(`run-context.ts`), le même que `chat.run.start` / `chat.run.end` mettent sur le fil. Avant la
+0.6.3 un run avait trois noms côté serveur : cet id de corrélation sur le fil, l'id de l'entrée
+`run_start` sur les pages, et le `runId` par *tour* d'API des phases et des outils. L'app devait
+renommer un run synthétique vers celui de la page à l'arrivée de celle-ci, et une page arrivée
+après la fin laissait des cartes vivantes orphelines. Un run porte maintenant un seul nom en direct
+et en historique ; un marqueur d'avant la 0.6.3 (sans `runId`) nomme le run d'après sa propre
+entrée. Le `runId` des phases et des outils, lui, reste ce qu'il a toujours été : l'id d'un tour
+d'API (`RunRecorder.turnId`), qui regroupe les phases d'un appel en un message assistant dans le
+prompt. Un run sans `run_end` à la fin du log reste `running` ; le serveur passe
 le booléen `activeRun` (déjà en place) et le client tranche : `activeRun=false` ⇒ le
 run est mort (crash) et se replie en `done`.
 

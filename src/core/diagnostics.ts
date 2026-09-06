@@ -19,6 +19,8 @@ export interface LogEntry {
   scope: string;
   level: string;
   run?: string;
+  /** A sub-agent's own run, when the line is one of its; `run` is then the parent's. */
+  subRun?: string;
   message: string;
   data?: unknown;
 }
@@ -27,7 +29,7 @@ export interface LogQuery {
   scope?: string;
   /** Minimum level, e.g. "warn" keeps warn and error. */
   level?: LogLevel;
-  /** Only the lines of one run id: the whole point of stamping it. */
+  /** Only the lines of one run id, root or sub-agent's own: the whole point of stamping it. */
   run?: string;
   limit?: number;
   /** Substring match on the message, case-insensitive. */
@@ -81,7 +83,7 @@ export async function readLogEntries(query: LogQuery = {}): Promise<LogEntry[]> 
         continue;
       }
       if ((LEVEL_ORDER[entry.level] ?? 0) < minLevel) continue;
-      if (query.run && entry.run !== query.run) continue;
+      if (query.run && entry.run !== query.run && entry.subRun !== query.run) continue;
       if (query.excludeScopes?.includes(entry.scope)) continue;
       if (needle && !entry.message.toLowerCase().includes(needle)) continue;
       out.push(entry);

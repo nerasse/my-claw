@@ -26,6 +26,7 @@ import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } fro
 import { sanitizeDisplayName } from "./registry.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { formatLocationForModel } from "../agent/preprocess.ts";
+import { withChildRunContext } from "../utils/run-context.ts";
 
 /**
  * Where a sub-agent's run reports itself while a human watches it. Absent for a parent-driven run:
@@ -135,7 +136,10 @@ export class SubAgentRunner {
     runs.add(entry);
     this.activeRuns.set(id, runs);
     try {
-      return await task(controller.signal);
+      // A run of its own: the frames the app channel sends for the child's thread, the marker the
+      // recorder writes in its log and the lines the logger stamps all name this run, and two
+      // sends to one child inside one parent run stay two runs (docs/run-grouping.md).
+      return await withChildRunContext(() => task(controller.signal));
     } finally {
       parentSignal?.removeEventListener("abort", onParentAbort);
       runs.delete(entry);

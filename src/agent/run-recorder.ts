@@ -8,11 +8,12 @@
  *
  * Three decisions live here and nowhere else.
  *
- * **A run id groups one API call's output.** Every phase and every tool of one call share it, and
- * that is what lets `promptOf` fold the phases back into the single assistant turn they were
- * before the streamer cut them. It is minted per call, not per run: an agentic run is a dozen
- * calls, and folding all of them into one turn would hand the model its own history as a single
- * message.
+ * **A turn id groups one API call's output.** Every phase and every tool of one call share it
+ * (stored as `runId`, a name from before runs had markers), and that is what lets `promptOf` fold
+ * the phases back into the single assistant turn they were before the streamer cut them. It is
+ * minted per call, not per run: an agentic run is a dozen calls, and folding all of them into one
+ * turn would hand the model its own history as a single message. The run itself is named by the
+ * run context's id, which its `run_start` marker carries.
  *
  * **A tool entry is written when the call settles, never before.** The old store persisted the
  * assistant turn with its `tool_calls` before the tools ran, so a process killed mid-tool left a
@@ -26,7 +27,7 @@
  * branch on disk, reachable, which is what makes `/retry` a sibling rather than an overwrite.
  */
 
-import { takeRunBubbles } from "../utils/run-context.ts";
+import { currentRunId, newRunId, takeRunBubbles } from "../utils/run-context.ts";
 import { spillToolOutput } from "../sessions/tool-output.ts";
 import type { SessionLog, Entry, PhaseEntry, ToolEntry, UserEntry } from "../sessions/log.ts";
 import type { SessionAttachment } from "../sessions/store.ts";
@@ -86,12 +87,16 @@ function parseArguments(raw: string): Record<string, unknown> {
   }
 }
 
-let runCounter = 0;
+let turnCounter = 0;
 
-/** A fresh id for one API call's output. Monotonic within a process, unique across one. */
-export function newRunId(): string {
-  runCounter += 1;
-  return `run-${Date.now().toString(36)}-${runCounter.toString(36)}`;
+/**
+ * A fresh id for one API call's output. Monotonic within a process, unique across one. Stored on
+ * phases and tools under `runId`, a name from before runs had markers: it groups one model turn,
+ * while the run itself is named by the run context's id (`run-context.ts`).
+ */
+export function newTurnId(): string {
+  turnCounter += 1;
+  return `run-${Date.now().toString(36)}-${turnCounter.toString(36)}`;
 }
 
 /**
@@ -104,17 +109,17 @@ export class RunRecorder {
   private readonly entries: SessionLog;
   /** Where rewind() returns: advances when user() is called, so rewinding never erases a user turn. */
   private startLeaf: string | null;
-  private currentRunId: string;
+  private currentTurnId: string;
 
   constructor(entries: SessionLog) {
     this.entries = entries;
     this.startLeaf = entries.leaf();
-    this.currentRunId = newRunId();
+    this.currentTurnId = newTurnId();
   }
 
-  /** The run id in force. Phases and tools written now are one model turn. */
-  runId(): string {
-    return this.currentRunId;
+  /** The turn id in force. Phases and tools written now are one model turn. */
+  turnId(): string {
+    return this.currentTurnId;
   }
 
   /**
@@ -122,10 +127,11 @@ export class RunRecorder {
    *
    * Everything logged from here to `runEnd` is one run's work -- docs/run-grouping.md. The marker
    * is the floor the app folds a finished run under, and the absence of its `run_end` pair is what
-   * tells a reopened thread that the run is still in flight.
+   * tells a reopened thread that the run is still in flight. It carries the run context's id, the
+   * same one `chat.run.start` put on the wire, so the fold names the run the app already knows.
    */
   runStart(): Entry {
-    return this.entries.append({ type: "run_start", prompt: false });
+    return this.entries.append({ type: "run_start", prompt: false, runId: currentRunId() ?? newRunId() });
   }
 
   /** Marks the closing of this run and why it ended. */
@@ -139,8 +145,8 @@ export class RunRecorder {
    * Called before each API call, so the phases of one call stay together and two calls stay apart.
    */
   nextTurn(): string {
-    this.currentRunId = newRunId();
-    return this.currentRunId;
+    this.currentTurnId = newTurnId();
+    return this.currentTurnId;
   }
 
   /**
@@ -206,7 +212,7 @@ export class RunRecorder {
         // One number for the whole turn: repeated per phase, every reader adding them up would
         // multiply what the model actually thought.
         ...(last && recorded.reasoningTokens ? { reasoningTokens: recorded.reasoningTokens } : {}),
-        runId: this.currentRunId,
+        runId: this.currentTurnId,
         ...(last && replayable ? { providerMeta: replayable } : {}),
       }, ids[index]);
     });
@@ -234,7 +240,7 @@ export class RunRecorder {
       // No sub-agent state here, and it is not an omission: a `spawn` returns while its child runs,
       // so this entry is written before there is anything terminal to record. `spawn_state` entries
       // carry the lifecycle -- src/sessions/spawn-state.ts.
-      runId: this.currentRunId,
+      runId: this.currentTurnId,
     });
     return { entry, message: spilled.message };
   }

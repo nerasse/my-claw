@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
-import { RunRecorder, newRunId } from "../../src/agent/run-recorder.ts";
+import { RunRecorder, newTurnId } from "../../src/agent/run-recorder.ts";
 import { openSessionLog, sessionDir, type SessionLog, type PhaseEntry, type ToolEntry } from "../../src/sessions/log.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { readToolOutput } from "../../src/sessions/tool-output.ts";
@@ -25,9 +25,9 @@ const call = (callId: string, over: Partial<Parameters<RunRecorder["tool"]>[0]> 
   callId, name: "bash", arguments: '{"command":"ls"}', output: "ok", ok: true, ...over,
 });
 
-describe("newRunId", () => {
+describe("newTurnId", () => {
   test("two ids are never the same", () => {
-    expect(new Set(Array.from({ length: 100 }, () => newRunId())).size).toBe(100);
+    expect(new Set(Array.from({ length: 100 }, () => newTurnId())).size).toBe(100);
   });
 });
 

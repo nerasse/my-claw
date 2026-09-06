@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { withRunContext, currentRunId, currentRun, setRunSession } from "../../src/utils/run-context.ts";
+import { withRunContext, withChildRunContext, currentRunId, currentRun, setRunSession } from "../../src/utils/run-context.ts";
 
 test("a run id is visible from anywhere inside the run, including after an await", async () => {
   expect(currentRunId()).toBeUndefined();
@@ -73,4 +73,35 @@ test("work that outlives the router still belongs to the run", async () => {
   });
 
   expect(afterRoute).toMatch(/^[0-9a-f]{8}$/);
+});
+
+test("a child context names its own run and keeps the root: a sub-agent's run is a run of its own on the wire", async () => {
+  // Two runs of the same sub-agent inside one parent run used to share the parent's id on the
+  // child's thread: the page folded them as one run. The root id stays for the logs, which is
+  // what one quoted id pulling the whole tree needs.
+  await withRunContext({ platform: "my-claw-app" }, async () => {
+    const parent = currentRunId()!;
+    const bubbles = currentRun()!.bubbles;
+    const children = await Promise.all([
+      withChildRunContext(async () => ({ id: currentRunId()!, root: currentRun()!.rootRunId, bubbles: currentRun()!.bubbles })),
+      withChildRunContext(async () => ({ id: currentRunId()!, root: currentRun()!.rootRunId, bubbles: currentRun()!.bubbles })),
+    ]);
+    expect(children[0].id).not.toBe(parent);
+    expect(children[1].id).not.toBe(parent);
+    expect(children[0].id).not.toBe(children[1].id);
+    expect(children[0].root).toBe(parent);
+    expect(children[1].root).toBe(parent);
+    // The bubble sinks a parent registered for its child are read by the child: same map.
+    expect(children[0].bubbles).toBe(bubbles);
+    // Back in the parent, nothing moved.
+    expect(currentRunId()).toBe(parent);
+    expect(currentRun()!.rootRunId).toBe(parent);
+  });
+});
+
+test("a child context outside any run is a root of its own", async () => {
+  await withChildRunContext(async () => {
+    expect(currentRunId()).toMatch(/^[0-9a-f]{8}$/);
+    expect(currentRun()!.rootRunId).toBe(currentRunId()!);
+  });
 });
