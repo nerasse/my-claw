@@ -19,6 +19,22 @@
 - Never decide on architecture, features, or design without explicit user approval
 - When in doubt, ask
 
+## Dependencies
+
+`package.json` carries an `overrides` block, and every entry is there because a direct dependency
+pins a transitive one that has an advisory against it. `bun audit` was at 20 (9 high), all of them
+transitive through `@modelcontextprotocol/sdk` (already on its latest, so bumping it fixes
+nothing) and `@huggingface/transformers`.
+
+Each override stays **inside the dependent's major** (`hono ^4`, `protobufjs ^7`,
+`@hono/node-server ^1`): a major bump forced under a package that did not ask for it is how an
+audit fix becomes a runtime break nothing tests. What proves them is not the audit but the two
+paths that actually use those trees: the real stdio MCP server in `tests/mcp/`, and a local
+embedding, which loads onnxruntime and sharp and must return 384 dimensions.
+
+Re-check with `bun audit` after any dependency change, and drop an override once the dependent
+ships the fix itself.
+
 ## Testing
 
 - `bun test` must never touch the real `~/.my-claw`. `bunfig.toml` preloads
