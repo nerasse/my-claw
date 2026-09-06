@@ -169,3 +169,22 @@ test("mcp section hot-reloads in place and is not reboot-only", () => {
   assert.ok(!result.rebootRequired.includes("mcp"));
   assert.equal(current.mcp?.weather?.url, "https://example.com/mcp");
 });
+
+test("browser_* tools belong to the browser base alone; every other base keeps only the delegate door", () => {
+  // The browser agent used to build a private registry for these. Registered globally so the
+  // generic runner can run it as a real sub-agent, they must not leak into the orchestrator or a
+  // general sub-agent: those drive the browser through `delegate_browser_task`, one task at a time.
+  const r = registry(["read", "bash", "spawn", "delegate_browser_task", "browser_navigate", "browser_click", "browser_done", "mcp__srv__tool"]);
+  r.setDynamicProvider(() => [stub("mcp__srv__tool")]);
+  const browser = r.getForAgent("browser").map((t) => t.name).sort();
+  assert.deepEqual(browser, ["browser_click", "browser_done", "browser_navigate"]);
+  for (const agent of ["main", "general", "research", "cron", "unknown-agent"] as AgentToolType[]) {
+    const names = r.getForAgent(agent).map((t) => t.name);
+    assert.ok(!names.some((n) => n.startsWith("browser_")), `${agent} must not see the raw browser tools`);
+  }
+  assert.ok(r.getForAgent("main").map((t) => t.name).includes("delegate_browser_task"));
+  assert.ok(r.getForAgent("general").map((t) => t.name).includes("delegate_browser_task"));
+  // The browser's set is closed: no MCP, no plugin, no denylisted name.
+  assert.ok(!r.getForAgent("browser", [], "all").map((t) => t.name).includes("mcp__srv__tool"));
+  assert.deepEqual(r.getForAgent("browser", ["browser_click"]).map((t) => t.name).sort(), ["browser_done", "browser_navigate"]);
+});

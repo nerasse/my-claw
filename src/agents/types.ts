@@ -6,9 +6,9 @@ import type { PromptLayerName } from "../agent/prompt/files.ts";
  * of these sets and never add to it, so a workspace file cannot grant itself capability.
  * See docs/file-agents.md.
  */
-export type AgentBase = "general" | "research";
+export type AgentBase = "general" | "research" | "browser";
 
-export const AGENT_BASES: readonly AgentBase[] = ["general", "research"];
+export const AGENT_BASES: readonly AgentBase[] = ["general", "research", "browser"];
 
 /**
  * Roles rather than spawnable agents, so a file cannot claim their name. `nested` is here for a

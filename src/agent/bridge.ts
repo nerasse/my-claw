@@ -279,7 +279,12 @@ export class AgentBridge implements AgentBackend {
         ? "main"
         : this.agentKind ?? "general";
     const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
-    const tools = this.toolRegistry.getForAgent(agent.base, this.config.tools?.disabled, agent.mcp, agent.allow);
+    const tools = this.toolRegistry.getForAgent(
+      agent.base,
+      agent.deny ? [...(this.config.tools?.disabled ?? []), ...agent.deny] : this.config.tools?.disabled,
+      agent.mcp,
+      agent.allow,
+    );
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
     // Resolved into its own binding so the run's chain keeps its type: an override from the

@@ -29,6 +29,13 @@ export interface ResolvedAgent {
   base: AgentToolType;
   /** Tool names the file allows, intersected with the baseline. Absent = the whole baseline. */
   allow?: readonly string[];
+  /**
+   * Tool names the config takes away from this agent for the run, on top of `tools.disabled`. The
+   * browser's low-level escape hatches live here: `browser.allowEval` and `browser.allowCdp` are
+   * read per run, so a hot-reload toggles them without a restart and a disabled tool is never
+   * advertised (a wasted step and an error the model then has to reason about).
+   */
+  deny?: readonly string[];
   /** The agent's own instructions, empty for the reserved roles and for a name with no file. */
   prompt?: string;
   /** Workspace prompt files this agent sits on. */
@@ -106,7 +113,10 @@ export function resolveAgent(
   // overrides, the config or the file.
   const ownMcp = overrideScope("mcp") ?? readAgentScope(config, type, "mcp") ?? file?.meta.mcp;
   const baseline = file?.meta.base ?? fallbackBase(type);
-  const mcp = ownMcp ?? (baseline === "research" ? [] : inheritedScope(config, "mcp") ?? "all");
+  // The browser agent's set is closed whatever the config says: it has no `read_skill` to honour a
+  // skill catalog with, and a page it reads is untrusted content that must not reach an MCP server.
+  const closed = baseline === "browser";
+  const mcp = closed ? [] : ownMcp ?? (baseline === "research" ? [] : inheritedScope(config, "mcp") ?? "all");
 
   // The run's tool list intersects the baseline exactly like a file's: a name outside it is
   // dropped at run time, so the editor flags it red instead of letting it silently vanish.
@@ -114,18 +124,26 @@ export function resolveAgent(
   const toolsOverride = overrideScope("tools");
   const allow = toolsOverride !== undefined ? (toolsOverride === "all" ? undefined : toolsOverride) : file?.meta.tools;
 
+  const deny = closed
+    ? [...(config.browser?.allowEval ? [] : ["browser_eval"]), ...(config.browser?.allowCdp ? [] : ["browser_cdp"])]
+    : [];
+
   return {
     type,
     base: baseline,
     ...(allow ? { allow } : {}),
+    ...(deny.length > 0 ? { deny } : {}),
     ...(file?.prompt ? { prompt: file.prompt } : {}),
     instructions: file?.meta.instructions ?? [...PROMPT_LAYERS],
-    skills,
+    skills: closed ? [] : skills,
     mcp,
     llm: resolveAgentLlm(config, type, file?.meta.model),
     ...(file?.meta.model ? { fileModel: file.meta.model } : {}),
     workspace: resolveAgentWorkspace(config, type, file?.meta.workspace),
-    maxIterations: resolveMaxIterations(config, type, file?.meta.maxIterations),
+    // `browser.maxSteps` is the budget of one browsing task and predates the agent running through
+    // this chain; it keeps meaning that, above the file's default and below an explicit
+    // `agents.browser.maxIterations`.
+    maxIterations: resolveMaxIterations(config, type, (closed ? config.browser?.maxSteps : undefined) ?? file?.meta.maxIterations),
     contextCap: agentConfigOf(config, type)?.context?.cap === undefined && file?.meta.contextCap !== undefined
       ? resolveContextCapFor(config, file.meta.contextCap)
       : resolveContextCap(config, type),

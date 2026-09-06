@@ -21,11 +21,22 @@ export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "
 const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron", "workspaces", "question"];
 const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "conversation_search", "workspaces", "question"];
 
+/**
+ * The raw browser tools drive the one shared Chromium and are the browser agent's whole toolbox.
+ * Every other agent reaches the browser through `delegate_browser_task`, which runs that agent one
+ * task at a time: handing the raw tools to the orchestrator or a general sub-agent would put two
+ * drivers on one browser. See docs/browser.md.
+ */
+export function isBrowserTool(name: string): boolean {
+  return name.startsWith("browser_");
+}
+
 /** The tool names a file agent of the given base may narrow from. Exported so the app channel can
  *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */
-export function baselineToolNames(base: "general" | "research", staticNames: readonly string[]): string[] {
+export function baselineToolNames(base: "general" | "research" | "browser", staticNames: readonly string[]): string[] {
   if (base === "research") return READ_ONLY_TOOLS.filter((n) => staticNames.includes(n));
-  return staticNames.filter((n) => !SUBAGENT_EXCLUDED_TOOLS.includes(n));
+  if (base === "browser") return staticNames.filter(isBrowserTool);
+  return staticNames.filter((n) => !SUBAGENT_EXCLUDED_TOOLS.includes(n) && !isBrowserTool(n));
 }
 
 /**
@@ -91,21 +102,26 @@ export class ToolRegistry {
       return server === undefined || scopeAllows(mcpScope, server);
     });
     let set: Tool[];
-    if (agentType === "main") {
-      set = [...this.tools.values(), ...dynamic];
+    if (agentType === "browser") {
+      // A closed set: the browser tools and nothing else, dynamic tools included. The browser
+      // agent reads untrusted pages all day; an MCP server or a plugin reached from there would
+      // be one prompt injection away from the rest of the machine.
+      set = [...this.tools.values()].filter((t) => isBrowserTool(t.name));
+    } else if (agentType === "main") {
+      set = [...this.tools.values(), ...dynamic].filter((t) => !isBrowserTool(t.name));
     } else if (agentType === "research") {
       // The read-only built-in allowlist still applies. MCP used to be denied here unconditionally;
       // it now comes from the scope, which resolves to none for research unless explicitly granted.
       set = [...this.getByNames(READ_ONLY_TOOLS), ...dynamic];
     } else if (agentType === "cron") {
-      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name));
+      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
     } else {
       // `general` and anything unrecognised. The orchestrator is the only agent granted the whole
       // registry, and it is named explicitly above: a name this chain does not know must land on a
       // sub-agent set, never on the full one. Before file-defined agents the union was closed and
       // the fallthrough was `main`, so a typo in an agent name would have handed out `spawn`,
       // `memory` and `manage_skills`. See docs/file-agents.md.
-      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name));
+      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
     }
     // An agent file's `tools:` intersects the baseline, it never adds to it. A workspace is often a
     // cloned repository, so a file that could grant tools would turn `git clone` into a privilege

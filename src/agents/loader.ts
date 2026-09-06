@@ -33,8 +33,15 @@ function parseScope(raw: string | undefined): AgentScope | undefined {
   return list.includes("*") ? "all" : list;
 }
 
-function parseBase(raw: string | undefined, path: string): AgentBase {
+function parseBase(raw: string | undefined, path: string, name: string): AgentBase {
   if (raw === undefined) return "general";
+  // The browser base is the one shared Chromium's toolbox, reached one task at a time through
+  // `delegate_browser_task`. Only the agent that tool runs may claim it: a second file on that base
+  // would be spawnable and would drive the browser outside the queue.
+  if (raw === "browser" && name !== "browser") {
+    void log("warn", "only the browser agent may declare the browser base, falling back to general", { path });
+    return "general";
+  }
   if ((AGENT_BASES as readonly string[]).includes(raw)) return raw as AgentBase;
   // The narrower baseline is not the safe one to guess: silently downgrading a general agent to
   // read-only would look like a broken agent, while the general baseline is already a sub-agent set.
@@ -114,7 +121,7 @@ export function parseAgentFile(
   return {
     meta: {
       description: description.slice(0, MAX_DESCRIPTION_LENGTH),
-      base: parseBase(parsed.fields["base"], path),
+      base: parseBase(parsed.fields["base"], path, name),
       instructions: parseInstructions(parsed.fields["instructions"], path),
       ...(tools ? { tools } : {}),
       ...(skills !== undefined ? { skills } : {}),
