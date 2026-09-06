@@ -1,0 +1,18 @@
+[Unit]
+Description=my-claw browser sidecar (Node + Playwright over CDP)
+After=my-claw-chromium.service
+Requires=my-claw-chromium.service
+
+[Service]
+Type=simple
+WorkingDirectory={{APP_DIR}}
+Environment=CDP_URL=http://127.0.0.1:9222
+Environment=PORT=9223
+ExecStart={{NODE}} {{APP_DIR}}/sidecar/server.mjs
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/my-claw/browser-sidecar.log
+StandardError=append:/var/log/my-claw/browser-sidecar.log
+
+[Install]
+WantedBy=default.target

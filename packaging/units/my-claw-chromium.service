@@ -1,0 +1,19 @@
+[Unit]
+Description=Chromium CDP for my-claw browser automation
+After=my-claw-xvfb.service
+Requires=my-claw-xvfb.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:99
+# Kill stale Chromium CDP from same user before starting
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "chromium.*9222" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
+# No --no-sandbox: the renderer sandbox is the one boundary between a page the agent was told to
+# open and this host, and it works here (unprivileged user namespaces are enabled). It was on the
+# command line as a habit, not for a reason -- verified by running this exact line without it.
+ExecStart=/usr/bin/chromium --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9222 --window-size=1920,1080 about:blank
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

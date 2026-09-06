@@ -1,0 +1,10 @@
+[Unit]
+Description=my-claw auto-update: check the registry and install the latest release
+After=my-claw.service
+
+[Service]
+Type=oneshot
+ExecStart={{APP_DIR}}/packaging/auto-update.sh
+
+[Install]
+WantedBy=default.target

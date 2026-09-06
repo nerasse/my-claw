@@ -1,9 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-# Install my-claw from tarball
+# Install my-claw from an extracted tarball.
 # Usage: sudo ./install.sh [--user <username>]
-# If --user not provided, detects from $SUDO_USER or asks
+# If --user is not given, the user is taken from $SUDO_USER, or asked.
+#
+# Root does the system side once: packages, /opt/my-claw and /var/log/my-claw handed to the
+# service user, linger, the /usr/local/bin/myclaw stub. Everything else, units included, is the
+# service user's (docs/install-layout.md), and the last step runs as that user.
 
 if [ "$EUID" -ne 0 ]; then
   echo "Error: run with sudo or as root"
@@ -12,8 +16,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+APP_DIR="/opt/my-claw"
 
-# Parse --user flag
 TARGET_USER=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,13 +34,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Detect target user
 if [ -z "$TARGET_USER" ]; then
   if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     TARGET_USER="$SUDO_USER"
     echo "Detected user from sudo: ${TARGET_USER}"
   else
-    read -p "Install my-claw for which user? " TARGET_USER
+    read -r -p "Install my-claw for which user? " TARGET_USER
     if [ -z "$TARGET_USER" ]; then
       echo "Error: username required"
       exit 1
@@ -48,187 +51,160 @@ if ! id -u "$TARGET_USER" >/dev/null 2>&1; then
   echo "Error: user '${TARGET_USER}' does not exist"
   exit 1
 fi
-
-TARGET_HOME="$(eval echo "~$TARGET_USER")"
-BUN_PATH="$(command -v bun || true)"
-PYTHON_PATH="$(command -v python3 || command -v python || true)"
-# Node runs the browser sidecar (Playwright connectOverCDP hangs under Bun).
-NODE_PATH="$(command -v node || true)"
-if [ -z "$NODE_PATH" ]; then
-  NODE_PATH="$(ls -1 ${TARGET_HOME}/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1 || true)"
-fi
-
-# If bun not in root PATH, check target user's home
-if [ -z "$BUN_PATH" ] && [ -x "${TARGET_HOME}/.bun/bin/bun" ]; then
-  BUN_PATH="${TARGET_HOME}/.bun/bin/bun"
-fi
-
-if [ -z "$BUN_PATH" ]; then
-  echo "Error: bun is required but not installed."
-  echo "Install it: curl -fsSL https://bun.sh/install | bash"
+if [ "$TARGET_USER" = "root" ]; then
+  echo "Error: my-claw runs as an unprivileged user, with an agent that has a shell. Create one and pass --user."
   exit 1
 fi
 
-if [ -z "$PYTHON_PATH" ]; then
-  echo "Error: python3 is required but not installed."
+if [ -f /etc/my-claw/.install-meta ] && [ ! -L "${APP_DIR}/current" ]; then
+  echo "An older my-claw install (root-owned, system units) is present."
+  echo "It moves to the new layout by itself with the next update: run 'sudo my-claw-update', or wait for the timer."
   exit 1
 fi
 
-# Node is required for the browser sidecar (Playwright connectOverCDP hangs under Bun). Without it
-# {{NODE}} renders empty and the sidecar unit flaps forever under Restart=always. Warn loudly; the
-# service generation below skips the sidecar when node is absent.
-if [ -z "$NODE_PATH" ]; then
-  echo "WARNING: node not found — the browser sidecar will be skipped (browsing disabled)."
-  echo "         Install Node.js and re-run the installer to enable it."
+TARGET_UID="$(id -u "$TARGET_USER")"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+VERSION="$(jq -r .version "${PROJECT_DIR}/package.json" 2>/dev/null || true)"
+if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+  echo "Error: cannot read the version from ${PROJECT_DIR}/package.json (is jq installed?)"
+  exit 1
 fi
 
-echo "Installing my-claw for user: ${TARGET_USER}"
+echo "Installing my-claw ${VERSION} for user: ${TARGET_USER}"
 echo "Home directory: ${TARGET_HOME}"
-echo "Bun path: ${BUN_PATH}"
 
-# Check and auto-install deps
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
 MISSING_BINS=""
-for dep in ffmpeg chromium Xvfb x11vnc websockify; do
+for dep in jq curl ffmpeg chromium Xvfb x11vnc websockify; do
   if ! command -v "$dep" >/dev/null 2>&1; then
     MISSING_BINS="$MISSING_BINS $dep"
   fi
 done
+# The user manager needs a session bus (dbus-user-session on Debian/Ubuntu); a server image
+# may lack it. Detected by the socket unit the package ships, not by the package name.
+if [ ! -e /usr/lib/systemd/user/dbus.socket ] && [ ! -e /lib/systemd/user/dbus.socket ]; then
+  MISSING_BINS="$MISSING_BINS dbus-user-session"
+fi
 
 if [ -n "$MISSING_BINS" ]; then
   echo ""
-  echo "Missing dependencies detected. Auto-installing..."
+  echo "Missing dependencies:${MISSING_BINS}. Installing..."
   echo ""
-
   if command -v apt-get >/dev/null 2>&1; then
-    echo "Detected: apt-get"
     apt-get update
-    apt-get install -y ffmpeg chromium xvfb x11vnc websockify
+    apt-get install -y jq curl ffmpeg chromium xvfb x11vnc websockify dbus-user-session
   elif command -v pacman >/dev/null 2>&1; then
-    echo "Detected: pacman"
-    pacman -S --needed --noconfirm ffmpeg chromium xorg-server-xvfb x11vnc python-websockify
+    pacman -S --needed --noconfirm jq curl ffmpeg chromium xorg-server-xvfb x11vnc python-websockify
   elif command -v dnf >/dev/null 2>&1; then
-    echo "Detected: dnf"
-    dnf install -y ffmpeg chromium Xvfb x11vnc python-websockify
+    dnf install -y jq curl ffmpeg chromium Xvfb x11vnc python-websockify
   else
-    echo "Warning: could not detect package manager. Install manually:"
-    echo "  ffmpeg, chromium, Xvfb, x11vnc, websockify"
+    echo "Warning: could not detect the package manager. Install by hand:"
+    echo "  jq curl ffmpeg chromium Xvfb x11vnc websockify, and the systemd user session bus"
   fi
   echo ""
 fi
 
-# Create directories
-mkdir -p /etc/my-claw
-mkdir -p "${TARGET_HOME}/.my-claw"
-mkdir -p /var/log/my-claw
-chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw"
+# Runtimes are checked here only to fail early with a clear message; the service user's copy
+# (~/.bun) counts, root's PATH rarely has it.
+if ! command -v bun >/dev/null 2>&1 && [ ! -x "${TARGET_HOME}/.bun/bin/bun" ]; then
+  echo "Error: bun is required. As ${TARGET_USER}: curl -fsSL https://bun.sh/install | bash"
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+  echo "Error: python3 is required but not installed."
+  exit 1
+fi
+if ! command -v node >/dev/null 2>&1 && ! ls "${TARGET_HOME}"/.nvm/versions/node/*/bin/node >/dev/null 2>&1; then
+  echo "WARNING: node not found. The browser sidecar will be skipped (browsing disabled)."
+  echo "         Install Node.js and run 'myclaw update --force' to enable it."
+fi
+
+# ---------------------------------------------------------------------------
+# Directories, all owned by the service user
+# ---------------------------------------------------------------------------
+mkdir -p "${TARGET_HOME}/.my-claw" "${TARGET_HOME}/.config/systemd/user" /var/log/my-claw
+chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw" "${TARGET_HOME}/.config" \
+  "${TARGET_HOME}/.config/systemd" "${TARGET_HOME}/.config/systemd/user"
 chown -R "${TARGET_USER}:${TARGET_USER}" /var/log/my-claw
 
-# Install app to /opt
-APP_DIR="/opt/my-claw"
-mkdir -p "${APP_DIR}"
-rm -rf "${APP_DIR}"/*
-cp -r "${PROJECT_DIR}"/* "${APP_DIR}/"
-chown -R root:root "${APP_DIR}"
-
-# Install config templates
-if [ ! -f /etc/my-claw/config.json ]; then
-  cp "${PROJECT_DIR}/etc/config.json" /etc/my-claw/
-  # 600 like the .env beside it: this file carries provider API keys and every paired device's
-  # token, and it was world-readable on a machine that runs an agent with a shell.
-  chmod 600 /etc/my-claw/config.json
-  echo "Installed config template to /etc/my-claw/config.json"
-fi
-
-if [ ! -f /etc/my-claw/.env ]; then
-  cp "${PROJECT_DIR}/etc/.env.example" /etc/my-claw/.env
-  chmod 600 /etc/my-claw/.env
-  echo "Installed env template to /etc/my-claw/.env"
-fi
-
-# Install config in user home (where the app reads it)
+# Config and secrets live in the user's home, where the server reads them. 600: the config
+# carries provider keys and every paired device's token, on a machine that runs an agent with
+# a shell.
 if [ ! -f "${TARGET_HOME}/.my-claw/config.json" ]; then
-  cp "${PROJECT_DIR}/etc/config.json" "${TARGET_HOME}/.my-claw/"
-  chmod 600 "${TARGET_HOME}/.my-claw/config.json"
-  chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json"
+  cp "${PROJECT_DIR}/etc/config.json" "${TARGET_HOME}/.my-claw/config.json"
+  echo "Installed config template to ${TARGET_HOME}/.my-claw/config.json"
 fi
+if [ ! -f "${TARGET_HOME}/.my-claw/.env" ]; then
+  cp "${PROJECT_DIR}/etc/.env.example" "${TARGET_HOME}/.my-claw/.env"
+  echo "Installed env template to ${TARGET_HOME}/.my-claw/.env"
+fi
+chmod 600 "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
+chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
 
-# Generate systemd services from templates
-for template in "${PROJECT_DIR}/templates/"*.service; do
-  [ -e "$template" ] || continue
-  svc_name="$(basename "$template")"
-  if [ "$svc_name" = "my-claw-browser-sidecar.service" ] && [ -z "$NODE_PATH" ]; then
-    continue
-  fi
-  sed -e "s|{{USER}}|${TARGET_USER}|g" \
-      -e "s|{{HOME}}|${TARGET_HOME}|g" \
-      -e "s|{{BUN}}|${BUN_PATH}|g" \
-      -e "s|{{NODE}}|${NODE_PATH}|g" \
-      -e "s|{{PYTHON}}|${PYTHON_PATH}|g" \
-      -e "s|{{APP_DIR}}|${APP_DIR}|g" \
-      "$template" > "/etc/systemd/system/${svc_name}"
-  chmod 644 "/etc/systemd/system/${svc_name}"
-done
-
-# Timer units carry no placeholders.
-for template in "${PROJECT_DIR}/templates/"*.timer; do
-  [ -e "$template" ] || continue
-  svc_name="$(basename "$template")"
-  cp "$template" "/etc/systemd/system/${svc_name}"
-  chmod 644 "/etc/systemd/system/${svc_name}"
-done
-
-# Install update script
-cp "${SCRIPT_DIR}/update.sh" /usr/local/bin/my-claw-update
-chmod 755 /usr/local/bin/my-claw-update
-
-# Install auto-update gate
-cp "${SCRIPT_DIR}/auto-update.sh" /usr/local/bin/my-claw-auto-update
-chmod 755 /usr/local/bin/my-claw-auto-update
-
-# Install CLI wrapper
-cp "${APP_DIR}/scripts/myclaw.sh" /usr/local/bin/myclaw
-chmod 755 /usr/local/bin/myclaw
-
-# Store install metadata for update/uninstall
-mkdir -p /etc/my-claw
-cat > /etc/my-claw/.install-meta <<EOF
+# The tree: one release directory, `current` pointing at it. A reinstall of the same version
+# replaces the directory; another version becomes current and the old one the rollback.
+mkdir -p "${APP_DIR}/releases"
+PREVIOUS=""
+if [ -L "${APP_DIR}/current" ]; then
+  PREVIOUS="$(readlink "${APP_DIR}/current")"
+fi
+rm -rf "${APP_DIR}/releases/${VERSION}" "${APP_DIR}"/releases/.staging-*
+cp -a "$PROJECT_DIR" "${APP_DIR}/releases/.staging-$$"
+mv "${APP_DIR}/releases/.staging-$$" "${APP_DIR}/releases/${VERSION}"
+ln -sfn "releases/${VERSION}" "${APP_DIR}/current.tmp"
+mv -T "${APP_DIR}/current.tmp" "${APP_DIR}/current"
+if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "releases/${VERSION}" ] && [ -d "${APP_DIR}/${PREVIOUS}" ]; then
+  ln -sfn "$PREVIOUS" "${APP_DIR}/prev.tmp"
+  mv -T "${APP_DIR}/prev.tmp" "${APP_DIR}/prev"
+fi
+cat > "${APP_DIR}/.install-meta" <<EOF
 USER=${TARGET_USER}
 HOME=${TARGET_HOME}
 APP_DIR=${APP_DIR}
 EOF
-chmod 644 /etc/my-claw/.install-meta
+chown -R "${TARGET_USER}:${TARGET_USER}" "$APP_DIR"
 
-# A hand-rolled user-session browser stack (~/.config/systemd/user/{xvfb,x11vnc,novnc,
-# chromium-cdp}.service) squats :99, :5900 and :6080 and starves these units: novnc then
-# crash-loops on EADDRINUSE while the stale viewer shows a second Chromium the sidecar
-# does not drive. Best-effort: no user session, nothing to disable.
+# The one file outside the user's ownership: a stub that forwards to the tree, dropping root
+# to the service user first.
+install -m 755 -o root -g root "${APP_DIR}/current/packaging/myclaw-stub.sh" /usr/local/bin/myclaw
+
+# A hand-rolled login-session browser stack (~/.config/systemd/user/{xvfb,x11vnc,novnc,
+# chromium-cdp}.service) squats :99, :5900 and :6080 and starves the units.
 for unit in xvfb x11vnc novnc chromium-cdp; do
   [ -f "${TARGET_HOME}/.config/systemd/user/${unit}.service" ] || continue
-  if runuser -u "${TARGET_USER}" -- env "XDG_RUNTIME_DIR=/run/user/$(id -u "${TARGET_USER}")" \
+  if runuser -u "${TARGET_USER}" -- env "XDG_RUNTIME_DIR=/run/user/${TARGET_UID}" \
+    "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus" \
     systemctl --user disable --now "${unit}.service" >/dev/null 2>&1; then
     echo "Disabled conflicting user unit: ${unit}.service"
   fi
 done
 
-# Reload systemd
-systemctl daemon-reload
-
-# Enable services
-systemctl enable my-claw-xvfb.service
-systemctl enable my-claw-chromium.service
-[ -n "$NODE_PATH" ] && systemctl enable my-claw-browser-sidecar.service
-systemctl enable my-claw-whisper.service
-systemctl enable my-claw-vnc.service
-systemctl enable my-claw-novnc.service
-systemctl enable my-claw.service
-systemctl enable my-claw-auto-update.timer
+# ---------------------------------------------------------------------------
+# The user manager: started at boot without a login, and reachable now
+# ---------------------------------------------------------------------------
+loginctl enable-linger "$TARGET_USER"
+for _ in $(seq 1 30); do
+  [ -S "/run/user/${TARGET_UID}/bus" ] && break
+  sleep 0.5
+done
+if [ ! -S "/run/user/${TARGET_UID}/bus" ]; then
+  echo "Error: no session bus at /run/user/${TARGET_UID}/bus. Is dbus-user-session installed and systemd-logind running?"
+  exit 1
+fi
 
 echo ""
-echo "my-claw installed for user: ${TARGET_USER}"
-echo "Next steps:"
-echo "  1. Edit /etc/my-claw/.env with your secrets"
-echo "  2. Edit ${TARGET_HOME}/.my-claw/config.json if needed"
-echo "  3. Start: sudo systemctl start my-claw"
-echo "  4. Check: sudo systemctl status my-claw"
+echo "Activating as ${TARGET_USER}..."
+runuser -u "$TARGET_USER" -- env "HOME=${TARGET_HOME}" "XDG_RUNTIME_DIR=/run/user/${TARGET_UID}" \
+  "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${TARGET_UID}/bus" \
+  "${APP_DIR}/current/packaging/update.sh" --activate
+
 echo ""
-echo "Update later with: sudo my-claw-update"
+echo "my-claw ${VERSION} installed for ${TARGET_USER}."
+echo "Next steps (as ${TARGET_USER}, no sudo):"
+echo "  1. Put your keys in ${TARGET_HOME}/.my-claw/.env (picked up live, no restart)"
+echo "  2. Pair a device: myclaw device add"
+echo "  3. Check: myclaw status"
+echo ""
+echo "Updates: myclaw update (the timer also checks every 15 minutes)"

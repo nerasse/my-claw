@@ -101,12 +101,14 @@ Traps:
 - REST reads need auth (private repo); unauth 404 reads as `target couldn't be found`. Prefer `fj`, it carries its own token.
 - `release.yml` fails on tag ≠ `package.json`. Keep that step.
 - Prod is never touched by hand. `my-claw-auto-update.timer` (15 min) skips while a run is in flight — an agent releasing from a my-claw session *is* that run, so the first tick skips. The user runs the update.
+- The install belongs to the service user: `/opt/my-claw/current` → `releases/<v>`, systemd **user** units, no sudo anywhere (`docs/install-layout.md`). `myclaw update` runs as that user; `sudo myclaw` drops to it.
 
 Quick log check:
 ```sh
-journalctl -u my-claw.service --since "5 min ago" --no-pager | tail -30   # boot errors
+tail -30 /var/log/my-claw/my-claw.log                                     # boot errors (unit stdout/stderr)
+journalctl --user -u my-claw.service --since "5 min ago" --no-pager | tail -30
 ss -tlnp | grep 8080                                                      # up?
-grep -m1 '"version"' /opt/my-claw/package.json                            # deployed version
+grep -m1 '"version"' /opt/my-claw/current/package.json                    # deployed version
 tail -f ~/.my-claw/logs/my-claw-app-$(date +%F).log | jq -c '{t:.timestamp,m:.message,d:.data}'
 ```
 Reading a red CI (job logs *are* reachable, contrary to the `forgejo` skill):

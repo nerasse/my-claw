@@ -1,0 +1,13 @@
+[Unit]
+Description=Faster Whisper STT server for my-claw
+
+[Service]
+Type=simple
+# Kill stale Whisper server from same user before starting
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "whisper-server.py" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
+ExecStart={{PYTHON}} {{APP_DIR}}/packaging/whisper-server.py --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

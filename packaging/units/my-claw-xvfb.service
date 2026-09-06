@@ -1,0 +1,13 @@
+[Unit]
+Description=Xvfb for my-claw
+
+[Service]
+Type=simple
+# If another Xvfb already holds :99 (a leftover login-session stack), stop it first
+ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "Xvfb :99" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -noreset
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

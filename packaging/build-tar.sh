@@ -37,6 +37,8 @@ cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
 # Sourced by both updaters out of the installed tree: without it in the tarball, the deployed
 # machine warns and never moves its web bundle again.
 cp "${SCRIPT_DIR}/web-bundle.sh" "${TAR_DIR}/packaging/"
+# The /usr/local/bin/myclaw stub, installed once by install.sh or the migration.
+cp "${SCRIPT_DIR}/myclaw-stub.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
 # The local STT sidecar the whisper unit runs. Without it in the tarball the unit points at a file
 # that is not there, which is the shape of the bug it replaces.
@@ -55,7 +57,16 @@ cp "${SCRIPT_DIR}/.env.example" "${TAR_DIR}/etc/"
 chmod 644 "${TAR_DIR}/etc/config.json"
 chmod 600 "${TAR_DIR}/etc/.env.example"
 
-# Copy systemd unit templates (services and timers)
+# systemd user units, what an install runs (docs/install-layout.md)
+mkdir -p "${TAR_DIR}/units"
+cp "${SCRIPT_DIR}/units/"*.service "${TAR_DIR}/units/"
+cp "${SCRIPT_DIR}/units/"*.timer "${TAR_DIR}/units/"
+chmod 644 "${TAR_DIR}/units/"*.service "${TAR_DIR}/units/"*.timer
+
+# Legacy system unit templates. An install that predates user units checks for this directory
+# before accepting a tarball and renders these to run the release until its own migration tick;
+# a migration that fails also falls back on them. Drop together with install_legacy_root once
+# no 0.5.x install is left.
 mkdir -p "${TAR_DIR}/templates"
 cp "${SCRIPT_DIR}/templates/"*.service "${TAR_DIR}/templates/"
 cp "${SCRIPT_DIR}/templates/"*.timer "${TAR_DIR}/templates/"

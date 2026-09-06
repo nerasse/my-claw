@@ -1,26 +1,26 @@
 # Auto-update
 
 my-claw can keep itself current: a systemd timer asks the Forgejo registry every 15 minutes and,
-when a newer release exists, runs the same swap `sudo myclaw update` would. The same tick then
+when a newer release exists, runs the same swap `myclaw update` would. The same tick then
 brings the web client bundle to the latest app release.
 
-Two artifacts, one timer, one credential: the `FORGEJO_TOKEN` in `/etc/my-claw/.env` reads both
+Two artifacts, one timer, one credential: the `FORGEJO_TOKEN` in `~/.my-claw/.env` reads both
 the generic package registry (the server) and the private release assets of `claw/my-claw-app`
 (the bundle).
 
 ## Pieces
 
-- `packaging/auto-update.sh` — the decision script, installed as `/usr/local/bin/my-claw-auto-update`.
-  It compares the installed version (`/opt/my-claw/package.json`) against the latest `my-claw`
+- `packaging/auto-update.sh` — the decision script, run out of the tree (`/opt/my-claw/current/packaging/`).
+  It compares the installed version (`/opt/my-claw/current/package.json`) against the latest `my-claw`
   generic package version, then delegates to `my-claw-update`. It never installs anything itself:
   the updater owns the lock, the staging, the atomic swap, the rollback and the post-start health
   check.
-- `templates/my-claw-auto-update.timer` — `OnBootSec=3min`, `OnUnitActiveSec=15min`,
+- `units/my-claw-auto-update.timer` — `OnBootSec=3min`, `OnUnitActiveSec=15min`,
   `Persistent=true`. Enabled by the installer/updater; disable with
-  `sudo systemctl disable --now my-claw-auto-update.timer`.
-- `templates/my-claw-auto-update.service` — a root `oneshot` running the script; output lands in
+  `systemctl --user disable --now my-claw-auto-update.timer` (as the service user).
+- `units/my-claw-auto-update.service` — a `oneshot` of the service user's manager running the script; output lands in
   journald only.
-- `templates/` and `/usr/local/bin` copies are re-installed on every update, so the mechanism
+- `units/` are re-rendered on every update, so the mechanism
   keeps shipping itself.
 
 ## The health gate
@@ -37,7 +37,7 @@ The swap window stops the services, so an update must never interrupt a live age
      a run the gate cannot see.
 
 A run starting between the check and the swap stays interruptible, exactly like a manual
-`sudo myclaw update` today — the race is inherent to any updater and the updater's rollback
+`myclaw update` today — the race is inherent to any updater and the updater's rollback
 covers the result.
 
 ## The web client bundle
@@ -49,7 +49,7 @@ gate to protect. `myclaw web use <version>` is the rollback, and it is instant f
 reason.
 
 The steps live in `packaging/web-bundle.sh`, sourced by both updaters rather than written twice:
-the timer runs it once the server is already current, and `sudo myclaw update` runs it after a
+the timer runs it once the server is already current, and `myclaw update` runs it after a
 successful server update. Two copies of this logic is how the timer and the manual command end
 up with two ideas of what "up to date" means.
 
@@ -72,12 +72,12 @@ An open tab keeps running the JavaScript it loaded until it is reloaded; nothing
 bundle into a live page. The service worker is network-first on the shell and `index.js` is
 served `no-cache`, so a reload is enough and no cache has to be cleared.
 
-### `sudo myclaw update` moves it too
+### `myclaw update` moves it too
 
 A human running the updater by hand wants the same machine the timer would produce, so the
 bundle is part of that command as well. Three rules make it safe:
 
-1. **Only for `latest`.** `sudo myclaw update 0.4.1` pins a version, which is a downgrade or a
+1. **Only for `latest`.** `myclaw update 0.4.1` pins a version, which is a downgrade or a
    repair, and pulling the newest bundle behind it would put the bundle in front of the server.
    A pinned run says so and leaves the bundle alone.
 2. **After the swap and after the health check.** A server that failed to come up is rolled back,
@@ -95,7 +95,7 @@ Settings > General > maintenance has an "Update server" action. It does not impl
 it sends `update.run`, and the server asks systemd to run the same unit the timer runs.
 
 ```
-app  ──update.run──►  server  ──sudo -n systemctl start --no-block my-claw-auto-update.service
+app  ──update.run──►  server  ──systemctl --user start --no-block my-claw-auto-update.service
                         │
                         └──update.result──►  app        (sent first, on purpose)
                                              socket dies when the swap window stops the service
@@ -116,15 +116,11 @@ Four decisions worth stating:
 - **The result frame is a decision, not an outcome.** It says whether the unit was started, plus
   the version currently running. What was actually installed is the version of the `hello` after
   reconnecting: identical version means the registry had nothing new, which the screen says
-  instead of inventing progress. The daemon runs as the service user and cannot read a root
-  unit's journal, so there is no output to stream and none is faked.
-- **One privilege, one command.** The service user needs exactly this, and nothing else:
-
-  ```
-  # /etc/sudoers.d/my-claw-update
-  neras ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block my-claw-auto-update.service
-  ```
-
-  Without it the frame comes back `reason: "denied"` with sudo's own message in `detail`, so the
-  screen names the missing drop-in rather than showing a button that does nothing. A machine whose
-  service user already has blanket NOPASSWD sudo needs no drop-in at all.
+  instead of inventing progress. The unit's output goes to the journal of the user manager, not
+  to the app, so there is no output to stream and none is faked.
+- **No privilege.** The unit belongs to the service user's own manager (`install-layout.md`), so
+  the server starts it with `systemctl --user` and nothing else. An install that has not moved to
+  user units yet still has it as a root unit; there the server falls back to the one `sudo -n`
+  command the legacy installer documented, and without that drop-in the frame comes back
+  `reason: "denied"` with sudo's message in `detail`. Once the install has moved, sudo is never
+  spawned.

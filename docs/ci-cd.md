@@ -54,12 +54,12 @@ Basic Auth format: `--user "${FORGEJO_USER}:${FORGEJO_TOKEN}"`
 | Script | Role | Runs as |
 |---|---|---|
 | `packaging/build-tar.sh` | Build `dist/my-claw-{VERSION}-linux-x64.tar.gz` | Any |
-| `packaging/install.sh` | Install to `/opt/my-claw`, systemd services, CLI | `root` |
-| `packaging/uninstall.sh` | Remove `/opt/my-claw`, services, CLI, `/etc/my-claw` | `root` |
-| `packaging/update.sh` | Download latest tarball, replace `/opt/my-claw`, restart services | `root` |
+| `packaging/install.sh` | Install to `/opt/my-claw/releases/<v>`, hand the tree to the service user, linger, stub; then activate as that user | `root` (once) |
+| `packaging/uninstall.sh` | Remove `/opt/my-claw`, user and legacy units, CLI, `/etc/my-claw*` | `root` |
+| `packaging/update.sh` | Download tarball, stage `releases/<v>`, flip `current`, render user units, restart, health gate, rollback | service user |
 | `packaging/install-remote.sh` | One-liner: download tarball from registry, run install.sh | Any (calls sudo) |
 | `packaging/cleanup-versions.sh` | Keep last N versions in Package Registry | Any |
-| `scripts/myclaw.sh` | CLI: `start`, `stop`, `restart`, `status`, `dev`, `update` | `root` for start/stop/restart/update |
+| `scripts/myclaw.sh` | CLI: `start`, `stop`, `restart`, `status`, `logs`, `dev`, `update`, `device`, `web`, `codex`, `claude` | service user (root is dropped to it) |
 | `scripts/dev.sh` | Stop main app, keep deps, run `bun --watch` | Any (calls sudo to stop/start systemd) |
 
 ## Install / Update / Uninstall Cycle
@@ -71,7 +71,7 @@ cd my-claw-0.1.11-linux-x64
 sudo ./packaging/install.sh --user neras
 ```
 
-Auto-detects bun in target user's `~/.bun/bin` if not in root PATH.
+Auto-detects bun in target user's `~/.bun/bin` if not in root PATH. Refuses `--user root`.
 Auto-installs missing deps (`ffmpeg`, `chromium`, `Xvfb`, `x11vnc`, `websockify`) via apt/pacman/dnf.
 
 ### Fresh install (remote one-liner)
@@ -83,12 +83,12 @@ curl -fsSL https://git.kssimi.fr/claw/my-claw/raw/main/packaging/install-remote.
 ### Update
 
 ```bash
-sudo myclaw update
+myclaw update
 # or
-sudo my-claw-update [version]
+myclaw update [version] [--force] [--file <tarball>]
 ```
 
-Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `/etc/my-claw/.env`. Backs up `config.json` before overwrite.
+Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `~/.my-claw/.env`. Layout, ownership and migration of older installs: `install-layout.md`.
 
 Without a version argument it also brings the web client bundle to the latest app release, the
 same step the timer runs (`docs/auto-update.md`). With a pinned version it leaves the bundle
@@ -115,7 +115,7 @@ Both do the same thing. `package.json` defines `"dev": "bash scripts/dev.sh"`.
 ### Uninstall
 
 ```bash
-sudo /opt/my-claw/packaging/uninstall.sh
+sudo /opt/my-claw/current/packaging/uninstall.sh
 ```
 
 Preserves `~/.my-claw/` (user data, sessions, workspace).
@@ -137,13 +137,15 @@ my-claw-{VERSION}-linux-x64/
 ├── etc/
 │   ├── config.json       # Default config template
 │   └── .env.example      # Env template
+├── units/
+│   └── *.service|*.timer # systemd user units, rendered into ~/.config/systemd/user/ at each update
 └── templates/
-    └── *.service         # Systemd service templates
+    └── *.service         # Legacy system unit templates, for installs that have not migrated yet
 ```
 
 ## Service Templates
 
-Templates in `packaging/templates/` use `{{USER}}`, `{{HOME}}`, `{{BUN}}`, `{{PYTHON}}`, `{{APP_DIR}}`. Replaced at install/update time by `sed`.
+Units in `packaging/units/` (and the legacy `packaging/templates/`) use `{{USER}}`, `{{HOME}}`, `{{BUN}}`, `{{NODE}}`, `{{PYTHON}}`, `{{APP_DIR}}`. Replaced at install/update time by `sed`; `{{APP_DIR}}` is `/opt/my-claw/current`, so a rollback flip needs no re-render to point units at the right tree.
 
 Services: `my-claw-xvfb`, `my-claw-chromium`, `my-claw-browser-sidecar`, `my-claw-whisper`, `my-claw-vnc`, `my-claw-novnc`, `my-claw`.
 

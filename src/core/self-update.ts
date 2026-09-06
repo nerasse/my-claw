@@ -3,12 +3,18 @@ import { runRegistry } from "./run-registry.ts";
 /**
  * Firing the maintenance gate on demand.
  *
- * The gate itself is `/usr/local/bin/my-claw-auto-update`, a root oneshot unit the timer runs
- * every 15 minutes (docs/auto-update.md). It already owns the registry check, the lock, the
- * atomic swap, the rollback, the health check and the web bundle. Nothing of that is reimplemented
- * here: this asks systemd to run the unit now instead of at the next tick.
+ * The gate itself is `packaging/auto-update.sh`, the oneshot unit the timer runs every 15
+ * minutes (docs/auto-update.md). It already owns the registry check, the lock, the atomic flip,
+ * the rollback, the health check and the web bundle. Nothing of that is reimplemented here: this
+ * asks systemd to run the unit now instead of at the next tick.
  *
- * Two properties matter.
+ * Three properties matter.
+ *
+ * The unit belongs to the service user's own manager (docs/install-layout.md), so the server
+ * starts it with `systemctl --user` and no privilege at all. An install that has not moved to
+ * user units yet still has it as a root unit: there the user manager does not know it, and the
+ * one `sudo -n` the legacy installer granted is tried second. Once the install has moved, sudo is
+ * never spawned.
  *
  * `--no-block` because the unit is a oneshot that stops `my-claw.service` in its swap window: a
  * blocking `systemctl start` would wait for a job whose first act is to kill the caller, so the
@@ -34,16 +40,21 @@ export interface UpdateOutcome {
 /** Injected in tests: spawning systemd is the one thing that cannot run in a unit test. */
 export type UnitStarter = (unit: string) => Promise<{ code: number; stderr: string }>;
 
-const startUnit: UnitStarter = async (unit) => {
-  // sudo -n: never prompt. The installer grants exactly this command to the service user, so a
-  // failure here means the drop-in is missing, and hanging on a password prompt would be worse.
-  const proc = Bun.spawn(["sudo", "-n", "systemctl", "start", "--no-block", unit], {
-    stdout: "ignore",
-    stderr: "pipe",
-  });
+async function run(cmd: string[]): Promise<{ code: number; stderr: string }> {
+  const proc = Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe" });
   const stderr = await new Response(proc.stderr).text();
   const code = await proc.exited;
   return { code, stderr: stderr.trim() };
+}
+
+const startUnit: UnitStarter = async (unit) => {
+  const own = await run(["systemctl", "--user", "start", "--no-block", unit]);
+  if (own.code === 0) return own;
+  // sudo -n: never prompt. A legacy install granted exactly this command to the service user, so
+  // a failure here means the drop-in is missing, and hanging on a password prompt would be worse.
+  const legacy = await run(["sudo", "-n", "systemctl", "start", "--no-block", unit]);
+  if (legacy.code === 0) return legacy;
+  return { code: legacy.code, stderr: [own.stderr, legacy.stderr].filter(Boolean).join(" | ") };
 };
 
 export async function requestSelfUpdate(starter: UnitStarter = startUnit): Promise<UpdateOutcome> {

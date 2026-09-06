@@ -1,0 +1,24 @@
+[Unit]
+Description=my-claw - personal AI agent
+After=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service my-claw-whisper.service
+# Wants (not Requires): browsing is optional. A failing Xvfb/Chromium must not take the whole
+# assistant down with it.
+Wants=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service
+
+[Service]
+Type=simple
+WorkingDirectory={{HOME}}
+# No EnvironmentFile: the server loads {{HOME}}/.my-claw/.env itself at boot and hot-reloads it.
+Environment="PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
+ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
+Restart=always
+RestartSec=5
+# The agent spawns arbitrary children via its bash tool (ffmpeg, demucs, ML jobs...). When the
+# kernel OOM-kills such a child, the agent must survive to report the failure. The default
+# policy would tear the whole service down and lose any in-flight response.
+OOMPolicy=continue
+StandardOutput=append:/var/log/my-claw/my-claw.log
+StandardError=append:/var/log/my-claw/my-claw.log
+
+[Install]
+WantedBy=default.target

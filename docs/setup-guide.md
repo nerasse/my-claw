@@ -136,32 +136,41 @@ FORGEJO_URL=https://mon.forgejo.fr FORGEJO_TOKEN=... bash install-remote.sh
 
 ### 6.2 Ce que fait l'installer
 
-- `/opt/my-claw` (l'application, root:root), `/etc/my-claw/` (`.env`, `.install-meta`),
-  `~/.my-claw/` (config, sessions, web, workspace, logs d'app), `/var/log/my-claw/`.
-- `/usr/local/bin/{myclaw,my-claw-update,my-claw-auto-update}`.
-- Unités systemd générées depuis les templates (user, home, buns, chemins interpolés).
-- `systemctl enable` de tout, y compris le timer d'auto-update.
+Root ne fait que la partie système, une fois ; tout le reste appartient à l'utilisateur de
+service et tourne sous **son** systemd (`systemctl --user`). Voir `docs/install-layout.md`.
+
+- Paquets manquants (`ffmpeg`, `chromium`, `Xvfb`, `x11vnc`, `websockify`, `jq`, `dbus-user-session`).
+- `/opt/my-claw/` (à l'utilisateur) : `releases/<version>/`, `current` → la release live,
+  `.install-meta`. `/var/log/my-claw/` (à l'utilisateur).
+- `~/.my-claw/` : `config.json`, `.env` (secrets, 600), puis sessions, web, workspace, logs d'app.
+- `loginctl enable-linger <user>` : le manager de l'utilisateur démarre au boot sans session.
+- `/usr/local/bin/myclaw` : un stub root qui redescend vers l'utilisateur avant d'exécuter quoi
+  que ce soit de l'arbre (`sudo myclaw ...` marche par habitude, sans jamais exécuter de fichier
+  utilisateur en root).
+- Puis, **en tant que l'utilisateur** : unités rendues depuis `units/` dans
+  `~/.config/systemd/user/`, `enable`, démarrage, health gate, bundle web si le token est là.
 - Désactivation (best-effort) de services user conflictuels (`xvfb`, `x11vnc`, `novnc`, `chromium-cdp`).
 
 ### 6.3 Vérification
 
 ```bash
-systemctl status my-claw --no-pager | head -20     # active (running)
+myclaw status                                      # active (running), en tant que l'utilisateur
 ss -tlnp | grep 8080                               # LISTEN *:8080 bun
-ls -la /opt/my-claw/package.json && grep -m1 '"version"' /opt/my-claw/package.json
+readlink /opt/my-claw/current && grep -m1 '"version"' /opt/my-claw/current/package.json
 ```
 
 ---
 
 ## 7. Configuration
 
-Le serveur lit **`~/.my-claw/config.json`** (config de l'app) et les secrets dans **`/etc/my-claw/.env`**
-(EnvironmentFile du service systemd). Les deux sont créés par l'installer à partir des templates.
+Le serveur lit **`~/.my-claw/config.json`** (config de l'app) et les secrets dans
+**`~/.my-claw/.env`**. Les deux sont créés par l'installer à partir des templates, et **relus à
+chaud** : éditer `.env` ou `config.json` ne demande pas de redémarrage.
 
 ### 7.1 Le fichier `.env`
 
 ```bash
-sudo vim /etc/my-claw/.env     # puis chmod 600 est déjà fait
+vim ~/.my-claw/.env     # en tant que l'utilisateur de service ; chmod 600 est déjà fait
 ```
 
 Valeurs minimales pour démarrer + rester à jour :
@@ -177,8 +186,9 @@ FORGEJO_TOKEN=ton_token_forgejo
 Optionnel : `GROQ_API_KEY` (STT cloud), `GEOAPIFY_API_KEY` (localisation),
 `CLAUDE_CODE_OAUTH_TOKEN` (backend Claude abonnement), `MY_CLAW_WEB_SEARCH_TOKEN` (SearXNG protégé).
 
-`myclaw` lit le `.env` du **user** (`~/.my-claw/.env`) ; le daemon lit `/etc/my-claw/.env`
-(via systemd) **et** `~/.my-claw/.env`. En cas de doute : mettre les clés dans `/etc/my-claw/.env`.
+Le daemon, `myclaw` et l'updater lisent tous le même fichier, `~/.my-claw/.env`. Une install
+plus ancienne avait un second exemplaire dans `/etc/my-claw/.env` : sa migration l'a fusionné ici
+et a laissé la copie root dans `/etc/my-claw.migrated/` (à supprimer quand vous êtes sûr).
 
 ### 7.2 Choisir un modèle LLM — depuis l'app (recommandé) ou à la main
 
@@ -317,17 +327,17 @@ Exemple :
 Le serveur ne porte **pas** le client web : il l'installe. Depuis le forge privé (token requis) :
 
 ```bash
-sudo myclaw web install latest        # ⚠️ n'existe PAS : il faut une version précise
+myclaw web install latest        # ⚠️ n'existe PAS : il faut une version précise
 ```
 
 ```bash
-sudo myclaw web install 0.5.53       # la version voulue (le plus récent des tags my-claw-app)
-sudo myclaw web ls                    # versions installées + laquelle est current
-sudo myclaw web use <version>         # rollback instantané (symlink)
-sudo myclaw web rm <version>          # purge (jamais la version derrière current)
+myclaw web install 0.5.53       # la version voulue (le plus récent des tags my-claw-app)
+myclaw web ls                    # versions installées + laquelle est current
+myclaw web use <version>         # rollback instantané (symlink)
+myclaw web rm <version>          # purge (jamais la version derrière current)
 ```
 
-> **Quelle version ?** `sudo myclaw web ls` puis ouvrir la release la plus récente de
+> **Quelle version ?** `myclaw web ls` puis ouvrir la release la plus récente de
 > `claw/my-claw-app` sur le forge (ou faire confiance à l'auto-update : le timer installe le
 > bundle **derrière** le serveur à jour — c'est la seule voie `latest` réellement disponible).
 
@@ -404,7 +414,7 @@ Un seul mot d'ordre, quel que soit le client : **le serveur m'int, le client ré
 ### 10.1 Client web
 
 ```bash
-sudo myclaw device add --name "Bureau" --kind web --owner ton_owner
+myclaw device add --name "Bureau" --kind web --owner ton_owner
 ```
 
 Sortie (à copier telle quelle) :
@@ -426,7 +436,7 @@ vérification + l'origine + IP avant d'approuver (anti-phishing).
 ### 10.2 Client Android (app)
 
 ```bash
-sudo myclaw device add --name "Phone" --kind app --owner ton_owner
+myclaw device add --name "Phone" --kind app --owner ton_owner
 ```
 
 1. Installer l'APK (release `my-claw-app-v0.5.53.apk` du forge).
@@ -453,7 +463,7 @@ Plus maintenant.
 ### 10.3 Vérification
 
 ```bash
-sudo myclaw device ls
+myclaw device ls
 # → web-a3f19c22  web  owner=...  "Bureau"  last seen ...
 myclaw device rm <deviceId>       # révoquer
 myclaw device disable <deviceId>  # fermer la porte sans supprimer
@@ -480,27 +490,33 @@ sinon local. Si aucun backend n'est disponible, la fonctionnalité est simplemen
 ## 12. Mises à jour
 
 ```bash
-sudo myclaw update              # dernier release serveur + bundle web (si "latest")
-sudo myclaw update 0.4.70       # épingler une version (pas de bundle)
+myclaw update                   # dernier release serveur + bundle web (si "latest"), sans sudo
+myclaw update 0.6.1             # épingler une version (pas de bundle)
+myclaw update --file my-claw-0.6.1-linux-x64.tar.gz   # depuis un tarball local
 ```
+
+Tout se passe sous l'utilisateur de service : téléchargement, vérification, staging complet,
+arrêt, bascule du lien `current`, rendu des unités depuis la release, démarrage, health gate. Un
+échec après la bascule rebascule sur `prev` et redémarre. Détails : `docs/install-layout.md`.
 
 **Auto-update** : timer systemd toutes les 15 min. Il vérifie le registry, et **ne touche jamais
 une run en cours** (health gate : `GET /health` répond `activeRun` ; si `true`, il temporise).
 Une fois le serveur à jour, il installe le bundle web (règle : le bundle ne devance jamais le serveur).
 
-**Rollback** : `/opt/my-claw.prev` conserve la version précédente jusqu'au prochain `update`.
-Restauration manuelle : `sudo systemctl stop my-claw && sudo mv /opt/my-claw.prev /opt/my-claw && sudo systemctl start my-claw`.
-Pour le bundle : `sudo myclaw web use <version>`.
+**Rollback** : `/opt/my-claw/prev` pointe sur la release précédente jusqu'au prochain `update`.
+Le plus simple : `myclaw update <version précédente>`. Hors ligne : `systemctl --user stop my-claw`,
+repointer `current` sur la cible de `prev` (`ln -sfn`), `systemctl --user start my-claw`.
+Pour le bundle : `myclaw web use <version>`.
 
 ---
 
 ## 13. Guide complet de vérification post-install
 
 ```bash
-# 1. Services
-systemctl is-active my-claw my-claw-xvfb my-claw-chromium          # → active active active
-systemctl is-active my-claw-browser-sidecar                        # active si Node installé
-systemctl list-timers my-claw-auto-update.timer --no-pager         # next run dans < 15 min
+# 1. Services (en tant que l'utilisateur de service)
+systemctl --user is-active my-claw my-claw-xvfb my-claw-chromium   # → active active active
+systemctl --user is-active my-claw-browser-sidecar                 # active si Node installé
+systemctl --user list-timers my-claw-auto-update.timer --no-pager  # next run dans < 15 min
 
 # 2. Ports
 ss -tlnp | grep -E '8080|9222|9223|8000'
@@ -513,7 +529,8 @@ curl -fsS http://127.0.0.1:8080/ | grep -q "<html" && echo "bundle OK"
 curl -fsS "http://127.0.0.1:8888/search?q=test&format=json" | head -c 80
 
 # 5. Logs (boot propre)
-sudo journalctl -u my-claw --since "5 min ago" --no-pager | tail -20
+tail -50 /var/log/my-claw/my-claw.log                   # ou: myclaw logs
+journalctl --user -u my-claw --since "5 min ago" --no-pager | tail -20
 tail -f ~/.my-claw/logs/my-claw-app-$(date +%F).log
 ```
 
@@ -527,14 +544,16 @@ streamer la réponse et afficher les cartes d'outils.
 | Symptôme | Cause probable | Fix |
 |---|---|---|
 | `my-claw.service` ne démarre pas | Port 8080 pris (SearXNG mal configuré, autre service) | `ss -tlnp | grep 8080`, libérer ou changer `channels.my-claw-app.port` (reboot-only) |
-| `my-claw-whisper` crash-loop | `faster-whisper` pas installé | `pip install faster-whisper` ou `sudo systemctl disable --now my-claw-whisper` |
-| Auto-update ne fait rien | `jq` absent, ou `FORGEJO_TOKEN` manquant/dépassé | `apt install jq`, vérifier `/etc/my-claw/.env` |
+| `my-claw-whisper` crash-loop | `faster-whisper` pas installé | `pip install faster-whisper` ou `systemctl --user disable --now my-claw-whisper` |
+| Auto-update ne fait rien | `jq` absent, ou `FORGEJO_TOKEN` manquant/dépassé | `apt install jq`, vérifier `~/.my-claw/.env` |
+| `systemctl --user` : « Failed to connect to bus » | Shell sans session (ssh sans login, `su`) | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` ; `myclaw` le fait tout seul |
+| Rien ne démarre après un reboot | Linger désactivé | `sudo loginctl enable-linger <user>` |
 | `myclaw web install` → 404 | Token Forgejo absent ou dépôt privé | `FORGEJO_TOKEN` dans `.env` (le token ne va qu'au forge) |
 | Première page = « Unauthorized » | Normal : aucun device pairé | Ouvrir l'URL Claim de `myclaw device add` |
 | L'app affiche « Pair device » à l'ouverture | Device inconnu du serveur (401) | C'est le nouveau flow : scanner le code |
 | `web_search` répond « not configured » | `webSearch.baseUrl` vide | Renseigner l'URL SearXNG (§9) |
 | `web_search` répond « invalid JSON » | `formats: [html]` sans `json` | `search.formats: [html, json]` |
-| noVNC ne se connecte pas | x11vnc squatté sur 5900 | `sudo systemctl restart my-claw-vnc my-claw-novnc` |
+| noVNC ne se connecte pas | x11vnc squatté sur 5900 | `systemctl --user restart my-claw-vnc my-claw-novnc` |
 | Le claim link pointe vers IP:8080 au lieu du domaine | `trustedProxies` non déclaré | Ajouter l'IP du proxy dans `web.trustedProxies` |
 | Message → « Provider not found » | Aucun LLM configuré | Settings → Providers (§7.2) |
 | Run interrompue pendant update | Health gate : ne jamais upgrader pendant une run | Attendre ; le timer retente dans 15 min |
@@ -545,8 +564,9 @@ streamer la réponse et afficher les cartes d'outils.
 ## 15. Désinstallation
 
 ```bash
-sudo /opt/my-claw/packaging/uninstall.sh
+sudo /opt/my-claw/current/packaging/uninstall.sh
 ```
 
-Retire `/opt/my-claw`, les unités systemd, la CLI. **Ne supprime pas** `~/.my-claw`
-(sessions, config) ni `/var/log/my-claw` — effacez-les à la main si vous voulez tout remettre à zéro.
+Retire `/opt/my-claw`, les unités (user et, s'il en reste, système), la CLI, `/var/log/my-claw`,
+`/etc/my-claw*`. **Ne supprime pas** `~/.my-claw` (sessions, config, secrets) ni le linger de
+l'utilisateur : effacez-les à la main si vous voulez tout remettre à zéro.
