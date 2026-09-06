@@ -43,6 +43,15 @@ son `run_end`, le champ `run: { id, status, startTs, endTs? }` (l'`id` est celui
 le booléen `activeRun` (déjà en place) et le client tranche : `activeRun=false` ⇒ le
 run est mort (crash) et se replie en `done`.
 
+Un run sans `run_end` qui n'est **pas** le dernier est mort lui aussi : un seul run à la
+fois sur une branche, donc le `run_start` suivant prouve que le précédent ne s'est jamais
+fermé ici (crash, ou branche coupée par une feuille de log périmée, cf. `session-log.md`
+« une seule instance par session »). `runFold` le ferme en `done` à sa dernière entrée,
+et le tour `user` qui déclenche le run suivant n'en fait pas partie. Laissé ouvert, l'app
+ne scelle que le run de queue : celui-là restait `running` à jamais, à plat, et la
+question suivante se lisait comme un pilotage plié dans le vieux travail (observé le
+2026-09-06 sur un fil coupé deux fois).
+
 Chaque `MyClawAppHistoryEntry` porte donc son appartenance, ce qui rend la pagination
 et les deltas triviaux : une page qui commence au milieu d'un run n'a aucune logique
 d'état à reconstituer côté client.

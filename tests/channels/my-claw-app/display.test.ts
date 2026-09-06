@@ -419,6 +419,27 @@ describe("runFold: the branch read as runs", () => {
     expect(runFold(aborted).get(aborted[2]!.id)?.status).toBe("aborted");
   });
 
+  test("a run whose end is missing closes when the next run starts, and does not swallow the turn that started it", () => {
+    // The shape a dead branch or a crash leaves: run 1 has a start and no end on this branch,
+    // then the owner asks again. Left open, run 1 rendered as running forever (the app settles
+    // only the trailing run) and the new question read as a steer folded into it.
+    const entries = chain([user("q1"), runStart(), tool("c1"), phase("half"), user("q2"), runStart(), tool("c2"), runEnd()]);
+    const runs = runFold(entries);
+    const first = runs.get(entries[2]!.id)!;
+    expect(first.status).toBe("done");
+    // Closed at its last own entry, not at the next run's start.
+    expect(first.endTs).toBe(new Date(entries[3]!.ts).toISOString());
+    expect(runs.get(entries[4]!.id)).toBeUndefined();
+    expect(runs.get(entries[6]!.id)?.id).toBe(entries[5]!.id);
+  });
+
+  test("two starts in a row (no trigger turn between them) still close the first", () => {
+    const entries = chain([user("q"), runStart(), tool("c1"), runStart(), tool("c2"), runEnd()]);
+    const runs = runFold(entries);
+    expect(runs.get(entries[2]!.id)).toMatchObject({ status: "done", endTs: new Date(entries[2]!.ts).toISOString() });
+    expect(runs.get(entries[4]!.id)?.id).toBe(entries[3]!.id);
+  });
+
   test("a user turn inside the run (injection) belongs to it", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), user("steer"), phase("answer"), runEnd()]);
     const runs = runFold(entries);

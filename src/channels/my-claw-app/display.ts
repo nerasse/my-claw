@@ -193,14 +193,32 @@ function tsOf(entry: Entry): string {
  *
  * A trailing run with no `run_end` stays `running`: the caller decides its terminality from the
  * run registry (`activeRun`), because a crash can leave exactly this shape in a file.
+ *
+ * A run with no `run_end` that is *not* trailing is dead: only one run is ever in flight on a
+ * branch, so the next `run_start` proves the previous one never closed here. A crash leaves that
+ * shape, and so did the branch a stale log leaf split (docs/session-log.md, one instance per
+ * session). It closes as `done` at its last own entry, the same verdict the app gives a trailing
+ * dead run, and the turn that triggers the next run stays out of it: left open, the run rendered
+ * as running forever (the app settles only the trailing run) and the new question read as a steer
+ * folded into the old work.
  */
 export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
   const out = new Map<string, MyClawAppRunMeta>();
   let current: MyClawAppRunMeta | null = null;
-  for (const entry of path) {
+  let lastTs = "";
+  const closeDead = () => {
+    if (!current) return;
+    current.status = "done";
+    current.endTs = lastTs;
+    current = null;
+  };
+  for (let i = 0; i < path.length; i++) {
+    const entry = path[i]!;
     if (entry.type === "run_start") {
+      closeDead();
       current = { id: entry.id, status: "running", startTs: tsOf(entry) };
       out.set(entry.id, current);
+      lastTs = tsOf(entry);
       continue;
     }
     if (entry.type === "run_end") {
@@ -211,7 +229,12 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
       current = null;
       continue;
     }
-    if (current) out.set(entry.id, current);
+    // The owner's turn that opens the next run is not a steer into the dead one.
+    if (entry.type === "user" && path[i + 1]?.type === "run_start") closeDead();
+    if (current) {
+      out.set(entry.id, current);
+      lastTs = tsOf(entry);
+    }
   }
   return out;
 }
