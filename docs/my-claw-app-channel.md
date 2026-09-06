@@ -693,6 +693,7 @@ runs fresh like any other message.
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
 { "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
+{ "type": "chat.send.received", "threadId": "projet", "id": "uuid" }
 { "type": "chat.send.queued", "threadId": "projet", "replyToId": "uuid", "reason": "compaction" }
 { "type": "chat.compaction", "threadId": "projet", "id": "<the compaction entry's id>", "summary": "ce qui precede", "count": 813, "ts": "iso" }
 { "type": "chat.compacting", "threadId": "projet", "since": "iso" }
@@ -716,7 +717,7 @@ runs fresh like any other message.
 { "type": "config.result", "content": "{ ... }", "sha": "9f2b1c4d5e6a", "maxBytes": 524288 }
 { "type": "config.saved", "ok": true, "sha": "9f2b1c4d5e6a", "conflict": false, "changed": ["llm"], "rebootRequired": [] }
 { "type": "notifications.info", "vapidPublicKey": "..." }
-{ "type": "hello", "version": "0.1.204" }
+{ "type": "hello", "version": "0.6.3", "receipts": true }
 { "type": "tags.result", "tags": [{ "name": "Default", "model": "gpt-5.1" }, { "name": "opus", "model": "claude-opus-4-8", "effort": "xhigh", "contextCap": 50000 }] }
 { "type": "jobs.runs.result", "jobId": "abc123def456", "runs": [{ "threadId": "cron-abc123def456-1723200000000", "runAt": 1723200000000, "messageCount": 4, "title": "Morning report · 08/08 19:30" }] }
 { "type": "error", "message": "...", "scope": "chat|files|session|diag|logs|voice|model|skills|agents|mcp|tools|instructions|config|workspaces|jobs|notifications" }
@@ -786,6 +787,17 @@ runs fresh like any other message.
   `replyToId` as its result. The app draws it as a placeholder bubble that the result replaces
   in place, so the wait and the answer are one bubble, never two. A placeholder is also dropped
   when a stream starts on the thread: the agent answered, so no result is coming.
+- `chat.send.received` is the transport receipt of a `chat.send`: sent to the socket that sent it
+  and to it alone, at the top of the handler, before the message is looked at. A socket a NAT
+  timeout or a VPN switch killed stays `OPEN` for a browser (no error, no close for minutes): the
+  send left, nothing arrived, and nothing said so. The app marks the bubble `pending` until the
+  receipt and, 15 s without one on a link that called itself open, reads it as undelivered with a
+  "send again" on the bubble. Sending again reuses the id, and the same id arriving twice is taken
+  once: already on the branch (the user entry is the send id) or parked in the run's mailbox, it is
+  receipted and goes no further. `hello.receipts` announces the receipt; the app does not wait on a
+  server that predates it. The heartbeat (`ping`/`pong`, 25 s, two misses) still closes the dead
+  socket underneath, which is what brings the link back; the receipt is what tells the owner which
+  message fell in the hole meanwhile.
 - `chat.send.queued` says a send is parked: a compaction holds the session, so the router waits
   for it before opening the run (`docs/compaction.md`). The app marks that bubble with a running
   counter instead of leaving it silent for the length of the compaction, which read as a dropped
@@ -933,8 +945,12 @@ text with no bubble to play, and the agent never saw the file it had just been r
 
 Both are read-only and redacted server-side (config secrets by value, plus the usual key
 shapes). `limit` is clamped to 1000 lines. `run` is the correlation id stamped on every log
-line of a single inbound message; it is echoed on `chat.message` and `chat.stream.start` so a
-reply can be traced back to its run. Verbosity is `logging.level` in config (hot-reloaded), or
+line of a single inbound message, the sub-agents it spawned included; a sub-agent's own run is
+named beside it as `subRun`, and the filter matches either. The same id rides on `chat.run.start`
+/ `chat.run.end`, `chat.message` and `chat.stream.start`, and since 0.6.3 it is the id the
+history's `run` field names too (`docs/run-grouping.md`), so a reply, a folded run and its log
+lines are one id. A sub-agent's run has its own (`withChildRunContext`), so two sends to one child
+inside one parent run are two runs on the child's thread. Verbosity is `logging.level` in config (hot-reloaded), or
 `MY_CLAW_LOG_LEVEL` which overrides it.
 
 `chat.history` is also the ack for `session.delete` (empty messages list).

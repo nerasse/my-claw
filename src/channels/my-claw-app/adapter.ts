@@ -200,6 +200,7 @@ import {
   type MediaEntry,
   type MyClawAppFilesDeps,
 } from "./files-http.ts";
+import { sessionLogOf } from "../../sessions/log-access.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -1127,7 +1128,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       surfaces: this.sockets.countFor(ws.data.deviceId),
     });
     // The server names itself first: the settings page labels its "connected" state with it.
-    void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version }));
+    void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version, receipts: true }));
     const locationCapabilities: MyClawAppLocationCapabilities = {
       type: "location.capabilities",
       ...(this.locationResolver?.capabilities() ?? { enabled: false, address: false, provider: "geoapify" as const }),
@@ -1665,6 +1666,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return questionManager.ofSession(sessionId);
   }
 
+  /** Whether a send with this id already reached the conversation: on its branch, or in its run's mailbox. */
+  private async alreadyHeld(owner: string, threadId: string, id: string): Promise<boolean> {
+    if (this.live.isQueued(owner, threadId, id)) return true;
+    try {
+      const log = await sessionLogOf(this.store.resolveSessionId(owner, threadId));
+      return log.get(id) !== undefined;
+    } catch (err) {
+      await myClawAppLog("debug", "duplicate check skipped", { threadId, error: String(err) });
+      return false;
+    }
+  }
+
   private async emitChatSend(
     ws: ServerWebSocket<MyClawAppSessionData>,
     frame: MyClawAppChatSend,
@@ -1678,6 +1691,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!text && refs.length === 0 && !hasLocation) return;
 
     const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
+
+    // The receipt goes first, to this socket only: the app has a bubble waiting on it, whatever the
+    // socket claimed about itself. A send it never gets a receipt for is offered again, so the same
+    // id arriving twice is taken once: on the branch already, or parked in the run's mailbox, it is
+    // receipted and goes no further.
+    if (typeof frame.id === "string" && frame.id) {
+      this.sendFrame(ws, { type: "chat.send.received", threadId, id: frame.id });
+      if (await this.alreadyHeld(owner, threadId, frame.id)) return;
+    }
 
     // Typing instead of answering cancels the question: the message is the answer, and it
     // reaches the run as the next user turn through the normal mailbox. The card is dropped

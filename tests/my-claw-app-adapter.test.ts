@@ -18,6 +18,8 @@ import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { questionManager } from "../src/questions/manager.ts";
+import { sessionLogOf } from "../src/sessions/log-access.ts";
+import type { UserEntry } from "../src/sessions/log.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,6 +49,7 @@ function connectClient(
   receiveHello = false,
   receiveQuestionPending = false,
   receiveApprovalPending = false,
+  receiveReceipts = false,
 ): Promise<WsClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
@@ -74,6 +77,8 @@ function connectClient(
         if (!receiveHello && frame.type === "hello") return;
         if (!receiveQuestionPending && frame.type === "question.pending") return;
         if (!receiveApprovalPending && frame.type === "approval.pending") return;
+        // The transport receipt of every send: ambient for a test about anything else.
+        if (!receiveReceipts && frame.type === "chat.send.received") return;
         client.frames.push(frame);
       } catch {
         client.frames.push(raw);
@@ -766,6 +771,45 @@ describe("MyClawAppAdapter", () => {
 
     reloaded.ws.close();
     after.ws.close();
+  });
+
+  test("every send is receipted to the socket that sent it, and the same id sent again is taken once", async () => {
+    // A socket a NAT or a VPN switch killed stays OPEN for the browser: the send goes into a hole
+    // and nothing says so. The receipt is what the app waits for; a send it never gets one for is
+    // offered again, and sending again has to be safe.
+    const sender = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, false, false, false, true);
+    sender.ws.send(JSON.stringify({ type: "chat.send", id: "m-receipt", text: "bonjour", threadId: "default" }));
+    const receipt = await nextFrame(sender);
+    assert.deepEqual(receipt, { type: "chat.send.received", threadId: "default", id: "m-receipt" });
+    await waitUntil(() => received.length === 1);
+
+    // The other window of the owner gets the mirrored bubble, never the receipt.
+    assert.equal((await nextFrame(client)).type, "chat.user");
+    await assert.rejects(() => nextFrame(client, 200));
+
+    // The turn is on the branch: sending the same id again is receipted and goes no further.
+    const log = await sessionLogOf(store.resolveSessionId(DEVICE_ID, "default"));
+    log.append<UserEntry>({ type: "user", prompt: true, text: "bonjour" }, "m-receipt");
+    sender.ws.send(JSON.stringify({ type: "chat.send", id: "m-receipt", text: "bonjour", threadId: "default" }));
+    assert.deepEqual(await nextFrame(sender), { type: "chat.send.received", threadId: "default", id: "m-receipt" });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(received.length, 1);
+
+    // Parked in a run's mailbox, not yet on the branch: the same rule.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    assert.equal((await nextFrame(sender)).type, "chat.run.start");
+    sender.ws.send(JSON.stringify({ type: "chat.send", id: "m-parked-twice", text: "encore", threadId: "default" }));
+    assert.equal((await nextFrame(sender)).type, "chat.send.received");
+    await waitUntil(() => received.length === 2);
+    adapter.notifyQueued(DEVICE_ID, "default", "m-parked-twice", "injection");
+    assert.equal((await nextFrame(sender)).type, "chat.send.queued");
+    sender.ws.send(JSON.stringify({ type: "chat.send", id: "m-parked-twice", text: "encore", threadId: "default" }));
+    assert.equal((await nextFrame(sender)).type, "chat.send.received");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(received.length, 2);
+    adapter.notifyRun(DEVICE_ID, "default", false);
+    sender.ws.close();
   });
 
   test("a send parked for the run's next turn survives a reload: bubble and mark are replayed", async () => {
