@@ -110,12 +110,27 @@ export class LiveTurnJournal {
    */
   private compactions = new Map<string, MyClawAppServerFrame>();
 
+  /**
+   * Sends the owner made that no run has consumed yet: parked in a run's mailbox until its next
+   * turn boundary, or held by the router while a compaction rewrites the history. Until then the
+   * message exists in memory and on the sender's screen, nowhere else, and a window reloading in
+   * that gap came back without it: no entry serves it, and the `chat.send.acked` that follows the
+   * drain reaches a window with no bubble left to mark. Held outside the journals like the
+   * compaction, since the compaction case has no run open at all.
+   */
+  private queued = new Map<string, Map<string, MyClawAppServerFrame[]>>();
+
   private key(owner: string, threadId: string): string {
     return `${owner}\u0000${threadId}`;
   }
 
-  /** A run started on this thread: whatever a previous one left is not this turn. */
+  /**
+   * A run started on this thread: whatever a previous one left is not this turn. The sends parked
+   * for it are released too: the one that opened the run is on the log from its first line, and
+   * any other lands in the run's mailbox and is held again through the injection path.
+   */
   open(owner: string, threadId: string): void {
+    this.queued.delete(this.key(owner, threadId));
     this.journals.set(this.key(owner, threadId), {
       frames: [],
       outputBytes: 0,
@@ -218,6 +233,29 @@ export class LiveTurnJournal {
   }
 
   /**
+   * A send is waiting for a turn boundary or a compaction: the frames a window needs to draw it
+   * as the sender sees it, the bubble then its "queued" mark, in that order.
+   */
+  holdQueued(owner: string, threadId: string, id: string, frames: MyClawAppServerFrame[]): void {
+    const key = this.key(owner, threadId);
+    let held = this.queued.get(key);
+    if (!held) {
+      held = new Map();
+      this.queued.set(key, held);
+    }
+    held.set(id, frames);
+  }
+
+  /** The run drained it: its entry is on the log, and the delta serves it from now on. */
+  releaseQueued(owner: string, threadId: string, id: string): void {
+    const key = this.key(owner, threadId);
+    const held = this.queued.get(key);
+    if (!held) return;
+    held.delete(id);
+    if (held.size === 0) this.queued.delete(key);
+  }
+
+  /**
    * What a window that missed the turn needs, in the order it was sent. The pending approvals come
    * last: the sheet belongs on top of the thread it interrupted, not before it.
    */
@@ -225,8 +263,11 @@ export class LiveTurnJournal {
     const key = this.key(owner, threadId);
     // A compaction outlives the run that triggered it and can exist without one at all, so it is
     // replayed on its own: a window that reloads during a `/compact` has no journal to read.
+    // The parked sends likewise: they sit at the bottom of the thread, after the work in flight,
+    // and a compaction-parked one exists with no run at all.
     const compacting = this.compactions.get(key);
-    const tail = compacting ? [compacting] : [];
+    const parked = [...(this.queued.get(key)?.values() ?? [])].flat();
+    const tail = [...parked, ...(compacting ? [compacting] : [])];
     const journal = this.journals.get(key);
     if (!journal) return tail;
 

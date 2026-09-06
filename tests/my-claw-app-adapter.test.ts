@@ -760,6 +760,41 @@ describe("MyClawAppAdapter", () => {
     after.ws.close();
   });
 
+  test("a send parked for the run's next turn survives a reload: bubble and mark are replayed", async () => {
+    // Reported: a message sent during a run, then a reload before the run reached a turn boundary.
+    // The message lived in the run's mailbox and on the sender's screen only, so the reloaded
+    // window had no bubble, and the ack that followed the drain had nothing to lift.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m-parked", text: "et ceci aussi" }));
+    await waitUntil(() => received.length === 1);
+    // What the router does with a send that lands on a run in flight.
+    adapter.notifyQueued(DEVICE_ID, "default", "m-parked", "injection");
+    assert.equal((await nextFrame(client)).type, "chat.send.queued");
+
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    const seen: Array<Record<string, unknown>> = [];
+    while (seen.length < 3) seen.push(await nextFrame(reloaded));
+    assert.equal(seen[0]!.type, "session.sync.result");
+    assert.equal(seen[1]!.type, "chat.user");
+    assert.equal(seen[1]!.id, "m-parked");
+    assert.equal(seen[1]!.text, "et ceci aussi");
+    assert.equal(seen[2]!.type, "chat.send.queued");
+    assert.equal(seen[2]!.replyToId, "m-parked");
+
+    // The drain: the entry is on the log from here, so the next window is served by the page.
+    adapter.notifyAcked(DEVICE_ID, "default", "m-parked");
+    const after = await connectClient(adapter.port);
+    after.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(after)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(after, 300));
+
+    adapter.notifyRun(DEVICE_ID, "default", false);
+    reloaded.ws.close();
+    after.ws.close();
+  });
+
   test("the replayed bubble arrives whole, so a window that was already watching does not paint it twice", async () => {
     // The window asking for a sync is usually the one that was watching a second ago: a blip, a
     // thread switched away from and back, a refresh. It still holds the bubble, and the client

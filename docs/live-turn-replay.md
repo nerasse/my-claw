@@ -55,6 +55,20 @@ result, since replacing an empty bubble is setting it.
 An old client ignores the flag and appends, which is exactly what it did before: no worse, and it
 converges as soon as it updates.
 
+## Sends no run has consumed yet
+
+A message sent while a run is in flight is parked in that run's mailbox until its next turn
+boundary; one sent during a compaction is held by the router until the history stops moving. In
+both cases the message exists in memory and on the sender's screen and nowhere else, for as long
+as a tool call or a compaction takes. A window reloading in that gap came back without it: no
+entry served it, and the `chat.send.acked` that follows the drain reached a window with no bubble
+left to lift. So the journal holds the parked sends as the frames their other windows received,
+`chat.user` then `chat.send.queued`, and replays them after the turn's own frames: the bubble at
+the bottom of the thread, with its mark. Released when the run drains the message (its entry is on
+the log from then on) and when a run opens on the thread (the send that opened it is the first
+line of that run). Held beside the compaction rather than inside a journal, because a
+compaction-parked send exists with no run open at all.
+
 ## It holds only what the store cannot know yet
 
 A journal is not a copy of the run. A bubble that closes and a tool that settles are dropped from

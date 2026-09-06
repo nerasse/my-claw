@@ -163,3 +163,51 @@ describe("live turn journal", () => {
     expect(live.size("owner-2", THREAD)).toBe(0);
   });
 });
+
+describe("live turn journal: sends no run has consumed yet", () => {
+  const bubble = (id: string): MyClawAppServerFrame => ({ type: "chat.user", threadId: THREAD, id, text: `send ${id}`, ts: "2026-01-01T00:00:02.000Z" });
+  const mark = (id: string): MyClawAppServerFrame => ({ type: "chat.send.queued", threadId: THREAD, replyToId: id, reason: "injection" });
+
+  test("a send parked in the run's mailbox is replayed after the work in flight, bubble then mark", () => {
+    // Reported: a message sent during a run, then a reload before the run reached its next turn
+    // boundary. The message existed in the mailbox and on the sender's screen and nowhere else, so
+    // the reloaded window came back without it, and the ack that followed the drain had no bubble
+    // to lift.
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.record(OWNER, THREAD, toolStart("t1"));
+    live.holdQueued(OWNER, THREAD, "m2", [bubble("m2"), mark("m2")]);
+
+    const replay = live.replay(OWNER, THREAD);
+    expect(types(replay)).toEqual(["chat.tool.start", "chat.user", "chat.send.queued"]);
+    expect(replay[1]).toMatchObject({ id: "m2", text: "send m2" });
+    expect(replay[2]).toMatchObject({ replyToId: "m2" });
+  });
+
+  test("the drain releases it: the entry is on the log, and the delta serves it from there", () => {
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.holdQueued(OWNER, THREAD, "m2", [bubble("m2"), mark("m2")]);
+    live.releaseQueued(OWNER, THREAD, "m2");
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+  });
+
+  test("a send parked by a compaction, with no run open, is still replayed", () => {
+    const live = new LiveTurnJournal();
+    live.holdQueued(OWNER, THREAD, "m1", [bubble("m1"), { type: "chat.send.queued", threadId: THREAD, replyToId: "m1", reason: "compaction" }]);
+    expect(types(live.replay(OWNER, THREAD))).toEqual(["chat.user", "chat.send.queued"]);
+  });
+
+  test("a run opening on the thread releases what was parked for it", () => {
+    const live = new LiveTurnJournal();
+    live.holdQueued(OWNER, THREAD, "m1", [bubble("m1"), mark("m1")]);
+    live.open(OWNER, THREAD);
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+  });
+
+  test("keeps one thread's parked sends out of another's", () => {
+    const live = new LiveTurnJournal();
+    live.holdQueued(OWNER, THREAD, "m1", [bubble("m1"), mark("m1")]);
+    expect(live.replay(OWNER, "thread-2")).toEqual([]);
+  });
+});

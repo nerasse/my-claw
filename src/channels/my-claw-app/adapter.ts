@@ -24,6 +24,7 @@ import { undoManager } from "./undo.ts";
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
+import { LruMap } from "../../utils/lru-map.ts";
 import { questionAskFrame, questionPendingFrame } from "./questions.ts";
 import { newEntryId } from "../../sessions/log.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
@@ -276,6 +277,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private sweeper?: ReturnType<typeof setInterval>;
   /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
   private live = new LiveTurnJournal();
+  /**
+   * The last sends, as the `chat.user` frame their other windows received. A send that gets parked
+   * is only known to be parked once the router says so, and by then the frame is what the journal
+   * has to hold for a reloading window; small, since a send is parked or routed within seconds.
+   */
+  private recentSends = new LruMap<string, MyClawAppServerFrame>(64);
 
   constructor(
     private config: MyClawAppChannelConfig,
@@ -652,6 +659,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
    *  bubble that carried it, so the owner sees the message enter the run. */
   notifyAcked(owner: string, threadId: string, replyToId: string): void {
     this.broadcast(owner, { type: "chat.send.acked", threadId, replyToId });
+    this.live.releaseQueued(owner, threadId, replyToId);
   }
 
   /**
@@ -808,7 +816,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * the app lifts it when the stream finally arrives.
    */
   notifyQueued(owner: string, threadId: string, replyToId: string, reason: "compaction" | "injection"): void {
-    this.broadcast(owner, { type: "chat.send.queued", threadId, replyToId, reason });
+    const queued: MyClawAppServerFrame = { type: "chat.send.queued", threadId, replyToId, reason };
+    this.broadcast(owner, queued);
+    // Until a run consumes it, the message exists nowhere a reload could read it back from: the
+    // journal replays the bubble and its mark to a window that opens or reloads meanwhile --
+    // docs/live-turn-replay.md.
+    const bubble = this.recentSends.get(`${owner}\u0000${threadId}\u0000${replyToId}`);
+    if (bubble) this.live.holdQueued(owner, threadId, replyToId, [bubble, queued]);
   }
 
   /**
@@ -1895,7 +1909,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     attachments: MyClawAppHistoryAttachment[],
     location?: ChatLocation,
   ): void {
-    this.broadcastExcept(ws, {
+    const bubble: MyClawAppServerFrame = {
       type: "chat.user",
       threadId,
       id: frame.id,
@@ -1903,7 +1917,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ...(frame.ts ? { ts: frame.ts } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(location ? { location } : {}),
-    });
+    };
+    this.recentSends.set(`${ws.data.owner}\u0000${threadId}\u0000${frame.id}`, bubble);
+    this.broadcastExcept(ws, bubble);
   }
 
   private async handleSessionRename(
