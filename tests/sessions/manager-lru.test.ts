@@ -151,3 +151,25 @@ test("SessionManager: the persisted leaf follows the instance a run holds, even 
   const meta = await readMeta(id);
   assert.equal(meta?.leafId, last.id);
 });
+
+test("SessionManager: an append alone dirties the session, so the autosave carries the leaf to the meta", async () => {
+  // The flag used to move only with a model call's usage. A leaf that advanced between two calls
+  // (a tool settling, the run_end marker) reached the meta only through the run's own persist, and
+  // a process killed there reopened the log one entry or more behind: a dead branch, every time.
+  const manager = new SessionManager();
+  const id = "test/live/dirty-on-append";
+  const session = await manager.getOrCreateWithMeta(id, "telegram", "dm");
+  await manager.persist(id);
+  const held = await manager.logOf(id);
+  const before = await readMeta(id);
+  const entry = held.append({ type: "user", prompt: true, text: "q" });
+  assert.notEqual(before?.leafId, entry.id);
+  await manager.flushDirty();
+  const after = await readMeta(id);
+  assert.equal(after?.leafId, entry.id);
+  // A rewind is a leaf move too.
+  held.branch(before?.leafId ?? null);
+  await manager.flushDirty();
+  assert.equal((await readMeta(id))?.leafId, before?.leafId ?? null);
+  void session;
+});

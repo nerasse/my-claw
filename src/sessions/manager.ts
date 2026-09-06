@@ -9,6 +9,7 @@ import {
   subagentThreadToSession,
   isSessionDirty,
   clearSessionDirty,
+  markSessionDirty,
   type SessionData,
 } from "./store.ts";
 import { LruMap } from "../utils/lru-map.ts";
@@ -285,6 +286,13 @@ export class SessionManager {
         return null;
       });
       const opened = await openSessionLog(sessionId, meta?.leafId ?? null);
+      // Every move of the leaf dirties the session, so the autosave carries it to the meta within
+      // its tick; a process killed mid-run then reopens the log at most one tick behind, instead
+      // of at the leaf of the last model call.
+      opened.onAppend = () => {
+        const session = this.sessions.get(sessionId);
+        if (session) markSessionDirty(session);
+      };
       this.liveLogs.set(sessionId, new WeakRef(opened));
       this.logs.set(sessionId, opened);
       return opened;

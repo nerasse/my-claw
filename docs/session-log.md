@@ -467,10 +467,24 @@ branche morte (observé le 2026-09-06 sur deux tours de l'owner). Le manager gar
 encore, et n'en relit une du disque que quand plus personne ne la tient. `writeSettings` lit la
 feuille de cette instance-là. Le cache ne fait que garder au chaud les logs inactifs.
 
-Ce que ça ne couvre pas : un crash en plein run. La méta est écrite en fin de run, donc au
-redémarrage le log rouvre sur la feuille d'avant le run et ses entrées sont sur une branche
-morte. La topologie seule ne permet pas d'adopter la queue du fichier (un `/undo` laisse
-exactement la même forme). Connu, pas traité.
+**La feuille suit le log à un tick d'autosave près.** La méta n'était réécrite qu'à la fin d'un
+run (et à chaque appel LLM via le drapeau dirty posé par l'usage). Un processus tué entre deux
+appels rouvrait le log sur la feuille du dernier appel : les outils réglés depuis, le `run_end`,
+parfois la question suivante, sur une branche morte. Chaque `append` et chaque `branch` posent
+maintenant le drapeau dirty de la session (`SessionLog.onAppend`, câblé par le manager), donc
+l'autosave (2 s) porte la feuille dans `meta.json` quoi qu'il arrive au run. Un crash brutal perd
+au plus ce tick.
+
+**Réparer l'existant.** `scripts/repair-branches.ts` remet les branches mortes sur la branche :
+pour chaque bifurcation qui n'est pas un rembobinage délibéré (`/undo`, `/retry`, `/redo`,
+`/fork` laissent une entrée `command` en tête de la nouvelle branche ; un run mort d'erreur
+rembobine sur sa propre question, donc la bifurcation porte sur une entrée `user` avec un
+`run_start` dont le run finit en `error`), les orphelins sont réinsérés dans l'ordre du fichier
+entre le point de bifurcation et l'enfant survivant, et une queue morte en fin de fichier devient
+la feuille. À blanc par défaut, `--apply` écrit (copie `.bak-branches-<date>` à côté). Le serveur
+relit le fichier à la prochaine ouverture : une session qu'il tient ouverte montre la réparation
+après son redémarrage. Passé le 2026-09-06 sur 104 sessions : 59 réparées, quasi toutes avec une
+méta en retard d'une entrée (le `run_end`), sept avec de vraies branches mortes.
 
 ## 2.7 Sorties d'outils : pas d'horloge
 

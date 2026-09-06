@@ -380,6 +380,14 @@ export class SessionLog {
    */
   private prompts: number;
   private firstUser: string | null;
+  /**
+   * Told after every append, leaf moved. The manager hangs the session's dirty flag on it, so the
+   * autosave carries the new leaf to `meta.json` within its tick. Without it the flag moved only
+   * with a model call's usage, and a leaf that advanced between two calls (a tool settling, the
+   * `run_end` marker) waited for the run's own persist: a process killed there reopened the log
+   * on the leaf before them, and the entries past it were a dead branch.
+   */
+  onAppend: (() => void) | undefined;
 
   constructor(sessionId: string, entries: Entry[], leafId: string | null) {
     this.sessionId = sessionId;
@@ -449,6 +457,7 @@ export class SessionLog {
     if (entry.prompt) this.prompts += 1;
     if (this.firstUser === null && entry.type === "user") this.firstUser = entry.text;
     this.write(`${JSON.stringify(entry)}\n`, 1);
+    this.onAppend?.();
     return entry;
   }
 
@@ -503,6 +512,7 @@ export class SessionLog {
     this.leafId = parentId;
     const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
     if (lines.length > 0) this.write(lines, entries.length);
+    if (entries.length > 0) this.onAppend?.();
     return entries;
   }
 
@@ -513,6 +523,7 @@ export class SessionLog {
   branch(leafId: string | null): void {
     if (leafId !== null && !this.get(leafId)) throw new UnknownCursorError(leafId);
     this.leafId = leafId;
+    this.onAppend?.();
   }
 
   /**
