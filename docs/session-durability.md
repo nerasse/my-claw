@@ -41,6 +41,22 @@ token counter changed without a new message must survive too.
 
 **Worst case.** A `SIGKILL` loses at most two seconds of a turn. Anything cleaner loses nothing.
 
+**Listing.** A conversation list never opens a log. `meta.json` carries `promptCount` and
+`firstUserText`, mirrored from the log on every settings write, and the drawer reads those. It used
+to open one log per conversation and keep it: the map of open logs was not bounded by anything (a
+log is opened without touching the session LRU, so nothing evicted them), each one holds a whole
+parsed JSONL file, and 214 MB on disk became 451 MB resident to draw a sidebar.
+
+Three rules make that hold:
+
+- **An open log outranks the file.** A run in flight has appended entries the meta has not seen
+  yet, so a thread that is moving must not show a stale count.
+- **A session written before those fields is backfilled**, by opening its log that once. The write
+  that follows means the next listing does not.
+- **Open logs are bounded on their own** (24, against 100 sessions): a log is the expensive half.
+  Eviction drains the queued appends first, and reopening reads the file, so nothing is lost --
+  the handle is closed, not the conversation.
+
 ## History paging
 
 `history()` returns a page of messages, walked back to the user message that opened the turn so

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { FailureEntry, CommandEntry, ToolEntry } from "../src/sessions/log.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
+import { readMeta, writeMeta } from "../src/sessions/meta.ts";
 import { appendSpawnState } from "../src/sessions/spawn-state.ts";
 
 const DEVICE = "dev-test";
@@ -794,6 +795,38 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     await store.rename(DEVICE, THREAD, "   ");
     listed = await store.list(DEVICE);
     assert.equal(listed[0]!.title, "comment je configure le dns du serveur");
+  });
+
+  test("the listing reads its counts from the meta, so a drawer never opens a log", async () => {
+    // Opening one per conversation is what this replaces: the listing walks every thread the
+    // owner ever had, and each open parses a whole JSONL file into objects and keeps it. 214 MB
+    // on disk here, several times that resident, to draw a sidebar.
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "ce que dit le journal", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const stored = await readMeta(sessionId);
+    assert.ok(stored);
+    // Deliberately disagreeing with the log: if the listing shows this, it did not open one.
+    await writeMeta(sessionId, { ...stored, promptCount: 7, firstUserText: "ce que dit le meta" });
+
+    const listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "ce que dit le meta");
+    assert.equal(listed[0]!.messageCount, 7);
+  });
+
+  test("a conversation written before the meta carried them is backfilled once", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "une vieille conversation", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "une reponse", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+    // Written by a version that did not know about them.
+    const before = await readMeta(sessionId);
+    assert.equal(before?.promptCount, undefined);
+
+    // The listing opens the log that once and answers correctly from it.
+    const listed = await store.list(DEVICE);
+    assert.equal(listed[0]!.title, "une vieille conversation");
+    assert.equal(listed[0]!.messageCount, 2);
   });
 
   test("archiving files the conversation away whole, and unarchiving hands it back", async () => {

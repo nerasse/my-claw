@@ -372,6 +372,14 @@ export class SessionLog {
   private leafId: string | null;
   /** Serializes appends: two awaited writes must not interleave inside one line. */
   private tail: Promise<void> = Promise.resolve();
+  /**
+   * What a conversation list needs and nothing else, kept incrementally so it can be mirrored
+   * into `meta.json`. A drawer that has to open every log to count messages and read a title
+   * parses every conversation the owner has ever had -- 214 MB of JSONL here, several times that
+   * once it is objects -- to draw one sidebar.
+   */
+  private prompts: number;
+  private firstUser: string | null;
 
   constructor(sessionId: string, entries: Entry[], leafId: string | null) {
     this.sessionId = sessionId;
@@ -379,6 +387,18 @@ export class SessionLog {
     this.list = entries;
     this.nextSeq = entries.reduce((max, entry) => Math.max(max, entry.seq), -1) + 1;
     this.leafId = leafId ?? entries[entries.length - 1]?.id ?? null;
+    this.prompts = entries.reduce((count, entry) => (entry.prompt ? count + 1 : count), 0);
+    this.firstUser = entries.find((entry): entry is UserEntry => entry.type === "user")?.text ?? null;
+  }
+
+  /** Entries a prompt would carry: the message count a conversation list shows. */
+  promptCount(): number {
+    return this.prompts;
+  }
+
+  /** Raw text of the first thing the owner said, which is what an untitled conversation is named after. */
+  firstUserText(): string | null {
+    return this.firstUser;
   }
 
   entries(): readonly Entry[] {
@@ -426,6 +446,8 @@ export class SessionLog {
     } as unknown as T;
     this.list.push(entry);
     this.leafId = entry.id;
+    if (entry.prompt) this.prompts += 1;
+    if (this.firstUser === null && entry.type === "user") this.firstUser = entry.text;
     this.write(`${JSON.stringify(entry)}\n`, 1);
     return entry;
   }

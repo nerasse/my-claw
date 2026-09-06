@@ -71,6 +71,16 @@ export interface SessionMeta {
   /** The branch cursor: which leaf this conversation is currently on. */
   leafId: string | null;
   title?: string;
+  /**
+   * What a conversation list needs, mirrored from the log so the list never has to open one.
+   * Reading every log to draw a sidebar meant parsing every conversation the owner has ever had.
+   *
+   * Absent on a session written before this existed; the first listing backfills it from the log
+   * it opens that once. `firstUserText` is stored raw: how a title is derived from it (stripping
+   * an attachment block, a location block, capping the length) belongs to the channel drawing it.
+   */
+  promptCount?: number;
+  firstUserText?: string;
   archivedAt?: string;
   pinRank?: number;
   modelOverride?: string;
@@ -151,6 +161,10 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   branches: "carried",
   forkedFrom: "carried",
   undo: "carried",
+  // Carried, because they come from the log rather than from the settings: a write with no log
+  // open must leave what is on disk alone instead of erasing a count it cannot compute.
+  promptCount: "carried",
+  firstUserText: "carried",
 };
 
 /** The keys of a stored meta that the session has no opinion about, taken from what is on disk. */
@@ -171,9 +185,16 @@ function carriedOver(previous: SessionMeta | null | undefined): Partial<SessionM
  * the scheduler sets them from the job before each run, and a cron session outlives its run (the
  * app opens it as a chat), so a persisted copy would outlive the settings it was taken from.
  */
-export function metaOf(session: SessionData, leafId: string | null, previous?: SessionMeta | null): SessionMeta {
+export function metaOf(
+  session: SessionData,
+  leafId: string | null,
+  previous?: SessionMeta | null,
+  /** Read off the open log, when there is one. Absent leaves whatever the file already held. */
+  fromLog?: { promptCount: number; firstUserText?: string },
+): SessionMeta {
   return defined({
     ...carriedOver(previous),
+    ...(fromLog ?? {}),
     id: session.id,
     platform: session.platform,
     chatType: session.chatType,

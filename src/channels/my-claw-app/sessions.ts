@@ -4,6 +4,7 @@ import { FAILURE_TEXT_LIMIT } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
+import { readMeta } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
 import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
@@ -304,6 +305,34 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     });
   }
 
+  /**
+   * The two numbers a row of the drawer needs, from `meta.json` when it has them.
+   *
+   * Opening the log instead is what this avoids: the listing walks every conversation the owner
+   * ever had, and each open parses a whole JSONL file into objects and keeps it -- 214 MB on disk
+   * here, several times that in memory, to draw a sidebar. A session written before the meta
+   * carried these is backfilled by opening its log that once; the write that follows means the
+   * next listing does not.
+   */
+  private async listingCounts(sessionId: string): Promise<{ promptCount: number; firstUserText?: string }> {
+    // An open log outranks the file: a run in flight has appended entries the meta has not seen.
+    const open = this.sessionManager.peekLog(sessionId);
+    if (open) {
+      const first = open.firstUserText();
+      return { promptCount: open.promptCount(), ...(first === null ? {} : { firstUserText: first }) };
+    }
+    const meta = await readMeta(sessionId).catch(() => null);
+    if (meta?.promptCount !== undefined) {
+      return {
+        promptCount: meta.promptCount,
+        ...(meta.firstUserText === undefined ? {} : { firstUserText: meta.firstUserText }),
+      };
+    }
+    const log = await sessionLogOf(sessionId);
+    const first = log.firstUserText();
+    return { promptCount: log.promptCount(), ...(first === null ? {} : { firstUserText: first }) };
+  }
+
   /** Every conversation of this owner. A cap here made the oldest ones unreachable and unsearchable. */
   async list(owner: string, limit = Number.MAX_SAFE_INTEGER): Promise<MyClawAppSessionSummary[]> {
     const ids = await this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, limit);
@@ -316,18 +345,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       // is producing, or the drawer shows a stale message count next to a thread that is moving.
       const session = await this.sessionManager.read(sessionId);
       if (!session) continue;
-      // Get entries from the log
-      const log = await sessionLogOf(sessionId);
-      const entries = log.entries();
-      const firstUser = entries.find((e): e is UserEntry => e.type === "user");
+      const counts = await this.listingCounts(sessionId);
+      const raw = counts.firstUserText;
       // Without the block, a "here, look" + photo would be titled by a server path.
-      const firstText = firstUser ? stripLocationBlock(splitAttachmentBlock(firstUser.text).text) : "";
+      const firstText = raw ? stripLocationBlock(splitAttachmentBlock(raw).text) : "";
       const derived = firstText.trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
-      const title = session.title?.trim() || derived || (firstUser?.location ? "(location)" : "(new conversation)");
+      // Read off the text rather than carried as a third field: the block is in the message the
+      // owner sent, which is exactly what makes it strippable above.
+      const hadLocation = raw !== undefined && stripLocationBlock(raw) !== raw;
+      const title = session.title?.trim() || derived || (hadLocation ? "(location)" : "(new conversation)");
       summaries.push({
         threadId: sessionId.slice(sessionId.lastIndexOf("/") + 1),
         title,
-        messageCount: entries.filter(e => e.prompt).length,
+        messageCount: counts.promptCount,
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),

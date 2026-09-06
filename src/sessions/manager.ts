@@ -21,6 +21,11 @@ import { rm } from "node:fs/promises";
 
 const MAX_CACHED_SESSIONS = 100;
 /**
+ * Open logs held at once. Lower than the session cap because a log is the expensive half: a
+ * `SessionData` is a small settings object, a `SessionLog` is every entry of a conversation.
+ */
+const MAX_OPEN_LOGS = 24;
+/**
  * How much of a running turn can be in memory only. A run writes when it ends, so without a
  * timer a kill, a crash or a restart mid-turn takes every message it produced with it.
  */
@@ -43,10 +48,15 @@ export class SessionManager {
    * log is a file handle with a write queue: putting one inside the other is how the settings
    * would end up carrying the history again, which is the split this exists to make.
    *
-   * Keyed by session id and evicted with it, so the number of open logs is bounded by the same
-   * LRU that bounds the sessions.
+   * Bounded on its own, and not only by the session LRU that drops alongside it: `logOf` opens a
+   * log without touching the session cache, so a caller that walks every conversation -- the
+   * drawer used to -- filled this map with entries nothing would ever evict. Each one holds a
+   * whole parsed JSONL file; that is how the process reached 451 MB resident.
    */
-  private logs = new Map<string, SessionLog>();
+  private logs = new LruMap<string, SessionLog>(MAX_OPEN_LOGS, (_key, value) => {
+    // The queued appends are drained before the handle goes, exactly as on session eviction.
+    void value.flush().catch(() => {});
+  });
   /** Opens in flight, so two callers asking at once share one read rather than racing it. */
   private opening = new Map<string, Promise<SessionLog>>();
 
@@ -350,7 +360,15 @@ export class SessionManager {
     if (stored === undefined) return;
     const openLog = this.logs.get(sessionId);
     const leaf = openLog ? openLog.leaf() : stored?.leafId ?? null;
-    await writeMeta(sessionId, metaOf(session, leaf, stored)).catch((err) => {
+    // Mirrored on every write while the log is in hand, so a conversation list never has to open
+    // one to know how long a conversation is or what to call it.
+    const fromLog = openLog
+      ? {
+          promptCount: openLog.promptCount(),
+          ...(openLog.firstUserText() === null ? {} : { firstUserText: openLog.firstUserText() as string }),
+        }
+      : undefined;
+    await writeMeta(sessionId, metaOf(session, leaf, stored, fromLog)).catch((err) => {
       void log("error", "session meta: write failed", { sessionId, error: String(err) });
     });
   }

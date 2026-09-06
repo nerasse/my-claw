@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "../../src/sessions/manager.ts";
+import { readMeta } from "../../src/sessions/meta.ts";
 
 test("SessionManager: evicts oldest sessions when cache is full", async () => {
   const manager = new SessionManager();
@@ -65,3 +66,41 @@ test("SessionManager: peek loads session into cache", async () => {
   assert.equal(result, null);
 });
 
+
+test("SessionManager: open logs are bounded on their own, not only by the session cache", async () => {
+  // `logOf` opens a log without touching the session LRU, so a caller that walked every
+  // conversation -- the drawer did -- filled the map with handles nothing would ever evict. Each
+  // one holds a whole parsed JSONL file, which is how the process reached 451 MB resident.
+  const manager = new SessionManager();
+
+  for (let i = 0; i < 40; i++) {
+    await manager.getOrCreateWithMeta(`test/logs/${i}`, "telegram", "dm");
+    const log = await manager.logOf(`test/logs/${i}`);
+    log.append({ type: "user", prompt: true, text: `message ${i}` });
+  }
+
+  assert.equal(manager.peekLog("test/logs/0"), undefined, "the oldest log must be closed");
+  assert.ok(manager.peekLog("test/logs/39"), "the newest log must still be open");
+
+  // Closed, not lost: reopening reads the file, and the entry written before eviction is there.
+  const reopened = await manager.logOf("test/logs/0");
+  assert.equal(reopened.entries().length, 1);
+  assert.equal(reopened.promptCount(), 1);
+  assert.equal(reopened.firstUserText(), "message 0");
+});
+
+test("SessionManager: a listing's counts are mirrored into the meta, so nothing has to open a log", async () => {
+  const manager = new SessionManager();
+  const id = "test/counts/one";
+  await manager.getOrCreateWithMeta(id, "telegram", "dm");
+  const log = await manager.logOf(id);
+  log.append({ type: "user", prompt: true, text: "bonjour" });
+  log.append({ type: "phase", prompt: true, text: "reponse", runId: "r1" });
+  log.append({ type: "failure", prompt: false, error: "boom" });
+
+  await manager.persist(id);
+
+  const meta = await readMeta(id);
+  assert.equal(meta?.promptCount, 2, "a failure is not part of a prompt");
+  assert.equal(meta?.firstUserText, "bonjour");
+});
