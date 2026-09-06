@@ -83,7 +83,7 @@ import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
-import { RerouteSignal, runRegistry } from "./core/run-registry.ts";
+import { FoldedRunError, RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { isAbort } from "./core/aborted.ts";
 import { setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
@@ -837,6 +837,31 @@ async function main() {
     hooks.on("message:injected", ({ message }) => {
       if (message.platform !== "my-claw-app") return;
       myClawApp.notifyAcked(message.chatId, message.threadId ?? DEFAULT_THREAD, message.id);
+    });
+
+    // The run's lifecycle, as the router sees it: one start when a message actually opens a run,
+    // one end when that run settles, whatever the reason. Not the message handler's: it runs once
+    // per message, and a message that lands mid-run is folded into the run in flight rather than
+    // opening one, so announcing from there gave a run one start and one end per message it
+    // absorbed. The Stop button, the live journal a reloading window is replayed from and the
+    // end-of-run ring all hang on these frames -- docs/live-turn-replay.md.
+    const appRunOf = (message: UnifiedMessage): { owner: string; threadId: string } | null =>
+      message.platform === "my-claw-app" ? { owner: message.chatId, threadId: message.threadId ?? DEFAULT_THREAD } : null;
+    hooks.on("message:route:start", ({ message }) => {
+      const run = appRunOf(message);
+      if (run) myClawApp.notifyRun(run.owner, run.threadId, true, undefined, message.id);
+    });
+    hooks.on("message:route:complete", ({ message }) => {
+      const run = appRunOf(message);
+      if (run) myClawApp.notifyRun(run.owner, run.threadId, false, "done");
+    });
+    hooks.on("message:route:error", ({ message }) => {
+      const run = appRunOf(message);
+      if (run) myClawApp.notifyRun(run.owner, run.threadId, false, "error");
+    });
+    hooks.on("message:route:aborted", ({ message }) => {
+      const run = appRunOf(message);
+      if (run) myClawApp.notifyRun(run.owner, run.threadId, false, "aborted");
     });
 
     // Remote debugging surface: the app can pull a health snapshot and a filtered log tail,
@@ -2072,8 +2097,11 @@ async function main() {
       undoPrompt: askUndoMode,
     }));
 
-    myClawApp.onStop((sessionId) => runRegistry.stop(sessionId));
-    myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId));
+    // A run is either a root the registry holds a controller for, or a child the runner tracks: a
+    // sub-agent spawned by the spawn tool has a mailbox in the registry and nothing else, so asking
+    // the registry alone read its thread as idle -- and the app sealed and folded a run in flight.
+    myClawApp.onStop((sessionId) => runRegistry.stop(sessionId) || subAgentRunner.stopSession(sessionId));
+    myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId) || subAgentRunner.isRunningSession(sessionId));
 
     // A message the app sends inside a sub-agent goes through the runner, never through a normal
     // run: see the refusal in MessageRouter.
@@ -2283,9 +2311,9 @@ async function main() {
           }
         }
 
-        // The Stop button is pinned to the run, not to the stream bubbles: it must survive
-        // tool calls and model turns, and only end with the run itself.
-        myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, true);
+        // The run's start and end reach the app from the router's lifecycle hooks (registered
+        // above), not from here: this handler runs once per message, and a message that lands
+        // mid-run is folded into the run in flight rather than opening one of its own.
         try {
           if (myClawApp.streamingEnabled()) {
             // The streamer owns the output bubble for the whole run; a mid-run injected message
@@ -2317,6 +2345,10 @@ async function main() {
             const streamSubAgent = (ev: { id: string }, context: UnifiedMessage): void => {
               const threadId = subagentSessionToThread(ev.id);
               if (!threadId) return;
+              // The child's thread is a conversation the app can open (docs/subagent-navigation.md),
+              // so its run is announced like any other: that is what opens the journal a window
+              // reloading on it is replayed from, and what gives it a Stop.
+              myClawApp.notifyRun(context.chatId, threadId, true);
               const streamer = myClawApp.createStreamer({
                 ...context,
                 id: `subagent-${ev.id}`,
@@ -2343,6 +2375,11 @@ async function main() {
                 subAgentStreamers.delete(ev.id);
                 if (ev.status === "complete") void streamer.finish();
                 else void streamer.abort(ev.error);
+              }
+              const context = subAgentContexts.get(ev.id);
+              const threadId = subagentSessionToThread(ev.id);
+              if (context && threadId) {
+                myClawApp.notifyRun(context.chatId, threadId, false, ev.status === "complete" ? "done" : ev.status);
               }
               subAgentContexts.delete(ev.id);
               subAgentStreamRenew.delete(ev.id);
@@ -2423,7 +2460,9 @@ async function main() {
               // A stop carries no text of its own. It is the owner's doing, the command that made it
               // already answered him, and its message ("Run aborted by user") printed once per
               // streamer the stop settles -- one for the run, one for every message folded into it.
-              await active.abort(isAbort(err) ? undefined : briefError(err));
+              // A message folded into a run that died learns the error but does not print it: the
+              // run's own streamer already did, in the bubble the error interrupted.
+              await active.abort(isAbort(err) || err instanceof FoldedRunError ? undefined : briefError(err));
               hooks.emit("stream:abort", { platform: "my-claw-app", chatId: msg.chatId, error: err });
               throw err;
             } finally {
@@ -2434,26 +2473,28 @@ async function main() {
               hooks.off("subagent:aborted", onSubagentAborted);
               hooks.off("subagent:killed", onSubagentKilled);
               hooks.off("subagent:reset", onSubagentReset);
-              for (const id of subAgentContexts.keys()) {
+              for (const [id, context] of subAgentContexts) {
                 const streamer = subAgentStreamers.get(id);
                 subAgentStreamers.delete(id);
                 subAgentStreamRenew.delete(id);
                 if (streamer) void streamer.abort("parent run ended");
+                const threadId = subagentSessionToThread(id);
+                if (threadId) myClawApp.notifyRun(context.chatId, threadId, false, "aborted");
               }
               subAgentContexts.clear();
             }
           } else {
             response = await routeWithReroute(router, msg, {});
           }
-          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, "done");
         } catch (err) {
-          const aborted = isAbort(err);
-          myClawApp.notifyRun(msg.chatId, msg.threadId ?? DEFAULT_THREAD, false, aborted ? "aborted" : "error");
           // The error was a stream frame and nothing else, so the next history page erased it and
           // the thread reopened on a question with nothing under it. Journalled here, where the
           // text is the one the bubble showed. An abort needs no entry: it is the owner's own
-          // doing and the partial answer is kept in the mirror.
-          if (!aborted) await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err));
+          // doing and the partial answer is kept in the mirror. A message folded into the run
+          // that died is not its reporter either: the run's own message journals the failure once.
+          if (!isAbort(err) && !(err instanceof FoldedRunError)) {
+            await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err));
+          }
           throw err;
         }
 

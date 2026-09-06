@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { runRegistry, RerouteSignal, MAX_INJECTIONS_PER_RUN } from "../../src/core/run-registry.ts";
+import { runRegistry, RerouteSignal, FoldedRunError, MAX_INJECTIONS_PER_RUN } from "../../src/core/run-registry.ts";
 import { AbortedError } from "../../src/core/aborted.ts";
 import { IterationBudget } from "../../src/agent/iteration-budget.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -68,6 +68,33 @@ test("settleMailbox reject rejects the claimed injection promise", async () => {
   runRegistry.drainInjections("s1");
   runRegistry.settleMailbox("s1", "reject", new Error("boom"));
   await assert.rejects(p, /boom/);
+  runRegistry.clear();
+});
+
+test("a claimed injection learns the run's error as a folded one, not as its own to report", async () => {
+  // The folded message was answered in the run that died, so it must fail too -- but its handler
+  // journalled a second failure entry and painted a second error bubble when it got the raw error.
+  runRegistry.clear();
+  runRegistry.startRoot("s1");
+  const p = runRegistry.enqueueInjection("s1", msg("a"))!;
+  runRegistry.drainInjections("s1");
+  const cause = new Error("provider said 500");
+  runRegistry.settleMailbox("s1", "reject", cause);
+  const err = await p.then(() => null, (e: unknown) => e);
+  assert.ok(err instanceof FoldedRunError);
+  assert.equal(err.cause, cause);
+  assert.equal(err.message, "provider said 500");
+  runRegistry.clear();
+});
+
+test("an abort reaches a claimed injection unwrapped: the stop is the owner's on every message it cut", async () => {
+  runRegistry.clear();
+  runRegistry.startRoot("s1");
+  const p = runRegistry.enqueueInjection("s1", msg("a"))!;
+  runRegistry.drainInjections("s1");
+  runRegistry.settleMailbox("s1", "reject", new AbortedError());
+  const err = await p.then(() => null, (e: unknown) => e);
+  assert.ok(err instanceof AbortedError);
   runRegistry.clear();
 });
 

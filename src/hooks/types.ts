@@ -50,6 +50,16 @@ export interface HookEventMap {
     error: unknown;
     durationMs: number;
   };
+  /**
+   * The run was stopped by the owner. Its own end, distinct from an error: the router swallows
+   * the abort (the command that caused it already answered), so without this a channel could
+   * not tell a stopped run from a finished one.
+   */
+  "message:route:aborted": {
+    message: UnifiedMessage;
+    sessionId: string;
+    durationMs: number;
+  };
   "message:delivered": {
     platform: string;
     chatId: string;

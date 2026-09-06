@@ -31,6 +31,24 @@ export class RerouteSignal extends Error {
   }
 }
 
+/**
+ * Thrown into a claimed injection's promise when the run it was folded into died of an error.
+ *
+ * The message did reach the model: it was drained at a turn boundary and answered in that run,
+ * so its outcome is the run's outcome, and it must learn it. But it is not the run's reporter.
+ * Handing the folded message the raw error made its own handler journal a second `failure`
+ * entry, paint a second error bubble and announce the run's end a second time, once per message
+ * the run had absorbed. The wrapper keeps the cause readable and marks who owns the report: the
+ * message that opened the run. An abort is not wrapped, it stays the owner's own doing on every
+ * message it interrupted.
+ */
+export class FoldedRunError extends Error {
+  constructor(public override readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "FoldedRunError";
+  }
+}
+
 interface InjectionItem {
   message: UnifiedMessage;
   resolve: () => void;
@@ -236,7 +254,7 @@ class RunRegistry {
     mb.accepting = false;
     for (const item of mb.claimed) {
       if (outcome === "resolve") item.resolve();
-      else item.reject(err);
+      else item.reject(aborted ? err : new FoldedRunError(err));
     }
     for (const item of mb.pending) {
       // Pending-but-undrained at settle only happens on forced close (budget exhausted) or

@@ -300,6 +300,7 @@ export class MessageRouter {
       if (isAbort(err, signal)) {
         await this.sessionManager.persist(sessionId).catch(() => {});
         runRegistry.settleMailbox(sessionId, "reject", err);
+        hooks.emit("message:route:aborted", { message, sessionId, durationMs });
         void log("info", "run stopped by user", { ...messageLogData(message), sessionId, streaming, durationMs });
         return undefined;
       }

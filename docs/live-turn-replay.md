@@ -66,8 +66,9 @@ left to lift. So the journal holds the parked sends as the frames their other wi
 `chat.user` then `chat.send.queued`, and replays them after the turn's own frames: the bubble at
 the bottom of the thread, with its mark. Released when the run drains the message (its entry is on
 the log from then on) and when a run opens on the thread (the send that opened it is the first
-line of that run). Held beside the compaction rather than inside a journal, because a
-compaction-parked send exists with no run open at all.
+line of that run, and it is acked at that moment, `chat.send.acked`, since a compaction-parked
+send has no turn boundary to be drained through). Held beside the compaction rather than inside a
+journal, because a compaction-parked send exists with no run open at all.
 
 ## It holds only what the store cannot know yet
 
@@ -100,6 +101,21 @@ a replay upserts rather than doubles.
 `createStreamer` is the single door every frame of a turn goes through
 (`send: (frame) => this.broadcast(owner, frame)`), so recording happens there and nowhere else.
 `notifyRun` is the lifecycle: `active` opens a journal for the thread, the matching end drops it.
+
+It is driven by the run, not by the message. The app handler used to call it once per inbound
+message, and a message sent mid-run is not a run: it is folded into the one in flight. Its call
+replaced the journal that run had been filling, so a reload after a steering send came back to the
+hole this document exists to plug, and its end was announced a second time. `notifyRun` now hangs
+on the router's lifecycle hooks (`message:route:start`, `:complete`, `:error`, `:aborted`), one
+start and one end per run, and the journal itself refuses to be reopened while it is open: a thread
+with a journal keeps it and says so, so a second announcement of the same run, from whatever
+caller, neither wipes nor re-broadcasts. Closing is the same, once.
+
+A sub-agent's thread gets a journal too: the child's streamer is created inside the parent run
+(`streamSubAgent`), which is where its run is announced and where its journal opens, and it closes
+when the child settles or when the parent run ends with children still painting. Without it a
+window opening a child mid-run (a conversation the app explicitly lets the owner open) saw the
+question and nothing under it.
 
 An approval is not a streamer frame, so `confirmTool` records its `approval.request` itself and
 the resolution removes it. A sheet is replayed only while its promise is still pending: replaying

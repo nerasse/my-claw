@@ -92,10 +92,18 @@ function connectClient(
 
 function nextFrame(client: WsClient, timeoutMs = 3000): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("no frame within timeout")), timeoutMs);
+    // Settled once: a poll left running past its timeout kept shifting frames off the socket and
+    // handed the next one to a promise nobody was waiting on any more.
+    let settled = false;
+    const timer = setTimeout(() => {
+      settled = true;
+      reject(new Error("no frame within timeout"));
+    }, timeoutMs);
     const check = () => {
+      if (settled) return;
       if (client.frames.length > 0) {
         clearTimeout(timer);
+        settled = true;
         resolve(client.frames.shift() as Record<string, unknown>);
         return;
       }
@@ -793,6 +801,67 @@ describe("MyClawAppAdapter", () => {
     adapter.notifyRun(DEVICE_ID, "default", false);
     reloaded.ws.close();
     after.ws.close();
+  });
+
+  test("a run announced twice is one run: the journal in flight is kept, one start and one end go out", async () => {
+    // Reported: a message sent during a run made the reloaded window lose the tools in flight, and
+    // the run's end rang twice. Every message handler used to announce the run, and the second
+    // announcement replaced the journal the first had been filling.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m-first", DEVICE_ID));
+    await streamer.push("travail en cours");
+    assert.equal((await nextFrame(client)).type, "chat.stream.start");
+    assert.equal((await nextFrame(client)).type, "chat.stream.delta");
+
+    // The same run, announced again: nothing on the wire, nothing lost.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    await assert.rejects(() => nextFrame(client, 300));
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    const seen: Array<Record<string, unknown>> = [];
+    while (seen.length < 3) seen.push(await nextFrame(reloaded));
+    assert.equal(seen[1]!.type, "chat.stream.start");
+    assert.equal(seen[2]!.text, "travail en cours");
+
+    // Two ends for one run: the first is the run's, the second is nobody's.
+    await streamer.finish();
+    while ((await nextFrame(client)).type !== "chat.stream.done") { /* the bubble's own closing frames */ }
+    adapter.notifyRun(DEVICE_ID, "default", false, "done");
+    assert.equal((await nextFrame(client)).type, "chat.run.end");
+    adapter.notifyRun(DEVICE_ID, "default", false, "done");
+    await assert.rejects(() => nextFrame(client, 300));
+    reloaded.ws.close();
+  });
+
+  test("a send parked behind a compaction is acked by the run it opens, and the stale mark is not replayed", async () => {
+    // The router holds a send while a compaction rewrites the history, then routes it as the next
+    // run's trigger. Nothing drains it through a turn boundary, so nothing acked it: the sender
+    // saw "queued" for the whole run, and a reload was replayed the mark on top of the entry.
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m-held", text: "pendant la compaction" }));
+    await waitUntil(() => received.length === 1);
+    adapter.notifyQueued(DEVICE_ID, "default", "m-held", "compaction");
+    assert.equal((await nextFrame(client)).type, "chat.send.queued");
+
+    adapter.notifyRun(DEVICE_ID, "default", true, undefined, "m-held");
+    const acked = await nextFrame(client);
+    assert.equal(acked.type, "chat.send.acked");
+    assert.equal(acked.replyToId, "m-held");
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(reloaded, 300));
+
+    // A send the run did not open is left alone: no ack for it.
+    adapter.notifyRun(DEVICE_ID, "default", false, "done");
+    assert.equal((await nextFrame(client)).type, "chat.run.end");
+    adapter.notifyRun(DEVICE_ID, "default", true, undefined, "m-never-queued");
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    adapter.notifyRun(DEVICE_ID, "default", false, "done");
+    assert.equal((await nextFrame(client)).type, "chat.run.end");
+    reloaded.ws.close();
   });
 
   test("the replayed bubble arrives whole, so a window that was already watching does not paint it twice", async () => {

@@ -1161,13 +1161,38 @@ reasoning is never replayed to a model: `docs/reasoning-visibility.md`.
 
 ### Run lifecycle
 
-One inbound message is one run, bracketed by `chat.run.start` and
-`chat.run.end` regardless of how many tools or model turns it takes: the
-client pins its Stop affordance to these frames, not to the stream bubbles,
-so it survives tool calls and only disappears when the run does. `reason`
-distinguishes a finished run from one stopped by the user (`aborted`) or one
-that failed (`error`). `activeRun` on `session.list.result` carries the same
-state to a device that connects or reconnects mid-run.
+One run is bracketed by `chat.run.start` and `chat.run.end` regardless of how
+many tools or model turns it takes: the client pins its Stop affordance to
+these frames, not to the stream bubbles, so it survives tool calls and only
+disappears when the run does. `reason` distinguishes a finished run from one
+stopped by the user (`aborted`) or one that failed (`error`). `activeRun` on
+`session.list.result` carries the same state to a device that connects or
+reconnects mid-run.
+
+One run, not one message. The frames follow the router's lifecycle hooks
+(`message:route:start`, `:complete`, `:error`, `:aborted`), which fire once per
+run; a message that lands while a run is in flight is folded into it at the
+next turn boundary and opens no run of its own, so it announces nothing. They
+used to be sent by the message handler, once per message, and a steering send
+produced a second `chat.run.start` (which replaced the live journal a reloading
+window is replayed from, see `live-turn-replay.md`) and a second `chat.run.end`
+(which rang the end-of-run sound twice). The abort hook is what lets a stopped
+run be announced as `aborted`: the router swallows the abort and returns
+nothing, so the handler had no way to tell it from `done`. A message folded
+into a run that died is told the error as a `FoldedRunError`, so it neither
+journals a second `failure` nor paints a second error bubble: the run's own
+message does both, once.
+
+A sub-agent's thread is a conversation the app can open, so a child run
+spawned by the `spawn` tool is announced on its own thread (`sub-<hex>`) the
+same way, from the moment its streamer is created to the moment it settles, and
+`activeRun` for that thread asks the runner too: the run registry only knows
+the roots it opened, and asking it alone read a child in flight as idle. Stop
+on a child thread aborts the child through the runner.
+
+A send parked while a compaction rewrote the history becomes the trigger of
+the next run: it is acked (`chat.send.acked`) when that run starts, since no
+turn boundary ever drains it.
 
 `output` is the result handed to the model, capped at 4000 characters
 (`truncated: true` past that). Nested `AGENTS.md` injections are excluded.

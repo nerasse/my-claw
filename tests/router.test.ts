@@ -4,6 +4,8 @@ import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import type { SessionData } from "../src/sessions/store.ts";
+import { hooks } from "../src/hooks/index.ts";
+import { AbortedError } from "../src/core/aborted.ts";
 
 function createMessage(userId = "u1"): UnifiedMessage {
   return {
@@ -288,5 +290,34 @@ test("a run that throws still writes what the session already holds", async () =
     assert.equal(onDisk?.title, "la question");
   } finally {
     await sessionManager.deleteSession(sessionId);
+  }
+});
+
+test("a stopped run is announced as aborted, the one ending the router used to swallow", async () => {
+  // The router returns undefined on a stop rather than throwing, so the only way a channel could
+  // tell a stopped run from a finished one was to guess; the app called it "done". The hook is the
+  // run's own ending, emitted once, on the abort path only.
+  const sessionManager = new SessionManager();
+  const router = new MessageRouter(sessionManager, {
+    async handleMessage() { throw new AbortedError(); },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never);
+
+  const seen: string[] = [];
+  const onAborted = ({ message }: { message: UnifiedMessage }) => { seen.push(`aborted:${message.id}`); };
+  const onError = ({ message }: { message: UnifiedMessage }) => { seen.push(`error:${message.id}`); };
+  const onComplete = ({ message }: { message: UnifiedMessage }) => { seen.push(`complete:${message.id}`); };
+  hooks.on("message:route:aborted", onAborted);
+  hooks.on("message:route:error", onError);
+  hooks.on("message:route:complete", onComplete);
+  try {
+    const result = await router.route(createMessage("stop-user"));
+    assert.equal(result, undefined);
+    assert.deepEqual(seen, ["aborted:m1"]);
+  } finally {
+    hooks.off("message:route:aborted", onAborted);
+    hooks.off("message:route:error", onError);
+    hooks.off("message:route:complete", onComplete);
   }
 });

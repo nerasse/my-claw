@@ -128,24 +128,43 @@ export class LiveTurnJournal {
    * A run started on this thread: whatever a previous one left is not this turn. The sends parked
    * for it are released too: the one that opened the run is on the log from its first line, and
    * any other lands in the run's mailbox and is held again through the injection path.
+   *
+   * A thread already holding an open journal keeps it, and the call says so by returning false.
+   * Two runs never overlap on one thread, so a second opening while the first is in flight is the
+   * same run announced twice, and honouring it would throw away everything a reloading window
+   * still needs replayed.
    */
-  open(owner: string, threadId: string): void {
-    this.queued.delete(this.key(owner, threadId));
-    this.journals.set(this.key(owner, threadId), {
+  open(owner: string, threadId: string): boolean {
+    const key = this.key(owner, threadId);
+    if (this.journals.has(key)) return false;
+    this.queued.delete(key);
+    this.journals.set(key, {
       frames: [],
       outputBytes: 0,
       clipped: new Set(),
       approvals: new Map(),
       questions: new Map(),
     });
+    return true;
+  }
+
+  /** Whether a run is journalled on this thread right now. */
+  isOpen(owner: string, threadId: string): boolean {
+    return this.journals.has(this.key(owner, threadId));
+  }
+
+  /** Whether a send is still held as parked on this thread. */
+  isQueued(owner: string, threadId: string, id: string): boolean {
+    return this.queued.get(this.key(owner, threadId))?.has(id) === true;
   }
 
   /**
    * The run ended: its content is in the session now, and the store is the one truth for anything
-   * settled. Keeping the journal past the end would give the same turn two writers.
+   * settled. Keeping the journal past the end would give the same turn two writers. Returns
+   * whether there was one to close.
    */
-  close(owner: string, threadId: string): void {
-    this.journals.delete(this.key(owner, threadId));
+  close(owner: string, threadId: string): boolean {
+    return this.journals.delete(this.key(owner, threadId));
   }
 
   /**

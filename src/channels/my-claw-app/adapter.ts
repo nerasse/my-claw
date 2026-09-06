@@ -745,25 +745,33 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
-  notifyRun(owner: string, threadId: string, active: boolean, reason?: "done" | "aborted" | "error"): void {
+  notifyRun(owner: string, threadId: string, active: boolean, reason?: "done" | "aborted" | "error", triggerId?: string): void {
     // The run's own lifecycle owns the journal: opened here, dropped at the end, because past the
-    // end the session holds the same turn and two writers for one state is one too many.
-    if (active) this.live.open(owner, threadId);
-    else this.live.close(owner, threadId);
+    // end the session holds the same turn and two writers for one state is one too many. The
+    // frames follow the journal's transitions and nothing else: a run announced twice (the same
+    // run reached from two callers) is one run, one start and one end on the wire, and the
+    // journal of the run in flight is never replaced under it -- docs/live-turn-replay.md.
     if (active) {
+      // The send that opens this run was parked while a compaction rewrote the history: the run
+      // is what drains it, so the mark it wears lifts here, as it does for an injected one.
+      if (triggerId && this.live.isQueued(owner, threadId, triggerId)) {
+        this.broadcast(owner, { type: "chat.send.acked", threadId, replyToId: triggerId });
+      }
+      if (!this.live.open(owner, threadId)) return;
       this.broadcast(owner, {
         type: "chat.run.start",
         threadId,
         ...(currentRunId() ? { run: currentRunId() } : {}),
       });
-    } else {
-      this.broadcast(owner, {
-        type: "chat.run.end",
-        threadId,
-        reason: reason ?? "done",
-        ...(currentRunId() ? { run: currentRunId() } : {}),
-      });
+      return;
     }
+    if (!this.live.close(owner, threadId)) return;
+    this.broadcast(owner, {
+      type: "chat.run.end",
+      threadId,
+      reason: reason ?? "done",
+      ...(currentRunId() ? { run: currentRunId() } : {}),
+    });
   }
 
   /**

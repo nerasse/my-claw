@@ -153,6 +153,21 @@ export class SubAgentRunner {
     }
   }
 
+  /**
+   * Whether a run of this sub-agent is in flight, whoever drives it. The run registry knows only
+   * the roots it opened itself; a child the spawn tool started is tracked here and nowhere else.
+   */
+  isRunningSession(sessionId: string): boolean {
+    return (this.activeRuns.get(sessionId)?.size ?? 0) > 0;
+  }
+
+  /** Stops the runs of this sub-agent, if any. True when there was one to stop. */
+  stopSession(sessionId: string): boolean {
+    if (!this.isRunningSession(sessionId)) return false;
+    void this.stopTracked(sessionId);
+    return true;
+  }
+
   /** Makes this conversation searchable from its log, which is where its turns actually are. */
   private async indexForSearch(id: string, session: SessionData): Promise<void> {
     indexSessionEntries(session, (await sessionLogOf(id)).entries());
