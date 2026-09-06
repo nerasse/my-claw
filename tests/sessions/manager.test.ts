@@ -5,7 +5,8 @@ import { SessionManager } from "../../src/sessions/manager.ts";
 import { deleteSession, loadSession, markSessionDirty } from "../../src/sessions/store.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { openSessionLog, type UserEntry, type ToolEntry } from "../../src/sessions/log.ts";
+import { openSessionLog, type UserEntry,
+  type CommandEntry, type ToolEntry } from "../../src/sessions/log.ts";
 import { readMeta, writeMeta, metaPath, STORAGE_VERSION } from "../../src/sessions/meta.ts";
 import { spillToolOutput, readToolOutput } from "../../src/sessions/tool-output.ts";
 
@@ -300,18 +301,41 @@ describe("SessionManager: the log half", () => {
 
   test("the cursor comes from meta, not from the end of the file", async () => {
     // Those differ exactly when the conversation sits on a branch that is not the newest thing
-    // written, which is the entire point of storing a cursor.
+    // written, which is the entire point of storing a cursor. The other branch has to be a
+    // deliberate one (a rewind command filed at its head): a bare tail past the cursor is damage,
+    // and the open adopts it (docs/session-log.md, "Réparer l'existant").
     const id = "log-manager/cursor";
     const writer = await openSessionLog(id);
     const first = writer.append<UserEntry>({ type: "user", prompt: true, text: "un" });
-    writer.append<UserEntry>({ type: "user", prompt: true, text: "deux" });
+    const second = writer.append<UserEntry>({ type: "user", prompt: true, text: "deux" });
+    writer.branch(first.id);
+    writer.append<CommandEntry>({ type: "command", prompt: false, input: "/undo", output: "rewound" });
+    writer.append<UserEntry>({ type: "user", prompt: true, text: "trois" });
+    await writer.flush();
+    await writeMeta(id, { id, platform: "my-claw-app", chatType: "dm", createdAt: "", lastActiveAt: "", storageVersion: STORAGE_VERSION, leafId: second.id });
+
+    const manager = new SessionManager();
+    const opened = await manager.logOf(id);
+    expect(opened.leaf()).toBe(second.id);
+    expect(opened.head()).not.toBe(second.id);
+    expect(opened.repaired).toBeNull();
+  });
+
+  test("a cursor left behind the end of a straight chain is damage: the open adopts the tail and writes it back", async () => {
+    // What a meta persisted before the run's last entries looks like after a kill (or, on 0.6.0,
+    // after any run: the run_end never made it to the meta).
+    const id = "log-manager/cursor-behind";
+    const writer = await openSessionLog(id);
+    const first = writer.append<UserEntry>({ type: "user", prompt: true, text: "un" });
+    const second = writer.append<UserEntry>({ type: "user", prompt: true, text: "deux" });
     await writer.flush();
     await writeMeta(id, { id, platform: "my-claw-app", chatType: "dm", createdAt: "", lastActiveAt: "", storageVersion: STORAGE_VERSION, leafId: first.id });
 
     const manager = new SessionManager();
     const opened = await manager.logOf(id);
-    expect(opened.leaf()).toBe(first.id);
-    expect(opened.head()).not.toBe(first.id);
+    expect(opened.leaf()).toBe(second.id);
+    expect(opened.repaired).toEqual({ relinked: 0, adoptedTail: true });
+    expect((await readMeta(id))?.leafId).toBe(second.id);
   });
 
   test("persist writes the settings beside the entries, without the history", async () => {

@@ -10,6 +10,7 @@ import {
   UnknownCursorError,
   type Entry,
   type UserEntry,
+  type CommandEntry,
   type PhaseEntry,
   type ToolEntry,
 } from "../../src/sessions/log.ts";
@@ -154,29 +155,35 @@ describe("session log: damage is bounded to a line", () => {
 
 describe("session log: the branch a leaf ends", () => {
   /** A trunk of two turns, then two branches from the first: the retry shape. */
-  async function forked(): Promise<{ log: Awaited<ReturnType<typeof openSessionLog>>; a: Entry; b: Entry; c: Entry }> {
+  /**
+   * A fork the way a channel leaves one: the command that moved the cursor is filed at the new
+   * position (`k`), which is what tells a reopen the fork was deliberate (docs/session-log.md,
+   * "Réparer l'existant").
+   */
+  async function forked(): Promise<{ log: Awaited<ReturnType<typeof openSessionLog>>; a: Entry; b: Entry; k: Entry; c: Entry }> {
     const log = await openSessionLog(freshId());
     const a = log.append<UserEntry>({ type: "user", prompt: true, text: "question" });
     const b = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "premiere reponse", runId: "r1" });
     log.branch(a.id);
+    const k = log.append<CommandEntry>({ type: "command", prompt: false, input: "/retry", output: "rewound" });
     const c = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "seconde reponse", runId: "r2" });
     await log.flush();
-    return { log, a, b, c };
+    return { log, a, b, k, c };
   }
 
   test("a path walks up parentId and comes back oldest first", async () => {
-    const { log, a, c } = await forked();
-    expect(log.path().map((e) => e.id)).toEqual([a.id, c.id]);
+    const { log, a, k, c } = await forked();
+    expect(log.path().map((e) => e.id)).toEqual([a.id, k.id, c.id]);
     await log.flush();
   });
 
   test("the abandoned branch is still on disk and comes back by switching to it", async () => {
-    const { log, a, b, c } = await forked();
+    const { log, a, b, k, c } = await forked();
     await log.flush();
     // This is what makes a retry non-destructive: the turn that was replaced is not gone, it is
     // beside the new one.
-    expect(log.entries()).toHaveLength(3);
-    expect(log.path().map((e) => e.id)).toEqual([a.id, c.id]);
+    expect(log.entries()).toHaveLength(4);
+    expect(log.path().map((e) => e.id)).toEqual([a.id, k.id, c.id]);
     log.branch(b.id);
     expect(log.path().map((e) => e.id)).toEqual([a.id, b.id]);
   });
@@ -193,7 +200,7 @@ describe("session log: the branch a leaf ends", () => {
     const { log } = await forked();
     log.branch(null);
     expect(log.path()).toEqual([]);
-    expect(log.entries()).toHaveLength(3);
+    expect(log.entries()).toHaveLength(4);
     // And the next append starts a root, exactly like a fresh conversation.
     const root = log.append<UserEntry>({ type: "user", prompt: true, text: "on repart" });
     expect(root.parentId).toBeNull();
@@ -206,12 +213,28 @@ describe("session log: the branch a leaf ends", () => {
     await log.flush();
   });
 
-  test("the leaf survives a reopen when it is handed back", async () => {
+  test("the leaf survives a reopen when it is handed back, and the fork it left is kept because a rewind marked it", async () => {
     const { log, a, b } = await forked();
     log.branch(b.id);
+    const k2 = log.append<CommandEntry>({ type: "command", prompt: false, input: "/branches 1", output: "switched" });
     await log.flush();
-    const reopened = await openSessionLog(log.sessionId, b.id);
-    expect(reopened.path().map((e) => e.id)).toEqual([a.id, b.id]);
+    const reopened = await openSessionLog(log.sessionId, k2.id);
+    expect(reopened.repaired).toBeNull();
+    expect(reopened.path().map((e) => e.id)).toEqual([a.id, b.id, k2.id]);
+  });
+
+  test("a fork nothing marked as deliberate is healed at open: the abandoned entries return in file order", async () => {
+    // What a stale second instance (0.6.0) or a kill mid-run left behind: a cursor move with no
+    // command filed at the new position.
+    const log = await openSessionLog(freshId());
+    const a = log.append<UserEntry>({ type: "user", prompt: true, text: "question" });
+    const b = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "premiere reponse", runId: "r1" });
+    log.branch(a.id);
+    const c = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "seconde reponse", runId: "r2" });
+    await log.flush();
+    const reopened = await openSessionLog(log.sessionId, c.id);
+    expect(reopened.repaired?.relinked).toBe(1);
+    expect(reopened.path().map((e) => e.id)).toEqual([a.id, b.id, c.id]);
   });
 
   test("an unknown leaf falls back to the last entry rather than an empty thread", async () => {

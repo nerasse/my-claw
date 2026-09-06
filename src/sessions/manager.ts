@@ -286,6 +286,12 @@ export class SessionManager {
         return null;
       });
       const opened = await openSessionLog(sessionId, meta?.leafId ?? null);
+      // The open adopted a dead tail: the meta says so at once, or the next open does it again.
+      if (opened.repaired?.adoptedTail && meta) {
+        await writeMeta(sessionId, { ...meta, leafId: opened.leaf() }).catch((err) => {
+          void log("error", "session log: could not persist the adopted leaf", { sessionId, error: String(err) });
+        });
+      }
       // Every move of the leaf dirties the session, so the autosave carries it to the meta within
       // its tick; a process killed mid-run then reopens the log at most one tick behind, instead
       // of at the leaf of the last model call.

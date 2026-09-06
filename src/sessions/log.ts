@@ -14,13 +14,14 @@
  *   delta cursor keeps working across a branch switch.
  */
 
-import { appendFile, mkdir, readFile, truncate } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readFile, rename, truncate, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import type { ChatLocation } from "../channels/types.ts";
 import type { SessionAttachment, SessionSubAgentAction, SessionSubAgentState, SessionSubAgentStatus } from "./store.ts";
+import { repairBranches } from "./branches.ts";
 
 export const SESSION_LOG_VERSION = 1;
 
@@ -103,6 +104,7 @@ export interface ToolEntry extends EntryBase {
    * and `spawnStates` reads both, this one being the floor.
    */
   spawn?: SessionSubAgentState;
+  /** The model turn this call belongs to, not the run: one id per API call (`RunRecorder.turnId`). Named before runs had markers. */
   runId: string;
 }
 
@@ -193,6 +195,13 @@ export interface SpawnStateEntry extends EntryBase {
 export interface RunStartEntry extends EntryBase {
   type: "run_start";
   prompt: false;
+  /**
+   * The run's id as the wire announces it (`chat.run.start` / `chat.run.end`, the run context's
+   * correlation id), so a live item and its persisted entry name the same run and the app never
+   * has to rename one to the other. Absent on markers written before 0.6.3: those runs are named
+   * after the marker's own entry id, as they always were.
+   */
+  runId?: string;
 }
 
 /** A run closed, and why. `done` is a normal ending, `error` a failed one, `aborted` a Stop. */
@@ -388,9 +397,12 @@ export class SessionLog {
    * on the leaf before them, and the entries past it were a dead branch.
    */
   onAppend: (() => void) | undefined;
+  /** What `openSessionLog` had to put back on the branch, if anything -- `branches.ts`. */
+  readonly repaired: { relinked: number; adoptedTail: boolean } | null;
 
-  constructor(sessionId: string, entries: Entry[], leafId: string | null) {
+  constructor(sessionId: string, entries: Entry[], leafId: string | null, repaired: { relinked: number; adoptedTail: boolean } | null = null) {
     this.sessionId = sessionId;
+    this.repaired = repaired;
     this.file = entriesPath(sessionId);
     this.list = entries;
     this.nextSeq = entries.reduce((max, entry) => Math.max(max, entry.seq), -1) + 1;
@@ -588,5 +600,30 @@ export async function openSessionLog(sessionId: string, leafId?: string | null):
     void log("warn", "session log: dropped an unterminated last line", { sessionId, bytes: raw.length - keep });
   }
 
-  return new SessionLog(sessionId, entries, leafId ?? null);
+  // Dead branches go back on the branch here, at the one door every read goes through, so an
+  // install that carries them from an older version is whole the next time a conversation opens
+  // (`branches.ts`). The file is rewritten only when a parent link moved, atomically, with a copy
+  // kept beside it: the repair moves links and never deletes, but the shape it undoes is gone.
+  const repair = repairBranches(entries, leafId ?? null);
+  const repaired = repair.relinked.length > 0 || repair.adoptedTail
+    ? { relinked: repair.relinked.length, adoptedTail: repair.adoptedTail }
+    : null;
+  if (repair.relinked.length > 0) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await copyFile(path, `${path}.bak-branches-${stamp}`);
+    await writeFile(`${path}.tmp`, repair.entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf-8");
+    await rename(`${path}.tmp`, path);
+  }
+  if (repaired) {
+    void log("warn", "session log: dead branches put back on the branch", {
+      sessionId,
+      forks: repair.bugForks,
+      deliberateForks: repair.deliberateForks,
+      relinked: repair.relinked.length,
+      adoptedTail: repair.adoptedTail,
+      leafId: repair.leafId,
+    });
+  }
+
+  return new SessionLog(sessionId, repair.entries, repair.leafId, repaired);
 }

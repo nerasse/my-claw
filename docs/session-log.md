@@ -475,16 +475,30 @@ maintenant le drapeau dirty de la session (`SessionLog.onAppend`, câblé par le
 l'autosave (2 s) porte la feuille dans `meta.json` quoi qu'il arrive au run. Un crash brutal perd
 au plus ce tick.
 
-**Réparer l'existant.** `scripts/repair-branches.ts` remet les branches mortes sur la branche :
-pour chaque bifurcation qui n'est pas un rembobinage délibéré (`/undo`, `/retry`, `/redo`,
-`/fork` laissent une entrée `command` en tête de la nouvelle branche ; un run mort d'erreur
-rembobine sur sa propre question, donc la bifurcation porte sur une entrée `user` avec un
-`run_start` dont le run finit en `error`), les orphelins sont réinsérés dans l'ordre du fichier
-entre le point de bifurcation et l'enfant survivant, et une queue morte en fin de fichier devient
-la feuille. À blanc par défaut, `--apply` écrit (copie `.bak-branches-<date>` à côté). Le serveur
-relit le fichier à la prochaine ouverture : une session qu'il tient ouverte montre la réparation
-après son redémarrage. Passé le 2026-09-06 sur 104 sessions : 59 réparées, quasi toutes avec une
-méta en retard d'une entrée (le `run_end`), sept avec de vraies branches mortes.
+**Réparer l'existant : à l'ouverture.** `src/sessions/branches.ts` (`repairBranches`) remet les
+branches mortes sur la branche, et `openSessionLog` l'appelle à chaque lecture du fichier : une
+install qui en porte depuis une version ≤ 0.6.0 est entière à la prochaine ouverture de chaque
+conversation, sans étape. Pour chaque bifurcation qui n'est pas un rembobinage délibéré, les
+orphelins sont réinsérés dans l'ordre du fichier entre le point de bifurcation et l'enfant
+survivant, et une queue morte en fin de fichier devient la feuille (le manager écrit la méta
+aussitôt). Rien n'est supprimé, seuls des liens `parentId` bougent ; le fichier n'est réécrit que
+si un lien a bougé, atomiquement, avec une copie `entries.jsonl.bak-branches-<date>` à côté, et
+l'événement est journalisé (`session log: dead branches put back on the branch`).
+
+Un rembobinage délibéré laisse sa marque, et c'est à elle qu'on le reconnaît : `/undo`, `/retry`,
+`/redo`, `/fork`, `/branches` écrivent leur entrée `command` à la position où ils se placent, donc
+le point de bifurcation a un enfant `command` d'un côté ou de l'autre (`/redo` la laisse côté
+branche abandonnée) ; un run mort d'erreur rembobine sur sa propre question et le canal y dépose
+une entrée `failure`, donc la bifurcation porte sur une entrée `user` avec un `run_start` dont le
+run finit en `error`, ou avec un enfant `failure` (les sessions d'avant les marqueurs de run).
+Toute autre bifurcation est un dégât. La seule perte assumée : un rembobinage d'erreur d'avant
+les marqueurs dont la `failure` n'aurait pas été écrite est remis sur la branche (la tentative
+ratée redevient visible, rien n'est perdu).
+
+`scripts/repair-branches.ts` passe la même fonction sur toutes les sessions d'un coup, à blanc
+par défaut, `--apply` pour écrire. Passé le 2026-09-06 sur les 104 sessions du owner : 59
+réparées, quasi toutes avec une méta en retard d'une entrée (le `run_end`), sept avec de vraies
+branches mortes.
 
 ## 2.7 Sorties d'outils : pas d'horloge
 
