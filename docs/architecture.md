@@ -146,7 +146,13 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 - Auth: API key per provider via env vars (`apiKeyEnv` in provider config), with global fallback
 - Custom headers per provider supported
 - Backward-compatible: legacy `{baseUrl, model}` configs auto-migrate on boot
-- **Retry**: 3 attempts with exponential backoff + jitter for 429/5xx, respects `Retry-After`
+- **Retry**: 3 attempts, one policy for the three transports (`llm/retry.ts`). Retryable is
+  `408, 429, 500, 502, 503, 504, 520-524, 529` -- the Cloudflare 52x because half the providers sit
+  behind one, and 529 because Anthropic's overloaded is a queue, not a fault. Backoff is
+  exponential, jittered (an outage releases every caller at once, and a bare doubling brings them
+  all back at the same instant), and capped at 30 s **after** the jitter. A `Retry-After` the server
+  sent wins, capped the same way so a header of an hour cannot park a run for an hour. The wait
+  itself is abortable: see `docs/stop.md`
 - **Timeout**: 120s non-streaming, 300s streaming (AbortController)
 - **Safe parsing**: malformed JSON in SSE chunks or tool args logged + skipped, never crashes
 - Error responses read and included in thrown error messages

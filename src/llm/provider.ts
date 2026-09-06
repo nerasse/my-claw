@@ -1,6 +1,7 @@
 import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
+import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -9,10 +10,6 @@ import { cacheDialectOf } from "./cache-policy.ts";
 import { OPENAI_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
-const LLM_RETRY_BASE_MS = 500;
-const LLM_RETRY_MAX_MS = 30_000;
-const LLM_RETRY_JITTER = 0.15;
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const TRANSIENT_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"]);
 
 const CIRCUIT_BREAKER_THRESHOLD = 5;
@@ -546,20 +543,6 @@ async function pinnedRoute404(
   };
 }
 
-function retryDelay(attempt: number, retryAfterMs?: number): number {
-  if (retryAfterMs && retryAfterMs > 0) return Math.min(retryAfterMs, LLM_RETRY_MAX_MS);
-  const base = LLM_RETRY_BASE_MS * Math.pow(2, attempt - 1);
-  const clamped = Math.min(base, LLM_RETRY_MAX_MS);
-  return clamped * (1 + (Math.random() * 2 - 1) * LLM_RETRY_JITTER);
-}
-
-function parseRetryAfterMs(response: Response): number | undefined {
-  const raw = response.headers.get("retry-after");
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
-}
-
 function safeJsonParse(raw: string, label: string): Record<string, unknown> {
   if (!raw.trim()) return {};
   try {
@@ -667,8 +650,8 @@ export async function chatCompletion(
           err.status = response.status;
           if (pinned404) err.stalePin = true;
 
-          if (attempt < LLM_RETRY_ATTEMPTS && (RETRYABLE_STATUS.has(response.status) || pinned404?.retryable)) {
-            const delay = retryDelay(attempt, parseRetryAfterMs(response));
+          if (attempt < LLM_RETRY_ATTEMPTS && (isRetryableStatus(response.status) || pinned404?.retryable)) {
+            const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
             hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: true });
             await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
             await sleep(delay, signal);
@@ -706,7 +689,7 @@ export async function chatCompletion(
         throw new Error(`LLM request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
-        const delay = retryDelay(attempt);
+        const delay = retryDelayMs(attempt);
         await log("warn", `LLM transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
         await sleep(delay, signal);
         continue;
@@ -786,8 +769,8 @@ export async function chatCompletionStream(
         err.status = response.status;
         if (pinned404) err.stalePin = true;
 
-        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (RETRYABLE_STATUS.has(response.status) || pinned404?.retryable)) {
-          const delay = retryDelay(attempt, parseRetryAfterMs(response));
+        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (isRetryableStatus(response.status) || pinned404?.retryable)) {
+          const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
           await sleep(delay, signal);
           lastErr = err;
@@ -926,7 +909,7 @@ export async function chatCompletionStream(
         throw new Error(`LLM stream stalled for ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && isTransientError(err)) {
-        const delay = retryDelay(attempt);
+        const delay = retryDelayMs(attempt);
         await log("warn", `LLM stream transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
         await sleep(delay, signal);
         continue;

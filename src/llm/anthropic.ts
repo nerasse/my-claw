@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { EffortLevel, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
+import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
 import { log } from "../utils/logger.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
@@ -13,9 +14,7 @@ import type { ChatMessage, LlmResponse, LlmUsage, ThinkingBlock, ToolCall } from
 import { ANTHROPIC_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_ATTEMPTS = 3;
-const RETRY_BASE_MS = 800;
 /**
  * Only reached when neither the provider nor models.dev declares an output limit. Taken from the
  * client's own fallback ceiling (`aph` in the 2.1.206 bundle, next to `sph = 32000`).
@@ -547,13 +546,6 @@ async function processStream(
 // Transport
 // ============================================================================
 
-function retryDelay(response: Response, attempt: number): number {
-  const header = response.headers.get("retry-after");
-  const seconds = header ? Number(header) : NaN;
-  if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1000, 60_000);
-  return RETRY_BASE_MS * 2 ** (attempt - 1);
-}
-
 /**
  * Effort levels the Messages API accepts, in the documented ladder. `high` is the API default, so
  * naming it is identical to omitting the parameter.
@@ -800,8 +792,8 @@ async function runAnthropic(
           lastErr = err;
           continue;
         }
-        if (attempt < MAX_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
-          const delay = retryDelay(response, attempt);
+        if (attempt < MAX_ATTEMPTS && !tokensDelivered && isRetryableStatus(response.status)) {
+          const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `Anthropic ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
           await sleep(delay, signal);
           lastErr = err;
@@ -827,7 +819,7 @@ async function runAnthropic(
         throw new Error(`Anthropic request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
-        const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
+        const delay = retryDelayMs(attempt);
         await log("warn", `Anthropic transient error, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS}): ${(err as Error).message}`);
         await sleep(delay, signal);
         continue;

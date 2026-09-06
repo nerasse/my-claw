@@ -1,6 +1,7 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
+import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
@@ -8,9 +9,7 @@ import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
-const RETRY_BASE_MS = 800;
 
 // Cloudflare in front of the Codex backend challenges non first-party originators with a 403
 // cf-mitigated response; mirroring the real codex client's originator/User-Agent avoids it.
@@ -479,8 +478,8 @@ async function runCodex(
         const detail = (await response.text().catch(() => "")).slice(0, 500);
         const err = new Error(`Codex request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
         err.status = response.status;
-        if (attempt < MAX_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
-          const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
+        if (attempt < MAX_ATTEMPTS && !tokensDelivered && isRetryableStatus(response.status)) {
+          const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `Codex ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
           await sleep(delay, signal);
           lastErr = err;
@@ -506,7 +505,7 @@ async function runCodex(
         throw new Error(`Codex request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
-        const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
+        const delay = retryDelayMs(attempt);
         await log("warn", `Codex transient error, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS}): ${(err as Error).message}`);
         await sleep(delay, signal);
         continue;
