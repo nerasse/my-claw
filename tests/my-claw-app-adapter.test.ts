@@ -812,6 +812,21 @@ describe("MyClawAppAdapter", () => {
     sender.ws.close();
   });
 
+  test("sends of one conversation reach the router in the order they arrived", async () => {
+    // The head of a send awaits the disk (the duplicate check opens the session log, an attachment
+    // is looked up by id) and each frame used to be handled on its own: two frames a few
+    // milliseconds apart reached the router in whichever order the disk answered, which is how a
+    // fresh thread's first message could land after its second. Same conversation, same order.
+    const sender = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, false, false, false, true);
+    const texts = Array.from({ length: 12 }, (_, i) => `burst ${i}`);
+    for (const [i, text] of texts.entries()) {
+      sender.ws.send(JSON.stringify({ type: "chat.send", id: `burst-${i}`, text, threadId: "burst-thread" }));
+    }
+    await waitUntil(() => received.length === texts.length);
+    assert.deepEqual(received.map((msg) => msg.text), texts);
+    sender.ws.close();
+  });
+
   test("a send parked for the run's next turn survives a reload: bubble and mark are replayed", async () => {
     // Reported: a message sent during a run, then a reload before the run reached a turn boundary.
     // The message lived in the run's mailbox and on the sender's screen only, so the reloaded

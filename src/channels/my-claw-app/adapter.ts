@@ -279,6 +279,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
   private live = new LiveTurnJournal();
   /**
+   * The send being admitted on each conversation, keyed by owner/thread.
+   *
+   * The head of a send awaits the disk (the duplicate check opens the session log, attachments
+   * are looked up by id), and every frame is handled on its own: two frames a few milliseconds
+   * apart reached the router in whichever order the disk answered, so a fresh thread's first
+   * message could land after its second. Sends of one conversation take a turn, held until the
+   * message is handed to the router or the command handler starts, and released before the
+   * command runs: a `/compact` holds a session for minutes and the `/stop` typed after it must
+   * not wait behind it.
+   */
+  private sendTurns = new Map<string, Promise<void>>();
+  /**
    * The last sends, as the `chat.user` frame their other windows received. A send that gets parked
    * is only known to be parked once the router says so, and by then the frame is what the journal
    * has to hold for a reloading window; small, since a send is parked or routed within seconds.
@@ -1682,6 +1694,40 @@ export class MyClawAppAdapter implements ChannelAdapter {
     ws: ServerWebSocket<MyClawAppSessionData>,
     frame: MyClawAppChatSend,
   ): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
+    const pass = await this.takeSendTurn(`${ws.data.owner}/${threadId}`);
+    try {
+      await this.admitChatSend(ws, frame, threadId, pass);
+    } finally {
+      pass();
+    }
+  }
+
+  /** Waits for the sends before this one on the conversation; the returned function passes the turn on, once. */
+  private async takeSendTurn(key: string): Promise<() => void> {
+    const previous = this.sendTurns.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => mine);
+    this.sendTurns.set(key, chained);
+    await previous;
+    let passed = false;
+    return () => {
+      if (passed) return;
+      passed = true;
+      release();
+      if (this.sendTurns.get(key) === chained) this.sendTurns.delete(key);
+    };
+  }
+
+  private async admitChatSend(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppChatSend,
+    threadId: string,
+    pass: () => void,
+  ): Promise<void> {
     const owner = ws.data.owner;
     // The frame is only typed on the wire: an app one version off, or one bug in its serializer,
     // sends a `chat.send` with no text at all.
@@ -1689,8 +1735,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const refs = Array.isArray(frame.attachments) ? frame.attachments : [];
     const hasLocation = frame.location !== undefined;
     if (!text && refs.length === 0 && !hasLocation) return;
-
-    const threadId = sanitizeThreadId(frame.threadId ?? "") ?? DEFAULT_THREAD;
 
     // The receipt goes first, to this socket only: the app has a bubble waiting on it, whatever the
     // socket claimed about itself. A send it never gets a receipt for is offered again, so the same
@@ -1759,6 +1803,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
               });
             }, COMMAND_PENDING_NOTICE_MS);
         try {
+          // The order of arrival is settled; what follows can take minutes.
+          pass();
           const output = await this.commandHandler(owner, threadId, command, args);
           clearTimeout(pending);
           if (output) {

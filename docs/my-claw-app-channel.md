@@ -798,6 +798,14 @@ runs fresh like any other message.
   server that predates it. The heartbeat (`ping`/`pong`, 25 s, two misses) still closes the dead
   socket underneath, which is what brings the link back; the receipt is what tells the owner which
   message fell in the hole meanwhile.
+- Sends of one conversation reach the router **in the order they arrived**. The head of a send
+  awaits the disk (the duplicate check opens the session log, attachments are looked up by id) and
+  every frame is handled on its own, so from 0.6.3 two frames a few milliseconds apart reached the
+  router in whichever order the disk answered: a fresh thread's first message could land after its
+  second. Since 0.6.5 the sends of a conversation take a turn (`sendTurns`, keyed by owner/thread),
+  held until the message is handed to the router or the command handler is about to run, and
+  passed on before the command runs: a `/compact` holds its session for minutes and the `/stop`
+  typed after it must not wait behind it.
 - `chat.send.queued` says a send is parked: a compaction holds the session, so the router waits
   for it before opening the run (`docs/compaction.md`). The app marks that bubble with a running
   counter instead of leaving it silent for the length of the compaction, which read as a dropped
