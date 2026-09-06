@@ -74,6 +74,13 @@ solves the blocker and replies "continue".
 
 ## Guardrails
 
+- **Renderer sandbox on**: the unit runs Chromium **without** `--no-sandbox`. That flag had been
+  there since the first draft, and it disables the one boundary between a page the agent was told
+  to open and this host -- on a browser that follows links chosen by whatever it is reading. It was
+  a habit, not a requirement: unprivileged user namespaces are enabled here, and the exact service
+  command line was run without the flag to check (CDP answered, no sandbox error). If a host ever
+  does refuse it (userns restricted by AppArmor), the answer is a setuid `chrome-sandbox`, not the
+  flag back.
 - **SSRF**: `browser_navigate` blocks `localhost`, `127.0.0.1`, `file://`
 - **Dialog auto-dismiss**: `page.on('dialog', d => d.accept())` — no blocking alerts
 - **Serialized tasks**: there is ONE shared Chromium, so `delegate_browser_task` calls are
