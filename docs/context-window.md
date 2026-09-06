@@ -360,8 +360,14 @@ context limit 262k (default, not declared for this model)
 context limit 1,048,576 (session override: full)
 ```
 
-The app's chat header carries the same reading, permanently, as one number: `ctx 37%`, the
-occupancy over the effective window. It travels on `model.result` (`context.used`, alongside
+The app's chat header carries the same reading, permanently, as one number: `ctx 37.4%`, the
+occupancy over the effective window, to a tenth of a percent. A tenth because the figure is pushed
+after every model call and is meant to move with it: on a 1M window one turn adds a few hundred to
+a couple of thousand tokens, under 0.2%, and a whole percent sat still for dozens of turns and
+read as a gauge that was stuck (measured on 2026-09-06: three consecutive pushes at 122 405,
+123 820 and 124 202 tokens of 1 000 000, all three drawn as `ctx 12%`). The status page carries
+the same movement in full: while it is open it re-asks its report on every push for its thread and
+at the end of a run, and it has a refresh button of its own. It travels on `model.result` (`context.used`, alongside
 `raw` / `effective` / `cap`), which the app already asks for when a conversation opens and now
 re-asks at the end of every run: the turn that just landed is what filled the window. It is the
 same `occupiedContextTokens` the compaction gate reads, with the same measurement qualification and
