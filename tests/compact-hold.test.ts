@@ -179,6 +179,42 @@ test("/stop reaches a compaction and aborts the signal its hold carries", async 
   assert.equal(runRegistry.isCompacting("s5"), false);
 });
 
+test("/stop during a /compact stops the summarizer, and the command answers that it was stopped", async () => {
+  // The registry aborted the hold's signal, but the command never handed that signal to the
+  // summarizer: /stop answered "Stopped." and the compaction ran to its end regardless. The
+  // summarizer's request must carry the hold's signal, and an abort is an answer, not an error.
+  const { session, setup } = await makeSessionWithLog("s5b");
+  let requestSignal: AbortSignal | undefined;
+  const mock = mockFetch(
+    (_input?: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        requestSignal = init?.signal ?? undefined;
+        requestSignal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }),
+  );
+  const settled: string[] = [];
+  const onSettled = (payload: HookEventMap["session:compact:settled"]): void => {
+    settled.push(payload.sessionId);
+  };
+  hooks.on("session:compact:settled", onSettled);
+  try {
+    const pending = handleCompactCommand({ config: makeConfig(), session, persist: async () => {} });
+    while (requestSignal === undefined) await new Promise((r) => setTimeout(r, 1));
+    assert.equal(requestSignal.aborted, false);
+
+    assert.equal(runRegistry.stop("s5b"), true);
+    const outcome = await pending;
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.text, "Compaction stopped.");
+    assert.deepEqual(settled, ["s5b"]);
+  } finally {
+    hooks.off("session:compact:settled", onSettled);
+    mock.restore();
+    await setup.cleanup();
+  }
+  assert.equal(runRegistry.isCompacting("s5b"), false);
+});
+
 test("a compaction counts as work in flight for the app's activity probe", () => {
   assert.equal(runRegistry.hasAny(), false);
   const held = runRegistry.beginCompaction("s6");

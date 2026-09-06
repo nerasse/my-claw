@@ -6,6 +6,7 @@
  */
 
 import type { CompactOutcome } from "../agent/backend.ts";
+import { isAbort } from "../core/aborted.ts";
 import type { MyClawConfig } from "../core/config.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { hooks } from "../hooks/index.ts";
@@ -22,8 +23,6 @@ export interface CompactCommandParams {
   persist: () => Promise<void>;
   /** The app thread this came from, carried through to the completion notification. */
   threadId?: string;
-  /** Aborts the summarizer, so `/stop` reaches a compaction that has one to two minutes to run. */
-  signal?: AbortSignal;
 }
 
 export async function handleCompactCommand(p: CompactCommandParams): Promise<CompactOutcome> {
@@ -54,7 +53,9 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
   // instructions the armed one was never given, and committing both would move the floor twice.
   cancelSpeculation(p.session.id);
   try {
-    const result = await compactSession(p.config, p.session, p.instructions, p.signal);
+    // The hold's signal is the one `/stop` and the app's Stop button abort (`runRegistry.stop`):
+    // handed to the summarizer, a stop reaches a compaction that has one to two minutes to run.
+    const result = await compactSession(p.config, p.session, p.instructions, held.signal);
     if (!result.ok) return finished({ text: result.reason ?? "Compaction failed.", ok: false });
     await p.persist();
     // Emitted after the session is written, so a window that reloads on the very next tick finds
@@ -74,6 +75,8 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
       ...(result.summary ? { summary: result.summary } : {}),
     });
   } catch (err) {
+    // The owner stopped it: an answer, not a failure to report as one.
+    if (isAbort(err, held.signal)) return finished({ text: "Compaction stopped.", ok: false });
     finished({ text: err instanceof Error ? err.message : String(err), ok: false });
     throw err;
   } finally {
