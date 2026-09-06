@@ -23,6 +23,33 @@ import type { MyClawAppServerFrame } from "./types.ts";
 const OUTPUT_BUDGET_BYTES = 256 * 1024;
 
 type ToolDelta = Extract<MyClawAppServerFrame, { type: "chat.tool.delta" }>;
+type StreamDelta = Extract<MyClawAppServerFrame, { type: "chat.stream.delta" }>;
+type ReasoningDelta = Extract<MyClawAppServerFrame, { type: "chat.reasoning.delta" }>;
+type AnyDelta = ToolDelta | StreamDelta | ReasoningDelta;
+
+/**
+ * The frames that carry a fragment of something bigger. Replaying them one by one is what made a
+ * reconnecting window paint the turn twice: the client keeps the bubble it was already watching,
+ * so a second pass of chunks lands on top of the text it already holds.
+ */
+function isDelta(frame: MyClawAppServerFrame): frame is AnyDelta {
+  return (
+    frame.type === "chat.stream.delta" ||
+    frame.type === "chat.tool.delta" ||
+    frame.type === "chat.reasoning.delta"
+  );
+}
+
+/** Two chunks of the same subject, as one. */
+function mergeDelta(into: AnyDelta, next: AnyDelta): AnyDelta {
+  if (into.type === "chat.tool.delta" && next.type === "chat.tool.delta") {
+    return { ...into, stdout: into.stdout + next.stdout, stderr: into.stderr + next.stderr };
+  }
+  if (into.type !== "chat.tool.delta" && next.type !== "chat.tool.delta") {
+    return { ...into, text: into.text + next.text };
+  }
+  return into;
+}
 
 /** Frames that carry a tool's live output: the only ones that can grow without limit. */
 function isToolOutput(frame: MyClawAppServerFrame): frame is ToolDelta {
@@ -202,9 +229,29 @@ export class LiveTurnJournal {
     const tail = compacting ? [compacting] : [];
     const journal = this.journals.get(key);
     if (!journal) return tail;
-    const frames = journal.frames.map((frame) =>
-      isToolOutput(frame) && journal.clipped.has(frame.id) ? { ...frame, clipped: true } : frame,
-    );
+
+    // One delta per subject, carrying everything held for it and flagged `replay` so the client
+    // replaces rather than appends. It sits where the first chunk sat, so the order the window
+    // sees is still the order the turn happened in.
+    const frames: MyClawAppServerFrame[] = [];
+    const mergedAt = new Map<string, number>();
+    for (const frame of journal.frames) {
+      const marked =
+        isToolOutput(frame) && journal.clipped.has(frame.id) ? { ...frame, clipped: true } : frame;
+      if (!isDelta(marked)) {
+        frames.push(marked);
+        continue;
+      }
+      const subject = `${marked.type}\u0000${marked.id}`;
+      const at = mergedAt.get(subject);
+      if (at === undefined) {
+        mergedAt.set(subject, frames.length);
+        frames.push({ ...marked, replay: true });
+        continue;
+      }
+      frames[at] = mergeDelta(frames[at] as AnyDelta, marked);
+    }
+
     return [...frames, ...tail, ...journal.approvals.values(), ...journal.questions.values()];
   }
 

@@ -1109,6 +1109,8 @@ export interface MyClawAppToolDelta {
    * docs/live-turn-replay.md.
    */
   clipped?: boolean;
+  /** Whole output rather than a chunk, replaced by the client. See MyClawAppStreamDelta.replay. */
+  replay?: boolean;
 }
 
 /** A sub-agent spawned mid-run. Annotates the `spawn` tool card (by toolCallId) with its
@@ -1402,6 +1404,12 @@ export interface MyClawAppStreamDelta {
   id: string;
   threadId: string;
   text: string;
+  /**
+   * Set only on a replay, where `text` is the bubble's whole text rather than one more chunk.
+   * The client replaces instead of appending: a window that still holds the bubble it was
+   * watching would otherwise concatenate the turn onto itself -- docs/live-turn-replay.md.
+   */
+  replay?: boolean;
 }
 
 /**
@@ -1413,6 +1421,8 @@ export interface MyClawAppReasoningDelta {
   id: string;
   threadId: string;
   text: string;
+  /** Whole text rather than a chunk, replaced by the client. See MyClawAppStreamDelta.replay. */
+  replay?: boolean;
 }
 
 /**

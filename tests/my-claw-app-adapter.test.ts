@@ -758,6 +758,36 @@ describe("MyClawAppAdapter", () => {
     after.ws.close();
   });
 
+  test("the replayed bubble arrives whole, so a window that was already watching does not paint it twice", async () => {
+    // The window asking for a sync is usually the one that was watching a second ago: a blip, a
+    // thread switched away from and back, a refresh. It still holds the bubble, and the client
+    // appends what it is handed, so replaying the chunks one by one wrote the turn onto itself.
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    const streamer = adapter.createStreamer(streamerMessage(adapter, "m-twice", DEVICE_ID));
+    await streamer.push("un ");
+    await streamer.push("deux ");
+    await streamer.push("trois");
+
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+
+    const seen: Array<Record<string, unknown>> = [];
+    while (seen.length < 3) seen.push(await nextFrame(reloaded));
+    assert.equal(seen[0]!.type, "session.sync.result");
+    assert.equal(seen[1]!.type, "chat.stream.start");
+
+    // One delta, not three, and flagged so the client replaces instead of appending.
+    assert.equal(seen[2]!.type, "chat.stream.delta");
+    assert.equal(seen[2]!.text, "un deux trois");
+    assert.equal(seen[2]!.replay, true);
+    await assert.rejects(() => nextFrame(reloaded, 300), "the other two chunks must not follow");
+
+    await streamer.finish();
+    adapter.notifyRun(DEVICE_ID, "default", false);
+    reloaded.ws.close();
+  });
+
   test("a pending approval is asked again to a window that reloaded", async () => {
     // The sheet is broadcast once. A window that reloads used to lose it, and the tool then waited
     // out its timeout and was denied without the owner ever seeing the question.

@@ -37,11 +37,42 @@ describe("live turn journal", () => {
     live.record(OWNER, THREAD, delta("s1", "Bon"));
     live.record(OWNER, THREAD, delta("s1", "jour"));
 
-    // The same frames, in the order they were sent: the client rebuilds the bubble by the path it
-    // already has, and ends up with the text the windows that never left are showing.
+    // One delta, not two. The window asking for this is usually the one that was already
+    // watching: it still holds the bubble, `chat.stream.start` on a known id is a no-op, and
+    // replaying the chunks made it append the answer to itself. `replay` says the text is whole
+    // so the client replaces -- and a window that never saw the run gets the same result, since
+    // replacing an empty bubble is setting it.
     const replay = live.replay(OWNER, THREAD);
-    expect(types(replay)).toEqual(["chat.stream.start", "chat.stream.delta", "chat.stream.delta"]);
+    expect(types(replay)).toEqual(["chat.stream.start", "chat.stream.delta"]);
     expect(replay.map((frame) => ("text" in frame ? frame.text : "")).join("")).toBe("Bonjour");
+    expect(replay.some((frame) => "replay" in frame && frame.replay === true)).toBe(true);
+  });
+
+  test("coalesces each subject on its own, at the place its first chunk held", () => {
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.record(OWNER, THREAD, streamStart("s1"));
+    live.record(OWNER, THREAD, delta("s1", "avant "));
+    live.record(OWNER, THREAD, streamStart("s2"));
+    live.record(OWNER, THREAD, delta("s2", "autre "));
+    live.record(OWNER, THREAD, delta("s1", "apres"));
+    live.record(OWNER, THREAD, delta("s2", "bulle"));
+
+    // Order is the turn's order, so the merged delta sits where the first chunk was rather than
+    // at the end: a bubble must not jump over the one that followed it.
+    const replay = live.replay(OWNER, THREAD);
+    expect(types(replay)).toEqual([
+      "chat.stream.start",
+      "chat.stream.delta",
+      "chat.stream.start",
+      "chat.stream.delta",
+    ]);
+    expect(replay.map((frame) => ("text" in frame ? frame.text : ""))).toEqual([
+      "",
+      "avant apres",
+      "",
+      "autre bulle",
+    ]);
   });
 
   test("forgets a bubble the moment it closes: the session serves it from there", () => {

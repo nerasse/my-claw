@@ -34,6 +34,27 @@ were sent, so the client applies them through the paths it already has and a rep
 watched turn converge on the same thread. That is the whole reason for choosing frames over a
 summary: a second representation of a turn is a second thing to keep true.
 
+### One delta per subject, and it replaces
+
+The same frames, with one exception that the first version got wrong: the fragments are coalesced.
+A bubble that was streamed in forty chunks replays as **one** `chat.stream.delta` carrying the
+whole text, flagged `replay: true`, sitting where the first chunk sat. Same for a tool card's
+output and for reasoning.
+
+The reason is that the window asking for a sync is usually the window that was already watching.
+A blip on the Wi-Fi, a thread left and reopened, a refresh: the client reconnects holding the
+bubble, `chat.stream.start` on a known id is a no-op by design, and every replayed chunk was then
+appended to text that was already there. The answer appeared twice, and stayed twice for the rest
+of the run.
+
+Appending is right for a live delta and wrong for a replay, so the frame says which it is rather
+than the client guessing. `replay` means *this is the whole thing*: `appendDelta` and
+`appendToolOutput` replace instead of concatenating. A window that never saw the run gets the same
+result, since replacing an empty bubble is setting it.
+
+An old client ignores the flag and appends, which is exactly what it did before: no worse, and it
+converges as soon as it updates.
+
 ## It holds only what the store cannot know yet
 
 A journal is not a copy of the run. A bubble that closes and a tool that settles are dropped from
