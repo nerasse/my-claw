@@ -8,6 +8,7 @@ import type { McpServerConfig } from "../../src/core/config.ts";
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "echo-server.ts");
 const stdioServer = (): McpServerConfig => ({ transport: "stdio", command: "bun", args: [SERVER] });
+const DYING_SERVER = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "dying-server.ts");
 
 test("mcpToolName namespaces to avoid collisions", () => {
   assert.equal(mcpToolName("weather", "forecast"), "mcp__weather__forecast");
@@ -192,3 +193,32 @@ test("status drops a server removed from config", async () => {
     await mgr.stop();
   }
 });
+
+test("a server that dies is noticed, and its tools stop being offered", async () => {
+  // Nothing used to notice. A stdio server that exited kept its tools listed and every call failed
+  // one at a time, forever, because the connection was never marked gone.
+  const mgr = new McpManager();
+  try {
+    await mgr.sync({ demo: { transport: "stdio", command: "bun", args: [DYING_SERVER] } });
+    assert.equal(mgr.status()[0]?.state, "connected");
+    assert.equal(mgr.getTools().length, 1);
+
+    // The fixture exits on its own once told to.
+    const quit = mgr.getTools().find((t) => t.name === "mcp__demo__quit")!;
+    await quit.execute({}).catch(() => undefined);
+
+    await waitFor(() => mgr.status()[0]?.state === "failed");
+    assert.equal(mgr.getTools().length, 0, "a dead server offers nothing");
+    assert.equal(mgr.status()[0]?.lastError, "connection lost");
+  } finally {
+    await mgr.stop();
+  }
+});
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("condition never held");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}

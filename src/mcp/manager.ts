@@ -29,6 +29,10 @@ function isEnabled(config: McpServerConfig): boolean {
   return config.enabled !== false;
 }
 
+/** Reconnect backoff after a server goes away: five seconds, doubling, capped at five minutes. */
+const RECONNECT_MIN_MS = 5_000;
+const RECONNECT_MAX_MS = 5 * 60_000;
+
 // Identity of a server's wiring: a change here means reconnect, anything else is a no-op.
 function configKey(config: McpServerConfig): string {
   return JSON.stringify({
@@ -57,6 +61,10 @@ export class McpManager {
   private failures = new Map<string, { error: string; at: string }>();
   private declared: Record<string, McpServerConfig> = {};
   private lastAttemptAt = new Map<string, string>();
+  /** Reconnect attempts since a server was last up, and the timer arming the next one. */
+  private backoff = new Map<string, number>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private stopped = false;
 
   async sync(mcp: Record<string, McpServerConfig> | undefined): Promise<void> {
     this.declared = { ...(mcp ?? {}) };
@@ -79,18 +87,8 @@ export class McpManager {
     await Promise.all(
       [...desired].map(async ([name, config]) => {
         if (this.entries.has(name)) return;
-        const conn = new McpConnection(name, config);
-        this.lastAttemptAt.set(name, new Date().toISOString());
-        try {
-          await conn.connect();
-          this.entries.set(name, { configKey: configKey(config), conn });
-          this.failures.delete(name);
-          added.push(name);
-        } catch (err) {
-          this.failures.set(name, { error: String(err), at: new Date().toISOString() });
-          void log("error", "mcp server connect failed", { server: name, error: String(err) });
-          await conn.close().catch(() => undefined);
-        }
+        const ok = await this.open(name, config);
+        if (ok) added.push(name);
       }),
     );
 
@@ -127,7 +125,72 @@ export class McpManager {
     });
   }
 
+  /**
+   * One connection attempt, and the wiring that makes a lost server come back.
+   *
+   * Nothing used to notice a peer going away: a stdio server that exited kept its tools listed and
+   * every call failed one at a time until the next restart. `onClosed` drops the entry and arms a
+   * retry instead.
+   */
+  private async open(name: string, config: McpServerConfig): Promise<boolean> {
+    const conn = new McpConnection(name, config);
+    this.lastAttemptAt.set(name, new Date().toISOString());
+    try {
+      await conn.connect();
+      conn.onClosed(() => this.handleLoss(name, config));
+      this.entries.set(name, { configKey: configKey(config), conn });
+      this.failures.delete(name);
+      this.backoff.delete(name);
+      return true;
+    } catch (err) {
+      this.failures.set(name, { error: String(err), at: new Date().toISOString() });
+      void log("error", "mcp server connect failed", { server: name, error: String(err) });
+      await conn.close().catch(() => undefined);
+      return false;
+    }
+  }
+
+  private handleLoss(name: string, config: McpServerConfig): void {
+    if (this.stopped) return;
+    this.entries.delete(name);
+    this.failures.set(name, { error: "connection lost", at: new Date().toISOString() });
+    void log("warn", "mcp server connection lost", { server: name });
+    hooks.emit("mcp:synced", { servers: [...this.entries.keys()], toolCount: this.getTools().length });
+    this.scheduleReconnect(name, config);
+  }
+
+  private scheduleReconnect(name: string, config: McpServerConfig): void {
+    if (this.stopped || this.timers.has(name)) return;
+    const attempt = (this.backoff.get(name) ?? 0) + 1;
+    this.backoff.set(name, attempt);
+    // Jittered, and capped at five minutes: a server that is down for the afternoon must not be
+    // dialled every five seconds until it comes back.
+    const base = Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** (attempt - 1));
+    const delay = base / 2 + Math.random() * (base / 2);
+    const timer = setTimeout(() => {
+      this.timers.delete(name);
+      if (this.stopped) return;
+      // Only if it is still declared and still wanted: a server removed from the config while it
+      // was down must not be resurrected by its own retry.
+      const declared = this.declared[name];
+      if (!declared || configKey(declared) !== configKey(config) || !isEnabled(declared)) return;
+      void this.open(name, config).then((ok) => {
+        if (ok) {
+          void log("info", "mcp server reconnected", { server: name });
+          hooks.emit("mcp:synced", { servers: [...this.entries.keys()], toolCount: this.getTools().length });
+        } else {
+          this.scheduleReconnect(name, config);
+        }
+      });
+    }, delay);
+    timer.unref?.();
+    this.timers.set(name, timer);
+  }
+
   async stop(): Promise<void> {
+    this.stopped = true;
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
     await Promise.all([...this.entries.values()].map((e) => e.conn.close()));
     this.entries.clear();
   }

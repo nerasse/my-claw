@@ -500,7 +500,12 @@ async function main() {
   // Optional owner-authored tool plugins (tools.d/), created after registration below.
   let pluginLoader: PluginLoader | undefined;
   toolRegistry.setDynamicProvider(() => [...mcpManager.getTools(), ...(pluginLoader?.getTools() ?? [])]);
-  await mcpManager.sync(config.mcp);
+  // Not awaited: the provider above is read per call, so a server that connects a second late is
+  // simply in the next tool list. Awaiting it put every external server on the critical path of
+  // the boot -- an unreachable host meant no channels at all until it gave up.
+  void mcpManager.sync(config.mcp).catch((err) => {
+    void log("error", "mcp sync failed at boot", { error: String(err) });
+  });
   registerCoreTools(toolRegistry, config);
   registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
   // Registered via a reusable closure so the config hot-reload watcher can (re)register

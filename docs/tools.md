@@ -44,6 +44,21 @@ MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp
 backends build from `getForAgent`, so the denylist and MCP tools apply uniformly to the home loop and the
 Claude SDK. See `docs/config.md` and `docs/hot-reload-extensions.md`.
 
+### An MCP server is never on the critical path
+
+Three rules, each of them a fault that was there:
+
+- **Boot does not wait for it.** The dynamic provider is read per call, so a server that connects a
+  second late is simply in the next tool list. Awaiting the sync put every declared server on the
+  path of the boot: one unreachable host meant no channels at all until it gave up.
+- **`connect()` has a deadline** (15 s, handshake and first `listTools` alike). The SDK has none of
+  its own, so a stdio server that starts and says nothing hung whoever awaited it.
+- **A peer that goes away is noticed.** `onclose`/`onerror` drop the entry, mark the server
+  `failed`, and arm a jittered reconnect (5 s doubling to 5 min). Without them a stdio server that
+  exited kept its tools listed and every call failed one at a time until the next restart. A retry
+  that fires after the server left the config, or after its wiring changed, does nothing: it
+  re-reads what is declared before dialling.
+
 ## search: the default is paths, not lines
 
 Measured on 2026-08-23, over one sub-agent asked to inspect two repositories: **304 tool calls,
