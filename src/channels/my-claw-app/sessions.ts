@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
-import { FAILURE_TEXT_LIMIT } from "../../sessions/store.ts";
+import { FAILURE_TEXT_LIMIT, attributionParent } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
@@ -41,6 +41,11 @@ export interface MyClawAppRunItemsPage {
 
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
+  /**
+   * The session a sub-agent session bills its runs to: whoever drove the last run, else its
+   * creator. Undefined for a conversation of its own, or a session that no longer exists.
+   */
+  payerOf(sessionId: string): Promise<string | undefined>;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
   history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string, fold?: boolean): Promise<MyClawAppHistoryPage>;
   /**
@@ -296,6 +301,13 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
   async flushDrafts(): Promise<void> {
     return this.drafts.flush();
+  }
+
+  async payerOf(sessionId: string): Promise<string | undefined> {
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) return undefined;
+    const payer = attributionParent(session);
+    return payer === sessionId ? undefined : payer;
   }
 
   resolveSessionId(owner: string, threadId: string): string {

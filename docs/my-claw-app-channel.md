@@ -360,6 +360,8 @@ the first answer wins.
 { "type": "instructions.get", "workspace": "default|sofa", "file": "AGENTS.md", "nested": "svc/AGENTS.md", "threadId": "t9" }
 { "type": "instructions.set", "workspace": "sofa", "file": "AGENTS.md", "content": "...", "sha": "9f2b1c4d5e6a", "nested": "/home/me/dev/repo/AGENTS.md", "threadId": "t9" }
 { "type": "session.instructions.get", "threadId": "t9" }
+{ "type": "status.watch", "threadId": "t9" }
+{ "type": "status.unwatch" }
 { "type": "instructions.layer.set", "workspace": "sofa", "file": "SOUL.md", "inherit": "lab|default|builtin|none", "off": true }
 { "type": "agents.config.get" }
  { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
@@ -492,6 +494,14 @@ provider request URLs.
   nested file: which directories carry instructions is not a decision an editor screen presents. `nestedTruncated` names the workspaces whose nested
   scan hit the per-workspace cap, so the page says the list is incomplete rather than implying the
   directory holds nothing more; it is omitted when none were cut. See `docs/instructions-page.md`.
+- `status.watch { threadId }` opens the status page of a conversation: `status.result { threadId,
+  status }` is sent now, then again every time the report moves (a call recorded on the session or
+  on a sub-agent billed to it, a run starting or ending, a compaction, a model change), gathered
+  over 250 ms so a burst is one frame. One page per socket, a second watch replaces the first;
+  `status.unwatch` or the socket closing ends it. The report is the `/status` payload
+  (docs/status-command.md); a typed `/status` still answers `chat.command.result` with the same
+  payload under `status`, and the app opens the page on it and watches. There is no `status.get`:
+  the watch is the fetch.
 - `session.instructions.get` answers `session.instructions.result`: what one conversation is
   actually loaded with, layer by layer, plus the nested `AGENTS.md` its runs injected. The layers
   come from `composeSystemPrompt`, the same function the run joins into its system prompt, so the

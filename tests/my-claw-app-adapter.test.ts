@@ -180,6 +180,13 @@ class FakeSessionStore {
     return `my-claw-app/thread/${deviceId}/${threadId}`;
   }
 
+  /** Sub-agent session -> the conversation it bills to; set by the tests that need a tree. */
+  payers = new Map<string, string>();
+
+  async payerOf(sessionId: string): Promise<string | undefined> {
+    return this.payers.get(sessionId);
+  }
+
   async list(deviceId: string): Promise<typeof this.summaries> {
     return this.summaries;
   }
@@ -3608,11 +3615,9 @@ describe("command frames", () => {
   const STATUS_PAYLOAD = {
     session: {
       id: "my-claw-app/dm/test-device/t9",
-      platform: "my-claw-app",
-      chatType: "dm",
       createdAt: "2026-08-08T10:00:00.000Z",
       lastActiveAt: "2026-08-08T11:00:00.000Z",
-      messages: 2,
+      turns: 2,
     },
     model: {
       current: "claude-opus-5",
@@ -3629,29 +3634,35 @@ describe("command frames", () => {
       autoCompactThresholdPct: 80,
       autoCompactThresholdTokens: 409_600,
     },
-    conversation: { calls: 1, promptTokens: 12_345, cacheReadTokens: 0, completionTokens: 10 },
-    analytics: {
-      calls: 4,
-      errors: 0,
-      durationMs: 4000,
-      billedUsd: 2.0,
-      referenceUsd: 5.0,
-      unpriced: 0,
-      rows: [
-        {
-          model: "claude-opus-5",
-          calls: 4,
-          promptTokens: 1000,
-          cacheReadTokens: 0,
-          completionTokens: 100,
-          costUsd: 2.0,
-          costBilled: true,
-          costApproximate: false,
-        },
-      ],
+    usage: {
+      total: { calls: 4, errors: 0, promptTokens: 1000, cacheReadTokens: 0, completionTokens: 100, billedUsd: 2.0, referenceUsd: 0, unpriced: 0 },
+      own: {
+        calls: 4,
+        errors: 0,
+        promptTokens: 1000,
+        cacheReadTokens: 0,
+        completionTokens: 100,
+        billedUsd: 2.0,
+        referenceUsd: 0,
+        unpriced: 0,
+        durationMs: 4000,
+        rows: [
+          {
+            model: "claude-opus-5",
+            calls: 4,
+            errors: 0,
+            promptTokens: 1000,
+            cacheReadTokens: 0,
+            completionTokens: 100,
+            costUsd: 2.0,
+            costBilled: true,
+            costApproximate: false,
+          },
+        ],
+      },
+      agents: [],
     },
-    delegated: null,
-    runtime: { activeRun: "none", verbose: true, approvedTools: ["bash"], sdkSessionId: "sdk-1" },
+    runtime: { runs: [], compacting: false, verbose: true, approvedTools: ["bash"] },
   };
 
   test("a /status reply carries the structured payload for the fullscreen page", async () => {
@@ -3669,23 +3680,47 @@ describe("command frames", () => {
     await agent.stop();
   });
 
-  test("status.get answers the report the menu opened", async () => {
+  test("status.watch answers the report now, then again when the conversation moves, until unwatch", async () => {
     const agent = new MyClawAppAdapter(createConfig(), store as never);
-    agent.onCommandHandler(async (_owner, threadId) => ({ text: `status of ${threadId}`, status: STATUS_PAYLOAD }));
+    let reports = 0;
+    agent.onCommandHandler(async (_owner, threadId) => {
+      reports += 1;
+      return { text: `status of ${threadId}`, status: { ...STATUS_PAYLOAD, session: { ...STATUS_PAYLOAD.session, turns: reports } } };
+    });
     await agent.start();
     const client2 = await connectClient(agent.port);
-    client2.ws.send(JSON.stringify({ type: "status.get", threadId: "t9" }));
-    const frame = await nextFrame(client2);
-    assert.equal(frame["type"], "status.result");
-    assert.equal(frame["threadId"], "t9");
-    assert.equal(frame["text"], "status of t9");
-    assert.deepEqual(frame["status"], STATUS_PAYLOAD);
+    client2.ws.send(JSON.stringify({ type: "status.watch", threadId: "t9" }));
+    const first = await nextFrame(client2);
+    assert.equal(first["type"], "status.result");
+    assert.equal(first["threadId"], "t9");
+    assert.equal((first["status"] as { session: { turns: number } }).session.turns, 1);
+    assert.equal("text" in first, false, "the page carries the report, the text belongs to the chat command alone");
+
+    // A call recorded on the conversation's session: the page is pushed a fresh report, unasked.
+    agent.statusChanged(store.resolveSessionId(DEVICE_ID, "t9"));
+    const pushed = await nextFrame(client2);
+    assert.equal(pushed["type"], "status.result");
+    assert.equal((pushed["status"] as { session: { turns: number } }).session.turns, 2);
+
+    // A sub-agent billed to this conversation moves the parent's page too.
+    store.payers.set("subagent/digger-1", store.resolveSessionId(DEVICE_ID, "t9"));
+    agent.statusChanged("subagent/digger-1");
+    const delegated = await nextFrame(client2);
+    assert.equal((delegated["status"] as { session: { turns: number } }).session.turns, 3);
+
+    // Another conversation is not this page's business.
+    agent.statusChanged(store.resolveSessionId(DEVICE_ID, "elsewhere"));
+    // And once the page is closed, nothing arrives at all.
+    client2.ws.send(JSON.stringify({ type: "status.unwatch" }));
+    await new Promise((r) => setTimeout(r, 50));
+    agent.statusChanged(store.resolveSessionId(DEVICE_ID, "t9"));
+    await assert.rejects(nextFrame(client2, 500), "an unwatched page receives nothing");
     client2.ws.close();
     await agent.stop();
   });
 
-  test("status.get for a thread id that cannot land in a file path is refused", async () => {
-    client.ws.send(JSON.stringify({ type: "status.get", threadId: "bad/id!" }));
+  test("status.watch for a thread id that cannot land in a file path is refused", async () => {
+    client.ws.send(JSON.stringify({ type: "status.watch", threadId: "bad/id!" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "status");
@@ -3767,11 +3802,11 @@ describe("command frames", () => {
     await agent.stop();
   });
 
-  test("status.get without a command handler is refused where the page asked", async () => {
+  test("status.watch without a command handler is refused where the page asked", async () => {
     const agent = new MyClawAppAdapter(createConfig(), store as never);
     await agent.start();
     const client2 = await connectClient(agent.port);
-    client2.ws.send(JSON.stringify({ type: "status.get", threadId: "t9" }));
+    client2.ws.send(JSON.stringify({ type: "status.watch", threadId: "t9" }));
     const frame = await nextFrame(client2);
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "status");

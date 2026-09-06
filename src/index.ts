@@ -2276,6 +2276,18 @@ async function main() {
     // A compaction moves the boundary with no turn behind it, so nothing would move the figure
     // until the next run: a thread the owner just compacted would keep showing it full.
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.notifyModelStateForSession(sessionId));
+    // The status page follows the conversation live: every event that moves its report names the
+    // session it happened in, and the page open on it (or on the conversation it bills to) is
+    // pushed a fresh one. The recorded call is what moves the money; the run events move the
+    // live tree; the compaction moves the context. Sub-agent runs report through the same hooks,
+    // under their own session id, which is how the parent's page sees its delegated spend grow.
+    hooks.on("analytics:call:recorded", ({ sessionId, parentSessionId }) => myClawApp.statusChanged(sessionId, parentSessionId));
+    hooks.on("agent:run:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    hooks.on("agent:run:finish", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    hooks.on("agent:run:aborted", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    hooks.on("agent:run:error", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    hooks.on("session:compact:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     // One to two minutes of silence, and until now the only surface that showed them was the
     // placeholder bubble on the device that typed `/compact`: every other window, and that same
     // window after a reload, saw a thread doing nothing. The state is raised by the summarizer

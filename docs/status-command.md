@@ -13,6 +13,79 @@ cache split, and a price.
 No new command. `/session` was considered and rejected: `/status` already carried most of the
 fields, and two commands answering the same question would have to be kept in sync forever.
 
+> **Since 0.7.1 the report is a page, and only a page.** The text rendering described under
+> "Output" below is gone with the chat channels that read it: the app draws the structured payload
+> (`MyClawAppStatusPayload`, "The page" below), a typed `/status` opens that page, and the one line
+> of text a command result carries by contract is a summary (`Status: <model> · context 12.3% · 41
+> calls · $0.84`). The sections that follow hold the decisions the payload rests on; where they say
+> "line" read "field".
+
+## The page
+
+What the page shows, in order, and what was taken out of it when it was redrawn (0.7.1):
+
+- **Context.** Occupied over the effective window, the auto-compaction threshold, the last measured
+  prompt. The only figure that needs a glance.
+- **Usage.** One card, leading with the **total**: money, tokens (in, cached, out) and calls, the
+  conversation's own calls and every sub-agent it drove added together. Under it, the tree: the
+  conversation's own row, then one row per sub-agent (name, type, a live mark while it runs), a
+  sub-agent's own sub-agents indented under it. A row unfolds into its per-model lines, each priced.
+  Three cards used to show the same calls and tokens three times over (a session counter, the
+  analytics, a "delegated" line); the session counter is gone from the page (see "The two totals
+  problem": with the room channels gone, a thread's session is the conversation, and the two totals
+  answer the same question), and the analytics are the one source since they alone can be priced.
+- **Details**, folded: created, last active, turns, ids, the window's provenance, the estimate,
+  the request wall, config default and effort, verbose, approved tools. `platform · chatType` is
+  gone (always `my-claw-app · dm`), `active run` is gone from here (the run strip above the cards
+  is its place), and the raw text of the chat command is gone with the chat command's text.
+
+**The total is one figure.** Billed and reference prices are added: the owner asked for what the
+conversation cost in tokens, whatever contract paid for them, and the split (`billed $a · reference
+$b`) is a sub-line when both exist. A row keeps its markers (`*` not a charge, `~` neighbouring
+model id).
+
+**Sub-agents are rows, and the walk goes two deep.** `getDelegatedModelUsage(parent)` groups the
+rows billed to a session by the session that ran them and by model; the report names each one from
+its session (`SessionManager.read`, never `peek`: a page walking every agent a conversation ever
+drove must not churn the LRU) and falls back to the id's tail once the session is gone (a killed
+one-shot). A sub-agent's own sub-agents bill to the sub-agent, not to the conversation, so the walk
+continues under each row (`MAX_DELEGATION_DEPTH`, a visited set): a total that stopped at depth one
+would report a fraction of what a research agent that spawned a coder actually caused.
+
+**90 days, said when it matters.** Analytics keep 90 days (`RETENTION_DAYS`). A conversation older
+than that carries `usage.since`, the horizon its figures start at, and nothing otherwise: dating
+every page for a limit most conversations never reach would be noise.
+
+## Live
+
+The page used to ask again (`status.get`) on every reading the app happened to hear about: the
+`model.result` pushed after each measured call, the end of a run, a button. It was blind to what
+it could not hear. A sub-agent's calls stream on the sub-agent's thread, not the parent's, so the
+parent's page kept its delegated figure until the parent itself made a call; a run driven from
+another window moved nothing; and the ask/re-ask left a race a `fetch === 'loading'` guard papered
+over.
+
+The server knows every event that moves a report, so it pushes (`src/channels/my-claw-app/status-watch.ts`):
+
+- `status.watch { threadId }` registers the page with its socket and sends the report now; the watch
+  is the fetch. `status.unwatch`, a watch on another thread, or the socket closing ends it.
+- `analytics:call:recorded { sessionId, parentSessionId }` is emitted by `recordApiCall` itself:
+  the one moment a conversation's spend moves, emitted once rather than at each of the three call
+  sites that write a row (the bridge's turns, its forced summary, the compaction). The run events
+  (`agent:run:start|finish|aborted|error`), the compaction events and a model, effort or context
+  change complete the set.
+- Every change names the session it happened in. The pages open on that session, on the payer the
+  event names, and on every session above it (`payerOf`: whoever drove the last run, else the
+  creator, walked at most four times) are scheduled a fresh report. A grandchild's call thus reaches
+  the conversation's page, which is what the total promises.
+- A burst is one report: a call's recording, its run finishing and the compaction it triggers land
+  within milliseconds, and the report is gathered over 250 ms per page, computed once per
+  conversation and sent to every socket open on it.
+
+The app side keeps no ask path at all: a `status.result` lands on the page open on its thread,
+whatever the page was doing; a report for another thread is dropped; a reconnection re-watches the
+page still open (`resumeFrames`). The refresh button is gone with the reason it existed.
+
 ## The two totals problem
 
 A session id is derived from the room or chat, never from the conversation:
@@ -485,7 +558,7 @@ The migration is not retroactive. The 15.5 M tokens already recorded stay unattr
 uncached-split, so rows written before the upgrade price as if nothing was cached. The rollup is
 honest about the boundary rather than pretending the history is complete.
 
-## Output
+## Output (historical: the text rendering, removed in 0.7.1)
 
 ```
 Session
@@ -547,11 +620,10 @@ kind of thing this view exists to expose.
 
 ## Shared handler
 
-`/status` is currently duplicated verbatim between
-`src/channels/matrix/session-handlers.ts:534-566` and
-`src/channels/telegram/session-handlers.ts:298-330` -- a copy-paste pair, byte for byte. Tripling
-the body in two places is not an option, so it moves to `src/channels/status-command.ts`, following
-`introspect-commands.ts`: channel-agnostic params in, string out, the caller injects the registries.
+`/status` was duplicated verbatim between the Matrix and Telegram session handlers, so it moved to
+`src/channels/status-command.ts`: channel-agnostic params in, the report out, the caller injects
+the registries. With both channels gone, `session-commands.ts` (the shared command bodies) had no
+importer left and was deleted in 0.7.1; `statusReport` is the one entry point.
 
 ## Model names in the report
 

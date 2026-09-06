@@ -6,7 +6,8 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import type { LegacySessionData } from "../../src/sessions/store.ts";
 import { recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
-import { handleStatusCommand, statusReport } from "../../src/channels/status-command.ts";
+import { statusReport } from "../../src/channels/status-command.ts";
+import type { SubAgentMeta } from "../../src/sessions/store.ts";
 import { chatModel } from "../../src/llm/chat-model.ts";
 import { saveSessionWithLog } from "../helpers/session-log.ts";
 
@@ -43,84 +44,114 @@ function session(id: string, over: Partial<LegacySessionData> = {}): LegacySessi
   };
 }
 
+
+type Params = Parameters<typeof statusReport>[0];
+
+/** The report of one session, with the price table unless the test says otherwise. */
+async function report(over: Partial<Params> & { sessionId: string }) {
+  return (await statusReport({ config, liveRuns: [], pricing: pricing(), session: session(over.sessionId), ...over })).status;
+}
+
+function call(sessionId: string, over: Partial<Parameters<typeof recordApiCall>[0]> = {}): void {
+  recordApiCall({
+    sessionId, parentSessionId: sessionId, platform: "my-claw-app", model: "claude-opus-5",
+    baseUrl: "https://api.anthropic.com", streaming: true, caller: "orchestrator",
+    promptTokens: 1000, completionTokens: 10, totalTokens: 1010, toolCalls: 0, iteration: 1, durationMs: 10,
+    ...over,
+  });
+}
+
 test("no session still reports the model and the live runs", async () => {
-  const out = await handleStatusCommand({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [] });
-  expect(out).toContain("Session: none active");
-  expect(out).toContain("claude-opus-5");
+  const { text, status } = await statusReport({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [{ label: "main", depth: 0, startedAt: Date.now() }] });
+  expect(status.session).toBeNull();
+  expect(status.usage).toBeNull();
+  expect(status.model.current).toBe("claude-opus-5");
+  expect(status.runtime.runs.map((r) => r.label)).toEqual(["main"]);
+  expect(text).toBe("Status: claude-opus-5 · no session yet · running: main");
 });
 
-test("both totals appear, labelled, because the same id carries two answers", async () => {
-  const sessionId = "matrix/room/!twototals:test";
-  // Analytics keeps accumulating under the room-derived id; /new resets only the session counter.
-  for (let i = 0; i < 4; i++) {
-    recordApiCall({
-      sessionId,
-      parentSessionId: sessionId,
-      platform: "matrix",
-      model: "claude-opus-5",
-      baseUrl: "https://api.anthropic.com",
-      streaming: true,
-      caller: "orchestrator",
-      promptTokens: 1_000_000,
-      completionTokens: 1000,
-      cacheReadTokens: 0,
-      totalTokens: 1001000, toolCalls: 0,
-      iteration: 1,
-      durationMs: 1000,
-    });
-  }
-  const out = await handleStatusCommand({
-    config,
+test("the usage is one block: calls, tokens and money from analytics, no second counter beside it", async () => {
+  // The session counter (`tokenUsage`) and the analytics used to be shown side by side, because a
+  // Matrix room id carried two answers. A thread is the conversation: one set of figures.
+  const sessionId = "my-claw-app/thread/o/twototals";
+  for (let i = 0; i < 4; i++) call(sessionId, { promptTokens: 1_000_000, completionTokens: 1000, totalTokens: 1_001_000 });
+  const status = await report({
     sessionId,
     session: session(sessionId, { tokenUsage: { promptTokens: 500, completionTokens: 10, totalTokens: 510, apiCalls: 1 } }),
-    liveRuns: [],
-    pricing: pricing(),
   });
-  expect(out).toContain("This conversation");
-  expect(out).toContain("1 calls");
-  expect(out).toContain("This session, 90 d");
-  expect(out).toContain("4 calls");
-  // A subscription figure must be marked as not-a-charge, never folded into the billed total.
-  expect(out).toContain("reference");
-  // Anchored on the total line itself: the word appears in prose elsewhere, and the claim being
-  // made is about the absence of a charge, not about the absence of a string.
-  expect(out).not.toMatch(/^ {2}billed\s/m);
+  expect(status.usage?.own.calls).toBe(4);
+  expect(status.usage?.own.promptTokens).toBe(4_000_000);
+  expect(status.usage?.own.durationMs).toBe(40);
+  expect(status.usage?.total).toEqual(expect.objectContaining({ calls: 4, promptTokens: 4_000_000, completionTokens: 4000 }));
+  expect(status.usage?.since).toBeUndefined();
+  expect("conversation" in status).toBe(false);
+  expect("analytics" in status).toBe(false);
 });
 
-test("a billed endpoint and a subscription are totalled separately", async () => {
-  const sessionId = "matrix/room/!mixed:test";
-  recordApiCall({
-    sessionId, parentSessionId: sessionId, platform: "matrix", model: "accounts/fireworks/routers/kimi-k2p6-turbo",
-    baseUrl: "https://api.fireworks.ai/inference/v1", streaming: true, caller: "orchestrator",
-    promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1000000, toolCalls: 0, iteration: 1, durationMs: 10,
-  });
-  recordApiCall({
-    sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5",
-    baseUrl: "https://api.anthropic.com", streaming: true, caller: "orchestrator",
-    promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1000000, toolCalls: 0, iteration: 1, durationMs: 10,
-  });
-  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(out).toContain("billed        $2.00");
-  expect(out).toContain("reference    *$5.00");
+test("a billed endpoint and a subscription are totalled apart, and the row says which it is", async () => {
+  const sessionId = "my-claw-app/thread/o/mixed";
+  call(sessionId, { model: "accounts/fireworks/routers/kimi-k2p6-turbo", baseUrl: "https://api.fireworks.ai/inference/v1", promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 });
+  call(sessionId, { promptTokens: 1_000_000, completionTokens: 0, totalTokens: 1_000_000 });
+  const status = await report({ sessionId });
+  expect(status.usage?.own.billedUsd).toBeCloseTo(2, 5);
+  expect(status.usage?.own.referenceUsd).toBeCloseTo(5, 5);
+  expect(status.usage?.own.unpriced).toBe(0);
+  const byModel = Object.fromEntries((status.usage?.own.rows ?? []).map((r) => [r.model, r]));
+  expect(byModel["claude-opus-5"]).toEqual(expect.objectContaining({ costUsd: 5, costBilled: false, costApproximate: false }));
+  expect(byModel["accounts/fireworks/routers/kimi-k2p6-turbo"]).toEqual(expect.objectContaining({ costBilled: true }));
 });
 
-test("work delegated to a sub-agent is reported under the session that drove it", async () => {
-  const parent = "matrix/room/!parent:test";
-  recordApiCall({
-    sessionId: "subagent/digger-aaaa", parentSessionId: parent, platform: "matrix", model: "claude-opus-5",
-    baseUrl: "https://api.anthropic.com", streaming: true, caller: "subagent",
-    promptTokens: 200_000, completionTokens: 100, totalTokens: 200100, toolCalls: 0, iteration: 1, durationMs: 10,
+test("the sub-agents a conversation drove are rows of their own, named, with their models, and the total covers them", async () => {
+  const parent = "my-claw-app/thread/o/parent";
+  call("subagent/digger-aaaa", { parentSessionId: parent, caller: "subagent", promptTokens: 200_000, completionTokens: 100, totalTokens: 200_100 });
+  call("subagent/digger-aaaa", { parentSessionId: parent, caller: "subagent", model: "accounts/fireworks/routers/kimi-k2p6-turbo", baseUrl: "https://api.fireworks.ai/inference/v1", promptTokens: 100_000, completionTokens: 0, totalTokens: 100_000 });
+  call("subagent/run-bbbb", { parentSessionId: parent, caller: "subagent", promptTokens: 50_000, completionTokens: 50, totalTokens: 50_050 });
+  call(parent, { promptTokens: 1000, completionTokens: 10, totalTokens: 1010 });
+  const metas: Record<string, SubAgentMeta> = {
+    "subagent/digger-aaaa": { displayName: "digger", type: "research", parentSessionId: parent, visibility: "global", createdAt: new Date().toISOString() },
+  };
+  const status = await report({
+    sessionId: parent,
+    liveRuns: [{ label: "main", depth: 0, startedAt: Date.now() }, { label: "digger", depth: 1, startedAt: Date.now() }],
+    subAgentOf: async (id) => metas[id] ?? null,
   });
-  recordApiCall({
-    sessionId: "browser-subagent", parentSessionId: parent, platform: "internal", model: "claude-opus-5",
-    baseUrl: "https://api.anthropic.com", streaming: false, caller: "browser",
-    promptTokens: 50_000, completionTokens: 50, totalTokens: 50050, toolCalls: 0, iteration: 1, durationMs: 10,
-  });
-  const out = await handleStatusCommand({ config, sessionId: parent, session: session(parent), liveRuns: [], pricing: pricing() });
-  expect(out).toContain("Delegated by this session");
-  expect(out).toContain("2 calls");
-  // The parent's own block must not absorb the children's calls.
-  expect(out).not.toContain("This session, 90 d");
+  const agents = status.usage?.agents ?? [];
+  expect(agents.map((a) => a.sessionId).sort()).toEqual(["subagent/digger-aaaa", "subagent/run-bbbb"]);
+  const digger = agents.find((a) => a.sessionId === "subagent/digger-aaaa")!;
+  expect(digger).toEqual(expect.objectContaining({ displayName: "digger", type: "research", depth: 1, alive: true, running: true, calls: 2, promptTokens: 300_000 }));
+  expect(digger.rows.map((r) => r.model).sort()).toEqual(["accounts/fireworks/routers/kimi-k2p6-turbo", "claude-opus-5"]);
+  // A one-shot whose session is gone is still a row: named by its id, not openable, not running.
+  const gone = agents.find((a) => a.sessionId === "subagent/run-bbbb")!;
+  expect(gone).toEqual(expect.objectContaining({ displayName: "run-bbbb", alive: false, running: false, calls: 1 }));
+  expect(gone.type).toBeUndefined();
+  // The parent's own block holds the parent's calls alone; the total holds everything.
+  expect(status.usage?.own.calls).toBe(1);
+  expect(status.usage?.total.calls).toBe(4);
+  expect(status.usage?.total.promptTokens).toBe(351_000);
+  expect(status.usage?.total.billedUsd).toBeCloseTo(0.2, 5);
+  expect(status.usage?.total.referenceUsd).toBeCloseTo(digger.referenceUsd + gone.referenceUsd + (status.usage?.own.referenceUsd ?? 0), 5);
+});
+
+test("a sub-agent's own sub-agents are billed to it, so the walk continues under it and the total reaches them", async () => {
+  const parent = "my-claw-app/thread/o/grand";
+  call("subagent/research-1", { parentSessionId: parent, caller: "subagent", promptTokens: 10_000, completionTokens: 0, totalTokens: 10_000 });
+  call("subagent/coder-2", { parentSessionId: "subagent/research-1", caller: "subagent", promptTokens: 20_000, completionTokens: 0, totalTokens: 20_000 });
+  const status = await report({ sessionId: parent, session: session(parent) });
+  const agents = status.usage?.agents ?? [];
+  expect(agents.map((a) => [a.sessionId, a.depth])).toEqual([["subagent/research-1", 1], ["subagent/coder-2", 2]]);
+  expect(status.usage?.total.promptTokens).toBe(30_000);
+  // The conversation itself made no call: the block still exists, for the agents.
+  expect(status.usage?.own.calls).toBe(0);
+  expect(status.usage?.own.rows).toEqual([]);
+});
+
+test("a conversation older than the analytics horizon says where its figures start", async () => {
+  const sessionId = "my-claw-app/thread/o/old";
+  call(sessionId);
+  const status = await report({ sessionId, session: session(sessionId, { createdAt: new Date(Date.now() - 200 * 86_400_000).toISOString() }) });
+  expect(status.usage?.since).toBeDefined();
+  const since = Date.parse(status.usage!.since!);
+  expect(Math.abs(Date.now() - 90 * 86_400_000 - since)).toBeLessThan(60_000);
 });
 
 test("measured, estimated and occupied are reported apart, because the estimate under-counts", async () => {
@@ -132,44 +163,38 @@ test("measured, estimated and occupied are reported apart, because the estimate 
   // The session needs lastPrompt since there is no log to derive measurements from.
   const sess = session(sessionId, { lastPrompt: { tokens: 12_345, messageCount: 1 } });
   await saveSessionWithLog(sessionId, sess);
-  const out = await handleStatusCommand({ config, sessionId, session: sess, liveRuns: [], pricing: pricing() });
+  const status = await report({ sessionId, session: sess });
   // Share of the *effective* window: claude-opus-5 resolves to 1M and the default cap lowers it to
   // 512k, so a percentage computed against the raw window would read half as much.
-  expect(out).toMatch(/measured\s+12k on the last call - 2\.4% of the limit/);
-  expect(out).toContain("estimated");
-  // The gate reads the occupied line, not the estimate, and the label has to say so.
-  expect(out).toMatch(/occupied\s+\S+ \(measured prompt plus the turns since, drives auto-compaction\)/);
+  expect(status.context.measured).toEqual({ tokens: 12_345, pctOfLimit: expect.closeTo(2.41, 1) });
   // The three must not be conflated: the estimate is tiny here while the measurement is not.
-  expect(out).not.toMatch(/estimated\s+12k/);
+  expect(status.context.estimated).toBeLessThan(1000);
+  expect(status.context.occupied).toBeGreaterThanOrEqual(12_345);
 });
 
 test("the cap lowers the window and says what it lowered, so the number can be explained", async () => {
   const sessionId = "matrix/room/!capped:test";
-  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(out).toMatch(/context limit\s+512k \(declared, capped from 1,000,000\)/);
+  const status = await report({ sessionId });
+  expect(status.model.contextLimit).toBe(512_000);
+  expect(status.model.contextNotes).toEqual(["declared", "capped from 1,000,000"]);
 });
 
 test("a session that asked for the full window is not capped, and the override is named", async () => {
   const sessionId = "matrix/room/!full:test";
-  const out = await handleStatusCommand({
-    config,
-    sessionId,
-    session: session(sessionId, { contextOverride: "full" }),
-    liveRuns: [],
-    pricing: pricing(),
-  });
-  expect(out).toMatch(/context limit\s+1\.0M \(declared, session override: full\)/);
-  expect(out).not.toContain("capped from");
+  const status = await report({ sessionId, session: session(sessionId, { contextOverride: "full" }) });
+  expect(status.model.contextLimit).toBe(1_000_000);
+  expect(status.model.contextNotes).toEqual(["declared", "session override: full"]);
   // The threshold has to follow the override, or the gate would still compact at the capped size.
-  expect(out).toMatch(/threshold 80% = 800k/);
+  expect(status.context.autoCompactThresholdPct).toBe(80);
+  expect(status.context.autoCompactThresholdTokens).toBe(800_000);
 });
 
 test("the request wall is reported with where the number comes from", async () => {
   // A run that died on a timeout has to be traceable to the declaration that set it: a number
   // without its provenance sends the owner editing the wrong one.
   const sessionId = "matrix/room/!wall:test";
-  const plain = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(plain).toMatch(/request wall\s+120s \(default\)/);
+  const plain = await report({ sessionId });
+  expect(plain.model.timeout).toBe("120s (default)");
 
   // Declared providers on purpose: a model row is a new-format notion, and the legacy branch of
   // the resolver reads none of the catalogue's fields.
@@ -182,17 +207,17 @@ test("the request wall is reported with where the number comes from", async () =
       models: [{ id: "claude-opus-5", label: "Opus 5", provider: "anthropic", timeoutMs: 900_000, limit: { context: 1_000_000 } }],
     },
   } as unknown as MyClawConfig;
-  const own = await handleStatusCommand({ config: declared, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(own).toMatch(/request wall\s+900s \(model\)/);
+  const own = await report({ config: declared, sessionId });
+  expect(own.model.timeout).toBe("900s (model)");
 
   const global = {
     llm: { defaultModel: "claude-opus-5", timeoutMs: 60_000, models: [{ id: "claude-opus-5", label: "Opus 5" }] },
   } as unknown as MyClawConfig;
-  const inherited = await handleStatusCommand({ config: global, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(inherited).toMatch(/request wall\s+60s \(global\)/);
+  const inherited = await report({ config: global, sessionId });
+  expect(inherited.model.timeout).toBe("60s (global)");
 });
 
-test("no wall at all is spelled out, and travels in the payload the app draws", async () => {
+test("no wall at all is spelled out in the payload the app draws", async () => {
   const sessionId = "matrix/room/!nowall:test";
   const unbounded = {
     llm: {
@@ -202,9 +227,8 @@ test("no wall at all is spelled out, and travels in the payload the app draws", 
       models: [{ id: "claude-opus-5", label: "Opus 5", provider: "anthropic", timeoutMs: 0 }],
     },
   } as unknown as MyClawConfig;
-  const report = await statusReport({ config: unbounded, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(report.text).toMatch(/request wall\s+none \(Stop only\)/);
-  expect(report.status.model.timeout).toBe("none (Stop only)");
+  const status = await report({ config: unbounded, sessionId });
+  expect(status.model.timeout).toBe("none (Stop only)");
 });
 
 test("a model that does not resolve degrades the wall line instead of failing the report", async () => {
@@ -214,35 +238,38 @@ test("a model that does not resolve degrades the wall line instead of failing th
   const broken = {
     llm: { defaultModel: "ghost/model", providers: {}, models: [{ id: "ghost/model", provider: "nowhere" }] },
   } as unknown as MyClawConfig;
-  const out = await handleStatusCommand({ config: broken, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
-  expect(out).toContain("request wall  unknown (model does not resolve)");
+  const status = await report({ config: broken, sessionId });
+  expect(status.model.timeout).toBe("unknown (model does not resolve)");
 });
 
 test("a sub-agent session reports its visibility and who spawned it", async () => {
   const id = "subagent/digger-bbbb";
-  const out = await handleStatusCommand({
-    config,
+  const status = await report({
     sessionId: id,
     session: session(id, {
       meta: { displayName: "digger", type: "research", parentSessionId: "matrix/room/!boss:test", visibility: "private", createdAt: new Date().toISOString() },
     }),
-    liveRuns: [],
-    pricing: pricing(),
   });
-  expect(out).toContain("private");
-  expect(out).toContain("matrix/room/!boss:test");
+  expect(status.session?.subAgent).toEqual({ displayName: "digger", type: "research", visibility: "private", parentSessionId: "matrix/room/!boss:test" });
 });
 
-test("an active run is named", async () => {
+test("the live run tree and a compaction in progress travel as structure", async () => {
   const id = "matrix/room/!running:test";
-  const out = await handleStatusCommand({
+  const started = Date.now();
+  const { status, text } = await statusReport({
     config,
     sessionId: id,
     session: session(id),
-    liveRuns: [{ label: "digger", depth: 1, startedAt: Date.now() }, { label: "main", depth: 0, startedAt: Date.now() }],
+    liveRuns: [{ label: "digger", depth: 1, startedAt: started }, { label: "main", depth: 0, startedAt: started }],
+    compacting: true,
   });
-  expect(out).toContain("digger[1]");
-  expect(out).toContain("main");
+  expect(status.runtime.runs).toEqual([
+    { label: "digger", depth: 1, startedAt: new Date(started).toISOString() },
+    { label: "main", depth: 0, startedAt: new Date(started).toISOString() },
+  ]);
+  expect(status.runtime.compacting).toBe(true);
+  expect(text).toContain("running: digger, main");
+  expect(text).toContain("compacting");
 });
 
 test("without a price table the tokens are still reported", async () => {
@@ -251,9 +278,10 @@ test("without a price table the tokens are still reported", async () => {
     sessionId, parentSessionId: sessionId, platform: "matrix", model: "claude-opus-5", baseUrl: "https://api.anthropic.com",
     streaming: true, caller: "orchestrator", promptTokens: 1000, completionTokens: 10, totalTokens: 1010, toolCalls: 0, iteration: 1, durationMs: 5,
   });
-  const out = await handleStatusCommand({ config, sessionId, session: session(sessionId), liveRuns: [] });
-  expect(out).toContain("1 calls");
-  expect(out).toContain("unpriced");
+  const status = await report({ sessionId, pricing: undefined });
+  expect(status.usage?.own.calls).toBe(1);
+  expect(status.usage?.own.unpriced).toBe(1);
+  expect(status.usage?.own.rows[0]?.costUsd).toBeUndefined();
 });
 
 test("after a reset the previous call is not reported as filling the window", async () => {
@@ -264,30 +292,22 @@ test("after a reset the previous call is not reported as filling the window", as
   });
   // Analytics keeps the call; the session history does not. Showing it as a share of the window
   // would contradict the occupied line on the very next row.
-  const out = await handleStatusCommand({
-    config, sessionId, session: session(sessionId, { messages: [] }), liveRuns: [], pricing: pricing(),
-  });
-  expect(out).toContain("measured      no call recorded yet");
-  expect(out).not.toMatch(/measured\s+10k/);
+  const status = await report({ sessionId, session: session(sessionId, { messages: [] }) });
+  expect(status.context.measured).toBeUndefined();
 });
 
-test("statusReport hands the payload over as `status`, the field the app channel reads", async () => {
+test("statusReport hands the payload over as `status`, the field the app channel reads, and one line of text", async () => {
   // The app channel's command output types `status` as optional, so a rename here is assignable
   // and only shows up in production as "status unavailable". Pin the field name.
-  const sessionId = "matrix/room/!report:test";
-  const report = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [] });
+  const sessionId = "my-claw-app/thread/o/report";
+  call(sessionId);
+  const out = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
 
-  expect(report.status.model.current).toBe("claude-opus-5");
-  expect(report.text).toContain("claude-opus-5");
-  expect("payload" in report).toBe(false);
-});
-
-test("the report text is the chat command's, character for character", async () => {
-  const sessionId = "matrix/room/!parity:test";
-  const data = session(sessionId);
-  const report = await statusReport({ config, sessionId, session: data, liveRuns: [] });
-
-  expect(report.text).toBe(await handleStatusCommand({ config, sessionId, session: data, liveRuns: [] }));
+  expect(out.status.model.current).toBe("claude-opus-5");
+  expect("payload" in out).toBe(false);
+  // The page is the report; the text is the one line a chat bubble would show.
+  expect(out.text).toMatch(/^Status: claude-opus-5 · context \d+\.\d% · 1 calls · <\$0\.01$/);
+  expect(out.text.split("\n")).toHaveLength(1);
 });
 
 test("a tag reference is resolved to the model it runs, with the tag named", async () => {
@@ -301,14 +321,13 @@ test("a tag reference is resolved to the model it runs, with the tag named", asy
 
   const sessionId = "matrix/room/!tagged:test";
   const withTag = session(sessionId, { modelOverride: "tag:zsmart" });
-  const out = await handleStatusCommand({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  const { status, text } = await statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
   // The page shows the model the API receives; the tag stays named so the chain is explainable.
-  expect(out).toMatch(/current\s+claude-opus-5 \(tag zsmart\) \(session override\)/);
-  expect(out).not.toContain("tag:zsmart");
-
-  const report = await statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
-  expect(report.status.model.current).toBe("claude-opus-5");
-  expect(report.status.model.tag).toBe("zsmart");
+  expect(status.model.current).toBe("claude-opus-5");
+  expect(status.model.tag).toBe("zsmart");
+  expect(status.model.configDefault).toBe("claude-opus-5");
+  expect(text).toContain("claude-opus-5 (tag zsmart)");
+  expect(text).not.toContain("tag:zsmart");
 });
 
 // Criterion 8 of docs/model-resolution.md: the surfaces do not each keep their own idea of the
@@ -327,17 +346,18 @@ test("/status names the model the run would use, pin included, exactly like chat
   } as unknown as MyClawConfig;
 
   const sessionId = "matrix/room/!pin:test";
-  const out = await handleStatusCommand({ config: pinned, sessionId, session: session(sessionId), liveRuns: [] });
+  const status = await report({ config: pinned, sessionId, pricing: undefined });
   const expected = chatModel(pinned, undefined);
   expect(expected).toBe("kimi-k26-turbo");
-  expect(out).toContain(expected);
-  // The global default is not what runs, so the line must not name it.
-  expect(out).not.toContain("claude-opus-5");
+  expect(status.model.current).toBe(expected);
+  // The global default is not what runs, so the report must not name it.
+  expect(status.model.configDefault).toBeUndefined();
 
   // And a chat with its own pick reports that instead, on the same code path.
   const withPick = session(sessionId, { modelOverride: "claude-opus-5" });
-  const picked = await handleStatusCommand({ config: pinned, sessionId, session: withPick, liveRuns: [] });
-  expect(picked).toContain(chatModel(pinned, "claude-opus-5"));
+  const picked = await report({ config: pinned, sessionId, session: withPick, pricing: undefined });
+  expect(picked.model.current).toBe(chatModel(pinned, "claude-opus-5"));
+  expect(picked.model.configDefault).toBe("kimi-k26-turbo");
 });
 
 test("the same history on the home loop keeps the estimate as a floor", async () => {

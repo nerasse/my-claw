@@ -24,6 +24,7 @@ import { undoManager } from "./undo.ts";
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
 import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
+import { StatusWatch } from "./status-watch.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 import { questionAskFrame, questionPendingFrame } from "./questions.ts";
 import { newEntryId } from "../../sessions/log.ts";
@@ -70,6 +71,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppDiagSnapshot,
   MyClawAppLogsTail,
   MyClawAppServerFrame,
+  MyClawAppStatusPayload,
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
   MyClawAppDraftSet,
@@ -167,7 +169,6 @@ import {
   handleProviderUpsert,
   handleSkillsList,
   handleSkillsTransfer,
-  handleStatusGet,
   handleTagsDelete,
   handleTagsList,
   handleTagsUpsert,
@@ -278,6 +279,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private sweeper?: ReturnType<typeof setInterval>;
   /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
   private live = new LiveTurnJournal();
+  /** The status pages open right now, pushed a fresh report whenever theirs moves -- docs/status-command.md. */
+  private statusWatch = new StatusWatch({
+    report: (owner, threadId) => this.statusOf(owner, threadId),
+    send: (ws, frame) => this.sendFrame(ws, frame),
+    sessionOf: (owner, threadId) => this.store.resolveSessionId(owner, threadId),
+    parentOf: (sessionId) => this.store.payerOf(sessionId),
+  });
   /**
    * The send being admitted on each conversation, keyed by owner/thread.
    *
@@ -1182,6 +1190,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     this.sockets.remove(ws);
+    this.statusWatch.unwatch(ws);
     void myClawAppLog("info", "device disconnected", {
       deviceId: ws.data.deviceId,
       surfaces: this.sockets.countFor(ws.data.deviceId),
@@ -1234,6 +1243,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       broadcastFrame: (owner, frame) => this.broadcast(owner, frame),
       refuse: (ws, scope, message, data) => this.refuse(ws, scope, message, data),
       sessionIdOf: (ws, threadId) => this.sessionIdOf(ws, threadId),
+      statusChanged: (owner, threadId) => this.statusChanged(this.store.resolveSessionId(owner, threadId)),
     };
   }
 
@@ -1491,8 +1501,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.stop":
         this.detach(this.handleChatStop(ws, frame), "handleChatStop");
         break;
-      case "status.get":
-        this.detach(handleStatusGet(this.settingsDeps(), ws, frame), "handleStatusGet");
+      case "status.watch": {
+        const threadId = sanitizeThreadId(frame.threadId);
+        if (!threadId) {
+          this.detach(this.refuse(ws, "status", "invalid threadId", { threadId: frame.threadId }), "status.watch");
+          break;
+        }
+        if (!this.commandHandler) {
+          this.detach(this.refuse(ws, "status", "status unavailable"), "status.watch");
+          break;
+        }
+        this.detach(this.statusWatch.watch(ws, ws.data.owner, threadId), "status.watch");
+        break;
+      }
+      case "status.unwatch":
+        this.statusWatch.unwatch(ws);
         break;
       case "session.instructions.get":
         this.detach(this.handleSessionInstructionsGet(ws, frame), "handleSessionInstructionsGet");
@@ -2234,6 +2257,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   /** The session a frame names, as a spreadable field: an unusable threadId yields nothing at
    *  all, so an absolute nested path arrives with no session to authorise it. */
+  /** The status report of one conversation, through the same pipeline as a typed `/status`. */
+  private async statusOf(owner: string, threadId: string): Promise<MyClawAppStatusPayload | undefined> {
+    if (!this.commandHandler) return undefined;
+    try {
+      const output = await this.commandHandler(owner, threadId, "status", "");
+      return typeof output === "string" || !output ? undefined : output.status;
+    } catch (err) {
+      void myClawAppLog("warn", "status report failed", { owner, threadId, error: String(err) });
+      return undefined;
+    }
+  }
+
+  /**
+   * Something in a session's report moved (a call recorded, a run started or ended, a compaction,
+   * a model change): every status page open on it, or on a conversation it bills to, is pushed a
+   * fresh report. `payer` is the session the change was billed to, when the event knows it.
+   */
+  statusChanged(sessionId: string, payer?: string): void {
+    void this.statusWatch.changed(sessionId, payer);
+  }
+
   private sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string } {
     const clean = threadId ? sanitizeThreadId(threadId) : null;
     return clean ? { sessionId: this.store.resolveSessionId(ws.data.owner, clean) } : {};

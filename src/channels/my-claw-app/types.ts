@@ -1023,7 +1023,8 @@ export type MyClawAppClientFrame =
   | MyClawAppProviderEnvList
   | MyClawAppModelUpsert
   | MyClawAppModelRemove
-  | MyClawAppStatusGet
+  | MyClawAppStatusWatch
+  | MyClawAppStatusUnwatch
   | MyClawAppSessionInstructionsGet
   | MyClawAppSessionInstructionsSet
   | MyClawAppJobsList
@@ -2325,24 +2326,64 @@ export interface MyClawAppChatSendReceived {
   id: string;
 }
 
+/** One model as one session used it, priced when a price is on record. */
+export interface MyClawAppUsageModelRow {
+  model: string;
+  calls: number;
+  errors: number;
+  promptTokens: number;
+  cacheReadTokens: number;
+  completionTokens: number;
+  /** Absent when the model has no price on record. */
+  costUsd?: number;
+  /** A charge (pay-as-you-go endpoint), as opposed to a reference price. */
+  costBilled: boolean;
+  /** Priced from a neighbouring model id, not this one. */
+  costApproximate: boolean;
+}
+
+/** Calls, tokens and money over one set of rows. */
+export interface MyClawAppUsageTotals {
+  calls: number;
+  errors: number;
+  promptTokens: number;
+  cacheReadTokens: number;
+  completionTokens: number;
+  /** What was charged: pay-as-you-go endpoints. */
+  billedUsd: number;
+  /** What it would have cost at list price: flat plans, subscriptions, self-hosted. Not a charge. */
+  referenceUsd: number;
+  /** Rows without a price on record: their tokens are counted, their money is not. */
+  unpriced: number;
+}
+
+/** A sub-agent this conversation drove, with what it spent on this conversation's behalf. */
+export interface MyClawAppUsageAgent extends MyClawAppUsageTotals {
+  sessionId: string;
+  /** The name it was spawned under; the id's tail once the session is gone. */
+  displayName: string;
+  /** The agent it was spawned as; absent once the session is gone. */
+  type?: string;
+  /** 1 for a sub-agent of this conversation, 2 for a sub-agent of one of those. */
+  depth: number;
+  /** The session still exists (not killed), so the conversation can be opened. */
+  alive: boolean;
+  running: boolean;
+  rows: MyClawAppUsageModelRow[];
+}
+
 /**
- * Structured `/status` report for the app's fullscreen diagnostics page. The text form stays the
- * canonical rendering for the chat channels; this is the same report shaped as fields.
+ * Structured `/status` report, the only rendering: the app draws it as a page, pushed to every
+ * page open on the conversation each time something in it moves (docs/status-command.md).
  */
 export interface MyClawAppStatusPayload {
   /** Null when this thread has no session yet: nothing has ever been asked here. */
   session: {
     id: string;
-    platform: string;
-    chatType: string;
     createdAt: string;
     lastActiveAt: string;
-    /**
-     * Turns in the conversation. Named `messages` because a shipped APK reads it under that name
-     * and does not update on the server's cadence; it counts log entries, `session.messages`
-     * having been an empty array since the storage switch.
-     */
-    messages: number;
+    /** Entries in the conversation's log. */
+    turns: number;
     subAgent?: {
       displayName: string;
       type: string;
@@ -2372,6 +2413,7 @@ export interface MyClawAppStatusPayload {
   context: {
     /** The provider's count on the last call; undefined until a call is recorded. */
     measured?: { tokens: number; pctOfLimit: number };
+    /** chars/4 over the prompt as it stands: under-counts, kept because a drift from `measured` is a mis-tuning made visible. */
     estimated: number;
     /** What actually drives auto-compaction. */
     occupied: number;
@@ -2379,51 +2421,46 @@ export interface MyClawAppStatusPayload {
     autoCompactThresholdPct: number;
     autoCompactThresholdTokens: number;
   };
-  /** Session-counter figures for this conversation; null when no call has been made. */
-  conversation: {
-    calls: number;
-    promptTokens: number;
-    cacheReadTokens: number;
-    completionTokens: number;
-  } | null;
-  /** The 90-day analytics for this session's own calls; null while there are none. */
-  analytics: {
-    calls: number;
-    errors: number;
-    durationMs?: number;
-    billedUsd: number;
-    referenceUsd: number;
-    unpriced: number;
-    rows: Array<{
-      model: string;
-      calls: number;
-      promptTokens: number;
-      cacheReadTokens: number;
-      completionTokens: number;
-      /** Absent when the model has no price on record. */
-      costUsd?: number;
-      costBilled: boolean;
-      costApproximate: boolean;
-    }>;
-  } | null;
-  /** Work driven by this session but run elsewhere (sub-agents, browser); null when there is none. */
-  delegated: {
-    calls: number;
-    tokens: number;
-    billedUsd: number;
-    referenceUsd: number;
+  /**
+   * What this conversation has spent, its own calls and every sub-agent it drove, from the
+   * analytics of the last 90 days. Null while nothing at all was called.
+   */
+  usage: {
+    /** Own plus every agent below: the one figure the page leads with. */
+    total: MyClawAppUsageTotals;
+    own: MyClawAppUsageTotals & {
+      /** Wall time spent inside the API, own calls. */
+      durationMs: number;
+      rows: MyClawAppUsageModelRow[];
+    };
+    /** Depth-first: a sub-agent's own sub-agents follow it. */
+    agents: MyClawAppUsageAgent[];
+    /** Analytics keep 90 days. Set when the conversation is older: the figures start here, not at its creation. */
+    since?: string;
   } | null;
   runtime: {
-    activeRun: string;
+    /** The live run tree of this conversation: `main` at depth 0, each sub-agent below it. */
+    runs: Array<{ label: string; depth: number; startedAt: string }>;
+    /** A /compact holds the session: work in progress with no run node of its own. */
+    compacting: boolean;
     verbose: boolean;
     approvedTools: string[];
   };
 }
 
-/** The app asks for the fullscreen status report of a conversation. */
-export interface MyClawAppStatusGet {
-  type: "status.get";
+/**
+ * The app opens the status page of a conversation: the report is sent now, then again every time
+ * it moves, until `status.unwatch` or the socket closes. One page per socket: a second watch
+ * replaces the first.
+ */
+export interface MyClawAppStatusWatch {
+  type: "status.watch";
   threadId: string;
+}
+
+/** The app closed its status page. */
+export interface MyClawAppStatusUnwatch {
+  type: "status.unwatch";
 }
 
 /**
@@ -2517,11 +2554,10 @@ export interface MyClawAppSessionInstructions {
   notes: string[];
 }
 
+/** The report of a watched conversation, on watch and at every change since. */
 export interface MyClawAppStatusResult {
   type: "status.result";
   threadId: string;
-  /** The same report as text, for clients that only show plain output. */
-  text: string;
   status: MyClawAppStatusPayload;
 }
 

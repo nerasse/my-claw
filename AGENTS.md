@@ -160,7 +160,7 @@ src/
 │   ├── auth-commands.ts  # /codex and /claude subcommands (login, status, logout, set-token)
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
-│   ├── status-command.ts  # /status diagnostics: context, tokens, cost -- docs/status-command.md
+│   ├── status-command.ts  # /status report: context, usage tree (own + sub-agents), cost -- docs/status-command.md
 │   ├── compact-command.ts # /compact for every channel: engine choice + session hold -- docs/compaction.md
 │   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
@@ -169,6 +169,7 @@ src/
 │       ├── sessions.ts    # Thread list/history/archive, keyed by owner
 │       ├── files.ts       # Per-thread uploads under $MY_CLAW_DIR/files/my-claw-app/
 │       ├── stream.ts      # Token streaming + tool cards (chat.stream.* / chat.tool)
+│       ├── status-watch.ts # The status pages open, pushed a fresh report when theirs moves -- docs/status-command.md
 │       └── types.ts       # Wire protocol types -- docs/my-claw-app-channel.md
 ├── llm/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)

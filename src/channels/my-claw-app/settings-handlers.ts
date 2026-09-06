@@ -57,7 +57,6 @@ import type {
   MyClawAppModelRemove,
   MyClawAppServerFrame,
   MyClawAppSkillsTransfer,
-  MyClawAppStatusGet,
   MyClawAppTagsDelete,
   MyClawAppTagsUpsert,
   MyClawAppToolsToggle,
@@ -97,6 +96,8 @@ export interface MyClawAppSettingsDeps {
     data?: Record<string, unknown>,
   ): Promise<void>;
   sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string };
+  /** A conversation's status report moved (model, effort, context choice): its open pages are pushed. */
+  statusChanged?(owner: string, threadId: string): void;
 }
 
 /**
@@ -1230,6 +1231,7 @@ export async function handleModel(
       // The pick belongs to the thread, not to the phone that made it: a browser left open on the
       // same conversation would otherwise keep naming the previous model until it reloads.
       d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
+      d.statusChanged?.(ws.data.owner, safeThread);
       return;
     }
     const state = await d.models.current(ws.data.owner, safeThread);
@@ -1257,6 +1259,7 @@ export async function handleModelEffort(
   try {
     const state = await d.models.setEffort(ws.data.owner, safeThread, level);
     d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
+    d.statusChanged?.(ws.data.owner, safeThread);
   } catch (err) {
     await d.refuse(ws, "model", "model.effort.set failed", { threadId: safeThread, level, error: String(err) });
   }
@@ -1284,6 +1287,7 @@ export async function handleModelContext(
   try {
     const state = await d.models.setContext(ws.data.owner, safeThread, choice);
     d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
+    d.statusChanged?.(ws.data.owner, safeThread);
   } catch (err) {
     await d.refuse(ws, "model", "model.context.set failed", { threadId: safeThread, error: String(err) });
   }
@@ -1293,26 +1297,3 @@ export async function handleModelContext(
  * The fullscreen status page asks directly, without typing a command: same server-side report,
  * delivered as a dedicated frame so the app does not have to fake a chat.send to get it.
  */
-export async function handleStatusGet(d: MyClawAppSettingsDeps, ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppStatusGet): Promise<void> {
-  const threadId = sanitizeThreadId(frame.threadId);
-  if (!threadId) {
-    await d.refuse(ws, "status", "invalid threadId", { threadId: frame.threadId });
-    return;
-  }
-  if (!d.commandHandler) {
-    await d.refuse(ws, "status", "status unavailable");
-    return;
-  }
-  const output = await d.commandHandler(ws.data.owner, threadId, "status", "");
-  if (!output) {
-    await d.refuse(ws, "status", "status unavailable");
-    return;
-  }
-  const text = typeof output === "string" ? output : output.text;
-  const status = typeof output === "string" ? undefined : output.status;
-  if (!status) {
-    await d.refuse(ws, "status", "status unavailable");
-    return;
-  }
-  d.sendFrame(ws, { type: "status.result", threadId, text, status });
-}

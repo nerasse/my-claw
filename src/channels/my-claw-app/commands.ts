@@ -14,7 +14,7 @@ import { redactCommandArgs } from "../command-log.ts";
 import { handleConfigCommand } from "../config-commands.ts";
 import { handleSkillsCommand, handleAgentsCommand, handleMcpCommand, handleInstructionsCommand } from "../introspect-commands.ts";
 import { handleAgentModelCommand } from "../agent-model-commands.ts";
-import { handleStatusCommand, statusReport } from "../status-command.ts";
+import { statusReport } from "../status-command.ts";
 import { formatModelGroupSummary } from "../model-picker.ts";
 import { formatContextInfo, contextChoiceFor } from "../context-menu.ts";
 import { getHelpText } from "../commands-catalog.ts";
@@ -291,6 +291,9 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           liveRuns: runRegistry.list(sessionId),
           compacting: runRegistry.isCompacting(sessionId),
           pricing: deps.pricing,
+          // `read`, not `peek`: a page walking every sub-agent a conversation ever drove must not
+          // churn the LRU and evict the sessions that are live.
+          subAgentOf: async (id) => (await deps.sessionManager.read(id))?.meta ?? null,
         });
 
       case "codex":

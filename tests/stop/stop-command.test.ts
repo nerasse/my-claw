@@ -52,8 +52,10 @@ test("/status shows the live run tree (main + sub-agents)", async () => {
   runRegistry.enter(signal, "researcher", 1);
 
   const output = await run("u1", "t1", "status", "");
-  const text = typeof output === "string" ? output : String((output as { text: string }).text);
-  assert.match(text, /Active run: main, researcher\[1\]/);
+  assert.ok(output && typeof output !== "string", "the status answers with the structured report");
+  const runs = output.status?.runtime.runs.map((r) => `${r.label}[${r.depth}]`);
+  assert.deepEqual(runs, ["main[0]", "researcher[1]"]);
+  assert.match(output.text, /running: main, researcher/);
 
   end();
   runRegistry.clear();
