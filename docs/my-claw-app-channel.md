@@ -685,6 +685,7 @@ runs fresh like any other message.
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
 { "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }
+{ "type": "approval.pending", "entries": [{ "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }] }
 { "type": "approval.resolved", "id": "uuid", "threadId": "projet", "reason": "expired|cancelled|answered-elsewhere" }
 { "type": "approval.history.result", "threadId": "projet", "entries": [{ "id": "uuid", "toolName": "write", "args": "{...}", "outcome": "allow-session", "requestedAt": "iso", "decidedAt": "iso", "durationMs": 1200, "auto": false }], "stats": { "total": 1, "allowed": 1, "denied": 0, "expired": 0 } }
 { "type": "question.ask", "id": "que_...", "threadId": "projet", "replyToId": "tc-...", "questions": [{ "header": "Langue", "question": "FR ou EN ?", "options": [{ "label": "fr" }, { "label": "en" }], "multiple": false, "custom": true }], "ts": "iso" }

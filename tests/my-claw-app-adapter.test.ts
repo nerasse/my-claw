@@ -46,6 +46,7 @@ function connectClient(
   receiveLocationCapabilities = false,
   receiveHello = false,
   receiveQuestionPending = false,
+  receiveApprovalPending = false,
 ): Promise<WsClient> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
@@ -72,6 +73,7 @@ function connectClient(
         if (!receiveLocationCapabilities && frame.type === "location.capabilities") return;
         if (!receiveHello && frame.type === "hello") return;
         if (!receiveQuestionPending && frame.type === "question.pending") return;
+        if (!receiveApprovalPending && frame.type === "approval.pending") return;
         client.frames.push(frame);
       } catch {
         client.frames.push(raw);
@@ -826,6 +828,44 @@ describe("MyClawAppAdapter", () => {
     watching.ws.close();
     reloaded.ws.close();
     other.ws.close();
+    await approvalsAdapter.stop();
+  });
+
+  test("a pending approval reaches a window that opens on another thread entirely", async () => {
+    // The replay above is per thread: it only fires on a `session.sync` of the thread the sheet
+    // belongs to. A window opening on another conversation, or an app coming back from sleep on
+    // its last thread, saw nothing, and the tool sat out its two minutes and was denied without
+    // the owner ever being asked.
+    const approvalsAdapter = new MyClawAppAdapter(createConfig({ approvals: true }), store as never);
+    approvalsAdapter.onMessage(() => Promise.resolve());
+    await approvalsAdapter.start();
+    const watching = await connectClient(approvalsAdapter.port);
+    approvalsAdapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(watching)).type, "chat.run.start");
+    const decision = approvalsAdapter.confirmTool(approvalRequest());
+    assert.equal((await nextFrame(watching)).type, "approval.request");
+
+    // No sync at all, and no mention of "default": just a socket opening.
+    const fresh = await connectClient(approvalsAdapter.port, DEVICE_ID, TOKEN, false, false, false, true);
+    const pending = await nextFrame(fresh);
+    assert.equal(pending.type, "approval.pending");
+    const entries = pending.entries as Array<{ id: string; toolName: string; threadId: string }>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]!.toolName, "bash");
+    assert.equal(entries[0]!.threadId, "default");
+
+    fresh.ws.send(JSON.stringify({ type: "approval.response", id: entries[0]!.id, decision: "deny" }));
+    assert.equal(await decision, "deny");
+
+    // And once it is settled, the next window is told the list is empty rather than left to guess.
+    const after = await connectClient(approvalsAdapter.port, DEVICE_ID, TOKEN, false, false, false, true);
+    const cleared = await nextFrame(after);
+    assert.equal(cleared.type, "approval.pending");
+    assert.deepEqual(cleared.entries, []);
+
+    watching.ws.close();
+    fresh.ws.close();
+    after.ws.close();
     await approvalsAdapter.stop();
   });
 

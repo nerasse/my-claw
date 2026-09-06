@@ -91,6 +91,14 @@ An approval is not a streamer frame, so `confirmTool` records its `approval.requ
 the resolution removes it. A sheet is replayed only while its promise is still pending: replaying
 a question already answered would ask twice.
 
+That replay is per thread, which is not enough on its own. It fires on a `session.sync` of the
+thread the sheet belongs to, so a window opening on another conversation -- or an app coming back
+from sleep on its last thread -- learned nothing, and the tool sat out its two minutes and was
+denied without the owner being asked. Every socket is therefore also handed `approval.pending` at
+connect, the whole list for that owner, read from the pending promises rather than from the
+journals so it does not depend on a run being open. Authoritative like `question.pending`: the
+client replaces its queue, and the empty list is what clears a sheet left behind by a restart.
+
 A compaction in flight (`chat.compacting`) is held **outside** the journals, in a slot of its own.
 It is the same kind of hole -- minutes of silence a reloading window cannot reconstruct from the
 store -- but it is not part of a turn: `/compact` is a command, so there is no journal open for it

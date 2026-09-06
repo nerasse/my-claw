@@ -1477,6 +1477,24 @@ export interface MyClawAppApprovalRequest {
   allowSessionOffered: boolean;
 }
 
+/** One pending approval, as `approval.pending` carries it: a request without the frame envelope. */
+export type MyClawAppApprovalPendingEntry = Omit<MyClawAppApprovalRequest, "type">;
+
+/**
+ * Every approval of this owner still waiting for an answer, sent at connect.
+ *
+ * Authoritative and idempotent, exactly like `question.pending`: the client replaces its whole
+ * pending set with `entries`. A sheet is broadcast once, and the live turn journal only replays
+ * it to a `session.sync` of the thread it belongs to -- so an approval raised on another thread,
+ * or while the device was asleep, was never asked again. The tool then sat out its two minutes
+ * and was denied without the owner ever seeing the question. The empty list matters as much: it
+ * clears a sheet left behind by a server that restarted while holding one.
+ */
+export interface MyClawAppApprovalPending {
+  type: "approval.pending";
+  entries: MyClawAppApprovalPendingEntry[];
+}
+
 /**
  * Closes a prompt the owner never answered, so the sheet does not sit there waiting on a run
  * that is already gone. `reason` is what the journal recorded.
@@ -2906,6 +2924,7 @@ export type MyClawAppServerFrame =
   | MyClawAppSpawnStart
   | MyClawAppSpawnEnd
   | MyClawAppApprovalRequest
+  | MyClawAppApprovalPending
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult
   | MyClawAppQuestionAsk

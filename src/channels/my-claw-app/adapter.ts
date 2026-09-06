@@ -219,6 +219,12 @@ const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
+  /**
+   * The sheet as it was broadcast. Kept here rather than only in the live turn journal because
+   * that journal is per thread and only exists while its run does, so a window opening on another
+   * thread had no way to learn a tool was waiting on it.
+   */
+  frame: MyClawAppApprovalRequest;
   /** Everything the journal needs once the answer lands, captured when the prompt was sent. */
   audit: {
     owner: string;
@@ -500,7 +506,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         this.broadcast(audit.owner, { type: "approval.resolved", id, threadId, reason: "expired" });
         resolve("deny");
       }, CONFIRM_TIMEOUT_MS);
-      this.pendingApprovals.set(id, { resolve, timer, audit });
+      this.pendingApprovals.set(id, { resolve, timer, audit, frame });
     });
   }
 
@@ -1113,6 +1119,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ws,
       questionPendingFrame(questionManager.list().filter((question) => question.owner === ws.data.owner)),
     );
+    // Approvals, for the same reason and with the same contract. The sheet is broadcast once, and
+    // the live turn journal only replays it to a `session.sync` of the thread it belongs to: an
+    // approval raised on another thread, or while this device was asleep, was never asked again,
+    // and the tool sat out its two minutes and was denied without the owner seeing anything. The
+    // empty list is meaningful too, it clears a sheet left over by a restart.
+    this.sendFrame(ws, {
+      type: "approval.pending",
+      entries: [...this.pendingApprovals.values()]
+        .filter((pending) => pending.audit.owner === ws.data.owner)
+        .map(({ frame }) => {
+          const { type: _type, ...entry } = frame;
+          return entry;
+        }),
+    });
     // The device needs the VAPID public key before it can register with its distributor;
     // sent at connect so the app can register on startup without another round-trip.
     void this.notifications?.info().then((vapidPublicKey) => {
