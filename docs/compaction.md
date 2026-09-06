@@ -316,9 +316,13 @@ Depuis :
 
 Côté app, un piège d'ordonnancement : le serveur envoie `chat.command.pending` au bout de 400 ms,
 et une compaction n'annonce son départ qu'une fois le log de session chargé, ce qui est plus long
-sur un fil long. La compaction hérite donc d'un placeholder qu'elle n'a pas créé. Comme un
-`/compact` réussi ne répond plus, elle doit pouvoir le refermer elle-même, sinon
-« Compacting the context... » reste à l'écran pour de bon.
+sur un fil long. La compaction en cours est donc un **état du fil** (app ≥ 0.6.42), dessiné comme
+une règle en bas de la conversation, jamais une bulle : la bulle « Compacting the context... »
+était déplacée par chaque delta de sync, recréée par le replay, et une seule trame pouvait la
+retirer ; une fin perdue avec une socket zombie en laissait deux fantômes se promener dans le run
+une heure plus tard. L'état est effacé par la trame de fin, par la frontière `chat.compaction`,
+par `chat.run.end`, par un `chat.stream.start` et par toute page fraîche. Détail côté app :
+`docs/compaction-indicator.md` du dépôt my-claw-app.
 
 ## 7. Ce qu'on ne fait pas, et pourquoi
 
