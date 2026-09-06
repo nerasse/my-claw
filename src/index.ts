@@ -89,7 +89,7 @@ import { setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
-import { bashTool } from "./tools/bash.ts";
+import { bashTool, setBashEnvPassthrough } from "./tools/bash.ts";
 import { readTool } from "./tools/read.ts";
 import { writeTool } from "./tools/write.ts";
 import { fetchTool } from "./tools/fetch.ts";
@@ -2732,6 +2732,9 @@ async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<vo
 }
 
 function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
+  // `bash` builds its child environment by name, not by inheritance: the process holds every
+  // provider key and the model writes the commands.
+  setBashEnvPassthrough(config.tools?.bashEnvPassthrough);
   for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool()]) {
     registry.register(tool);
   }

@@ -143,6 +143,24 @@ Claude Code surface:
 through `resolveWorkspacePath`. Tightening the file tools does not sandbox anything as long as it is
 there; that is a separate decision, not a side effect of this one.
 
+### Its environment is built by name, not inherited
+
+`Bun.spawn` without `env` hands the child the whole process environment. On a host that loads its
+keys from an `.env` -- this one does -- that meant every provider credential was one `echo` away,
+and the model is what writes the commands: a page it was asked to summarise only has to suggest
+one.
+
+So the child gets a base that makes a shell a shell (`PATH`, `HOME`, `USER`, `SHELL`, `TERM`,
+`TMPDIR`, `LANG`, `TZ`, `PWD`, `MY_CLAW_DIR`, plus `LC_*` and `XDG_*`), and then exactly the
+service tokens named in `tools.bashEnvPassthrough` -- by default the Forgejo and Nextcloud ones,
+which is what the skills actually drive. The LLM keys are not among them and there is no reason
+for them to be: nothing in a shell calls a provider API by hand, the transports do that
+in-process.
+
+This is not a sandbox. `bash` can still read `/etc/my-claw/.env` if it is told to, and that is the
+escape hatch working as designed. What it removes is the accident: a credential sitting in the
+environment of every command, waiting for one `env` to print it.
+
 ## fetch speaks http and https, and nothing else
 
 `fetch` used to hand any URL to the runtime's `fetch`, which speaks more schemes than the tool

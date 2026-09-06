@@ -9,6 +9,71 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
 const KILL_GRACE_MS = 2_000;
 
+/** What any shell needs to behave like a shell. Nothing here is a credential. */
+const BASE_ENV = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "TMPDIR",
+  "LANG",
+  "TZ",
+  "PWD",
+  "MY_CLAW_DIR",
+];
+
+/** Prefixes that carry locale and desktop wiring, never secrets. */
+const BASE_ENV_PREFIXES = ["LC_", "XDG_"];
+
+/**
+ * The service tokens the skills drive, and only those. Overridable through
+ * `tools.bashEnvPassthrough` for an owner who wires a skill to something else.
+ */
+export const DEFAULT_PASSTHROUGH = [
+  "FORGEJO_URL",
+  "FORGEJO_TOKEN",
+  "NEXTCLOUD_URL",
+  "NEXTCLOUD_USER",
+  "NEXTCLOUD_TOKEN",
+];
+
+let passthrough = DEFAULT_PASSTHROUGH;
+
+/**
+ * Set at boot and on every config reload. A module-level seam rather than a parameter because
+ * `bashTool` is a value, not a factory, and the list has to follow a hot-reloaded config.
+ */
+export function setBashEnvPassthrough(names: string[] | undefined): void {
+  passthrough = names ?? DEFAULT_PASSTHROUGH;
+}
+
+/**
+ * The environment a command is given, built by name instead of inherited.
+ *
+ * `Bun.spawn` without `env` hands the child the whole process environment, and on a host that
+ * loads its keys from an `.env` that means every provider credential is one `echo` away. The
+ * model writes these commands: a page it was asked to summarise only has to suggest one. Nothing
+ * in a shell needs to call an LLM API by hand -- the transports do that in-process -- so those
+ * keys are simply not there any more.
+ */
+export function bashEnv(
+  source: Record<string, string | undefined> = process.env,
+  passthrough: string[] = DEFAULT_PASSTHROUGH,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const wanted =
+      BASE_ENV.includes(key) ||
+      BASE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix)) ||
+      passthrough.includes(key);
+    if (wanted) env[key] = value;
+  }
+  return env;
+}
+
 export const bashTool: Tool = {
   name: "bash",
   description: "Execute a shell command",
@@ -57,6 +122,7 @@ export const bashTool: Tool = {
         stdout: "pipe",
         stderr: "pipe",
         cwd,
+        env: bashEnv(process.env, passthrough),
       });
 
       const killGroup = (sig: "SIGTERM" | "SIGKILL") => {

@@ -585,6 +585,17 @@ export interface ToolsConfig {
   /** Tool names filtered out of every agent's tool set. Read live per run. */
   disabled?: string[];
   /**
+   * Names of environment variables `bash` is allowed to see, on top of the system base
+   * (`PATH`, `HOME`, `LANG`, `TERM`, `XDG_*`...).
+   *
+   * The tool used to inherit the whole process environment, which on this host means every
+   * provider key in `/etc/my-claw/.env`. The model writes the commands, so a prompt that talks it
+   * into `echo $GROQ_API_KEY` reads a credential it never needed: nothing in a shell calls an LLM
+   * API by hand, the transports do that in-process. What a shell genuinely needs is the tokens of
+   * the services the skills drive, which is what this list is for.
+   */
+  bashEnvPassthrough?: string[];
+  /**
    * Load owner-authored tool modules from `$MY_CLAW_DIR/tools.d/` at runtime. Off by
    * default: loading arbitrary code is an in-process RCE surface. See
    * `docs/hot-reload-extensions.md`.
