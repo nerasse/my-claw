@@ -1,6 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { isPrivateUrl, isPrivateIp, isAllowedScheme, resolveAndCheckUrl } from "../../src/tools/fetch.ts";
+import { mockDns } from "../helpers/mock-dns.ts";
 
 test("isPrivateUrl: https://example.com is public", () => {
   assert.equal(isPrivateUrl("https://example.com"), false);
@@ -210,5 +211,15 @@ test("isPrivateIp: NAT64 carries a loopback across the translator", () => {
 test("resolveAndCheckUrl: a name that does not resolve is refused, not allowed through", async () => {
   // Fail closed: the resolver here is not the resolver inside fetch, and the gap between the
   // two is the whole of a rebinding attack.
-  assert.equal(await resolveAndCheckUrl("https://this-name-does-not-exist.invalid/x"), true);
+  //
+  // Through the seam, not the real DNS. Asking the network what `.invalid` resolves to is a
+  // question with two answers: NXDOMAIN on a workstation, something else entirely on a runner
+  // behind a resolver that answers everything -- and the guard then reads as fail-open. The
+  // suite must not depend on which network it runs in.
+  const dns = mockDns(null);
+  try {
+    assert.equal(await resolveAndCheckUrl("https://this-name-does-not-exist.invalid/x"), true);
+  } finally {
+    dns.restore();
+  }
 });
