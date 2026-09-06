@@ -350,10 +350,13 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           owner,
           threadId,
           isRunning: () => runRegistry.isRunning(sessionId),
+          isCompacting: () => runRegistry.isCompacting(sessionId),
           abortRun: async () => {
             runRegistry.stop(sessionId);
-            // Wait briefly for the run to settle. The abort is synchronous, but tools may take
-            // a moment to acknowledge the signal.
+            // A compaction releases its hold once the summarizer has answered the abort: waiting
+            // on the hold is exact. A run has no such promise, so it gets a moment for its tools
+            // to acknowledge the signal.
+            await runRegistry.waitForCompaction(sessionId);
             await new Promise((r) => setTimeout(r, 50));
           },
           persist: async () => {

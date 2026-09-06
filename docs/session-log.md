@@ -899,9 +899,27 @@ par le modèle sur le chemin, ou une feuille sur une autre branche, c'est un tou
 | | leaf après | texte au composer | branche abandonnée |
 |---|---|---|---|
 | `/retry` | avant le tour user | oui | gardée |
-| `/undo` | avant le tour user | oui | gardée + mémorisée dans `meta.undo` |
+| `/undo` | avant le dernier tour (user **ou compaction**) | oui si user | gardée + mémorisée dans `meta.undo` |
 
 Une fonction, deux commandes.
+
+**Décision arrêtée : une compaction est un tour.** Le owner l'a demandée (ou la porte l'a décidée)
+et elle a changé ce que le modèle lit, exactement comme un message. `lastTurnOf` regarde la fin
+du chemin en traversant les entrées d'affichage (`command`, `failure`, `note`, `spawn_state`) :
+une `compaction` qui ferme la branche est le dernier tour, `/undo` rembobine juste avant elle et
+rien d'autre (« pas plus »), sans demander soft ou hard (aucun run, aucun fichier), sans texte au
+composer, et `/redo` rend la feuille d'avant, frontière et entrée `/compact` comprises. Sinon le
+dernier tour est le dernier `user`, comme avant. Une compaction écrite **dans** un run (la porte
+entre deux itérations, le retry d'overflow) est du travail fait pour le message : `run_end` ferme
+la branche, l'undo prend le tour entier, compaction comprise. Une compaction en cours est le tour
+en vol : `/undo` l'interrompt (`runRegistry.stop`, attente du hold) et ne rembobine rien ; `/retry`
+et `/branches n` refusent tant qu'elle tient la session, comme pendant un run. Après l'undo d'une
+compaction le prompt reprend l'historique complet : fenêtre pleine, la porte recompacte au message
+suivant, ce qui est le comportement attendu et non un bug.
+
+Cas limite assumé : un run mort juste après sa compaction mid-run, avant la phase suivante, laisse
+la compaction fermer la branche ; `/undo` ne retire alors qu'elle, un second `/undo` retire le
+reste. Bénin (on retire moins, pas plus) et réversible.
 
 **Décision arrêtée : `/undo` abort le run en cours**, comme opencode. Séquence : abort →
 attendre le settle → `branch()`. `sealDanglingToolCalls` tourne sur l'abort, donc la

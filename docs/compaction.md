@@ -282,9 +282,23 @@ Le coût est réel et assumé : l'appel de fond est facturé même jeté. Il est
 
 `channels/compact-command.ts`, partagé par tous les canaux. Prend la session pour toute l'opération
 (`runRegistry.beginCompaction`) : sans ce hold, un message arrivant une seconde plus tard ouvre un
-run sur le transcript pré-compaction et le résumé est perdu. Porte un `AbortSignal`, donc un `/stop`
-atteint un résumeur qui a une minute devant lui. Sa fin ne notifie rien (`docs/notifications.md`) :
-ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
+run sur le transcript pré-compaction et le résumé est perdu. Sa fin ne notifie rien
+(`docs/notifications.md`) : ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
+
+**Stop.** Le signal du hold est celui que `runRegistry.stop` aborte (`/stop`, bouton Stop de l'app),
+et c'est lui que la commande passe au résumeur : un stop atteint une compaction qui a une à deux
+minutes devant elle, la requête au modèle est coupée, rien n'est écrit, la commande répond
+« Compaction stopped. » (une réponse, pas une erreur) et `session:compact:settled` retire
+l'indicateur. Jusqu'en 0.6.3 la commande ignorait ce signal : `/stop` répondait « Stopped. » et le
+résumeur allait au bout. L'app montre le bouton Stop tant que l'état de compaction est posé, même
+sans run (`docs/compaction-indicator.md` de my-claw-app). Une compaction automatique en plein run
+porte le signal du run : le Stop du run la coupe avec lui.
+
+**Undo.** Une compaction est un tour comme un message : `/undo` juste après un `/compact` retire la
+frontière et rien d'autre, `/redo` la remet (`docs/session-log.md` §6.2). Une compaction en cours
+est le tour en vol : `/undo` l'interrompt sans rien rembobiner ; `/retry` et `/branches n` refusent
+tant qu'elle tient la session, comme pendant un run, sinon la frontière se poserait sur la branche
+vers laquelle on vient de basculer.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 

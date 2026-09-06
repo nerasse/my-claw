@@ -40,7 +40,9 @@ export interface BranchCommandContext {
   threadId: string;
   /** Whether a run is in progress on this session. */
   isRunning: () => boolean;
-  /** Abort the current run (for /undo). Returns once the run has settled. */
+  /** Whether a compaction holds the session: it is about to write a boundary at the leaf. */
+  isCompacting: () => boolean;
+  /** Abort the current run or compaction (for /undo). Returns once it has settled. */
   abortRun: () => Promise<void>;
   /** Persist the session and its meta. */
   persist: () => Promise<void>;
@@ -159,6 +161,25 @@ function findNthUserFromEnd(path: readonly Entry[], n: number): UserEntry | unde
 }
 
 /**
+ * The last thing that happened to the conversation, as `/undo` sees it.
+ *
+ * A compaction is a turn like a message is: the owner asked for it (or the gate did) and it
+ * changed what the model reads. When it is the last thing on the branch, undoing takes it back
+ * and nothing else. Only a compaction that closes the branch counts: one written inside a run,
+ * between two iterations, belongs to the message that run answered and goes with that turn.
+ * Display-only entries (the `/compact` journal line, a failure notice) sit on top of what they
+ * report on and are looked through.
+ */
+function lastTurnOf(path: readonly Entry[]): UserEntry | CompactionEntry | undefined {
+  for (let i = path.length - 1; i >= 0; i--) {
+    const entry = path[i]!;
+    if (entry.type === "compaction") return entry;
+    if (entry.prompt || entry.type === "run_start" || entry.type === "run_end") break;
+  }
+  return findNthUserFromEnd(path, 1);
+}
+
+/**
  * Whether nothing was written since the leaf `/undo` left, walking back from the current one.
  *
  * The app journals every command as a `command` entry at the leaf it left, the `/undo` itself
@@ -192,6 +213,11 @@ export async function handleRetryCommand(
   // would be a costly surprise. Refusing is reversible (`/stop` then retry); killing is not.
   if (ctx.isRunning()) {
     return { text: "Un run est en cours. Utilise /stop d'abord." };
+  }
+  // A compaction is about to append its boundary at the leaf: moved now, the leaf is another
+  // branch and the boundary would summarize a history that is no longer the one shown.
+  if (ctx.isCompacting()) {
+    return { text: "Une compaction est en cours. Utilise /stop d'abord." };
   }
 
   const n = args.trim() ? parseInt(args.trim(), 10) : 1;
@@ -237,6 +263,12 @@ export async function handleUndoCommand(
   ctx: BranchCommandContext,
   args: string,
 ): Promise<BranchCommandResult> {
+  // A compaction in flight is the turn in flight: stopping it is the whole undo. It has written
+  // nothing yet, so there is nothing to rewind and no /redo to offer.
+  if (ctx.isCompacting()) {
+    await ctx.abortRun();
+    return { text: "Undo: compaction interrompue." };
+  }
   // Abort if a run is in progress — this is the key difference with /retry.
   if (ctx.isRunning()) {
     await ctx.abortRun();
@@ -250,10 +282,14 @@ export async function handleUndoCommand(
   }
 
   const path = ctx.log.path();
-  const userTurn = findNthUserFromEnd(path, 1);
-  if (!userTurn) {
+  const turn = lastTurnOf(path);
+  if (!turn) {
     return { text: "Rien à annuler : aucun tour utilisateur." };
   }
+  if (turn.type === "compaction") {
+    return undoCompaction(ctx, turn);
+  }
+  const userTurn = turn;
 
   const preview = userTurn.text.slice(0, 50) + (userTurn.text.length > 50 ? "..." : "");
   let mode: UndoMode = "soft";
@@ -332,6 +368,29 @@ export async function handleUndoCommand(
     text: `Undo: conversation rembobinée avant "${preview}". /redo pour revenir.${filesNote}`,
     reset: "branch-switch",
     compose: userTurn.text,
+  };
+}
+
+/**
+ * Takes a compaction back: the branch resumes right before its boundary, the turns it stood for
+ * are the history again. Soft and hard are the same thing here (no run, no files), so the mode
+ * is neither asked nor read, and there is no message to hand back to the composer.
+ */
+async function undoCompaction(ctx: BranchCommandContext, boundary: CompactionEntry): Promise<BranchCommandResult> {
+  const oldLeaf = ctx.log.leaf()!;
+  ctx.log.branch(boundary.parentId);
+  const newLeaf = ctx.log.leaf();
+
+  const meta = (await readMeta(ctx.sessionId)) ?? metaOf(ctx.session, newLeaf);
+  meta.undo = { redoLeafId: oldLeaf, expectedLeafId: newLeaf ?? "" };
+  meta.leafId = newLeaf;
+  meta.lastActiveAt = new Date().toISOString();
+  ctx.session.lastActiveAt = meta.lastActiveAt;
+  await writeMeta(ctx.sessionId, meta);
+
+  return {
+    text: `Undo: compaction annulée, ${boundary.count} tour(s) de nouveau dans le contexte. /redo pour revenir.`,
+    reset: "branch-switch",
   };
 }
 
@@ -440,6 +499,9 @@ export async function handleBranchesCommand(
   if (parts[0] && /^\d+$/.test(parts[0])) {
     if (ctx.isRunning()) {
       return { text: "Un run est en cours. Utilise /stop d'abord." };
+    }
+    if (ctx.isCompacting()) {
+      return { text: "Une compaction est en cours. Utilise /stop d'abord." };
     }
 
     const branchNum = parseInt(parts[0], 10);

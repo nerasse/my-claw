@@ -17,6 +17,8 @@ import {
   type PhaseEntry,
   type CompactionEntry,
   type CommandEntry,
+  type RunStartEntry,
+  type RunEndEntry,
 } from "../../src/sessions/log.ts";
 import { contextEntries } from "../../src/sessions/projection.ts";
 import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
@@ -44,6 +46,7 @@ const testOwner = "test-owner";
 
 interface CreateContextOptions {
   isRunning?: boolean;
+  isCompacting?: boolean;
   sessionManager?: SessionManager;
   onAbort?: () => void;
 }
@@ -55,7 +58,7 @@ async function createContext(
 ): Promise<BranchCommandContext> {
   // Backward compat: if a boolean is passed, it's `isRunning`
   const opts = typeof options === "boolean" ? { isRunning: options } : options;
-  const { isRunning = false, sessionManager, onAbort } = opts;
+  const { isRunning = false, isCompacting = false, sessionManager, onAbort } = opts;
 
   const session = createMockSession(sessionId);
   const manager = sessionManager ?? new SessionManager();
@@ -69,6 +72,7 @@ async function createContext(
     owner: testOwner,
     threadId,
     isRunning: () => isRunning,
+    isCompacting: () => isCompacting,
     abortRun: async () => {
       onAbort?.();
     },
@@ -150,6 +154,20 @@ describe("branch-commands: /retry", () => {
     const result = await handleRetryCommand(ctx, "abc");
     expect(result.text).toContain("Usage");
   });
+
+  test("retry refuses while a compaction holds the session", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    const answer = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log, { isCompacting: true });
+    const result = await handleRetryCommand(ctx, "");
+    expect(result.text).toContain("compaction");
+    expect(result.reset).toBeUndefined();
+    expect(log.leaf()).toBe(answer.id);
+  });
 });
 
 describe("branch-commands: /branches", () => {
@@ -208,6 +226,21 @@ describe("branch-commands: /branches", () => {
     const result = await handleBranchesCommand(ctx, "1");
 
     expect(result.text).toContain("run est en cours");
+    expect(result.reset).toBeUndefined();
+  });
+
+  test("branches <n> refuses while a compaction holds the session", async () => {
+    // Same reason as a run: the boundary about to be written would land on the branch switched
+    // to, summarizing a history that is no longer the one on screen.
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    await log.flush();
+
+    const ctx = await createContext(id, log, { isCompacting: true });
+    const result = await handleBranchesCommand(ctx, "1");
+
+    expect(result.text).toContain("compaction");
     expect(result.reset).toBeUndefined();
   });
 
@@ -739,6 +772,120 @@ describe("branch-commands: /undo", () => {
     const result = await handleUndoCommand(ctx, "bogus");
     expect(result.text).toContain("Usage");
   });
+
+  test("a compaction is a turn: undo rewinds before it and nothing else", async () => {
+    // The owner's model: a compaction is one more thing that happened to the conversation,
+    // like a message. Undoing right after a /compact takes the boundary back and leaves the
+    // turn it summarized exactly where it was.
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    const end = log.append<RunEndEntry>({ type: "run_end", prompt: false, reason: "done" });
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "ce qui precede",
+      firstKeptEntryId: end.id,
+      tokensBefore: 900,
+      count: 12,
+    });
+    // The /compact's own journal entry lands after the boundary, the way the app writes it.
+    const journal = log.append<CommandEntry>({ type: "command", prompt: false, input: "/compact", output: "" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleUndoCommand(ctx, "");
+
+    expect(result.reset).toBe("branch-switch");
+    expect(result.text).toContain("compaction");
+    expect(result.text).toContain("12");
+    expect(result.text).toContain("/redo pour revenir");
+    // Nothing to put back in the composer: no message was undone.
+    expect(result.compose).toBeUndefined();
+    expect(log.leaf()).toBe(end.id);
+
+    const meta = await readMeta(id);
+    expect(meta?.undo?.redoLeafId).toBe(journal.id);
+    expect(meta?.undo?.expectedLeafId).toBe(end.id);
+  });
+
+  test("undoing a compaction never asks soft or hard: no file was touched", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const user = log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "s",
+      firstKeptEntryId: user.id,
+      tokensBefore: 900,
+      count: 3,
+    });
+    await log.flush();
+
+    let prompted = false;
+    const ctx = await createContext(id, log);
+    ctx.undoPrompt = async () => {
+      prompted = true;
+      return "hard";
+    };
+    const result = await handleUndoCommand(ctx, "");
+
+    expect(prompted).toBe(false);
+    expect(result.reset).toBe("branch-switch");
+    expect(log.leaf()).toBe(user.id);
+  });
+
+  test("a compaction inside the run belongs to the message's turn", async () => {
+    // Mid-run, the gate summarized the history between two iterations. The compaction is part of
+    // the work done for the message, so undoing takes the whole turn, as it always did.
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const before = log.append<UserEntry>({ type: "user", prompt: true, text: "Earlier" });
+    const user = log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Working", runId: "r1" });
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "s",
+      firstKeptEntryId: user.id,
+      tokensBefore: 900,
+      count: 5,
+    });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    log.append<RunEndEntry>({ type: "run_end", prompt: false, reason: "done" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    const result = await handleUndoCommand(ctx, "soft");
+
+    expect(result.compose).toBe("Question");
+    expect(log.leaf()).toBe(before.id);
+  });
+
+  test("a compaction still running is the turn in flight: undo stops it and rewinds nothing", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    const answer = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    let abortCalled = false;
+    const ctx = await createContext(id, log, {
+      isCompacting: true,
+      onAbort: () => { abortCalled = true; },
+    });
+    const result = await handleUndoCommand(ctx, "");
+
+    expect(abortCalled).toBe(true);
+    expect(result.reset).toBeUndefined();
+    expect(result.text).toContain("compaction");
+    expect(log.leaf()).toBe(answer.id);
+    expect((await readMeta(id))?.undo).toBeUndefined();
+  });
 });
 
 describe("branch-commands: /redo", () => {
@@ -790,6 +937,33 @@ describe("branch-commands: /redo", () => {
     const result = await handleRedoCommand(ctx, "");
     expect(result.reset).toBe("branch-switch");
     expect(log.leaf()).toBe(phase1.id);
+  });
+
+  test("redo restores an undone compaction, journal entry included", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    const end = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    const boundary = log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "s",
+      firstKeptEntryId: end.id,
+      tokensBefore: 900,
+      count: 2,
+    });
+    const journal = log.append<CommandEntry>({ type: "command", prompt: false, input: "/compact", output: "" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "");
+    expect(log.leaf()).toBe(end.id);
+    log.append<CommandEntry>({ type: "command", prompt: false, input: "/undo", output: "Undo", quiet: true });
+
+    const result = await handleRedoCommand(ctx, "");
+    expect(result.reset).toBe("branch-switch");
+    expect(log.leaf()).toBe(journal.id);
+    expect(log.path().map((e) => e.id)).toContain(boundary.id);
   });
 
   test("a compaction written since the undo is a turn: redo refuses", async () => {
