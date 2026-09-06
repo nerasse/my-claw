@@ -285,12 +285,18 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
         else push("user", [{ type: "text", text: msg.content }]);
         break;
       case "user":
+        // An empty text block fails the whole request ("text content blocks must be non-empty"),
+        // and a retry reposts the same prompt: whatever produced it upstream, it does not go on the
+        // wire. A user turn left with no block at all is skipped, and `push` merges the assistant
+        // turns it would have separated.
         if (typeof msg.content === "string") {
-          push("user", [{ type: "text", text: msg.content }]);
+          if (msg.content.trim()) push("user", [{ type: "text", text: msg.content }]);
         } else {
           push(
             "user",
-            msg.content.map((p): AnthropicBlock => (p.type === "text" ? { type: "text", text: p.text } : imageBlock(p.image_url.url))),
+            msg.content.flatMap((p): AnthropicBlock[] =>
+              p.type === "text" ? (p.text.trim() ? [{ type: "text", text: p.text }] : []) : [imageBlock(p.image_url.url)],
+            ),
           );
         }
         break;

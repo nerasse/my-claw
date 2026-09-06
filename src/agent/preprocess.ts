@@ -406,9 +406,13 @@ async function encodeImage(path: string): Promise<string | null> {
   }
 }
 
-/** Text plus one image block per readable path, or null when none of them can be read. */
+/**
+ * Text plus one image block per readable path. A picture sent without a word is the picture
+ * alone: an empty text block beside it is a request Anthropic refuses whole ("text content blocks
+ * must be non-empty"), and a retry reposts the same prompt.
+ */
 export async function imageContentFrom(text: string, paths: string[]): Promise<ChatMessageContent[]> {
-  const contents: ChatMessageContent[] = [{ type: "text", text }];
+  const contents: ChatMessageContent[] = text.trim() ? [{ type: "text", text }] : [];
   for (const path of paths) {
     const dataUrl = await encodeImage(path);
     if (dataUrl) contents.push({ type: "image_url", image_url: { url: dataUrl } });

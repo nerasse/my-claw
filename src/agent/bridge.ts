@@ -1006,19 +1006,24 @@ export class AgentBridge implements AgentBackend {
 
     const userContent = this.preprocessor.buildUserContent(injected);
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
-    // recorder.user() advances startLeaf automatically, so rewind() cannot erase this turn
+    const images = imageAttachmentsOf(injected);
+    // recorder.user() advances startLeaf automatically, so rewind() cannot erase this turn.
+    // The images ride on the entry as on the trigger turn: that field is what every later
+    // request and every reopened thread reads the picture back from. Without it the bubble came
+    // back as bare text and the model never saw the picture again.
     recorder.user({
       // An injected app message already has a bubble open under its chat.send id.
       id: injected.id,
       text: transformedContent,
+      ...(images.length > 0 ? { attachments: images } : {}),
       ...(injected.location ? { location: injected.location } : {}),
     });
 
-    if (vision && injected.attachments.some((a) => a.type === "image" && a.path)) {
-      chatMessages.push({ role: "user", content: await this.preprocessor.buildImageContent(injected) });
-    } else {
-      chatMessages.push({ role: "user", content: transformedContent });
-    }
+    // The built text, not the raw one: a picture sent without a word has an empty raw text, and
+    // an empty text block beside the image is a request Anthropic refuses whole. A file that cannot
+    // be read leaves the text alone, which still names the attachment.
+    const content = vision && images.length > 0 ? await this.preprocessor.buildImageContent(injected, transformedContent) : [];
+    chatMessages.push({ role: "user", content: content.length > 0 ? content : transformedContent });
 
     void log("info", "mid-run injection", { sessionId: session.id, messageId: injected.id, textChars: injected.text.length });
   }
@@ -1435,29 +1440,29 @@ export class AgentBridge implements AgentBackend {
    *
    * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
    * photos, and each one costs its tokens on every single turn.
-   */
-  /**
-   * Puts the images back into the turns that carry them, not just the last one. The chat APIs
-   * are stateless: an image only stays visible to the model if it is resent with every request,
-   * which is what opencode and Claude Code do. Without this, "and here, what do you see?" hits
-   * a model that lost the picture one turn ago.
    *
-   * Capped to the most recent images: unlike a desktop client, a phone conversation can pile up
-   * photos, and each one costs its tokens on every single turn.
+   * The k-th user-role message of the prompt is the k-th `user` or `compaction` entry of the
+   * context: those are the only entry types `messagesOf` renders in that role, one message each,
+   * so the two sequences zip. Anything else is not a stable count: a run's phases fold into one
+   * assistant message however many there are, every settled tool adds a message of its own, and a
+   * turn that said and asked nothing renders to none. Walking the entries with a running index
+   * drifted on the first run that called a tool, and the drift landed on a tool message, where the
+   * image was dropped without a word in the log.
    */
   private async attachImages(chatMessages: ChatMessage[], path: readonly Entry[]): Promise<number> {
+    const userSlots: number[] = [];
+    for (let i = 1; i < chatMessages.length; i++) {
+      if (chatMessages[i]!.role === "user") userSlots.push(i);
+    }
     const withImages: Array<{ chatIndex: number; text: string; paths: string[] }> = [];
-    let chatIndex = 1;
+    let k = 0;
     for (const entry of path) {
-      if (entry.type === "user") {
-        const paths = (entry.attachments ?? []).filter((a) => a.type === "image").map((a) => a.path);
-        if (paths.length > 0) withImages.push({ chatIndex, text: entry.text, paths });
-        chatIndex++;
-      } else if (entry.type === "phase") {
-        chatIndex++;
-      } else if (entry.type === "compaction") {
-        chatIndex++;
-      }
+      if (entry.type !== "user" && entry.type !== "compaction") continue;
+      const chatIndex = userSlots[k++];
+      if (chatIndex === undefined) break;
+      if (entry.type !== "user") continue;
+      const paths = (entry.attachments ?? []).filter((a) => a.type === "image").map((a) => a.path);
+      if (paths.length > 0) withImages.push({ chatIndex, text: entry.text, paths });
     }
 
     let budget = MAX_HISTORY_IMAGES;
@@ -1469,9 +1474,10 @@ export class AgentBridge implements AgentBackend {
       const target = chatMessages[turn.chatIndex];
       if (target?.role !== "user") continue;
       const content = await imageContentFrom(turn.text, paths);
-      if (content.length > 1) {
+      const images = content.filter((part) => part.type === "image_url").length;
+      if (images > 0) {
         chatMessages[turn.chatIndex] = { role: "user", content };
-        attached += content.length - 1;
+        attached += images;
       }
     }
     return attached;
