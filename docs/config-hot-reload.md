@@ -108,9 +108,12 @@ emits none at all -- so `/config rollback` applies through this call and reports
 
 ### Browser tool is always registered
 
-To make `browser.enabled` toggleable at runtime, `delegate_browser_task` is now always registered; its
-`execute` reads `config.browser.enabled` live and no-ops with an error when disabled. The sidecar client
-is built per call, so a new `sidecarUrl` takes effect on the next delegation with no reconnection logic.
+To make `browser.enabled` toggleable at runtime, `delegate_browser_task` is always registered; its
+`execute` reads `config.browser.enabled` live and no-ops with an error when disabled. The `browser_*`
+tools are registered once as well (the browser agent's toolbox, `docs/browser.md`): the one sidecar
+client is re-pointed between runs (`BrowserClient.reconfigure`, called by `BrowserSession.cleanup`), so
+a new `sidecarUrl`, viewport or timeout takes effect on the next run; `allowEval` / `allowCdp` are read
+per run into the agent's denied tools, and `maxSteps` per run as its iteration budget.
 
 ### Web search (re)registration
 

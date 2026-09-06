@@ -31,7 +31,8 @@ The goal is that a sub-agent is a file: a prompt, a description, and a narrowed 
   carry. See "The ceiling" below; this is the invariant the whole design rests on.
 - **No agent-defined MCP servers or providers.** A file selects among what is configured; it does
   not declare infrastructure.
-- **Not a replacement for the browser runner.** Only its prompt moves to a file. See "Browser".
+- **The browser is one of them since 0.7.** Its file carries `base: browser`; the runner and the loop
+  are the shared ones. See "Browser" for what stays special (the door, the queue, the outcome).
 - **No orchestrator prompt here.** The main agent's instructions are the workspace prompt files
   (`docs/instructions-page.md`), which the owner already edits.
 
@@ -72,7 +73,7 @@ with a warning rather than registered under a name no one can type.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `description` | yes | One line. This is what the orchestrator reads to decide whether to spawn this agent, so it is the single most load-bearing field in the file. |
-| `base` | no | `general` (default) or `research`. The tool baseline this agent narrows from. |
+| `base` | no | `general` (default) or `research`. The tool baseline this agent narrows from. `browser` exists too, for the agent of that name alone (see "Browser"). |
 | `tools` | no | Comma-separated tool names. Absent = the whole baseline. Intersected with the baseline, never added to it. |
 | `skills` | no | Comma-separated skill names, or `*`. Same semantics as `agents.<key>.skills`. |
 | `mcp` | no | Comma-separated MCP server names, or `*`. Same semantics as `agents.<key>.mcp`. |
@@ -330,9 +331,9 @@ skills, tools and runtime blocks stay adjacent at the end where the cacheable pr
 (`builder.ts:70-81`) expects them.
 
 `instructions:` selects which workspace layers are included at all. This exists because the browser
-sub-agent already needs it: `buildBrowserSystemPrompt` (`src/agent/subagents/browser.ts:111`)
-deliberately drops `AGENTS.md`. Today that is expressed by a second prompt builder; it becomes one
-field.
+sub-agent already needed it: its own prompt builder (the private loop, since removed) deliberately
+dropped `AGENTS.md`. What was a second prompt builder is one field, `instructions: CORE, SOUL, USER`
+in `browser.md`.
 
 ## Bounds
 
@@ -370,31 +371,38 @@ dynamic everywhere" requirement, and it is most of the work.
 
 ## Browser
 
-The browser sub-agent's prompt lives in `src/agents/builtin/browser.md`, with `instructions: CORE,
-SOUL, USER` expressing the `AGENTS.md` omission that used to be a hardcoded list.
+The browser agent's prompt lives in `src/agents/builtin/browser.md`, with `instructions: CORE,
+SOUL, USER` expressing the `AGENTS.md` omission that used to be a hardcoded list, `base: browser`
+and `maxIterations: 60`.
 
-It is the one agent in the registry that `spawn` does not offer: its tools live in a private
-registry its own runner builds, so spawning it would produce an agent carrying the browser's prompt
-and none of its tools. `AgentRegistry.list` (the spawn catalog) leaves it out while `get`,
-`listAll` and `names` keep it, which is what lets `/agents`, the app and an override still see it.
-That exception is a named set in the registry rather than a frontmatter field: one agent needing it
-does not justify a flag every file would carry.
+It runs through the same runner and loop as every other agent since 0.7 (`docs/browser.md`, "The
+browser is a sub-agent"). The earlier version of this section had kept it out of the runner on
+purpose ("its tools live in a private registry its own runner builds, so spawning it would produce
+an agent carrying the browser's prompt and none of its tools", and registering the `browser_*`
+tools globally was "a separate decision, not taken here"). That decision was taken when the card's
+UX fell short of every other sub-agent's: a browsing task could not be opened, watched, steered or
+continued. The private loop is gone; what made it special is now expressed as agent configuration
+and as two small pieces of code:
 
-`BROWSER_PROMPT` survives in `src/agent/subagents/browser.ts` as the fallback, the way `CORE_PROMPT`
-backs a missing `CORE.md`. The file is repo-synced at boot, but a run between a deleted file and the
-next boot must not lose its instructions altogether.
+- **`base: browser`**, a third tool baseline: the `browser_*` tools and nothing else, no MCP, no
+  plugin, no skills (`ToolRegistry.getForAgent("browser")`, `resolveAgent`). Every other base is
+  filtered of the `browser_*` names. Only the agent named `browser` may declare it: a second file on
+  that base would be spawnable and would drive the one Chromium outside its queue, so the loader
+  falls it back to `general` with a warning. The app's editor shows the base and does not offer it.
+- **The door and the session** (`src/tools/browser/delegate.ts`, `session.ts`): `delegate_browser_task`
+  frames the task and runs the agent as a private one-shot of the caller; the runner queues every
+  `browser`-typed run on the shared Chromium and cleans up after it; `browser_done` records what the
+  run's last message cannot carry (handoff, dead sidecar).
 
-**Nothing else about it moves.** It keeps its private tool registry, its own loop, the sidecar
-lifecycle, the global serialisation queue for the single Chromium, the `needs_human` handoff to
-noVNC and the `summarizeFindings` salvage call. Those are not agent configuration, and folding them
-into the generic runner would trade a working escape hatch for uniformity.
+`spawn` still leaves `browser` out of its catalog (`AgentRegistry.list`): a spawn would skip the
+framing, the queue and the handoff. `get`, `listAll`, `names`, `/agents`, the roster and the app
+keep it, and the runs it creates are listed and opened like any other one-shot.
 
-Consequences worth stating: `browser` is still reached through `delegate_browser_task`, not `spawn`;
-it still does not appear in `list_agents`; and because it calls `chatCompletion()` directly it still
-cannot run on the claude-sdk backend. Editing `browser.md` changes its instructions and nothing else.
-
-Registering the `browser_*` tools in the global registry so an ordinary file agent could request
-them is a separate decision, not taken here.
+`browser.maxSteps` keeps its meaning as the budget of one task: `resolveAgent` reads it as the
+browser agent's `maxIterations`, below an explicit `agents.browser.maxIterations` and above the
+file's default. `browser.allowEval` / `allowCdp` are read per run into `ResolvedAgent.deny`, so the
+low-level tools are taken away from a run rather than left unregistered, and a hot-reload toggles
+them.
 
 ## Delivery
 

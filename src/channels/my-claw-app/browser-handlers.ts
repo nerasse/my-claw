@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readVncPassword } from "../../browser/vnc.ts";
 import { BrowserClient } from "../../browser/client.ts";
-import { DEFAULT_SIDECAR_URL } from "../../tools/browser/delegate.ts";
+import { DEFAULT_SIDECAR_URL } from "../../tools/browser/session.ts";
 import type { BrowserConfig } from "../../core/config.ts";
 import type {
   MyClawAppBrowserService,

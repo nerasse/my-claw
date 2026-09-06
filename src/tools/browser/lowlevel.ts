@@ -4,7 +4,7 @@ import type { BrowserClient } from "../../browser/client.ts";
 import type { BrowserConfig } from "../../core/config.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
 import { log } from "../../utils/logger.ts";
-import { type BrowserPageState, getPageId } from "./state.ts";
+import { type BrowserPageState, getPageId, workspaceOf } from "./state.ts";
 import { globToRegExp } from "../../utils/glob.ts";
 
 /** Methods the subagent may drive when allowCdp is on. Deliberately narrow: page structure,
@@ -30,9 +30,10 @@ export interface BrowserLowLevelOptions {
   workspaceDir?: string;
 }
 
-function downloadDirFor(opts: BrowserLowLevelOptions): string {
+function downloadDirFor(opts: BrowserLowLevelOptions, args: Record<string, unknown>): string {
   if (opts.config?.downloadDir) return opts.config.downloadDir;
-  return opts.workspaceDir ? join(opts.workspaceDir, "downloads") : "/tmp/my-claw-downloads";
+  const workspaceDir = workspaceOf(args, opts.workspaceDir);
+  return workspaceDir ? join(workspaceDir, "downloads") : "/tmp/my-claw-downloads";
 }
 
 /** Audit trail for the powerful tools. Written before the call so a crash still leaves a
@@ -163,7 +164,7 @@ export function createBrowserDownloadTool(
     },
     async execute(args): Promise<ToolResult> {
       try {
-        const dir = downloadDirFor(opts);
+        const dir = downloadDirFor(opts, args);
         const result = await client.waitForDownload(getPageId(state), dir, numOpt(args, "timeout_ms"));
         return { success: true, output: `Downloaded ${result.filename} to ${result.path}` };
       } catch (e) {
@@ -192,8 +193,8 @@ export function createBrowserPdfTool(
       let destination: string;
       try {
         destination = requested
-          ? resolveWorkspacePath(requested, opts.workspaceDir)
-          : join(downloadDirFor(opts), `page-${Date.now()}.pdf`);
+          ? resolveWorkspacePath(requested, workspaceOf(args, opts.workspaceDir))
+          : join(downloadDirFor(opts, args), `page-${Date.now()}.pdf`);
       } catch (e) {
         return { success: false, output: "", error: String((e as Error).message) };
       }

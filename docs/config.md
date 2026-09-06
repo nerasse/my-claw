@@ -219,9 +219,10 @@ Migrates automatically to the new format internally. No manual action needed.
   On a human handoff the agent suggests `novncUrl` in a web browser, and the same host on
   port 5900 with a VNC client (the host is derived from `novncUrl`, the port is the pinned
   `-rfbport` of `my-claw-vnc`).
-- `maxSteps` (default 60): step budget of one browsing task. The subagent walks an escalation
-  ladder rather than asking for a human, which costs steps on purpose.
-- `allowEval` / `allowCdp` (default `false`): register `browser_eval` and `browser_cdp`. Off by
+- `maxSteps` (default 60): step budget of one browsing task, the `browser` agent's iteration budget
+  (`agents.browser.maxIterations`, when set, wins). The subagent walks an escalation ladder rather
+  than asking for a human, which costs steps on purpose.
+- `allowEval` / `allowCdp` (default `false`): offer `browser_eval` and `browser_cdp` to the run. Off by
   default because the subagent reads untrusted page content, so these widen the prompt-injection
   surface; `browser_eval` also implies access to non-`HttpOnly` cookies. Every call is written to
   the audit log. When disabled the tools are not registered at all and are absent from the
@@ -727,7 +728,7 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
 - `sidecarUrl` — where the app reaches the Node browser sidecar (default `http://127.0.0.1:9223`). Playwright runs in that sidecar because `connectOverCDP` hangs under Bun. See `browser.md`. The Chromium CDP endpoint itself is set via the sidecar's `CDP_URL` env, not here.
 - `novncUrl` — live-browser URL surfaced to the user on a human-handoff (default `http://localhost:6080`).
 - `viewport` — browser viewport size.
-- `maxSteps` — max LLM iterations for the browser sub-agent (default: 30).
+- `maxSteps` — max LLM iterations of one browsing task, the browser agent's budget (default: 60).
 
 Tabs are persistent and never auto-closed (the shared browser stays open for reuse across tasks).
 

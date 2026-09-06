@@ -109,7 +109,7 @@ export function createSpawnTool(
         }
         const visibility: "global" | "workspace" | "private" = requested ?? (args["private"] === true ? "private" : "global");
         const existing = await registry.listExistingIds();
-        const { id, result } = await runner.spawn({
+        const { id, result, attachments } = await runner.spawn({
           displayName: name,
           type,
           mode: mode as "run" | "session",
@@ -132,7 +132,9 @@ export function createSpawnTool(
         // it: without this line the one thing `send` requires has to be guessed, and a guess is a
         // "sub-agent not found" every time. One-shots are left alone, nothing is meant to drive them.
         const handle = mode === "session" && id ? `\n\n[sub-agent id: ${id}]` : "";
-        return { success: true, output: `${result}${handle}` };
+        // A picture the sub-agent's tools produced (a screenshot, a chart) reaches the person who
+        // asked the same way the answer does: through the caller's own reply.
+        return { success: true, output: `${result}${handle}`, ...(attachments.length > 0 ? { attachments } : {}) };
       } catch (e) {
         rethrowIfAborted(e, args["__signal"] as AbortSignal | undefined);
         return { success: false, output: "", error: String(e) };

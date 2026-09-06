@@ -44,6 +44,19 @@ export class BrowserClient {
     private timeoutsMs: Record<string, number> = {},
   ) {}
 
+  /**
+   * Points the client at the sidecar the live config names. The browser tools hold one client for
+   * the life of the process, so this is how a hot-reloaded `browser.sidecarUrl`, viewport or
+   * timeout reaches the next run. Only between runs: the sidecar session in flight, if any, stays
+   * on the settings it was opened with.
+   */
+  reconfigure(sidecarUrl: string, viewport = DEFAULT_VIEWPORT, timeoutsMs: Record<string, number> = {}): void {
+    if (this.sessionId) return;
+    this.sidecarUrl = sidecarUrl;
+    this.viewport = viewport;
+    this.timeoutsMs = timeoutsMs;
+  }
+
   private timeoutFor(path: string): number {
     return (
       this.timeoutsMs[path] ??

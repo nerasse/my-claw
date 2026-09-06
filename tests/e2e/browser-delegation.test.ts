@@ -5,8 +5,16 @@ import { SessionManager } from "../../src/sessions/manager.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
-import { createDelegateBrowserTool } from "../../src/tools/browser/index.ts";
+import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "../../src/tools/browser/index.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { SubAgentRunner } from "../../src/subagents/runner.ts";
+import { SubAgentRegistry } from "../../src/subagents/registry.ts";
+import { AgentRegistry } from "../../src/agents/registry.ts";
+import { loadAllAgents } from "../../src/agents/loader.ts";
+import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
+import { mockDns } from "../helpers/mock-dns.ts";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
@@ -48,7 +56,8 @@ type FetchImpl = (input?: string | URL | Request, init?: RequestInit) => Promise
 // The browser subagent queries the sidecar (session/tabs/cleanup) around its LLM
 // loop. Route those to sidecar-shaped responses so the LLM mock only sees LLM calls.
 function withSidecar(impl: FetchImpl): { restore(): void } {
-  return mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
+  const dns = mockDns();
+  const mock = mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
       if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
@@ -57,11 +66,37 @@ function withSidecar(impl: FetchImpl): { restore(): void } {
     }
     return impl(input as never, init as never);
   }) as FetchImpl);
+  return {
+    restore() {
+      mock.restore();
+      dns.restore();
+    },
+  };
 }
 
 function makeRouter(reg: ToolRegistry, cfg?: Partial<MyClawConfig>): MessageRouter {
   const merged = { ...config, ...cfg };
   return new MessageRouter(new SessionManager(), new AgentBridge(merged, reg, new SkillRegistry()), merged);
+}
+
+let agents: AgentRegistry;
+
+/**
+ * The browser wired the way index.ts wires it: the raw tools in the registry for the browser
+ * agent, and the delegate door running that agent through the sub-agent runner.
+ */
+async function withBrowser(cfg: MyClawConfig): Promise<ToolRegistry> {
+  agents ??= new AgentRegistry(await loadAllAgents({
+    builtInDir: join(import.meta.dir, "..", "..", "src", "agents", "builtin"),
+    customDir: join(tmpdir(), "no-such-agents-dir"),
+  }));
+  const registry = new ToolRegistry();
+  const session = new BrowserSession(cfg);
+  registerBrowserTools(registry, cfg, session);
+  const voice = new VoiceManager(cfg);
+  const runner = new SubAgentRunner(cfg, registry, new SkillRegistry(), voice, new SttPipeline(voice), agents, session);
+  registry.register(createDelegateBrowserTool(cfg, runner, new SubAgentRegistry(), session));
+  return registry;
 }
 
 describe("E2E browser delegation", () => {
@@ -70,8 +105,7 @@ describe("E2E browser delegation", () => {
   });
 
   test("delegate_browser_task through router returns response", async () => {
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(config));
+    const registry = await withBrowser(config);
     const router = makeRouter(registry);
 
     let bridgeCall = 0;
@@ -80,10 +114,14 @@ describe("E2E browser delegation", () => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
       const tools = body.tools as Array<{ function: { name: string } }> | undefined;
 
-      // Subagent calls have "browser_done" in tools
+      // Subagent calls have "browser_done" in tools. The browser agent is a real sub-agent now:
+      // it records its outcome with browser_done, then answers with the summary as its last message.
       if (tools?.some((t) => t.function.name === "browser_done")) {
         subagentCall++;
-        return llmResp({ content: "", tool_calls: [{ id: "tc_sub", function: { name: "browser_done", arguments: '{"summary":"Screenshot taken"}' } }] });
+        const recorded = (body.messages as Array<{ role: string }>).some((m) => m.role === "tool");
+        return recorded
+          ? llmResp({ content: "Screenshot taken" })
+          : llmResp({ content: "", tool_calls: [{ id: "tc_sub", function: { name: "browser_done", arguments: '{"summary":"Screenshot taken"}' } }] });
       }
 
       bridgeCall++;
@@ -101,7 +139,7 @@ describe("E2E browser delegation", () => {
       expect(result).toBeDefined();
       expect(result!.text).toBe("Here is the screenshot");
       expect(bridgeCall).toBe(2);
-      expect(subagentCall).toBe(1);
+      expect(subagentCall).toBe(2);
     } finally {
       mock.restore();
     }
@@ -109,8 +147,7 @@ describe("E2E browser delegation", () => {
 
   test("delegate_browser_task returns tool error when browser is disabled", async () => {
     const disabledConfig = { ...config, browser: { enabled: false } };
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(disabledConfig));
+    const registry = await withBrowser(disabledConfig);
     const router = makeRouter(registry, { browser: { enabled: false } });
 
     let bridgeCall = 0;
@@ -136,8 +173,7 @@ describe("E2E browser delegation", () => {
 
   test("handoff surfaces the configurable noVNC URL to the main agent", async () => {
     const cfg = { ...config, browser: { enabled: true, novncUrl: "https://vnc.example.com" } };
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(cfg));
+    const registry = await withBrowser(cfg);
     const router = makeRouter(registry, { browser: cfg.browser });
 
     const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -172,11 +208,10 @@ describe("E2E browser delegation", () => {
   });
 
   test("delegate surfaces a technical failure (not a fake success) when the subagent fails", async () => {
-    // maxSteps=1 + a subagent LLM that never calls browser_done -> subagent returns
-    // { success:false, needs_human:false } -> delegate must map it to a tool error.
+    // maxSteps=1 + a subagent LLM that never calls browser_done -> the run ends on its last words
+    // with no recorded outcome -> delegate must map it to a tool error carrying those words.
     const cfg = { ...config, browser: { enabled: true, maxSteps: 1 } };
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(cfg));
+    const registry = await withBrowser(cfg);
     const router = makeRouter(registry, { browser: cfg.browser });
 
     const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -202,7 +237,7 @@ describe("E2E browser delegation", () => {
       const toolMessages = bodies.flatMap((b) => b.messages).filter((m) => m.role === "tool");
       const joined = toolMessages.map((m) => String(m.content)).join("\n");
       expect(joined).toContain("Error:");
-      expect(joined.toLowerCase()).toContain("maximum number of steps");
+      expect(joined).toContain("still thinking, no action");
       expect(result?.text).toBe("The browser task did not complete.");
     } finally {
       mock.restore();
@@ -210,8 +245,7 @@ describe("E2E browser delegation", () => {
   });
 
   test("delegate_browser_task description is visible to the LLM", async () => {
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(config));
+    const registry = await withBrowser(config);
     const router = makeRouter(registry);
 
     let capturedTools: Array<{ function: { name: string; description: string } }> = [];
@@ -232,8 +266,7 @@ describe("E2E browser delegation", () => {
   });
 
   test("delegate_browser_task has url and instructions as required params", async () => {
-    const registry = new ToolRegistry();
-    registry.register(createDelegateBrowserTool(config));
+    const registry = await withBrowser(config);
     const router = makeRouter(registry);
 
     let capturedTools: Array<{ function: { name: string; parameters: Record<string, unknown> } }> = [];
@@ -267,7 +300,7 @@ describe("E2E browser delegation", () => {
         return { success: true, output: String(args["expr"]) };
       },
     });
-    registry.register(createDelegateBrowserTool(config));
+    registry.register((await withBrowser(config)).get("delegate_browser_task")!);
     const router = makeRouter(registry);
 
     let capturedToolNames: string[] = [];

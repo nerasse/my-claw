@@ -10,20 +10,56 @@ boundary — they are referenced by opaque string ids. Screenshots are written t
 (shared FS) and only the path is returned.
 
 ```
-User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Node sidecar → Playwright → Chromium (Xvfb :99)
-        (Bun)                           (Bun)        :9223      (Node)                       :9222
-                                                                                              ↓
-                                                                                       noVNC :6080 (human view)
+User → Main Agent → delegate_browser_task → SubAgentRunner → browser agent (AgentBridge) → BrowserClient ──HTTP──> Node sidecar → Playwright → Chromium (Xvfb :99)
+        (Bun)                                                  session subagent/run-<uuid>         (Bun)        :9223      (Node)                       :9222
+                                                                                                                                                          ↓
+                                                                                                                                                   noVNC :6080 (human view)
 ```
+
+## The browser is a sub-agent
+
+Since 0.7 a browsing task is a run of the `browser` agent through the same runner and loop as
+`spawn`: a private one-shot session of the caller (`subagent/run-<uuid>`, type `browser`), announced
+with the delegate's own tool call id so the card in the parent thread is a door, streamed to its own
+thread (tokens, tool cards, reasoning), steerable mid-run, and kept: the owner opens it, reads what
+the agent did, messages it to carry on in the same browser, kills or resets it from the roster.
+Compaction, the iteration budget and the summary forced at the end of it are the bridge's.
+
+Before that it was a private loop (`src/agent/subagents/browser.ts`, 490 lines) with its own tool
+registry, its own messages array and no session: nothing to open, nothing to replay, no streaming,
+no steering. `docs/file-agents.md` had deferred folding it into the runner ("a separate decision");
+the owner took it when the card's UX fell short of every other sub-agent's.
+
+What the door (`src/tools/browser/delegate.ts`) still does around the run:
+
+- frames the task: `Task: … / Start URL: … / ## Open browser tabs …`, the tab list read from the
+  sidecar so the reuse rule has something to work with;
+- runs the agent as `spawn` would (`SubAgentRunner.spawn`, mode `run`, visibility `private`);
+- reads back what the run recorded for it (`src/tools/browser/session.ts`): `browser_done` records
+  the summary and `needs_human`; a tool whose failure has an infrastructure signature records it and
+  tells the model to stop. A run with no recorded `browser_done` is reported as a failure carrying
+  its last words, never as a completed task;
+- returns the screenshots the run's tools produced as the tool result's attachments, so they reach
+  the person through the caller's reply as they always did (`SubAgentRunner.spawn` now returns them
+  for every sub-agent, and `spawn` passes them on too).
+
+What the runner does for a `browser`-typed run, whoever started it (the door or a `send`): it takes
+the browser queue (`enqueueBrowserTask`, one Chromium, one run at a time) and calls
+`BrowserSession.cleanup()` when the run ends, so the pages it opened are closed and the next run
+starts on a fresh sidecar session.
+
+`spawn` still does not offer `browser` (`AgentRegistry.list`): a spawn of it would skip the framing,
+the queue and the handoff. The delegate is the door; `list_agents`, `/agents`, the roster and the
+app see the runs it creates like any other one-shot.
 
 ## Layers
 
 | Layer | Files | Role |
 |---|---|---|
 | Sidecar | `sidecar/` (Node) | Owns Playwright. `browser.mjs`: CDP connection, session/page registries, dialog + download policy. `snapshot.mjs`: ref stamping, cross-frame resolution, label overlay. `handlers.mjs`: one function per operation. `server.mjs`: HTTP routing only |
-| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one session per task, pages addressed by id, per-endpoint timeouts |
-| Tools | `src/tools/browser/` | `state` (page pointer, URL guard), `navigation` (pages/tabs), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `delegate` (`delegate_browser_task`, the only tool the main agent sees) |
-| Subagent | `src/agent/subagents/browser.ts` | Loop + LLM-driven human-in-the-loop + attachment accumulation + shared prompt (CORE/SOUL/USER) |
+| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one sidecar session per run, pages addressed by id, per-endpoint timeouts; `reconfigure()` between runs follows the live config |
+| Tools | `src/tools/browser/` | `state` (page pointer, URL guard, the run's workspace), `navigation` (pages/tabs), `inspect` (find/network/response), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `session` (the one browser, the queue, the outcome, `browser_done`), `register` (the toolbox into the registry), `delegate` (`delegate_browser_task`, the door every other agent sees) |
+| Agent | `src/agents/builtin/browser.md` | The browser agent: `base: browser`, prompt and rules, `maxIterations: 60`. Runs through `src/subagents/runner.ts` and `src/agent/bridge.ts` like every sub-agent |
 
 ## Tools
 
@@ -50,8 +86,18 @@ User → Main Agent → Browser Subagent → BrowserClient ──HTTP──> Nod
 | `browser_list_tabs()` | List open tabs |
 | `browser_focus_tab(index)` | Switch to tab |
 | `browser_close_tab(index)` | Close tab |
-| `browser_done(summary, needs_human?)` | Finish task, or request human takeover |
-| `delegate_browser_task(url, instructions)` | Main agent → subagent. Screenshots auto-attached to response |
+| `browser_done(summary, needs_human?)` | Record the outcome for the caller (summary, human takeover), then the agent answers with the summary |
+| `delegate_browser_task(url, instructions)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
+
+**Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
+a closed set: no MCP, no plugin, no skills) and every other base (`main`, `general`, `research`,
+`cron`) is filtered of them: two drivers on one Chromium is the failure the queue exists to prevent.
+`browser_eval` and `browser_cdp` are registered always and taken away per run through
+`ResolvedAgent.deny` when `browser.allowEval` / `browser.allowCdp` are off, so a hot-reload toggles
+them without a restart and a disabled tool is never advertised. Only the agent named `browser` may
+declare `base: browser` in its file; another file claiming it falls back to `general` with a warning.
+The tools read the calling run's workspace from `__workspaceDir` (uploads, downloads, PDFs), since
+one registration serves every conversation.
 
 This surface is being extended so the subagent can finish tasks that currently end in a human
 handoff (uploads, custom comboboxes, elements without a ref). Spec, phases and security model:
@@ -106,11 +152,12 @@ solves the blocker and replies "continue".
   run a claude-sdk or codex default, which is why it used to skip agent resolution altogether and
   take that last fallback whatever `agents.browser` said -- so the model was decided by the order
   of `llm.models`, and a gateway that blocks the first entry broke every browser task.
-- **Cancellable**: the parent run's `AbortSignal` is threaded into the subagent loop (via the tool's
-  `__signal`). `/stop` interrupts it — it bails out before the next LLM call or tool execution and
-  returns "Stopped by user."
-- **Bounded context**: snapshots are large, so the loop runs `trimToContextWindow` before each LLM
-  call; a long (up to `maxSteps`) run cannot outgrow the model context window.
+- **Cancellable**: the parent run's `AbortSignal` is threaded into the sub-agent run (via the tool's
+  `__signal`, then the runner's tracked signal). `/stop` and the app's Stop interrupt it like any
+  sub-agent run; the browser run's own thread has a Stop of its own too.
+- **Bounded context**: snapshots are large; the bridge trims to the context window before each LLM
+  call and compacts like every run, so a long (up to `maxSteps`) run cannot outgrow the model
+  context window.
 - **Ref coverage**: the stamping selector includes `role=option/listbox/menuitem*/treeitem/slider/
   spinbutton`, `label`, `summary` and `[tabindex]`, so custom (React) dropdown options are
   clickable instead of merely visible in the aria tree.
@@ -185,8 +232,10 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 ```
 
 - `sidecarUrl` (default `http://127.0.0.1:9223`): where the Bun app reaches the Node sidecar.
-- `maxSteps` (default 60): the ladder spends steps on purpose instead of handing off.
-- `allowEval` / `allowCdp` (default false): register `browser_eval` / `browser_cdp`. The page
+- `maxSteps` (default 60): the budget of one browsing task, the `browser` agent's `maxIterations`
+  (an explicit `agents.browser.maxIterations` wins over it). The ladder spends steps on purpose
+  instead of handing off.
+- `allowEval` / `allowCdp` (default false): offer `browser_eval` / `browser_cdp` to the run. The page
   content the subagent reads is untrusted, so these widen the prompt-injection surface — enable
   them deliberately. `browser_eval` implies access to non-`HttpOnly` cookies, which is why the
   real controls are the flags themselves plus the audit log, not a cookie API blocklist.
@@ -243,11 +292,14 @@ src/tools/browser/
   state.ts           # Page pointer, URL guard, snapshot formatting
   navigation.ts      # navigate/snapshot/screenshot + tabs
   actions.ts         # click, type, select_option, upload, key, scroll, hover, drag, click_at, wait_for
+  inspect.ts         # find, network, response
   lowlevel.ts        # eval, cdp (allowlist), dialog, download, pdf
-  delegate.ts        # delegate_browser_task + the one-at-a-time queue
+  session.ts         # the one browser (client + page pointer), the one-at-a-time queue, the run's outcome, browser_done
+  register.ts        # the toolbox into the process registry (browser base)
+  delegate.ts        # delegate_browser_task: frames the task, runs the browser agent as a sub-agent, reads the outcome back
   index.ts           # Public surface
-src/agent/subagents/browser.ts
-  # Subagent loop + human handoff + attachment accumulation + shared prompt
+src/agents/builtin/browser.md
+  # The browser agent: base, prompt, rules, budget. Runs through src/subagents/runner.ts + src/agent/bridge.ts
 packaging/templates/my-claw-browser-sidecar.service
   # systemd unit (Node, Restart=always, CDP_URL+PORT env)
 src/skills/web-browsing/SKILL.md

@@ -145,14 +145,14 @@ Not scheduled; captured for the same reason.
   `reloadSkills`.
 - Phase 2: `src/core/config.ts` (`ToolsConfig` type), `src/tools/registry.ts`
   (`getForAgent` denylist filter), `src/core/config-watcher.ts` (`tools` HOT
-  section), call sites `backend.ts` / `bridge.ts` / `subagents/browser.ts`.
+  section), call sites `backend.ts` / `bridge.ts` (the browser loop that also read it is gone since 0.7: the browser runs through the bridge).
 - Phase 3: `src/core/config.ts` (`McpServerConfig` type), `src/mcp/connection.ts`
   + `src/mcp/manager.ts` (official MCP SDK client, adapter),
   `src/tools/registry.ts` (`setDynamicProvider`, `get`/`getForAgent`),
   `src/core/config-watcher.ts` (`mcp` HOT section + `syncMcp` applier),
   `src/index.ts` (manager wiring + shutdown).
 - Phase 4: `src/agent/prompt/loader.ts` (`loadCorePrompt`, scanned + fallback),
-  `src/agent/prompt/builder.ts` + `src/agent/subagents/browser.ts` (Layer 0),
+  `src/agent/prompt/builder.ts` (Layer 0; the browser reads it through the bridge since 0.7),
   `src/agent/prompt/core-prompts.ts` (constant kept as fallback/seed),
   `docs/prompt/CORE.md` (new seed), `src/core/config.ts` `PROMPT_TEMPLATES`.
 

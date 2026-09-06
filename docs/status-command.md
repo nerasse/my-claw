@@ -59,9 +59,10 @@ outside any chat total.
 
 Read-time reconstruction was rejected. `SubAgentMeta.createdBy` holds the parent **chatId**, not a
 session id (`src/subagents/runner.ts:68`), which cannot separate a thread session from its room
-session; `kill` deletes the session file and orphans the rows; and the browser records a hardcoded
-literal `sessionId: "browser-subagent"` (`src/agent/subagents/browser.ts:242,373`) with no parent
-reference at all. Best-effort would have been wrong in three distinct ways.
+session; `kill` deletes the session file and orphans the rows; and the browser, then a private loop,
+recorded a hardcoded literal `sessionId: "browser-subagent"` with no parent reference at all (since
+0.7 it is a sub-agent session like the others, billed to the caller through `invokedBy`).
+Best-effort would have been wrong in three distinct ways.
 
 So the link is captured at write time, in a new nullable column.
 

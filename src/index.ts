@@ -108,7 +108,7 @@ import { createSttTool } from "./tools/stt.ts";
 import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
-import { createDelegateBrowserTool } from "./tools/browser/index.ts";
+import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { createQuestionTool } from "./tools/question.ts";
 import { questionManager } from "./questions/manager.ts";
@@ -562,11 +562,6 @@ async function main() {
   const agentRegistry = new AgentRegistry(allAgents);
   hooks.emit("agents:loaded", { count: allAgents.size });
 
-  // Always register: the tool reads config.browser.enabled live and no-ops when disabled, so the
-  // hot-reload watcher can toggle the browser without a restart. Registered after the agent
-  // registry because the browser reads its prompt from `agents/browser.md` through it.
-  toolRegistry.register(createDelegateBrowserTool(config, agentRegistry));
-
   // Scope entries pointing at nothing narrow an agent silently, so they are reported. Validated
   // against the *declared* MCP servers rather than the connected ones: a server that failed to
   // connect is still a real name, and flagging it as a typo would send the owner the wrong way.
@@ -608,7 +603,12 @@ async function main() {
   }
 
   const subAgentRegistry = new SubAgentRegistry();
-  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, agentRegistry);
+  // The browser agent's toolbox, registered whatever `browser.enabled` says: the delegate tool
+  // reads that flag live and refuses when it is off, so the hot-reload watcher can toggle the
+  // browser without a restart. The runner holds the session too, to queue and clean up its runs.
+  const browserSession = new BrowserSession(config);
+  registerBrowserTools(toolRegistry, config, browserSession);
+  const subAgentRunner = new SubAgentRunner(config, toolRegistry, skillRegistry, voiceManager, sttPipeline, agentRegistry, browserSession);
   // Live streams of sub-agent runs for the app channel, keyed by sub-agent session id.
   // Filled when `subagent:spawn` fires inside an app run, read by the spawn tool's
   // streamProvider to attach tokens to the sub-agent's own thread.
@@ -618,7 +618,7 @@ async function main() {
   // exactly that: the app channel is what knows where the child paints.
   const subAgentStreamRenew = new Map<string, (injected: UnifiedMessage) => MyClawAppStreamer>();
   registerSubAgentTools(
-    toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry,
+    toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry, browserSession,
     (subagentId) => {
       const streamer = subAgentStreamers.get(subagentId);
       if (!streamer) return undefined;
@@ -1426,10 +1426,13 @@ async function main() {
         const file = agentRegistry.get(agent);
         if (!file) throw new Error(`unknown agent: ${agent}`);
         if (file.source === "built-in") throw new Error("built-in agents are repo-synced; fork to a custom file first");
+        // The browser agent is the browser base and nothing else: the editor cannot move it off
+        // the toolbox `delegate_browser_task` runs it with, whatever picker it offers.
+        const base = agent === "browser" ? "browser" : fields.base;
         const text = serializeAgentFile(
           {
             description: fields.description,
-            ...(fields.base ? { base: fields.base } : {}),
+            ...(base ? { base } : {}),
             ...(fields.tools ? { tools: fields.tools } : {}),
             skillsMode: fields.skillsMode,
             ...(fields.skills ? { skills: fields.skills } : {}),
@@ -2789,7 +2792,7 @@ function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPi
 
 function registerSubAgentTools(
   registry: ToolRegistry, runner: SubAgentRunner, subRegistry: SubAgentRegistry, config: MyClawConfig,
-  agentRegistry: AgentRegistry,
+  agentRegistry: AgentRegistry, browserSession: BrowserSession,
   streamProvider?: (subagentId: string) => SubAgentStream | undefined,
 ): void {
   // Both lists are read live: the spawn schema is rebuilt per run, so an agent file dropped in
@@ -2802,6 +2805,9 @@ function registerSubAgentTools(
     streamProvider,
   ));
   registry.register(createSendTool(runner, subRegistry, streamProvider));
+  // The browser is a sub-agent like the others, reached through its own door rather than `spawn`:
+  // one shared Chromium, one task at a time (docs/browser.md).
+  registry.register(createDelegateBrowserTool(config, runner, subRegistry, browserSession, streamProvider));
   registry.register(createListAgentsTool(runner, subRegistry));
   registry.register(createKillAgentTool(runner));
   registry.register(createResetAgentTool(runner));

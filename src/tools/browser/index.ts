@@ -31,12 +31,18 @@ export {
   createBrowserDownloadTool,
   createBrowserPdfTool,
 } from "./lowlevel.ts";
+export { createDelegateBrowserTool } from "./delegate.ts";
 export {
+  BrowserSession,
   DEFAULT_NOVNC_URL,
   DEFAULT_SIDECAR_URL,
   enqueueBrowserTask,
-  createDelegateBrowserTool,
-} from "./delegate.ts";
+  isBrowserInfraError,
+  recordBrowserOutcome,
+  takeBrowserOutcome,
+  type BrowserRunOutcome,
+} from "./session.ts";
+export { registerBrowserTools } from "./register.ts";
 export {
   createBrowserFindTool,
   createBrowserNetworkTool,

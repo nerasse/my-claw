@@ -22,6 +22,10 @@ test("the browser ships as a file and keeps its AGENTS.md omission as a field", 
   assert.ok(!browser?.meta.instructions.includes("AGENTS"), "a workspace AGENTS.md is not the browser's business");
   assert.match(browser?.prompt ?? "", /You are a web browsing assistant/);
   assert.match(browser?.prompt ?? "", /DISMISS OVERLAYS FIRST/);
+  // Its toolbox is the browser base, closed by construction; its budget is the file's until
+  // `browser.maxSteps` says otherwise.
+  assert.equal(browser?.meta.base, "browser");
+  assert.equal(browser?.meta.maxIterations, 60);
 });
 
 test("the browser is not offered as a spawn target, but stays a real entry", async () => {

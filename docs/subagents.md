@@ -26,6 +26,7 @@ The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subage
 |---|---|---|
 | `general` | All base tools (bash, read, write, apply_patch, fetch, search, ls, memory) | Execution tasks |
 | `research` | Read-only: read, search, ls, fetch | Exploration, analysis |
+| `browser` | The `browser_*` tools and nothing else | Web tasks. Not offered by `spawn`: reached through `delegate_browser_task`, which frames the task, takes the one Chromium's queue and reads the handoff back (`docs/browser.md`). Its runs are private one-shots of the caller, listed, opened and driven like any other |
 
 Depth 0 (orchestrator) can spawn depth 1. `MAX_DEPTH` is 2, but **depth 2 is currently unreachable**:
 `spawn` is in `SUBAGENT_EXCLUDED_TOOLS` (`src/tools/registry.ts`), so no sub-agent of any type can

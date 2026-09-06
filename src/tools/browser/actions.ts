@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 import { type Tool, type ToolResult, str, strOpt, num, numOpt } from "../types.ts";
 import type { BrowserClient } from "../../browser/client.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
-import { type BrowserPageState, getPageId, formatSnapshot } from "./state.ts";
+import { type BrowserPageState, getPageId, formatSnapshot, workspaceOf } from "./state.ts";
 
 export function createBrowserClickTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
@@ -75,7 +75,7 @@ export function createBrowserUploadFileTool(
     async execute(args): Promise<ToolResult> {
       let resolved: string;
       try {
-        resolved = resolveWorkspacePath(str(args, "path"), workspaceDir);
+        resolved = resolveWorkspacePath(str(args, "path"), workspaceOf(args, workspaceDir));
       } catch (e) {
         return { success: false, output: "", error: String((e as Error).message) };
       }

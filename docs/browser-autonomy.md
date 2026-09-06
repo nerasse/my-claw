@@ -5,6 +5,11 @@ that completes real web tasks on its own. Architecture (Bun -> HTTP -> Node side
 Playwright -> Chromium) is unchanged and described in `docs/browser.md`; this document
 only covers the capability gap, the new tool surface, and the security model.
 
+> Written against the private browser loop (`src/agent/subagents/browser.ts`). Since 0.7 the browser
+> runs as a sub-agent through the shared runner and loop, and that file is gone: the tool surface,
+> the ladder and the budget below still hold, they live in `src/tools/browser/` and
+> `src/agents/builtin/browser.md` now (`docs/browser.md`, "The browser is a sub-agent").
+
 ## Why
 
 Two hard blockers in the same session (Instagram account setup, 2026-07-24), both ending in

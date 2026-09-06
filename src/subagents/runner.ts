@@ -7,6 +7,7 @@ import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
+import { enqueueBrowserTask, type BrowserSession } from "../tools/browser/session.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
 
@@ -114,7 +115,22 @@ export class SubAgentRunner {
     private sttPipeline: SttPipeline,
     /** File-defined agents, handed to whichever backend runs the sub-agent. */
     private agentRegistry?: AgentRegistry,
+    /**
+     * The one browser. A `browser` agent's run drives the shared Chromium, so it takes the browser
+     * queue and closes what it opened when it ends, whoever started it: a delegated task or the
+     * owner continuing in the agent's own thread.
+     */
+    private browser?: BrowserSession,
   ) {}
+
+  /** Pictures a run's tools produced (screenshots), read once by the caller that reports the run. */
+  private producedAttachments = new Map<string, Attachment[]>();
+
+  private takeAttachments(id: string): Attachment[] {
+    const attachments = this.producedAttachments.get(id) ?? [];
+    this.producedAttachments.delete(id);
+    return attachments;
+  }
 
   /**
    * Wires the shared cache so live sub-agent runs are reachable from the app channel
@@ -243,7 +259,7 @@ export class SubAgentRunner {
      * have no live view (cron, CLI).
      */
     streamProvider?: (id: string) => SubAgentStream | undefined;
-  }): Promise<{ id: string; result: string }> {
+  }): Promise<{ id: string; result: string; attachments: Attachment[] }> {
     const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue, toolCallId, streamProvider } = opts;
     // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
     // a callback, so this is the one place every caller passes through, and it keeps the stored
@@ -251,11 +267,11 @@ export class SubAgentRunner {
     const displayName = sanitizeDisplayName(opts.displayName);
 
     const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
-    if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}` };
+    if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [] };
 
     if (mode === "run") {
       if (!this.canSpawn(0)) {
-        return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)` };
+        return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)`, attachments: [] };
       }
       return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue);
     }
@@ -305,7 +321,7 @@ export class SubAgentRunner {
         throw err;
       }
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
-      return { id, result };
+      return { id, result, attachments: this.takeAttachments(id) };
     });
   }
 
@@ -600,7 +616,7 @@ export class SubAgentRunner {
      * the one-shot on the session file.
      */
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
-  ): Promise<{ id: string; result: string }> {
+  ): Promise<{ id: string; result: string; attachments: Attachment[] }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
     // like a chat, so deleting it would make the roster promise something it cannot deliver. It
@@ -636,7 +652,7 @@ export class SubAgentRunner {
         const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, trackedSignal, model, stream, undefined, task);
         const result = await (enqueue ? enqueue(id, execute) : execute());
         hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
-        return { id, result };
+        return { id, result, attachments: this.takeAttachments(id) };
       } finally {
         this.activeCount -= 1;
         await this.indexForSearch(id, session);
@@ -765,44 +781,59 @@ export class SubAgentRunner {
     // and the engine picks it up at the next iteration boundary. Open for parent-driven runs too
     // (they are the ones nobody else could steer before); openMailbox is idempotent, so an
     // app-driven run already opened by the router keeps its own.
-    runRegistry.openMailbox(session.id);
-    let failure: unknown = null;
-    try {
-      // userEntryWritten: true — the runner wrote the UserEntry before calling the bridge,
-      // so the bridge must not write a duplicate.
-      const result = stream?.onToken
-        ? await bridge.handleMessageStreaming(
-            subMessage,
-            session,
-            stream.onToken,
-            stream.onToolUse,
-            signal,
-            // An absorbed injection seals the current bubble and opens a fresh reply to it, the
-            // same turn-switch contract the root path uses.
-            stream.onTurnSwitch,
-            undefined,
-            stream.reasoning,
-            stream.onToolStart,
-            undefined,
-            true, // userEntryWritten
-          )
-        : await bridge.handleMessage(subMessage, session, signal, undefined, undefined, true);
-      return result;
-    } catch (err) {
-      failure = err;
-      if (isAbort(err, signal)) {
-        hooks.emit("subagent:aborted", { id: session.id, parentSessionId: session.meta?.parentSessionId ?? "" });
+    const execute = async (): Promise<string> => {
+      runRegistry.openMailbox(session.id);
+      let failure: unknown = null;
+      try {
+        // userEntryWritten: true — the runner wrote the UserEntry before calling the bridge,
+        // so the bridge must not write a duplicate.
+        const result = stream?.onToken
+          ? await bridge.handleMessageStreaming(
+              subMessage,
+              session,
+              stream.onToken,
+              stream.onToolUse,
+              signal,
+              // An absorbed injection seals the current bubble and opens a fresh reply to it, the
+              // same turn-switch contract the root path uses.
+              stream.onTurnSwitch,
+              undefined,
+              stream.reasoning,
+              stream.onToolStart,
+              undefined,
+              true, // userEntryWritten
+            )
+          : await bridge.handleMessage(subMessage, session, signal, undefined, undefined, true);
+        // What the run's tools produced for the eye (a screenshot) travels with the answer to whoever
+        // asked for the run; in prose alone a picture reached nobody.
+        this.producedAttachments.set(session.id, bridge.getResponseAttachments(subMessage.id) ?? []);
+        return result;
+      } catch (err) {
+        failure = err;
+        if (isAbort(err, signal)) {
+          hooks.emit("subagent:aborted", { id: session.id, parentSessionId: session.meta?.parentSessionId ?? "" });
+          throw err;
+        }
+        hooks.emit("subagent:error", { id: session.id, error: err, parentSessionId: session.meta?.parentSessionId ?? "" });
         throw err;
+      } finally {
+        // Settle whatever the run did not absorb: an injection the engine never drained is rerouted
+        // to a fresh run (RerouteSignal), which the router turns into a queued send. The mailbox is
+        // closed either way, so a late arrival falls back to send() rather than a dead mailbox.
+        runRegistry.settleMailbox(session.id, failure === null ? "resolve" : "reject", failure === null ? undefined : failure);
+        runRegistry.closeMailbox(session.id);
       }
-      hooks.emit("subagent:error", { id: session.id, error: err, parentSessionId: session.meta?.parentSessionId ?? "" });
-      throw err;
-    } finally {
-      // Settle whatever the run did not absorb: an injection the engine never drained is rerouted
-      // to a fresh run (RerouteSignal), which the router turns into a queued send. The mailbox is
-      // closed either way, so a late arrival falls back to send() rather than a dead mailbox.
-      runRegistry.settleMailbox(session.id, failure === null ? "resolve" : "reject", failure === null ? undefined : failure);
-      runRegistry.closeMailbox(session.id);
-    }
+    };
+    const browser = this.browser;
+    if (type !== "browser" || !browser) return execute();
+    // One Chromium: the run takes its turn on it, and leaves it clean for the next one.
+    return enqueueBrowserTask(async () => {
+      try {
+        return await execute();
+      } finally {
+        await browser.cleanup();
+      }
+    });
   }
 
   private createSession(

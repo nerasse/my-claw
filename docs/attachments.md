@@ -59,4 +59,4 @@ return {
 
 ## Browser screenshots
 
-`delegate_browser_task` → subagent calls `browser_screenshot` → attachment flows through `BrowserSubagentResult.attachments` → `ToolResult.attachments` → bridge → router → adapter. The main agent does not need to handle the image; delivery is automatic.
+`delegate_browser_task` → the browser agent's run calls `browser_screenshot` → the bridge of that run collects the attachment (`getResponseAttachments`) → `SubAgentRunner.spawn` returns it → `delegate_browser_task` puts it on its `ToolResult.attachments` → the caller's bridge → router → adapter. The main agent does not need to handle the image; delivery is automatic. Since 0.7 `spawn` returns a sub-agent's produced attachments the same way.

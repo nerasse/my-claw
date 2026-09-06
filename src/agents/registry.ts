@@ -7,10 +7,11 @@ function keyFor(name: string, layer?: string): string {
 /**
  * Agents that have a definition but are not reached through `spawn`.
  *
- * The browser owns its runner, its loop and a private tool registry, so offering it as a spawn
- * target would hand the model an agent carrying the browser's prompt and none of its tools. It is
- * still a real entry: `get` resolves it, `/agents` and the app list it, and overriding
- * `agents/browser.md` edits its instructions. Only the spawn catalog leaves it out.
+ * The browser runs as a sub-agent like the others, but there is one shared Chromium behind it and
+ * `delegate_browser_task` is the door that frames the task, waits its turn on the browser and reads
+ * the handoff back: a `spawn` of it would skip all three. It is still a real entry: `get` resolves
+ * it, `/agents` and the app list it, and overriding `agents/browser.md` edits its instructions.
+ * Only the spawn catalog leaves it out.
  */
 const NOT_SPAWNABLE = new Set(["browser"]);
 

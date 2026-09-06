@@ -1,7 +1,7 @@
 import { test, describe } from "bun:test";
 import assert from "node:assert";
 import { BrowserClient } from "../../src/browser/client.ts";
-import { isBrowserInfraError } from "../../src/agent/subagents/browser.ts";
+import { isBrowserInfraError } from "../../src/tools/browser/session.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 interface Call {

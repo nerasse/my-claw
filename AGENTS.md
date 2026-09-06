@@ -143,8 +143,6 @@ src/
 │   ├── approvals.ts
 │   ├── blacklist.ts
 │   ├── preprocess.ts     # Message preprocessing (audio/video/attachments)
-│   ├── subagents/
-│   │   └── browser.ts     # delegate_browser_task sub-agent
 │   └── prompt/
 │       ├── builder.ts
 │       ├── loader.ts
@@ -220,7 +218,7 @@ src/
 │   ├── workspace.ts       # Workspace path resolution
 │   ├── bash.ts, read.ts, write.ts, apply-patch.ts, fetch.ts, search.ts, ls.ts, memory.ts
 │   ├── web-search.ts, conversation-search.ts
-│   ├── browser/           # Browser tools: state, navigation, actions, lowlevel, delegate
+│   ├── browser/           # Browser tools: state, navigation, inspect, actions, lowlevel, session (one browser + queue + outcome), register, delegate -- docs/browser.md
 │   ├── plugins.ts         # PluginLoader: external tool plugins
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
