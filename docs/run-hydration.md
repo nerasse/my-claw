@@ -165,6 +165,12 @@ continuent d'arriver item par item.
   (`freshWindow`). Un delta peut par ailleurs réviser une carte (`spawn_state` qui se règle)
   vivant dans un run non hydraté : le remplacement par id ne trouve rien et doit être un no-op
   silencieux, pas une insertion en fin de fil.
+- **Un id déjà détenu est corrigé sur place, jamais déplacé** (`appendSyncEntries`, côté app).
+  Le remplacement se faisait par retrait puis réajout en fin de fil, ce qui transformait une page
+  que le client tenait déjà en réordonnancement : deux `session.sync` partent d'un rechargement
+  avec le même curseur nul, le second redélivre l'échange d'ouverture, et la première question
+  atterrissait sous la réponse à la seconde. Même faute pour une carte d'outil qui se règle :
+  elle quittait le tour qui l'a appelée pour la fin de la conversation.
 - **Run en cours.** Jamais replié, quelle que soit sa taille : c'est ce à quoi les frames live
   ajoutent. Un run laissé ouvert par un crash reste donc entier lui aussi, ce qui est le bon
   compromis (c'est la queue du fil, une seule).
