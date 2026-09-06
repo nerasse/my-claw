@@ -493,3 +493,52 @@ describe("max_tokens against a pinned endpoint ceiling", () => {
     expect(endpointCalls).toBe(0);
   });
 });
+
+describe("a stop reaches a run that is waiting to retry", () => {
+  beforeEach(() => {
+    resetCircuitBreaker();
+    clearOpenRouterCache();
+  });
+
+  test("a 429 with a long Retry-After does not hold the run past the stop", async () => {
+    // The backoff slept on a bare setTimeout, so `Retry-After: 30` made /stop a no-op for half a
+    // minute: the signal was aborted, the run was marked stopped, and the process sat in a timer
+    // nothing could reach. The owner pressed the button and watched nothing happen.
+    const mock = mockFetch(async () =>
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "30" },
+      }) as never,
+    );
+    const controller = new AbortController();
+    try {
+      const started = Date.now();
+      const call = chatCompletion(config, simpleMessages, undefined, controller.signal);
+      // The stop lands while the run is in the backoff, not before it.
+      setTimeout(() => controller.abort(), 20);
+      await expect(call).rejects.toThrow("Run aborted by user");
+      // The point is what did *not* happen: thirty seconds of waiting.
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      mock.restore();
+      controller.abort();
+    }
+  });
+
+  test("a signal already aborted buys no delay at all", async () => {
+    const mock = mockFetch(async () =>
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "30" },
+      }) as never,
+    );
+    const controller = new AbortController();
+    try {
+      const call = chatCompletion(config, simpleMessages, undefined, controller.signal);
+      controller.abort();
+      await expect(call).rejects.toThrow();
+    } finally {
+      mock.restore();
+    }
+  });
+});

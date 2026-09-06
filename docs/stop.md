@@ -52,6 +52,15 @@ a synthetic `[Stopped by user]` result so the next turn's API call stays valid.
 Codex/Hermes separate "interrupt current turn" from "/stop cleanup background work" because they have
 backgrounded processes. MyClaw awaits every tool and sub-agent, so a single `/stop` is authoritative.
 
+### The backoff waits on the signal, not on a timer
+
+Every retry in the three transports sleeps through `sleep(ms, signal)`, which rejects with
+`AbortedError` the moment the run is stopped. A bare `setTimeout` is what made `/stop` a no-op for
+half a minute whenever a provider answered `429 Retry-After: 30`: the signal was aborted, the run
+was marked stopped, and the process sat in a timer nothing could reach while the owner watched the
+button do nothing. The check runs before the wait too, so a stop that landed a moment earlier does
+not buy one more delay.
+
 ### Reply
 
 `/stop` replies `Stopped.` if a run was cancelled, `Nothing running.` otherwise. The cancelled run

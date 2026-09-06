@@ -1,6 +1,6 @@
 import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
-import { AbortedError } from "../core/aborted.ts";
+import { AbortedError, sleep } from "../core/aborted.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -93,10 +93,6 @@ export function countsTowardBreaker(err: unknown): boolean {
  */
 function timeoutBudget(config: ResolvedLlmConfig): number {
   return requestTimeoutMs(config, OPENAI_TIMEOUT_MS);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function* readStream(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
@@ -675,7 +671,7 @@ export async function chatCompletion(
             const delay = retryDelay(attempt, parseRetryAfterMs(response));
             hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: true });
             await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
-            await sleep(delay);
+            await sleep(delay, signal);
             lastErr = err;
             continue;
           }
@@ -712,7 +708,7 @@ export async function chatCompletion(
       if (attempt < LLM_RETRY_ATTEMPTS && isTransientError(err)) {
         const delay = retryDelay(attempt);
         await log("warn", `LLM transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);
@@ -793,7 +789,7 @@ export async function chatCompletionStream(
         if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (RETRYABLE_STATUS.has(response.status) || pinned404?.retryable)) {
           const delay = retryDelay(attempt, parseRetryAfterMs(response));
           await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
-          await sleep(delay);
+          await sleep(delay, signal);
           lastErr = err;
           continue;
         }
@@ -932,7 +928,7 @@ export async function chatCompletionStream(
       if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && isTransientError(err)) {
         const delay = retryDelay(attempt);
         await log("warn", `LLM stream transient error, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS}): ${(err as Error).message}`);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(config.baseUrl);

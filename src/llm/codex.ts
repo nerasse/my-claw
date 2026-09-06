@@ -1,6 +1,6 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
-import { AbortedError } from "../core/aborted.ts";
+import { AbortedError, sleep } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
@@ -390,10 +390,6 @@ async function processStream(
 // Transport
 // ============================================================================
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 async function runCodex(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
@@ -486,7 +482,7 @@ async function runCodex(
         if (attempt < MAX_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
           await log("warn", `Codex ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
-          await sleep(delay);
+          await sleep(delay, signal);
           lastErr = err;
           continue;
         }
@@ -512,7 +508,7 @@ async function runCodex(
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
         await log("warn", `Codex transient error, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS}): ${(err as Error).message}`);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);

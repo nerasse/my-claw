@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { EffortLevel, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
-import { AbortedError } from "../core/aborted.ts";
+import { AbortedError, sleep } from "../core/aborted.ts";
 import { log } from "../utils/logger.ts";
 import { loadClaudeToken } from "./claude-auth.ts";
 import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
@@ -547,10 +547,6 @@ async function processStream(
 // Transport
 // ============================================================================
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 function retryDelay(response: Response, attempt: number): number {
   const header = response.headers.get("retry-after");
   const seconds = header ? Number(header) : NaN;
@@ -807,7 +803,7 @@ async function runAnthropic(
         if (attempt < MAX_ATTEMPTS && !tokensDelivered && RETRYABLE_STATUS.has(response.status)) {
           const delay = retryDelay(response, attempt);
           await log("warn", `Anthropic ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
-          await sleep(delay);
+          await sleep(delay, signal);
           lastErr = err;
           continue;
         }
@@ -833,7 +829,7 @@ async function runAnthropic(
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = RETRY_BASE_MS * 2 ** (attempt - 1);
         await log("warn", `Anthropic transient error, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS}): ${(err as Error).message}`);
-        await sleep(delay);
+        await sleep(delay, signal);
         continue;
       }
       if (countsTowardBreaker(lastErr)) recordCircuitFailure(base);
