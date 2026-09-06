@@ -159,6 +159,24 @@ function findNthUserFromEnd(path: readonly Entry[], n: number): UserEntry | unde
 }
 
 /**
+ * Whether nothing was written since the leaf `/undo` left, walking back from the current one.
+ *
+ * The app journals every command as a `command` entry at the leaf it left, the `/undo` itself
+ * included, so the leaf never is the one the undo recorded. What makes a redo ambiguous is a
+ * turn: an entry the model reads (a message, an answer, a boundary). Display-only entries are
+ * looked through; anything else on the way, or a leaf on another branch, is a turn written since.
+ */
+function nothingWrittenSince(log: SessionLog, expectedLeafId: string): boolean {
+  for (let id = log.leaf(); id !== null; ) {
+    if (id === expectedLeafId) return true;
+    const entry = log.get(id);
+    if (!entry || entry.prompt) return false;
+    id = entry.parentId;
+  }
+  return expectedLeafId === "";
+}
+
+/**
  * `/retry [n]` — recule avant le dernier tour user (ou n tours), remet son texte au composer.
  *
  * The turn is not destroyed: the cursor moves to its parent, leaving the abandoned turn as a
@@ -331,8 +349,7 @@ export async function handleRedoCommand(
     return { text: "Rien à refaire : pas de /undo en attente." };
   }
 
-  const currentLeaf = ctx.log.leaf() ?? "";
-  if (currentLeaf !== meta.undo.expectedLeafId) {
+  if (!nothingWrittenSince(ctx.log, meta.undo.expectedLeafId)) {
     // A turn was written since the undo — redo is no longer the immediate inverse.
     // Point the user to /branches with the branch number.
     const entries = ctx.log.entries();

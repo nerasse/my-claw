@@ -16,6 +16,7 @@ import {
   type UserEntry,
   type PhaseEntry,
   type CompactionEntry,
+  type CommandEntry,
 } from "../../src/sessions/log.ts";
 import { contextEntries } from "../../src/sessions/projection.ts";
 import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
@@ -769,6 +770,48 @@ describe("branch-commands: /redo", () => {
     const result = await handleRedoCommand(ctx, "");
     expect(result.reset).toBe("branch-switch");
     expect(log.leaf()).toBe(phase1.id);
+  });
+
+
+  test("the journal entry of the undo itself does not count as a new turn", async () => {
+    // The app writes every command, quiet ones included, as a `command` entry at the leaf the
+    // command left. That entry lands right after /undo moved the branch, so an exact-leaf check
+    // refused every /redo the app ever sent. Display-only entries are not a turn.
+    const id = freshId();
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    const phase1 = log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "soft");
+    log.append<CommandEntry>({ type: "command", prompt: false, input: "/undo", output: "Undo", quiet: true });
+
+    const result = await handleRedoCommand(ctx, "");
+    expect(result.reset).toBe("branch-switch");
+    expect(log.leaf()).toBe(phase1.id);
+  });
+
+  test("a compaction written since the undo is a turn: redo refuses", async () => {
+    const id = freshId();
+    const log = await openSessionLog(id);
+    const user = log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    await log.flush();
+
+    const ctx = await createContext(id, log);
+    await handleUndoCommand(ctx, "soft");
+    log.append<CompactionEntry>({
+      type: "compaction",
+      prompt: true,
+      summary: "s",
+      firstKeptEntryId: user.id,
+      tokensBefore: 900,
+      count: 1,
+    });
+
+    const result = await handleRedoCommand(ctx, "");
+    expect(result.text).toContain("Redo impossible");
   });
 
   test("redo twice in a row: second fails", async () => {

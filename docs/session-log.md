@@ -887,6 +887,15 @@ c'est-à-dire la même surprise coûteuse que `/branches` refuse pendant un run.
 retiré au passage, seulement un raccourci qui a cessé d'être univoque. La détection se fait
 sur le leaf attendu mémorisé dans `meta.undo`, jamais sur des timestamps.
 
+**« Un tour a été écrit » = une entrée `prompt: true` depuis le point d'undo** (user, phase, tool,
+compaction), pas « la feuille a bougé ». L'app journalise chaque commande, les silencieuses
+comprises, comme entrée `command` à la feuille où elle se place : le `/undo` lui-même pose la
+sienne juste après la bascule, donc la feuille n'est jamais celle que l'undo a mémorisée et une
+comparaison exacte refusait tous les `/redo` envoyés depuis l'app (bug jusqu'en 0.6.3, jamais
+vu parce que personne n'avait encore fait `/undo` dans l'app). `nothingWrittenSince` remonte de
+la feuille courante vers le leaf attendu en traversant les entrées d'affichage ; une entrée lue
+par le modèle sur le chemin, ou une feuille sur une autre branche, c'est un tour écrit.
+
 | | leaf après | texte au composer | branche abandonnée |
 |---|---|---|---|
 | `/retry` | avant le tour user | oui | gardée |
