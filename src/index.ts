@@ -3,6 +3,7 @@ import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
+import { gcShadows } from "./snapshots/store.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
 import { migrateRunMarkers } from "./sessions/migrate-run-markers.ts";
 import type { CommandEntry } from "./sessions/log.ts";
@@ -330,6 +331,11 @@ async function main() {
   const reloadConfigNow = async (): Promise<{ changed: string[]; rebootRequired: string[] }> =>
     (await configWatcher?.reloadNow()) ?? { changed: [], rebootRequired: [] };
   const memoryPurgeTimer = initMemory(config);
+  // A capture writes blobs and trees and no commit, so nothing in a shadow is reachable from a
+  // ref and nothing ever pruned them: 247 MB of objects for snapshots long expired. Daily, and
+  // never on the path of a run.
+  const shadowGcTimer = setInterval(() => void gcShadows(), 24 * 60 * 60 * 1000);
+  shadowGcTimer.unref?.();
   // Left empty on purpose: applyModelCatalog() below is the single place that projects the merged
   // model list into the picker, and it runs synchronously before anything can read the menu.
   // The agent list is a closure, not a snapshot: the registry is built further down and its
@@ -2615,6 +2621,7 @@ async function main() {
     cronScheduler.stop();
     clearInterval(modelCatalogTimer);
     if (memoryPurgeTimer) clearInterval(memoryPurgeTimer);
+    clearInterval(shadowGcTimer);
     for (const ch of activeChannels) hooks.emit("channel:stopped", { platform: ch });
     await Promise.allSettled(adapters.map((a) => a.stop()));
     // After the adapters, so nothing can append behind the write, and before the exit: a cached

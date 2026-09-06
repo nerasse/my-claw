@@ -933,7 +933,23 @@ Acceptable. Sur un dépôt de code, la première capture sera plus lente si `nod
 n'est pas ignoré, donc **respecter `.gitignore` est obligatoire**, et le premier snapshot
 d'un workspace se fait en tâche de fond avec un log.
 
-## 7.4 Deux garde-fous non négociables
+## 7.4 Rétention
+
+Rien ne supprimait jamais rien : 22 shadows, 247 Mo, pour des snapshots dont plus aucun `/undo`
+n'aurait voulu. Deux niveaux, alignés par construction :
+
+- **Les `<runId>.json`** (l'index) sont purgés à la fin de chaque run : on garde les **20 plus
+  récents** de la session, et rien au-delà de **30 jours**. Les 20 protègent l'usage réel (undo
+  porte sur le run précédent), les 30 jours bornent une session qu'on ne rouvre plus.
+- **Les objets des shadows** sont compactés une fois par jour, `git gc --prune=30.days.ago`. La
+  fenêtre est la même que la rétention, et ce n'est pas un hasard : une capture écrit des blobs et
+  un arbre et **aucun commit**, donc rien n'est joignable depuis une ref et un `git gc` ordinaire
+  effacerait tout. Ce qui garde un snapshot lisible, c'est exactement la fenêtre de prune. Un
+  objet plus vieux appartient à un snapshot déjà supprimé.
+
+Le GC tourne sur un timer, jamais sur le chemin d'un run.
+
+## 7.5 Deux garde-fous non négociables
 
 - **Hors workspace, rien.** `bash` peut écrire dans `/etc`, `~/Documents`, n'importe où.
   `/undo` doit dire « restauration limitée au workspace », sinon il promet ce qu'il ne

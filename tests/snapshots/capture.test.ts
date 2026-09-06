@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureWorkspace, diffSnapshots, restoreDepot } from "../../src/snapshots/capture.ts";
-import { recordRunStart, recordRunEnd, latestSnapshot, clearSessionSnapshots } from "../../src/snapshots/store.ts";
+import { recordRunStart, recordRunEnd, latestSnapshot, clearSessionSnapshots, pruneSessionSnapshots, gcShadows, snapshotsRoot } from "../../src/snapshots/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 describe("snapshots: capture", () => {
@@ -95,6 +95,56 @@ describe("snapshots: store", () => {
       await rm(ws, { recursive: true, force: true });
       await rm(shadows, { recursive: true, force: true });
       void old;
+    }
+  });
+
+  test("keeps the recent runs of a session and drops what undo can no longer reach", async () => {
+    // Nothing used to delete these. They are the index of the shadow objects, so the retention is
+    // decided here and the object prune follows it -- 247 MB of shadows nothing had ever pruned.
+    const sessionId = `test-snap-prune-${process.pid}-${Date.now()}`;
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws3-"));
+    const dir = join(snapshotsRoot(), "session", sessionId);
+    try {
+      await mkdir(dir, { recursive: true });
+      const now = Date.now();
+      // 25 runs today, and one from last spring.
+      for (let i = 0; i < 25; i++) {
+        await writeFile(join(dir, `run-${i}.json`), JSON.stringify({ runId: `run-${i}`, sessionId, before: null, after: null, ts: now - i * 1000 }), "utf8");
+      }
+      await writeFile(join(dir, "ancient.json"), JSON.stringify({ runId: "ancient", sessionId, before: null, after: null, ts: now - 90 * 24 * 3600 * 1000 }), "utf8");
+
+      await pruneSessionSnapshots(sessionId);
+
+      const left = (await readdir(dir)).sort();
+      expect(left).toHaveLength(20);
+      expect(left).toContain("run-0.json");
+      expect(left).not.toContain("run-20.json");
+      expect(left).not.toContain("ancient.json");
+    } finally {
+      await clearSessionSnapshots(sessionId);
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("the shadow gc runs over every shadow and leaves a fresh capture readable", async () => {
+    // A capture writes blobs and trees and no commit, so every object is unreachable and a plain
+    // `git gc` would take the lot. The prune window is what keeps a live snapshot readable.
+    const sessionId = `test-snap-gc-${process.pid}-${Date.now()}`;
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws4-"));
+    try {
+      await writeFile(join(ws, "note.txt"), "avant", "utf8");
+      const run = await recordRunStart(sessionId, ws);
+      const treeBefore = run.before.depots[0]?.treeId;
+      expect(treeBefore).toBeTruthy();
+
+      await gcShadows();
+
+      // Still there: the object is younger than the prune window.
+      const snap = await latestSnapshot(sessionId);
+      expect(snap!.before.depots[0]!.treeId).toBe(treeBefore!);
+    } finally {
+      await clearSessionSnapshots(sessionId);
+      await rm(ws, { recursive: true, force: true });
     }
   });
 });
