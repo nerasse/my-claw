@@ -831,9 +831,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * own failure: this is called from a path that is already handling an error, and losing the
    * record of it must not replace the error the owner is being told about.
    */
-  async recordFailure(owner: string, threadId: string, error: string): Promise<void> {
+  async recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void> {
     try {
-      await this.store.recordFailure(owner, threadId, error);
+      await this.store.recordFailure(owner, threadId, error, bubbleId);
     } catch (err) {
       void myClawAppLog("error", "failure journal failed", { owner, threadId, error: String(err) });
     }

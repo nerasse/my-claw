@@ -158,6 +158,31 @@ describe("MyClawAppStreamer media refs", () => {
     expect(aborts[0]!.error).toBe("LLM call failed: 401");
   });
 
+  // The failure entry is journalled by the run's own error path, which is nowhere near this
+  // object: what it needs from here is the id, or the entry becomes a second identity for one
+  // error and the next page draws it twice -- docs/bubble-identity.md.
+  test("the bubble an error was painted in is readable afterwards, and is the one the frame carried", async () => {
+    const { streamer, frames } = collect();
+    expect(streamer.errorBubble()).toBeUndefined();
+    await streamer.abort("LLM call failed: 401");
+    const abort = frames.find((f) => f.type === "chat.stream.abort") as { id: string };
+    expect(streamer.errorBubble()).toBe(abort.id);
+  });
+
+  test("a run that painted an answer before dying reports in the bubble it was writing", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("je regarde");
+    await streamer.abort("LLM call failed: 529");
+    const deltaFrames = frames.filter((f) => f.type === "chat.stream.delta") as { id: string }[];
+    expect(streamer.errorBubble()).toBe(deltaFrames[0]!.id);
+  });
+
+  test("a streamer that never painted anything has no error bubble to offer", async () => {
+    const { streamer } = collect();
+    await streamer.abort();
+    expect(streamer.errorBubble()).toBeUndefined();
+  });
+
   test("a bubble that was painted is settled by the stop, silently", async () => {
     const { streamer, frames } = collect();
     await streamer.push("partial answer");

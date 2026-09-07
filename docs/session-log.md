@@ -699,8 +699,16 @@ Trois cas :
 | Situation | Réponse | Action app |
 |---|---|---|
 | `since` connu, même branche | delta | `append` |
+| `since` null (ouverture, `resume`) | fenêtre la plus récente + `nextBefore`/`hasMore` | remplacer la plage couverte |
 | `since` inconnu | `reset: "unknown-cursor"` + page complète | remplacer |
 | `leaf` hors du chemin courant | `reset: "branch-switch"` + page complète | remplacer |
+
+La deuxième ligne n'est pas un `reset` (le curseur du client n'a rien d'invalide) mais ce n'est
+pas un delta non plus : la fenêtre **est** le fil sur la plage qu'elle couvre. Traitée comme un
+delta, elle ajoutait à la fin tout ce qu'elle dessine sous un id que le run live n'a pas utilisé —
+un `failure` et une ligne de run repliée — soit la même erreur et le même run une seconde fois,
+sous la réponse. `nextBefore` est ce qui distingue les deux sur le fil : seule une fenêtre en
+porte un (app `docs/thread-sync.md`).
 
 L'erreur explicite vient de pi (`rpc-mode.ts:640`). Le silence actuel est ce qui laisse
 deux fenêtres diverger sans que personne ne le remarque.

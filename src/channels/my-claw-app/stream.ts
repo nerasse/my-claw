@@ -46,6 +46,7 @@ export class MyClawAppStreamer {
   private segmentIds: string[] = [];
   /** Bubble ids not yet taken by the recorder, oldest first. */
   private unclaimed: string[] = [];
+  private errorBubbleId: string | undefined;
   private started = false;
   /**
    * Whether anything of this streamer ever reached a screen. Not the same as `started`, which is
@@ -194,6 +195,11 @@ export class MyClawAppStreamer {
     const ids = this.unclaimed;
     this.unclaimed = [];
     return ids;
+  }
+
+  /** The bubble an abort painted the error in, once one has. */
+  errorBubble(): string | undefined {
+    return this.errorBubbleId;
   }
 
   private currentId(): string {
@@ -459,6 +465,11 @@ export class MyClawAppStreamer {
       });
     }
     this.spawnCardIds = new Map();
-    await this.opts.send({ type: "chat.stream.abort", id: this.currentId(), threadId: this.opts.threadId, error: err || undefined });
+    const bubble = this.currentId();
+    // The bubble the error is shown in, so the `failure` entry can be journalled under the same
+    // id -- docs/bubble-identity.md. Minted here when the run died before its first token, and
+    // then this is the only place that knows it: the app invents the bubble from this very frame.
+    this.errorBubbleId = bubble;
+    await this.opts.send({ type: "chat.stream.abort", id: bubble, threadId: this.opts.threadId, error: err || undefined });
   }
 }

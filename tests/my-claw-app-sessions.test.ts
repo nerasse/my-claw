@@ -1570,6 +1570,32 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     assert.equal((failures[0] as FailureEntry).error.length, FAILURE_TEXT_LIMIT);
   });
 
+  test("the entry takes the id of the bubble the error is on screen in", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    logSetup.log.append({ type: "user", prompt: true, text: "continue" });
+    await logSetup.log.flush();
+    // The id the streamer minted for the bubble it painted the error in: one identity, so the
+    // page the app is handed next replaces that bubble instead of adding a second copy.
+    await store.recordFailure(DEVICE, THREAD, "API Error: 529 Overloaded", "bubble-42");
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.equal(entries[1]!.id, "bubble-42");
+  });
+
+  test("an id the log already holds does not cost the failure entry", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, []));
+    const user = logSetup.log.append({ type: "user", prompt: true, text: "continue" });
+    await logSetup.log.flush();
+    // A reroute can hand back the id of a turn already written. The entry is worth more than its
+    // id: it falls back to one of its own rather than losing the error.
+    await store.recordFailure(DEVICE, THREAD, "boom", user.id);
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    assert.deepEqual(entries.map((e) => e.role), ["user", "assistant"]);
+    assert.notEqual(entries[1]!.id, user.id);
+    assert.equal(proseOf(entries[1]!).error, "boom");
+  });
+
   test("a failure on a thread with no session yet is dropped rather than creating one", async () => {
     await store.recordFailure(DEVICE, THREAD, "boom");
     assert.equal(await loadSession(sessionId), null);

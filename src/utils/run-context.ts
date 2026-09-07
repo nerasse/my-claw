@@ -16,6 +16,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
  */
 export interface BubbleSink {
   take(): string[];
+  /** The bubble an error was painted in, if the run died in one. Never taken, only read. */
+  errorBubble?(): string | undefined;
 }
 
 export interface RunContext {
@@ -101,4 +103,13 @@ export function setRunBubbles(sessionId: string, sink: BubbleSink): void {
  */
 export function takeRunBubbles(sessionId: string): string[] {
   return storage.getStore()?.bubbles?.get(sessionId)?.take() ?? [];
+}
+
+/**
+ * The bubble this session's error is on screen in, so the entry that journals it can carry the
+ * same id -- docs/bubble-identity.md. Read, never claimed: the phases of the same run go on
+ * taking their own ids from the sink.
+ */
+export function runErrorBubble(sessionId: string): string | undefined {
+  return storage.getStore()?.bubbles?.get(sessionId)?.errorBubble?.();
 }

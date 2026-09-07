@@ -5,7 +5,7 @@ import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { readMeta } from "../../sessions/meta.ts";
-import { pathOf, UnknownCursorError, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
+import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
 import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
@@ -70,7 +70,7 @@ export interface MyClawAppSessionStore {
    * Journals a run that died and the error the owner was shown, so a reopened thread still says
    * why the question got no answer. No-op on a thread that has no session yet.
    */
-  recordFailure(owner: string, threadId: string, error: string): Promise<void>;
+  recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void>;
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
   /** Pins the conversation at the end of the pinned list, or unpins it. */
@@ -623,7 +623,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return null;
   }
 
-  async recordFailure(owner: string, threadId: string, error: string): Promise<void> {
+  /**
+   * `bubbleId` is the bubble the error is already on screen in, when a streamer painted one. The
+   * entry then carries that id, so a page replaces the bubble instead of adding a second copy of
+   * the same error below the thread -- docs/bubble-identity.md. An id the log already holds is
+   * refused by `append`, and the entry keeps one of its own: a duplicate error is a nuisance, a
+   * lost failure entry is a question with nothing under it.
+   */
+  async recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
@@ -631,11 +638,16 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const text = error.trim();
     if (!text) return;
     const log = await sessionLogOf(sessionId);
-    log.append<FailureEntry>({
+    const entry: Provisioned<FailureEntry> = {
       type: "failure",
       prompt: false,
       error: text.slice(0, FAILURE_TEXT_LIMIT),
-    });
+    };
+    try {
+      log.append<FailureEntry>(entry, bubbleId);
+    } catch {
+      log.append<FailureEntry>(entry);
+    }
     await this.sessionManager.persist(sessionId);
   }
 

@@ -78,3 +78,23 @@ and a provider can report phases the stream never split. Pairing those by positi
 phase the id of a bubble holding something else, which is worse than two ids: the client would
 merge one into the other. A conservative fallback costs a turn's alignment; a wrong pairing costs
 the reader's trust in what they are reading.
+
+## A failure is a bubble too
+
+A run that dies is shown in a bubble like anything else: the streamer aborts, and the app either
+patches the bubble it was streaming into or invents one from the id the abort frame carries. The
+`failure` entry the run's error path journals used to mint an id of its own, which is the same
+two-identities bug one layer down -- and it showed: a page handed to a window that had seen the
+error live drew it a second time, at the end of the thread, under the answer to the next question.
+
+So the id travels the same way the phases' does, through the run context: the streamer remembers
+the bubble its abort painted in (`errorBubble()`), the sink exposes it (`runErrorBubble`), and
+`recordFailure` appends the entry under it. Read, never taken: the phases of the same run go on
+claiming their own ids from the sink.
+
+`append` refuses an id the log already holds (a reroute can hand back a turn already written), and
+here that refusal must not cost the entry: the failure falls back to an id of its own. A duplicated
+error is a nuisance, a question with nothing under it is a mystery.
+
+The app closes the same hole from its side, for a thread drawn by an older server: a window
+replaces the range it covers instead of piling onto it (app docs/thread-sync.md).

@@ -85,7 +85,7 @@ import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { FoldedRunError, RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import { isAbort } from "./core/aborted.ts";
-import { setRunBubbles, withRunContext } from "./utils/run-context.ts";
+import { runErrorBubble, setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
@@ -2338,7 +2338,7 @@ async function main() {
             // The bubbles this run paints in, so the phases the recorder writes are appended under
             // the ids already on screen -- docs/bubble-identity.md. Read through `active`, which a
             // mid-run injection replaces: the sink must follow the bubble that is open now.
-            setRunBubbles(runSessionId, { take: () => active.take() });
+            setRunBubbles(runSessionId, { take: () => active.take(), errorBubble: () => active.errorBubble() });
             // Live tool output (bash) is a global hook; route each chunk to the streamer of the
             // session that produced it. A sub-agent's chunks carry its own session id, so matching
             // the root alone silently dropped them and a long command in a child ran blind.
@@ -2508,7 +2508,12 @@ async function main() {
           // doing and the partial answer is kept in the mirror. A message folded into the run
           // that died is not its reporter either: the run's own message journals the failure once.
           if (!isAbort(err) && !(err instanceof FoldedRunError)) {
-            await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err));
+            // Under the id of the bubble the owner is looking at, when a streamer painted one: the
+            // entry and the bubble are then one identity, and the next page replaces it in place
+            // instead of drawing the same error a second time at the end of the thread
+            // (docs/bubble-identity.md).
+            const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", msg.chatId, msg.userId, { threadId: msg.threadId, sessionScope: "per-user" });
+            await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err), runErrorBubble(sessionId));
           }
           throw err;
         }
