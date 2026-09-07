@@ -237,6 +237,15 @@ Au déclenchement : compaction, reconstruction du prompt, une itération rendue 
 retry. **Une seule récupération par run** : la fenêtre à laquelle on croit est l'entrée du test, donc
 une fenêtre simplement fausse tournerait en boucle.
 
+L'input lu, pour les formes 2 et 3, est `LlmUsage.promptTokens` **seul**. Ce champ est normalisé par
+les trois transports comme « tout le token d'entrée, cache compris » (`provider.ts`, `anthropic.ts`,
+`codex.ts`) : `cacheReadTokens` en est un sous-ensemble, pas un supplément. Y ajouter le cache lisait
+un prompt entièrement caché comme deux fois sa taille, donc déclenchait ce garde à **la moitié** de
+la fenêtre — mesuré sur la session `fbe927c6` : compaction en plein run à 257 006 tokens sur 512 000,
+itération 100, parce que 257 006 + 256 188 la franchissait. Toute conversation longue chez un
+provider avec cache payait une compaction sur deux, et la porte à 0.8 (409 600 ici) n'avait jamais
+sa chance.
+
 ### Le rebuild mi-run et le reasoning replay
 
 `providerMeta` (blobs `rs_`, thinking signé, `reasoning_content`) ne vit que sur le prompt en mémoire

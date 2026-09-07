@@ -11,6 +11,11 @@ import { mockFetch } from "./helpers/mock-fetch.ts";
 import { setupSessionLog, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { SessionLog, Entry, CompactionEntry, UserEntry, PhaseEntry, ToolEntry } from "../src/sessions/log.ts";
 import { contextEntries, promptOf } from "../src/sessions/projection.ts";
+import type { LlmUsage } from "../src/llm/provider.ts";
+
+function usage(promptTokens: number, completionTokens = 20): LlmUsage {
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+}
 
 /**
  * The compaction contract as the field defines it -- docs/compaction.md. Every case here is a
@@ -294,13 +299,36 @@ test("an overflow is recognised from the provider's wording, and a rate limit is
 
 test("an overflow nobody reported is read from the usage it billed", () => {
   // Accepted and answered past its own window.
-  assert.equal(isSilentOverflow({ promptTokens: 130_000, completionTokens: 20 }, 128_000), true);
+  assert.equal(isSilentOverflow(usage(130_000), undefined, 128_000), true);
   // Truncated server-side and called `length`, with nothing produced.
-  assert.equal(isSilentOverflow({ promptTokens: 127_000, completionTokens: 0, finishReason: "length" }, 128_000), true);
+  assert.equal(isSilentOverflow(usage(127_000, 0), "length", 128_000), true);
   // A long but legal answer is not an overflow.
-  assert.equal(isSilentOverflow({ promptTokens: 127_000, completionTokens: 900, finishReason: "length" }, 128_000), false);
-  assert.equal(isSilentOverflow({ promptTokens: 1_000 }, 128_000), false);
-  assert.equal(isSilentOverflow({ promptTokens: 500_000 }, undefined), false);
+  assert.equal(isSilentOverflow(usage(127_000, 900), "length", 128_000), false);
+  assert.equal(isSilentOverflow(usage(1_000), undefined, 128_000), false);
+  assert.equal(isSilentOverflow(usage(500_000), undefined, undefined), false);
+  assert.equal(isSilentOverflow(undefined, undefined, 128_000), false);
+});
+
+/**
+ * The cache buckets are already inside `promptTokens` (`LlmUsage`, normalised by all three
+ * transports). Adding them on top read a fully cached prompt as twice its size, so the guard fired
+ * at half the window: session fbe927c6 was compacted mid-run at 257006 tokens of 512000, iteration
+ * 100, because 257006 + 256188 crossed it. Every long conversation on a caching provider paid for
+ * one compaction in two.
+ */
+test("a cached prompt is not counted twice", () => {
+  const cached = { promptTokens: 257_006, completionTokens: 400, totalTokens: 257_406, cacheReadTokens: 256_188, cacheWriteTokens: 818 };
+  assert.equal(isSilentOverflow(cached, undefined, 512_000), false);
+  // A real overflow is still a real overflow when most of it came from the cache.
+  assert.equal(
+    isSilentOverflow({ promptTokens: 513_000, completionTokens: 10, totalTokens: 513_010, cacheReadTokens: 500_000 }, undefined, 512_000),
+    true,
+  );
+  // Same for the truncated-empty shape: the ratio is measured on the real read.
+  assert.equal(
+    isSilentOverflow({ promptTokens: 300_000, completionTokens: 0, totalTokens: 300_000, cacheReadTokens: 299_000 }, "length", 512_000),
+    false,
+  );
 });
 
 test("the threshold leaves room for the answer on a narrow window and never fires later than 80 percent", () => {

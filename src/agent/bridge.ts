@@ -595,12 +595,8 @@ export class AgentBridge implements AgentBackend {
         // the empty-turn retry, which would otherwise repost the same oversized prompt.
         if (
           isSilentOverflow(
-            {
-              promptTokens: response.usage?.promptTokens,
-              cacheReadTokens: response.usage?.cacheReadTokens,
-              completionTokens: response.usage?.completionTokens,
-              ...(response.finishReason ? { finishReason: response.finishReason } : {}),
-            },
+            response.usage,
+            response.finishReason,
             this.contextWindow(session, llmConfig, agentToolType).effective,
           )
         ) {

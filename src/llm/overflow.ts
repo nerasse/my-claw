@@ -1,3 +1,5 @@
+import type { LlmUsage } from "./provider.ts";
+
 /**
  * Recognising a context overflow, whatever shape the provider gave it -- docs/compaction.md.
  *
@@ -70,14 +72,6 @@ export function isOverflowError(err: unknown): boolean {
   return isOverflowMessage(typeof err === "string" ? err : undefined);
 }
 
-export interface OverflowSignals {
-  /** What the provider reported it read, prompt plus whatever it served from cache. */
-  promptTokens?: number;
-  cacheReadTokens?: number;
-  finishReason?: string;
-  completionTokens?: number;
-}
-
 /**
  * An overflow the provider never named.
  *
@@ -92,10 +86,17 @@ export interface OverflowSignals {
  * error is self-correcting: a compaction happens, the next call is smaller, and the ratio test
  * (99%) keeps it from firing on a prompt that merely came close.
  */
-export function isSilentOverflow(signals: OverflowSignals, contextTokens: number | undefined): boolean {
-  if (!contextTokens || contextTokens <= 0) return false;
-  const read = (signals.promptTokens ?? 0) + (signals.cacheReadTokens ?? 0);
+export function isSilentOverflow(
+  usage: LlmUsage | undefined,
+  finishReason: string | undefined,
+  contextTokens: number | undefined,
+): boolean {
+  if (!usage || !contextTokens || contextTokens <= 0) return false;
+  // `promptTokens` is every input token the call read, cache buckets included: all three
+  // transports normalise to that (docs/compaction.md). Adding `cacheReadTokens` on top read a
+  // fully cached prompt as twice its size and fired this guard at half the window.
+  const read = usage.promptTokens;
   if (read > contextTokens) return true;
-  const truncatedEmpty = signals.finishReason === "length" && (signals.completionTokens ?? 0) === 0;
+  const truncatedEmpty = finishReason === "length" && usage.completionTokens === 0;
   return truncatedEmpty && read >= Math.floor(contextTokens * 0.99);
 }
