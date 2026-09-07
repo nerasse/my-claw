@@ -7,6 +7,7 @@ import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
 import { cacheDialectOf } from "./cache-policy.ts";
+import { sessionAffinityHeaders, userAgent } from "./session-headers.ts";
 import { OPENAI_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
@@ -613,6 +614,9 @@ export async function chatCompletion(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+    // The conversation this call belongs to, and who we are. The config comes last on purpose:
+    // an owner overriding either of them has a reason we do not know -- docs/session-affinity.md.
+    ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
   const bodyObject = buildRequestBody(config, messages, tools);
@@ -727,6 +731,9 @@ export async function chatCompletionStream(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+    // The conversation this call belongs to, and who we are. The config comes last on purpose:
+    // an owner overriding either of them has a reason we do not know -- docs/session-affinity.md.
+    ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
   const bodyObject = buildRequestBody(config, messages, tools, true);

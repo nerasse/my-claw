@@ -2751,6 +2751,9 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
     const every = memCfg?.consolidation?.every ?? 20;
     const caller: LlmCaller = async (system, user) => {
       const llmCfg = resolveUtilityLlmConfig(config.llm, memCfg?.consolidation?.model);
+      // Housekeeping belongs to no conversation, but a gateway routing on the session key still
+      // wants one, and this job is stable enough to be its own -- docs/session-affinity.md.
+      llmCfg.cacheKey ??= "my-claw:memory-consolidation";
       const res = await llmComplete(llmCfg, [
         { role: "system", content: system },
         { role: "user", content: user },

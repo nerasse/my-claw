@@ -9,6 +9,7 @@ import { setupSessionLog, appendMessages, writeLegacySessionFile } from "./helpe
 import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
 import { contextEntries } from "../src/sessions/projection.ts";
 import { hooks } from "../src/hooks/index.ts";
+import { sessionAffinityHeaders } from "../src/llm/session-headers.ts";
 
 const SESSION_ID = "test-compaction";
 
@@ -117,6 +118,32 @@ test("compactSession writes a compaction entry and shrinks the context", async (
     // The context should now be smaller
     const context = contextEntries(entries, log.leaf());
     assert.equal(context.length, result.afterCount);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+// The summarizer prompt is the conversation's own prefix, so it belongs on the backend already
+// holding that cache -- and a gateway that routes on the header refuses a call without one
+// (docs/session-affinity.md).
+test("the summarizer call names the conversation it is compacting", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const seen: Headers[] = [];
+  const fetchMock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    seen.push(new Headers(init?.headers));
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: "Summary of earlier context, long enough to pass the guard on a summary that says nothing." } }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never;
+  });
+
+  try {
+    await compactSession(makeConfig(), session);
+    const expected = sessionAffinityHeaders("https://test.example.com", SESSION_ID, "ua");
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.get("x-session-affinity"), expected["x-session-affinity"]);
   } finally {
     fetchMock.restore();
   }

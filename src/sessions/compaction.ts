@@ -312,6 +312,10 @@ export async function summarizeForCompaction(
   const llmConfig = {
     ...resolved,
     limit: { ...resolved.limit, output: Math.min(MAX_SUMMARY_TOKENS, resolved.limit?.output ?? MAX_SUMMARY_TOKENS) },
+    // Maintenance on a conversation is still that conversation: the prompt it sends is that
+    // conversation's own prefix, and a gateway routing on the session key refuses a call without
+    // one -- docs/session-affinity.md.
+    cacheKey: resolved.cacheKey ?? session.id,
   };
 
   const startedAt = Date.now();
