@@ -865,7 +865,17 @@ export async function repointEnvKey(from: string, to: string): Promise<ConfigEdi
  * run. Discovered models are not in the file and die with the catalog cache; curated ones
  * (llm.models) are the owner's declaration and are never touched behind their back.
  */
-export async function removeProvider(key: string): Promise<ConfigEditResult> {
+export interface RemoveProviderOptions {
+  /**
+   * Drop what points at the entry instead of refusing: the curated models declared under it, and
+   * the default-provider role when it holds it. The refusal alone was a dead end -- the app offers
+   * the delete, the server always says no, and hand-editing the file left the declarations behind,
+   * pointing at a provider that no longer exists.
+   */
+  withModels?: boolean;
+}
+
+export async function removeProvider(key: string, options: RemoveProviderOptions = {}): Promise<ConfigEditResult> {
   const read = await readConfigFile();
   if (!read.ok) return read;
   const providers = providersAt(read.data);
@@ -877,23 +887,34 @@ export async function removeProvider(key: string): Promise<ConfigEditResult> {
   const blocking: string[] = [];
   if (llm["defaultProvider"] === key) blocking.push(`llm.defaultProvider`);
   const models = llm["models"];
-  if (Array.isArray(models)) {
-    for (const model of models) {
+  const entries: unknown[] = Array.isArray(models) ? models : [];
+  const declared: Record<string, unknown>[] = [];
+  if (entries.length > 0) {
+    for (const model of entries) {
       if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === key) {
-        const id = (model as Record<string, unknown>)["id"];
-        blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
+        declared.push(model as Record<string, unknown>);
       }
     }
   }
-  if (blocking.length > 0) {
+  for (const model of declared) {
+    const id = model["id"];
+    blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
+  }
+  if (blocking.length > 0 && options.withModels !== true) {
     return { ok: false, error: `Cannot remove ${key}: still referenced by ${blocking.join(", ")}` };
   }
 
+  if (options.withModels === true) {
+    if (declared.length > 0) {
+      llm["models"] = entries.filter((model) => !declared.includes(model as Record<string, unknown>));
+    }
+    if (llm["defaultProvider"] === key) delete llm["defaultProvider"];
+  }
   delete providers[key];
-  if (Object.keys(providers).length === 0) delete (objectAt(read.data, "llm"))["providers"];
+  if (Object.keys(providers).length === 0) delete llm["providers"];
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait provider ${key}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key });
+  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key, withModels: options.withModels === true });
   return { ok: true, previous: {} };
 }
 

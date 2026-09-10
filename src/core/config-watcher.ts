@@ -54,6 +54,12 @@ export interface ConfigReloadContext {
   reloadMemory?: (memory: MyClawConfig["memory"]) => void;
   /** Re-scan the skill layers: the workspace list is hot, so new keys take effect without a restart. */
   reloadSkills?: () => void;
+  /**
+   * Hand a freshly rebuilt provider/agent list to the app. A config file edited outside the app --
+   * by hand, or by another tool -- reloads the server but says nothing to the devices, which then
+   * render the list they were last handed until a screen asks again.
+   */
+  pushAgentsConfig?: () => void;
 }
 
 export interface ConfigWatcherOptions {
@@ -223,6 +229,7 @@ export function runReloadAppliers(
     } else if (ctx.modelPicker) {
       ctx.modelPicker.syncFromConfig(config.llm, config.tags);
     }
+    ctx.pushAgentsConfig?.();
   }
   if (changed.includes("webSearch")) ctx.registerWebSearch?.();
   // mcp is applied in place for live reads, but connections must be (re)opened/closed too.

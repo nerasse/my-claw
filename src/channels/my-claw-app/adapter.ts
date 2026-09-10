@@ -63,6 +63,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppHistoryAttachment,
   MyClawAppChatStop,
   MyClawAppClientFrame,
+  MyClawAppError,
   MyClawAppErrorScope,
   MyClawAppFileDelete,
   MyClawAppFilesList,
@@ -71,6 +72,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppDiagSnapshot,
   MyClawAppLogsTail,
   MyClawAppServerFrame,
+  MyClawAppAgentsConfigResult,
   MyClawAppStatusPayload,
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
@@ -691,6 +693,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * it through the path it already has. Never throws: a push that cannot reach a device must not
    * fail the auth change.
    */
+  /**
+   * Hands the provider list to every connected surface, whatever its owner: the list is global, the
+   * frame is the same for all of them, and only an authenticated socket is ever registered here.
+   * A config file edited outside the app (by hand, or by another tool) reloads the server but says
+   * nothing to the devices, which then keep rendering the list they were last handed.
+   */
+  pushAgentsConfig(frame: MyClawAppAgentsConfigResult): void {
+    try {
+      for (const ws of this.sockets.all()) this.sendFrame(ws, frame);
+    } catch (err) {
+      void myClawAppLog("debug", "agents config push failed", { error: String(err) });
+    }
+  }
+
   pushModelList(owner: string): void {
     if (!this.models) return;
     try {
@@ -2391,7 +2407,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     data: Record<string, unknown> = {},
   ): Promise<void> {
     await myClawAppLog("warn", `refused: ${message}`, { deviceId: ws.data.deviceId, scope, ...data });
-    this.sendFrame(ws, { type: "error", message, scope });
+    this.sendFrame(ws, refusalFrame(scope, message, data));
   }
 
   /**
@@ -2876,4 +2892,25 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private pairSocketCount(): number {
     return this.pairing.size;
   }
+}
+
+/**
+ * The frame a refusal sends.
+ *
+ * The cause travels with it. Logged only, it left every refused settings action reading
+ * "providers.remove failed" on screen: true, and actionable by nobody -- the config-edit refusal
+ * that names the models still pointing at a provider never reached the app. The "Error: " prefix
+ * is what `String(new Error(x))` adds, and it is noise in a sentence.
+ */
+export function refusalFrame(
+  scope: MyClawAppErrorScope,
+  message: string,
+  data: Record<string, unknown> = {},
+): MyClawAppError {
+  return {
+    type: "error",
+    message,
+    scope,
+    ...(typeof data.error === "string" ? { detail: data.error.replace(/^Error:\s*/, "") } : {}),
+  };
 }

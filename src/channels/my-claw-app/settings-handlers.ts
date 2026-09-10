@@ -397,7 +397,7 @@ export async function handleProviderRemove(
     return;
   }
   try {
-    d.broadcastFrame(ws.data.owner, await d.providers.remove(frame.key));
+    d.broadcastFrame(ws.data.owner, await d.providers.remove(frame.key, frame.withModels === true));
   } catch (err) {
     await d.refuse(ws, "providers", "providers.remove failed", { key: frame.key, error: String(err) });
   }

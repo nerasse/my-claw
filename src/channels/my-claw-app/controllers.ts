@@ -157,8 +157,12 @@ export interface MyClawAppTagsController {
 export interface MyClawAppProvidersController {
   /** Creates or edits one entry under llm.providers. */
   upsert(patch: MyClawAppProviderUpsert): Promise<MyClawAppAgentsConfigResult>;
-  /** Removes one entry; refused while anything still references it. */
-  remove(key: string): Promise<MyClawAppAgentsConfigResult>;
+  /**
+   * Removes one entry; refused while anything still references it, unless `withModels` says to
+   * drop the curated models declared under it (and the default-provider role, when it holds it)
+   * in the same write.
+   */
+  remove(key: string, withModels?: boolean): Promise<MyClawAppAgentsConfigResult>;
   /** Renames the entry key, rewriting references in the same file. */
   rename(from: string, to: string): Promise<MyClawAppAgentsConfigResult>;
   /** Writes one `NAME=value` line in .env. The one operation that carries a secret value. */

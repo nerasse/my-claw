@@ -61,7 +61,7 @@ left there. Rules:
 | frame | payload | answer |
 |---|---|---|
 | `providers.upsert` | key + fields above | `agents.config.result` |
-| `providers.remove` | key | `agents.config.result` |
+| `providers.remove` | key, `withModels?` | `agents.config.result` |
 | `providers.rename` | from, to | `agents.config.result` (rewrites `llm.models[].provider` and `llm.defaultProvider` in the same write) |
 | `providers.env.set` | name, value | `providers.env.result` -- the only frame that carries a secret value; it is never echoed or logged |
 | `providers.env.rename` | from, to | `providers.env.result` (repoints every provider that read the old name; a failed config write rolls the .env line back) |
@@ -74,12 +74,27 @@ that just gained a key (or just appeared) discovers its models now, not at the n
 ## Refusals
 
 - `remove` is refused while anything in the file still references the provider: `llm.defaultProvider`
-  or a curated `llm.models[].provider`. Discovered models are not in the file and leave with the
-  catalog; curated ones are the owner's declaration and are never dropped behind their back.
+  or a curated `llm.models[].provider`.
+- **`withModels: true` accepts the cascade** instead of being refused: the provider leaves, and so do
+  the curated models declared under it (and the default-provider role, when it holds it), in the same
+  write. The app's confirmation sheet offers this when it counts such a declaration, naming the ids.
+  The plain refusal stays for a caller that did not ask for it -- dropping an owner's declarations is
+  never something a provider removal does on its own.
+- Why the cascade exists at all: the refusal alone was a dead end. The app offers the delete, the
+  server always says no, and the only way out was hand-editing `config.json` -- measured on
+  `commandcode` (2026-09-09), which left a `llm.models` entry pointing at a provider that no longer
+  existed. Exactly the state the refusal is there to prevent, reached by obeying it.
 - `env.rename` onto an existing name is refused (`providers.env.set` is how you point a provider
   at a variable that already holds a value).
 - `anthropic` / `chatgpt` may be deleted, but `/claude set-token` and `/codex login` recreate
   their provider on the next auth change (`src/index.ts`, `ensureAuthProvider`): the app says so
   in the delete confirmation.
 - Errors ride the `error` frame with scope `providers`, and the refusing log line never carries
-  an env value.
+  an env value. **The cause travels with the frame** (`detail`), not only into the log: the message
+  names the operation that failed, which is not something a screen can act on.
+- A refused removal is rendered by the list the app lands on, not by the editor that asked for it:
+  the answer arrives after that screen is gone. `providersEnvStore` holds it, and `ProvidersScreen`
+  is what draws it.
+- A config file edited outside the app (by hand, or by another tool) pushes a fresh
+  `agents.config.result` to every connected socket. Without it the devices keep rendering the list
+  they were last handed, and a hand edit looks like it did not take.

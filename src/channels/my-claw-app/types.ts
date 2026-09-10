@@ -819,10 +819,15 @@ export interface MyClawAppProviderUpsert {
   fallbackModel?: string;
 }
 
-/** Removes a provider. Refused while anything still references it. */
+/**
+ * Removes a provider. Refused while anything still references it, unless `withModels` says to drop
+ * those references in the same write -- the curated models declared under it, and the
+ * default-provider role when it holds it.
+ */
 export interface MyClawAppProviderRemove {
   type: "providers.remove";
   key: string;
+  withModels?: boolean;
 }
 
 /** Renames the provider key, rewriting every reference in the same file in one write. */
@@ -1710,6 +1715,13 @@ export interface MyClawAppError {
   type: "error";
   message: string;
   scope: MyClawAppErrorScope;
+  /**
+   * What actually went wrong, when the handler has it. The message is the operation that failed
+   * ("providers.remove failed"), which is not an answer a screen can act on: it names nothing and
+   * nothing to fix. Screens prefer this when it is present, and it may carry the config-edit
+   * refusal verbatim (which models still reference the entry, for instance).
+   */
+  detail?: string;
 }
 
 /**

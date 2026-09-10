@@ -131,6 +131,39 @@ describe("removeProvider", () => {
   });
 });
 
+// The refusal was a dead end: the app offers the delete, the server always says no, and the only
+// way out was hand-editing the file -- which leaves the declarations behind, pointing at a
+// provider that no longer exists (measured on commandcode, 2026-09-09).
+describe("removeProvider with the declarations it blocks on", () => {
+  test("drops the curated models declared under it and keeps the others", async () => {
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, defaultProvider: "anthropic" } });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.providers.litellm).toBeUndefined();
+    expect(file.llm.providers.anthropic).toBeDefined();
+    expect(file.llm.models).toEqual([{ id: "opus", label: "Opus", provider: "anthropic" }]);
+  });
+
+  test("clears the default provider role in the same write", async () => {
+    await writeConfigFile();
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.defaultProvider).toBeUndefined();
+    expect(file.llm.models).toEqual([{ id: "opus", label: "Opus", provider: "anthropic" }]);
+  });
+
+  test("without the flag nothing moves, as before", async () => {
+    await writeConfigFile();
+    const result = await removeProvider("litellm");
+    expect(result.ok).toBe(false);
+    const file = await readConfigFile();
+    expect(file.llm.providers.litellm).toBeDefined();
+    expect(file.llm.models).toHaveLength(2);
+  });
+});
+
 describe("renameProvider", () => {
   test("renames the entry and every reference in the same write", async () => {
     await writeConfigFile();

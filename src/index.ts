@@ -777,6 +777,9 @@ async function main() {
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
   let myClawAppRef: MyClawAppAdapter | undefined;
+  // Filled by the app channel once its settings surface exists. The config watcher has to push the
+  // same provider list the settings frames answer with, and that builder lives inside the channel.
+  let pushAgentsConfig: (() => void) | undefined;
 
   // Boot-time alerts are addressed to a person, and the app names one through its paired devices.
   // Ambiguous (several owners) resolves to nothing rather than picking someone's conversation.
@@ -1294,6 +1297,7 @@ async function main() {
         ],
       };
     };
+    pushAgentsConfig = () => myClawApp.pushAgentsConfig(agentsConfigSnapshot());
     /**
      * Whether a name may receive config overrides: a reserved role, or an agent that has a file.
      * Accepting anything would let the app create an `agents.<typo>` section that nothing reads.
@@ -1564,8 +1568,8 @@ async function main() {
         if (!result.ok) throw new Error(result.error);
         return writeProvidersConfig(`provider ${patch.key}`);
       },
-      remove: async (key) => {
-        const result = await removeProvider(key);
+      remove: async (key, withModels) => {
+        const result = await removeProvider(key, { withModels: withModels === true });
         if (!result.ok) throw new Error(result.error);
         return writeProvidersConfig(`retrait provider ${key}`);
       },
@@ -2585,6 +2589,9 @@ async function main() {
       applyModelCatalog();
       void modelCatalog.refresh();
     },
+    // Deferred, and read at call time: the snapshot builder only exists once the channel has
+    // started, and the frame must describe the config the watcher has just landed.
+    pushAgentsConfig: () => queueMicrotask(() => pushAgentsConfig?.()),
     registerWebSearch,
     syncMcp: (mcp) => void mcpManager.sync(mcp),
     reloadCron: () => cronScheduler.restart(),
