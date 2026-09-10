@@ -1076,7 +1076,13 @@ async function main() {
       refresh: async () => {
         // Awaited, not fired and forgotten: the button exists to be told when the answer is in,
         // and the catalogue coalesces concurrent passes onto the one already running.
-        await modelCatalog.refresh();
+        // The same press refetches both metadata tables past their TTLs. Discovery alone left a
+        // new id with no window and no effort ladder whenever models.dev published it after the
+        // last table download (deepseek-flash, released between two fetches, sat at the global
+        // cap with no efforts until the 24h TTL rolled over) -- a manual refresh is exactly when
+        // fresh metadata is the point.
+        await Promise.all([modelCatalog.refresh(), pricing.refresh(), openRouterModels(true)]);
+        applyModelCatalog();
         // A provider that opts into discovery but has no complete answer on record kept its
         // previous models (docs/model-identity.md). Saying which ones is the whole point of a
         // manual refresh: silence would read as "nothing new", which is a different fact.

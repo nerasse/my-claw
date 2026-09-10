@@ -190,6 +190,25 @@ test("a suffix variant is its own row, not a synonym of the base id", async () =
   }
 });
 
+// The manual refresh button promises "everything, fresh now". The TTL is for the automatic
+// paths; a forced call is the one moment refetching inside it is the whole point.
+test("a forced call refetches inside the TTL, which still guards the plain path", async () => {
+  clearOpenRouterCache();
+  const counter = { calls: 0 };
+  const mock = modelsMock(counter);
+  try {
+    await openRouterModels();
+    await openRouterModels();
+    assert.equal(counter.calls, 1);
+    await openRouterModels(true);
+    assert.equal(counter.calls, 2);
+    await openRouterModels();
+    assert.equal(counter.calls, 2);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("the catalogue is fetched once, even for concurrent callers", async () => {
   clearOpenRouterCache();
   const counter = { calls: 0 };

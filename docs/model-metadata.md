@@ -157,6 +157,26 @@ fills only what is absent: `label` (the published name), `supportsEffort` and
 `supportedEffortLevels`, `vision` (from `modalities.input`), `limit.output`. Context windows keep
 the resolution they already have.
 
+### R8 — The manual refresh refetches both tables past their TTLs
+
+`model.refresh` (the app's button) used to refresh discovery only: the id list from each
+`discover` provider, re-merged, nothing else. The metadata that fills a discovered model's fiche
+(context window, label, vision, effort ladder) comes from two caches with their own TTLs --
+models.dev, 24 h on disk, and OpenRouter, 15 min in memory -- and neither was reachable from the
+button. A model published between two table downloads showed its id with no window and no ladder
+until the TTL rolled over, and pressing "refresh" said nothing was wrong: the count moved, the
+fiche did not.
+
+Measured on `deepseek-flash` (DeepSeek V4.1 Flash, released 2026-09-10 between the last table
+download and its publication): listed by discovery immediately, context pinned to the global cap
+(430 080) with no effort ladder, and every press of the button reproduced it, for as long as the
+24 h TTL held.
+
+The button now refetches both tables past their TTLs (`pricing.refresh()` is already an
+unconditional fetch; `openRouterModels(true)` skips the TTL check, keeping in-flight coalescing),
+then replays the projection. The automatic paths keep their TTLs: the forced fetch is a manual
+action, paid in one 3.3 MB download per press, and a human does not press it in a loop.
+
 ## Verification criteria
 
 1. `deepseek-v4-flash` on `opencode_go` offers exactly `low, high, max` — not the global six.
@@ -173,5 +193,7 @@ the resolution they already have.
    key order in `api.json`.
 9. A model whose label, vision or output limit is already set keeps it after enrichment.
 10. The effort step never shows two rows meaning "inherit".
-11. The vocabulary is checked against the live `models.dev` value space by a gated e2e test, so a
+11. A manual refresh refetches the models.dev and OpenRouter tables inside their TTLs; the plain
+    paths still serve from cache until they expire.
+12. The vocabulary is checked against the live `models.dev` value space by a gated e2e test, so a
     new level published upstream is a failing test rather than a silently dropped rung.

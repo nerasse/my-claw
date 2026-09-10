@@ -243,8 +243,8 @@ function toModel(raw: RawModel): OpenRouterModel | undefined {
  * whole. A failed fetch caches an empty map for the TTL rather than throwing: callers treat a miss
  * as "no evidence" and leave their own values untouched.
  */
-export async function openRouterModels(): Promise<Map<string, OpenRouterModel>> {
-  if (modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.value;
+export async function openRouterModels(force = false): Promise<Map<string, OpenRouterModel>> {
+  if (!force && modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.value;
   // Several callers can ask at once; one flight serves them all.
   if (modelsInFlight) return modelsInFlight;
   modelsInFlight = (async () => {
