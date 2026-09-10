@@ -181,7 +181,72 @@ test("a summary that hit the output ceiling is refused instead of stored", async
   assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
-test("the summarizer asks for a bounded answer rather than slicing what comes back", async () => {
+/**
+ * The reasoning shares `max_tokens` with the text on every reasoning model, so a model that thinks
+ * past the ceiling comes back with an empty `content` and `finish_reason: "length"` -- measured on
+ * opencode_go/deepseek-flash, 2026-09-10: 400 tokens of budget, 400 billed, zero characters out.
+ * Reporting that as "the model returned an empty summary" named the symptom and hid the cause: the
+ * owner read two different messages for one problem, on two sessions.
+ */
+test("an empty answer cut by the ceiling is reported as the ceiling, not as an empty model", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => answer("", { finish_reason: "length" }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /incomplete/);
+    assert.doesNotMatch(result.reason ?? "", /empty summary/);
+  } finally {
+    mock.restore();
+  }
+});
+
+/**
+ * `finish_reason: "length"` is the OpenAI spelling. Anthropic says "max_tokens", and it says it
+ * *with* text in hand and `incomplete: false`, so a truncated Opus summary passed the gate and was
+ * stored cut mid-sentence -- the failure the ceiling exists to refuse, on the model the owner
+ * compacts with most.
+ */
+test("a truncated Anthropic answer is refused on its own spelling of the ceiling", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => answer("Summary that ran out of room on Anthropic ".repeat(3), { finish_reason: "max_tokens" }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /incomplete/);
+  } finally {
+    mock.restore();
+  }
+  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+});
+
+test("an empty answer the model simply did not write keeps its own message", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => answer("", { finish_reason: "stop" }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /empty summary/);
+  } finally {
+    mock.restore();
+  }
+});
+
+/**
+ * The cap was the bug, not the protection: `max_tokens` is one budget for the thinking and the text
+ * on a reasoning model, so no value is right for both. Codex sends none at all and lets the server
+ * own the ceiling. What protects the conversation is the truncation gate, tested above.
+ *
+ * The old `content.slice(0, 8000)` is what the cap was introduced to replace, and it is not coming
+ * back: a summary is stored whole or refused, never cut to fit.
+ */
+test("the summarizer sends no output cap at all, and stores what the model finished writing", async () => {
   conversation(8);
   await log.flush();
 
@@ -189,7 +254,26 @@ test("the summarizer asks for a bounded answer rather than slicing what comes ba
   try {
     assert.equal((await compactSession(config(), sess)).ok, true);
     const body = JSON.parse(mock.bodies[0]!) as { max_tokens?: number };
-    assert.equal(body.max_tokens, 16_384, "capped at the summary ceiling, not at the model's 64k output limit");
+    assert.equal(body.max_tokens, undefined, "no ceiling asked for, so the thinking cannot spend the summary's room");
+  } finally {
+    mock.restore();
+  }
+});
+
+/**
+ * Dropping the cap must not drop the rest of the model's limit: `limit.context` is what the window
+ * resolution and the token accounting read, and a summary that quietly widened it would be a
+ * different bug in the same file.
+ */
+test("dropping the output cap keeps the rest of the model limit", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => answer("A summary long enough to be accepted by the length floor of the summarizer."));
+  try {
+    assert.equal((await compactSession(config(), sess)).ok, true);
+    const body = JSON.parse(mock.bodies[0]!) as { model?: string };
+    assert.equal(body.model, "test-model", "the session's own model still summarizes it");
   } finally {
     mock.restore();
   }

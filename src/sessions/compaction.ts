@@ -15,6 +15,7 @@ import { sessionLogOf } from "./log-access.ts";
 import { contextEntries } from "./projection.ts";
 import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry } from "./log.ts";
 import { estimateMessagesTokens } from "../llm/tokens.ts";
+import { cutByOutputCeiling } from "../llm/truncation.ts";
 import { messagesOf, promptOf } from "./projection.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import { firstSummaryPrompt, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
@@ -40,15 +41,22 @@ const MIN_MESSAGES_TO_COMPACT = 10;
 export const TAIL_BUDGET_TOKENS = DEFAULT_COMPACTION_TAIL_TOKENS;
 
 /**
- * Ceiling on the summary itself, and it is a real request parameter rather than a slice.
+ * Why the summary carries no output cap.
  *
- * The old code took `content.slice(0, 8000)` and stored whatever that left, so a summary that ran
- * long was persisted cut mid-sentence as the permanent floor of the conversation. Asking for a
- * bounded answer and refusing a truncated one is what pi and oh-my-pi both do (oh-my-pi caps at
- * this same 16384 after measuring that reasoning tokens ate a smaller budget before the summary
- * even started).
+ * It used to. Codex's summarizer sends no `max_output_tokens` at all and lets the server own the
+ * ceiling, and the cap we sent was the bug rather than the protection: `max_tokens` is one budget
+ * for two things on a reasoning model, the thinking and the text, so no single value is right for
+ * both. Measured on the session that would not compact (2026-09-10, opencode_go/deepseek-flash, a
+ * 33k-token prompt rebuilt from that conversation): with a 16384 cap the call billed 14945 tokens
+ * for a summary of about 7400 -- half the budget went to thinking, landing 9% under the cap. The
+ * attempt before it crossed the cap and returned an empty `content`, which the app reported as
+ * "the model returned an empty summary".
+ *
+ * Raising it only moves the line the thinking and the text fight over. Dropping it does not: the
+ * model stops when it has finished writing, which is what it did before the cap existed (2000 to
+ * 13000 tokens a summary across the month before). What protects the conversation is the gate, not
+ * the cap: a truncated answer is still refused, on all three dialects.
  */
-const MAX_SUMMARY_TOKENS = 16_384;
 
 /** Tool output kept per call in the summarization prompt. */
 const TOOL_OUTPUT_CHARS = 1200;
@@ -309,9 +317,13 @@ export async function summarizeForCompaction(
   const resolved = resolveUtilityLlmConfig(config.llm, runModel?.apiModel ?? runModel?.model ?? session.modelOverride);
   // `max_tokens` on the wire comes from `limit.output`, so bounding the answer is a matter of
   // handing the transport a narrower limit rather than a new parameter on every transport.
+  // `limit.output` is what the transport turns into `max_tokens`, so dropping it is how the summary
+  // goes uncapped. Anthropic requires the field: its transport falls back to the model's own
+  // declared ceiling, which is the same thing codex gets from leaving it out.
+  const { output: _uncapped, ...limit } = resolved.limit ?? {};
   const llmConfig = {
     ...resolved,
-    limit: { ...resolved.limit, output: Math.min(MAX_SUMMARY_TOKENS, resolved.limit?.output ?? MAX_SUMMARY_TOKENS) },
+    limit,
     // Maintenance on a conversation is still that conversation: the prompt it sends is that
     // conversation's own prefix, and a gateway routing on the session key refuses a call without
     // one -- docs/session-affinity.md.
@@ -351,14 +363,18 @@ export async function summarizeForCompaction(
     ...cacheAttributionOf(llmConfig),
   });
 
+  // Tested before the content, because the two are one event on a reasoning model: the reasoning
+  // shares `max_tokens` with the text, so a model that thinks past the ceiling comes back with an
+  // empty `content` and `finish_reason: "length"`. Calling that an empty summary named the symptom
+  // and hid the cause. A summary that hit the ceiling is not a shorter summary either, it is a
+  // summary missing its end -- and what it is missing is Next Steps, the section the next turn
+  // needs most.
+  if (response.incomplete || cutByOutputCeiling(response.finishReason)) {
+    return { ok: false, reason: "The summary hit the output ceiling and is incomplete." };
+  }
   const summary = response.content.trim();
   if (!summary) return { ok: false, reason: "The model returned an empty summary." };
   if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short." };
-  // A summary that hit the ceiling is not a shorter summary, it is a summary missing its end --
-  // and what it is missing is Next Steps, the section the next turn needs most.
-  if (response.incomplete || response.finishReason === "length") {
-    return { ok: false, reason: "The summary hit the output ceiling and is incomplete." };
-  }
   if (REFUSAL_PATTERNS.some((pattern) => pattern.test(summary))) {
     return { ok: false, reason: "The model refused to generate a summary." };
   }

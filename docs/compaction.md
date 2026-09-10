@@ -158,14 +158,69 @@ l'a dépassée, et reproduire mot pour mot une question restée sans réponse (u
 après « colle-moi la sortie de cette commande » faisait répondre le tour suivant à une question que
 personne ne voyait plus).
 
+### Ce que font les autres
+
+Comparé le 10/09/2026 dans les dépôts clonés (`codex` `0650d6d1`, `pi-mono` `e44d75c2`) :
+
+- **codex** (`codex-rs/core/src/compact.rs`) n'envoie **aucun** `max_output_tokens` pour le résumé :
+  le plafond est celui du serveur. Il ne peut donc pas stocker un résumé tronqué côté client, mais
+  ne détecte pas non plus un résumé vide-sans-erreur (`get_last_assistant_message_from_turn(...)
+  .unwrap_or_default()`). Sa seule borne numérique est côté entrée (`COMPACT_USER_MESSAGE_MAX_TOKENS
+  = 20 000`).
+- **pi** (`packages/coding-agent/src/core/compaction/compaction.ts`) demande
+  `min(floor(0.8 × reserveTokens), model.maxTokens)` = 13 107 par défaut, laisse le raisonnement au
+  niveau de la session, et **refuse** un `stopReason === "length"` sans rien persister
+  (`getSummarizationFailure`, test de régression `7048`). Il ne réserve de la place pour la réponse
+  (1024 tokens) que là où le fournisseur expose un budget de réflexion **séparé** (Anthropic).
+
+Conclusion : ni l'un ni l'autre ne résout le budget partagé ; codex l'évite en ne plafonnant pas, pi
+le détecte et refuse sans réessayer. On prend les deux moitiés : **aucun plafond** (comme codex) et
+**refus de tout résumé tronqué** (comme pi), avec le test du plafond qui passe avant celui du
+contenu.
+
 ### Ce qui est refusé plutôt que stocké
 
-- un résumé vide ou de moins de 50 caractères ;
+- un résumé vide ou de moins de 50 caractères, une fois écarté le cas du plafond ci-dessous ;
 - un refus du modèle (`REFUSAL_PATTERNS`, français et anglais) ;
-- **un résumé tronqué** (`incomplete` ou `finishReason === "length"`). C'était un `slice(0, 8000)`
-  silencieux : la phrase coupée devenait le plancher définitif de la conversation, et ce qui manquait
-  était Next Steps. Le plafond est maintenant demandé (`max_tokens` = 16 384, via `limit.output`) au
-  lieu d'être appliqué après coup.
+- **un résumé tronqué**, et ce test passe **avant** celui du contenu vide. `max_tokens` est un seul
+  budget pour deux choses sur un modèle qui raisonne : le raisonnement et le texte. Un modèle qui
+  réfléchit au-delà du plafond rend un `content` vide avec `finish_reason: "length"` ; l'annoncer
+  comme « le modèle a rendu un résumé vide » nommait le symptôme et cachait la cause. Mesuré le
+  10/09/2026 sur `opencode_go/deepseek-flash` : `max_tokens=400` → 400 tokens facturés, 0 caractère.
+- les trois orthographes du plafond sont reconnues (`src/llm/truncation.ts`) : `length`
+  (OpenAI-compatible), `max_tokens` (Anthropic Messages) et `incomplete` (Codex Responses). Tester
+  `=== "length"` seul était le dialecte OpenAI, et une réponse Anthropic tronquée arrive **avec** du
+  texte et `incomplete: false` : elle passait le garde et était stockée coupée.
+- Ce garde existait déjà sous une autre forme : c'était un `slice(0, 8000)` silencieux, dont la
+  phrase coupée devenait le plancher définitif de la conversation, et ce qui manquait était Next
+  Steps.
+
+### Le budget de sortie : aucun
+
+Le résumé ne porte **aucun plafond de sortie**. C'est le comportement de codex, dont le résumé
+n'envoie pas de `max_output_tokens` du tout : le plafond est celui du serveur.
+
+Le plafond a existé ici, et **c'était le bug**, pas la protection. `max_tokens` est un seul budget
+pour deux choses sur un modèle qui raisonne, le raisonnement et le texte, donc aucune valeur n'est
+juste pour les deux. Mesure sur la session qui refusait de compacter (10/09/2026,
+`opencode_go/deepseek-flash`, prompt de 33k reconstruit depuis cette conversation) : avec un plafond
+de 16 384, l'appel a facturé **14 945 tokens pour un résumé d'environ 7 400**, la moitié du budget
+partie en raisonnement, soit 9 % sous le plafond. La tentative précédente l'a franchi et a rendu un
+`content` vide, annoncé comme « le modèle a rendu un résumé vide ».
+
+Le monter ne fait que déplacer la ligne que le raisonnement et le texte se disputent. Le retirer
+non : le modèle s'arrête quand il a fini d'écrire, ce qu'il faisait déjà avant que le plafond
+existe (2 000 à 13 000 tokens par résumé sur le mois précédent). **Ce qui protège la conversation
+est le garde, pas le plafond** : une réponse tronquée est toujours refusée, sur les trois
+dialectes. Et le `content.slice(0, 8000)` que le plafond remplaçait ne revient pas : un résumé est
+stocké entier ou refusé, jamais coupé pour rentrer.
+
+Anthropic exige le champ : son transport retombe sur la limite déclarée du modèle quand `limit.output`
+est absent, ce qui donne le même résultat. `limit.context` est conservé.
+
+L'effort n'est pas le levier non plus : `reasoning_effort` n'est pas transmis pour cet appel (le
+résolveur l'applique au modèle déclaré, et rien ne le demande ici), et le forcer ne change pas le
+volume de raisonnement mesuré.
 
 ### L'ancrage, calculé par du code
 
