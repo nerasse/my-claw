@@ -89,9 +89,12 @@ La FlatList porte des **rows**, pas des items bruts :
 - **hoistés** (toujours des rows, le groupe se découpe autour) : les messages `user`
   (réponses aux questions, injections), les résultats de commandes, les notices, les
   bornes de compaction ;
-- la **réponse** du run (sa dernière phase) sort du groupe : c'est elle que le lecteur
-  doit lire, le reste est replié ;
-- un run dont le dernier item est un tool (mort sans répondre) garde tout dans le
+- la **réponse** du run (la dernière prose que l'agent a écrite) sort du groupe : c'est elle que
+  le lecteur doit lire, le reste est replié. Trouvée par **nature**, pas par position : une carte
+  restée `running` quand le run s'est terminé est recollée après elle par le store (2026-09-10), et
+  « le dernier item » lisait alors cette carte comme la réponse, la vraie restant dans le groupe
+  sous un en-tête descendu plus bas qu'elle ;
+- un run dont les entrées sont **toutes** des cartes n'a jamais répondu : tout reste dans le
   groupe, et la bulle d'erreur (`failure`, hors run par construction) reste visible ;
 - un groupe ne s'affiche que s'il contient au moins un item : une réponse seule ne
   produit jamais un header vide.
