@@ -167,9 +167,11 @@ test("a run that fills the window mid-flight is compacted, not trimmed", async (
   assert.ok(hasCompaction, "compaction entry present in context");
 });
 
-// The mark exists because nothing travels for a minute or two while the summarizer runs, in the
-// middle of an answer the owner is already watching.
-test("the bubble is marked while a mid-run compaction runs", async () => {
+// A mid-run compaction must not mark the send. The mark says "this message is waiting for its run",
+// and here the run is already going: nothing would ever lift it, and a run that only called tools
+// left the bubble wearing it for hours. The operation is visible through `chat.compacting`, which
+// outlives a reload. Observed on the owner's thread, 2026-09-11.
+test("a mid-run compaction does not mark the send as queued", async () => {
   const queued: string[] = [];
   const onQueued = ({ reason }: { reason: string }): void => {
     queued.push(reason);
@@ -177,10 +179,31 @@ test("the bubble is marked while a mid-run compaction runs", async () => {
   hooks.on("message:queued", onQueued);
   try {
     await run({ summary: SUMMARY });
-    assert.ok(queued.length >= 1);
-    assert.ok(queued.every((reason) => reason === "compaction"));
+    assert.equal(queued.length, 0);
   } finally {
     hooks.off("message:queued", onQueued);
+  }
+});
+
+// It still has to be visible: the hook is gone, the compaction is not silent.
+test("a mid-run compaction still announces itself while it runs", async () => {
+  const starts: string[] = [];
+  const settled: string[] = [];
+  const onStart = ({ sessionId }: { sessionId: string }): void => {
+    starts.push(sessionId);
+  };
+  const onSettled = ({ sessionId }: { sessionId: string }): void => {
+    settled.push(sessionId);
+  };
+  hooks.on("session:compact:start", onStart);
+  hooks.on("session:compact:settled", onSettled);
+  try {
+    await run({ summary: SUMMARY });
+    assert.ok(starts.length >= 1, "the compaction announced its start");
+    assert.equal(starts.length, settled.length, "every start is paired with a settled");
+  } finally {
+    hooks.off("session:compact:start", onStart);
+    hooks.off("session:compact:settled", onSettled);
   }
 });
 

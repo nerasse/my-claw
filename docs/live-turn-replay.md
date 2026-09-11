@@ -70,6 +70,22 @@ line of that run, and it is acked at that moment, `chat.send.acked`, since a com
 send has no turn boundary to be drained through). Held beside the compaction rather than inside a
 journal, because a compaction-parked send exists with no run open at all.
 
+The hold exists for every mark, not only the ones whose bubble the adapter still has in hand. It
+used to be recorded only when `recentSends` (an LRU of 64) could still name the bubble, and the
+`chat.send.queued` frame went out either way: a send whose bubble had aged out was marked on the
+device and had nothing for `chat.send.acked` to fire on, so it wore "waiting for the compaction"
+until the run ended, and every reconnect was replayed the mark again (2026-09-11). The bubble only
+enriches the replay; it is not what makes the mark liftable.
+
+A mid-run compaction does **not** mark anything. The hook marks a send waiting for a run to become
+possible, and a run parked mid-answer has no such send: its bubble is the one already being
+answered, no `message:route:start` will ever come for it, and the mark could only be lifted by the
+end of a run that had nothing to do with it. A run that called tools without ever writing produced
+no clear signal at all, and the owner's bubble wore the badge for 1 h 31 while its run was well
+underway. The operation is announced by `session:compact:start` / `chat.compacting`, which every
+path emits, which the journal replays, and which the app draws as the live compaction rule -- not
+by a mark on a send that is not queued.
+
 ## It holds only what the store cannot know yet
 
 A journal is not a copy of the run. A bubble that closes and a tool that settles are dropped from

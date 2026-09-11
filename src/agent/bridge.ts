@@ -375,7 +375,7 @@ export class AgentBridge implements AgentBackend {
       // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
       // the profile that fills a window, and it used to have nothing but the hard trim.
       if (autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(message, session, llmConfig, agentToolType, entries, signal);
+        await this.maybeAutoCompact(session, llmConfig, agentToolType, entries, signal);
       }
 
       // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
@@ -518,7 +518,7 @@ export class AgentBridge implements AgentBackend {
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
         const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;
         if (autoCompactEnabled(this.config) && currentEntryCount >= midRunCompactRetryAt) {
-          const outcome = await this.compactMidRun(message, session, llmConfig, agentToolType, iteration, entries, signal);
+          const outcome = await this.compactMidRun(session, llmConfig, agentToolType, iteration, entries, signal);
           if (outcome === "compacted") {
             await rebuildPrompt();
           } else if (outcome === "skipped") {
@@ -557,7 +557,7 @@ export class AgentBridge implements AgentBackend {
             iteration,
             ...why,
           });
-          const outcome = await this.runCompaction(message, session, signal, { sessionId: session.id, iteration, reason: "overflow" });
+          const outcome = await this.runCompaction(session, signal, { sessionId: session.id, iteration, reason: "overflow" });
           if (outcome !== "compacted") return false;
           await rebuildPrompt();
           // Correction, not work: the iteration is given back so a run cannot spend its budget on
@@ -1337,14 +1337,18 @@ export class AgentBridge implements AgentBackend {
    * and falls through to the blocking pass.
    */
   private async runCompaction(
-    message: UnifiedMessage,
     session: SessionData,
     signal: AbortSignal | undefined,
     logData: Record<string, unknown>,
   ): Promise<"skipped" | "compacted"> {
-    // A minute or two with nothing on the wire: the same mark a send held behind a `/compact`
-    // gets, lifted by the stream that follows it.
-    hooks.emit("message:queued", { message, sessionId: session.id, reason: "compaction" });
+    // No `message:queued` here, deliberately. The hook marks a send that is waiting for a run to
+    // become possible, and it is lifted when that run starts. A mid-run compaction has no such
+    // send: the run is already going, its bubble is the one already being answered, and nothing
+    // will ever lift the mark -- so the bubble wore "waiting for the compaction" for hours while a
+    // run that only called tools produced no signal to clear it, and the journal replayed the mark
+    // on every reconnect. The operation is already visible through `session:compact:start`
+    // (`chat.compacting`), which every path emits and which outlives a reload. Observed on the
+    // owner's thread, 2026-09-11.
     try {
       const claimed = await claimSpeculation(this.config, session);
       if (claimed?.ok) {
@@ -1397,12 +1401,12 @@ export class AgentBridge implements AgentBackend {
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(message: UnifiedMessage, session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }, signal?: AbortSignal): Promise<void> {
+  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }, signal?: AbortSignal): Promise<void> {
     const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return;
 
     void log("info", "auto-compaction triggered", gate.data);
-    await this.runCompaction(message, session, signal, { sessionId: session.id });
+    await this.runCompaction(session, signal, { sessionId: session.id });
   }
 
   /**
@@ -1420,7 +1424,6 @@ export class AgentBridge implements AgentBackend {
    * backing off from.
    */
   private async compactMidRun(
-    message: UnifiedMessage,
     session: SessionData,
     llmConfig: ResolvedLlmConfig,
     agent: AgentToolType,
@@ -1432,7 +1435,7 @@ export class AgentBridge implements AgentBackend {
     if (!gate.over) return "under";
 
     void log("info", "auto-compaction triggered mid-run", { ...gate.data, iteration });
-    return await this.runCompaction(message, session, signal, { sessionId: session.id, iteration });
+    return await this.runCompaction(session, signal, { sessionId: session.id, iteration });
   }
 
   /**
