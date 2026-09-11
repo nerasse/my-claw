@@ -276,9 +276,16 @@ export async function openRouterModel(apiId: string): Promise<OpenRouterModel | 
 /**
  * The catalogue as it stands in memory, never reaching the network. Same rule as the endpoint
  * accessors: pricing and window resolution sit on synchronous hot paths and cannot await.
+ *
+ * Age is not absence. This used to answer `undefined` the moment the TTL elapsed, which turned
+ * every OpenRouter model into an undescribed one until something happened to refetch: it fell back
+ * to models.dev (which does not carry the batch variants at all) and it was eligible for the alias
+ * rung, so it could come back wearing a neighbour's name. `openRouterModels()` owns the TTL, and
+ * it is the one that decides to refetch; the reader answers with the last catalogue it was given.
+ * The models.dev table has always worked this way with its 24-hour copy on disk.
  */
 export function cachedOpenRouterModels(): Map<string, OpenRouterModel> | undefined {
-  if (!modelsCache || Date.now() - modelsCache.at >= MODELS_TTL_MS) return undefined;
+  if (!modelsCache) return undefined;
   return modelsCache.value;
 }
 

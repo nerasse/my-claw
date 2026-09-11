@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test, setSystemTime } from "bun:test";
 import assert from "node:assert/strict";
 import {
   openRouterEndpoints,
@@ -264,6 +264,41 @@ test("the cached reader never fetches and is empty until the catalogue is loaded
     assert.equal(cachedOpenRouterModels(), undefined);
     assert.equal(calls, 1);
   } finally {
+    mock.restore();
+  }
+});
+
+/**
+ * The cache has a TTL and the reader must survive it -- measured live on 2026-09-11.
+ *
+ * `cachedOpenRouterModels()` used to answer `undefined` the moment the 15-minute TTL elapsed, so an
+ * OpenRouter model stopped being described by the catalogue that knows it and fell through to
+ * models.dev, which carries none of the batch variants. That is also the state in which the alias
+ * rung went looking for a neighbour: a model with no metadata had one, borrowed, and wore a
+ * stranger's name until the next refresh.
+ *
+ * The TTL belongs to `openRouterModels()` -- it is what decides to refetch. The synchronous reader
+ * answers with the last catalogue it was given, which is what the models.dev table already does
+ * with its 24-hour disk copy.
+ */
+test("the cached catalogue survives its TTL, so an aged cache never turns a model into an unknown", async () => {
+  clearOpenRouterCache();
+  const counter = { calls: 0 };
+  const mock = modelsMock(counter);
+  try {
+    await openRouterModels();
+    assert.equal(counter.calls, 1);
+    assert.equal(cachedOpenRouterModel("deepseek/deepseek-v4-flash")?.contextLength, 786432);
+
+    setSystemTime(new Date(Date.now() + 20 * 60 * 1000));
+    assert.equal(cachedOpenRouterModels()?.size, 2);
+    assert.equal(cachedOpenRouterModel("deepseek/deepseek-v4-flash")?.name, "DeepSeek: DeepSeek V4 Flash");
+
+    // The plain path still refreshes once the TTL has elapsed: the cache is not frozen, it is read.
+    await openRouterModels();
+    assert.equal(counter.calls, 2);
+  } finally {
+    setSystemTime();
     mock.restore();
   }
 });

@@ -204,6 +204,39 @@ Two bounds hold it in place, and both are tested:
   a table. Price reads the same rung, and returns a reference tariff (`billed: false`): the gateway
   bills what it bills, and this is not its table.
 
+### R10 — An id a provider publishes is never an alias
+
+`resolveAlias` answers the ids no table carries: `opus`, a short form the vendor resolves
+server-side. It recognises kinship by a token the alias shares with a concrete sibling in the same
+group, and two holes in that test let an unrelated model answer for one:
+
+- **A digit is not a name.** `anthropic/claude-fable-5.1:batch` shares the token `1` with
+  `thedrummer/cydonia-24b-v4.1`, so the batch variant of a Claude model came back labelled
+  *Cydonia 24B V4.1*, carrying its 131 072 window and its `vision: false`. Measured 2026-09-11. The
+  version key that picks between siblings makes it worse: `[24, 4, 1]` outranks `[5, 1]`.
+- **A catalogue variant is an id, not a short form.** `:batch`, `:free` and `:nitro` are rows a
+  provider publishes with their own price. Even a genuine name token in common (`claude` with
+  `anthropic/claude-sonnet-5`) says nothing: the variant is not a nickname for anything.
+
+Both are refused now, and the guard is load-bearing in the direction that matters: a model with no
+metadata of its own stays undescribed rather than borrowing. What still resolves is what the rung
+exists for -- a short form the owner declared, filed in the same group as the concrete versions it
+stands for, and carrying at least one of their name tokens.
+
+### R11 — An aged cache is not an absent one
+
+The in-memory OpenRouter catalogue answered `undefined` as soon as its 15-minute TTL elapsed. Every
+OpenRouter model then lost the table that knows it -- models.dev does not carry the batch variants
+at all -- and fell into the state R10 describes: undescribed, and eligible for the alias rung.
+The name changed from one projection to the next as the cache aged, which read as a haunted model
+rather than a lookup going wrong: `Cydonia 24B V4.1`, then the raw id, then back.
+
+The TTL belongs to `openRouterModels()`, which is what decides to refetch (boot, the six-hour
+timer, the manual refresh). The synchronous reader answers with the last catalogue it was given,
+which is already how the models.dev table behaves with its 24-hour copy on disk. A fetch that
+failed still leaves an empty catalogue, and every caller reads that as "no evidence" exactly as
+before.
+
 ## Verification criteria
 
 1. `deepseek-v4-flash` on `opencode_go` offers exactly `low, high, max` — not the global six.
@@ -229,3 +262,7 @@ Two bounds hold it in place, and both are tested:
     vision, and `0.15/0.60` rather than the cross-market median.
 14. That rung never outranks a table that carries the id, and an unknown host still resolves
     nothing.
+15. A catalogue variant (`:batch`) inherits nothing from a sibling it happens to share a version
+    digit with, and keeps its own catalogue row when one is loaded.
+16. A short form the owner declared still resolves to its family, and an aged OpenRouter cache
+    still describes its models.

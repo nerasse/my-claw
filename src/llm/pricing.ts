@@ -136,6 +136,21 @@ const ENGINE_PROVIDER: Record<string, string> = {
 const VARIANT_SUFFIX = /-(?:uncensored|heretic|instant|mtp|abliterated|thinking|gguf|awq|fp8|fp16|int4|int8|q\d+(?:_k)?(?:_[msl])?)/gi;
 
 /**
+ * An id a provider publishes verbatim: `:batch`, `:free`, `:nitro`. It has its own catalogue row
+ * and its own price, so it is never a short form for something else -- and its version digits are
+ * shared with unrelated models, which is how it inherited their name (docs/model-metadata.md R10).
+ */
+const CATALOG_VARIANT = /:[a-z0-9._-]+$/i;
+
+/**
+ * Whether a token of an id names anything. A digit is not a family name, and matching on one is
+ * how `anthropic/claude-fable-5.1:batch` resolved to `thedrummer/cydonia-24b-v4.1`.
+ */
+function isNamedToken(token: string): boolean {
+  return /[a-z]/.test(token);
+}
+
+/**
  * The same version is written four ways across models.dev -- `4-8`, `4.8`, `4p8`, `48` -- where
  * `p` stands for the decimal point (`glm-5p2`, `kimi-k2p6`). Collapsing any separator between two
  * digits makes them converge. Measured across the 2 776 priced ids: 106 merges, every one a
@@ -281,16 +296,21 @@ export class ModelPricing {
    * `mistral-small-2603` beats `glm-5.3` on `[2603] > [5, 3]` -- and wears its name and price.
    */
   private resolveAlias(model: string): string | undefined {
+    if (CATALOG_VARIANT.test(model)) return undefined;
     const models = this.catalogModels();
     // A price is looked up under the id the provider bills, never under the qualified reference
     // the catalogue addresses the model by (docs/model-identity.md).
     const wireId = (m: { id: string; apiId?: string }): string => m.apiId ?? m.id;
     const self = models.find((m) => wireId(m) === model);
     if (!self || !self.group || self.limit?.context) return undefined;
-    // Name tokens of the alias (`opus` -> {opus}, `ox-alpha` -> {ox, alpha}). One shared token
-    // is kinship enough: the alias is a short form of the family, never an unrelated name.
-    const tokensOf = (id: string): Set<string> => new Set(id.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+    // Name tokens of the alias (`opus` -> {opus}, `ox-alpha` -> {ox, alpha}), digits excluded: one
+    // named token in common is kinship enough, because the alias is a short form of the family's
+    // name. A shared version number is not kinship -- every `-5` or `-1` in the catalogue would
+    // otherwise answer for a model that simply has no metadata of its own.
+    const tokensOf = (id: string): Set<string> =>
+      new Set(id.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 0 && isNamedToken(token)));
     const selfTokens = tokensOf(model);
+    if (selfTokens.size === 0) return undefined;
     const siblings = models.filter(
       (m) =>
         m.group === self.group &&

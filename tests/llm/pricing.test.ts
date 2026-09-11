@@ -63,6 +63,7 @@ function withTable(): ModelPricing {
 }
 
 const base = { promptTokens: 1_000_000, completionTokens: 0 };
+const OPENROUTER_URL = "https://openrouter.ai/api/v1";
 
 test("the engine names the vendor, and a subscription is never reported as a charge", () => {
   const p = withTable();
@@ -528,4 +529,107 @@ test("a cost recorded with the call outranks every rung, table moved or not", ()
   assert.equal(pricing.costOf({ ...usage, pinned })?.usd, 12.5);
   // A proxy's total is the same kind of evidence and keeps its own rung when nothing is pinned.
   assert.equal(pricing.costOf({ ...usage, proxyCostUsd: 3 })?.source, "proxy");
+});
+
+/**
+ * The alias rung and the catalogue ids it must never speak for -- measured live on 2026-09-11.
+ *
+ * `anthropic/claude-fable-5.1:batch` came back labelled `Cydonia 24B V4.1`, carrying its 131 072
+ * window and its `vision: false`. Nothing in `modelKeyCandidates` finds that id, so the alias rung
+ * ran, and the only kinship it saw with `thedrummer/cydonia-24b-v4.1` was the digit `1`. The model
+ * changed name from one projection to the next as the OpenRouter cache aged, which is what made it
+ * read as a haunted model rather than a lookup going wrong.
+ */
+function withOpenRouterTable(): ModelPricing {
+  mkdirSync(MY_CLAW_DIR, { recursive: true });
+  writeFileSync(
+    join(MY_CLAW_DIR, "model-pricing.json"),
+    JSON.stringify({
+      version: CACHE_VERSION,
+      fetchedAt: new Date().toISOString(),
+      hosts: { openrouter: "https://openrouter.ai/api/v1" },
+      models: {
+        openrouter: {
+          "anthropic/claude-fable-5.1": {
+            cost: { input: 10, output: 50 },
+            id: "anthropic/claude-fable-5.1",
+            name: "Claude Fable 5.1",
+            context: 1_000_000,
+          },
+          "anthropic/claude-fable-5": {
+            cost: { input: 10, output: 50 },
+            id: "anthropic/claude-fable-5",
+            name: "Claude Fable 5",
+            context: 1_000_000,
+          },
+          "anthropic/claude-sonnet-5": {
+            cost: { input: 3, output: 15 },
+            id: "anthropic/claude-sonnet-5",
+            name: "Claude Sonnet 5",
+            context: 1_000_000,
+          },
+          "thedrummer/cydonia-24b-v4.1": {
+            cost: { input: 0.3, output: 0.6 },
+            id: "thedrummer/cydonia-24b-v4.1",
+            name: "Cydonia 24B V4.1",
+            context: 131_072,
+          },
+          "openai/gpt-5.6-luna-pro": {
+            cost: { input: 0.2, output: 1.2 },
+            id: "openai/gpt-5.6-luna-pro",
+            name: "GPT-5.6 Luna Pro",
+            context: 1_050_000,
+          },
+        },
+      },
+    }),
+  );
+  return new ModelPricing(
+    () => ({ openrouter: { baseUrl: OPENROUTER_URL } }),
+    () => [
+      // The catalogue as the projection leaves it: the batch variants have no window, and their
+      // neighbours all do. That asymmetry is what arms the alias rung.
+      { id: "openrouter/anthropic/claude-fable-5.1:batch", apiId: "anthropic/claude-fable-5.1:batch", provider: "openrouter", group: "openrouter" },
+      { id: "openrouter/anthropic/claude-fable-5:batch", apiId: "anthropic/claude-fable-5:batch", provider: "openrouter", group: "openrouter" },
+      { id: "openrouter/anthropic/claude-fable-5.1", apiId: "anthropic/claude-fable-5.1", provider: "openrouter", group: "openrouter", limit: { context: 1_000_000 } },
+      { id: "openrouter/thedrummer/cydonia-24b-v4.1", apiId: "thedrummer/cydonia-24b-v4.1", provider: "openrouter", group: "openrouter", limit: { context: 131_072 } },
+      { id: "openrouter/openai/gpt-5.6-luna-pro", apiId: "openai/gpt-5.6-luna-pro", provider: "openrouter", group: "openrouter", limit: { context: 1_050_000 } },
+      // A short form the owner declared, in the same group: this one is meant to resolve.
+      { id: "claude-fable", group: "openrouter" },
+      // No `:`, so the variant rule does not speak for it -- the digit rule has to hold alone.
+      { id: "stealth/ox-5", apiId: "stealth/ox-5", provider: "openrouter", group: "openrouter" },
+    ],
+  );
+}
+
+test("a catalogue variant does not inherit a neighbour's name through a shared digit", () => {
+  const p = withOpenRouterTable();
+  expect(p.metadataOf("anthropic/claude-fable-5.1:batch", OPENROUTER_URL)).toBeUndefined();
+  expect(p.metadataOf("anthropic/claude-fable-5:batch", OPENROUTER_URL)).toBeUndefined();
+  // The window rides the same rung: no window is honest, another model's is a lie the compaction
+  // gate and the header both read.
+  expect(p.contextWindowOf("anthropic/claude-fable-5.1:batch", OPENROUTER_URL)).toBeUndefined();
+});
+
+test("a variant is not a short form even when a real name token is shared", () => {
+  // `anthropic/claude-fable-5.1:batch` shares `claude` with `anthropic/claude-sonnet-5`: a genuine
+  // token, and still not kinship. `:batch` is an id a provider publishes, never an alias.
+  const p = withOpenRouterTable();
+  expect(p.metadataOf("anthropic/claude-fable-5.1:batch", OPENROUTER_URL)).toBeUndefined();
+  expect(p.costOf({ ...base, model: "anthropic/claude-fable-5.1:batch", baseUrl: OPENROUTER_URL })).toBeUndefined();
+});
+
+test("a version number alone is not kinship either", () => {
+  // The variant rule needs a `:`; this id has none, and its only token shared with
+  // `openai/gpt-5.6-luna-pro` is the numeral `5`. Matching on that named half the catalogue.
+  const p = withOpenRouterTable();
+  expect(p.metadataOf("stealth/ox-5", OPENROUTER_URL)).toBeUndefined();
+  expect(p.contextWindowOf("stealth/ox-5", OPENROUTER_URL)).toBeUndefined();
+  expect(p.costOf({ ...base, model: "stealth/ox-5", baseUrl: OPENROUTER_URL })).toBeUndefined();
+});
+
+test("a genuine short form still resolves to its family", () => {
+  const p = withOpenRouterTable();
+  expect(p.metadataOf("claude-fable", OPENROUTER_URL)?.label).toBe("Claude Fable 5.1");
+  expect(p.contextWindowOf("claude-fable", OPENROUTER_URL)?.tokens).toBe(1_000_000);
 });

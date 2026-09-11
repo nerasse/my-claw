@@ -1,4 +1,4 @@
-import { test } from "bun:test";
+import { test, setSystemTime } from "bun:test";
 import assert from "node:assert/strict";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "../../src/llm/catalog.ts";
 import { openRouterModels, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
@@ -443,6 +443,45 @@ test("an OpenRouter model's exact metadata fills gaps before models.dev, includi
     assert.equal(enriched?.vision, true);
     assert.deepEqual(enriched?.supportedEffortLevels, ["none", "low", "high"]);
   } finally {
+    mock.restore();
+    clearOpenRouterCache();
+  }
+});
+
+/**
+ * Measured on the owner's config, 2026-09-11: the same two steps, run twice with time passing
+ * between them, produced two different answers for one model. The in-memory catalogue expired, the
+ * models.dev table did not know the batch variants, and the model came back labelled with its raw
+ * id -- the state in which the alias rung could hand it a stranger's name.
+ *
+ * The pair of steps is the point: windows run before metadata, and what the first one wrote is what
+ * the second one reads. A test of either alone would have been green through all of it.
+ */
+test("an aged OpenRouter catalogue still describes its models, so a projection never renames them", async () => {
+  clearOpenRouterCache();
+  const mock = mockFetch(async () => new Response(JSON.stringify({ data: [
+    { id: "vendor/model:batch", name: "OpenRouter Model (batch)", context_length: 999_999, pricing: {}, top_provider: {} },
+    { id: "vendor/other", name: "OpenRouter Other", context_length: 444_444, pricing: {}, top_provider: {} },
+  ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+  try {
+    await openRouterModels();
+    const providers = { openrouter: { baseUrl: "https://gateway.openrouter.ai/api/v1" } };
+    const source: LlmModelConfig[] = [
+      { id: "vendor/model:batch", apiId: "vendor/model:batch", label: "vendor/model:batch", provider: "openrouter" },
+      { id: "vendor/other", apiId: "vendor/other", label: "vendor/other", provider: "openrouter" },
+    ];
+    const table = { contextWindowOf: () => undefined, metadataOf: () => undefined };
+    const project = () => applyModelMetadata(applyModelWindows(source, providers, table), providers, table);
+
+    assert.deepEqual(project().map((m) => m.label), ["OpenRouter Model (batch)", "OpenRouter Other"]);
+
+    // The TTL elapses and something replays the projection: the reader must not have gone blind.
+    setSystemTime(new Date(Date.now() + 20 * 60 * 1000));
+    const aged = project();
+    assert.deepEqual(aged.map((m) => m.label), ["OpenRouter Model (batch)", "OpenRouter Other"]);
+    assert.deepEqual(aged.map((m) => m.limit?.context), [999_999, 444_444]);
+  } finally {
+    setSystemTime();
     mock.restore();
     clearOpenRouterCache();
   }
