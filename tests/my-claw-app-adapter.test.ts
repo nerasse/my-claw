@@ -930,6 +930,32 @@ describe("MyClawAppAdapter", () => {
     reloaded.ws.close();
   });
 
+  /**
+   * The mark must be liftable even when the journal has no bubble for it.
+   *
+   * Observed worse than theoretical on 2026-09-11: a run whose compaction held the send marked the
+   * bubble, and `recentSends` no longer held it, so `holdQueued` was skipped and the run's ack had
+   * nothing to fire on. The device kept "waiting for the compaction" until the run ended, and the
+   * journal replayed the mark on every reconnect.
+   */
+  test("a send marked with no bubble in the cache is still acked by the run it opens", async () => {
+    // No `chat.send` first: nothing was ever echoed into `recentSends` for this id.
+    adapter.notifyQueued(DEVICE_ID, "default", "m-cold", "compaction");
+    assert.equal((await nextFrame(client)).type, "chat.send.queued");
+
+    adapter.notifyRun(DEVICE_ID, "default", true, undefined, "m-cold");
+    const acked = await nextFrame(client);
+    assert.equal(acked.type, "chat.send.acked");
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+
+    // And the mark is gone from the journal: a reload is not handed it again.
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(reloaded, 300));
+    reloaded.ws.close();
+  });
+
   test("the replayed bubble arrives whole, so a window that was already watching does not paint it twice", async () => {
     // The window asking for a sync is usually the one that was watching a second ago: a blip, a
     // thread switched away from and back, a refresh. It still holds the bubble, and the client

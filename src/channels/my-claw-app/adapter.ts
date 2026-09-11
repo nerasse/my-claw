@@ -863,11 +863,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
   notifyQueued(owner: string, threadId: string, replyToId: string, reason: "compaction" | "injection"): void {
     const queued: MyClawAppServerFrame = { type: "chat.send.queued", threadId, replyToId, reason };
     this.broadcast(owner, queued);
-    // Until a run consumes it, the message exists nowhere a reload could read it back from: the
-    // journal replays the bubble and its mark to a window that opens or reloads meanwhile --
-    // docs/live-turn-replay.md.
+    // Held even when the bubble has aged out of `recentSends` (an LRU of 64): the mark is what the
+    // run's ack lifts, and a send whose bubble the cache no longer holds would be marked on the
+    // device and never acked -- wearing "queued" for the whole run, and replayed on every reload.
+    // The bubble only enriches the replay; it is not what makes the mark liftable.
     const bubble = this.recentSends.get(`${owner}\u0000${threadId}\u0000${replyToId}`);
-    if (bubble) this.live.holdQueued(owner, threadId, replyToId, [bubble, queued]);
+    this.live.holdQueued(owner, threadId, replyToId, bubble ? [bubble, queued] : [queued]);
   }
 
   /**
