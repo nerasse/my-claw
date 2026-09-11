@@ -30,9 +30,23 @@ async function streamed(events: Event[]): Promise<Array<{ reasoning?: string; co
   return order.map((id) => bubbles.get(id)!);
 }
 
-/** The same order through the segmenter, which is what the replay of those bubbles reads. */
+/**
+ * The same order through the segmenter, which is what the replay of those bubbles reads.
+ *
+ * The duration is dropped: it is measured here and nowhere on the live side, which paints its own
+ * counter from the frames. Everything the two are supposed to agree on -- where the cuts are, and
+ * what each phase holds -- is still compared exactly.
+ */
 function stored(events: Event[]): Array<{ reasoning?: string; content: string }> {
-  const segmenter = new ReasoningSegmenter();
+  return phasesOf(events).map(({ reasoning, content }) => ({
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    content,
+  }));
+}
+
+/** The segmenter's own output, duration included. */
+function phasesOf(events: Event[], now: () => number = Date.now): Array<{ reasoning?: string; reasoningMs?: number; content: string }> {
+  const segmenter = new ReasoningSegmenter(now);
   for (const event of events) {
     if (event.kind === "reasoning") segmenter.reasoning(event.delta);
     else segmenter.text(event.delta);
@@ -77,5 +91,73 @@ describe("what the reader saw is what the replay stores", () => {
     const events = [reasoning("weighing"), text("answer")];
     expect(await streamed(events)).toHaveLength(1);
     expect(stored(events)).toEqual([]);
+  });
+});
+
+/**
+ * How long a phase spent thinking -- added 2026-09-11.
+ *
+ * The duration used to exist only while the bubble was on screen: the app measured it from the
+ * frames and a reopened conversation kept the thought with no span at all. Measured where both
+ * ends are visible, it survives in the log and reaches every reader.
+ */
+describe("the thinking span", () => {
+  test("runs from the first reasoning delta to the text that follows it", () => {
+    let clock = 1_000;
+    const segmenter = new ReasoningSegmenter(() => clock);
+    segmenter.reasoning("weighing");
+    clock = 3_400;
+    segmenter.reasoning(" it over");
+    clock = 5_900;
+    segmenter.text("answer");
+    expect(segmenter.thinkingMs()).toBe(4_900);
+  });
+
+  test("each phase carries its own, and a thought that answered nothing is closed at the end", () => {
+    let clock = 0;
+    const segmenter = new ReasoningSegmenter(() => clock);
+    segmenter.reasoning("first");
+    clock = 700;
+    segmenter.text("one");
+    clock = 700;
+    segmenter.reasoning("second");
+    clock = 2_100;
+    segmenter.text("two");
+    clock = 2_100;
+    segmenter.reasoning("about to call a tool");
+    clock = 2_650;
+
+    const phases = segmenter.list();
+    expect(phases?.map((phase) => phase.reasoningMs)).toEqual([700, 1_400, 550]);
+  });
+
+  test("the single-phase turn still reports its span, which list() deliberately drops", () => {
+    let clock = 10;
+    const segmenter = new ReasoningSegmenter(() => clock);
+    segmenter.reasoning("only once");
+    clock = 910;
+    segmenter.text("answer");
+    // One segment is not stored as phases: `content` and `reasoning` already say it.
+    expect(segmenter.list()).toBeUndefined();
+    expect(segmenter.thinkingMs()).toBe(900);
+  });
+
+  test("a turn that never thought reports nothing rather than a zero", () => {
+    const segmenter = new ReasoningSegmenter(() => 5);
+    segmenter.text("straight to the point");
+    expect(segmenter.thinkingMs()).toBeUndefined();
+  });
+
+  test("a span closes once: reading it twice does not restart the clock", () => {
+    let clock = 0;
+    const segmenter = new ReasoningSegmenter(() => clock);
+    segmenter.reasoning("hmm");
+    clock = 400;
+    segmenter.text("done");
+
+    // The text closed the span. Time passing afterwards belongs to the answer, not to the thought.
+    clock = 9_000;
+    expect(segmenter.thinkingMs()).toBe(400);
+    expect(segmenter.thinkingMs()).toBe(400);
   });
 });

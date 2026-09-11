@@ -83,6 +83,21 @@ describe("displayOf: what the model said", () => {
     expect(show(chain([phase("")]))).toHaveLength(0);
   });
 
+  /**
+   * Added 2026-09-11: the span is measured at the stream and has to reach the device, or a reopened
+   * conversation keeps the thought and loses how long it took.
+   */
+  test("a phase carries how long it thought, so a reload shows the span", () => {
+    const entries = chain([phase("la reponse", { reasoning: "je reflechis", reasoningMs: 4200 })]);
+    expect(show(entries).at(0)).toMatchObject({ reasoning: "je reflechis", reasoningMs: 4200 });
+  });
+
+  test("a phase written before the field existed sends none, rather than a zero", () => {
+    const entries = chain([phase("la reponse", { reasoning: "je reflechis" })]);
+    const drawn = show(entries).at(0) as { reasoningMs?: number };
+    expect(drawn.reasoningMs).toBeUndefined();
+  });
+
   test("a counted-but-hidden thought still earns its bubble", () => {
     expect(show(chain([phase("", { reasoningTokens: 120 })])).at(0)).toMatchObject({ reasoningTokens: 120 });
   });

@@ -210,6 +210,14 @@ export interface LlmResponse {
   /** What the model thought, when the endpoint reports it. Display only -- docs/reasoning-visibility.md. */
   reasoning?: string;
   /**
+   * How long that thinking lasted.
+   *
+   * Set beside `reasoning`, for the single-phase turn: `segments` carries one duration per phase
+   * when there is more than one, and `list()` stays `undefined` for a single segment so the log
+   * does not double what `content` and `reasoning` already say.
+   */
+  reasoningMs?: number;
+  /**
    * The same answer cut where the thinking restarted, set only when there is more than one phase.
    * The live stream splits its bubbles there, so the replay has to know where the cuts were or a
    * reopened conversation glues them back into one -- docs/reasoning-visibility.md.
@@ -897,6 +905,7 @@ export async function chatCompletionStream(
 
       recordCircuitSuccess(config.baseUrl);
       const segments = segmenter.list();
+      const reasoningMs = segmenter.thinkingMs();
       const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning);
       return {
         content,
@@ -905,6 +914,7 @@ export async function chatCompletionStream(
         incomplete: !content && streamedToolCalls.length === 0 && finishReason !== "stop",
         usage: streamUsage,
         ...(reasoning ? { reasoning } : {}),
+        ...(reasoningMs !== undefined ? { reasoningMs } : {}),
         ...(providerMeta ? { providerMeta } : {}),
         ...(segments ? { segments } : {}),
         ...readProxyHeaders(response),

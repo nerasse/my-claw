@@ -77,6 +77,8 @@ export interface PhaseEntry extends EntryBase {
   text: string;
   reasoning?: string;
   reasoningTokens?: number;
+  /** How long the thinking that produced `reasoning` lasted. Kept so a reopened thread shows it. */
+  reasoningMs?: number;
   /** Phases of one model turn share this, which is what lets the prompt fold them back together. */
   runId: string;
   /** Opaque provider state, replayed verbatim -- docs/reasoning-replay.md. Omitted on a truncated turn. */

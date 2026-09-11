@@ -70,6 +70,39 @@ describe("RunRecorder: one model turn", () => {
     expect(second[0]!.runId).not.toBe(first[0]!.runId);
   });
 
+  /**
+   * Added 2026-09-11: the span used to live only in the app's memory, so a reopened conversation
+   * kept the thought and lost how long it took.
+   */
+  test("how long the turn thought is written on the phase, and survives the log", async () => {
+    const recorder = new RunRecorder(entries);
+    const phases = recorder.turn({ content: "salut", reasoning: "je reflechis", reasoningMs: 4200 });
+    await entries.flush();
+    expect(phases[0]).toMatchObject({ type: "phase", reasoningMs: 4200 });
+    const reopened = await openSessionLog(SESSION);
+    const stored = reopened.entries().find((entry) => entry.type === "phase");
+    expect(stored).toMatchObject({ reasoning: "je reflechis", reasoningMs: 4200 });
+  });
+
+  test("each phase of a cut turn keeps its own span", async () => {
+    const recorder = new RunRecorder(entries);
+    const phases = recorder.turn({
+      content: "un\n\ndeux",
+      segments: [
+        { reasoning: "a", reasoningMs: 100, content: "un" },
+        { reasoning: "b", reasoningMs: 900, content: "deux" },
+      ],
+    });
+    expect(phases.map((p) => p.reasoningMs)).toEqual([100, 900]);
+  });
+
+  test("a turn that thought without reporting a span writes none", async () => {
+    const recorder = new RunRecorder(entries);
+    const phases = recorder.turn({ content: "salut", reasoning: "je reflechis" });
+    expect(phases[0]).toMatchObject({ type: "phase" });
+    expect(phases[0]!.reasoningMs).toBeUndefined();
+  });
+
   test("the thinking count is on the turn, not on every phase", async () => {
     // Repeated per phase, every reader adding them up multiplies what the model actually thought.
     const recorder = new RunRecorder(entries);

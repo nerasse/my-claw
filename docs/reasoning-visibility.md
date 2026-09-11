@@ -111,8 +111,8 @@ DeepSeek tool-chain contract is satisfied. It is not.
 
 ```ts
 | { role: "assistant"; content: string; timestamp: string;
-    toolCalls?: [...]; reasoning?: string; reasoningTokens?: number;
-    segments?: Array<{ reasoning?: string; content: string }> }
+    toolCalls?: [...]; reasoning?: string; reasoningTokens?: number; reasoningMs?: number;
+    segments?: Array<{ reasoning?: string; reasoningMs?: number; content: string }> }
 ```
 
 `reasoningTokens` is the redacted engine's half of the same field, and the bridge is its only
@@ -151,6 +151,28 @@ rule, reasoning after visible text opens the next phase, and
 `tests/channels/reasoning-segments.test.ts` runs one event order through both and asserts they
 produce the same phases: two implementations of one rule drift, so the drift is what the test
 watches.
+
+### `reasoningMs`: how long the thinking lasted
+
+`segments` carries a duration per phase, and the single-phase turn carries one on `reasoning`
+itself. Both are measured by the same `ReasoningSegmenter`, at the only place that sees both ends
+of a span: the first reasoning delta opens it, the first text delta after it closes it, and a
+turn that ends on a thought is closed when the response is read out.
+
+Until 2026-09-11 that span lived only in the app's memory. The live counter was real, and the
+moment the thread was reopened every thought came back as an untimed aside — the reader had
+watched a phase take forty seconds and the reload said nothing about it. The duration is now
+written on the phase and travels with it, which is what the owner asked for: always visible, on a
+reload, mid-run, and mid-reload.
+
+The span is measured where the deltas arrive, not guessed from neighbouring timestamps: a turn
+that goes straight to a tool call after thinking closes its span when the segmenter is read, and a
+span of zero is not written at all rather than stored as `0`.
+
+The app draws it with two decimals, unlike a tool duration. A phase can last a tenth of a second,
+and `formatDuration`'s whole seconds rounded one to `0s`, which reads as a phase that never
+happened. `tests/channels/reasoning-segments.test.ts` pins the measurement, `display.test.ts` the
+frame that carries it, and the app's `reasoningLine.test.tsx` the rendering.
 
 A hook that rewrites the answer (`transform:agent:response`) drops the cuts: they are positions in
 text that no longer exists, and a cut in the wrong place is worse than no cut.

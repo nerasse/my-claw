@@ -1230,6 +1230,8 @@ export type MyClawAppHistoryEntry =
       reasoning?: string;
       /** How much it thought, when the engine redacts the text and only counts it. */
       reasoningTokens?: number;
+      /** How long that thinking lasted, so a reopened thread shows the span it took. */
+      reasoningMs?: number;
       /** The answer to a slash command, drawn as its own kind of bubble rather than as a reply. */
       command?: boolean;
       /** The aside folded under a command answer (a compaction summary). */

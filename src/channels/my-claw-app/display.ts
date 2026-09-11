@@ -553,6 +553,7 @@ export function displayOf(
         ...(media.length > 0 ? { attachments: media } : {}),
         ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
         ...(entry.reasoningTokens ? { reasoningTokens: entry.reasoningTokens } : {}),
+        ...(entry.reasoningMs !== undefined ? { reasoningMs: entry.reasoningMs } : {}),
       }));
       continue;
     }

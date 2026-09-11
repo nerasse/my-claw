@@ -675,6 +675,7 @@ export class AgentBridge implements AgentBackend {
           recorder.turn({
             content: transformedResponse,
             ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+            ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
             ...(segments ? { segments } : {}),
             ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
             ...(response.incomplete ? { incomplete: response.incomplete } : {}),
@@ -769,6 +770,7 @@ export class AgentBridge implements AgentBackend {
         recorder.turn({
           content: response.content,
           ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+          ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
           ...(response.segments ? { segments: response.segments } : {}),
           ...(replayable ? { providerMeta: response.providerMeta } : {}),
           ...(response.incomplete ? { incomplete: response.incomplete } : {}),

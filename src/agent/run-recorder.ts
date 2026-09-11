@@ -38,12 +38,16 @@ import type { ProviderMeta } from "../llm/provider.ts";
 export interface RecordedPhase {
   content: string;
   reasoning?: string;
+  /** How long that thinking lasted, measured at the stream -- docs/reasoning-visibility.md. */
+  reasoningMs?: number;
 }
 
 export interface RecordedTurn {
   /** The whole turn's text, used when the provider reported no phases. */
   content: string;
   reasoning?: string;
+  /** How long the turn spent thinking, when it thought as one phase. */
+  reasoningMs?: number;
   /** Set only when one call produced more than one thinking phase. */
   segments?: RecordedPhase[];
   /** How much it thought, when the engine counts instead of reporting the text. */
@@ -191,7 +195,11 @@ export class RunRecorder {
   turn(recorded: RecordedTurn): PhaseEntry[] {
     const phases: RecordedPhase[] = recorded.segments?.length
       ? recorded.segments
-      : [{ content: recorded.content, ...(recorded.reasoning ? { reasoning: recorded.reasoning } : {}) }];
+      : [{
+          content: recorded.content,
+          ...(recorded.reasoning ? { reasoning: recorded.reasoning } : {}),
+          ...(recorded.reasoningMs !== undefined ? { reasoningMs: recorded.reasoningMs } : {}),
+        }];
     const replayable = recorded.providerMeta && !recorded.incomplete ? recorded.providerMeta : undefined;
 
     // The ids of the bubbles this turn was streamed into, so a phase and the bubble holding its
@@ -209,6 +217,7 @@ export class RunRecorder {
         prompt: true,
         text: phase.content,
         ...(phase.reasoning ? { reasoning: phase.reasoning } : {}),
+        ...(phase.reasoningMs !== undefined ? { reasoningMs: phase.reasoningMs } : {}),
         // One number for the whole turn: repeated per phase, every reader adding them up would
         // multiply what the model actually thought.
         ...(last && recorded.reasoningTokens ? { reasoningTokens: recorded.reasoningTokens } : {}),
