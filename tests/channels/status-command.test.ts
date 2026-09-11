@@ -9,9 +9,15 @@ import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { statusReport } from "../../src/channels/status-command.ts";
 import type { SubAgentMeta } from "../../src/sessions/store.ts";
 import { chatModel } from "../../src/llm/chat-model.ts";
+import { setSharedPricing } from "../../src/llm/pricing.ts";
 import { saveSessionWithLog } from "../helpers/session-log.ts";
 
-function pricing(): ModelPricing {
+/**
+ * The price table, written to disk rather than fetched. `rates` lets a test move a model's price:
+ * the table is one file overwritten in place, which is exactly how a provider changing its tariff
+ * reaches an instance that has been running for weeks.
+ */
+function pricing(rates: { input: number; output: number; cacheRead?: number } = { input: 5, output: 25, cacheRead: 0.5 }): ModelPricing {
   mkdirSync(MY_CLAW_DIR, { recursive: true });
   writeFileSync(
     join(MY_CLAW_DIR, "model-pricing.json"),
@@ -20,7 +26,7 @@ function pricing(): ModelPricing {
       fetchedAt: new Date().toISOString(),
       hosts: { "fireworks-ai": "https://api.fireworks.ai/inference/v1/" },
       models: {
-        anthropic: { "claude-opus-5": { cost: { input: 5, output: 25, cacheRead: 0.5 }, id: "claude-opus-5" } },
+        anthropic: { "claude-opus-5": { cost: rates, id: "claude-opus-5" } },
         "fireworks-ai": { "kimi-k26-turbo": { cost: { input: 2, output: 8 }, id: "kimi-k2.6-turbo" } },
       },
     }),
@@ -310,6 +316,113 @@ test("statusReport hands the payload over as `status`, the field the app channel
   expect(out.text.split("\n")).toHaveLength(1);
 });
 
+// The model reference carries the endpoint pin, and for OpenRouter that pin is the only place the
+// upstream provider exists. A name cut from the whole reference read `fp8`, which is a
+// quantization, and two rows of the same model on two providers read identically.
+// The table is one file refetched every 24 h with no history, and the report re-priced the past
+// against whatever it held at read time: a provider changing its price silently restated 90 days of
+// spend, with nothing on the page to say the figure had moved.
+test("a call keeps the cost it was charged when the price table moves under it", async () => {
+  const sessionId = "my-claw-app/thread/o/frozen";
+  setSharedPricing(pricing());
+  call(sessionId, {
+    model: "claude-opus-5",
+    baseUrl: "https://api.anthropic.com",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+    totalTokens: 1_000_000,
+  });
+
+  // The provider doubles its tariff, and the next read is served the new table.
+  const { status } = await statusReport({
+    config,
+    sessionId,
+    session: session(sessionId),
+    liveRuns: [],
+    pricing: pricing({ input: 10, output: 50 }),
+  });
+
+  const row = status.usage!.own.rows[0]!;
+  expect(row.costUsd).toBeCloseTo(5);
+  expect(row.costSource).toBe("engine anthropic");
+  setSharedPricing(null);
+});
+
+// The guard that makes the frozen figure trustworthy: a group whose calls are only partly recorded
+// with a cost would sum to a figure covering part of its tokens, which reads as a cheap model.
+test("a group only half recorded with a cost is priced live rather than partly summed", async () => {
+  const sessionId = "my-claw-app/thread/o/half-frozen";
+  setSharedPricing(pricing());
+  call(sessionId, {
+    model: "claude-opus-5",
+    baseUrl: "https://api.anthropic.com",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+    totalTokens: 1_000_000,
+  });
+  // A row written with no table published: the shape every row had before the columns existed.
+  setSharedPricing(null);
+  call(sessionId, {
+    model: "claude-opus-5",
+    baseUrl: "https://api.anthropic.com",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+    totalTokens: 1_000_000,
+  });
+
+  const { status } = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  const row = status.usage!.own.rows[0]!;
+  // Both calls, at the tariff in force: the pinned half is not allowed to stand for the group.
+  expect(row.costUsd).toBeCloseTo(10);
+});
+
+test("a model row says where it went, and keeps the route out of the name", async () => {
+  const sessionId = "my-claw-app/thread/o/routes";
+  call(sessionId, {
+    model: "z-ai/glm-5.2@streamlake/fp8",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 73_600_000,
+    completionTokens: 3_000_000,
+    totalTokens: 76_600_000,
+    cacheReadTokens: 36_600_000,
+  });
+  call(sessionId, {
+    model: "google/gemini-3.7-flash@google-vertex/global/flex",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 459_000,
+    completionTokens: 9_897,
+    totalTokens: 468_897,
+  });
+  // No pin: OpenRouter picked, so the row falls back to the base and the route stays unknown.
+  call(sessionId, {
+    model: "deepseek/deepseek-v4-flash-0731",
+    baseUrl: "https://openrouter.ai/api/v1",
+    promptTokens: 65_654,
+    completionTokens: 1_000,
+    totalTokens: 66_654,
+  });
+  // Same id, two transports: two providers, two rates.
+  call(sessionId, { model: "claude-opus-5", baseUrl: "https://api.anthropic.com" });
+  call(sessionId, { model: "claude-opus-5", baseUrl: "claude-sdk" });
+
+  const { status } = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+  const rows = status.usage!.own.rows;
+  const byModel = (model: string) => rows.find((r) => r.model === model)!;
+
+  // The reference travels whole, so the route can be explained rather than only displayed.
+  expect(byModel("z-ai/glm-5.2@streamlake/fp8")).toMatchObject({ provider: "streamlake", variant: "fp8" });
+  expect(byModel("google/gemini-3.7-flash@google-vertex/global/flex")).toMatchObject({
+    provider: "google-vertex",
+    variant: "global/flex",
+  });
+  expect(byModel("deepseek/deepseek-v4-flash-0731")).toMatchObject({ provider: "openrouter.ai" });
+  expect(byModel("deepseek/deepseek-v4-flash-0731").variant).toBeUndefined();
+
+  // The two providers of one model are two rows, and only the provider tells them apart.
+  const robots = rows.filter((r) => r.model === "claude-opus-5").map((r) => r.provider).sort();
+  expect(robots).toEqual(["api.anthropic.com", "claude-sdk"]);
+});
+
 test("a tag reference is resolved to the model it runs, with the tag named", async () => {
   const tagged = {
     llm: {
@@ -325,7 +438,7 @@ test("a tag reference is resolved to the model it runs, with the tag named", asy
   // The page shows the model the API receives; the tag stays named so the chain is explainable.
   expect(status.model.current).toBe("claude-opus-5");
   expect(status.model.tag).toBe("zsmart");
-  expect(status.model.configDefault).toBe("claude-opus-5");
+  expect(status.model.defaultModel).toBe("claude-opus-5");
   expect(text).toContain("claude-opus-5 (tag zsmart)");
   expect(text).not.toContain("tag:zsmart");
 });
@@ -350,14 +463,84 @@ test("/status names the model the run would use, pin included, exactly like chat
   const expected = chatModel(pinned, undefined);
   expect(expected).toBe("kimi-k26-turbo");
   expect(status.model.current).toBe(expected);
-  // The global default is not what runs, so the report must not name it.
-  expect(status.model.configDefault).toBeUndefined();
+  // The default is named here, always; the source is what says the agent's pin is answering and not
+  // the chat itself, since a page that shows a model without it cannot explain why picking the
+  // global default changes nothing.
+  expect(status.model.defaultModel).toBe("kimi-k26-turbo");
+  expect(status.model.source).toBe("agent");
 
   // And a chat with its own pick reports that instead, on the same code path.
   const withPick = session(sessionId, { modelOverride: "claude-opus-5" });
   const picked = await report({ config: pinned, sessionId, session: withPick, pricing: undefined });
   expect(picked.model.current).toBe(chatModel(pinned, "claude-opus-5"));
-  expect(picked.model.configDefault).toBe("kimi-k26-turbo");
+  expect(picked.model.source).toBe("session");
+  // What it was picked away from, which is the whole reason the default rides along.
+  expect(picked.model.defaultModel).toBe("kimi-k26-turbo");
+});
+
+// The level alone cannot be drawn: "high" pinned by this chat and "high" inherited from the
+// global default are the same string and two different states. Each rung of the chain is named by
+// the source, so the page can say which one is answering (docs/status-command.md).
+test("the effort is reported with the rung it comes from", async () => {
+  const withLlm = (llm: Record<string, unknown>, agents?: Record<string, unknown>): MyClawConfig =>
+    ({
+      llm: {
+        defaultModel: "claude-opus-5",
+        models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 }, supportsEffort: true }],
+        ...llm,
+      },
+      ...(agents ? { agents } : {}),
+    }) as unknown as MyClawConfig;
+
+  // Nothing pinned anywhere: the model takes effort, nobody sets one, so the provider's own runs.
+  const bare = await report({ config: withLlm({}), sessionId: "matrix/room/!e1:test", pricing: undefined });
+  expect(bare.model.effort).toBe("");
+  expect(bare.model.effortSource).toBe("provider-default");
+
+  // A model that discards effort says so, rather than naming a level that is never sent.
+  const silent = await report({
+    config: ({
+      llm: {
+        defaultModel: "claude-opus-5",
+        effort: "high",
+        models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 }, supportsEffort: false }],
+      },
+    }) as unknown as MyClawConfig,
+    sessionId: "matrix/room/!e2:test",
+    pricing: undefined,
+  });
+  expect(silent.model.effort).toBe("");
+  expect(silent.model.effortSource).toBe("unsupported");
+
+  // The global default, when nothing above it pins one.
+  const globalDefault = await report({
+    config: withLlm({ effort: "high" }),
+    sessionId: "matrix/room/!e3:test",
+    pricing: undefined,
+  });
+  expect(globalDefault.model.effort).toBe("high");
+  expect(globalDefault.model.effortSource).toBe("config");
+
+  // The agent's own pin outranks the global, and is named as the agent's. The entry carries a model
+  // too: resolveAgentLlm only returns an agent's llm block when it declares one, so an effort-only
+  // pin is not a rung the chain ever reaches.
+  const scoped = await report({
+    config: withLlm({ effort: "high" }, { orchestrator: { llm: { defaultModel: "claude-opus-5", effort: "low" } } }),
+    sessionId: "matrix/room/!e4:test",
+    pricing: undefined,
+  });
+  expect(scoped.model.effort).toBe("low");
+  expect(scoped.model.effortSource).toBe("scope");
+
+  // And this chat's own pick outranks them all, which is the rung a reader most needs named.
+  const picked = await report({
+    config: withLlm({ effort: "high" }, { orchestrator: { llm: { defaultModel: "claude-opus-5", effort: "low" } } }),
+    sessionId: "matrix/room/!e5:test",
+    session: session("matrix/room/!e5:test", { effortOverride: "max" }),
+    pricing: undefined,
+  });
+  expect(picked.model.effort).toBe("max");
+  expect(picked.model.effortSource).toBe("session");
 });
 
 test("the same history on the home loop keeps the estimate as a floor", async () => {

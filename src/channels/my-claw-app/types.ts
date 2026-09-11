@@ -1834,6 +1834,19 @@ export interface MyClawAppEffortState {
 }
 
 /**
+ * Where the effort a run sends comes from: session > tag > agent/scope > the global default > what
+ * the API or the provider does on its own. `unsupported` means the model takes none at all.
+ */
+export type MyClawAppEffortSource =
+  | "session"
+  | "tag"
+  | "scope"
+  | "config"
+  | "api-default"
+  | "provider-default"
+  | "unsupported";
+
+/**
  * What window this thread may use, and what the owner may pick from. The app builds the ceiling
  * list itself (full window, the standing cap, then the graduations under it), so this carries the
  * three numbers that list is derived from rather than a pre-rendered menu. See
@@ -2081,6 +2094,12 @@ export interface MyClawAppInstructionsSaved {
 }
 
 /**
+ * Which of the three picks a thread's model: this chat's own, an agent pin (from the config or from
+ * an agent file), or the global default.
+ */
+export type MyClawAppModelSource = "session" | "agent" | "agent-file" | "global";
+
+/**
  * Answer to model.get, model.set and model.effort.set: the state the server actually stored,
  * never an optimistic echo of what the app hoped for.
  */
@@ -2095,7 +2114,7 @@ export interface MyClawAppModelState {
    * cannot explain why picking the global default changed nothing (docs/model-resolution.md).
    * Absent on a server that predates the field.
    */
-  source?: "session" | "agent" | "agent-file" | "global";
+  source?: MyClawAppModelSource;
   effort: MyClawAppEffortState;
   context: MyClawAppContextState;
 }
@@ -2341,6 +2360,19 @@ export interface MyClawAppChatSendReceived {
 /** One model as one session used it, priced when a price is on record. */
 export interface MyClawAppUsageModelRow {
   model: string;
+  /**
+   * Where the calls went, as precisely as the record allows: the endpoint pin's provider for a
+   * routed OpenRouter call (`streamlake`), otherwise the host of the base that was reached
+   * (`api.anthropic.com`, `claude-sdk`). Two rows that share a model id and differ here are two
+   * providers billed at two rates (docs/status-command.md).
+   */
+  provider: string;
+  /**
+   * The rest of the endpoint pin, when it has one: the quantization or service tier the route was
+   * served as (`fp8`, `global/flex`). Never part of the model name, which is what a name taken from
+   * the whole reference used to read (`fp8`).
+   */
+  variant?: string;
   calls: number;
   errors: number;
   promptTokens: number;
@@ -2352,6 +2384,13 @@ export interface MyClawAppUsageModelRow {
   costBilled: boolean;
   /** Priced from a neighbouring model id, not this one. */
   costApproximate: boolean;
+  /**
+   * Which rung of the price ladder answered, so a surprising figure can be explained: the cost
+   * frozen on the row when the call was made, a pinned endpoint's own tariff, the OpenRouter
+   * catalogue, an engine, the base that was reached, or the cross-market median. Absent on a row
+   * nothing could price.
+   */
+  costSource?: string;
 }
 
 /** Calls, tokens and money over one set of rows. */
@@ -2408,9 +2447,26 @@ export interface MyClawAppStatusPayload {
     current: string;
     /** Set when the current model is a `tag:` reference, naming the tag. */
     tag?: string;
-    /** The agent's configured default, present when the session overrides it. */
-    configDefault?: string;
-    effort?: string;
+    /**
+     * Which of the three picked it: this chat's own model, an agent pin, or the default. Absent
+     * when nothing resolved -- a stale override or a broken config -- so the page says so rather
+     * than naming a pick that never happened.
+     */
+    source?: MyClawAppModelSource;
+    /**
+     * What runs here without a chat pin: the agent's configured default, else the global one. Sent
+     * every time rather than only when the session overrides it, because a page that shows a
+     * pinned model and not what it is pinned away from answers half the question.
+     */
+    defaultModel: string;
+    /** The effort a run on this conversation would send, `""` when the model discards it. */
+    effort: string;
+    /**
+     * The rung `effort` comes from. Sent beside the level rather than implied by it: "high" pinned
+     * by this chat and "high" inherited from the global default are the same string and two
+     * different states, and a row that shows the level alone cannot say which one is in force.
+     */
+    effortSource: MyClawAppEffortSource;
     selfHosted: boolean;
     contextLimit: number;
     /** Why the window is what it is ("declared", "capped from …", …). */

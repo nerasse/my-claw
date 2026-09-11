@@ -106,6 +106,12 @@ export interface UsageForCost {
   cacheWriteTokens?: number;
   upstreamApiBase?: string;
   proxyCostUsd?: number;
+  /**
+   * The cost this call was recorded with, when the row carries one. Read before every other rung:
+   * it is the only one that answers "what did this cost then" rather than "what would it cost at
+   * today's prices".
+   */
+  pinned?: CostBreakdown;
 }
 
 /**
@@ -120,6 +126,10 @@ export interface UsageForCost {
 const ENGINE_PROVIDER: Record<string, string> = {
   "api.anthropic.com": "anthropic",
   "chatgpt.com": "openai",
+  // The subscription SDK transport. Without it the Claude rows written through the SDK fell to the
+  // cross-market median while the same model on the native host, one line below, was priced at the
+  // vendor's tarif -- two answers for one model on one page.
+  "claude-sdk": "anthropic",
 };
 
 // Variant and quantisation markers a self-hosted build appends and no catalogue will ever carry.
@@ -328,6 +338,11 @@ export class ModelPricing {
    * different statement from zero -- zero is a real price in this data set.
    */
   costOf(usage: UsageForCost): CostBreakdown | undefined {
+    // 0. The cost frozen on the row when the call was recorded, flags and rung included. A table
+    //    refetched since cannot restate what was charged that day, and re-pricing the past is how a
+    //    provider changing its price silently rewrites up to 90 days of spend.
+    if (usage.pinned) return usage.pinned;
+
     // 1. The proxy states what it billed. Only trusted when positive: LiteLLM reports 0.0 both for
     //    a free plan and for a model it has no price for.
     if (usage.proxyCostUsd !== undefined && usage.proxyCostUsd > 0) {
@@ -732,4 +747,25 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
     if (Object.keys(table).length > 0) models[provider] = table;
   }
   return { version: CACHE_VERSION, fetchedAt: new Date().toISOString(), hosts, models };
+}
+
+/**
+ * The table the whole process prices with.
+ *
+ * `recordApiCall` freezes a tariff on every row it writes, and it runs deep in the agent loop, from
+ * three call sites that hold no pricing table of their own. One instance is registered at boot
+ * (`src/index.ts`) and read here, which also keeps the multi-megabyte models.dev cache loaded once
+ * instead of once per sub-agent.
+ *
+ * Null before boot, and in any test that never registers one: a row then carries no tariff and the
+ * report prices it live, exactly as it did before tariffs were pinned.
+ */
+let shared: ModelPricing | null = null;
+
+export function setSharedPricing(pricing: ModelPricing | null): void {
+  shared = pricing;
+}
+
+export function sharedPricing(): ModelPricing | null {
+  return shared;
 }

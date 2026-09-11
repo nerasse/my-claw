@@ -27,17 +27,23 @@ What the page shows, in order, and what was taken out of it when it was redrawn 
 - **Context.** Occupied over the effective window, the auto-compaction threshold, the last measured
   prompt. The only figure that needs a glance.
 - **Usage.** One card, leading with the **total**: money, tokens (in, cached, out) and calls, the
-  conversation's own calls and every sub-agent it drove added together. Under it, the tree: the
-  conversation's own row, then one row per sub-agent (name, type, a live mark while it runs), a
-  sub-agent's own sub-agents indented under it. A row unfolds into its per-model lines, each priced.
-  Three cards used to show the same calls and tokens three times over (a session counter, the
-  analytics, a "delegated" line); the session counter is gone from the page (see "The two totals
-  problem": with the room channels gone, a thread's session is the conversation, and the two totals
-  answer the same question), and the analytics are the one source since they alone can be priced.
-- **Details**, folded: created, last active, turns, ids, the window's provenance, the estimate,
-  the request wall, config default and effort, verbose, approved tools. `platform · chatType` is
-  gone (always `my-claw-app · dm`), `active run` is gone from here (the run strip above the cards
-  is its place), and the raw text of the chat command is gone with the chat command's text.
+  conversation's own calls and every sub-agent it drove added together. Under it, three blocks: the
+  conversation's own row, always open, with the models it ran on under it; the sub-agents summed
+  into **one** figure (calls, tokens, money) with the models they all ran on merged by id; and
+  `by sub-agent`, folded, where the per-agent rows live (name, type, a live mark while it runs), a
+  sub-agent's own sub-agents indented under it. A model line carries its calls, tokens in, cached
+  and out, its price, and **the provider that served them**; a line is one (model, provider), so the
+  same id reached through two providers is two lines, as it is in the SQL behind it. Three cards
+  used to show the same calls and tokens three times over (a
+  session counter, the analytics, a "delegated" line); the session counter is gone from the page
+  (see "The two totals problem": with the room channels gone, a thread's session is the
+  conversation, and the two totals answer the same question), and the analytics are the one source
+  since they alone can be priced.
+- **Details**, folded: created, last active, turns, ids, the current model with its source and what
+  it is pinned away from, the current effort with the rung it comes from, the window's provenance,
+  the estimate, the request wall, verbose, approved tools. `platform · chatType` is gone (always
+  `my-claw-app · dm`), `active run` is gone from here (the run strip above the cards is its place),
+  and the raw text of the chat command is gone with the chat command's text.
 
 **The total is one figure.** Billed and reference prices are added: the owner asked for what the
 conversation cost in tokens, whatever contract paid for them, and the split (`billed $a · reference
@@ -230,7 +236,12 @@ already in `api_calls`.
 
 ### Resolving the provider
 
-Five rules, tried in order. A proxy is asked before it is guessed at.
+Before any of the rules below, `costOf` returns the cost the row itself carries, when it has one.
+Prices move and the table has no history, so the ladder here is what a call is priced with **at the
+moment it is recorded** -- see "The price is frozen when the call is made" below. The same ladder
+runs again at read time, for any row that predates the columns.
+
+Six rules, tried in order. A proxy is asked before it is guessed at.
 
 **1. The proxy states its own cost.** LiteLLM returns it on the completion route itself -- the one a
 restricted virtual key is allowed to call -- as response headers:
@@ -256,12 +267,24 @@ Two independent sources therefore agree that this traffic is free: the proxy's o
 models.dev's entry for the upstream it names.
 
 **3. The engine names the vendor.** Two backends are not generic HTTP clients, they talk to exactly
-one company, so there is nothing to infer:
+one company, so there is nothing to infer. `ENGINE_PROVIDER` is the map, and it is the code's:
 
 | `base_url` | Provider | Calls |
 | --- | --- | --- |
 | `claude-sdk` | `anthropic` | 59 |
+| `https://api.anthropic.com` | `anthropic` | 14 125 |
 | `https://chatgpt.com/backend-api` | `openai` | 9 |
+
+`api.anthropic.com` needs the entry for the same reason `claude-sdk` does, only louder: models.dev
+publishes no api base for `anthropic` itself, only for Anthropic-compatible third parties, so host
+resolution cannot find it and the row falls to the cross-market median. Subscription auth is not
+metered, so both are reference prices -- but they are reference prices at the vendor's tariff, which
+is the whole point of naming the engine.
+
+**`claude-sdk` was missing from that map while this table claimed it was there.** The two Claude rows
+of one report disagreed -- the native host at 5/25 per million, the SDK at a median over 28 resellers
+-- and the page had no way to say why. A documented rule is not an implemented one; the map is what
+runs.
 
 **4. Exact host match against the `api` field**, applied to `base_url` or to the upstream from rule
 2. 152 of the 177 providers in models.dev declare their endpoint;
@@ -270,6 +293,54 @@ one company, so there is nothing to infer:
 **5. Median of the non-zero prices**, and only then. See below for why this rule is dangerous and
 must stay last. An optional `pricingProvider` key on the provider config overrides it for owners who
 know their upstream; it is expected to stay unset.
+
+### The price is frozen when the call is made
+
+The table is a **single file overwritten in place**, refetched every 24 h from models.dev, with no
+history anywhere: not on disk, not in the config snapshots. Resolving a three-week-old call against
+it therefore answers "what would this cost at today's prices", while the report claims to say what
+the conversation *cost*. A provider changing its tariff silently restated up to 90 days of spend,
+with nothing on the page to say the figure had moved.
+
+So `recordApiCall` resolves the cost once, at write time, and keeps it: `cost_usd`, `cost_billed`,
+`cost_approximate` and `cost_source` on the `api_calls` row. The report reads those and never walks
+the ladder again for a row that has them. The per-token tariff is deliberately **not** stored: it is
+recoverable from the cost and the token columns, and it is the money that must not move.
+
+Two guards make the frozen figure trustworthy:
+
+- **A group is pinned only when every call in it is.** `getSessionModelUsage` groups by model and
+  base URL over the whole window, so on the day the columns appeared a group can hold both pinned
+  and unpinned calls. Summing the pinned ones alone would report a total covering part of the
+  group's tokens, which reads as a cheap model rather than as a partial sum. Such a group is priced
+  live, as it always was.
+- **One rung, or none.** A group whose calls came from different rungs has two sets of markers (`*`
+  not a charge, `~` neighbouring model) that no single row can carry, so it is not pinned. The SQL
+  says which: `COUNT(DISTINCT cost_source)`.
+
+`costSource` travels to the app for the same reason it exists here: a figure nothing could price and
+a figure guessed from the cross-market median look identical on a page that does not say which rung
+answered.
+
+### Reconciliation against what the provider charged
+
+There is exactly one source of truth for money in this system, and it is not the table: a billing
+proxy stating what it charged, per call, on the completion route itself
+(`x-litellm-response-cost-original`). It is rule 1 of the ladder, it is stored as `proxy_cost_usd`,
+and it is authoritative when positive.
+
+It is also **unused on this instance**: measured over the whole database, `proxy_cost_usd` is NULL on
+all 42 000 rows, across every provider. Only the LiteLLM path can fill it, and it is read on the two
+OpenAI-compatible response paths of `provider.ts` -- the native Messages transport (`anthropic`) and
+the Codex Responses transport never look at response headers at all. So for everything reached
+through `claude-sdk`, `chatgpt.com`, `api.anthropic.com` and the OpenRouter catalogue, the figure on
+the page is a **computed reference, not a reconciled charge**, and the pricing rule now shown on each
+line is what says so.
+
+Nothing else reconciles: no invoice ingestion, no credit-balance read, no per-model true-up. Closing
+that gap means reading a vendor's own usage endpoint (OpenRouter has `/api/v1/generation`, Anthropic
+has a cost report) or reading the LiteLLM headers on the transports that ignore them. Both are new
+integrations, neither started.
 
 ### Never report zero
 
@@ -633,6 +704,51 @@ tag named (`claude-opus-5 (tag opus)`) so the chain stays explainable. The same 
 the analytics rows: `recordApiCall` snapshots `apiModel ?? model` at run time (see docs/tags.md),
 so cost and token stats group by the model that ran. A tag repointed between two runs splits the
 history at the boundary instead of silently re-filing old rows.
+
+### The route is not part of the name
+
+A usage row's `model` is the reference the call actually sent, endpoint pin included
+(`z-ai/glm-5.2@streamlake/fp8`). Everything after the `@` is a **route**: `streamlake` is the
+upstream provider and `fp8` the quantization it served. The payload therefore carries them apart
+from the name:
+
+- `provider` -- the pin's first segment when there is one, otherwise the host of the base that was
+  reached (`api.anthropic.com`, `claude-sdk`).
+- `variant` -- the rest of the pin (`fp8`, `global/flex`), absent when there is none.
+
+The pin is neither decoration nor a name: it is the **only** place an OpenRouter upstream exists.
+OpenRouter leaves `upstream_api_base` empty, so a row that dropped the pin would have nothing left
+to say which provider served it, and the two `claude-opus-5` rows of one conversation (one on
+`api.anthropic.com`, one through the SDK) would read identically. `getSessionModelUsage` already
+groups by `model, base_url` for that exact reason; `provider` is what carries that grouping out to
+the app instead of collapsing it there.
+
+Reading a name off the whole reference is how `fp8` came to be drawn as a model of its own, next to
+`flex`: a quantization and a service tier, neither of which is a model.
+
+## The model block of the payload
+
+Three fields answer one question -- what runs here, and why -- and each exists because the other
+two cannot:
+
+- `current` is the model the API receives (a tag resolved to its leaf), and `source` is which of
+  the three picked it: `session` (this chat's own model), `agent` or `agent-file` (a pin), or
+  `global`. The source is not decoration: a page that names a model without it cannot explain why
+  picking the global default changes nothing (docs/model-resolution.md). It comes from the same
+  `tryResolveRunModel` the runs use, never from `override ?? default` written out again.
+- `defaultModel` is what would run here **without a chat pin**: the agent's configured default,
+  else the global one. Sent every time rather than only when this chat overrides the model, because
+  a page that shows a pinned model and not what it is pinned away from answers half the question.
+  With no pin in play it equals `current`, which is the true answer rather than a missing field.
+- `effort` is the level a run would send, `""` when the model discards the parameter, and
+  `effortSource` is the rung it comes from: `session` > `tag` > `scope` (the agent) > `config` (the
+  global default) > `api-default` / `provider-default`, with `unsupported`. Sent as a pair, because
+  the level alone is not drawable: "high" pinned by this chat and "high" inherited are the same
+  string and two different states.
+
+`effort` and the model block answer the same question at two levels, and neither falls back to the
+other: a run sends the effort of the model it resolved, and a model that takes none is told none
+whatever is pinned above it (`computeEffort` in `src/llm/resolver.ts` is the one implementation).
 
 ## Out of scope
 

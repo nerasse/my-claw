@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
+import { sharedPricing, type CostBreakdown } from "../llm/pricing.ts";
 
 const DB_PATH = join(MY_CLAW_DIR, "analytics.db");
 
@@ -62,6 +63,17 @@ function getDb(): Database {
   // The dialect the request actually used, so a cache regression can be traced to the hint that
   // was sent rather than inferred from the model name months later.
   ensureColumn(db, "api_calls", "cache_dialect", "TEXT");
+  // The money this call was charged, frozen when the row was written, with the rung that produced
+  // it. Resolving a call against a table refetched since answers "what would this cost today", and
+  // the models.dev file is one copy overwritten every 24 h with no history: without these columns a
+  // provider changing its price silently restates up to 90 days of spend. The per-token tariff is
+  // not stored -- it is recoverable from this and the token columns, and it is the money that must
+  // not move. Rows written before the columns existed carry NULL and are priced live, as they always
+  // were. See docs/status-command.md.
+  ensureColumn(db, "api_calls", "cost_usd", "REAL");
+  ensureColumn(db, "api_calls", "cost_billed", "INTEGER");
+  ensureColumn(db, "api_calls", "cost_approximate", "INTEGER");
+  ensureColumn(db, "api_calls", "cost_source", "TEXT");
 
   // Must come after ensureColumn: an index on a column the table does not have yet would throw,
   // and inside the block above it would take the whole statement down with it.
@@ -116,21 +128,61 @@ export interface ApiCallRecord {
 
 let insertStmt: ReturnType<Database["prepare"]> | null = null;
 
+/**
+ * The cost this call is charged, resolved once and kept on the row.
+ *
+ * Undefined before boot (no table registered) and for a model no rung can price -- the row then
+ * stores nothing and the report prices it live, which is what every row did before.
+ */
+function pinnedCostFor(record: ApiCallRecord): CostBreakdown | undefined {
+  const pricing = sharedPricing();
+  if (!pricing) return undefined;
+  return pricing.costOf({
+    model: record.model,
+    baseUrl: record.baseUrl,
+    promptTokens: record.promptTokens ?? 0,
+    completionTokens: record.completionTokens ?? 0,
+    cacheReadTokens: record.cacheReadTokens ?? 0,
+    cacheWriteTokens: record.cacheWriteTokens ?? 0,
+    ...(record.upstreamApiBase === undefined ? {} : { upstreamApiBase: record.upstreamApiBase }),
+    ...(record.proxyCostUsd === undefined ? {} : { proxyCostUsd: record.proxyCostUsd }),
+  });
+}
+
+/** The cost a stored row was recorded with, or undefined when it predates the columns. */
+function pinnedCostOf(row: {
+  cost_usd: number | null;
+  cost_billed: number | null;
+  cost_approximate: number | null;
+  cost_source: string | null;
+}): CostBreakdown | undefined {
+  if (row.cost_usd === null) return undefined;
+  return {
+    usd: row.cost_usd,
+    billed: row.cost_billed === 1,
+    approximate: row.cost_approximate === 1,
+    source: row.cost_source ?? "unknown",
+  };
+}
+
 export function recordApiCall(record: ApiCallRecord): void {
   try {
     const d = getDb();
+    const cost = pinnedCostFor(record);
     if (!insertStmt) {
       insertStmt = d.prepare(`
         INSERT INTO api_calls (
           session_id, parent_session_id, platform, model, base_url, streaming, caller,
           prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
           tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, backend,
-          cache_dialect, error
+          cache_dialect, error,
+          cost_usd, cost_billed, cost_approximate, cost_source
         ) VALUES (
           $session_id, $parent_session_id, $platform, $model, $base_url, $streaming, $caller,
           $prompt_tokens, $completion_tokens, $total_tokens, $cache_read_tokens, $cache_write_tokens,
           $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $backend,
-          $cache_dialect, $error
+          $cache_dialect, $error,
+          $cost_usd, $cost_billed, $cost_approximate, $cost_source
         )
       `);
     }
@@ -157,6 +209,10 @@ export function recordApiCall(record: ApiCallRecord): void {
       $backend: record.backend ?? null,
       $cache_dialect: record.cacheDialect ?? null,
       $error: record.error ?? null,
+      $cost_usd: cost?.usd ?? null,
+      $cost_billed: cost === undefined ? null : cost.billed ? 1 : 0,
+      $cost_approximate: cost === undefined ? null : cost.approximate ? 1 : 0,
+      $cost_source: cost?.source ?? null,
     });
   } catch (err) {
     void log("warn", "analytics recordApiCall failed", { error: String(err) });
@@ -202,6 +258,54 @@ export interface SessionModelRow {
   proxyCostUsd: number | null;
   errorCount: number;
   lastUsedAt: string;
+  /**
+   * The money this group was actually charged, frozen as each call was recorded. Absent when the
+   * group cannot be pinned -- see `withPinnedCost`.
+   */
+  pinnedCost?: CostBreakdown;
+}
+
+/** A group's raw aggregate, before the frozen-cost decision is made. */
+interface AggregatedModelRow extends SessionModelRow {
+  pinnedUsd: number | null;
+  pinnedRows: number;
+  costSources: number;
+  costSource: string | null;
+  costBilled: number | null;
+  costApproximate: number | null;
+}
+
+/**
+ * The frozen money of a group, when it can be trusted.
+ *
+ * Only when every call in the group was recorded with a cost, and all of them came from one rung of
+ * the ladder. A group half-written before the columns existed would otherwise report a total
+ * covering part of its tokens, which reads as a cheap model rather than as a partial sum -- and a
+ * group spanning two rungs has two markers (`*` not a charge) that no single row can carry.
+ */
+function withPinnedCost(row: AggregatedModelRow): SessionModelRow {
+  const { model, baseUrl, upstreamApiBase, calls, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, proxyCostUsd, errorCount, lastUsedAt } = row;
+  const out: SessionModelRow = {
+    model,
+    baseUrl,
+    upstreamApiBase,
+    calls,
+    promptTokens,
+    completionTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    proxyCostUsd,
+    errorCount,
+    lastUsedAt,
+  };
+  if (row.pinnedUsd === null || row.pinnedRows !== calls || row.costSources !== 1) return out;
+  out.pinnedCost = {
+    usd: row.pinnedUsd,
+    billed: row.costBilled === 1,
+    approximate: row.costApproximate === 1,
+    source: row.costSource ?? "unknown",
+  };
+  return out;
 }
 
 /**
@@ -216,7 +320,7 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
   const where = scope === "own" ? "session_id = ?" : "parent_session_id = ? AND session_id <> parent_session_id";
   try {
     const d = getDb();
-    return d
+    const rows = d
       .prepare(
         `SELECT
            model,
@@ -229,13 +333,20 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
            COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
            SUM(proxy_cost_usd)             AS proxyCostUsd,
            SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
-           MAX(timestamp)                  AS lastUsedAt
+           MAX(timestamp)                  AS lastUsedAt,
+           SUM(cost_usd)                   AS pinnedUsd,
+           COUNT(cost_usd)                 AS pinnedRows,
+           COUNT(DISTINCT cost_source)     AS costSources,
+           MAX(cost_source)                AS costSource,
+           MAX(cost_billed)                AS costBilled,
+           MAX(cost_approximate)           AS costApproximate
          FROM api_calls
          WHERE ${where}
          GROUP BY model, base_url
          ORDER BY SUM(total_tokens) DESC`,
       )
-      .all(sessionId) as SessionModelRow[];
+      .all(sessionId) as AggregatedModelRow[];
+    return rows.map(withPinnedCost);
   } catch (err) {
     void log("warn", "analytics getSessionModelUsage failed", { error: String(err) });
     return [];
@@ -255,7 +366,7 @@ export interface DelegatedModelRow extends SessionModelRow {
 export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelRow[] {
   try {
     const d = getDb();
-    return d
+    const rows = d
       .prepare(
         `SELECT
            session_id                      AS sessionId,
@@ -269,13 +380,20 @@ export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelR
            COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
            SUM(proxy_cost_usd)             AS proxyCostUsd,
            SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
-           MAX(timestamp)                  AS lastUsedAt
+           MAX(timestamp)                  AS lastUsedAt,
+           SUM(cost_usd)                   AS pinnedUsd,
+           COUNT(cost_usd)                 AS pinnedRows,
+           COUNT(DISTINCT cost_source)     AS costSources,
+           MAX(cost_source)                AS costSource,
+           MAX(cost_billed)                AS costBilled,
+           MAX(cost_approximate)           AS costApproximate
          FROM api_calls
          WHERE parent_session_id = ? AND session_id <> parent_session_id
          GROUP BY session_id, model, base_url
          ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
       )
-      .all(parentSessionId) as DelegatedModelRow[];
+      .all(parentSessionId) as Array<AggregatedModelRow & { sessionId: string }>;
+    return rows.map((row) => ({ ...withPinnedCost(row), sessionId: row.sessionId }));
   } catch (err) {
     void log("warn", "analytics getDelegatedModelUsage failed", { error: String(err) });
     return [];

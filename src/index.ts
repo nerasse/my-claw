@@ -76,7 +76,7 @@ import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
 import { openRouterModels } from "./llm/openrouter-endpoints.ts";
-import { ModelPricing } from "./llm/pricing.ts";
+import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
@@ -346,6 +346,10 @@ async function main() {
   // model list so an alias resolves to whatever version discovery last reported. Declared ahead of
   // the catalog because the same table also fills in the context windows discovery left blank.
   const pricing = new ModelPricing(() => config.llm.providers ?? {}, () => config.llm.models ?? []);
+  // Every recorded call keeps the cost it was charged, so the analytics do not re-price the past
+  // against a table that has been refetched since. `recordApiCall` runs deep in the agent loop, in
+  // files that hold no table of their own, so the one instance is published here.
+  setSharedPricing(pricing);
 
   // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,

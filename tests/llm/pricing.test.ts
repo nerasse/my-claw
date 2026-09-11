@@ -492,3 +492,40 @@ test("a proxy's own figure still outranks the endpoint price", async () => {
   assert.equal(cost?.usd, 0.42);
   assert.equal(cost?.source, "proxy");
 });
+
+// Two Claude rows of one report used to disagree: the same model on the native host was priced at
+// the vendor's tariff while the same model through the subscription SDK fell to the cross-market
+// median, because models.dev publishes no api base for `anthropic` itself.
+test("the subscription SDK transport is priced at the vendor, not at the cross-market median", () => {
+  const pricing = withTable();
+  const usage = { model: "claude-opus-5", promptTokens: 1_000_000, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const sdk = pricing.costOf({ ...usage, baseUrl: "claude-sdk" });
+  const native = pricing.costOf({ ...usage, baseUrl: "https://api.anthropic.com" });
+
+  assert.equal(sdk?.source, "engine anthropic");
+  assert.equal(sdk?.approximate, false);
+  assert.equal(sdk?.usd, 5);
+  assert.equal(sdk?.usd, native?.usd);
+});
+
+// Prices move. The table is one file refetched every 24 h with no history, so a call resolved again
+// next week answers "what would this cost today" -- which is not what the report claims to say.
+test("a cost recorded with the call outranks every rung, table moved or not", () => {
+  const pricing = withTable();
+  const pinned = { usd: 12.5, billed: false, approximate: true, source: "median of 28" };
+  const usage = {
+    model: "claude-opus-5",
+    baseUrl: "https://api.anthropic.com",
+    promptTokens: 1_000_000,
+    completionTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+
+  // Identity, not equality: the ladder was not walked at all.
+  assert.equal(pricing.costOf({ ...usage, pinned }), pinned);
+  // And a model the table does price is still answered with the frozen figure.
+  assert.equal(pricing.costOf({ ...usage, pinned })?.usd, 12.5);
+  // A proxy's total is the same kind of evidence and keeps its own rung when nothing is pinned.
+  assert.equal(pricing.costOf({ ...usage, proxyCostUsd: 3 })?.source, "proxy");
+});

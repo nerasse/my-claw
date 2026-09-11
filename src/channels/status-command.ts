@@ -1,7 +1,9 @@
 import type { AgentLlmConfig, MyClawConfig } from "../core/config.ts";
 import { resolveAgentLlm, tagNameOf } from "../core/config.ts";
 import { chatModel } from "../llm/chat-model.ts";
-import { leafModelId, resolveAgentLlmConfig } from "../llm/resolver.ts";
+import { leafModelId, resolveAgentLlmConfig, effectiveEffort } from "../llm/resolver.ts";
+import { tryResolveRunModel } from "../llm/run-model.ts";
+import { availabilityWorld } from "../llm/world.ts";
 import { describeTimeout, transportTimeoutDefault } from "../llm/request-timeout.ts";
 import type { SessionData, SubAgentMeta } from "../sessions/store.ts";
 import { agentTypeOf } from "../sessions/store.ts";
@@ -68,6 +70,7 @@ function priceRows<R extends SessionModelRow>(rows: R[], pricing?: ModelPricing)
       cacheWriteTokens: row.cacheWriteTokens,
       upstreamApiBase: row.upstreamApiBase ?? undefined,
       proxyCostUsd: row.proxyCostUsd ?? undefined,
+      ...(row.pinnedCost === undefined ? {} : { pinned: row.pinnedCost }),
     }),
   }));
 }
@@ -107,16 +110,47 @@ function addTotals(into: MyClawAppUsageTotals, more: MyClawAppUsageTotals): void
   into.unpriced += more.unpriced;
 }
 
+/**
+ * The host a base URL reaches, or the string itself when it is not a URL at all: the SDK and
+ * subscription transports record a bare name (`claude-sdk`), which is already the clearest label
+ * there is for them.
+ */
+function providerHost(baseUrl: string): string {
+  const match = /^https?:\/\/([^/]+)/.exec(baseUrl);
+  return match ? match[1]!.replace(/^www\./, "") : baseUrl;
+}
+
+/**
+ * Where a call went, and which variant of the route it was served as.
+ *
+ * The model reference carries the endpoint pin (`z-ai/glm-5.2@streamlake/fp8`), and for OpenRouter
+ * that pin is the only place the upstream provider exists: `upstream_api_base` is filled in by the
+ * resellers that proxy, and OpenRouter leaves it empty. The pin's first segment is therefore the
+ * provider and the rest is the variant, which is why `fp8` and `flex` -- a quantization and a
+ * service tier -- must never be read as part of a model name.
+ *
+ * A row without a pin falls back to the base it reached, which is the only thing left that tells
+ * two calls of the same model apart (the same id on `api.anthropic.com` and through `claude-sdk`
+ * is two providers, two rates, and two rows).
+ */
+function routeOf(model: string, baseUrl: string): { provider: string; variant?: string } {
+  const at = model.lastIndexOf("@");
+  const [head, ...rest] = at > 0 ? model.slice(at + 1).split("/").filter(Boolean) : [];
+  if (!head) return { provider: providerHost(baseUrl) };
+  return { provider: head, ...(rest.length > 0 ? { variant: rest.join("/") } : {}) };
+}
+
 function modelRow(row: PricedRow): MyClawAppUsageModelRow {
   return {
     model: row.model,
+    ...routeOf(row.model, row.baseUrl),
     calls: row.calls,
     errors: row.errorCount,
     promptTokens: row.promptTokens,
     cacheReadTokens: row.cacheReadTokens,
     completionTokens: row.completionTokens,
     ...(row.cost
-      ? { costUsd: row.cost.usd, costBilled: row.cost.billed, costApproximate: row.cost.approximate }
+      ? { costUsd: row.cost.usd, costBilled: row.cost.billed, costApproximate: row.cost.approximate, costSource: row.cost.source }
       : { costBilled: false, costApproximate: false }),
   };
 }
@@ -188,6 +222,17 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
   const tagName = tagNameOf(currentModel);
   const displayModel = leafModelId(p.config.llm, currentModel);
+  // Which of the three picks it, from the resolver itself: reading `override ?? default` here is
+  // how a screen came to name the global default while every run went to the agent's own pin
+  // (docs/model-resolution.md).
+  const run = tryResolveRunModel(
+    p.config,
+    { agent: "main", ...(p.session?.modelOverride ? { sessionModel: p.session.modelOverride } : {}) },
+    availabilityWorld(),
+  );
+  // Session > tag > agent > global > what the API or the provider does on its own. The level alone
+  // cannot be drawn: "high" pinned here and "high" inherited are the same string.
+  const effort = effectiveEffort(p.config.llm, displayModel, p.session?.effortOverride, configured?.effort);
   const contextAgent = p.session ? agentTypeOf(p.session) : "main";
   const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
   // Every clause here is a reason the number can look wrong, so each one that applies is named.
@@ -258,10 +303,10 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     model: {
       current: displayModel,
       ...(tagName ? { tag: tagName } : {}),
-      ...(session?.modelOverride
-        ? { configDefault: leafModelId(p.config.llm, configured?.defaultModel ?? p.config.llm.defaultModel ?? "") }
-        : {}),
-      ...(session?.effortOverride ? { effort: session.effortOverride } : {}),
+      ...(run ? { source: run.source } : {}),
+      defaultModel: leafModelId(p.config.llm, configured?.defaultModel ?? p.config.llm.defaultModel ?? ""),
+      effort: effort.source === "unsupported" ? "" : effort.level ?? "",
+      effortSource: effort.source,
       selfHosted: isSelfHosted(displayModel),
       contextLimit: limit,
       contextNotes,

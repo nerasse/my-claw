@@ -3621,6 +3621,9 @@ describe("command frames", () => {
     },
     model: {
       current: "claude-opus-5",
+      defaultModel: "claude-opus-5",
+      effort: "high",
+      effortSource: "config" as const,
       selfHosted: false,
       contextLimit: 512_000,
       contextNotes: ["declared", "capped from 1,000,000"],
@@ -3649,6 +3652,7 @@ describe("command frames", () => {
         rows: [
           {
             model: "claude-opus-5",
+            provider: "api.anthropic.com",
             calls: 4,
             errors: 0,
             promptTokens: 1000,
