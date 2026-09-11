@@ -69,6 +69,29 @@ function rawApi(): Record<string, unknown> {
       api: "https://api.xiaomimimo.com/v1",
       models: { "mimo-v2.5-pro": { name: "MiMo v2.5 Pro", cost: { input: 0.435, output: 0.87 } } },
     },
+    // The vendor a gateway's model name belongs to, and the only table that lists it. A gateway
+    // announces the ids it serves, not the vendor's own: `opencode-go` publishes
+    // `deepseek-v4.1-flash`, so an id it does not carry has nowhere else to be described.
+    deepseek: {
+      api: "https://api.deepseek.com",
+      models: {
+        "deepseek-flash": {
+          name: "DeepSeek V4.1 Flash",
+          reasoning: true,
+          reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+          modalities: { input: ["text", "image"] },
+          limit: { context: 1_000_000, output: 384_000 },
+          cost: { input: 0.15, output: 0.6, cache_read: 0.003 },
+        },
+        // The same id the gateway carries, so the vendor rung has something to steal if it is ever
+        // allowed to answer before a table that knows the model itself. Never read in practice:
+        // the gateway's own entry always wins, and that is the point of listing it here.
+        "deepseek-v4-flash": {
+          name: "DeepSeek V4 Flash (vendor, never used)",
+          cost: { input: 9, output: 9 },
+        },
+      },
+    },
     // Deliberately without an `api`, as the live file has it: models.dev describes Anthropic's own
     // models while publishing an endpoint only for the resellers. Nothing can resolve this provider
     // by host, which is why the vendor is named by the engine instead.
@@ -292,4 +315,43 @@ test("a stale cache shape is ignored rather than half-read", async () => {
   const stale = new ModelPricing(() => ({ opencode_go: { baseUrl: "https://opencode.ai/zen/go/v1" } }));
   expect(stale.ready()).toBe(false);
   expect(stale.metadataOf("deepseek-v4-flash", "https://opencode.ai/zen/go/v1")).toBeUndefined();
+});
+
+/**
+ * Measured live on 2026-09-11: `opencode_go` is declared `pricingProvider: "opencode-go"`, whose
+ * table carries `deepseek-v4.1-flash` and not `deepseek-flash` -- the id the gateway's own
+ * discovery announces. The model therefore kept its raw id as a label, offered no effort step at
+ * all, and lost its vision flag, while its window (from discovery, not from this table) was right.
+ *
+ * Neither the declared provider nor its own vendor answers: `opencode-go` resolves to `opencode`,
+ * which does not carry the id either. The model's *name* is the last evidence -- `deepseek`
+ * publishes it under exactly that id -- and a vendor selling a model under its own name is how
+ * this table is seeded.
+ */
+const BARE_GO = { opencode_go: { baseUrl: GO_URL, pricingProvider: "opencode-go" } };
+
+test("an id the declared provider does not carry is described by the vendor its name belongs to", async () => {
+  const pricing = await withApi(BARE_GO);
+  const [enriched] = applyModelMetadata([model({ id: "deepseek-flash" })], PROVIDERS, pricing);
+  expect(enriched?.label).toBe("DeepSeek V4.1 Flash");
+  expect(enriched?.supportsEffort).toBe(true);
+  expect(enriched?.supportedEffortLevels).toEqual(["low", "high", "max"]);
+  expect(enriched?.vision).toBe(true);
+  expect(enriched?.limit?.output).toBe(384_000);
+});
+
+test("the same rung prices it, instead of leaving it to the market median", async () => {
+  const pricing = await withApi(BARE_GO);
+  const cost = pricing.costOf({ model: "deepseek-flash", baseUrl: GO_URL, promptTokens: 1_000_000, completionTokens: 1_000_000 });
+  expect(cost?.usd).toBeCloseTo(0.75, 6);
+  expect(cost?.source).toBe("vendor deepseek");
+  // A reference tariff, never a charge: the gateway bills what it bills, and this is not its table.
+  expect(cost?.billed).toBe(false);
+});
+
+test("the vendor rung stays below every table that knows the id itself", async () => {
+  const pricing = await withApi(BARE_GO);
+  // `opencode-go` carries this one, and its own entry must win over anything the name suggests.
+  const [enriched] = applyModelMetadata([model({ id: "deepseek-v4-flash" })], PROVIDERS, pricing);
+  expect(enriched?.label).toBe("DeepSeek V4 Flash (2x usage)");
 });

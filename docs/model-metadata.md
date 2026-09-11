@@ -177,6 +177,33 @@ unconditional fetch; `openRouterModels(true)` skips the TTL check, keeping in-fl
 then replays the projection. The automatic paths keep their TTLs: the forced fetch is a manual
 action, paid in one 3.3 MB download per press, and a human does not press it in a loop.
 
+### R9 — The ladder ends at the vendor the model's name belongs to
+
+A gateway announces the ids it serves, and they are not the ones its table publishes. Measured on
+2026-09-11: `opencode_go` is configured `pricingProvider: "opencode-go"` and discovery reports
+`deepseek-flash`, while the `opencode-go` table carries `deepseek-v4.1-flash`. The provider rung
+misses, and so does the escalation that names the provider's own vendor (`vendorOf("opencode-go")`
+resolves to `opencode`, which does not carry the id either -- the model belongs to neither).
+
+The model kept its raw id as a label, offered no effort ladder at all and lost its vision flag. On
+the owner's thread that is not cosmetic: `tag:Cheap` routes to this model, so the chat's model
+picker offered no effort step anywhere, not even for a model publishing six rungs. The price fell
+to the cross-market median as well.
+
+The ladder therefore ends at the vendor the *model's name* designates: the longest `-`-separated
+prefix of the id (never shorter than three characters) that is a provider in the table, tried only
+after the endpoint that served the call has declined the id. `deepseek-flash` reaches `deepseek`,
+which publishes the id verbatim, with its name, its ladder `[low, high, max]`, its vision flag and
+its price.
+
+Two bounds hold it in place, and both are tested:
+
+- **Below the endpoint, always.** A model the gateway itself carries is described by the gateway:
+  the vendor rung must never answer first, or one model would be described by another's entry.
+- **Anchored on a resolved endpoint.** An unknown host still resolves nothing rather than borrowing
+  a table. Price reads the same rung, and returns a reference tariff (`billed: false`): the gateway
+  bills what it bills, and this is not its table.
+
 ## Verification criteria
 
 1. `deepseek-v4-flash` on `opencode_go` offers exactly `low, high, max` — not the global six.
@@ -197,3 +224,8 @@ action, paid in one 3.3 MB download per press, and a human does not press it in 
     paths still serve from cache until they expire.
 12. The vocabulary is checked against the live `models.dev` value space by a gated e2e test, so a
     new level published upstream is a failing test rather than a silently dropped rung.
+13. An id the configured table does not carry is described and priced by the vendor its name
+    designates: `deepseek-flash` on `opencode_go` gets `DeepSeek V4.1 Flash`, `low, high, max`,
+    vision, and `0.15/0.60` rather than the cross-market median.
+14. That rung never outranks a table that carries the id, and an unknown host still resolves
+    nothing.

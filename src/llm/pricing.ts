@@ -382,7 +382,14 @@ export class ModelPricing {
       // more informative half of the trace.
       const label = resolved.how === "host" ? fallbackLabel : resolved.how;
       const hit = this.lookupCost(provider, usage.model);
-      if (!hit) continue;
+      if (!hit) {
+        const vendor = this.vendorByModelId(usage.model);
+        const vendorHit = vendor ? this.lookupCost(vendor, usage.model) : undefined;
+        if (vendorHit && !isFree(vendorHit.cost)) {
+          return this.priced(usage, vendorHit.cost, false, vendorHit.approximate, `vendor ${vendor}`);
+        }
+        continue;
+      }
       if (!isFree(hit.cost)) return this.priced(usage, hit.cost, true, hit.approximate, `${label} ${provider}`);
       // Never report zero: climb from a flat plan to the vendor for a comparable figure.
       const vendor = this.vendorOf(provider);
@@ -391,6 +398,14 @@ export class ModelPricing {
         return this.priced(usage, vendorHit.cost, false, vendorHit.approximate, `plan ${provider} via ${vendor}`);
       }
     }
+
+    // 3. The vendor the model's name belongs to, when the endpoint resolved above carries the id
+    //    not at all. The escalation inside that loop answers a flat plan; this one answers an empty
+    //    table, which is otherwise a straight fall to the market median.
+    //
+    //    Anchored on a resolved endpoint, like every rung here: an unknown host still resolves
+    //    nothing rather than borrowing a table. See `metadataOf` for why the vendor is named by the
+    //    model and not by the provider (`opencode-go` resolves to `opencode`, which lacks the id).
 
     // 5. Last resort. A median describes what a model costs on the open market, not what this
     //    deployment pays for it, so it is never billed and always approximate.
@@ -512,7 +527,14 @@ export class ModelPricing {
     const resolved = this.resolveProvider(baseUrl);
     const rungs: Array<[string, string]> = [];
     if (engine) rungs.push([engine, `engine ${engine}`]);
-    if (resolved) rungs.push([resolved.provider, `${resolved.how} ${resolved.provider}`]);
+    if (resolved) {
+      rungs.push([resolved.provider, `${resolved.how} ${resolved.provider}`]);
+      // The endpoint, then the vendor the model's name belongs to. That vendor is not the endpoint's
+      // own (see `vendorByModelId`): it is the last rung before giving up on describing the model,
+      // and it stays below the table of the endpoint that actually served the call.
+      const vendor = this.vendorByModelId(model);
+      if (vendor && vendor !== resolved.provider && vendor !== engine) rungs.push([vendor, `vendor ${vendor}`]);
+    }
     for (const [provider, source] of rungs) {
       const hit = this.lookup(provider, model, (entry) => (describesModel(entry) ? entry : undefined));
       if (hit) return entryMetadata(hit.value, source);
@@ -574,6 +596,28 @@ export class ModelPricing {
     const parts = provider.split("-");
     for (let n = parts.length - 1; n >= 1; n--) {
       const candidate = parts.slice(0, n).join("-");
+      if (this.cache?.models[candidate]) return candidate;
+    }
+    return undefined;
+  }
+
+  /**
+   * The vendor a model id names, for the rung where no endpoint table answers -- measured live on
+   * 2026-09-11.
+   *
+   * `deepseek-flash` through the opencode gateway: that table carries `deepseek-v4.1-flash`, its
+   * vendor resolves to `opencode` which does not carry it either, so neither rung can describe it.
+   * The model's own name is the last evidence -- `deepseek` publishes the id verbatim -- and a
+   * vendor selling a model under its own name is how models.dev is seeded in the first place.
+   *
+   * Longest prefix first, never shorter than three characters. This runs only once every table that
+   * knows the id has declined it, so a wrong guess costs nothing that was not already missing.
+   */
+  private vendorByModelId(model: string): string | undefined {
+    const parts = model.toLowerCase().split("-");
+    for (let n = parts.length - 1; n >= 1; n--) {
+      const candidate = parts.slice(0, n).join("-");
+      if (candidate.length < 3) continue;
       if (this.cache?.models[candidate]) return candidate;
     }
     return undefined;
