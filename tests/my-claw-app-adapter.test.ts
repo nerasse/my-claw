@@ -797,6 +797,10 @@ describe("MyClawAppAdapter", () => {
     // The turn is on the branch: sending the same id again is receipted and goes no further.
     const log = await sessionLogOf(store.resolveSessionId(DEVICE_ID, "default"));
     log.append<UserEntry>({ type: "user", prompt: true, text: "bonjour" }, "m-receipt");
+    // Flushed before the resend: the duplicate check reads the log the manager holds, and a log
+    // reloaded from disk would not carry an append still sitting in memory -- which is how this
+    // test failed on a loaded CI runner while passing locally (2026-09-12).
+    await log.flush();
     sender.ws.send(JSON.stringify({ type: "chat.send", id: "m-receipt", text: "bonjour", threadId: "default" }));
     assert.deepEqual(await nextFrame(sender), { type: "chat.send.received", threadId: "default", id: "m-receipt" });
     await new Promise((r) => setTimeout(r, 100));
