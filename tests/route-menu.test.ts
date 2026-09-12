@@ -9,7 +9,11 @@ import {
   sortRoutes,
   type RouteOption,
 } from "../src/channels/route-menu.ts";
-import { clearOpenRouterCache } from "../src/llm/openrouter-endpoints.ts";
+import {
+  cachedOpenRouterProviderName,
+  clearOpenRouterCache,
+  openRouterProviderNames,
+} from "../src/llm/openrouter-endpoints.ts";
 import { ModelPicker } from "../src/channels/model-picker.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 
@@ -27,6 +31,17 @@ const ENDPOINTS = {
     ],
   },
 };
+
+const PROVIDERS = {
+  data: [
+    { name: "StreamLake", slug: "streamlake" },
+    { name: "OpenAI", slug: "openai" },
+  ],
+};
+
+function endpointsResponse(): Response {
+  return new Response(JSON.stringify(ENDPOINTS), { status: 200, headers: { "Content-Type": "application/json" } });
+}
 
 function config(): MyClawConfig {
   return {
@@ -92,13 +107,80 @@ test("the routes of a model are asked for under the id its provider knows", asyn
   }
 });
 
+/**
+ * A usage row spells its provider with the name OpenRouter publishes for it, read through an
+ * accessor that is forbidden from fetching (docs/status-command.md). Opening this menu is what
+ * fills that cache: it is already the one gesture that reaches OpenRouter about a model, and
+ * nothing else ever asked for the provider list.
+ */
+test("opening the route menu fills the provider names nothing else would ask for", async () => {
+  clearOpenRouterCache();
+  let providers = 0;
+  const mock = mockFetch(async (input) => {
+    if (!String(input).endsWith("/providers")) return endpointsResponse();
+    providers++;
+    return new Response(JSON.stringify(PROVIDERS), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  try {
+    assert.equal(cachedOpenRouterProviderName("streamlake"), undefined);
+
+    const routes = await routesFor(config(), "openrouter/openai/gpt-5.6-luna");
+    assert.deepEqual(routes.map((r) => r.tag), ["openai/flex", "azure/eu"]);
+    assert.equal(providers, 1);
+
+    // Joined instead of raced: a warm cache answers with no request at all, so the count standing
+    // still is what proves the menu's own lookup had already landed.
+    await openRouterProviderNames();
+    assert.equal(providers, 1);
+    assert.equal(cachedOpenRouterProviderName("streamlake"), "StreamLake");
+  } finally {
+    mock.restore();
+  }
+});
+
+/**
+ * The names are a decoration on a page nobody is looking at yet, and this menu is a gesture the
+ * owner is waiting on. The lookup is therefore started and never waited on, and it keeps its own
+ * failure: a cold cache leaves the usage rows on their verbatim tags, which is what they carried
+ * before the names existed.
+ */
+test("a provider list that hangs does not hold the menu, and a failed one names nothing", async () => {
+  clearOpenRouterCache();
+  let failProviders: ((err: Error) => void) | undefined;
+  const providers = new Promise<Response>((_resolve, reject) => {
+    failProviders = reject;
+  });
+  // Nothing awaits this one until the end of the test, so the rejection is claimed here rather
+  // than surfacing as the test's own unhandled error.
+  providers.catch(() => {});
+  const mock = mockFetch(async (input) => (String(input).endsWith("/providers") ? providers : endpointsResponse()));
+  try {
+    // Hangs on this line if the menu ever waits for the names.
+    const routes = await routesFor(config(), "openrouter/openai/gpt-5.6-luna");
+    assert.deepEqual(routes.map((r) => r.tag), ["openai/flex", "azure/eu"]);
+    assert.equal(cachedOpenRouterProviderName("streamlake"), undefined);
+
+    failProviders!(new Error("openrouter unreachable"));
+    // The lookup swallows it, so this resolves; what it leaves behind names nothing.
+    await openRouterProviderNames();
+    assert.equal(cachedOpenRouterProviderName("streamlake"), undefined);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("a model with a single route is never asked about", async () => {
   clearOpenRouterCache();
+  let asked = 0;
   const mock = mockFetch(async () => {
+    asked++;
     throw new Error("the network must not be touched for a model that cannot be pinned");
   });
   try {
     assert.deepEqual(await routesFor(config(), "litellm/qwen"), []);
+    // Counted, not only thrown: every OpenRouter lookup here swallows its own failure, so a
+    // request made for a model that cannot be pinned would leave no trace in the result.
+    assert.equal(asked, 0);
   } finally {
     mock.restore();
   }

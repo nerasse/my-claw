@@ -1,7 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { isOpenRouterBaseUrl } from "../llm/resolver.ts";
 import { formatModelRef, withoutEndpoint } from "../llm/model-ref.ts";
-import { openRouterEndpoints } from "../llm/openrouter-endpoints.ts";
+import { openRouterEndpoints, openRouterProviderNames } from "../llm/openrouter-endpoints.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 
@@ -96,6 +96,13 @@ export function routeChoiceFor(config: MyClawConfig, modelId: string): RouteChoi
 export async function routesFor(config: MyClawConfig, modelId: string): Promise<RouteOption[]> {
   const resolved = tryResolveRunModel(config, { agent: "main", forcedModel: modelId }, availabilityWorld());
   if (!resolved || !isOpenRouterBaseUrl(resolved.baseUrl)) return [];
+  // Started here and never waited on: this is the one gesture that already reaches OpenRouter for
+  // a model, and the names it caches are read elsewhere by a synchronous accessor that must never
+  // fetch (`cachedOpenRouterProviderName`, docs/status-command.md). Nothing in this menu draws
+  // them, so the opening must not pay for them -- and a failure is the lookup's own business: it
+  // logs once and caches the miss for a day, which leaves the accessor silent and the usage rows
+  // on their verbatim tags. The cache holds 24 h, so a menu opened again is free.
+  void openRouterProviderNames().catch(() => {});
   const endpoints = await openRouterEndpoints(resolved.apiModel ?? resolved.model);
   return endpoints.map((endpoint) => ({
     tag: endpoint.tag,

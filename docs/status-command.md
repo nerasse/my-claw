@@ -745,10 +745,17 @@ name is never part of an identity:
 - The app draws `providerName` when it is there and the tag when it is not, and that is the whole
   use of the field.
 
-Nothing warms that cache on a run path today: `openRouterProviderNames()` has no caller in `src/`,
-and the `/model` route menu fills the *endpoint* cache (15 minutes, one model at a time), not this
-one. The field is therefore absent until something asks for the provider list. That is the cache-only
-rule working as designed, not a failure to report.
+What fills that cache is **opening the route step of `/model`** (`routesFor`, `src/channels/route-menu.ts`).
+That gesture already reaches OpenRouter about a model, so it is the one place where asking for the
+provider list costs nothing new, and the run paths stay clear of it. The list is fetched once and
+held for 24 hours, so a menu opened again asks for nothing.
+
+It is started there and never waited on. The menu is a gesture the owner is waiting on and it draws
+no provider name at all -- those are for a page nobody is looking at yet -- so the opening must not
+pay for them, and must not fail for them either: the lookup logs its own failure once and caches the
+miss for a day, which leaves the accessor silent and the rows on their verbatim tags. That is the
+same degradation as a cache nobody has warmed yet, which is the state until the owner opens the menu
+for the first time.
 
 ## The model block of the payload
 
