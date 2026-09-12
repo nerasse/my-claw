@@ -143,6 +143,10 @@ export function availabilityOf(
     return world.codexAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
   }
   if (provider.type === "anthropic") {
+    // A provider that brings its own key is judged by that key: the subscription is what the type
+    // means when nothing else is declared, not what it always means.
+    const own = provider.apiKeyEnv;
+    if (own) return world.hasEnv(own) ? { state: "ready" } : { state: "no-key", provider: providerName, env: own };
     return world.claudeAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
   }
   // An openai-compatible provider needs its key. The resolver's own last-resort env names count:

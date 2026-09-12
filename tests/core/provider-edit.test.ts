@@ -85,13 +85,33 @@ describe("upsertProvider", () => {
     expect((await upsertProvider("ok", { type: "gemini" as never })).ok).toBe(false);
   });
 
-  test("openai needs a baseUrl, subscription types reject one and a key env", async () => {
+  test("openai needs a baseUrl, codex takes neither an endpoint nor a key env", async () => {
     await writeConfigFile();
     expect((await upsertProvider("naked", { type: "openai" })).ok).toBe(false);
-    expect((await upsertProvider("abo", { type: "anthropic", baseUrl: "https://x" })).ok).toBe(false);
-    expect((await upsertProvider("abo", { type: "codex", apiKeyEnv: "CODEX_KEY" })).ok).toBe(false);
+    expect((await upsertProvider("gpt", { type: "codex", baseUrl: "https://x" })).ok).toBe(false);
+    expect((await upsertProvider("gpt", { type: "codex", apiKeyEnv: "CODEX_KEY" })).ok).toBe(false);
     const ok = await upsertProvider("abo", { type: "anthropic", group: "Claude (abo)" });
     expect(ok.ok).toBe(true);
+  });
+
+  test("an anthropic provider may name its own endpoint and its own key env", async () => {
+    // The type is a transport, so it also serves an Anthropic-compatible backend: refusing the two
+    // fields is what used to make that unreachable without hand-editing config.json.
+    await writeConfigFile();
+    const created = await upsertProvider("zai", {
+      type: "anthropic",
+      baseUrl: "https://api.z.ai/api/anthropic",
+      apiKeyEnv: "ZAI_API_KEY",
+    });
+    expect(created.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.providers.zai).toEqual({
+      type: "anthropic",
+      baseUrl: "https://api.z.ai/api/anthropic",
+      apiKeyEnv: "ZAI_API_KEY",
+    });
+    // And declaring neither still means the subscription against Anthropic's own endpoint.
+    expect(file.llm.providers.anthropic).toEqual({ type: "anthropic", group: "Claude (abo)" });
   });
 });
 

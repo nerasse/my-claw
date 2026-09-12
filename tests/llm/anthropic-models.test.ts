@@ -88,7 +88,7 @@ test("fetchAnthropicModels: sends subscription auth and maps capabilities", asyn
   });
 
   try {
-    const models = await fetchAnthropicModels("tok-123");
+    const models = await fetchAnthropicModels({ authorization: "Bearer tok-123" });
     assert.match(seenUrl, /^https:\/\/api\.anthropic\.com\/v1\/models\?limit=100$/);
     assert.equal(seenHeaders["authorization"], "Bearer tok-123");
     assert.equal(seenHeaders["anthropic-version"], "2023-06-01");
@@ -115,7 +115,7 @@ test("fetchAnthropicModels: sends subscription auth and maps capabilities", asyn
 test("fetchAnthropicModels: a non-ok response throws so the caller keeps its cached set", async () => {
   const mock = mockFetch(async () => new Response("nope", { status: 401 }));
   try {
-    await assert.rejects(() => fetchAnthropicModels("bad"), /HTTP 401/);
+    await assert.rejects(() => fetchAnthropicModels({ authorization: "Bearer bad" }), /HTTP 401/);
   } finally {
     mock.restore();
   }

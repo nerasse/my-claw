@@ -120,8 +120,10 @@ export interface LlmProviderConfig {
   // "openai" (default) = OpenAI-compatible HTTP endpoint driven by the home agent loop.
   // "codex" = OpenAI ChatGPT subscription via the Responses backend (device-code OAuth,
   // home loop with the Codex transport).
-  // "anthropic" = Claude subscription on the home loop with the native Messages transport.
-  // See docs/anthropic-backend.md and docs/codex-backend.md.
+  // "anthropic" = Anthropic Messages transport on the home loop. Two independent knobs, each
+  // with its own default: `baseUrl` (api.anthropic.com) says where the request goes, `apiKeyEnv`
+  // (the Claude subscription token) says what signs it, so the type also serves an
+  // Anthropic-compatible backend. See docs/anthropic-backend.md and docs/codex-backend.md.
   type?: "openai" | "codex" | "anthropic";
   baseUrl?: string;
   apiKeyEnv?: string;
@@ -326,6 +328,10 @@ export interface ResolvedLlmConfig {
   // else understands that field. See docs/model-identity.md.
   providerRoute?: string;
   apiKey?: string;
+  // The env variable the key above was read from, carried only where its absence changes the
+  // request: an anthropic provider that declares one must fail rather than fall back to the
+  // subscription token. See docs/anthropic-backend.md.
+  apiKeyEnv?: string;
   headers?: Record<string, string>;
   vision?: boolean;
   limit?: {

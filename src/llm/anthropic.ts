@@ -4,7 +4,7 @@ import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
 import { log } from "../utils/logger.ts";
-import { loadClaudeToken } from "./claude-auth.ts";
+import { anthropicAuthHeaders } from "./anthropic-auth.ts";
 import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
@@ -735,8 +735,9 @@ async function runAnthropic(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
-    const token = await loadClaudeToken();
-    if (!token) throw new Error("No Claude subscription token. Run /claude login to mint one.");
+    // Inside the loop, not above it: a subscription token can be refreshed between two attempts.
+    const auth = await anthropicAuthHeaders({ apiKey: config.apiKey, apiKeyEnv: config.apiKeyEnv }, config.provider);
+    if (!auth) throw new Error("No Claude subscription token. Run /claude login to mint one.");
 
     const controller = new AbortController();
     let timedOut = false;
@@ -759,8 +760,8 @@ async function runAnthropic(
       const response = await fetch(url, llmFetchInit({
         method: "POST",
         headers: {
-          // x-api-key is never sent beside a bearer token.
-          authorization: `Bearer ${token}`,
+          // Exactly one credential header, never `x-api-key` beside a bearer token.
+          ...auth,
           "anthropic-version": "2023-06-01",
           "anthropic-beta": BETAS,
           "anthropic-dangerous-direct-browser-access": "true",

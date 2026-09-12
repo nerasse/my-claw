@@ -762,16 +762,18 @@ const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * A type's shape, checked against the *resulting* entry so a patch that flips the type is
- * validated the same way as one that builds it. SDK types hold no endpoint and no key of their
- * own: the Claude SDK and Codex backends own their token stores and their targets.
+ * validated the same way as one that builds it.
+ *
+ * `codex` is the one backend that owns both its target and its token store, so it takes neither
+ * field. `anthropic` declares them or defaults them (api.anthropic.com, the Claude subscription),
+ * which is what lets the type serve an Anthropic-compatible backend -- see
+ * docs/anthropic-backend.md.
  */
 function providerShapeError(spec: Record<string, unknown>): string | null {
   const type = spec["type"] ?? "openai";
-  if (spec["baseUrl"] && type !== "openai") {
-    return `${type} providers do not take a baseUrl (the backend owns its targets)`;
-  }
-  if (spec["apiKeyEnv"] && type !== "openai") {
-    return `${type} providers do not take an apiKeyEnv (subscription auth)`;
+  if (type === "codex") {
+    if (spec["baseUrl"]) return `${type} providers do not take a baseUrl (the backend owns its targets)`;
+    if (spec["apiKeyEnv"]) return `${type} providers do not take an apiKeyEnv (subscription auth)`;
   }
   if (type === "openai" && !spec["baseUrl"]) {
     return "openai providers need a baseUrl";

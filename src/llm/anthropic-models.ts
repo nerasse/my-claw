@@ -104,20 +104,28 @@ export function anthropicThinkingTypes(
 }
 
 /**
- * List the versioned Claude models the account can run. The Claude Agent SDK only exposes
+ * List the versioned Claude models this credential can run. The Claude Agent SDK only exposes
  * moving aliases (opus/sonnet/haiku), so this REST endpoint is the only way to pin a specific
  * version. The subscription OAuth token is accepted here — no separate API key needed.
+ *
+ * `auth` is the one credential header the provider resolved (`anthropicAuthHeaders`) rather than a
+ * bare token: an Anthropic-compatible backend authenticates with its own key, and a key and a
+ * bearer token do not travel under the same header name.
+ *
+ * A `baseUrl` that is not an absolute URL is the provider's default, not a relative path: fetch
+ * reads `/v1/models` as one and answers `TypeError [ERR_INVALID_URL]`, which names nothing.
  */
 export async function fetchAnthropicModels(
-  token: string,
-  baseUrl: string = ANTHROPIC_BASE_URL,
+  auth: Record<string, string>,
+  baseUrl?: string,
 ): Promise<DiscoveredAnthropicModel[]> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/v1/models?limit=100`;
+  const base = baseUrl?.startsWith("http") ? baseUrl : ANTHROPIC_BASE_URL;
+  const url = `${base.replace(/\/+$/, "")}/v1/models?limit=100`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVER_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}`, "anthropic-version": ANTHROPIC_VERSION },
+      headers: { ...auth, "anthropic-version": ANTHROPIC_VERSION },
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -1,5 +1,6 @@
 import type { AgentLlmConfig, EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ResolvedLlmConfig, TagConfig } from "../core/config.ts";
 import { tagNameOf, tagRouteOf } from "../core/config.ts";
+import { anthropicCredential } from "./anthropic-auth.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { parseModelRef } from "./model-ref.ts";
 import { cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
@@ -230,9 +231,12 @@ function resolveFromMerged(
   if (provider.type === "anthropic") {
     return {
       backend: "anthropic",
-      // Claude subscription on the home loop with the native Messages transport; the token is
-      // fetched by the transport, so no apiKey rides here. See docs/anthropic-backend.md.
+      // Anthropic Messages transport on the home loop. Where it points and what signs it are two
+      // independent declarations: a provider naming neither is the Claude subscription against
+      // api.anthropic.com, and then no apiKey rides here because the transport fetches the token
+      // itself. See docs/anthropic-backend.md.
       baseUrl: providerBaseUrl(provider),
+      ...anthropicCredential(provider),
       model: rawModelId,
       ...apiModel,
       provider: providerName,

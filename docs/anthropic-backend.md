@@ -488,6 +488,24 @@ touches auth.
 6. `OWNER_STEERING_NOTE` on this transport: same note, a different one, or none?
 7. P4 timing for the app release, since the union change is a breaking wire
    change that must ship in lockstep.
+8. Client fidelity toward an endpoint that is not Anthropic's. A provider with its
+   own credential still receives the whole captured identity: eight betas
+   including `claude-code-20250219`, the pinned `claude-cli/<v> (external,
+   sdk-cli)` user-agent, the eight `x-stainless-*`, the
+   `x-anthropic-billing-header` system block and the `mcp__myclaw__` tool prefix.
+   None of it means anything to a third-party gateway, one of them is a Claude
+   Code accounting field, and a strict endpoint may reject an unknown beta. Keep
+   the shape identical, or strip it to the plain Messages API when the provider
+   declares its own key?
+9. `promptCache` and `reasoningReplay` are provider switches the `anthropic`
+   branch of the resolver never propagates. Caching is deliberately not optional
+   here, but a compatible backend may place breakpoints differently or reject
+   `cache_control` outright -- and `reasoningReplay` is read by the transport
+   while nothing ever sets it.
+10. `utility-model.ts` picks a compaction model by scanning providers of type
+    `anthropic` for the same wire id. A second provider of that type can now
+    answer that scan, so a summarizer could land on another vendor's model that
+    happens to share an id.
 
 Answered by P0, kept here for the record: the beta list is the eight flags of the
 capture, not ex-machina's two; the user-agent suffix is `(external, sdk-cli)`;
@@ -525,7 +543,8 @@ keeps the old one, because dropping it would throw away the only way back in.
 
 ## It is a provider, not a special case
 
-Three things separated it from a plain litellm provider, all closed.
+Four things separated it from a plain litellm provider, all closed. The fourth, its endpoint and
+its key, has its own section below.
 
 **Compaction and memory consolidation used to refuse it.** Both callers forced their model onto a
 chat-completions one, so a 1M-context Opus session was summarized by whichever model sat at the top
@@ -568,6 +587,65 @@ and names nothing. It happens for real: a config naming a provider type the runn
 know falls through to the openai branch, which is exactly how an `anthropic` entry looked like a
 network error on the build before the one that understood it. It now names the provider and the
 missing field.
+
+## The type is a transport, not one endpoint with one credential
+
+`type: "anthropic"` used to mean three things at once: the Messages transport, `api.anthropic.com`,
+and the Claude subscription. The first is the type; the other two are defaults that were spelled as
+constants. Every other provider declares where it points and what signs it, and this one could not,
+so an Anthropic-compatible backend (a gateway, a capture proxy, a vendor serving `/v1/messages`)
+had no way in short of a second provider type.
+
+So the two are separated, each keeping its own default:
+
+| field | absent | declared |
+|---|---|---|
+| `baseUrl` | `https://api.anthropic.com` | that endpoint, for runs **and** for discovery |
+| `apiKeyEnv` | the Claude subscription token, as `authorization: Bearer` | `process.env[<name>]`, as `x-api-key` |
+
+```json
+"providers": {
+  "anthropic": { "type": "anthropic", "discover": true, "group": "Claude (abo)" },
+  "zai":       { "type": "anthropic", "baseUrl": "https://api.z.ai/api/anthropic",
+                 "apiKeyEnv": "ZAI_API_KEY", "discover": true, "group": "Z.ai" }
+}
+```
+
+The first entry is byte-for-byte the config that already ran, and it resolves exactly as it did:
+no new field is required anywhere, and nothing is migrated.
+
+**The two knobs are orthogonal on purpose.** A `baseUrl` alone still authenticates with the
+subscription, which is what makes a local logging proxy (`scripts/capture-anthropic-proxy.ts`)
+reachable as a provider rather than only as an env var on the `claude` binary. An `apiKeyEnv` alone
+still talks to Anthropic, which is the plain API-key account.
+
+**One credential header, never two.** An API key travels as `x-api-key`, the documented header for
+one; the subscription travels as a bearer token. `x-api-key` beside a bearer token is refused by
+the API and is an invariant of the captured client, so the two are produced by one function
+(`src/llm/anthropic-auth.ts`) that returns exactly one of them.
+
+**A declared key that is unset fails the run.** It does not fall back to the subscription. The
+resolved config therefore carries `apiKeyEnv` next to `apiKey`: "declared and empty" and "not
+declared" have to stay distinguishable, because collapsing them sends an `sk-ant-oat` subscription
+token to whatever third party the `baseUrl` names. One forgotten `export` is the whole distance
+between a 401 and a leaked credential.
+
+**The key is read from `apiKeyEnv` only**, never through the resolver's `resolveApiKey`. That
+helper ends on `FIREWORKS_API_KEY` / `OPENAI_API_KEY`, so reusing it would hand a subscription
+provider a stranger's key on any box that exports one -- a silent change of the default path, which
+is the one thing this must not do.
+
+What follows from the type being a transport: discovery reads `{baseUrl}/v1/models` under the same
+credential the run will use (a provider listed from one endpoint and talked to at another offers
+models the second does not serve), availability judges a keyed provider by its env variable instead
+of by the subscription token, and the app's provider editor accepts both fields for this type
+(`codex` still refuses them, being the one backend that really does own its target and its store).
+
+The request shape is unchanged for both. A keyed provider receives the same betas, the same pinned
+client identity, the same billing block and the same `mcp__myclaw__` tool names as the
+subscription: fidelity is a decision of its own (see [Fidelity](#fidelity)) and this change does not
+reopen it. Whether any of it should be dropped when the endpoint is not Anthropic's is an open
+question, listed below.
 
 ## Reasoning is shown, which is the one field we differ on
 

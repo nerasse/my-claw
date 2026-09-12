@@ -22,9 +22,9 @@ Fields the app can write (`providers.upsert`, one payload for create and edit):
 
 | field | meaning |
 |---|---|
-| `providerType` | `"openai"` (default), `"claude-sdk"`, `"codex"`. The frame's own `type` discriminates the message, so the engine field is renamed on the wire. |
-| `baseUrl` | openai only, required. |
-| `apiKeyEnv` | openai only: the *name* of the env var, never the value. |
+| `providerType` | `"openai"` (default), `"anthropic"`, `"codex"`. The frame's own `type` discriminates the message, so the engine field is renamed on the wire. |
+| `baseUrl` | openai (required) and anthropic (optional, defaults to api.anthropic.com). |
+| `apiKeyEnv` | openai and anthropic: the *name* of the env var, never the value. On anthropic, absent means the Claude subscription (docs/anthropic-backend.md). |
 | `group` | picker group label (docs/model-discovery.md). |
 | `discover` | auto-discover this provider's models. |
 | `promptCache` | openai only (docs/prompt-caching.md). |
@@ -34,8 +34,10 @@ Fields the app can write (`providers.upsert`, one payload for create and edit):
 
 Empty optional strings delete the field (the file never carries settings that say nothing);
 an absent field leaves the entry untouched. The resulting entry must pass the shape check:
-openai needs a `baseUrl`; claude-sdk and codex refuse both `baseUrl` and `apiKeyEnv` -- those
-backends own their targets and their token stores (docs/claude-sdk-backend.md, docs/codex-backend.md).
+openai needs a `baseUrl`; codex refuses both `baseUrl` and `apiKeyEnv`, because it is the one
+backend that owns its target and its token store (docs/codex-backend.md). anthropic takes both and
+defaults both, which is what lets one transport serve the Claude subscription and an
+Anthropic-compatible backend (docs/anthropic-backend.md).
 
 The key itself is validated like the MCP names (`/^[a-z0-9][a-z0-9_-]*$/`) and `tags` is
 reserved: the `tags` row of the providers listing is synthetic, it has no config entry.

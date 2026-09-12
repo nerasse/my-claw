@@ -194,6 +194,32 @@ describe("availability", () => {
     });
   });
 
+  test("an anthropic provider with its own key is judged by that key, not by the subscription", () => {
+    // Two providers on the same transport, authenticated differently: judging both by the
+    // subscription would hide a keyed backend's models on a box that never logged into Claude.
+    const mixed = config({
+      llm: {
+        defaultProvider: "abo",
+        defaultModel: "claude-sonnet-5",
+        providers: {
+          abo: { type: "anthropic" as const },
+          zai: { type: "anthropic" as const, baseUrl: "https://api.z.ai/api/anthropic", apiKeyEnv: "ZAI_API_KEY" },
+        },
+        models: [
+          { id: "claude-sonnet-5", label: "Sonnet 5", provider: "abo" },
+          { id: "glm-5", label: "GLM 5", provider: "zai" },
+        ],
+      },
+    });
+    const noKey = world({ claudeAuth: true, hasEnv: () => false });
+    expect(availabilityOf(mixed.llm, "glm-5", noKey)).toEqual({ state: "no-key", provider: "zai", env: "ZAI_API_KEY" });
+    expect(availabilityOf(mixed.llm, "claude-sonnet-5", noKey)).toEqual({ state: "ready" });
+
+    const noSub = world({ claudeAuth: false, hasEnv: () => true });
+    expect(availabilityOf(mixed.llm, "glm-5", noSub)).toEqual({ state: "ready" });
+    expect(availabilityOf(mixed.llm, "claude-sonnet-5", noSub)).toEqual({ state: "no-auth", provider: "abo" });
+  });
+
   test("a picker only offers what can run", () => {
     const w = world({ claudeAuth: false, hasEnv: () => false });
     expect(runnableModels(config().llm, w).map((m) => m.id)).toEqual(["gpt-5.6-sol"]);

@@ -3,7 +3,7 @@ import { EFFORT_ORDER } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
-import { loadClaudeToken } from "./claude-auth.ts";
+import { anthropicAuthHeaders, anthropicCredential } from "./anthropic-auth.ts";
 import { fetchAnthropicModels } from "./anthropic-models.ts";
 import { providerBaseUrl } from "./resolver.ts";
 import { cachedOpenRouterModel, cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
@@ -424,9 +424,12 @@ export class ModelCatalog {
    * family only orders them: the label already says which is which.
    */
   private async claudeVersionedModels(name: string, provider: LlmProviderConfig): Promise<LlmModelConfig[]> {
-    const token = await loadClaudeToken();
-    if (!token) return [];
-    const models = await fetchAnthropicModels(token);
+    // Discovery reads the same endpoint the run will send to, under the same credential: a
+    // provider listed from api.anthropic.com and then talked to elsewhere would offer models the
+    // other backend does not serve.
+    const auth = await anthropicAuthHeaders(anthropicCredential(provider), name);
+    if (!auth) return [];
+    const models = await fetchAnthropicModels(auth, provider.baseUrl);
     return models.map((m) => discoveredModel({
       id: m.id,
       label: m.label,
