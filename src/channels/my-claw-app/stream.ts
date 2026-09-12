@@ -44,6 +44,8 @@ export class MyClawAppStreamer {
   private spawnCardIds = new Map<string, string>();
   /** Bubble id per segment, minted on first use. */
   private segmentIds: string[] = [];
+  /** ISO instant the open thinking phase began, while one is open -- see `openSpan`. */
+  private reasoningSince: string | undefined;
   /** Bubble ids not yet taken by the recorder, oldest first. */
   private unclaimed: string[] = [];
   private errorBubbleId: string | undefined;
@@ -263,6 +265,7 @@ export class MyClawAppStreamer {
       id: this.currentId(),
       threadId: this.opts.threadId,
       text: delta,
+      ...this.openSpan(),
     });
   }
 
@@ -275,7 +278,25 @@ export class MyClawAppStreamer {
       id: this.currentId(),
       threadId: this.opts.threadId,
       tokens,
+      ...this.openSpan(),
     });
+  }
+
+  /**
+   * Opens the thinking span if none is open, and answers the instant for the frame that opens it.
+   *
+   * The instant travels rather than an elapsed time, like `chat.compacting` does: the client turns
+   * it into a counter, and a window reloading mid-thought is replayed that same opening frame
+   * (`live-turn.ts` merges a subject's deltas onto its first one), so the span it draws is the one
+   * that has been running rather than a fresh zero.
+   *
+   * Only the opening frame carries it. The ones that follow would move the start of a span still
+   * running, and the phase ends where the segmenter ends it: the seal, which is what clears this.
+   */
+  private openSpan(): { since?: string } {
+    if (this.reasoningSince !== undefined) return {};
+    this.reasoningSince = new Date().toISOString();
+    return { since: this.reasoningSince };
   }
 
   /**
@@ -299,6 +320,9 @@ export class MyClawAppStreamer {
     }
     this.segmentText = "";
     this.emittedText = "";
+    // The thinking span belongs to the bubble that was sealed: the next thought is another phase,
+    // and it opens its own.
+    this.reasoningSince = undefined;
   }
 
   /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */

@@ -217,3 +217,65 @@ test("reasoning and text keep their order under interleaved pushes", async () =>
   expect(textOf(frames, bubbleId(frames, 0))).toBe("t1");
   expect(textOf(frames, bubbleId(frames, 1))).toBe("t2");
 });
+
+/**
+ * The counter used to restart at zero whenever a window reloaded mid-thought: the frame carried no
+ * instant, so the client had nothing to date the span from but its own arrival.
+ * See docs/reasoning-visibility.md.
+ */
+describe("the thinking span carries the instant it opened", () => {
+  function sinces(frames: MyClawAppServerFrame[]): Array<string | undefined> {
+    return frames
+      .filter((f) => f.type === "chat.reasoning.delta" || f.type === "chat.reasoning.tokens")
+      .map((f) => ("since" in f ? f.since : undefined));
+  }
+
+  test("the first delta of a phase dates it, and the ones that follow do not", async () => {
+    const before = Date.now();
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("weighing ");
+    await streamer.pushReasoning("options");
+
+    const [first, second, ...rest] = sinces(frames);
+    expect(rest).toHaveLength(0);
+    expect(Date.parse(first!)).toBeGreaterThanOrEqual(before);
+    // A second instant would move the start of a span that is still running.
+    expect(second).toBeUndefined();
+  });
+
+  test("the next phase opens its own span, so a second thought is not dated by the first", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("first thought");
+    await streamer.push("first answer");
+    await streamer.pushReasoning("second thought");
+    await streamer.finish();
+
+    const dated = frames.filter(
+      (f): f is MyClawAppServerFrame & { type: "chat.reasoning.delta"; id: string; since?: string } =>
+        f.type === "chat.reasoning.delta",
+    );
+    // Two bubbles, each dated: the seal closes the span, so the thought after the answer is timed
+    // from itself. Held undated, the client would date the second phase from the first one's start
+    // and report the answer in between as thinking.
+    expect(dated.map((f) => f.id)).toEqual([bubbleId(frames, 0), bubbleId(frames, 1)]);
+    expect(dated.every((f) => typeof f.since === "string")).toBe(true);
+  });
+
+  test("a redacted engine dates its count the same way, since the span is just as long", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoningTokens(128);
+    await streamer.pushReasoningTokens(640);
+
+    expect(sinces(frames)[0]).toBeTypeOf("string");
+    expect(sinces(frames)[1]).toBeUndefined();
+  });
+
+  test("text and a count share one span while the phase is open", async () => {
+    // The phase is the bubble, whatever fills it: an engine reporting both must not date the same
+    // thinking twice, or the client would restart a running counter on the second frame.
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("still weighing");
+    await streamer.pushReasoningTokens(64);
+    expect(sinces(frames).filter((since) => since !== undefined)).toHaveLength(1);
+  });
+});

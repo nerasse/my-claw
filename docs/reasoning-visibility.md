@@ -234,10 +234,10 @@ Two additive server frames, and one additive history field.
 
 ```ts
 /** Incremental reasoning for the bubble `id`. Text engines only. */
-{ type: "chat.reasoning.delta"; id: string; threadId: string; text: string }
+{ type: "chat.reasoning.delta"; id: string; threadId: string; text: string; since?: string }
 
 /** Running estimate while a redacted engine thinks. No text will follow. */
-{ type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number }
+{ type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number; since?: string }
 ```
 
 `MyClawAppHistoryEntry`'s assistant entry gains `reasoning?: string`, filled by
@@ -251,6 +251,31 @@ dropping it made a reopened thread jump from the question straight to a tool car
 No lockstep release. The app validates incoming frames against a `Set` (`protocol.ts:872`), so an
 older app drops both frames and renders exactly what it renders today; a newer app on an older
 server simply never receives them.
+
+### `since`: the span survives the window that was watching it
+
+A turn that settles carries its duration (`reasoningMs`, below). The turn **in flight** did not: the
+frames carried no instant, so the client dated the span from the moment the first one reached it,
+and a window reloading mid-thought started a new counter from zero on a thought that had been
+running for forty seconds. The stored duration then contradicted what the reader had just watched.
+
+`since` is the ISO instant the phase opened, server side, put on the frame that opens the phase --
+the first delta, or the first token count for a redacted engine, whichever fills the bubble first.
+An instant and not an elapsed time, for the reason `chat.compacting.since` carries one: a state
+replayed to a window that arrives late cannot be a number that was true when it was computed.
+
+Only the opening frame carries it, and that is what makes the replay work rather than something it
+has to work around. `LiveTurnJournal` merges every delta of one subject onto the first one, so the
+single frame a reloading window is served is the one holding the instant. The frames that follow
+carry nothing on purpose: a second instant would move the start of a span still running.
+
+The phase ends where the segmenter ends it. The streamer clears the span when it seals a bubble
+(`sealSegment`), so thinking that follows an answer is timed from itself -- the same cut
+`sealBeforeReasoning` already makes for the bubbles, applied to their clocks.
+
+Both fields are optional and additive. An older app ignores them (`parseServerFrame` validates the
+frame `type` and nothing else), and against an older server the app keeps dating the span from its
+own `Date.now()`, which is what it did before.
 
 ## Streamer semantics
 
@@ -307,6 +332,16 @@ plus `appendReasoning(threadId, id, delta)` and `setReasoningTokens(...)`, accum
 same `streams`-style map so a late frame for a closed bubble is ignored rather than resurrecting it.
 `endStream` keeps an item when `reasoning` or `reasoningTokens` is present. `seedHistory` reads the
 new history field.
+
+Both take the frame's `since`. It **replaces** the local start when it is there, and the store falls
+back to its own `Date.now()` when it is not (an older server, or a frame inside an open phase). An
+unparseable value is treated as absent: the fallback is the local clock, never a `NaN` written onto
+the item.
+
+The span is sealed into `reasoningMs` by the first word of the answer, and a span that does not
+measure as positive is not written at all -- the same rule `ReasoningSegmenter` applies to the
+stored phase. Zero is what a phase that never happened looks like, and with the two ends of the
+span now read from two clocks it is also what a device running ahead of the server would produce.
 
 ## UI/UX
 

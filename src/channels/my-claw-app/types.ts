@@ -1466,6 +1466,16 @@ export interface MyClawAppReasoningDelta {
   text: string;
   /** Whole text rather than a chunk, replaced by the client. See MyClawAppStreamDelta.replay. */
   replay?: boolean;
+  /**
+   * ISO instant this thinking phase began, on the frame that opens it and on the replay of that
+   * frame. An instant and not an elapsed time, for the reason MyClawAppChatCompacting.since carries
+   * one: the client dates the span from it, so a window that reloads mid-thought resumes the
+   * counter where it stands instead of restarting it at zero.
+   *
+   * The frames that follow within the phase carry nothing: the client already has the instant, and
+   * a second one would move the start of a span that is still running.
+   */
+  since?: string;
 }
 
 /**
@@ -1477,6 +1487,9 @@ export interface MyClawAppReasoningTokens {
   id: string;
   threadId: string;
   tokens: number;
+  /** ISO instant this thinking phase began. Same rule as MyClawAppReasoningDelta.since: a redacted
+   *  engine reports a count and no text, and the span is just as long. */
+  since?: string;
 }
 
 export interface MyClawAppStreamDone {

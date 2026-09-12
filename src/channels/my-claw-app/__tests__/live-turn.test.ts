@@ -13,6 +13,10 @@ function delta(id: string, text: string): MyClawAppServerFrame {
   return { type: "chat.stream.delta", id, threadId: THREAD, text };
 }
 
+function reasoning(id: string, text: string, since?: string): MyClawAppServerFrame {
+  return { type: "chat.reasoning.delta", id, threadId: THREAD, text, ...(since === undefined ? {} : { since }) };
+}
+
 function toolStart(id: string): MyClawAppServerFrame {
   return { type: "chat.tool.start", id, threadId: THREAD, turnId: "turn-1", name: "bash", args: { command: "ls" }, ts: "2026-01-01T00:00:00.000Z" };
 }
@@ -73,6 +77,27 @@ describe("live turn journal", () => {
       "",
       "autre bulle",
     ]);
+  });
+
+  /**
+   * The reload this class exists for is exactly the case the thinking counter lost: the window
+   * comes back mid-thought and the merged delta is all it gets, so the instant the phase opened has
+   * to survive the merge or the counter restarts at zero -- docs/reasoning-visibility.md.
+   */
+  test("the merged thinking delta keeps the instant its first chunk opened the span with", () => {
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.record(OWNER, THREAD, streamStart("s1"));
+    live.record(OWNER, THREAD, reasoning("s1", "weighing ", "2026-01-01T00:00:00.000Z"));
+    live.record(OWNER, THREAD, reasoning("s1", "options"));
+
+    const replay = live.replay(OWNER, THREAD);
+    expect(types(replay)).toEqual(["chat.stream.start", "chat.reasoning.delta"]);
+    const merged = replay[1] as MyClawAppServerFrame & { type: "chat.reasoning.delta" };
+    expect(merged.text).toBe("weighing options");
+    expect(merged.replay).toBe(true);
+    // The chunks that followed carry no instant, and merging must not let them erase the one.
+    expect(merged.since).toBe("2026-01-01T00:00:00.000Z");
   });
 
   test("forgets a bubble the moment it closes: the session serves it from there", () => {
