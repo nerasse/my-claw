@@ -427,6 +427,18 @@ Depuis :
   entrée `compaction`. Cette paire-là seulement : un refus, ou un moteur qui a résumé sans écrire
   de frontière, garde sa ligne, qui est sa seule trace.
 
+### Dix bulles qui resteront sans frontière
+
+Une chose ne se répare pas après coup. Dix `/compact` du fil de référence répondent
+`Context compacted (SDK session summarized).` sans qu'aucune entrée `compaction` les suive. Ce texte
+venait du backend **Claude Agent SDK**, retiré en 0.4.31 (commit `5b9680d`) : la compaction avait
+bien lieu, mais de l'autre côté de la frontière, le CLI réécrivant sa propre transcription. Le log
+de my-claw n'avait donc aucune coupe à border, et il ne doit pas en recevoir une après coup :
+`firstKeptEntryId`, `count` et `tokensBefore` n'ont pas de valeur honnête pour ces dix, et
+`contextEntries` les **lit** pour projeter le prompt. Une frontière fabriquée sortirait réellement
+des tours d'un fil vivant. Ces bulles portent leur résumé (12 761 à 22 726 caractères mesurés) :
+elles sont leur propre trace, et la seule.
+
 Côté app, un piège d'ordonnancement : le serveur envoie `chat.command.pending` au bout de 400 ms,
 et une compaction n'annonce son départ qu'une fois le log de session chargé, ce qui est plus long
 sur un fil long. La compaction en cours est donc un **état du fil** (app ≥ 0.6.42), dessiné comme
