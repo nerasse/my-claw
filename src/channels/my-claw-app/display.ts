@@ -628,7 +628,14 @@ export function displayOf(
       // Stored as a user turn because that is the role the prompt needs it in; drawn as a boundary
       // because replayed as a user turn it reads as a wall of `[Prior context summarized]` in the
       // owner's own voice. The turns it stands for are still above it, in full.
-      out.push(withRun({ id: entry.id, role: "user", text: entry.summary, ts, summaryOf: entry.count }));
+      out.push(withRun({
+        id: entry.id,
+        role: "user",
+        text: entry.summary,
+        ts,
+        summaryOf: entry.count,
+        ...(entry.compactionMs !== undefined ? { compactionMs: entry.compactionMs } : {}),
+      }));
       continue;
     }
 

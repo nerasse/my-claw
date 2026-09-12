@@ -142,6 +142,12 @@ export interface CompactionEntry extends EntryBase {
   firstKeptEntryId: string;
   tokensBefore: number;
   count: number;
+  /**
+   * How long the summary took to write, so a replayed boundary shows it the way a replayed
+   * thinking phase shows its own span -- docs/reasoning-visibility.md. Absent on a boundary
+   * written before this was measured, and drawn as nothing rather than as a zero.
+   */
+  compactionMs?: number;
 }
 
 export interface ModelChangeEntry extends EntryBase {

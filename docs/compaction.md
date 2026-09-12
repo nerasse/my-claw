@@ -222,6 +222,22 @@ L'effort n'est pas le levier non plus : `reasoning_effort` n'est pas transmis po
 résolveur l'applique au modèle déclaré, et rien ne le demande ici), et le forcer ne change pas le
 volume de raisonnement mesuré.
 
+### La durée du résumé est écrite sur la frontière
+
+Le compteur qui tourne pendant la compaction vit dans l'app, et il meurt avec elle : une frontière
+relue une heure plus tard ne disait plus combien de temps l'opération avait pris. C'est le même trou
+que la durée d'un thinking avant 0.7.11, et la réponse est la même : `summarizeForCompaction`
+mesure son propre appel et rend un `elapsedMs`, que `commitCompaction` écrit sur l'entrée
+(`compactionMs`). Une horloge injectable (`now`, défaut `Date.now`) permet de tester une valeur et
+non une fourchette.
+
+Contrairement au thinking, un span nul est écrit : là-bas un zéro veut dire qu'aucun raisonnement
+n'est jamais arrivé, ici il veut dire qu'un résumé a été produit instantanément. Le canal le porte
+tel quel, et l'app ne dessine rien quand le champ est absent -- une frontière d'avant la mesure.
+
+La somme des deux moitiés, la spéculation incluse : un résumé armé en arrière-plan garde la durée de
+son propre appel, pas celle du moment où il est réclamé.
+
 ### L'appel est streamé, et pourquoi il doit l'être
 
 `summarizeForCompaction` passe par `llmCompleteStream`, pas par `llmComplete`. Ce n'est pas un

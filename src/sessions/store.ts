@@ -62,6 +62,11 @@ export type SessionMessage =
        * it read before, a `[Prior context summarized]` block in the composer's own voice.
        */
       summaryOf?: number;
+      /**
+       * How long the summary took to write, carried to the replayed boundary so the thread shows
+       * it without having watched the compaction run. Display-only, like `summaryOf`.
+       */
+      compactionMs?: number;
     }
   | {
       role: "assistant";

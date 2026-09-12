@@ -430,3 +430,60 @@ test("a compaction that succeeds settles too", async () => {
     fetchMock.restore();
   }
 });
+
+/**
+ * The duration of a compaction, written on the boundary (2026-09-12).
+ *
+ * Same reason the thinking span is measured at the stream: it is a fact about the turn, and a
+ * thread reopened an hour later cannot re-measure it. The clock is injected so the assertion is a
+ * value and not a range.
+ */
+test("the boundary keeps how long the summary took, and replays it", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const fetchMock = mockFetch(async () =>
+    sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }) as never,
+  );
+
+  try {
+    // First read is the start, every later read is the end: 4 250 ms of summary.
+    let clock = 1_000;
+    const now = (): number => {
+      const value = clock;
+      clock += 4_250;
+      return value;
+    };
+    const result = await compactSession(makeConfig(), session, undefined, undefined, now);
+    assert.equal(result.ok, true);
+    assert.equal(result.boundary?.compactionMs, 4_250);
+
+    await log.flush();
+    const entry = log.entries().find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
+    assert.equal(entry?.compactionMs, 4_250);
+  } finally {
+    // A fetch mock left standing is shared by every other test file in the run: it answered the
+    // adapter's own requests with a stream and took 21 of them down.
+    fetchMock.restore();
+  }
+});
+
+test("a zero span is written as a zero, not dropped", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const fetchMock = mockFetch(async () =>
+    sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }) as never,
+  );
+
+  try {
+    // A clock that never advances is a zero span, which is written rather than dropped here: only the
+    // thinking path drops a zero, because there a zero means nothing was ever streamed.
+    await compactSession(makeConfig(), session, undefined, undefined, () => 7);
+    await log.flush();
+    const entry = log.entries().find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
+    assert.equal(entry?.compactionMs, 0);
+  } finally {
+    fetchMock.restore();
+  }
+});

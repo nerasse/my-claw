@@ -1251,6 +1251,12 @@ export type MyClawAppHistoryEntry =
        * addressed to the model, and the turns it stands for are replayed above it in full.
        */
       summaryOf?: number;
+      /**
+       * How long the summary took to write, in milliseconds. Carried to the replayed boundary for
+       * the same reason the thinking span is: the duration is a fact about the turn, and a thread
+       * reopened an hour later cannot re-measure it -- docs/reasoning-visibility.md.
+       */
+      compactionMs?: number;
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
     }

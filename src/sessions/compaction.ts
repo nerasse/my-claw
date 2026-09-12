@@ -96,7 +96,7 @@ export interface CompactionResult {
    * the turns the summary stands for, which is what the boundary says and is not derivable from
    * `beforeCount - afterCount` (the tail and the summary itself are in neither).
    */
-  boundary?: { entryId: string; count: number };
+  boundary?: { entryId: string; count: number; compactionMs?: number };
 }
 
 /**
@@ -314,7 +314,9 @@ const REFUSAL_PATTERNS = [
   /^en tant qu('|e )ia/i,
 ];
 
-export type SummaryResult = { ok: true; summary: string } | { ok: false; reason: string };
+export type SummaryResult =
+  | { ok: true; summary: string; elapsedMs: number }
+  | { ok: false; reason: string };
 
 /**
  * Run the summarizer for a plan.
@@ -332,6 +334,7 @@ export async function summarizeForCompaction(
   instructions?: string,
   signal?: AbortSignal,
   caller: "compaction" | "compaction-speculative" = "compaction",
+  now: () => number = Date.now,
 ): Promise<SummaryResult> {
   const serialized = serializeEntriesForCompaction(plan.middle);
   const prompt = plan.previousSummary
@@ -359,7 +362,7 @@ export async function summarizeForCompaction(
     cacheKey: resolved.cacheKey ?? session.id,
   };
 
-  const startedAt = Date.now();
+  const startedAt = now();
   // Streamed, not a single blocking call. The budget a transport enforces is "time with not one
   // byte received": a stream rearms it at every chunk and measures silence, while a one-shot call
   // turns it into a hard ceiling on the whole operation -- prompt prefill plus a 20k-token summary.
@@ -422,11 +425,16 @@ export async function summarizeForCompaction(
   // The anchor is computed over the whole branch, not over `middle`: a path the tail still shows is
   // one the next turn is most likely to need, and naming it twice costs a line.
   const anchor = fileAnchorOf(plan.entries);
-  return { ok: true, summary: anchor ? `${summary}\n\n${anchor}` : summary };
+  return { ok: true, summary: anchor ? `${summary}\n\n${anchor}` : summary, elapsedMs: now() - startedAt };
 }
 
 /** Append the boundary. The turns it stands for stay on disk and stay on screen. */
-export async function commitCompaction(log: SessionLog, plan: CompactionPlan, summary: string): Promise<CompactionEntry> {
+export async function commitCompaction(
+  log: SessionLog,
+  plan: CompactionPlan,
+  summary: string,
+  compactionMs?: number,
+): Promise<CompactionEntry> {
   const entry = log.append<CompactionEntry>({
     type: "compaction",
     prompt: true,
@@ -434,6 +442,7 @@ export async function commitCompaction(log: SessionLog, plan: CompactionPlan, su
     firstKeptEntryId: plan.firstKeptEntryId,
     tokensBefore: plan.tokensBefore,
     count: plan.middle.length,
+    ...(compactionMs !== undefined ? { compactionMs } : {}),
   });
   await log.flush();
   return entry;
@@ -464,6 +473,7 @@ export async function compactSession(
   session: SessionData,
   instructions?: string,
   signal?: AbortSignal,
+  now: () => number = Date.now,
 ): Promise<CompactionResult> {
   const log = await sessionLogOf(session.id);
   const planned = planCompaction(log, tailBudgetFor(config, session));
@@ -482,11 +492,11 @@ export async function compactSession(
     const beforeCount = plan.entries.length;
 
     try {
-      const summarized = await summarizeForCompaction(config, session, plan, instructions, signal);
+      const summarized = await summarizeForCompaction(config, session, plan, instructions, signal, "compaction", now);
       if (!summarized.ok) {
         return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
       }
-      const boundary = await commitCompaction(log, plan, summarized.summary);
+      const boundary = await commitCompaction(log, plan, summarized.summary, summarized.elapsedMs);
       session.lastActiveAt = new Date().toISOString();
       const afterCount = contextEntries(log.entries(), log.leaf()).length;
       hooks.emit("session:compact:end", {
@@ -500,7 +510,7 @@ export async function compactSession(
         beforeCount,
         afterCount,
         summary: summarized.summary,
-        boundary: { entryId: boundary.id, count: boundary.count },
+        boundary: { entryId: boundary.id, count: boundary.count, compactionMs: summarized.elapsedMs },
       };
     } catch (err) {
       // An abort is the owner stopping the run, not a compaction that failed on its own terms.

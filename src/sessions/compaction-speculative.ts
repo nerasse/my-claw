@@ -33,6 +33,7 @@ import { isAbort } from "../core/aborted.ts";
 interface Armed {
   plan: CompactionPlan;
   summary: string;
+  elapsedMs: number;
 }
 
 /**
@@ -166,7 +167,7 @@ export function startSpeculation(config: MyClawConfig, session: SessionData): vo
       // The controller is aborted by `cancelSpeculation`, which also clears the map: arming here
       // would resurrect a summary a manual compaction has already superseded.
       if (controller.signal.aborted) return;
-      armed.set(sessionId, { plan: planned.plan, summary: summarized.summary });
+      armed.set(sessionId, { plan: planned.plan, summary: summarized.summary, elapsedMs: summarized.elapsedMs });
       void logLine("info", "speculative compaction armed", {
         sessionId,
         covered: planned.plan.middle.length,
@@ -201,7 +202,7 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
     return undefined;
   }
 
-  const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary);
+  const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary, entry.elapsedMs);
   session.lastActiveAt = new Date().toISOString();
   const afterCount = contextEntries(sessionLog.entries(), sessionLog.leaf()).length;
   void logLine("info", "speculative compaction claimed", { sessionId: session.id, beforeCount: before, afterCount });
@@ -210,6 +211,6 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
     beforeCount: before,
     afterCount,
     summary: entry.summary,
-    boundary: { entryId: boundary.id, count: boundary.count },
+    boundary: { entryId: boundary.id, count: boundary.count, compactionMs: entry.elapsedMs },
   };
 }

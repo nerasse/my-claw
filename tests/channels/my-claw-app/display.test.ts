@@ -359,6 +359,22 @@ describe("displayOf: what is shown and never sent", () => {
     // The summary alone: the instructions wrapped around it are addressed to the model.
     expect(drawn.text).toBe("resume");
   });
+
+  test("a boundary replayed from history carries how long the summary took", () => {
+    // The device that watched it run has the counter; the one that opens the thread later has
+    // nothing to count from unless the span travelled -- the same gap the thinking duration had.
+    const entries = chain([
+      { type: "compaction", prompt: true, summary: "resume", firstKeptEntryId: "x", tokensBefore: 900, count: 12, compactionMs: 84_500 },
+    ]);
+    expect(show(entries)[0]).toMatchObject({ role: "user", summaryOf: 12, compactionMs: 84_500 });
+  });
+
+  test("a boundary nobody timed shows no span rather than a zero", () => {
+    const entries = chain([
+      { type: "compaction", prompt: true, summary: "resume", firstKeptEntryId: "x", tokensBefore: 900, count: 12 },
+    ]);
+    expect(show(entries)[0]).not.toHaveProperty("compactionMs");
+  });
 });
 
 describe("pageOf", () => {
