@@ -11,6 +11,8 @@ import type { SubAgentMeta } from "../../src/sessions/store.ts";
 import { chatModel } from "../../src/llm/chat-model.ts";
 import { setSharedPricing } from "../../src/llm/pricing.ts";
 import { saveSessionWithLog } from "../helpers/session-log.ts";
+import { openRouterProviderNames } from "../../src/llm/openrouter-endpoints.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 /**
  * The price table, written to disk rather than fetched. `rates` lets a test move a model's price:
@@ -421,6 +423,46 @@ test("a model row says where it went, and keeps the route out of the name", asyn
   // The two providers of one model are two rows, and only the provider tells them apart.
   const robots = rows.filter((r) => r.model === "claude-opus-5").map((r) => r.provider).sort();
   expect(robots).toEqual(["api.anthropic.com", "claude-sdk"]);
+});
+
+/**
+ * `streamlake` is the right key and a poor label. The name beside it is OpenRouter's own, read from
+ * the cache alone: the report is drawn synchronously, so a cold catalogue drops the decoration
+ * rather than making the page wait for it.
+ */
+test("a routed row carries the provider's own name beside the tag, and the tag whatever happens", async () => {
+  const sessionId = "my-claw-app/thread/o/provider-names";
+  call(sessionId, { model: "z-ai/glm-5.2@streamlake/fp8", baseUrl: "https://openrouter.ai/api/v1" });
+  call(sessionId, { model: "moonshot/kimi-k3@ghost-provider", baseUrl: "https://openrouter.ai/api/v1" });
+  call(sessionId, { model: "claude-opus-5", baseUrl: "https://api.anthropic.com" });
+
+  const cold = await report({ sessionId });
+  const coldRow = cold.usage!.own.rows.find((r) => r.provider === "streamlake")!;
+  // Nothing has asked OpenRouter for its provider list: the tag stands alone rather than guessed at.
+  expect(coldRow.providerName).toBeUndefined();
+  expect(coldRow.provider).toBe("streamlake");
+
+  const mock = mockFetch(
+    async () =>
+      new Response(JSON.stringify({ data: [{ name: "StreamLake", slug: "streamlake" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+  try {
+    await openRouterProviderNames();
+    const warm = await report({ sessionId });
+    const rows = warm.usage!.own.rows;
+    const byProvider = (provider: string) => rows.find((r) => r.provider === provider)!;
+
+    // The name decorates the tag; the tag itself never moves, since it is what the rows group on.
+    expect(byProvider("streamlake")).toMatchObject({ provider: "streamlake", variant: "fp8", providerName: "StreamLake" });
+    // A slug the catalogue does not list, and a row with no pin at all: no name, no invention.
+    expect(byProvider("ghost-provider").providerName).toBeUndefined();
+    expect(byProvider("api.anthropic.com").providerName).toBeUndefined();
+  } finally {
+    mock.restore();
+  }
 });
 
 test("a tag reference is resolved to the model it runs, with the tag named", async () => {

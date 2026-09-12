@@ -2395,6 +2395,13 @@ export interface MyClawAppUsageModelRow {
    * the whole reference used to read (`fp8`).
    */
   variant?: string;
+  /**
+   * How the provider behind `provider` spells its own name (`Z.AI`, `Amazon Bedrock`). Decoration
+   * beside the tag, never instead of it: the tag is the key the rows are grouped and merged on, and
+   * the name is only known while OpenRouter's catalogue is cached, so the same route reported twice
+   * can carry it once. Absent on a cold catalogue, and on anything OpenRouter does not front.
+   */
+  providerName?: string;
   calls: number;
   errors: number;
   promptTokens: number;

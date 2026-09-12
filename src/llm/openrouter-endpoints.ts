@@ -186,6 +186,19 @@ export async function openRouterProviderNames(): Promise<Map<string, string>> {
   }
 }
 
+/**
+ * A provider's display name if the catalogue is already in memory, never reaching the network.
+ *
+ * Same rule as the pricing and limit accessors below: this is read while a usage row is written or
+ * a report is drawn, and neither can wait on a lookup. A miss answers undefined rather than a name
+ * derived from the slug -- no casing rule turns `z-ai` into `Z.AI`, so a guess would be a different
+ * provider's name spelled wrong.
+ */
+export function cachedOpenRouterProviderName(slug: string): string | undefined {
+  if (!providersCache || Date.now() - providersCache.at >= PROVIDERS_TTL_MS) return undefined;
+  return providersCache.value.get(slug);
+}
+
 interface RawModel {
   id?: string;
   canonical_slug?: string | null;

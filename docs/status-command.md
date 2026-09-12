@@ -715,6 +715,8 @@ from the name:
 - `provider` -- the pin's first segment when there is one, otherwise the host of the base that was
   reached (`api.anthropic.com`, `claude-sdk`).
 - `variant` -- the rest of the pin (`fp8`, `global/flex`), absent when there is none.
+- `providerName` -- how that provider spells its own name (`Z.AI`, `Amazon Bedrock`), when it is
+  known.
 
 The pin is neither decoration nor a name: it is the **only** place an OpenRouter upstream exists.
 OpenRouter leaves `upstream_api_base` empty, so a row that dropped the pin would have nothing left
@@ -725,6 +727,28 @@ the app instead of collapsing it there.
 
 Reading a name off the whole reference is how `fp8` came to be drawn as a model of its own, next to
 `flex`: a quantization and a service tier, neither of which is a model.
+
+#### The name is a decoration, the tag is the key
+
+`streamlake` is the right key and a poor label. The names are OpenRouter's own
+(`openRouterProviderNames`, slug to display name, 24-hour cache), read here through a **cache-only**
+accessor: a report is drawn on a synchronous path and prices a row while it writes it, so neither
+may wait on a lookup. A miss leaves the field out rather than deriving a name from the slug -- the
+catalogue spells things `Z.AI` and `VoyageAI by MongoDB`, and no casing rule produces that.
+
+Which means the same route can be reported with the name once and without it the next time, so the
+name is never part of an identity:
+
+- `provider` keeps the verbatim tag, always. It is what `getSessionModelUsage` grouped on and what
+  the app merges sub-agent rows on (`model \0 provider \0 variant`). A name in that key would turn
+  one cold read and one warm read of the same route into two lines.
+- The app draws `providerName` when it is there and the tag when it is not, and that is the whole
+  use of the field.
+
+Nothing warms that cache on a run path today: `openRouterProviderNames()` has no caller in `src/`,
+and the `/model` route menu fills the *endpoint* cache (15 minutes, one model at a time), not this
+one. The field is therefore absent until something asks for the provider list. That is the cache-only
+rule working as designed, not a failure to report.
 
 ## The model block of the payload
 

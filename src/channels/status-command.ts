@@ -22,6 +22,7 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
 import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
+import { cachedOpenRouterProviderName } from "../llm/openrouter-endpoints.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type {
@@ -132,12 +133,21 @@ function providerHost(baseUrl: string): string {
  * A row without a pin falls back to the base it reached, which is the only thing left that tells
  * two calls of the same model apart (the same id on `api.anthropic.com` and through `claude-sdk`
  * is two providers, two rates, and two rows).
+ *
+ * `providerName` is how OpenRouter spells that first segment, and it is decoration: the tag stays
+ * in `provider`, which is the key everything else groups and merges on. Read from the cache alone,
+ * so a cold catalogue drops the decoration instead of making the report wait on a lookup.
  */
-function routeOf(model: string, baseUrl: string): { provider: string; variant?: string } {
+function routeOf(model: string, baseUrl: string): { provider: string; variant?: string; providerName?: string } {
   const at = model.lastIndexOf("@");
   const [head, ...rest] = at > 0 ? model.slice(at + 1).split("/").filter(Boolean) : [];
   if (!head) return { provider: providerHost(baseUrl) };
-  return { provider: head, ...(rest.length > 0 ? { variant: rest.join("/") } : {}) };
+  const name = cachedOpenRouterProviderName(head);
+  return {
+    provider: head,
+    ...(rest.length > 0 ? { variant: rest.join("/") } : {}),
+    ...(name === undefined ? {} : { providerName: name }),
+  };
 }
 
 function modelRow(row: PricedRow): MyClawAppUsageModelRow {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   openRouterEndpoints,
   openRouterProviderNames,
+  cachedOpenRouterProviderName,
   openRouterModels,
   openRouterModel,
   cachedOpenRouterModel,
@@ -297,6 +298,41 @@ test("the cached catalogue survives its TTL, so an aged cache never turns a mode
     // The plain path still refreshes once the TTL has elapsed: the cache is not frozen, it is read.
     await openRouterModels();
     assert.equal(counter.calls, 2);
+  } finally {
+    setSystemTime();
+    mock.restore();
+  }
+});
+
+/**
+ * The display name is read while a usage row is drawn, on a path that cannot await: a cold cache
+ * answers nothing rather than making the report wait, and never a name derived from the slug.
+ */
+test("a provider name is read from the cache alone, and a cold cache is a miss and not a guess", async () => {
+  clearOpenRouterCache();
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls++;
+    return new Response(JSON.stringify({ data: [{ name: "Z.AI", slug: "z-ai" }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    assert.equal(cachedOpenRouterProviderName("z-ai"), undefined);
+    assert.equal(calls, 0);
+
+    await openRouterProviderNames();
+    assert.equal(cachedOpenRouterProviderName("z-ai"), "Z.AI");
+    assert.equal(calls, 1);
+
+    // A provider the catalogue does not list stays unnamed: there is nothing to spell it from.
+    assert.equal(cachedOpenRouterProviderName("streamlake"), undefined);
+
+    // Past the 24-hour TTL the name is stale evidence, and the reader never refetches to renew it.
+    setSystemTime(new Date(Date.now() + 25 * 60 * 60 * 1000));
+    assert.equal(cachedOpenRouterProviderName("z-ai"), undefined);
+    assert.equal(calls, 1);
   } finally {
     setSystemTime();
     mock.restore();
