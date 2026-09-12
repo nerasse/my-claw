@@ -135,7 +135,7 @@ import { PluginLoader } from "./tools/plugins.ts";
 import { backfillConversationArchive } from "./conversations/store.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
-import { llmComplete } from "./llm/transport.ts";
+import { llmCompleteStream } from "./llm/transport.ts";
 import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
@@ -2774,10 +2774,14 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
       // Housekeeping belongs to no conversation, but a gateway routing on the session key still
       // wants one, and this job is stable enough to be its own -- docs/session-affinity.md.
       llmCfg.cacheKey ??= "my-claw:memory-consolidation";
-      const res = await llmComplete(llmCfg, [
+      // Streamed, for the same reason the compaction summarizer is: a transport's budget is
+      // "time with not one byte received", so a one-shot call turns it into a hard ceiling on the
+      // whole generation -- 120 s on an OpenAI-compatible endpoint, whatever the work. The tokens
+      // themselves are not wanted here, only the answer read out of them.
+      const res = await llmCompleteStream(llmCfg, [
         { role: "system", content: system },
         { role: "user", content: user },
-      ]);
+      ], () => {});
       return res.content;
     };
     let storeCount = 0;
