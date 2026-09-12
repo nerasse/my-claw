@@ -772,6 +772,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.broadcast(owner, frame);
   }
 
+  /**
+   * A fragment of the summary a compaction is writing, on its way to the windows watching it.
+   *
+   * Broadcast live and folded onto the held frame, so a window that was there sees the text
+   * appear and a window that opens mid-compaction is handed what was written so far.
+   */
+  notifyCompactionProgress(sessionId: string, text: string): void {
+    const match = APP_THREAD_SESSION.exec(sessionId);
+    if (!match) return;
+    const owner = match[1]!;
+    const threadId = match[2]!;
+    this.live.appendCompactingText(owner, threadId, text);
+    this.broadcast(owner, { type: "chat.compacting.delta", threadId, text });
+  }
+
   async notifyModelState(owner: string, threadId: string): Promise<void> {
     if (!this.models) return;
     try {

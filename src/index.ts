@@ -2308,6 +2308,9 @@ async function main() {
     // itself, so the automatic gates announce themselves exactly like the command does, and the
     // `settled` end is the one event no exit path can skip (docs/compaction.md).
     hooks.on("session:compact:start", ({ sessionId }) => myClawApp.notifyCompacting(sessionId, Date.now()));
+    // The summary being written, live. Batched at the source: one frame per token would be a wall
+    // of them for text the owner may not be reading.
+    hooks.on("session:compact:progress", ({ sessionId, text }) => myClawApp.notifyCompactionProgress(sessionId, text));
     hooks.on("session:compact:settled", ({ sessionId }) => myClawApp.notifyCompacting(sessionId, undefined));
 
     // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`

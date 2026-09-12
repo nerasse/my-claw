@@ -1381,6 +1381,20 @@ export interface MyClawAppChatCompacting {
   threadId: string;
   /** ISO instant the operation began. Absent means it is over. */
   since?: string;
+  /**
+   * The summary written so far, on a replayed frame only.
+   *
+   * A window that reloads mid-compaction gets one frame with the text accumulated up to that
+   * point; the live fragments come as `chat.compacting.delta` and the client appends them.
+   */
+  text?: string;
+}
+
+/** A fragment of the summary a compaction is writing, live. */
+export interface MyClawAppChatCompactingDelta {
+  type: "chat.compacting.delta";
+  threadId: string;
+  text: string;
 }
 
 export interface MyClawAppLocationCapabilities {
@@ -3032,6 +3046,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatUser
   | MyClawAppChatCompaction
   | MyClawAppChatCompacting
+  | MyClawAppChatCompactingDelta
   | MyClawAppLocationCapabilities
   | MyClawAppLocationPreviewResult
   | MyClawAppChatLocation

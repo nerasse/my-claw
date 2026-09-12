@@ -246,6 +246,20 @@ export class LiveTurnJournal {
     this.compactions.set(this.key(owner, threadId), frame);
   }
 
+  /**
+   * A fragment of the summary being written, folded onto the frame a reload will replay.
+   *
+   * The live frames are fragments and the client accumulates them; the replayed one has to carry
+   * the whole text, or a window that opens mid-compaction would see the operation with none of
+   * the words written so far.
+   */
+  appendCompactingText(owner: string, threadId: string, text: string): void {
+    const key = this.key(owner, threadId);
+    const frame = this.compactions.get(key);
+    if (!frame || frame.type !== "chat.compacting") return;
+    this.compactions.set(key, { ...frame, text: (frame.text ?? "") + text });
+  }
+
   /** Settled, whatever the outcome: a replay of it would show an operation that is over. */
   clearCompacting(owner: string, threadId: string): void {
     this.compactions.delete(this.key(owner, threadId));

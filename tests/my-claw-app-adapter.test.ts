@@ -2262,6 +2262,43 @@ describe("MyClawAppAdapter owners", () => {
   });
 
   /**
+   * The summary being written, live, and handed whole to a window that arrives mid-compaction.
+   *
+   * Added 2026-09-12: the summarizer streams, so the operation can show its text instead of a
+   * bare counter. The live fragments are appended by the client; the replayed frame has to carry
+   * everything written so far, or a reload would show the operation with none of its words.
+   */
+  test("the summary streams to the windows watching, and a late one is handed what was written", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    try {
+      adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, Date.now());
+      assert.equal((await nextFrame(phone))["type"], "chat.compacting");
+
+      adapter.notifyCompactionProgress(`my-claw-app/thread/${OWNER}/t-1`, "Prior work: ");
+      const first = await nextFrame(phone);
+      assert.equal(first["type"], "chat.compacting.delta");
+      assert.equal(first["threadId"], "t-1");
+      assert.equal(first["text"], "Prior work: ");
+
+      adapter.notifyCompactionProgress(`my-claw-app/thread/${OWNER}/t-1`, "we fixed the runner.");
+      const second = await nextFrame(phone);
+      assert.equal(second["type"], "chat.compacting.delta");
+      assert.equal(second["text"], "we fixed the runner.");
+
+      // A window that opens now gets the operation, once, with the whole text so far.
+      const late = await connectClient(adapter.port, "browser");
+      late.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
+      assert.equal((await nextFrame(late))["type"], "session.sync.result");
+      const replayed = await nextFrame(late);
+      assert.equal(replayed["type"], "chat.compacting");
+      assert.equal(replayed["text"], "Prior work: we fixed the runner.");
+      late.ws.close();
+    } finally {
+      phone.ws.close();
+    }
+  });
+
+  /**
    * The operation is minutes of silence with nothing on the wire. The window that typed
    * `/compact` had a placeholder; every other one, and that same one after a reload, saw a thread
    * doing nothing -- so the owner typed `/compact` again and was told one was already running.
