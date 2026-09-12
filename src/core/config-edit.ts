@@ -1,6 +1,7 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, tagNameOf, type EffortLevel, type TagRouteCandidate } from "./config.ts";
+import { CONFIG_PATH, tagNameOf, tagRouteOf, type EffortLevel, type TagConfig, type TagRouteCandidate } from "./config.ts";
+import { parseModelRef } from "../llm/model-ref.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
 
@@ -900,6 +901,22 @@ export async function removeProvider(key: string, options: RemoveProviderOptions
     const id = model["id"];
     blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
   }
+  /*
+   * Tags too. A route pointing at a model of this provider dies with it, and nothing says so: the
+   * router falls back to the global default and the tag quietly stops meaning what it says. The
+   * owner's `Cheap` route is exactly this shape.
+   */
+  const tags = objectAt(read.data, "tags");
+  const providerNames = Object.keys(providers);
+  const tagHits: Array<{ name: string; tag: TagConfig; route: TagRouteCandidate[] }> = [];
+  for (const [name, raw] of Object.entries(tags)) {
+    const tag = (raw ?? {}) as TagConfig;
+    const route = tagRouteOf(tag);
+    const hit = route.find((candidate) => parseModelRef(candidate.model, providerNames).provider === key);
+    if (!hit) continue;
+    blocking.push(`tag ${name} -> ${hit.model}`);
+    tagHits.push({ name, tag, route });
+  }
   if (blocking.length > 0 && options.withModels !== true) {
     return { ok: false, error: `Cannot remove ${key}: still referenced by ${blocking.join(", ")}` };
   }
@@ -909,12 +926,31 @@ export async function removeProvider(key: string, options: RemoveProviderOptions
       llm["models"] = entries.filter((model) => !declared.includes(model as Record<string, unknown>));
     }
     if (llm["defaultProvider"] === key) delete llm["defaultProvider"];
+    for (const { name, tag, route } of tagHits) {
+      const kept = route.filter((candidate) => parseModelRef(candidate.model, providerNames).provider !== key);
+      const legacy = typeof tag.model === "string" && parseModelRef(tag.model, providerNames).provider === key;
+      if (legacy && !Array.isArray(tag.route)) {
+        // The pre-route shape holds one model: dropping it leaves a tag with nothing to resolve.
+        delete tags[name];
+        continue;
+      }
+      if (kept.length === 0) {
+        // Nothing left to try: a tag with an empty route is a trap, not a route.
+        delete tags[name];
+        continue;
+      }
+      // The route is written, the legacy single-model field goes: leaving both would keep the
+      // removed model alive as the shape the next read upgrades from.
+      tags[name] = { ...tag, route: kept };
+      if (legacy) delete (tags[name] as TagConfig).model;
+    }
+    if (Object.keys(tags).length === 0) delete read.data["tags"];
   }
   delete providers[key];
   if (Object.keys(providers).length === 0) delete llm["providers"];
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait provider ${key}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key, withModels: options.withModels === true });
+  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key, withModels: options.withModels === true, tagsDropped: tagHits.map((hit) => hit.name) });
   return { ok: true, previous: {} };
 }
 

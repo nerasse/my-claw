@@ -249,3 +249,72 @@ describe("repointEnvKey", () => {
     expect((await repointEnvKey("GHOST_KEY", "NEW_KEY")).ok).toBe(true);
   });
 });
+
+/**
+ * A tag route pointing at the provider's models -- added 2026-09-12.
+ *
+ * The refusal ignored them, so the cascade passed without seeing anything and the route quietly
+ * fell back to the global default while the tag kept claiming to mean what it said.
+ */
+const TAGGED = {
+  ...FILE,
+  tags: {
+    Cheap: { route: [{ model: "litellm/mimo", effort: "max" }, { model: "anthropic/opus" }], fallbackToGlobalDefault: true },
+    Smart: { route: [{ model: "anthropic/opus", effort: "high" }] },
+  },
+};
+
+describe("removeProvider with tags routing through it", () => {
+  test("names the tag in the refusal, with the model it points at", async () => {
+    await writeConfigFile({ ...TAGGED, llm: { ...TAGGED.llm, defaultProvider: "anthropic" } });
+    const result = await removeProvider("litellm");
+    expect(result.ok).toBe(false);
+    expect(String(result.ok === false && result.error)).toContain("tag Cheap");
+    expect(String(result.ok === false && result.error)).toContain("litellm/mimo");
+  });
+
+  test("dropping the references prunes the candidate and keeps the rest of the route", async () => {
+    await writeConfigFile({ ...TAGGED, llm: { ...TAGGED.llm, defaultProvider: "anthropic" } });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.providers.litellm).toBeUndefined();
+    // Cheap keeps its second candidate: the tag still means what it says, one step shorter.
+    expect(file.tags.Cheap.route).toEqual([{ model: "anthropic/opus" }]);
+    expect(file.tags.Cheap.fallbackToGlobalDefault).toBe(true);
+    // A tag that routed elsewhere is untouched.
+    expect(file.tags.Smart.route).toEqual([{ model: "anthropic/opus", effort: "high" }]);
+  });
+
+  test("a tag left with nothing to try is dropped, not left as an empty trap", async () => {
+    await writeConfigFile({
+      ...FILE,
+      llm: { ...FILE.llm, defaultProvider: "anthropic" },
+      tags: { Only: { route: [{ model: "litellm/mimo" }] } },
+    });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.tags).toBeUndefined();
+  });
+
+  test("the legacy single-model shape goes with the provider it named", async () => {
+    await writeConfigFile({
+      ...FILE,
+      llm: { ...FILE.llm, defaultProvider: "anthropic" },
+      tags: { Legacy: { model: "litellm/mimo", effort: "low" } },
+    });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.tags).toBeUndefined();
+  });
+
+  test("without the flag nothing moves, tags included", async () => {
+    await writeConfigFile({ ...TAGGED, llm: { ...TAGGED.llm, defaultProvider: "anthropic" } });
+    expect((await removeProvider("litellm")).ok).toBe(false);
+    const file = await readConfigFile();
+    expect(file.tags.Cheap.route).toHaveLength(2);
+    expect(file.llm.providers.litellm).toBeDefined();
+  });
+});

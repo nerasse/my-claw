@@ -73,11 +73,17 @@ that just gained a key (or just appeared) discovers its models now, not at the n
 
 ## Refusals
 
-- `remove` is refused while anything in the file still references the provider: `llm.defaultProvider`
-  or a curated `llm.models[].provider`.
+- `remove` is refused while anything in the file still references the provider: `llm.defaultProvider`,
+  a curated `llm.models[].provider`, or a **tag route** whose candidate names it
+  (`tags.X.route[].model`, or the legacy single-model `tags.X.model`).
+- The tag case is the one that used to pass unseen, and it is the quietest: a route that loses its
+  model does not fail, it falls back to the global default, so the tag goes on claiming to mean
+  what it says (2026-09-12, the owner's `Cheap` route into `opencode_go`).
 - **`withModels: true` accepts the cascade** instead of being refused: the provider leaves, and so do
   the curated models declared under it (and the default-provider role, when it holds it), in the same
-  write. The app's confirmation sheet offers this when it counts such a declaration, naming the ids.
+  write. A tag route drops the candidates that named it, keeps the rest, and the whole tag goes when
+  nothing is left to try -- an empty route is a trap, not a route. The app's confirmation sheet
+  offers this when it counts either kind of reference, naming the ids and the tags.
   The plain refusal stays for a caller that did not ask for it -- dropping an owner's declarations is
   never something a provider removal does on its own.
 - Why the cascade exists at all: the refusal alone was a dead end. The app offers the delete, the
