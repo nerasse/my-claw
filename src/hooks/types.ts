@@ -206,6 +206,15 @@ export interface HookEventMap {
   "session:deleted": { sessionId: string };
   "session:evicted": { sessionId: string };
   "session:compact:start": { sessionId: string; messageCount: number };
+  /**
+   * A fragment of the summary a compaction is writing, as it arrives.
+   *
+   * The summarizer streams, so a window can show the text being written next to the operation it
+   * belongs to instead of a bare spinner. Fragments, not a running total: the reader accumulates
+   * them, and re-sending the whole text per batch would cost the square of the summary's length.
+   * Batched at the source -- one hook per token would be one frame per token.
+   */
+  "session:compact:progress": { sessionId: string; text: string };
   "session:compact:end": {
     sessionId: string;
     beforeCount: number;

@@ -8,8 +8,10 @@ import { test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { compactSession } from "../../src/sessions/compaction.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { sseFromCompletion, sseResponse } from "../helpers/sse.ts";
 import { saveSessionWithLog, type SessionLogSetup } from "../helpers/session-log.ts";
 import { deleteSession } from "../../src/sessions/store.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { LegacySessionData } from "../../src/sessions/store.ts";
 
@@ -64,10 +66,7 @@ async function sessionWithLog(): Promise<LegacySessionData> {
 }
 
 function reply(content: string): Response {
-  return new Response(
-    JSON.stringify({ choices: [{ message: { role: "assistant", content } }], usage: {} }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
+  return sseFromCompletion({ choices: [{ message: { content } }], usage: {} });
 }
 
 const SUMMARY = `1. What the owner asked 2. What was built ${"and the rest of it ".repeat(5)}`;
@@ -167,5 +166,37 @@ test("a session too short to compact says so before reaching the wire", async ()
   } finally {
     mock.restore();
     await deleteSession(SESSION_ID);
+  }
+});
+
+/**
+ * The live mouth of a running summary -- added 2026-09-12.
+ *
+ * The summarizer streams now (a one-shot call turned the transport's "time without a byte" budget
+ * into a hard ceiling on the whole operation), so the text it is writing can be shown while it is
+ * written instead of a bare spinner.
+ */
+test("the summary is announced as it is written, not only when it is done", async () => {
+  const long = `Prior work: ${"the agent ran the filler tool and gathered its output. ".repeat(20)}`;
+  const mock = mockFetch(async () => sseResponse(long));
+  const fragments: string[] = [];
+  const collect = ({ text }: { sessionId: string; text: string }): void => {
+    fragments.push(text);
+  };
+  hooks.on("session:compact:progress", collect);
+  try {
+    const s = await sessionWithLog();
+    const result = await compactSession(config(), s);
+    assert.equal(result.ok, true);
+    assert.ok(fragments.length >= 2, `expected several fragments, got ${fragments.length}`);
+    // Fragments, not a running total: the client accumulates them. Concatenated they are exactly
+    // what the summarizer wrote -- nothing repeated, nothing dropped by the batching.
+    assert.equal(fragments.join(""), long);
+    // Batched: a fragment per token would be a frame per token on the wire.
+    assert.ok(fragments.every((f) => f.length >= 1));
+    assert.ok(fragments.length < long.length / 4, `too many fragments: ${fragments.length}`);
+  } finally {
+    hooks.off("session:compact:progress", collect);
+    mock.restore();
   }
 });

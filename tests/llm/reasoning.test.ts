@@ -129,7 +129,14 @@ describe("chatCompletionStream cuts the answer where the thinking restarted", ()
       new Response(sse(chunks), { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never,
     );
     try {
-      return (await chatCompletionStream(config, [{ role: "user", content: "hi" }], () => {})).segments;
+      // The duration is measured off the real clock and belongs to the transport that streamed
+      // it, so it is dropped here: this suite pins where the cuts are, not how long a phase took
+      // (that lives in tests/channels/reasoning-segments.test.ts, with a pinned clock).
+      const segments = (await chatCompletionStream(config, [{ role: "user", content: "hi" }], () => {})).segments;
+      return segments?.map(({ reasoning, content }) => ({
+        ...(reasoning !== undefined ? { reasoning } : {}),
+        content,
+      }));
     } finally {
       fetchMock.restore();
     }

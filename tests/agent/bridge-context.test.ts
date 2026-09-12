@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { sseResponse } from "../helpers/sse.ts";
 import { setupSessionLog, appendMessages, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -110,7 +111,7 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
     if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("You summarize a conversation")) {
       sawCompactionCall = true;
-      return llm({ content: "Summary of the prior work: steps 0-9 executed bash and completed successfully." });
+      return sseResponse("Summary of the prior work: steps 0-9 executed bash and completed successfully.");
     }
     return llm({ content: "final answer" });
   });

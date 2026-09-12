@@ -5,6 +5,7 @@ import { type LegacySessionData, type SessionMessage } from "../src/sessions/sto
 import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { sseFromCompletion } from "./helpers/sse.ts";
 import { setupSessionLog, appendMessages, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
 import { contextEntries } from "../src/sessions/projection.ts";
@@ -94,10 +95,7 @@ test("compactSession writes a compaction entry and shrinks the context", async (
   await log.flush();
 
   const fetchMock = mockFetch(async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never,
+    sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }) as never,
   );
 
   try {
@@ -133,10 +131,7 @@ test("the summarizer call names the conversation it is compacting", async () => 
   const seen: Headers[] = [];
   const fetchMock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
     seen.push(new Headers(init?.headers));
-    return new Response(
-      JSON.stringify({ choices: [{ message: { content: "Summary of earlier context, long enough to pass the guard on a summary that says nothing." } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never;
+    return sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context, long enough to pass the guard on a summary that says nothing." } }] }) as never;
   });
 
   try {
@@ -161,10 +156,7 @@ test("a second compaction summarizes only what is past the previous boundary", a
   const fetchMock = mockFetch(async (_url, init) => {
     const body = init?.body;
     seen.push(typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array));
-    return new Response(
-      JSON.stringify({ choices: [{ message: { content: `Summary number ${seen.length}, long enough to clear the fifty character floor.` } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never;
+    return sseFromCompletion({ choices: [{ message: { content: `Summary number ${seen.length}, long enough to clear the fifty character floor.` } }] }) as never;
   });
 
   try {
@@ -208,10 +200,7 @@ test("compactSession passes instructions to the prompt", async () => {
     } else if (body && typeof (body as ArrayBufferView).byteLength === "number") {
       capturedBody = new TextDecoder().decode(body as Uint8Array);
     }
-    return new Response(
-      JSON.stringify({ choices: [{ message: { content: "Focused summary of the conversation covering the main task and key decisions made." } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never;
+    return sseFromCompletion({ choices: [{ message: { content: "Focused summary of the conversation covering the main task and key decisions made." } }] }) as never;
   });
 
   try {
@@ -241,10 +230,7 @@ test("compactSession handles tool entries without splitting them", async () => {
   await log.flush();
 
   const fetchMock = mockFetch(async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "Summary of the tool usage session covering main operations and their results in detail." } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never,
+    sseFromCompletion({ choices: [{ message: { content: "Summary of the tool usage session covering main operations and their results in detail." } }] }) as never,
   );
 
   try {
@@ -336,13 +322,10 @@ async function summarizerHost(sessionId: string, sessionOver: Partial<LegacySess
   const hosts: string[] = [];
   const mock = mockFetch(async (url) => {
     hosts.push(new URL(String(url)).host);
-    return new Response(
-      JSON.stringify({
-        choices: [{ message: { content: "Prior work: a summary long enough to clear the fifty character floor imposed on it." } }],
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never;
+    return sseFromCompletion({
+      choices: [{ message: { content: "Prior work: a summary long enough to clear the fifty character floor imposed on it." } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    }) as never;
   });
   try {
     const result = await compactSession(agentScopedConfig(), testSession);
@@ -439,10 +422,7 @@ test("a compaction that succeeds settles too", async () => {
   await log.flush();
 
   const fetchMock = mockFetch(async () =>
-    new Response(
-      JSON.stringify({ choices: [{ message: { content: "A summary long enough to be kept as one." } }] }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ) as never,
+    sseFromCompletion({ choices: [{ message: { content: "A summary long enough to be kept as one." } }] }) as never,
   );
   try {
     assert.deepEqual(await settledEvents(() => compactSession(makeConfig(), session)), ["start", "settled"]);

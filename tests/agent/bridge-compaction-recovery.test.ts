@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { sseResponse } from "../helpers/sse.ts";
 import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -107,7 +108,7 @@ test("a context overflow the gate never saw is compacted and retried, not droppe
     const body = String(init?.body ?? "{}");
     if (isSummarizer(body)) {
       calls.push("summarizer");
-      return reply(SUMMARY, 100);
+      return sseResponse(SUMMARY);
     }
     calls.push("run");
     runCalls += 1;
@@ -151,7 +152,7 @@ test("a provider that answers past its own window without complaining is treated
     const body = String(init?.body ?? "{}");
     if (isSummarizer(body)) {
       calls.push("summarizer");
-      return reply(SUMMARY, 100);
+      return sseResponse(SUMMARY);
     }
     calls.push("run");
     runCalls += 1;
@@ -183,7 +184,7 @@ test("only one recovery per run, so a wrong window cannot loop", async () => {
     const body = String(init?.body ?? "{}");
     if (isSummarizer(body)) {
       summarizers += 1;
-      return reply(SUMMARY, 100);
+      return sseResponse(SUMMARY);
     }
     runs += 1;
     // Always over the window: the belief is simply wrong.
@@ -218,7 +219,7 @@ test("a run ending inside the band arms a summary, and the next crossing spends 
     if (isSummarizer(body)) {
       calls.push("summarizer");
       armedSummary += 1;
-      return reply(SUMMARY, 100);
+      return sseResponse(SUMMARY);
     }
     calls.push("run");
     // Just under the 160000 gate and inside the band, so the run ends by arming one.

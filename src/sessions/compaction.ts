@@ -2,7 +2,7 @@ import type { MyClawConfig } from "../core/config.ts";
 import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCompactionTailTokens } from "../core/config.ts";
 import { resolveModelContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
-import { llmComplete } from "../llm/transport.ts";
+import { llmCompleteStream } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData } from "./store.ts";
@@ -276,6 +276,35 @@ export function planCompaction(log: SessionLog, tailBudget: number = TAIL_BUDGET
   };
 }
 
+/**
+ * The live mouth of a running summary.
+ *
+ * Fragments are batched before they leave: the summarizer streams a token at a time, and one hook
+ * per token would be one frame per token on the wire for a wall of text the owner may not even be
+ * looking at. A batch goes out when it is big enough to be worth a frame, or when the last one is
+ * old enough that a silent pause would read as a stall.
+ */
+const PROGRESS_BATCH_CHARS = 240;
+const PROGRESS_BATCH_MS = 400;
+
+function compactionProgress(sessionId: string): { push: (chunk: string) => void; flush: () => void } {
+  let pending = "";
+  let lastAt = Date.now();
+  const send = (): void => {
+    if (!pending) return;
+    hooks.emit("session:compact:progress", { sessionId, text: pending });
+    pending = "";
+    lastAt = Date.now();
+  };
+  return {
+    push: (chunk: string) => {
+      pending += chunk;
+      if (pending.length >= PROGRESS_BATCH_CHARS || Date.now() - lastAt >= PROGRESS_BATCH_MS) send();
+    },
+    flush: send,
+  };
+}
+
 const REFUSAL_PATTERNS = [
   /^i (?:cannot|can't|won't|am unable to)/i,
   /^sorry,? (?:i|but)/i,
@@ -331,15 +360,26 @@ export async function summarizeForCompaction(
   };
 
   const startedAt = Date.now();
-  const response = await llmComplete(
+  // Streamed, not a single blocking call. The budget a transport enforces is "time with not one
+  // byte received": a stream rearms it at every chunk and measures silence, while a one-shot call
+  // turns it into a hard ceiling on the whole operation -- prompt prefill plus a 20k-token summary.
+  // The OpenAI-compatible default of 120 s made that ceiling real: a compaction of this very
+  // conversation timed out at 23:36 on 2026-09-11 and the same work took 85 s two minutes later,
+  // while every Anthropic compaction in the history ran 180-360 s and only survived because that
+  // transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
+  // they arrive, so a window can watch it being written -- docs/compaction.md.
+  const progress = compactionProgress(session.id);
+  const response = await llmCompleteStream(
     llmConfig,
     [
       { role: "system", content: SUMMARIZER_SYSTEM },
       { role: "user", content: prompt },
     ],
+    (chunk: string) => progress.push(chunk),
     undefined,
     signal,
   );
+  progress.flush();
   recordApiCall({
     sessionId: session.id,
     // Compaction is maintenance on a session, not work delegated by another one, so it bills

@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { sseResponse } from "../helpers/sse.ts";
 import { setupSessionLog, writeLegacySessionFile } from "../helpers/session-log.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
@@ -115,7 +116,7 @@ async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; se
     const system = String(body.messages[0]?.content ?? "");
     if (system.includes("You summarize a conversation")) {
       sent.push({ kind: "compaction", messages: body.messages });
-      return llmResponse({ content: opts.summary ?? "" }, 100);
+      return sseResponse(opts.summary ?? "");
     }
     sent.push({ kind: "run", messages: body.messages });
     rounds += 1;
@@ -308,7 +309,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
     if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
-      return llmResponse({ content: SUMMARY }, promptTokens);
+      return sseResponse(SUMMARY);
     }
     rounds += 1;
     if (rounds <= 12) {
@@ -360,7 +361,7 @@ test("a cron run is compacted mid-flight too", async () => {
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
     if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
-      return llmResponse({ content: SUMMARY }, promptTokens);
+      return sseResponse(SUMMARY);
     }
     rounds += 1;
     if (rounds <= 12) {

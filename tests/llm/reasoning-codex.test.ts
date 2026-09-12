@@ -167,7 +167,8 @@ describe("Codex Responses reasoning", () => {
       ]) as never,
     );
     const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
-    expect(response.segments).toEqual([
+    // Duration dropped, same reason as in reasoning.test.ts: it comes off the real clock.
+    expect(response.segments?.map(({ reasoning, content }) => ({ reasoning, content }))).toEqual([
       { reasoning: "checking", content: "one moment" },
       { reasoning: "now sure", content: "the answer" },
     ]);

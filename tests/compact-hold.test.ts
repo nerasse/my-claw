@@ -16,6 +16,7 @@ import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { sseFromCompletion } from "./helpers/sse.ts";
 import { setupSessionLog, type SessionLogSetup } from "./helpers/session-log.ts";
 
 function makeConfig(): MyClawConfig {
@@ -81,10 +82,7 @@ async function makeSessionWithLog(id: string): Promise<{ session: LegacySessionD
 const SUMMARY = `The conversation covered ${"a lot of ground ".repeat(8)}and ended there.`;
 
 function summaryResponse(content: string): Response {
-  return new Response(
-    JSON.stringify({ choices: [{ message: { role: "assistant", content } }], usage: {} }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
+  return sseFromCompletion({ choices: [{ message: { content } }], usage: {} });
 }
 
 afterEach(() => {

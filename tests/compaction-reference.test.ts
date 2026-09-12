@@ -8,6 +8,7 @@ import { resolveAutoCompactThreshold, resolveCompactionTailTokens } from "../src
 import { deleteSession, type LegacySessionData } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { sseFromCompletion } from "./helpers/sse.ts";
 import { setupSessionLog, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { SessionLog, Entry, CompactionEntry, UserEntry, PhaseEntry, ToolEntry } from "../src/sessions/log.ts";
 import { contextEntries, promptOf } from "../src/sessions/projection.ts";
@@ -80,7 +81,7 @@ function summarizer(reply: (body: string) => object): { bodies: string[]; restor
   const mock = mockFetch(async (_url, init) => {
     const raw = String(init?.body ?? "{}");
     bodies.push(raw);
-    return new Response(JSON.stringify(reply(raw)), { status: 200, headers: { "Content-Type": "application/json" } }) as never;
+    return sseFromCompletion(reply(raw)) as never;
   });
   return { bodies, restore: () => mock.restore() };
 }
