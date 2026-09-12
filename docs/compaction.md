@@ -222,6 +222,25 @@ L'effort n'est pas le levier non plus : `reasoning_effort` n'est pas transmis po
 résolveur l'applique au modèle déclaré, et rien ne le demande ici), et le forcer ne change pas le
 volume de raisonnement mesuré.
 
+### L'appel est streamé, et pourquoi il doit l'être
+
+`summarizeForCompaction` passe par `llmCompleteStream`, pas par `llmComplete`. Ce n'est pas un
+détail de style : le budget qu'un transport fait respecter est un **temps maximal sans recevoir un
+octet** (`docs/llm-timeout.md`), réamorcé à chaque morceau reçu. En streaming il mesure un silence
+entre deux tokens ; en un seul appel bloquant, il devient un **plafond dur** sur toute l'opération --
+le prefill d'un prompt énorme plus la génération d'un résumé de 16 000 à 23 000 tokens.
+
+Le défaut OpenAI-compatible est de 120 s, calibré pour du streaming. Mesuré le 11/09/2026 : une
+compaction de cette conversation est morte en timeout à 23:36, et la même a pris 85 s deux minutes
+plus tard. Le chiffre qui tranche : sur l'historique complet, **toutes** les compactions Anthropic
+ont tourné entre 180 s et 358 s -- elles n'ont survécu que parce que ce transport autorise 600 s.
+Un budget de silence n'a jamais été conçu pour couvrir une génération entière.
+
+Le streaming donne aussi au résumé une bouche : les morceaux partent à mesure qu'ils arrivent
+(`session:compact:progress`, groupés par 240 caractères ou 400 ms -- un hook par token serait une
+trame par token), et l'app les affiche sous la règle. Une fenêtre qui recharge en pleine compaction
+reçoit le texte accumulé dans la trame rejouée.
+
 ### L'ancrage, calculé par du code
 
 `compaction-files.ts` dérive les fichiers lus et modifiés des `ToolEntry` (`read` → lu,
@@ -399,7 +418,9 @@ une règle en bas de la conversation, jamais une bulle : la bulle « Compacting 
 était déplacée par chaque delta de sync, recréée par le replay, et une seule trame pouvait la
 retirer ; une fin perdue avec une socket zombie en laissait deux fantômes se promener dans le run
 une heure plus tard. L'état est effacé par la trame de fin, par la frontière `chat.compaction`,
-par `chat.run.end`, par un `chat.stream.start` et par toute page fraîche. Détail côté app :
+par `chat.run.end`, par un `chat.stream.start` et par toute page fraîche. Depuis le 12/09/2026 elle
+porte aussi **le résumé en train de s'écrire** : `chat.compacting.delta` en direct, et le texte
+accumulé sur la trame rejouée, replié sous la règle comme tout aside. Détail côté app :
 `docs/compaction-indicator.md` du dépôt my-claw-app.
 
 ## 7. Ce qu'on ne fait pas, et pourquoi
