@@ -1,0 +1,14 @@
+{"type":"user","prompt":true,"text":"first question","id":"b-01","seq":0,"parentId":null,"ts":1757600000000}
+{"type":"run_start","prompt":false,"runId":"run-b1","id":"b-02","seq":1,"parentId":"b-01","ts":1757600000100}
+{"type":"phase","prompt":true,"text":"first answer","runId":"run-b1","id":"b-03","seq":2,"parentId":"b-02","ts":1757600000200}
+{"type":"tool","prompt":true,"callId":"call-b3","name":"bash","args":{"command":"ls"},"output":"a\nb","truncated":false,"ok":true,"runId":"run-b1","id":"b-04","seq":3,"parentId":"b-03","ts":1757600000300}
+{"type":"phase","prompt":true,"text":"second answer","runId":"run-b1","id":"b-05","seq":4,"parentId":"b-04","ts":1757600000400}
+{"type":"tool","prompt":true,"callId":"call-b5","name":"read","args":{"path":"notes.md"},"output":"notes","truncated":false,"ok":true,"runId":"run-b1","id":"b-06","seq":5,"parentId":"b-05","ts":1757600000500}
+{"type":"phase","prompt":true,"text":"third answer","runId":"run-b1","id":"b-07","seq":6,"parentId":"b-06","ts":1757600000600}
+{"type":"spawn_state","prompt":false,"callId":"call-b7","subagentId":"subagent/demo","status":"complete","resultLength":1234,"id":"b-08","seq":7,"parentId":"b-07","ts":175{"type":"tool","prompt":true,"callId":"call-b9","name":"bash","args":{"command":"cat entries.jsonl"},"output":"{\"type\":\"user\",\"id\":\"printed-1\"}\n{\"type\":\"phase\",\"id\":\"printed-2\"}","truncated":false,"ok":true,"runId":"run-b1","id":"b-10","seq":9,"parentId":"b-09","ts":1757600000900}
+{"type":"phase","prompt":true,"text":"fourth answer","runId":"run-b1","id":"b-11","seq":10,"parentId":"b-10","ts":1757600001000}
+{"type":"run_end","prompt":false,"runId":"run-b1","reason":"done","id":"b-12","seq":11,"parentId":"b-11","ts":1757600001100}
+{"type":"user","prompt":true,"text":"second question","id":"b-13","seq":12,"parentId":"b-12","ts":1757600002000}
+{"type":"run_start","prompt":false,"runId":"run-b2","id":"b-14","seq":13,"parentId":"b-13","ts":1757600002100}
+{"type":"phase","prompt":true,"text":"fifth answer","runId":"run-b2","id":"b-15","seq":14,"parentId":"b-14","ts":1757600002200}
+{"type":"run_end","prompt":false,"runId":"run-b2","reason":"done","id":"b-16","seq":15,"parentId":"b-15","ts":1757600002300}

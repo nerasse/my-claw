@@ -26,6 +26,9 @@ sont implémentés ; ce document conserve la conception et les décisions qui le
 - [Partie 10 — Invariants et tests](#partie-10--invariants-et-tests)
 - [Annexe A — Migration](#annexe-a--migration)
 - [Annexe B — Décisions arrêtées](#annexe-b--décisions-arrêtées)
+- [Annexe C — Journal de livraison](#annexe-c--journal-de-livraison)
+- [Annexe D — Où en est le lot 3b](#annexe-d--où-en-est-le-lot-3b)
+- [Annexe E — Le disque plein du 2026-09-12](#annexe-e--le-disque-plein-du-2026-09-12)
 
 ---
 
@@ -111,7 +114,9 @@ Un `verbose` qui bascule réécrit 12 MB.
    `appendFileSync(file, JSON.stringify(entry) + "\n")`. 0.02 ms contre 53.
 2. **Lecture tolérante.** `parseSessionEntryLine` (`:503`) renvoie `null` sur parse
    error, la ligne est sautée. Un crash en écriture coûte **la dernière ligne**, pas le
-   fichier.
+   fichier. Vrai du fichier, faux de l'arbre : une ligne sautée emporte le maillon
+   `parentId` que la suivante nomme, et `pathOf` s'arrête là. Mesuré le 2026-09-12,
+   corrigé — Annexe E.
 3. **`type` ouvert sur l'entrée.** `message`, `model_change`, `thinking_level_change`,
    `compaction`, `branch_summary`, `label`, `session_info`, `custom`, `custom_message`.
    Un lecteur ancien ignore un type inconnu → zéro migration.
@@ -449,6 +454,13 @@ argument ; le log le réutilise et refuse s'il existe déjà. Sinon il génère 
 pas d'id interne : le seul id imposé est celui d'une bulle déjà ouverte par le canal, ce qui
 garantit que l'id de la bulle live et l'id de l'entrée restent le même.
 
+**Avant d'écrire, un octet de lecture.** `appendFile` ouvre en append : si le fichier ne se
+termine pas par un retour à la ligne, l'entrée suivante se colle à ce qui traîne. La chaîne
+d'écriture (déjà asynchrone, l'appelant reste fire-and-forget) lit donc le dernier octet du
+fichier et écrit un `\n` d'abord s'il manque. Sans cette garde, une écriture courte — disque
+plein, mesuré le 2026-09-12 — coûte deux entrées au lieu d'une, et la seconde emporte le
+maillon de l'arbre. Annexe E.
+
 ## 2.6 Lecture
 
 Lire le fichier ligne par ligne, `JSON.parse` par ligne, ligne invalide sautée avec un
@@ -475,6 +487,12 @@ maintenant le drapeau dirty de la session (`SessionLog.onAppend`, câblé par le
 l'autosave (2 s) porte la feuille dans `meta.json` quoi qu'il arrive au run. Un crash brutal perd
 au plus ce tick.
 
+Une ligne qui ne se parse pas peut quand même porter une entrée entière : c'est ce que laisse une
+écriture courte suivie d'un append collé, `[moignon][entrée complète]`. Le lecteur cherche la
+**dernière** position d'un début d'objet (`{"type":"`) à partir de laquelle le reste de la ligne
+se parse entièrement, et rend cette entrée ; sinon rien, comme avant. Le rattrapage et le moignon
+abandonné sont journalisés (`session log: entry recovered from behind a stump`) — Annexe E.
+
 **Réparer l'existant : à l'ouverture.** `src/sessions/branches.ts` (`repairBranches`) remet les
 branches mortes sur la branche, et `openSessionLog` l'appelle à chaque lecture du fichier : une
 install qui en porte depuis une version ≤ 0.6.0 est entière à la prochaine ouverture de chaque
@@ -494,6 +512,14 @@ run finit en `error`, ou avec un enfant `failure` (les sessions d'avant les marq
 Toute autre bifurcation est un dégât. La seule perte assumée : un rembobinage d'erreur d'avant
 les marqueurs dont la `failure` n'aurait pas été écrite est remis sur la branche (la tentative
 ratée redevient visible, rien n'est perdu).
+
+Une entrée dont le `parentId` ne désigne **aucune** ligne du journal n'est pas une bifurcation,
+c'est un trou : `repairBranches` la rattache, avant toute analyse de branche, à l'entrée écrite
+juste avant elle dans l'ordre du fichier, et le rapport les liste dans `reparented`. Le fichier
+est réécrit comme pour un relink (copie `.bak-branches-<date>` à côté, écriture atomique), ce qui
+fait au passage disparaître du fichier vivant le moignon dont la lecture a extrait une entrée : la
+copie garde ces octets. La première entrée du fichier est laissée telle quelle — rien n'a été
+écrit avant elle, et un chemin qui s'arrête là s'arrête sur une racine.
 
 `scripts/repair-branches.ts` passe la même fonction sur toutes les sessions d'un coup, à blanc
 par défaut, `--apply` pour écrire. Passé le 2026-09-06 sur les 104 sessions du owner : 59
@@ -1114,13 +1140,19 @@ Pas de shim de compatibilité (règle `AGENTS.md`) : le lot 6 tourne une fois au
    erreur disque = la prochaine échouera aussi). Décision prise avant que le log soit la source
    de vérité unique ; à réexaminer.
 2. `id` d'entrée = id de bulle. Le serveur ne dérive jamais un id d'affichage.
-3. `parentId` pointe une entrée existante, ou `null`. Un parent manquant est une
-   corruption, pas un cas à réparer.
+3. `parentId` pointe une entrée existante, ou `null`. Un parent que le journal ne contient pas
+   est réparé à l'ouverture, jamais fabriqué : l'entrée passe derrière celle écrite juste avant
+   elle dans l'ordre du fichier (`repairBranches`, `reparented`). Était écrit ici « une
+   corruption, pas un cas à réparer » — le 2026-09-12 a montré ce que ça coûte (Annexe E).
 4. `promptOf` et `displayOf` sont pures et ne partagent aucun état.
 5. Aucun `tool_call` sans résultat dans `promptOf` (garanti par `3b09196`).
-6. Une ligne JSONL invalide est sautée, jamais fatale. Et une dernière ligne **non
-   terminée** est retirée du fichier à l'ouverture : la sauter en lecture ne suffit pas, l'append
-   suivant se collerait au moignon et serait avalé avec lui (trouvé par le test au lot 2).
+6. Une ligne JSONL invalide est sautée, jamais fatale — mais « le dégât est borné à la ligne »
+   ne vaut que pour le fichier : dans l'arbre, la ligne perdue est un maillon, et tout ce qui la
+   précède disparaît de l'écran (Annexe E). Trois garde-fous, pas un : l'écriture s'assure que le
+   fichier finit par un retour à la ligne avant d'ajouter le sien ; une dernière ligne **non
+   terminée** est retirée du fichier à l'ouverture (la sauter en lecture ne suffit pas, trouvé par
+   le test au lot 2) ; et une ligne illisible qui porte une entrée entière collée derrière un
+   moignon rend cette entrée.
 7. Un curseur `since` inconnu est une erreur explicite, jamais un delta silencieux.
 8. Une pièce jointe appartient à un seul thread. Aucun partage inter-session, jamais.
 9. Un snapshot ne couvre que le workspace, et `/undo` le dit.
@@ -1129,7 +1161,9 @@ Pas de shim de compatibilité (règle `AGENTS.md`) : le lot 6 tourne une fois au
 
 - **Round-trip** : append de chaque type, relecture, égalité.
 - **Ligne cassée** : fichier avec une ligne tronquée au milieu, la ligne est sautée, les
-  suivantes arrivent.
+  suivantes arrivent. Et si elle porte une entrée entière collée derrière un moignon, cette
+  entrée revient et son parent absent est rattaché — `tests/sessions/torn-line.test.ts`, sur
+  les deux journaux que le disque plein a cassés (Annexe E).
 - **Crash simulé** : couper le fichier à un octet arbitraire, la session reste lisible.
 - **Chemin** : arbre à trois branches, `pathOf` rend le bon chemin pour chaque leaf.
 - **Compaction** : `promptOf` saute avant `firstKeptEntryId`, `displayOf` garde tout.
@@ -1651,3 +1685,94 @@ C'est le gros du diff, pas les 14 sites de production.
 Aucun helper de test ne construit de session : il n'y a donc pas de point unique où
 absorber le changement, chaque fichier porte ses propres fixtures. C'est ce qui rend le
 travail long plutôt que difficile.
+
+---
+
+# Annexe E — Le disque plein du 2026-09-12
+
+## Les faits
+
+Le journal du serveur porte la preuve, deux fois, le 2026-09-12 à 15:04 :
+`Error: ENOSPC: no space left on device, write`. Trois journaux de conversation en sont sortis
+avec une ligne illisible.
+
+| Journal | Dégât |
+|---|---|
+| un fil de 5550 entrées | moignon d'une entrée `tool` coupé dans ses `args` — pas d'`id`, pas de `seq`, pas de `parentId`, ils n'ont jamais été écrits — avec une entrée `phase` entière collée derrière. Cette entrée nomme le moignon comme parent. |
+| un fil de 7316 entrées | moignon d'une entrée `spawn_state` coupé dans son `ts`, celui-là avec son `id`/`seq`/`parentId`, avec une entrée `tool` entière collée derrière. Cette entrée nomme un parent qu'aucune ligne ne porte : l'écriture courte a coûté dix-neuf entrées d'un coup (les `seq` sautent de 7084 à 7103). |
+| un journal de sous-agent | un moignon seul, coupé en pleine commande. Rien à rattraper, rien de cassé en amont : la garde de la dernière ligne non terminée suffit. |
+
+## Le mécanisme, en trois temps
+
+1. Une écriture courte laisse un **moignon sans retour à la ligne**.
+2. `appendFile` ouvre en **append** : l'entrée suivante se colle au moignon, sur sa ligne, et
+   devient illisible avec lui. La garde de `openSessionLog` qui coupe une dernière ligne non
+   terminée ne se déclenche pas — la ligne a été terminée, par l'append suivant.
+3. `pathOf` remonte les parents **depuis la feuille** : un maillon manquant rend invisible tout
+   ce qui le précède, même si les octets sont sur le disque.
+
+`parseEntryLine` sautait la ligne, ce qui borne le dégât au **fichier** et pas à l'**arbre** ;
+`repairBranches` rattachait les branches mortes, mais ne voyait pas un parent absent du journal.
+
+**Mesuré en rouvrant la sauvegarde du premier fil, avant réparation** : 5549 entrées lues, chemin
+de la racine à la feuille **1005** entrées, alors que la branche en porte 5520. Vingt heures de
+conversation hors de l'écran du propriétaire, tous les octets sur le disque. Sur le second fil,
+même forme : 227 entrées visibles sur 7316.
+
+## Ce qui a changé
+
+**À l'écriture, un octet lu.** `SessionLog.write` lit le dernier octet du fichier et écrit un
+`\n` d'abord s'il manque. Le coût tient dans la chaîne d'écriture, déjà asynchrone ; l'appelant
+reste fire-and-forget. C'est le seul des trois garde-fous qui empêche le dégât plutôt que de le
+réparer.
+
+**À la lecture, un rattrapage.** Une ligne qui ne se parse pas peut porter une entrée entière.
+La règle : chercher la **dernière** position d'un début d'objet (`{"type":"`) à partir de
+laquelle le **reste de la ligne** se parse entièrement, et rendre cette entrée ; sinon rien,
+comme avant. « La dernière » parce que c'est le plus court suffixe qui tient debout : une
+position plus tôt devrait avaler des octets que personne n'a fini d'écrire. Un début d'objet à
+l'intérieur d'une sortie d'outil ne peut pas gagner — le reste de la ligne ne se parse pas
+depuis là. Le rattrapage et la taille du moignon abandonné sont journalisés.
+
+**À l'ouverture, un rattachement.** Une entrée dont le `parentId` ne désigne aucune ligne est
+rattachée à l'**entrée écrite juste avant elle dans l'ordre du fichier**, avant toute analyse de
+branche (`repairBranches`, champ `reparented` du rapport), et le fichier est réécrit comme pour
+un relink : copie `.bak-branches-<date>` à côté, écriture atomique.
+
+## Pourquoi rattacher, et pas fabriquer
+
+Fabriquer le parent manquant — une entrée de remplacement portant l'id que l'orpheline nomme —
+aurait recousu la chaîne sans rien réécrire. C'est une entrée que personne n'a écrite, avec un
+`ts` et un `type` inventés, dans un journal dont toute la valeur tient à ce qu'une entrée écrite
+est vraie. L'ordre du fichier, lui, est un fait : il dit ce qui a été écrit juste avant, ce qui
+est exactement ce que l'entrée aurait nommé si la ligne perdue n'avait jamais existé. Le
+rattachement ne prétend rien de plus que ça.
+
+La première entrée du fichier est laissée telle quelle : rien n'a été écrit avant elle, et un
+chemin qui s'arrête là s'arrête sur une racine.
+
+Ce qui reste perdu est ce qui n'a jamais atteint le disque : le moignon lui-même et, sur le
+second fil, les dix-neuf entrées que les `seq` sautent. La réécriture les laisse là où elles
+sont — nulle part — et la copie de sauvegarde garde les octets du moignon.
+
+## Ce que ça rend, et ce que le test en garde
+
+Les deux journaux cassés **ne sont pas** dans le dépôt : ils portent des conversations du
+propriétaire, et une fixture n'a pas à coûter ça. `tests/sessions/torn-line.test.ts` travaille
+sur deux journaux synthétiques écrits à la main (`tests/fixtures/sessions/`, quelques kilo-octets)
+qui reproduisent les deux formes mesurées : moignon sans identité, moignon avec identité.
+
+Ce que le test vérifie n'est donc pas un chiffre mais le mécanisme :
+
+- l'entrée collée derrière le moignon revient, et le moignon est abandonné ;
+- elle est rattachée à l'entrée écrite juste avant elle, donc `pathOf(entries, leaf)` rend la
+  **branche entière**, de la racine (`parentId: null`) à la feuille, nommée entrée par entrée ;
+- ce qui reste hors branche est compté à part et doit rester hors branche : sur la première
+  fixture, un run mort d'erreur qui a rembobiné sur sa question, exactement la forme que les 30
+  entrées hors chemin du vrai fil avaient ;
+- un journal sain s'ouvre sans rien réécrire : ni `.tmp`, ni nouvelle sauvegarde, ni lien
+  déplacé. C'est la moitié du test qui compte le plus, parce que c'est celle qui protège les
+  centaines de conversations que le disque porte déjà.
+
+Ce que le passage au synthétique a coûté : les chiffres du 2026-09-12 (1005 → 5520, 227 → 7316)
+ne sont plus vérifiés par personne. Ils sont ici, et là seulement.

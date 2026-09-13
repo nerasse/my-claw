@@ -147,12 +147,15 @@ describe("repairBranches", () => {
     expect(path(out.entries, out.leafId)).toEqual(["u1", "p1", "a1", "a2", "b1", "x1", "u2", "y1", "y2", "z1", "u3"]);
   });
 
-  test("an off-path entry whose parent is not in the log is left alone", () => {
+  test("an entry whose parent is not in the log is put behind the line before it, not treated as a fork", () => {
+    // The parent's line was lost to a short write -- tests/sessions/torn-line.test.ts has the
+    // measured case. File order is what is left to say where the entry belongs.
     const entries = build(["u1:user:-", "p1:phase:u1", "w:phase:ghost"]);
-    const out = repairBranches(entries, "p1");
+    const out = repairBranches(entries, "w");
+    expect(out.reparented).toEqual(["w"]);
+    expect(path(out.entries, out.leafId)).toEqual(["u1", "p1", "w"]);
     expect(out.bugForks).toBe(0);
     expect(out.relinked).toEqual([]);
-    expect(out.leafId).toBe("p1");
   });
 
   test("an unknown leaf falls back to the last entry, as the log itself does", () => {

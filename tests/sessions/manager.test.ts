@@ -334,7 +334,7 @@ describe("SessionManager: the log half", () => {
     const manager = new SessionManager();
     const opened = await manager.logOf(id);
     expect(opened.leaf()).toBe(second.id);
-    expect(opened.repaired).toEqual({ relinked: 0, adoptedTail: true });
+    expect(opened.repaired).toEqual({ relinked: 0, reparented: 0, adoptedTail: true });
     expect((await readMeta(id))?.leafId).toBe(second.id);
   });
 

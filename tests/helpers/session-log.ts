@@ -90,6 +90,10 @@ function parseUserContent(content: string): {
  * Call cleanup() in afterEach to reset.
  */
 export async function setupSessionLog(sessionId: string): Promise<SessionLogSetup> {
+  // A setup for the same id may still have appends in flight: an append is fire-and-forget, and
+  // the rm below takes the file out from under it. Left alone, those bytes land in the file this
+  // setup is about to create and the new log opens with a turn from the old one inside it.
+  await activeSetups.get(sessionId)?.flush();
   await rm(sessionDir(sessionId), { recursive: true, force: true });
   await mkdir(sessionDir(sessionId), { recursive: true });
   const log = await openSessionLog(sessionId);

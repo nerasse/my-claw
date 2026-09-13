@@ -1,0 +1,18 @@
+{"type":"user","prompt":true,"text":"first question","id":"a-01","seq":0,"parentId":null,"ts":1757600000000}
+{"type":"run_start","prompt":false,"runId":"run-a1","id":"a-02","seq":1,"parentId":"a-01","ts":1757600000100}
+{"type":"phase","prompt":true,"text":"first answer","runId":"run-a1","id":"a-03","seq":2,"parentId":"a-02","ts":1757600000200}
+{"type":"tool","prompt":true,"callId":"call-a3","name":"bash","args":{"command":"ls"},"output":"a\nb","truncated":false,"ok":true,"runId":"run-a1","id":"a-04","seq":3,"parentId":"a-03","ts":1757600000300}
+{"type":"run_end","prompt":false,"runId":"run-a1","reason":"done","id":"a-05","seq":4,"parentId":"a-04","ts":1757600000400}
+{"type":"user","prompt":true,"text":"second question","id":"a-06","seq":5,"parentId":"a-05","ts":1757600001000}
+{"type":"run_start","prompt":false,"runId":"run-a2","id":"a-07","seq":6,"parentId":"a-06","ts":1757600001100}
+{"type":"phase","prompt":true,"text":"second answer","runId":"run-a2","id":"a-08","seq":7,"parentId":"a-07","ts":1757600001200}
+{"type":"tool","prompt":true,"callId":"call-a8","name":"bash","args":{"command":"grep -rn needle ."},"output":"one hit","truncated":false,"ok":true,"runId":"run-a2","id":"a-09","seq":8,"parentId":"a-08","ts":1757600001300}
+{"type":"tool","prompt":true,"callId":"call-a9","name":"bash","args":{"command":"grep -rn \"needle\" . | sort -u | he{"type":"phase","prompt":true,"text":"third answer","runId":"run-a2","id":"a-11","seq":10,"parentId":"a-10","ts":1757600001500}
+{"type":"tool","prompt":true,"callId":"call-a11","name":"read","args":{"path":"notes.md"},"output":"notes","truncated":false,"ok":true,"runId":"run-a2","id":"a-12","seq":11,"parentId":"a-11","ts":1757600001600}
+{"type":"phase","prompt":true,"text":"fourth answer","runId":"run-a2","id":"a-13","seq":12,"parentId":"a-12","ts":1757600001700}
+{"type":"run_end","prompt":false,"runId":"run-a2","reason":"done","id":"a-14","seq":13,"parentId":"a-13","ts":1757600001800}
+{"type":"user","prompt":true,"text":"third question","id":"a-15","seq":14,"parentId":"a-14","ts":1757600002000}
+{"type":"run_start","prompt":false,"runId":"run-a3","id":"a-16","seq":15,"parentId":"a-15","ts":1757600002100}
+{"type":"phase","prompt":true,"text":"","runId":"run-a3","id":"a-17","seq":16,"parentId":"a-16","ts":1757600002200}
+{"type":"run_end","prompt":false,"runId":"run-a3","reason":"error","id":"a-18","seq":17,"parentId":"a-17","ts":1757600002300}
+{"type":"failure","prompt":false,"error":"provider stream error: internal server error","id":"a-19","seq":18,"parentId":"a-15","ts":1757600002400}

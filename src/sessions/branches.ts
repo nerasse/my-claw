@@ -19,6 +19,13 @@
  * file order (the order they happened in) between the fork point and the child that survived, and
  * a dead tail at the end of the file becomes the leaf. Nothing is deleted; only parent links move.
  *
+ * A parent that is not in the log *at all* is the other way a branch loses its ancestors, and the
+ * disk filling up on 2026-09-12 is what measured it: a short write lost the line an entry names as
+ * its parent, and `pathOf` stops at the missing link, so a 5520-entry thread showed 1005. That
+ * entry is put behind the one written just before it in file order -- the entry it would have
+ * named if the lost line had never been written -- rather than given a fabricated parent: file
+ * order is what actually happened, an invented id is a claim nothing on disk supports.
+ *
  * `scripts/repair-branches.ts` runs the same function over every session, dry run by default.
  */
 
@@ -30,8 +37,10 @@ export interface BranchRepair {
   /** File order kept. An entry whose parent moved is a copy; the others are the objects given. */
   entries: Entry[];
   leafId: string | null;
-  /** Ids of the entries whose `parentId` changed. */
+  /** Ids of the entries whose `parentId` changed to put a dead branch back on the branch. */
   relinked: string[];
+  /** Ids of the entries whose parent was nowhere in the log, put behind the line before them. */
+  reparented: string[];
   bugForks: number;
   deliberateForks: number;
   /** The leaf moved to a dead tail at the end of the file. */
@@ -80,6 +89,19 @@ export function repairBranches(entries: readonly Entry[], leafId: string | null)
   const list = [...entries];
   const byId = new Map(list.map((entry) => [entry.id, entry]));
   const index = new Map(list.map((entry, i) => [entry.id, i]));
+  const reparented: string[] = [];
+  // Before anything is judged on-path or off-path: an entry naming a parent no line holds is not a
+  // fork, it is a hole. Filling it first is what lets the fork pass see one branch where it would
+  // otherwise see a chain hanging in the air. The first entry of the file is left alone -- nothing
+  // was written before it, and a walk that stops there stops at a root.
+  for (let i = 1; i < list.length; i++) {
+    const entry = list[i]!;
+    if (entry.parentId === null || byId.has(entry.parentId)) continue;
+    const copy = { ...entry, parentId: list[i - 1]!.id } as Entry;
+    byId.set(entry.id, copy);
+    list[i] = copy;
+    reparented.push(entry.id);
+  }
   const children = new Map<string, Entry[]>();
   for (const entry of list) {
     if (!entry.parentId || !byId.has(entry.parentId)) continue;
@@ -90,13 +112,13 @@ export function repairBranches(entries: readonly Entry[], leafId: string | null)
   for (const siblings of children.values()) siblings.sort((a, b) => a.seq - b.seq);
 
   let leaf = leafId && byId.has(leafId) ? leafId : (list[list.length - 1]?.id ?? null);
-  const report: BranchRepair = { entries: list, leafId: leaf, relinked: [], bugForks: 0, deliberateForks: 0, adoptedTail: false };
+  const report: BranchRepair = { entries: list, leafId: leaf, relinked: [], reparented, bugForks: 0, deliberateForks: 0, adoptedTail: false };
   if (list.length === 0) return report;
   let path = pathOf(byId, leaf);
   if (path.size === list.length) return report;
 
-  // Fork points: on-path entries with an off-path child, oldest first. An off-path entry whose
-  // parent is not in the log at all has nothing to be reattached to and is left where it is.
+  // Fork points: on-path entries with an off-path child, oldest first. Nothing here can name a
+  // parent the log does not hold: the pass above gave those the line written before them.
   const forks = new Map<string, Entry[]>();
   for (const entry of list) {
     if (path.has(entry.id) || !entry.parentId || !path.has(entry.parentId)) continue;

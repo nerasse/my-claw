@@ -14,7 +14,7 @@
  *   delta cursor keeps working across a branch switch.
  */
 
-import { appendFile, copyFile, mkdir, readFile, rename, truncate, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, open, readFile, rename, truncate, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
@@ -312,12 +312,46 @@ export function newEntryId(now = Date.now()): string {
   return `${time.slice(0, 8)}-${time.slice(8, 12)}-${version}-${variant}-${rest.slice(8, 20)}`;
 }
 
+const ENTRY_START = '{"type":"';
+
+/**
+ * The entry glued behind a stump, when an unreadable line holds one.
+ *
+ * A short write leaves an entry that stops mid-token and with no newline, and the append after it
+ * lands on the same line: `[stump][whole entry]`. The stump is lost either way -- nobody finished
+ * writing it -- but the entry behind it is intact, and it is the link the rest of the branch hangs
+ * from, so dropping the whole line costs every ancestor of the leaf rather than one entry.
+ *
+ * Candidates are tried from the last object start backwards, so what comes back is the shortest
+ * suffix of the line that parses whole: an earlier start would have to swallow bytes that were
+ * never finished. A failed attempt is cheap -- `JSON.parse` stops at the first bad token, it does
+ * not read to the end -- so a line carrying JSON inside a tool output costs a scan, not a square.
+ */
+function gluedEntry(line: string): { entry: Entry; stumpBytes: number } | null {
+  const starts: number[] = [];
+  for (let at = line.indexOf(ENTRY_START, 1); at >= 0; at = line.indexOf(ENTRY_START, at + 1)) starts.push(at);
+  for (let i = starts.length - 1; i >= 0; i--) {
+    const start = starts[i]!;
+    try {
+      const parsed = JSON.parse(line.slice(start)) as Entry;
+      if (typeof parsed?.id === "string" && typeof parsed?.type === "string") return { entry: parsed, stumpBytes: start };
+    } catch {
+      // Not a boundary. An earlier start may still be one.
+    }
+  }
+  return null;
+}
+
 /**
  * Reads one line, or nothing.
  *
  * A truncated last line is what a process killed mid-append leaves behind, and it must cost that
  * line alone. The whole point of the format is that damage is bounded to a line instead of taking
  * the conversation with it, the way a half-written 12 MB JSON object did.
+ *
+ * Bounded to the line is true of the file and false of the tree, which is what the disk filling up
+ * on 2026-09-12 measured: `pathOf` walks parents from the leaf, so one lost link hid twenty hours
+ * of conversation that were still on disk. Hence the recovery -- docs/session-log.md, annexe E.
  */
 export function parseEntryLine(line: string, sessionId: string, lineNumber: number): Entry | null {
   if (!line.trim()) return null;
@@ -329,7 +363,17 @@ export function parseEntryLine(line: string, sessionId: string, lineNumber: numb
     }
     return parsed;
   } catch {
-    void log("warn", "session log: unreadable line, skipped", { sessionId, lineNumber });
+    const glued = gluedEntry(line);
+    if (glued) {
+      void log("warn", "session log: entry recovered from behind a stump, the stump is dropped", {
+        sessionId,
+        lineNumber,
+        stumpBytes: glued.stumpBytes,
+        id: glued.entry.id,
+      });
+      return glued.entry;
+    }
+    void log("warn", "session log: unreadable line, skipped", { sessionId, lineNumber, bytes: line.length });
     return null;
   }
 }
@@ -376,6 +420,33 @@ export function leavesOf(entries: readonly Entry[]): Entry[] {
 }
 
 /**
+ * Whether the log is at a point where a new line can start.
+ *
+ * `appendFile` opens in append mode, so a write that stopped short -- the disk filled on
+ * 2026-09-12, twice, `ENOSPC: no space left on device` -- leaves a stump with no newline and the
+ * next entry lands glued behind it, unreadable with it. One byte read at the end of the file is
+ * what keeps the two apart, inside the write chain that was already asynchronous.
+ */
+async function endsOnNewline(file: string): Promise<boolean> {
+  try {
+    const handle = await open(file, "r");
+    try {
+      const { size } = await handle.stat();
+      if (size === 0) return true;
+      const tail = Buffer.alloc(1);
+      await handle.read(tail, 0, 1, size - 1);
+      return tail[0] === 0x0a;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // No file yet, or one this process cannot read: an entry written at offset 0 needs nothing in
+    // front of it, and a real disk problem surfaces on the append that follows, loudly.
+    return true;
+  }
+}
+
+/**
  * One session's entries, in memory and on disk.
  *
  * Opened through `openSessionLog`, which is the only path that reads the file. The instance owns
@@ -406,9 +477,9 @@ export class SessionLog {
    */
   onAppend: (() => void) | undefined;
   /** What `openSessionLog` had to put back on the branch, if anything -- `branches.ts`. */
-  readonly repaired: { relinked: number; adoptedTail: boolean } | null;
+  readonly repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null;
 
-  constructor(sessionId: string, entries: Entry[], leafId: string | null, repaired: { relinked: number; adoptedTail: boolean } | null = null) {
+  constructor(sessionId: string, entries: Entry[], leafId: string | null, repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null = null) {
     this.sessionId = sessionId;
     this.repaired = repaired;
     this.file = entriesPath(sessionId);
@@ -485,7 +556,10 @@ export class SessionLog {
   private write(lines: string, count: number): void {
     this.tail = this.tail
       .catch(() => {})
-      .then(() => appendFile(this.file, lines, "utf-8"))
+      .then(async () => {
+        const separator = (await endsOnNewline(this.file)) ? "" : "\n";
+        await appendFile(this.file, `${separator}${lines}`, "utf-8");
+      })
       .catch((err) => {
         // Deliberately not rethrown, and deliberately not recreating the directory: a write that
         // fails with ENOENT means the conversation was deleted under the run, and resurrecting it
@@ -613,16 +687,26 @@ export async function openSessionLog(sessionId: string, leafId?: string | null):
   // (`branches.ts`). The file is rewritten only when a parent link moved, atomically, with a copy
   // kept beside it: the repair moves links and never deletes, but the shape it undoes is gone.
   const repair = repairBranches(entries, leafId ?? null);
-  const repaired = repair.relinked.length > 0 || repair.adoptedTail
-    ? { relinked: repair.relinked.length, adoptedTail: repair.adoptedTail }
+  const repaired = repair.relinked.length > 0 || repair.reparented.length > 0 || repair.adoptedTail
+    ? { relinked: repair.relinked.length, reparented: repair.reparented.length, adoptedTail: repair.adoptedTail }
     : null;
-  if (repair.relinked.length > 0) {
+  // The rewrite also settles what the read recovered: the stump that swallowed an entry is not
+  // part of any entry, so it is gone from the file the moment the file is rewritten. The copy kept
+  // beside it is where those bytes stay, which is the same trade the branch repair already makes.
+  if (repair.relinked.length > 0 || repair.reparented.length > 0) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     await copyFile(path, `${path}.bak-branches-${stamp}`);
     await writeFile(`${path}.tmp`, repair.entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf-8");
     await rename(`${path}.tmp`, path);
   }
-  if (repaired) {
+  if (repair.reparented.length > 0) {
+    void log("warn", "session log: entries whose parent was never written, put behind the line before them", {
+      sessionId,
+      reparented: repair.reparented.length,
+      ids: repair.reparented.slice(0, 5),
+    });
+  }
+  if (repair.relinked.length > 0 || repair.adoptedTail) {
     void log("warn", "session log: dead branches put back on the branch", {
       sessionId,
       forks: repair.bugForks,
