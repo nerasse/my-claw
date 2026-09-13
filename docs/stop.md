@@ -43,7 +43,9 @@ Shell commands run under `setsid` (own process group). On abort the group is kil
 
 ### History is kept, dangling tool_calls are sealed
 
-A stopped run is not rolled back: the user's message and any completed turns stay in history. If the abort
+A stopped run is not rolled back: the user's message and any completed turns stay in history.
+A run that dies of an error now ends the same way, and for the same reason (`session-log.md` §2.6):
+it writes its `run_end` and leaves the cursor where it stands. If the abort
 lands while an assistant `tool_calls` message has no matching tool result, `sealDanglingToolCalls` appends
 a synthetic `[Stopped by user]` result so the next turn's API call stays valid.
 

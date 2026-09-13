@@ -509,7 +509,6 @@ export class AgentBridge implements AgentBackend {
         {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
-            // recorder.user() advances startLeaf automatically - rewind() cannot erase this turn
             await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
           }
         }
@@ -691,7 +690,6 @@ export class AgentBridge implements AgentBackend {
               chatMessages.push({ role: "assistant", content: transformedResponse });
               for (const m of injected) {
                 budget.grant(injectionBonus);
-                // recorder.user() advances startLeaf automatically - rewind() cannot erase this turn
                 await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
               }
               continue;
@@ -947,10 +945,14 @@ export class AgentBridge implements AgentBackend {
         recorder.runEnd("aborted");
         throw new AbortedError();
       }
-      // The run's own end called before the cursor moves: the dead branch keeps its markers, so
-      // opening it from the branch picker shows the error state instead of an eternal spinner.
+      // The same ending as the abort above, and for the same reason: the cursor stays where the
+      // run left it. Rewinding to the question is what made a run that died a branch `pathOf` does
+      // not walk -- settled tool calls, their output and the phases around them on disk and in no
+      // view, so a refresh served the question with nothing under it. The channel's `failure` entry
+      // therefore lands after the run's last entry instead of on the question, and the next turn
+      // reads the work rather than doing it again. What that costs is the dead attempt's tokens in
+      // the next prompt -- docs/session-log.md 2.6.
       recorder.runEnd("error");
-      await recorder.rewind();
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -1010,7 +1012,6 @@ export class AgentBridge implements AgentBackend {
     const userContent = this.preprocessor.buildUserContent(injected);
     const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
     const images = imageAttachmentsOf(injected);
-    // recorder.user() advances startLeaf automatically, so rewind() cannot erase this turn.
     // The images ride on the entry as on the trigger turn: that field is what every later
     // request and every reopened thread reads the picture back from. Without it the bubble came
     // back as bare text and the model never saw the picture again.

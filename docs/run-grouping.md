@@ -27,9 +27,10 @@ Le `RunRecorder` les écrit autour de chaque run :
 
 - `run_start` juste après le tour déclencheur (`user`), dans `bridge.run()` -- le point
   unique par lequel passent tous les runs (orchestrateur, sous-agents, cron) ;
-- `run_end` à la fin normale (`done`), sur abort (`aborted`), et sur erreur **avant le
-  rewind** (`error`) : la branche morte garde ses marqueurs et reste lisible depuis le
-  picker de branches.
+- `run_end` à la fin normale (`done`), sur abort (`aborted`) et sur erreur (`error`). Les
+  trois ferment le run là où il s'est arrêté : une erreur ne rembobine plus
+  (`session-log.md` §2.6), donc le travail du run reste sur la branche et la `failure` que
+  le canal dépose ensuite se place après le `run_end`, hors du run replié.
 
 La chaîne d'un run est donc : `user` (déclencheur) → `run_start` → work → `run_end` →
 tour suivant. Une injection (message de pilotage, réponse à une question) est écrite

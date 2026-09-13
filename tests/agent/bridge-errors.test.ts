@@ -8,7 +8,8 @@ import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
-import type { SessionLog, ToolEntry, UserEntry } from "../../src/sessions/log.ts";
+import { promptOf } from "../../src/sessions/projection.ts";
+import type { FailureEntry, SessionLog, ToolEntry, UserEntry } from "../../src/sessions/log.ts";
 
 const SESSION_ID = "test-errors";
 
@@ -378,6 +379,83 @@ describe("AgentBridge error handling", () => {
       const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
       expect(userEntry).toBeDefined();
       expect(userEntry!.text).toBe("test msg");
+    } finally {
+      mock.restore();
+      end();
+    }
+  });
+
+  test("a run that dies of an API error leaves its work on the branch, and the failure lands after it", async () => {
+    // A run that dies ends where it died, like one `/stop` killed. Rewinding to the question put
+    // the settled call on a branch `pathOf` never walks: on disk, and gone from the thread at the
+    // next refresh.
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "echo",
+      description: "echo",
+      parameters: {},
+      async execute() {
+        return { success: true, output: "24 minutes of bash" };
+      },
+    });
+    const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount === 1) return toolCallResponse("echo") as never;
+      return new Response(JSON.stringify({ error: { message: "overloaded" } }), { status: 400 }) as never;
+    });
+
+    try {
+      await expect(bridge.handleMessage(createMessage(), createSession(), signal)).rejects.toThrow();
+      await log.flush();
+      expect(log.path().map((e) => e.type)).toEqual(["user", "run_start", "phase", "tool", "run_end"]);
+      const tool = log.path().find((e): e is ToolEntry => e.type === "tool");
+      expect(tool!.output).toContain("24 minutes of bash");
+      // The channel files the error where the cursor stands, which is now past the run's own end.
+      const failure = log.append<FailureEntry>({ type: "failure", prompt: false, error: "API Error: 400" });
+      expect(log.get(failure.parentId!)!.type).toBe("run_end");
+      await log.flush();
+    } finally {
+      mock.restore();
+      end();
+    }
+  });
+
+  test("the dead attempt projects to a prompt where every call it made is answered", async () => {
+    // The work staying on the branch means the next turn reads it. An assistant turn asking for a
+    // call nothing answers is refused outright by Anthropic and by any OpenAI-compatible endpoint,
+    // so what the dead attempt leaves has to be a legal exchange on its own.
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "echo",
+      description: "echo",
+      parameters: {},
+      async execute() {
+        return { success: true, output: "settled" };
+      },
+    });
+    const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount === 1) return toolCallResponse("echo") as never;
+      return new Response(JSON.stringify({ error: { message: "overloaded" } }), { status: 400 }) as never;
+    });
+
+    try {
+      await expect(bridge.handleMessage(createMessage(), createSession(), signal)).rejects.toThrow();
+      await log.flush();
+      const prompt = promptOf(log.entries(), log.leaf());
+      const asked = prompt.flatMap((m) => ("tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : []));
+      const answered = prompt.filter((m) => m.role === "tool").map((m) => (m as { tool_call_id: string }).tool_call_id);
+      expect(asked).toEqual(["tc1"]);
+      expect(answered).toEqual(asked);
+      expect(prompt.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
     } finally {
       mock.restore();
       end();

@@ -141,13 +141,13 @@ describe("a log a short write tore, reopened", () => {
     // Eighteen lines in the file, one of them holding a stump and an entry: the stump is not an
     // entry, the one behind it is.
     expect(entries).toHaveLength(18);
-    expect(log.repaired).toEqual({ relinked: 0, reparented: 1, adoptedTail: false });
+    expect(log.repaired).toEqual({ relinked: 1, reparented: 1, adoptedTail: false });
 
     // The whole branch, root to leaf, named. `a-11` is the recovered entry: it named `a-10`, the
     // id the stump never got to carry, and sits behind `a-09`, the line written before it.
     expect(path.map((entry) => entry.id)).toEqual([
       "a-01", "a-02", "a-03", "a-04", "a-05", "a-06", "a-07", "a-08", "a-09",
-      "a-11", "a-12", "a-13", "a-14", "a-15", "a-19",
+      "a-11", "a-12", "a-13", "a-14", "a-15", "a-16", "a-17", "a-18", "a-19",
     ]);
     expect(path[0]!.parentId).toBeNull();
     expect((path[0] as UserEntry).type).toBe("user");
@@ -155,10 +155,11 @@ describe("a log a short write tore, reopened", () => {
     expect(leaf.type).toBe("failure");
     expect(leaf.error).toBe("provider stream error: internal server error");
 
-    // Counted apart: the run that died of an error and rewound to its question is a deliberate
-    // fork, and stays off the branch. The repair heals the hole without swallowing that.
+    // The run that died of an error (`a-16`..`a-18`) rewound to its question when this shape was
+    // written, which left its work off the branch with nothing marking the fork. It goes back in
+    // file order between the question and the failure filed on it: nothing is off the branch here.
     const offBranch = entries.filter((entry) => !path.some((onPath) => onPath.id === entry.id));
-    expect(offBranch.map((entry) => entry.id)).toEqual(["a-16", "a-17", "a-18"]);
+    expect(offBranch).toEqual([]);
 
     // The file was healed in place: every line of it parses now, and the bytes of the stump are
     // in the copy kept beside it.

@@ -3,12 +3,19 @@
  *
  * A session log is a tree: `parentId` links every entry to the one before it, and the meta's
  * leaf says which tip the conversation is on. Every entry the leaf does not reach is off the
- * branch: not in the prompt, not in the thread. Two things legitimately leave entries there, and
- * both leave a mark. A rewind command (`/undo`, `/retry`, `/redo`, `/fork`, `/branches`) writes
+ * branch: not in the prompt, not in the thread. One thing legitimately leaves entries there, and
+ * it leaves a mark. A rewind command (`/undo`, `/retry`, `/redo`, `/fork`, `/branches`) writes
  * its own `command` entry at the position it moved to, so the fork point has a `command` child on
- * one side or the other. A run that died of an error rewinds to its own question and the channel
- * files a `failure` entry there, so the fork sits on a `user` entry with a `run_start` child whose
- * run ends in `error`, or with a `failure` child.
+ * one side or the other. A branch the owner walked away from stays walked away from: that mark is
+ * the one thing this pass refuses to undo, whatever else the fork looks like.
+ *
+ * A run that died of an error used to rewind to its own question, which left the same shape
+ * without the mark: a fork on a `user` entry whose abandoned side is a run ending in `error`, and
+ * a `failure` entry filed on the question. That was read as deliberate and left alone, so a whole
+ * run's work -- settled tool calls with their output, the phases around them -- sat on disk and
+ * appeared in no view, while `/stop` on the same run kept everything. A run now ends where it died
+ * (`agent/bridge.ts`), so nothing produces that shape any more; the logs carrying it from an
+ * earlier version are damage like the rest and are sewn back here.
  *
  * Every other fork is damage. Until 0.6.1 one session could be held by two `SessionLog` instances
  * at once, each with its own leaf, and whatever the second one appended hung off a stale leaf:
@@ -55,19 +62,6 @@ function pathOf(byId: Map<string, Entry>, leafId: string | null): Set<string> {
     cur = cur.parentId ? byId.get(cur.parentId) : undefined;
   }
   return path;
-}
-
-/** Whether the chain from `head` (first child each time) is a run that ended in an error. */
-function errorRun(head: Entry, children: Map<string, Entry[]>): boolean {
-  if (head.type !== "run_start") return false;
-  const seen = new Set<string>();
-  let cur: Entry | undefined = head;
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.type === "run_end") return cur.reason === "error";
-    cur = children.get(cur.id)?.[0];
-  }
-  return false;
 }
 
 function isBranchCommand(entry: Entry | undefined): boolean {
@@ -139,10 +133,7 @@ export function repairBranches(entries: readonly Entry[], leafId: string | null)
     const fork = byId.get(forkId)!;
     const siblings = children.get(forkId) ?? [];
     const survivor = siblings.find((child) => path.has(child.id));
-    const deliberate =
-      siblings.some(isBranchCommand) ||
-      (fork.type === "user" && (survivor?.type === "failure" || offChildren.some((child) => errorRun(child, children))));
-    if (deliberate) {
+    if (siblings.some(isBranchCommand)) {
       report.deliberateForks += 1;
       continue;
     }

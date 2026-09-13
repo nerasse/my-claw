@@ -506,12 +506,31 @@ l'événement est journalisé (`session log: dead branches put back on the branc
 Un rembobinage délibéré laisse sa marque, et c'est à elle qu'on le reconnaît : `/undo`, `/retry`,
 `/redo`, `/fork`, `/branches` écrivent leur entrée `command` à la position où ils se placent, donc
 le point de bifurcation a un enfant `command` d'un côté ou de l'autre (`/redo` la laisse côté
-branche abandonnée) ; un run mort d'erreur rembobine sur sa propre question et le canal y dépose
-une entrée `failure`, donc la bifurcation porte sur une entrée `user` avec un `run_start` dont le
-run finit en `error`, ou avec un enfant `failure` (les sessions d'avant les marqueurs de run).
-Toute autre bifurcation est un dégât. La seule perte assumée : un rembobinage d'erreur d'avant
-les marqueurs dont la `failure` n'aurait pas été écrite est remis sur la branche (la tentative
-ratée redevient visible, rien n'est perdu).
+branche abandonnée). C'est la **seule** marque, et elle est inconditionnelle : une branche que le
+propriétaire a abandonnée ne revient jamais sur le fil, quelle que soit la façon dont le run
+qu'elle porte s'est terminé. Toute autre bifurcation est un dégât.
+
+**Un run mort d'erreur ne rembobine plus.** Il rembobinait sur sa propre question, et le canal
+déposait la `failure` à cet endroit : tout ce que le run avait écrit devenait une branche que
+`pathOf` ne traverse pas. Mesuré sur un fil réel : 11 appels `bash` réglés sur le disque avec leur
+sortie et leur durée, plus leurs phases — 24 entrées, ~9,7 k tokens — invisibles dès le premier
+rechargement. `/stop` sur le même run gardait tout : la branche `isAbort` écrit son `run_end` et
+relance sans toucher au curseur. L'asymétrie ne se justifiait pas, et l'exigence est « on doit tout
+retrouver au rechargement, quelle que soit l'erreur » : une erreur se termine donc maintenant comme
+un abandon (`bridge.ts`, `runEnd("error")` sans `rewind()`). Ce que ça change :
+
+- la `failure` s'écrit après la dernière entrée du run, pas sur la question — donc hors du run
+  replié, juste après son `run_end` (`run-grouping.md`) ;
+- le travail reste sur la branche : visible au rechargement, **et** relu par le modèle au tour
+  suivant, ce qui est le but (il ne refait pas ce qui est déjà fait) et ce que ça coûte (les tokens
+  de la tentative morte dans le prompt suivant) ;
+- `/retry` n'en dépend pas : il part de `log.path()` et cherche le dernier tour `user` du chemin
+  courant, pas un curseur qu'un rewind aurait laissé.
+
+Les journaux qui portent l'ancienne forme sont des dégâts comme les autres : la bifurcation sur un
+tour `user` dont la branche morte est un run fini en `error`, ou dont le survivant est une
+`failure`, n'est plus lue comme délibérée. `repairBranches` recoud ces runs en ordre de fichier
+entre la question et la `failure` filée dessus, à la prochaine ouverture de la conversation.
 
 Une entrée dont le `parentId` ne désigne **aucune** ligne du journal n'est pas une bifurcation,
 c'est un trou : `repairBranches` la rattache, avant toute analyse de branche, à l'entrée écrite
@@ -870,8 +889,10 @@ Nom retenu plutôt que `/tree` : jargon TUI, et sur mobile c'est une liste, pas 
 
 ## 5.5 Ce que ça change dans le bridge
 
-`bridge.ts:883` disparaît. Un run qui échoue laisse ses entrées en place ; la branche
-morte est visible et le retry est un frère, pas un écrasement.
+`bridge.ts:883` disparaît : un run qui échoue ne tronque plus le tableau. Il ne rembobine
+pas non plus (§2.6) — ses entrées restent sur la branche, comme celles d'un run que `/stop`
+a tué. Ce qui fait d'un retry un frère et non un écrasement, c'est `/retry` qui branche sur
+le parent du tour user, pas la façon dont le run précédent s'est terminé.
 
 ---
 
@@ -1145,7 +1166,10 @@ Pas de shim de compatibilité (règle `AGENTS.md`) : le lot 6 tourne une fois au
    elle dans l'ordre du fichier (`repairBranches`, `reparented`). Était écrit ici « une
    corruption, pas un cas à réparer » — le 2026-09-12 a montré ce que ça coûte (Annexe E).
 4. `promptOf` et `displayOf` sont pures et ne partagent aucun état.
-5. Aucun `tool_call` sans résultat dans `promptOf` (garanti par `3b09196`).
+5. Aucun `tool_call` sans résultat dans `promptOf` (garanti par `3b09196`). Vaut aussi pour une
+   tentative morte restée sur la branche : les `tool_calls` sont dérivés des entrées `tool`, et
+   une entrée `tool` n'est écrite qu'une fois l'appel réglé. Une tentative morte projette donc une
+   suite d'appels tous répondus, close par un tour assistant qui ne demande rien.
 6. Une ligne JSONL invalide est sautée, jamais fatale — mais « le dégât est borné à la ligne »
    ne vaut que pour le fichier : dans l'arbre, la ligne perdue est un maillon, et tout ce qui la
    précède disparaît de l'écran (Annexe E). Trois garde-fous, pas un : l'écriture s'assure que le
@@ -1575,8 +1599,11 @@ Lire le log a rendu `statusReport` asynchrone, ce qui est le vrai coût du chang
 **Le rewind repassait par-dessus une question du propriétaire.** Le recorder rembobinait à
 un leaf fixé à sa construction : un run qui échouait après avoir absorbé un message de
 steering effaçait ce message. C'est la régression déjà corrigée une fois dans l'ancienne
-boucle, réintroduite par une autre porte. Le plancher avance désormais dans `user()`
-lui-même : l'invariant tient par construction et non parce qu'un appelant y pense.
+boucle, réintroduite par une autre porte. Le plancher a alors été avancé dans `user()`
+lui-même, pour que l'invariant tienne par construction. **Plus rien de tout ça n'existe** :
+un run mort d'erreur ne rembobine plus (§2.6), donc `rewind()`, `origin()` et le plancher
+`startLeaf` sont partis avec le mécanisme. Le recorder n'a plus de curseur à lui, il écrit à
+la feuille du log.
 
 **Le chemin sous-agent écrivait le tour user deux fois**, une fois dans le runner et une
 fois dans le bridge.
@@ -1630,7 +1657,7 @@ Huit écritures dans `bridge.ts`, toutes remplaçables une pour une :
 | 619 | `messages.push` tour assistant final | `recorder.turn()` |
 | 726 | `persistedAssistant` avec `toolCalls` | `recorder.turn()` seul |
 | 861 | `messages.push` résultat d'outil | `await recorder.tool()` |
-| 895 | `messages.length = messageCountBeforeLoop` | `recorder.rewind()` |
+| 895 | `messages.length = messageCountBeforeLoop` | `recorder.rewind()` (retiré depuis, voir §2.6) |
 | 940 | `messages.push` tour injecté | `recorder.user()` |
 | 979 | `messages.push` consigne de résumé | `recorder.user()` |
 | 1040 | `messages.push` résumé final | `recorder.turn()` |
@@ -1650,12 +1677,12 @@ des entrées qui portent les résultats.
 **`messageCountBeforeLoop` disparaît.** C'était l'index de rembobinage ; le recorder tient
 un leaf, ce qui est la même information sans dépendre de la longueur d'un tableau.
 
-**`user()` déplace le plancher de rembobinage.** Un run qui échoue ne doit jamais emporter
-une question que le propriétaire a posée. Dans le code actuel, `messageCountBeforeLoop`
-est re-fixé après chaque tour user (initial ou injection mid-run). `RunRecorder.user()`
-reprend cette sémantique en avançant `startLeaf` à chaque appel, de sorte que `rewind()`
-ne remonte jamais par-dessus un tour user. L'invariant tient par construction, pas par
-discipline de l'appelant.
+**`user()` déplaçait le plancher de rembobinage.** Un run qui échoue ne doit jamais emporter
+une question que le propriétaire a posée ; `messageCountBeforeLoop` était re-fixé après chaque
+tour user, et `RunRecorder.user()` a repris cette sémantique en avançant `startLeaf`.
+**Caduc** : un run mort n'emporte plus rien du tout, parce qu'il ne rembobine plus (§2.6). Le
+plancher, `rewind()` et `origin()` ont été supprimés en même temps que le rembobinage : il n'y a
+plus d'invariant à tenir, seulement un journal qu'on prolonge.
 
 ## Ce qui reste vrai après, et qu'il faut vérifier avant de retirer quoi que ce soit
 

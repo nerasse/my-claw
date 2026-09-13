@@ -271,8 +271,10 @@ test("a run that fails after absorbing a steer keeps the steered turn", async ()
     runRegistry.settleMailbox(sess.id, "reject", new Error("boom"));
     
     await log.flush();
-    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
-    assert.ok(userEntries.some((e) => e.text === "keep me"), "the steered turn survives the rollback");
+    // On the branch, not merely in the file: a run that dies keeps its work where the next turn
+    // and the next page will read it.
+    const userEntries = log.path().filter((e): e is UserEntry => e.type === "user");
+    assert.ok(userEntries.some((e) => e.text === "keep me"), "the steered turn is still on the branch");
   } finally {
     mock.restore();
     end();

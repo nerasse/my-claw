@@ -76,7 +76,7 @@ test("bridge: already-aborted signal stops before the first LLM call and emits a
   }
 });
 
-test("bridge: abort mid-tool rewinds and leaves the user turn but not the partial work", async () => {
+test("bridge: abort mid-tool leaves the question on the branch and no entry for the call it cut", async () => {
   const registry = new ToolRegistry();
   // Sealing only happens once the assistant tool_call message is in the session, so the abort has
   // to land while the tool runs. A fixed delay made that a race: on a loaded machine it could fire
@@ -105,20 +105,20 @@ test("bridge: abort mid-tool rewinds and leaves the user turn but not the partia
     c.abort();
     await assert.rejects(() => p, AbortedError);
 
-    // With the new log system, abort does a rewind() which moves the cursor back.
-    // The user turn is kept (recorder.user advances startLeaf), but the partial tool work is not on the branch.
+    // An abort moves no cursor: it writes its `run_end` and rethrows. The question is on the
+    // branch because it was appended there, and the tool is absent because it never settled --
+    // a tool entry is only written once its call has a result, so the stop leaves no half-entry
+    // and nothing to seal.
     await log.flush();
     const entries = log.entries();
     const context = contextEntries(entries, log.leaf());
-    
-    // The user turn should be in the context (rewind never erases it)
+
     const userEntry = context.find((e): e is UserEntry => e.type === "user");
     assert.ok(userEntry, "user turn should be in context");
     assert.equal(userEntry.text, "hello");
-    
-    // The tool call and result should NOT be in the context (rewound past them)
+
     const toolEntry = context.find((e) => e.type === "tool");
-    assert.equal(toolEntry, undefined, "tool entry should not be in context after rewind");
+    assert.equal(toolEntry, undefined, "a call cut mid-flight settled into no entry");
   } finally {
     fetchMock.restore();
   }

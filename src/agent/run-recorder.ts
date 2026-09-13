@@ -106,18 +106,17 @@ export function newTurnId(): string {
 /**
  * Writes one run's entries into a session's log.
  *
- * Holds the leaf the run started from, which is the only state it needs: a failure rewinds to it,
- * and the rewind is a cursor move rather than a deletion.
+ * It holds no cursor of its own: every entry lands at the log's leaf, wherever that is. A run
+ * therefore never moves the conversation, it only extends it, and moving is left to the commands
+ * whose job it is (`/retry`, `/undo`). That is also what makes an abandoned branch a sibling of
+ * the attempt that replaced it rather than something the attempt overwrote.
  */
 export class RunRecorder {
   private readonly entries: SessionLog;
-  /** Where rewind() returns: advances when user() is called, so rewinding never erases a user turn. */
-  private startLeaf: string | null;
   private currentTurnId: string;
 
   constructor(entries: SessionLog) {
     this.entries = entries;
-    this.startLeaf = entries.leaf();
     this.currentTurnId = newTurnId();
   }
 
@@ -153,12 +152,7 @@ export class RunRecorder {
     return this.currentTurnId;
   }
 
-  /**
-   * What the owner (or another agent) asked.
-   *
-   * Advances the rewind floor: a failed run must never erase a question the owner actually sent.
-   * The floor moves here, not in a separate call, so the invariant holds by construction.
-   */
+  /** What the owner (or another agent) asked. */
   user(input: {
     /** The channel bubble id, when this turn was already drawn before persistence. */
     id?: string;
@@ -177,7 +171,6 @@ export class RunRecorder {
       ...(input.transcripts && Object.keys(input.transcripts).length > 0 ? { transcripts: input.transcripts } : {}),
       ...(input.from ? { from: input.from } : {}),
     }, input.id);
-    this.startLeaf = entry.id;
     return entry;
   }
 
@@ -262,24 +255,5 @@ export class RunRecorder {
   /** Why a run died. Display-only: stored as an assistant turn it would come back as the agent's own words. */
   failure(error: string): Entry {
     return this.entries.append({ type: "failure", prompt: false, error });
-  }
-
-  /**
-   * Rewinds to where this run started, keeping everything it wrote.
-   *
-   * The old loop truncated the array, which destroyed the turn. A branch leaves it on disk and
-   * reachable: that is what makes the abandoned attempt a sibling of the retry rather than
-   * something that was overwritten by it, and it is why `/retry` and `/undo` cost nothing extra.
-   *
-   * The dead branch is coherent on its own terms because a tool entry is only ever written once
-   * its call settled: there is no request on it that nothing answers.
-   */
-  rewind(): void {
-    this.entries.branch(this.startLeaf);
-  }
-
-  /** Where the conversation stood before this run. What `/retry` branches back to. */
-  origin(): string | null {
-    return this.startLeaf;
   }
 }

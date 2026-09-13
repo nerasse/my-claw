@@ -238,133 +238,33 @@ describe("RunRecorder: the prompt it produces", () => {
   });
 });
 
-describe("RunRecorder: rewind never erases a user turn", () => {
-  test("a run that fails after its opening question keeps that question", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "la question du proprio" });
-    recorder.turn({ content: "un debut" });
-    await recorder.tool(call("c1"));
-    recorder.rewind();
-    await entries.flush();
+describe("RunRecorder: it writes where the log stands", () => {
+  test("an attempt the owner branched away from stays reachable, coherent, and is not overwritten", async () => {
+    // The recorder holds no cursor: it appends at the log's leaf, so moving the cursor is entirely
+    // the commands' business. `/retry` moves to the parent of a user turn and the next run writes
+    // there, which is what makes the abandoned attempt a sibling rather than something overwritten.
+    const first = new RunRecorder(entries);
+    const question = first.user({ text: "question" });
+    first.turn({ content: "mauvaise reponse" });
+    await first.tool(call("c1"));
+    const abandoned = entries.leaf();
 
-    const prompt = promptOf(entries.entries(), entries.leaf());
-    expect(prompt.map((m) => m.content)).toEqual(["la question du proprio"]);
-  });
-
-  test("a mid-run injection survives a later failure", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "question initiale" });
-    recorder.turn({ content: "debut" });
-    await recorder.tool(call("c1"));
-    recorder.nextTurn();
-    recorder.user({ text: "steering mid-run" });
-    recorder.turn({ content: "suite" });
-    await recorder.tool(call("c2"));
-    recorder.rewind();
-    await entries.flush();
-
-    const prompt = promptOf(entries.entries(), entries.leaf());
-    expect(prompt.map((m) => m.content)).toEqual(["question initiale", "debut", "ok", "steering mid-run"]);
-  });
-
-  test("two injections: rewind stops at the last one", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "q1" });
-    recorder.turn({ content: "a1" });
-    recorder.user({ text: "q2" });
-    recorder.turn({ content: "a2" });
-    recorder.user({ text: "q3" });
-    recorder.turn({ content: "a3 qui echoue" });
-    recorder.rewind();
-    await entries.flush();
-
-    const prompt = promptOf(entries.entries(), entries.leaf());
-    expect(prompt.map((m) => m.content)).toEqual(["q1", "a1", "q2", "a2", "q3"]);
-  });
-});
-
-describe("RunRecorder: a run that fails", () => {
-  test("rewinding keeps what the run wrote and takes it off the branch", async () => {
-    // The old loop cut the array back, destroying the turn. A branch is what makes the abandoned
-    // attempt a sibling of the retry rather than something the retry overwrote.
-    // The user turn survives (it is the owner's question), only the model's work is abandoned.
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "avant" });
-    recorder.turn({ content: "etabli" });
-    await entries.flush();
-
-    const failing = new RunRecorder(entries);
-    failing.user({ text: "la question qui a echoue" });
-    failing.turn({ content: "un debut de reponse" });
-    await failing.tool(call("c1"));
-    const writtenBefore = entries.entries().length;
-
-    failing.rewind();
-    await entries.flush();
-
-    // Nothing was deleted.
-    expect(entries.entries()).toHaveLength(writtenBefore);
-    // The user's question survives; only the assistant's work is gone.
-    expect(promptOf(entries.entries(), entries.leaf()).map((m) => m.content)).toEqual(["avant", "etabli", "la question qui a echoue"]);
-  });
-
-  test("the abandoned branch is still reachable, and coherent", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "q" });
-    const failing = new RunRecorder(entries);
-    failing.turn({ content: "mort" });
-    const deadLeaf = entries.leaf();
-    await failing.tool(call("c1"));
-    const deadTip = entries.leaf();
-    failing.rewind();
-    await entries.flush();
-    void deadLeaf;
-
-    const revisited = promptOf(entries.entries(), deadTip);
-    expect(revisited.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
-    // Every call it asked for is answered: nothing to seal on a branch nobody is on.
-    const asked = revisited.flatMap((m) => ("tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : []));
-    const answered = revisited.filter((m) => m.role === "tool").map((m) => (m as { tool_call_id: string }).tool_call_id);
-    expect(answered).toEqual(asked);
-  });
-
-  test("a retry after a rewind is a sibling, not an overwrite", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "question" });
-    const failing = new RunRecorder(entries);
-    failing.turn({ content: "mauvaise reponse" });
-    const dead = entries.leaf();
-    failing.rewind();
-
+    entries.branch(question.id);
     const retry = new RunRecorder(entries);
     retry.turn({ content: "bonne reponse" });
     await entries.flush();
 
     expect(promptOf(entries.entries(), entries.leaf()).map((m) => m.content)).toEqual(["question", "bonne reponse"]);
-    expect(promptOf(entries.entries(), dead).map((m) => m.content)).toEqual(["question", "mauvaise reponse"]);
-  });
 
-  test("a run that wrote nothing rewinds to where it was", async () => {
-    const recorder = new RunRecorder(entries);
-    recorder.user({ text: "q" });
-    await entries.flush();
-    const leaf = entries.leaf();
-
-    const failing = new RunRecorder(entries);
-    failing.rewind();
-    expect(entries.leaf()).toBe(leaf);
-  });
-
-  test("the first run of a conversation rewinds to nothing", async () => {
-    const failing = new RunRecorder(entries);
-    expect(failing.origin()).toBeNull();
-    failing.turn({ content: "mort-ne" });
-    failing.rewind();
-    await entries.flush();
-    expect(entries.leaf()).toBeNull();
-    expect(promptOf(entries.entries(), entries.leaf())).toEqual([]);
-    // Written all the same: the bubble was on screen.
-    expect(entries.entries()).toHaveLength(1);
+    const revisited = promptOf(entries.entries(), abandoned);
+    expect(revisited.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+    expect(revisited[1]!.content).toBe("mauvaise reponse");
+    // Every call it asked for is answered: a branch nobody is on is still a legal exchange, which
+    // is why revisiting one costs nothing and why nothing has to be sealed on it.
+    const asked = revisited.flatMap((m) => ("tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : []));
+    const answered = revisited.filter((m) => m.role === "tool").map((m) => (m as { tool_call_id: string }).tool_call_id);
+    expect(asked).toEqual(["c1"]);
+    expect(answered).toEqual(asked);
   });
 });
 

@@ -109,29 +109,41 @@ describe("repairBranches", () => {
     }
   });
 
-  test("a run that died of an error and rewound to its question is deliberate", () => {
+  test("a run that died of an error left its work off the branch: it goes back on, markers included", () => {
+    // What the rewind on error wrote until it was removed: the run's own entries hanging off the
+    // question, the failure filed on the question, the next turn under the failure. Nothing marked
+    // it, nobody asked for it, and the tool call it settled was invisible on reload.
     const entries = build(
-      ["u1:user:-", "s1:run_start:u1", "p1:phase:s1", "e1:run_end:p1", "f1:failure:u1", "u2:user:f1"],
+      ["u1:user:-", "s1:run_start:u1", "p1:phase:s1", "t1:tool:p1", "e1:run_end:t1", "f1:failure:u1", "u2:user:f1"],
       { e1: { reason: "error" } as Partial<Entry> },
     );
     const out = repairBranches(entries, "u2");
-    expect(out.deliberateForks).toBe(1);
-    expect(out.relinked).toEqual([]);
+    expect(out.bugForks).toBe(1);
+    expect(out.deliberateForks).toBe(0);
+    expect(path(out.entries, out.leafId)).toEqual(["u1", "s1", "p1", "t1", "e1", "f1", "u2"]);
   });
 
-  test("an error rewind from before the run markers existed is recognised by the failure it filed", () => {
+  test("a log from before the run markers, where only the filed failure names the error, goes back too", () => {
     const entries = build(["u1:user:-", "p1:phase:u1", "t1:tool:p1", "f1:failure:u1", "u2:user:f1"]);
     const out = repairBranches(entries, "u2");
-    expect(out.deliberateForks).toBe(1);
-    expect(out.relinked).toEqual([]);
+    expect(out.bugForks).toBe(1);
+    expect(out.deliberateForks).toBe(0);
+    expect(path(out.entries, out.leafId)).toEqual(["u1", "p1", "t1", "f1", "u2"]);
   });
 
-  test("a failure hung off a stale leaf that is not a question is damage, not a rewind", () => {
-    // 0.6.0: the second instance filed the run's error under the leaf before the question.
-    const entries = build(["u0:user:-", "p0:phase:u0", "u1:user:p0", "s1:run_start:u1", "p1:phase:s1", "f1:failure:p0", "u2:user:f1"]);
+  test("an owner rewind over a run that died of an error is still deliberate, and stays abandoned", () => {
+    // The trap: both marks on one fork. `/undo` moved back over an attempt that had died of an
+    // error, so the fork carries the error shape *and* the command. The command wins -- a branch
+    // the owner walked away from is never put back, however it died.
+    const entries = build(
+      ["u1:user:-", "s1:run_start:u1", "p1:phase:s1", "t1:tool:p1", "e1:run_end:t1", "k:command:u1", "u2:user:k"],
+      { e1: { reason: "error" } as Partial<Entry>, k: { input: "/undo", output: "rewound" } as Partial<Entry> },
+    );
     const out = repairBranches(entries, "u2");
-    expect(out.bugForks).toBe(1);
-    expect(path(out.entries, out.leafId)).toEqual(["u0", "p0", "u1", "s1", "p1", "f1", "u2"]);
+    expect(out.deliberateForks).toBe(1);
+    expect(out.bugForks).toBe(0);
+    expect(out.relinked).toEqual([]);
+    expect(path(out.entries, out.leafId)).toEqual(["u1", "k", "u2"]);
   });
 
   test("several forks and a nested one are all put back, oldest first", () => {
