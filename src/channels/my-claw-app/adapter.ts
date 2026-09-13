@@ -2499,12 +2499,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     try {
       const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit, frame.fold);
+      const compacting = this.live.compactionState(ws.data.owner, threadId);
       const result: MyClawAppSessionSyncResult = {
         type: "session.sync.result",
         threadId,
         entries: page.entries,
         leaf: page.leaf,
         head: page.head,
+        // Said on every sync, present or absent: an absence is what a window that was not
+        // connected when the compaction ended has no other way to hear.
+        ...(compacting ? { compacting } : {}),
         ...(page.reset ? { reset: page.reset } : {}),
         ...(page.truncated ? { truncated: page.truncated } : {}),
         ...(page.hasMore !== undefined && page.nextBefore !== undefined

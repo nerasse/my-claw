@@ -1660,6 +1660,15 @@ export interface MyClawAppSessionSyncResult {
   head: string | null;
   /** Whether a run is in flight for this conversation. */
   activeRun?: boolean;
+  /**
+   * The compaction running on this thread, when one is.
+   *
+   * Present or absent on every answer, and the absence is what carries the information: the end
+   * of a compaction is broadcast once, to the windows connected at that second, so one that was
+   * down would otherwise keep drawing the rule -- counter still climbing -- until something
+   * unrelated took it down. A client applies this state in both directions.
+   */
+  compacting?: { since: string; text?: string };
   /** Why the delta was replaced by a full page. */
   reset?: "unknown-cursor" | "branch-switch";
   /** Whether entries were truncated by the limit. */

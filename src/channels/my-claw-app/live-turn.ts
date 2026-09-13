@@ -247,6 +247,21 @@ export class LiveTurnJournal {
   }
 
   /**
+   * The compaction running on this thread, as a resynchronising window has to hear about it.
+   *
+   * `undefined` is a fact here, not a silence: it means there is none. The end is broadcast once,
+   * to the windows connected at that second, and a socket that was down has no journal to read it
+   * back from -- the rule it drew stays up, counter still climbing from the instant it began, until
+   * something unrelated takes it down. Carried by the sync, the state is a fact of the thread
+   * rather than a memory of one socket.
+   */
+  compactionState(owner: string, threadId: string): { since: string; text?: string } | undefined {
+    const frame = this.compactions.get(this.key(owner, threadId));
+    if (!frame || frame.type !== "chat.compacting" || !frame.since) return undefined;
+    return { since: frame.since, ...(frame.text ? { text: frame.text } : {}) };
+  }
+
+  /**
    * A fragment of the summary being written, folded onto the frame a reload will replay.
    *
    * The live frames are fragments and the client accumulates them; the replayed one has to carry
@@ -294,13 +309,12 @@ export class LiveTurnJournal {
    */
   replay(owner: string, threadId: string): MyClawAppServerFrame[] {
     const key = this.key(owner, threadId);
-    // A compaction outlives the run that triggered it and can exist without one at all, so it is
-    // replayed on its own: a window that reloads during a `/compact` has no journal to read.
-    // The parked sends likewise: they sit at the bottom of the thread, after the work in flight,
-    // and a compaction-parked one exists with no run at all.
-    const compacting = this.compactions.get(key);
+    // The parked sends sit at the bottom of the thread, after the work in flight, and a
+    // compaction-parked one exists with no run at all. The compaction itself is deliberately not
+    // here: it is not an event the client missed but a state of the thread, and it is said on
+    // every sync either way -- see `compactionState`.
     const parked = [...(this.queued.get(key)?.values() ?? [])].flat();
-    const tail = [...parked, ...(compacting ? [compacting] : [])];
+    const tail = [...parked];
     const journal = this.journals.get(key);
     if (!journal) return tail;
 

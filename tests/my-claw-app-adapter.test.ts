@@ -2292,10 +2292,9 @@ describe("MyClawAppAdapter owners", () => {
       // A window that opens now gets the operation, once, with the whole text so far.
       const late = await connectClient(adapter.port, "browser");
       late.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
-      assert.equal((await nextFrame(late))["type"], "session.sync.result");
-      const replayed = await nextFrame(late);
-      assert.equal(replayed["type"], "chat.compacting");
-      assert.equal(replayed["text"], "Prior work: we fixed the runner.");
+      const page = await nextFrame(late);
+      assert.equal(page["type"], "session.sync.result");
+      assert.equal((page["compacting"] as { text?: string }).text, "Prior work: we fixed the runner.");
       late.ws.close();
     } finally {
       phone.ws.close();
@@ -2320,23 +2319,66 @@ describe("MyClawAppAdapter owners", () => {
 
       const late = await connectClient(adapter.port, "browser");
       late.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
-      assert.equal((await nextFrame(late))["type"], "session.sync.result");
-      const replayed = await nextFrame(late);
-      assert.equal(replayed["type"], "chat.compacting");
-      assert.equal(replayed["since"], new Date(started).toISOString());
+      const page = await nextFrame(late);
+      assert.equal(page["type"], "session.sync.result");
+      // The instant it began, not an elapsed: a late window counts from the same zero.
+      assert.deepEqual(page["compacting"], { since: new Date(started).toISOString() });
 
       adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, undefined);
       const over = await nextFrame(phone);
       assert.equal(over["type"], "chat.compacting");
       assert.equal(over["since"], undefined, "no start means it is over");
 
-      // And a window opening now is not shown an operation that has stopped.
+      // And a window opening now is not shown an operation that has stopped -- and is told so.
       const after = await connectClient(adapter.port, "browser");
       after.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
-      assert.equal((await nextFrame(after))["type"], "session.sync.result");
+      const settled = await nextFrame(after);
+      assert.equal(settled["type"], "session.sync.result");
+      assert.equal(settled["compacting"], undefined, "the sync says: not compacting");
       await assert.rejects(() => nextFrame(after, 300));
       late.ws.close();
       after.ws.close();
+    } finally {
+      phone.ws.close();
+    }
+  });
+
+  /**
+   * A window that missed the end of a compaction is told, not left to guess.
+   *
+   * Measured on the owner's phone, 2026-09-13: a `/compact` that had succeeded kept its rule on
+   * screen for another nineteen minutes, counter still climbing from the instant it started, and
+   * `/stop` -- answering truthfully that nothing was running -- read as the server losing the
+   * plot. The end is broadcast once, to the windows that are connected at that second. Nothing was
+   * ever done about the ones that were not: the socket drops every ten to forty minutes on that
+   * device, and a frame lost while the thread is quiet had nothing to correct it.
+   */
+  test("a window that missed the end of a compaction is told it is over", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    try {
+      const started = Date.now() - 12_000;
+      adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, started);
+      assert.equal((await nextFrame(phone))["type"], "chat.compacting");
+
+      // The end lands on the phone above, and nowhere else: this window is the one the socket
+      // dropped for, and the rule it already drew has no way back down on its own.
+      adapter.notifyCompacting(`my-claw-app/thread/${OWNER}/t-1`, undefined);
+      await nextFrame(phone);
+
+      const missed = await connectClient(adapter.port, "browser");
+      missed.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
+      const state = await nextFrame(missed);
+      assert.equal(state["type"], "session.sync.result");
+      assert.equal(state["threadId"], "t-1");
+      assert.equal(state["compacting"], undefined, "the sync says: not compacting");
+
+      // And the state is said every time, not once: a window that reconnects later is corrected
+      // just the same, since the interesting case is precisely the one with no event to carry it.
+      missed.ws.send(JSON.stringify({ type: "session.sync", threadId: "t-1" }));
+      const again = await nextFrame(missed);
+      assert.equal(again["type"], "session.sync.result");
+      assert.equal(again["compacting"], undefined);
+      missed.ws.close();
     } finally {
       phone.ws.close();
     }
