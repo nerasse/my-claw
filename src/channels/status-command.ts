@@ -11,6 +11,7 @@ import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf } from "../sessions/projection.ts";
 import {
   getDelegatedModelUsage,
+  getProviderModelUsage,
   getSessionModelUsage,
   getLastContextTokens,
   getSessionUsage,
@@ -22,13 +23,15 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
 import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
-import { cachedOpenRouterProviderName } from "../llm/openrouter-endpoints.ts";
+import { cachedOpenRouterProviderName, isOpenRouterBaseUrl } from "../llm/openrouter-endpoints.ts";
+import { cachedOpenRouterAccount, openRouterApiKey, warmOpenRouterAccount } from "../llm/openrouter-account.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
 import type {
   MyClawAppStatusPayload,
   MyClawAppUsageAgent,
   MyClawAppUsageModelRow,
+  MyClawAppUsageReconciliation,
   MyClawAppUsageTotals,
 } from "./my-claw-app/types.ts";
 
@@ -226,6 +229,49 @@ async function delegatedAgents(p: StatusParams): Promise<MyClawAppUsageAgent[]> 
   return agents;
 }
 
+/** Cheap prefilter for the analytics: the host is then checked properly, row by row. */
+const OPENROUTER_BASE_LIKE = "%openrouter.ai%";
+
+/**
+ * What OpenRouter says the key spent, beside what we deduced for it, and the gap.
+ *
+ * Both halves are account-wide because a provider bills the key and not the conversation. Ours is
+ * the same money the rest of the page shows, priced the same way: the cost frozen on each group
+ * when it can be, the live ladder when it cannot.
+ *
+ * The provider's half is read from a cache and never waited on. A page may not hang on a third
+ * party nor fail with it, so a cold cache and an unreachable API both leave the line standing with
+ * the recorded sum alone; the refresh started here answers the next redraw.
+ *
+ * Absent entirely when no OpenRouter key is configured: one number labelled as a comparison is
+ * worse than no line.
+ */
+function reconciliation(config: MyClawConfig, pricing?: ModelPricing): MyClawAppUsageReconciliation | undefined {
+  const apiKey = openRouterApiKey(config.llm.providers);
+  if (!apiKey) return undefined;
+  warmOpenRouterAccount(apiKey);
+  const rows = priceRows(
+    getProviderModelUsage(OPENROUTER_BASE_LIKE).filter((row) => isOpenRouterBaseUrl(row.baseUrl)),
+    pricing,
+  );
+  const account = cachedOpenRouterAccount();
+  const recordedUsd = rows.reduce((sum, row) => sum + (row.cost?.usd ?? 0), 0);
+  return {
+    provider: "openrouter.ai",
+    recordedUsd,
+    calls: rows.reduce((sum, row) => sum + row.calls, 0),
+    windowDays: RETENTION_DAYS,
+    ...(account === undefined
+      ? { providerUnread: true }
+      : {
+          providerUnread: false,
+          providerUsd: account.usageUsd,
+          deltaUsd: account.usageUsd - recordedUsd,
+          ...(account.balanceUsd === undefined ? {} : { balanceUsd: account.balanceUsd }),
+        }),
+  };
+}
+
 async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
   const configured = resolveAgentLlm(p.config, "main");
   // The same chain the run uses, rather than a copy of it that happens to agree today.
@@ -290,6 +336,7 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     };
   }
 
+  const reconciled = reconciliation(p.config, p.pricing);
   const session = p.session ?? null;
   return {
     session: session
@@ -331,6 +378,7 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
       autoCompactThresholdTokens: autoCompactOn ? Math.round(limit * threshold) : 0,
     },
     usage,
+    ...(reconciled ? { reconciliation: reconciled } : {}),
     runtime: {
       runs: p.liveRuns.map((r) => ({ label: r.label, depth: r.depth, startedAt: new Date(r.startedAt).toISOString() })),
       compacting: p.compacting === true,

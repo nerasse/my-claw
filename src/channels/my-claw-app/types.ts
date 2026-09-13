@@ -2466,6 +2466,41 @@ export interface MyClawAppUsageAgent extends MyClawAppUsageTotals {
 }
 
 /**
+ * Two figures for the same money, and the gap between them.
+ *
+ * `recordedUsd` is what this install deduced, priced exactly as the rest of the page prices it.
+ * `providerUsd` is what the provider's own ledger says the key spent. The gap is not a pricing
+ * error to be fixed: it is the distance between what a provider debited and what we inferred, and
+ * it has honest reasons -- the analytics keep 90 days while a key's counter runs from the day it
+ * was made, and a BYOK route is billed by the upstream provider that OpenRouter never charged for.
+ *
+ * Account-wide on both sides, deliberately: a provider bills the key, not the conversation, so
+ * scoping our half to one chat would put two numbers side by side that were never comparable.
+ */
+export interface MyClawAppUsageReconciliation {
+  /** The host the two figures are about, as the page should name it (`openrouter.ai`). */
+  provider: string;
+  /** Our own rows for that provider, added up over every conversation the analytics still hold. */
+  recordedUsd: number;
+  /** How many recorded calls that sum covers. Zero is a real answer: nothing went there yet. */
+  calls: number;
+  /** How far back `recordedUsd` reaches, in days. The provider's figure has no such bound. */
+  windowDays: number;
+  /** What the provider says the key has spent since it was created. Absent when it was not read. */
+  providerUsd?: number;
+  /** `providerUsd - recordedUsd`, sent rather than subtracted on the page. Absent with it. */
+  deltaUsd?: number;
+  /** Credits bought minus credits spent. Absent when the provider does not publish a balance. */
+  balanceUsd?: number;
+  /**
+   * The provider's ledger was not read, so the line carries the recorded sum alone. True for an
+   * API that is down and for a cache nothing has warmed yet alike: the report never waits on the
+   * network, so both are the same statement -- we do not have their number right now.
+   */
+  providerUnread: boolean;
+}
+
+/**
  * Structured `/status` report, the only rendering: the app draws it as a page, pushed to every
  * page open on the conversation each time something in it moves (docs/status-command.md).
  */
@@ -2548,6 +2583,11 @@ export interface MyClawAppStatusPayload {
     /** Analytics keep 90 days. Set when the conversation is older: the figures start here, not at its creation. */
     since?: string;
   } | null;
+  /**
+   * What a provider says it charged the key, beside what we deduced. Absent when no provider that
+   * publishes its own ledger is configured -- see `MyClawAppUsageReconciliation`.
+   */
+  reconciliation?: MyClawAppUsageReconciliation;
   runtime: {
     /** The live run tree of this conversation: `main` at depth 0, each sub-agent below it. */
     runs: Array<{ label: string; depth: number; startedAt: string }>;

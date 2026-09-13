@@ -353,6 +353,50 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
   }
 }
 
+/**
+ * Every model group of one endpoint, across every session the analytics still hold.
+ *
+ * Deliberately not scoped to a conversation: it feeds the reconciliation against what a provider
+ * says it charged, and a provider bills the key, not the chat. `baseUrlLike` is a SQL LIKE pattern
+ * and a prefilter only -- there is no index on `base_url` and no URL parser in SQLite, so the
+ * caller is the one that decides what the host really is.
+ */
+export function getProviderModelUsage(baseUrlLike: string): SessionModelRow[] {
+  try {
+    const d = getDb();
+    const rows = d
+      .prepare(
+        `SELECT
+           model,
+           base_url                        AS baseUrl,
+           MAX(upstream_api_base)          AS upstreamApiBase,
+           COUNT(*)                        AS calls,
+           COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
+           COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+           COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+           SUM(proxy_cost_usd)             AS proxyCostUsd,
+           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
+           MAX(timestamp)                  AS lastUsedAt,
+           SUM(cost_usd)                   AS pinnedUsd,
+           COUNT(cost_usd)                 AS pinnedRows,
+           COUNT(DISTINCT cost_source)     AS costSources,
+           MAX(cost_source)                AS costSource,
+           MAX(cost_billed)                AS costBilled,
+           MAX(cost_approximate)           AS costApproximate
+         FROM api_calls
+         WHERE base_url LIKE ?
+         GROUP BY model, base_url
+         ORDER BY SUM(total_tokens) DESC`,
+      )
+      .all(baseUrlLike) as AggregatedModelRow[];
+    return rows.map(withPinnedCost);
+  } catch (err) {
+    void log("warn", "analytics getProviderModelUsage failed", { error: String(err) });
+    return [];
+  }
+}
+
 /** One model as one delegated session used it, on the paying conversation's behalf. */
 export interface DelegatedModelRow extends SessionModelRow {
   sessionId: string;

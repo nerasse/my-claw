@@ -360,23 +360,97 @@ answered.
 
 ### Reconciliation against what the provider charged
 
-There is exactly one source of truth for money in this system, and it is not the table: a billing
-proxy stating what it charged, per call, on the completion route itself
-(`x-litellm-response-cost-original`). It is rule 1 of the ladder, it is stored as `proxy_cost_usd`,
-and it is authoritative when positive.
+There is exactly one source of truth for money in this system, and it is not the table: whatever
+billed the call stating what it charged. That is rule 1, stored as `proxy_cost_usd`, and it now
+reaches two kinds of statement -- a proxy header and an aggregator's body. Everything else on the
+page is a **computed reference, not a reconciled charge**, and the pricing rule shown on each line
+is what says so.
 
-It is also **unused on this instance**: measured over the whole database, `proxy_cost_usd` is NULL on
-all 42 000 rows, across every provider. Only the LiteLLM path can fill it, and it is read on the two
-OpenAI-compatible response paths of `provider.ts` -- the native Messages transport (`anthropic`) and
-the Codex Responses transport never look at response headers at all. So for everything reached
-through `claude-sdk`, `chatgpt.com`, `api.anthropic.com` and the OpenRouter catalogue, the figure on
-the page is a **computed reference, not a reconciled charge**, and the pricing rule now shown on each
-line is what says so.
+That leaves the question the per-call figure cannot answer: does the total agree with what the
+provider actually took? One line at the foot of the usage card answers it for OpenRouter, which is
+the only configured provider that publishes its own ledger.
 
-Nothing else reconciles: no invoice ingestion, no credit-balance read, no per-model true-up. Closing
-that gap means reading a vendor's own usage endpoint (OpenRouter has `/api/v1/generation`, Anthropic
-has a cost report) or reading the LiteLLM headers on the transports that ignore them. Both are new
-integrations, neither started.
+#### Per call is not on offer. Per amount is.
+
+Measured against the live key:
+
+| Route | Answer |
+| --- | --- |
+| `GET /api/v1/key` | **200** -- `{ data: { label, limit, limit_remaining, usage, is_free_tier } }` |
+| `GET /api/v1/credits` | **200** -- `{ data: { total_credits, total_usage } }` |
+| `GET /api/v1/generation?id=` | **404** -- the ids are not kept, and BYOK generations are not there |
+| `GET /api/v1/activity` | **403** with this key |
+
+So a call-by-call true-up is not merely unbuilt, it is unavailable, and the page must not imply
+otherwise. What is available is an account total, and that is what the line compares.
+
+#### What the line says
+
+`reconciliation` on the payload, drawn as one line: what OpenRouter says the key spent, what our own
+rows add up to for it, the gap, and what is left on the account (`total_credits - total_usage`).
+
+**Both halves are account-wide**, and they have to be: a provider bills the key, not the
+conversation. Putting one chat's spend beside a key's lifetime usage would be two numbers that were
+never comparable. Our half is `getProviderModelUsage`, priced exactly as every other figure on the
+page -- the cost frozen on a group when the whole group carries one, the live ladder when it does
+not.
+
+Three states, and the line never disappears:
+
+- **the provider answered** -- `recordedUsd`, `providerUsd`, `deltaUsd`, `balanceUsd`.
+- **it did not** -- `providerUnread: true` and the recorded sum alone. An unreachable API removes a
+  number from the line, never the line: what we recorded is still true.
+- **nothing recorded** -- `recordedUsd: 0` over `calls: 0`, which is a reading and not a gap in the
+  data. Their whole figure is then the delta, which is exactly what it means.
+
+With no OpenRouter key configured there is no line at all. One number wearing the label of a
+comparison is worse than no comparison.
+
+#### The gap is not an error
+
+It is the distance between what a provider debited and what we deduced, and it has honest reasons
+that no amount of pricing work removes:
+
+- The analytics keep **90 days**; a key's `usage` counter runs from the day the key was made. The
+  line sends `windowDays` so the page can say so.
+- A **BYOK** route is charged by the upstream provider, not by OpenRouter. We record
+  `upstream_inference_cost` (rule 1), OpenRouter's own counter does not. That pushes our sum
+  *above* theirs, and it is the correct behaviour on both sides.
+- Rows priced by a table are estimates by construction. The line exists to show that, not to hide
+  it.
+
+#### The page never waits on a third party
+
+The figures are read from a cache and nothing else: `cachedOpenRouterAccount()` answers what is in
+memory, `warmOpenRouterAccount()` starts a refresh when it is stale and is never awaited. A report
+is drawn on a path that already holds a socket open, and a status page that hangs (or fails)
+because somebody else's API is down is worse than a page missing one number.
+
+- **5-minute TTL.** The page is redrawn on every recorded call, so a shorter window turns one active
+  conversation into a poll of somebody else's API; a longer one lets the figure drift away from the
+  delta it explains. Five minutes caps an open page at twelve calls an hour and is under a minute of
+  spend at any rate this instance runs at.
+- **60-second failure cache.** A failure is remembered too, or a dead API is asked once per redraw.
+- **3-second hard deadline** on each request. Nothing waits on it, but a socket that never answers
+  must not hold the single-flight slot for the next five minutes.
+
+A consequence worth stating plainly: **a cold cache reads exactly like an unreachable provider**,
+and the line says the same thing for both -- we do not have their number right now. The first draw
+after a boot carries the recorded sum alone, and the figures appear on the next redraw. Pushing a
+fresh report when the refresh lands would fix that; it needs a hook event and a `StatusWatch`
+method, and it is not built.
+
+#### Credential and cost
+
+The key is the one the catalogue already uses: the provider whose `baseUrl` is OpenRouter, and the
+environment variable its `apiKeyEnv` names. No second place to configure one -- a key declared twice
+is a key that rotates in one of the two places.
+
+The recorded half costs one `GROUP BY` over `api_calls` per report. `base_url` has no index and
+SQLite has no URL parser, so the SQL `LIKE '%openrouter.ai%'` is a prefilter and
+`isOpenRouterBaseUrl` is the authority on each row it returns -- a base that merely mentions the
+domain in its path is not OpenRouter. Measured on the live database: 45 849 rows, 11 ms filtered
+against 32 ms unfiltered, 15 groups against 50.
 
 ### Never report zero
 
