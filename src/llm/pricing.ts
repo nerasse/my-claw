@@ -105,6 +105,7 @@ export interface UsageForCost {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   upstreamApiBase?: string;
+  /** What the proxy or the aggregator said it charged, as recorded on the row. */
   proxyCostUsd?: number;
   /**
    * The cost this call was recorded with, when the row carries one. Read before every other rung:
@@ -363,8 +364,9 @@ export class ModelPricing {
     //    provider changing its price silently rewrites up to 90 days of spend.
     if (usage.pinned) return usage.pinned;
 
-    // 1. The proxy states what it billed. Only trusted when positive: LiteLLM reports 0.0 both for
-    //    a free plan and for a model it has no price for.
+    // 1. Whatever billed the call states what it charged: a proxy's response header, or the cost an
+    //    aggregator declares on `usage` in its own body (see readDeclaredCost). Only trusted when
+    //    positive: 0.0 means a free plan and an unpriced model alike, on either source.
     if (usage.proxyCostUsd !== undefined && usage.proxyCostUsd > 0) {
       return { usd: usage.proxyCostUsd, billed: true, approximate: false, source: "proxy" };
     }

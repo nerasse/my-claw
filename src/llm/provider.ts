@@ -223,8 +223,8 @@ export interface LlmResponse {
    * reopened conversation glues them back into one -- docs/reasoning-visibility.md.
    */
   segments?: ReasoningSegment[];
-  // A proxy that bills us can report the authoritative figure for the call it just served.
-  // Preferred over any price table when present and positive.
+  // What the thing that billed us says this call cost: a proxy's response header, or the cost an
+  // aggregator declares on `usage` in its own body. Preferred over any price table when positive.
   proxyCostUsd?: number;
   // The endpoint the proxy actually forwarded to, which is what determines the real tariff.
   upstreamApiBase?: string;
@@ -259,6 +259,20 @@ interface RawUsage {
   cache_creation_input_tokens?: number;
   // DeepSeek names it differently again.
   prompt_cache_hit_tokens?: number;
+  /**
+   * What the aggregator charged for this call, in USD. OpenRouter declares it here and nowhere
+   * else: no response header carries it, and the per-generation route does not keep these ids.
+   */
+  cost?: number;
+  /**
+   * The call was served on the owner's own key at the upstream provider. OpenRouter then charges
+   * nothing, so `cost` is 0 while the money was still spent -- `upstream_inference_cost` is where
+   * it is.
+   */
+  is_byok?: boolean;
+  cost_details?: {
+    upstream_inference_cost?: number;
+  };
 }
 
 interface ChatCompletionResponse {
@@ -598,6 +612,41 @@ function readProxyHeaders(response: Response): { proxyCostUsd?: number; upstream
   return out;
 }
 
+/**
+ * The charge an aggregator states in the body of its own answer, when it states one.
+ *
+ * OpenRouter puts it on `usage` and nowhere else. `is_byok` decides which of the two figures is
+ * the money: on a BYOK route OpenRouter bills nothing and the upstream provider debits the owner's
+ * own account, so `cost` is 0 while `cost_details.upstream_inference_cost` holds what was spent.
+ * Reading `cost` alone there would erase the whole expense -- measured on
+ * `google/gemini-3.7-flash` via Google AI Studio: `is_byok true, cost 0, upstream 4.5e-06`.
+ *
+ * Off a BYOK route the two agree and `cost` is the charge, so an aggregator that declares a cost
+ * and no `is_byok` at all is taken at its word.
+ *
+ * Carried only when positive, for the same reason the header is: a zero means both "free" and
+ * "nothing priced", and the price tables answer that better than a fabricated 0.00.
+ */
+function declaredCostOf(usage: RawUsage | undefined): number | undefined {
+  if (!usage) return undefined;
+  const declared = usage.is_byok === true ? usage.cost_details?.upstream_inference_cost ?? usage.cost : usage.cost;
+  return typeof declared === "number" && Number.isFinite(declared) && declared > 0 ? declared : undefined;
+}
+
+/**
+ * What this call cost according to whatever served it: the proxy's header first, the body second.
+ *
+ * A positive header is LiteLLM's own billing line for the call it just forwarded, so it outranks a
+ * body figure that can only describe the leg the aggregator itself sold. A header that says
+ * nothing leaves the body to answer, and the upstream it names is carried either way.
+ */
+function readDeclaredCost(response: Response, usage: RawUsage | undefined): { proxyCostUsd?: number; upstreamApiBase?: string } {
+  const headers = readProxyHeaders(response);
+  if (headers.proxyCostUsd !== undefined) return headers;
+  const body = declaredCostOf(usage);
+  return body === undefined ? headers : { ...headers, proxyCostUsd: body };
+}
+
 function parseToolCalls(
   toolCalls?: Array<{
     id: string;
@@ -689,7 +738,7 @@ export async function chatCompletion(
         usage: normalizeUsage(data.usage),
         ...(reasoning ? { reasoning } : {}),
         ...(providerMeta ? { providerMeta } : {}),
-        ...readProxyHeaders(response),
+        ...readDeclaredCost(response, data.usage),
       };
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
@@ -809,12 +858,16 @@ export async function chatCompletionStream(
       let streamedReasoningDetails: Record<string, unknown> | undefined;
       const segmenter = new ReasoningSegmenter();
       let streamUsage: LlmUsage | undefined;
+      // Kept beside the normalised tokens because `normalizeUsage` drops everything that is not a
+      // token count, and the declared cost rides on that same object.
+      let streamRawUsage: RawUsage | undefined;
       let finishReason: string | undefined;
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
       const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
         if (payload.usage) {
           streamUsage = normalizeUsage(payload.usage);
+          streamRawUsage = payload.usage;
         }
 
         const choice = payload.choices?.[0];
@@ -917,7 +970,7 @@ export async function chatCompletionStream(
         ...(reasoningMs !== undefined ? { reasoningMs } : {}),
         ...(providerMeta ? { providerMeta } : {}),
         ...(segments ? { segments } : {}),
-        ...readProxyHeaders(response),
+        ...readDeclaredCost(response, streamRawUsage),
       };
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();

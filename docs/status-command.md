@@ -243,8 +243,13 @@ runs again at read time, for any row that predates the columns.
 
 Six rules, tried in order. A proxy is asked before it is guessed at.
 
-**1. The proxy states its own cost.** LiteLLM returns it on the completion route itself -- the one a
-restricted virtual key is allowed to call -- as response headers:
+**1. Whatever billed the call states what it charged.** Two places carry that statement, and both
+are read on the two OpenAI-compatible paths of `provider.ts`, streaming and buffered. They land on
+the same column, `proxy_cost_usd`, because they answer the same question: not "what would this cost
+at today's prices" but "what was charged for this call".
+
+*The response headers.* LiteLLM returns them on the completion route itself -- the one a restricted
+virtual key is allowed to call:
 
 ```
 x-litellm-response-cost-original: 0.0
@@ -252,11 +257,28 @@ x-litellm-model-api-base: https://token-plan-ams.xiaomimimo.com/v1
 x-litellm-model-group: mimo-v2.5-pro
 ```
 
-This is ground truth from the owner's own billing, per call. It is currently discarded: the fetch
-`Response` is in hand at `provider.ts`, and only the body is read.
+*The body.* OpenRouter declares nothing in a header and puts the figure on `usage`, which both
+paths already ask for (`stream_options: { include_usage: true }`). Measured live:
 
-`0.0` is ambiguous -- it means both "free" and "no price configured" -- so it is only trusted when
-positive, and otherwise falls through to rule 2 for confirmation.
+| Route | `is_byok` | `cost` | `cost_details.upstream_inference_cost` |
+| --- | --- | --- | --- |
+| `z-ai/glm-5.2` via Baidu | `false` | 3.45058e-06 | 3.45058e-06 |
+| `deepseek/deepseek-v4-flash-0731` via OpenInference | `false` | 6.46e-07 | 6.46e-07 |
+| `google/gemini-3.7-flash` via Google AI Studio | **`true`** | **0** | 4.5e-06 |
+
+**`is_byok` decides which of the two figures is the money.** On a BYOK route the owner's own key at
+the upstream provider served the call, so OpenRouter charged nothing and `cost` is 0 while the
+expense is real and sits in `upstream_inference_cost`. Believing `cost` alone would erase it. Off a
+BYOK route the two agree, so `cost` is the charge -- and an aggregator that declares a cost with no
+`is_byok` at all is taken at its word, for the same reason.
+
+**Precedence: the header when it is positive, the body otherwise.** The header is the bill of the
+leg that forwarded the call; a body figure can only describe the leg the aggregator itself sold.
+The upstream header is carried either way, since it is what lets rule 2 resolve a real tariff.
+
+`0.0` is ambiguous on both -- it means "free" and "no price configured" alike -- so a zero is never
+recorded as a price. It falls through to rule 2 and the tables below, which is a different
+statement from freezing `$0.00` on the row.
 
 **2. The proxy states its upstream.** `x-litellm-model-api-base` names the real endpoint behind the
 proxy, which turns the unknowable case into rule 3. Here it resolves to
@@ -293,6 +315,20 @@ runs.
 **5. Median of the non-zero prices**, and only then. See below for why this rule is dangerous and
 must stay last. An optional `pricingProvider` key on the provider config overrides it for owners who
 know their upstream; it is expected to stay unset.
+
+### Why LiteLLM still reports nothing to rule 1, and why that is correct
+
+Measured over 45 906 recorded calls: `proxy_cost_usd` is null on every one of them, and not a single
+row was ever priced by rule 1. That is not a bug in the rule. Of the 1 470 LiteLLM calls, 385 carry
+the upstream header and **none** carries a cost, because the models behind that proxy (mimo, Qwen)
+are served **locally**. LiteLLM bills 0 for them, and the "only when positive" guard drops that 0 on
+purpose -- rule 2 then resolves the upstream, and `isSelfHosted` is the positive evidence the zero
+could never be.
+
+So nothing on the LiteLLM side needs fixing: it reports what it charges, which is nothing. What was
+missing was the body, and only OpenRouter fills it here. `chatgpt` and `codex` are native transports
+that declare no cost at all, `claude-sdk` is a retired backend, and `commandcode` and `opencode_go`
+are subscriptions -- none of them states a charge per call.
 
 ### The price is frozen when the call is made
 
