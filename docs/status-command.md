@@ -60,7 +60,13 @@ would report a fraction of what a research agent that spawned a coder actually c
 
 **90 days, said when it matters.** Analytics keep 90 days (`RETENTION_DAYS`). A conversation older
 than that carries `usage.since`, the horizon its figures start at, and nothing otherwise: dating
-every page for a limit most conversations never reach would be noise.
+every page for a limit most conversations never reach would be noise. What the purge sweeps is
+folded into a permanent monthly rollup before it is deleted, but that rollup has no session on its
+key: it feeds the install-wide page, never this one (docs/stats-page.md).
+
+**No provider reconciliation.** There was a line here comparing what OpenRouter said the key spent
+with what we recorded, and both of its figures were account-wide on a page scoped to a conversation.
+It moved to the statistics page in 0.7.22 -- see below, and docs/stats-page.md.
 
 ## Live
 
@@ -358,147 +364,37 @@ Two guards make the frozen figure trustworthy:
 a figure guessed from the cross-market median look identical on a page that does not say which rung
 answered.
 
-### Reconciliation against what the provider charged
+### Reconciliation against what the provider charged -- moved out (0.7.22)
 
-There is exactly one source of truth for money in this system, and it is not the table: whatever
-billed the call stating what it charged. That is rule 1, stored as `proxy_cost_usd`, and it now
-reaches two kinds of statement -- a proxy header and an aggregator's body. Everything else on the
-page is a **computed reference, not a reconciled charge**, and the pricing rule shown on each line
-is what says so.
+It used to be a line at the foot of the usage card here, and both of its figures were account-wide.
+That is the contradiction that took it out: `/status` is scoped to a conversation, and a provider's
+ledger is scoped to the key it bills. A chat running entirely on `api.anthropic.com` was shown an
+OpenRouter line, because the comparison never had anything to do with the conversation it was drawn
+under.
 
-That leaves the question the per-call figure cannot answer: does the total agree with what the
-provider actually took? One line at the foot of the usage card answers it for OpenRouter, which is
-the only configured provider that publishes its own ledger.
+It lives on the install-wide statistics page now, unchanged in substance -- the same three states,
+the same cache, the same refusal to wait on a third party. See **docs/stats-page.md**.
 
-#### Per call is not on offer. Per amount is.
+Gone from here, and not replaced:
 
-Measured against the live key:
+- `reconciliation` on `MyClawAppStatusPayload`, and `MyClawAppUsageReconciliation` with it. The
+  statistics payload carries `MyClawAppStatsReconciliation`, which drops `windowDays` (the page
+  states its own period and its own horizons) and is a list rather than a single entry.
+- `reconciliationSegment` and its part of the chat line. The line `/status` answers with is
+  per-conversation like the rest of the command, and a page-wide figure has no place on it.
+- The push. `llm:account:refreshed` had exactly one listener, `myClawApp.statusRefreshed()` ->
+  `StatusWatch.refreshed()`, whose only job was to refill a status page still saying "provider not
+  reached". No status page says that any more, so the listener, the adapter method and
+  `StatusWatch.refreshed()` are gone. The event still fires from `refreshOpenRouterAccount` on a
+  successful read and on nothing else, and `tests/llm/openrouter-account.test.ts` still proves it.
 
-| Route | Answer |
-| --- | --- |
-| `GET /api/v1/key` | **200** -- `{ data: { label, limit, limit_remaining, usage, is_free_tier } }` |
-| `GET /api/v1/credits` | **200** -- `{ data: { total_credits, total_usage } }` |
-| `GET /api/v1/generation?id=` | **404** -- the ids are not kept, and BYOK generations are not there |
-| `GET /api/v1/activity` | **403** with this key |
+Kept, because the statistics page needs every bit of it: `src/llm/openrouter-account.ts`, its
+5-minute TTL, its 60-second failure cache, its single-flight, and its 3-second deadline.
 
-So a call-by-call true-up is not merely unbuilt, it is unavailable, and the page must not imply
-otherwise. What is available is an account total, and that is what the line compares.
+The six `statusChanged` hooks in `src/index.ts` are untouched: a call recorded, a run starting,
+finishing, aborting or failing, and a compaction starting or finishing all still move a
+conversation's report and still push it.
 
-#### What the line says
-
-`reconciliation` on the payload, drawn as one line: what OpenRouter says the key spent, what our own
-rows add up to for it, the gap, and what is left on the account (`total_credits - total_usage`).
-
-**Both halves are account-wide**, and they have to be: a provider bills the key, not the
-conversation. Putting one chat's spend beside a key's lifetime usage would be two numbers that were
-never comparable. Our half is `getProviderModelUsage`, priced exactly as every other figure on the
-page -- the cost frozen on a group when the whole group carries one, the live ladder when it does
-not.
-
-Three states, and the line never disappears:
-
-- **the provider answered** -- `recordedUsd`, `providerUsd`, `deltaUsd`, `balanceUsd`.
-- **it did not** -- `providerUnread: true` and the recorded sum alone. An unreachable API removes a
-  number from the line, never the line: what we recorded is still true.
-- **nothing recorded** -- `recordedUsd: 0` over `calls: 0`, which is a reading and not a gap in the
-  data. Their whole figure is then the delta, which is exactly what it means.
-
-With no OpenRouter key configured there is no line at all. One number wearing the label of a
-comparison is worse than no comparison.
-
-#### The gap is not an error
-
-It is the distance between what a provider debited and what we deduced, and it has honest reasons
-that no amount of pricing work removes:
-
-- The analytics keep **90 days**; a key's `usage` counter runs from the day the key was made. The
-  line sends `windowDays` so the page can say so.
-- A **BYOK** route is charged by the upstream provider, not by OpenRouter. We record
-  `upstream_inference_cost` (rule 1), OpenRouter's own counter does not. That pushes our sum
-  *above* theirs, and it is the correct behaviour on both sides.
-- Rows priced by a table are estimates by construction. The line exists to show that, not to hide
-  it.
-
-#### The page never waits on a third party
-
-The figures are read from a cache and nothing else: `cachedOpenRouterAccount()` answers what is in
-memory, `warmOpenRouterAccount()` starts a refresh when it is stale and is never awaited. A report
-is drawn on a path that already holds a socket open, and a status page that hangs (or fails)
-because somebody else's API is down is worse than a page missing one number.
-
-- **5-minute TTL.** The page is redrawn on every recorded call, so a shorter window turns one active
-  conversation into a poll of somebody else's API; a longer one lets the figure drift away from the
-  delta it explains. Five minutes caps an open page at twelve calls an hour and is under a minute of
-  spend at any rate this instance runs at.
-- **60-second failure cache.** A failure is remembered too, or a dead API is asked once per redraw.
-- **3-second hard deadline** on each request. Nothing waits on it, but a socket that never answers
-  must not hold the single-flight slot for the next five minutes.
-
-A consequence worth stating plainly: **a cold cache reads exactly like an unreachable provider**,
-and the line says the same thing for both -- we do not have their number right now. The first draw
-of a page therefore carries the recorded sum alone, always: it is drawn before the read it started
-can land.
-
-#### The page fills itself in
-
-A reading that lands announces itself, `llm:account:refreshed`, and every open status page is handed
-a fresh report. Without it an **idle** conversation would sit on "provider not reached" forever:
-nothing else moves its report, and the page has no way to ask.
-
-The event fires on a **successful network read and nothing else**:
-
-| Moment | Event |
-| --- | --- |
-| `refreshOpenRouterAccount` reads `/key` and gets a usage figure | **yes** |
-| a cached failure becomes a real figure | **yes** -- this is the moment that matters |
-| `warmOpenRouterAccount` finds the cache fresh and does not read | no |
-| the read fails, or answers without a usage figure | no |
-
-That rule is the whole design. A five-minute cache answering a page redrawn on every recorded call
-would otherwise push twelve reports an hour at a phone for figures that did not move, which is a
-battery drain dressed up as liveness. A failure is not a reading either: the page already says
-"not reached" and being woken to be told again is worse than silence.
-
-It reuses the push that already exists rather than opening a second one. `StatusWatch.refreshed()`
-schedules every open page through the same 250 ms burst as `changed()`, so two readings landing
-together are still one report per page, and a page that closed meanwhile gets nothing. There is no
-session chain to walk -- a provider's ledger belongs to no conversation -- and with no page open the
-event walks an empty map and stops. `src/index.ts` wires it beside the six `statusChanged` hooks;
-the adapter method is `statusRefreshed()`.
-
-#### The chat line
-
-`/status` typed in a chat answers with one line by contract, the page carries the report, and that
-line now carries the balance and the gap:
-
-```
-Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai: $7.50 left, billed $10.50 more than recorded
-Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai: $18.50 left, billed $0.50 less than recorded
-Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai not reached
-```
-
-The direction is **spelled out, not signed**. On the page a `+$10.50` sits under a rule with a
-legend and can be tapped; in a chat line it sits next to a balance, where a leading `+` reads as a
-credit -- the opposite of what it means. A gap under a cent is named as agreement (`billed within
-$0.01 of recorded`) rather than printed as `$0.00`, and a provider that was not read says so instead
-of leaving a figure out of a sentence built around one. No balance published, no `left,` clause.
-
-Nothing identifying can reach it. The segment is built from `provider` -- a constant, not config --
-and two amounts. The key's own answer carries a `label` (`sk-or-v1-...`), a limit and a remaining
-balance, and **none of them is read**: `refreshOpenRouterAccount` takes `data.usage` and nothing
-else, so there is no path from the credential to a chat message or to a log line quoting one.
-
-#### Credential and cost
-
-The key is the one the catalogue already uses: the provider whose `baseUrl` is OpenRouter, and the
-environment variable its `apiKeyEnv` names. No second place to configure one -- a key declared twice
-is a key that rotates in one of the two places.
-
-The recorded half costs one `GROUP BY` over `api_calls` per report. `base_url` has no index and
-SQLite has no URL parser, so the SQL `LIKE '%openrouter.ai%'` is a prefilter and
-`isOpenRouterBaseUrl` is the authority on each row it returns -- a base that merely mentions the
-domain in its path is not OpenRouter. Measured on the live database: 45 849 rows, 11 ms filtered
-against 32 ms unfiltered, 15 groups against 50.
 
 ### Never report zero
 

@@ -77,6 +77,7 @@ import { contextChoiceFor } from "./channels/context-menu.ts";
 import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
 import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
+import { statsReport } from "./channels/stats-command.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
@@ -262,7 +263,6 @@ async function main() {
   }
   // Live read: a hot-reloaded logging.level applies to the next line written, no restart.
   setLogLevelSource(() => config.logging?.level);
-  pruneOldRecords();
   void pruneOldLogs();
   void pruneOldSessions();
   const workspacePath = config.workspace!;
@@ -350,6 +350,12 @@ async function main() {
   // against a table that has been refetched since. `recordApiCall` runs deep in the agent loop, in
   // files that hold no table of their own, so the one instance is published here.
   setSharedPricing(pricing);
+
+  // After the table is published, and not with the other boot sweeps: the purge folds the rows it
+  // deletes into the monthly rollup and prices, on the way out, the ones that carry no frozen cost.
+  // Run before `setSharedPricing` it would find no table, roll every condemned month up at zero and
+  // write that down for good -- the rollup is never recomputed (docs/stats-page.md).
+  pruneOldRecords();
 
   // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,
@@ -2159,6 +2165,24 @@ async function main() {
 
     if (config.browser) myClawApp.onBrowserConfig(config.browser);
 
+    // The install-wide statistics page. Its money is the same money `/status` shows, priced by the
+    // same table, so the two screens cannot disagree about a call they both cover.
+    myClawApp.onStatsController({
+      report: (period) =>
+        statsReport({
+          config,
+          period,
+          pricing,
+          // `read`, not `peek`: this walks every conversation that ever spent something, and most
+          // of them no longer exist. `peek` caches its misses and would evict the live ones.
+          sessionInfo: async (sessionId) => {
+            const session = await sessionManager.read(sessionId);
+            if (!session) return undefined;
+            return session.title ? { title: session.title } : {};
+          },
+        }),
+    });
+
     myClawApp.onSubAgentsController({
       list: async (callerSessionId) => {
         const agents = await subAgentRunner.list(subAgentRegistry, callerSessionId);
@@ -2302,10 +2326,6 @@ async function main() {
     hooks.on("agent:run:error", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("session:compact:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.statusChanged(sessionId));
-    // The one report event with no session on it: a provider's ledger is the same figure on every
-    // page. It fires on a successful read alone, so an idle page fills in once rather than being
-    // woken every five minutes by a cache that answered.
-    hooks.on("llm:account:refreshed", () => myClawApp.statusRefreshed());
     // One to two minutes of silence, and until now the only surface that showed them was the
     // placeholder bubble on the device that typed `/compact`: every other window, and that same
     // window after a reload, saw a thread doing nothing. The state is raised by the summarizer

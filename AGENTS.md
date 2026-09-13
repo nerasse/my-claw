@@ -161,6 +161,8 @@ src/
 │   ├── config-commands.ts # /config history|diff|rollback over the snapshot store
 │   ├── introspect-commands.ts # /skills, /agents, /mcp, /instructions -- docs/agent-scoping.md
 │   ├── status-command.ts  # /status report: context, usage tree (own + sub-agents), cost -- docs/status-command.md
+│   ├── stats-command.ts   # Install-wide statistics payload: totals, models, sessions, rollup -- docs/stats-page.md
+│   ├── usage-route.ts     # Where a recorded call went, shared by /status and the stats page
 │   ├── compact-command.ts # /compact for every channel: engine choice + session hold -- docs/compaction.md
 │   ├── agent-model-commands.ts # /model <agent>: per-agent model in config -- docs/agent-model.md
 │   ├── recreate.ts
@@ -202,7 +204,8 @@ src/
 ├── notifications/
 │   └── push.ts            # UnifiedPush (self-hosted ntfy), no Firebase -- docs/notifications.md
 ├── analytics/
-│   └── usage-db.ts        # SQLite analytics (per-API-call token tracking)
+│   ├── usage-db.ts        # SQLite analytics (per-API-call token tracking) + the monthly rollup the purge feeds
+│   └── usage-stats.ts     # Install-wide aggregates over a period, rollup included -- docs/stats-page.md
 ├── approvals/
 │   └── store.ts           # SQLite journal of every tool-approval outcome -- docs/my-claw-app-channel.md
 ├── memory/                # Active memory: SQLite store, hybrid recall, dedup, consolidation

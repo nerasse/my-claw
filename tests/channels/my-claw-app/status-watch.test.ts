@@ -114,37 +114,3 @@ test("a report that cannot be built sends nothing, and a page closed meanwhile g
   expect(sent).toEqual([]);
 });
 
-/**
- * A provider's ledger is the one figure on a report that belongs to no conversation, so the push
- * it triggers is aimed at every page rather than at a session chain.
- */
-test("a ledger reading refreshes every page open, whatever conversation each is on", async () => {
-  const { watch, sent, reports } = world();
-  await watch.watch(socket("a"), "o", "t1");
-  await watch.watch(socket("b"), "o", "t2");
-  reports.length = 0;
-  sent.length = 0;
-
-  watch.refreshed();
-  expect(sent).toEqual([]);
-  await settle();
-  expect(reports.sort()).toEqual(["o/t1", "o/t2"]);
-  expect(sent.map((s) => `${s.ws}:${s.frame.threadId}`).sort()).toEqual(["a:t1", "b:t2"]);
-});
-
-test("two readings in one burst are still one report per page, and none at all with no page open", async () => {
-  const { watch, sent, reports } = world();
-  // Nothing is watching: the event costs a walk over an empty map and builds no report.
-  watch.refreshed();
-  await settle();
-  expect(reports).toEqual([]);
-
-  await watch.watch(socket("a"), "o", "t1");
-  reports.length = 0;
-  sent.length = 0;
-  watch.refreshed();
-  watch.refreshed();
-  await settle();
-  expect(reports).toEqual(["o/t1"]);
-  expect(sent).toHaveLength(1);
-});

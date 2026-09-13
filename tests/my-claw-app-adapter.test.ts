@@ -3839,6 +3839,68 @@ describe("command frames", () => {
     assert.equal(frame["scope"], "status");
   });
 
+  const STATS_PAYLOAD = {
+    period: "30d" as const,
+    rollupIncluded: false,
+    totals: { calls: 3, errors: 0, promptTokens: 10, completionTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, billedUsd: 1, referenceUsd: 0, unpriced: 0, durationMs: 5 },
+    models: [],
+    providers: [],
+    sessions: [],
+    daily: [],
+    reliability: [],
+    cache: { promptTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, readSharePct: 0, writeSharePct: 0 },
+    callers: [],
+    reconciliation: [],
+  };
+
+  test("stats.get answers the install-wide report for the period it names, and nothing per thread", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    const asked: string[] = [];
+    agent.onStatsController({
+      report: async (period) => {
+        asked.push(period);
+        return { ...STATS_PAYLOAD, period };
+      },
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "stats.get", period: "all" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "stats.result");
+    assert.deepEqual(asked, ["all"]);
+    assert.equal((frame["stats"] as { period: string }).period, "all");
+    assert.equal("threadId" in frame, false, "the page is about the install, not about a conversation");
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("a period the server does not offer is refused, never silently narrowed to one it does", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    let called = 0;
+    agent.onStatsController({
+      report: async (period) => {
+        called += 1;
+        return { ...STATS_PAYLOAD, period };
+      },
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "stats.get", period: "6mo" }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "stats");
+    assert.equal(called, 0, "a window that asked for six months must not be handed another period and believe it");
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("stats.get with no controller wired is refused rather than answered with an empty page", async () => {
+    client.ws.send(JSON.stringify({ type: "stats.get", period: "7d" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "error");
+    assert.equal(frame["scope"], "stats");
+  });
+
   test("session.instructions.get answers the report of the conversation that asked", async () => {
     const agent = new MyClawAppAdapter(createConfig(), store as never);
     const asked: string[] = [];

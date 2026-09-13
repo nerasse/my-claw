@@ -171,10 +171,19 @@ export class QuestionManager {
     return any;
   }
 
-  /** Test/reset seam: drops everything, as if every run had gone away. */
+  /**
+   * Test/reset seam: drops everything, as if every surface and every run had gone away.
+   *
+   * The handler goes with the pending questions, and it is the half that used to survive: it is set
+   * by a channel adapter, which is exactly the thing a reset is pretending no longer exists. One
+   * file registering one made `hasSurface()` true for every file after it, so the tool's refusal
+   * when nothing can display a question passed or failed on the order the suite happened to pick.
+   */
   clear(): void {
     for (const { resolve } of this.pending.values()) resolve({ kind: "canceled" });
     this.pending.clear();
+    this.handler = undefined;
+    this.notifier = undefined;
   }
 
   /** Whether anything would see a question at all; the tool refuses otherwise. */

@@ -26,6 +26,8 @@ import type {
   MyClawAppUnavailableModel,
   MyClawAppSessionInstructions,
   MyClawAppSkillEntry,
+  MyClawAppStatsPayload,
+  MyClawAppStatsPeriod,
   MyClawAppStatusPayload,
   MyClawAppSubAgentEntry,
   MyClawAppTagsResult,
@@ -319,6 +321,18 @@ export interface MyClawAppSubAgentsController {
     /** `ask` opens a run in the target so the orchestrator acts on it; `note` only files it. */
     mode: "ask" | "note";
   }): Promise<MyClawAppSubAgentHandoffOutcome[]>;
+}
+
+/**
+ * The install-wide statistics page (docs/stats-page.md).
+ *
+ * Injected rather than built in the adapter: the report needs the whole config, the price table and
+ * the session store, none of which the channel holds. It takes no thread and no owner, because it
+ * is about the install and not about a conversation -- there is one owner, and scoping a total to
+ * one of his threads would answer a different question than the one the page asks.
+ */
+export interface MyClawAppStatsController {
+  report(period: MyClawAppStatsPeriod): Promise<MyClawAppStatsPayload>;
 }
 
 /**

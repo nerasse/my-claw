@@ -48,6 +48,9 @@ import { redactCommandArgs } from "../command-log.ts";
 
 /** What this channel advertises and what it intercepts, from one list so they cannot diverge. */
 const APP_COMMANDS = commandsFor("my-claw-app");
+
+/** The only windows `stats.get` accepts. Anything else is refused rather than coerced. */
+const STATS_PERIODS: readonly MyClawAppStatsPeriod[] = ["7d", "30d", "90d", "all"];
 import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
@@ -73,6 +76,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppLogsTail,
   MyClawAppServerFrame,
   MyClawAppAgentsConfigResult,
+  MyClawAppStatsGet,
+  MyClawAppStatsPeriod,
   MyClawAppStatusPayload,
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
@@ -120,6 +125,7 @@ import type {
   MyClawAppSessionData,
   MyClawAppSessionInstructionsProvider,
   MyClawAppSkillsController,
+  MyClawAppStatsController,
   MyClawAppSubAgentsController,
   MyClawAppTagsController,
   MyClawAppToolsController,
@@ -273,6 +279,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private commandHandler?: MyClawAppCommandHandler;
   /** Set by the host: broadcasts `undo.prompt` and waits for the owner's `undo.choose`. */
   private subagents?: MyClawAppSubAgentsController;
+  private stats?: MyClawAppStatsController;
   /** Serializes roster snapshots per parent so a slower lifecycle read cannot publish stale state. */
   private rosterPushes = new Map<string, Promise<void>>();
   private locationResolver?: MyClawAppLocationResolver;
@@ -672,6 +679,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   onSubAgentsController(controller: MyClawAppSubAgentsController): void {
     this.subagents = controller;
+  }
+
+  /** The install-wide statistics page. Absent leaves `stats.get` refused rather than empty. */
+  onStatsController(controller: MyClawAppStatsController): void {
+    this.stats = controller;
   }
 
   onLocationResolver(resolver: MyClawAppLocationResolver): void {
@@ -1549,6 +1561,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "status.unwatch":
         this.statusWatch.unwatch(ws);
         break;
+      case "stats.get":
+        this.detach(this.handleStatsGet(ws, frame), "handleStatsGet");
+        break;
       case "session.instructions.get":
         this.detach(this.handleSessionInstructionsGet(ws, frame), "handleSessionInstructionsGet");
         break;
@@ -2311,11 +2326,26 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
-   * A provider's ledger was read: the reconciliation line is on every report and names no session,
-   * so every open page is refreshed. This is the moment a page stops saying "provider not reached".
+   * The install-wide statistics, for one period.
+   *
+   * The period is checked against the list rather than passed through: it reaches SQL as a date
+   * bound, and a frame is whatever the socket sent. An unknown one is refused, not defaulted --
+   * a page that asked for six months and was quietly shown seven days would be believed.
    */
-  statusRefreshed(): void {
-    this.statusWatch.refreshed();
+  private async handleStatsGet(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppStatsGet): Promise<void> {
+    if (!this.stats) {
+      await this.refuse(ws, "stats", "stats unavailable");
+      return;
+    }
+    if (!STATS_PERIODS.includes(frame.period)) {
+      await this.refuse(ws, "stats", "invalid period", { period: String(frame.period) });
+      return;
+    }
+    try {
+      this.sendFrame(ws, { type: "stats.result", stats: await this.stats.report(frame.period) });
+    } catch (err) {
+      await this.refuse(ws, "stats", "stats.get failed", { error: String(err) });
+    }
   }
 
   private sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string } {

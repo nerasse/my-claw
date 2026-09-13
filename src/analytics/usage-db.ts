@@ -45,6 +45,32 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_api_calls_model        ON api_calls (model);
     CREATE INDEX IF NOT EXISTS idx_api_calls_platform     ON api_calls (platform);
     CREATE INDEX IF NOT EXISTS idx_api_calls_caller       ON api_calls (caller);
+
+    CREATE TABLE IF NOT EXISTS usage_monthly (
+      month       TEXT NOT NULL,
+      model       TEXT NOT NULL,
+      base_url    TEXT NOT NULL,
+      platform    TEXT NOT NULL,
+      caller      TEXT NOT NULL,
+
+      calls              INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+      completion_tokens  INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+
+      -- billed_usd is what was charged, and only ever what was charged: a price the purge had to
+      -- compute is a catalogue rate, so it lands in reference_usd. unpriced_calls is what no rung
+      -- of the ladder could price even then.
+      billed_usd     REAL    NOT NULL DEFAULT 0,
+      reference_usd  REAL    NOT NULL DEFAULT 0,
+      unpriced_calls INTEGER NOT NULL DEFAULT 0,
+
+      errors      INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+
+      PRIMARY KEY (month, model, base_url, platform, caller)
+    );
   `);
 
   // Columns added after the table shipped. CREATE TABLE IF NOT EXISTS never re-runs, so an
@@ -80,6 +106,135 @@ function getDb(): Database {
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_parent ON api_calls (parent_session_id)");
 
   return db;
+}
+
+/**
+ * The condemned rows, folded into their months, with the money split the way it has to be read.
+ *
+ * Scoped to exactly the rows the DELETE removes, which is what makes a global total safe to read as
+ * rollup + live: a row is in one or the other, never in both, and never in neither.
+ *
+ * The frozen money is summed apart from the tokens of the rows that carry none. A group can hold
+ * both -- the cost columns shipped mid-history -- and pricing the whole group's tokens on top of a
+ * frozen sum would charge the frozen calls twice. So the unfrozen tokens travel separately, and the
+ * caller prices those and only those.
+ *
+ * `substr` rather than `strftime`: the month is the first seven characters of an ISO timestamp, and
+ * reading them is not a date parse that can fail on a row written by an older shape.
+ */
+const CONDEMNED_SQL = `
+  SELECT
+    substr(timestamp, 1, 7) AS month, model, base_url AS baseUrl, platform, caller,
+    COUNT(*)                            AS calls,
+    COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
+    COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+    COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+    COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+    COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed = 1 THEN cost_usd ELSE 0 END), 0)  AS billedUsd,
+    COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed <> 1 THEN cost_usd ELSE 0 END), 0) AS referenceUsd,
+    SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END)                                   AS unfrozenCalls,
+    COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN prompt_tokens ELSE 0 END), 0)          AS unfrozenPromptTokens,
+    COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN completion_tokens ELSE 0 END), 0)      AS unfrozenCompletionTokens,
+    COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN cache_read_tokens ELSE 0 END), 0)      AS unfrozenCacheReadTokens,
+    COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN cache_write_tokens ELSE 0 END), 0)     AS unfrozenCacheWriteTokens,
+    MAX(CASE WHEN cost_usd IS NULL THEN upstream_api_base END)                          AS unfrozenUpstreamApiBase,
+    SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors,
+    COALESCE(SUM(duration_ms), 0)                      AS durationMs
+  FROM api_calls
+  WHERE timestamp < $cutoff
+  GROUP BY month, model, baseUrl, platform, caller
+`;
+
+const ROLLUP_UPSERT_SQL = `
+  INSERT INTO usage_monthly (
+    month, model, base_url, platform, caller,
+    calls, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens,
+    billed_usd, reference_usd, unpriced_calls, errors, duration_ms
+  )
+  VALUES (
+    $month, $model, $baseUrl, $platform, $caller,
+    $calls, $promptTokens, $completionTokens, $cacheReadTokens, $cacheWriteTokens,
+    $billedUsd, $referenceUsd, $unpricedCalls, $errors, $durationMs
+  )
+  ON CONFLICT (month, model, base_url, platform, caller) DO UPDATE SET
+    calls              = calls + excluded.calls,
+    prompt_tokens      = prompt_tokens + excluded.prompt_tokens,
+    completion_tokens  = completion_tokens + excluded.completion_tokens,
+    cache_read_tokens  = cache_read_tokens + excluded.cache_read_tokens,
+    cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+    billed_usd         = billed_usd + excluded.billed_usd,
+    reference_usd      = reference_usd + excluded.reference_usd,
+    unpriced_calls     = unpriced_calls + excluded.unpriced_calls,
+    errors             = errors + excluded.errors,
+    duration_ms        = duration_ms + excluded.duration_ms
+`;
+
+interface CondemnedGroup {
+  month: string;
+  model: string;
+  baseUrl: string;
+  platform: string;
+  caller: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  billedUsd: number;
+  referenceUsd: number;
+  unfrozenCalls: number;
+  unfrozenPromptTokens: number;
+  unfrozenCompletionTokens: number;
+  unfrozenCacheReadTokens: number;
+  unfrozenCacheWriteTokens: number;
+  unfrozenUpstreamApiBase: string | null;
+  errors: number;
+  durationMs: number;
+}
+
+/**
+ * What a condemned group is worth, in the last moment its rows still exist.
+ *
+ * The calls frozen with a cost keep it. The calls that carry none are priced from their tokens
+ * through the live ladder, because the alternative is losing them: the cost columns shipped after
+ * most of this history was written, and rolling those months up at zero would turn the bulk of a
+ * year's real spend into a permanent hole on a page whose whole job is to show it.
+ *
+ * That price lands in `reference_usd` and never in `billed_usd`. A catalogue rate is what the
+ * traffic would have cost if rented; it is not a statement from whatever billed the call, and the
+ * two columns exist precisely so that distinction survives.
+ *
+ * The table used is the table of the day the purge runs, not of the day the call was made. That is
+ * the same approximation the live page already makes for those same rows, and it beats a zero. What
+ * stays in `unpriced_calls` is what the ladder itself could not price -- an unknown model on an
+ * unknown host -- so the figure means one thing now: nothing anywhere knows what this cost.
+ */
+function rolledMoney(group: CondemnedGroup): { billedUsd: number; referenceUsd: number; unpricedCalls: number } {
+  if (group.unfrozenCalls === 0) return { billedUsd: group.billedUsd, referenceUsd: group.referenceUsd, unpricedCalls: 0 };
+  const cost = sharedPricing()?.costOf({
+    model: group.model,
+    baseUrl: group.baseUrl,
+    promptTokens: group.unfrozenPromptTokens,
+    completionTokens: group.unfrozenCompletionTokens,
+    cacheReadTokens: group.unfrozenCacheReadTokens,
+    cacheWriteTokens: group.unfrozenCacheWriteTokens,
+    ...(group.unfrozenUpstreamApiBase === null ? {} : { upstreamApiBase: group.unfrozenUpstreamApiBase }),
+  });
+  return {
+    billedUsd: group.billedUsd,
+    referenceUsd: group.referenceUsd + (cost?.usd ?? 0),
+    unpricedCalls: cost ? 0 : group.unfrozenCalls,
+  };
+}
+
+/**
+ * The one open handle on the analytics, for the query layer that lives beside this file.
+ *
+ * Shared rather than reopened: the module holds a WAL connection and a prepared insert, and a
+ * second handle on the same file would sit behind the same write lock for no gain.
+ */
+export function analyticsDb(): Database {
+  return getDb();
 }
 
 /** Add a column to an existing table if a prior schema version lacks it. */
@@ -226,13 +381,77 @@ export function recordApiCall(record: ApiCallRecord): void {
 /** How far back the analytics reach: rows older than this are swept at boot. */
 export const RETENTION_DAYS = 90;
 
-export function pruneOldRecords(): void {
+/**
+ * Sweep the per-call rows past the retention wall, after folding them into the monthly rollup.
+ *
+ * One transaction, the read included: a rollup that lands without its delete double-counts every
+ * month it touches on the next boot, a delete that lands without its rollup is the loss the rollup
+ * exists to prevent, and a row recorded between the read and the delete would be swept by one and
+ * missed by the other. Both halves read the same cutoff inside the same transaction, so a row is
+ * condemned by both or by neither.
+ *
+ * `cutoff` is injectable so the invariant is testable without waiting ninety days.
+ */
+export function pruneOldRecords(cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString()): void {
   try {
     const d = getDb();
-    const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
-    d.run("DELETE FROM api_calls WHERE timestamp < ?", [cutoff]);
+    d.transaction(() => {
+      const groups = d.prepare(CONDEMNED_SQL).all({ $cutoff: cutoff }) as CondemnedGroup[];
+      const upsert = d.prepare(ROLLUP_UPSERT_SQL);
+      for (const group of groups) {
+        const money = rolledMoney(group);
+        upsert.run({
+          $month: group.month,
+          $model: group.model,
+          $baseUrl: group.baseUrl,
+          $platform: group.platform,
+          $caller: group.caller,
+          $calls: group.calls,
+          $promptTokens: group.promptTokens,
+          $completionTokens: group.completionTokens,
+          $cacheReadTokens: group.cacheReadTokens,
+          $cacheWriteTokens: group.cacheWriteTokens,
+          $billedUsd: money.billedUsd,
+          $referenceUsd: money.referenceUsd,
+          $unpricedCalls: money.unpricedCalls,
+          $errors: group.errors,
+          $durationMs: group.durationMs,
+        });
+      }
+      d.run("DELETE FROM api_calls WHERE timestamp < ?", [cutoff]);
+    })();
   } catch (err) {
     void log("warn", "analytics pruneOldRecords failed", { error: String(err) });
+  }
+}
+
+/**
+ * Where the two halves of a global report start.
+ *
+ * `detailSince` is the oldest per-call row left on disk: every view that needs a session, a day or
+ * an hour stops there, because that is where the rows that carry them stop. `totalsSince` is the
+ * first month the rollup holds, and the totals reach back to it whatever the purge has swept.
+ *
+ * A page that shows one figure for both is lying about one of them, which is the whole reason this
+ * is on the payload rather than inferred from the period.
+ */
+export interface UsageHorizon {
+  detailSince?: string;
+  totalsSince?: string;
+}
+
+export function usageHorizon(): UsageHorizon {
+  try {
+    const d = getDb();
+    const detail = d.prepare("SELECT MIN(timestamp) AS at FROM api_calls").get() as { at: string | null } | null;
+    const rollup = d.prepare("SELECT MIN(month) AS month FROM usage_monthly").get() as { month: string | null } | null;
+    return {
+      ...(detail?.at ? { detailSince: detail.at } : {}),
+      ...(rollup?.month ? { totalsSince: rollup.month } : {}),
+    };
+  } catch (err) {
+    void log("warn", "analytics usageHorizon failed", { error: String(err) });
+    return {};
   }
 }
 
@@ -349,50 +568,6 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
     return rows.map(withPinnedCost);
   } catch (err) {
     void log("warn", "analytics getSessionModelUsage failed", { error: String(err) });
-    return [];
-  }
-}
-
-/**
- * Every model group of one endpoint, across every session the analytics still hold.
- *
- * Deliberately not scoped to a conversation: it feeds the reconciliation against what a provider
- * says it charged, and a provider bills the key, not the chat. `baseUrlLike` is a SQL LIKE pattern
- * and a prefilter only -- there is no index on `base_url` and no URL parser in SQLite, so the
- * caller is the one that decides what the host really is.
- */
-export function getProviderModelUsage(baseUrlLike: string): SessionModelRow[] {
-  try {
-    const d = getDb();
-    const rows = d
-      .prepare(
-        `SELECT
-           model,
-           base_url                        AS baseUrl,
-           MAX(upstream_api_base)          AS upstreamApiBase,
-           COUNT(*)                        AS calls,
-           COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
-           COALESCE(SUM(completion_tokens), 0) AS completionTokens,
-           COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
-           COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
-           SUM(proxy_cost_usd)             AS proxyCostUsd,
-           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
-           MAX(timestamp)                  AS lastUsedAt,
-           SUM(cost_usd)                   AS pinnedUsd,
-           COUNT(cost_usd)                 AS pinnedRows,
-           COUNT(DISTINCT cost_source)     AS costSources,
-           MAX(cost_source)                AS costSource,
-           MAX(cost_billed)                AS costBilled,
-           MAX(cost_approximate)           AS costApproximate
-         FROM api_calls
-         WHERE base_url LIKE ?
-         GROUP BY model, base_url
-         ORDER BY SUM(total_tokens) DESC`,
-      )
-      .all(baseUrlLike) as AggregatedModelRow[];
-    return rows.map(withPinnedCost);
-  } catch (err) {
-    void log("warn", "analytics getProviderModelUsage failed", { error: String(err) });
     return [];
   }
 }

@@ -10,11 +10,24 @@ describe("snapshots: capture", () => {
   let ws: string;
   let shadows: string;
 
+  // The fixture belongs here, not to whichever test ran first. The repo used to be created by
+  // "captures a workspace with nested git depots separately", and the two tests below silently
+  // depended on it having run: under --randomize either of them could go first, find no depot to
+  // diff, and fail for a reason neither is about. Each test now restores the repo to this state on
+  // its way out, so any order works.
   beforeAll(async () => {
     ws = await mkdtemp(join(tmpdir(), "snap-ws-"));
     shadows = await mkdtemp(join(tmpdir(), "snap-sh-"));
     await mkdir(join(ws, "repo"), { recursive: true });
     await mkdir(join(ws, "plain"), { recursive: true });
+
+    const repo = join(ws, "repo");
+    await execGit(repo, ["init", "-q"]);
+    await execGit(repo, ["config", "user.email", "t@t"]);
+    await execGit(repo, ["config", "user.name", "t"]);
+    await writeFile(join(repo, "a.txt"), "v1\n");
+    await execGit(repo, ["add", "--all"]);
+    await execGit(repo, ["commit", "-qm", "init"]);
   });
 
   afterAll(async () => {
@@ -23,15 +36,6 @@ describe("snapshots: capture", () => {
   });
 
   test("captures a workspace with nested git depots separately", async () => {
-    const repo = join(ws, "repo");
-    // Make repo a git repo with one commit
-    await execGit(repo, ["init", "-q"]);
-    await execGit(repo, ["config", "user.email", "t@t"]);
-    await execGit(repo, ["config", "user.name", "t"]);
-    await writeFile(join(repo, "a.txt"), "v1\n");
-    await execGit(repo, ["add", "--all"]);
-    await execGit(repo, ["commit", "-qm", "init"]);
-
     const snap = await captureWorkspace(ws, shadows);
     // Root (non-git) + the single nested repo
     expect(snap.depots.length).toBe(2);

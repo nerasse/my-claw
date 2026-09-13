@@ -362,6 +362,7 @@ the first answer wins.
 { "type": "session.instructions.get", "threadId": "t9" }
 { "type": "status.watch", "threadId": "t9" }
 { "type": "status.unwatch" }
+{ "type": "stats.get", "period": "7d|30d|90d|all" }
 { "type": "instructions.layer.set", "workspace": "sofa", "file": "SOUL.md", "inherit": "lab|default|builtin|none", "off": true }
 { "type": "agents.config.get" }
  { "type": "agents.model.set", "agent": "global|orchestrator|general|research|cron", "model": "gpt-5.1", "effort": "medium" }
@@ -502,6 +503,14 @@ provider request URLs.
   (docs/status-command.md); a typed `/status` still answers `chat.command.result` with the same
   payload under `status`, and the app opens the page on it and watches. There is no `status.get`:
   the watch is the fetch.
+- `stats.get { period }` answers `stats.result { stats }`: everything this install has spent over
+  one window, the conversations that no longer exist included. The opposite scoping to `status.*`,
+  and therefore the opposite delivery: no `threadId` on the answer, and no watch -- nothing a
+  session event names can be said to move an install-wide total, so the page asks when it opens. A
+  period outside the four is refused (scope `stats`) rather than narrowed to one that is offered.
+  Two horizons travel with it, `detailSince` and `totalsSince`, because the per-session and daily
+  views stop at the 90-day retention wall while the totals cross it through a permanent monthly
+  rollup. See docs/stats-page.md.
 - `session.instructions.get` answers `session.instructions.result`: what one conversation is
   actually loaded with, layer by layer, plus the nested `AGENTS.md` its runs injected. The layers
   come from `composeSystemPrompt`, the same function the run joins into its system prompt, so the

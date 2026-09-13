@@ -11,7 +11,6 @@ import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf } from "../sessions/projection.ts";
 import {
   getDelegatedModelUsage,
-  getProviderModelUsage,
   getSessionModelUsage,
   getLastContextTokens,
   getSessionUsage,
@@ -23,15 +22,13 @@ import { estimateMessagesTokens } from "../llm/tokens.ts";
 import { resolveAutoCompactThreshold, autoCompactEnabled } from "../core/config.ts";
 import type { RunNode } from "../core/run-registry.ts";
 import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
-import { cachedOpenRouterProviderName, isOpenRouterBaseUrl } from "../llm/openrouter-endpoints.ts";
-import { cachedOpenRouterAccount, openRouterApiKey, warmOpenRouterAccount } from "../llm/openrouter-account.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
+import { routeOf } from "./usage-route.ts";
 import type {
   MyClawAppStatusPayload,
   MyClawAppUsageAgent,
   MyClawAppUsageModelRow,
-  MyClawAppUsageReconciliation,
   MyClawAppUsageTotals,
 } from "./my-claw-app/types.ts";
 
@@ -114,45 +111,6 @@ function addTotals(into: MyClawAppUsageTotals, more: MyClawAppUsageTotals): void
   into.unpriced += more.unpriced;
 }
 
-/**
- * The host a base URL reaches, or the string itself when it is not a URL at all: the SDK and
- * subscription transports record a bare name (`claude-sdk`), which is already the clearest label
- * there is for them.
- */
-function providerHost(baseUrl: string): string {
-  const match = /^https?:\/\/([^/]+)/.exec(baseUrl);
-  return match ? match[1]!.replace(/^www\./, "") : baseUrl;
-}
-
-/**
- * Where a call went, and which variant of the route it was served as.
- *
- * The model reference carries the endpoint pin (`z-ai/glm-5.2@streamlake/fp8`), and for OpenRouter
- * that pin is the only place the upstream provider exists: `upstream_api_base` is filled in by the
- * resellers that proxy, and OpenRouter leaves it empty. The pin's first segment is therefore the
- * provider and the rest is the variant, which is why `fp8` and `flex` -- a quantization and a
- * service tier -- must never be read as part of a model name.
- *
- * A row without a pin falls back to the base it reached, which is the only thing left that tells
- * two calls of the same model apart (the same id on `api.anthropic.com` and through `claude-sdk`
- * is two providers, two rates, and two rows).
- *
- * `providerName` is how OpenRouter spells that first segment, and it is decoration: the tag stays
- * in `provider`, which is the key everything else groups and merges on. Read from the cache alone,
- * so a cold catalogue drops the decoration instead of making the report wait on a lookup.
- */
-function routeOf(model: string, baseUrl: string): { provider: string; variant?: string; providerName?: string } {
-  const at = model.lastIndexOf("@");
-  const [head, ...rest] = at > 0 ? model.slice(at + 1).split("/").filter(Boolean) : [];
-  if (!head) return { provider: providerHost(baseUrl) };
-  const name = cachedOpenRouterProviderName(head);
-  return {
-    provider: head,
-    ...(rest.length > 0 ? { variant: rest.join("/") } : {}),
-    ...(name === undefined ? {} : { providerName: name }),
-  };
-}
-
 function modelRow(row: PricedRow): MyClawAppUsageModelRow {
   return {
     model: row.model,
@@ -229,49 +187,6 @@ async function delegatedAgents(p: StatusParams): Promise<MyClawAppUsageAgent[]> 
   return agents;
 }
 
-/** Cheap prefilter for the analytics: the host is then checked properly, row by row. */
-const OPENROUTER_BASE_LIKE = "%openrouter.ai%";
-
-/**
- * What OpenRouter says the key spent, beside what we deduced for it, and the gap.
- *
- * Both halves are account-wide because a provider bills the key and not the conversation. Ours is
- * the same money the rest of the page shows, priced the same way: the cost frozen on each group
- * when it can be, the live ladder when it cannot.
- *
- * The provider's half is read from a cache and never waited on. A page may not hang on a third
- * party nor fail with it, so a cold cache and an unreachable API both leave the line standing with
- * the recorded sum alone; the refresh started here answers the next redraw.
- *
- * Absent entirely when no OpenRouter key is configured: one number labelled as a comparison is
- * worse than no line.
- */
-function reconciliation(config: MyClawConfig, pricing?: ModelPricing): MyClawAppUsageReconciliation | undefined {
-  const apiKey = openRouterApiKey(config.llm.providers);
-  if (!apiKey) return undefined;
-  warmOpenRouterAccount(apiKey);
-  const rows = priceRows(
-    getProviderModelUsage(OPENROUTER_BASE_LIKE).filter((row) => isOpenRouterBaseUrl(row.baseUrl)),
-    pricing,
-  );
-  const account = cachedOpenRouterAccount();
-  const recordedUsd = rows.reduce((sum, row) => sum + (row.cost?.usd ?? 0), 0);
-  return {
-    provider: "openrouter.ai",
-    recordedUsd,
-    calls: rows.reduce((sum, row) => sum + row.calls, 0),
-    windowDays: RETENTION_DAYS,
-    ...(account === undefined
-      ? { providerUnread: true }
-      : {
-          providerUnread: false,
-          providerUsd: account.usageUsd,
-          deltaUsd: account.usageUsd - recordedUsd,
-          ...(account.balanceUsd === undefined ? {} : { balanceUsd: account.balanceUsd }),
-        }),
-  };
-}
-
 async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
   const configured = resolveAgentLlm(p.config, "main");
   // The same chain the run uses, rather than a copy of it that happens to agree today.
@@ -336,7 +251,6 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     };
   }
 
-  const reconciled = reconciliation(p.config, p.pricing);
   const session = p.session ?? null;
   return {
     session: session
@@ -378,7 +292,6 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
       autoCompactThresholdTokens: autoCompactOn ? Math.round(limit * threshold) : 0,
     },
     usage,
-    ...(reconciled ? { reconciliation: reconciled } : {}),
     runtime: {
       runs: p.liveRuns.map((r) => ({ label: r.label, depth: r.depth, startedAt: new Date(r.startedAt).toISOString() })),
       compacting: p.compacting === true,
@@ -394,26 +307,6 @@ function money(usd: number): string {
 }
 
 /**
- * The reconciliation, as one segment of the chat line: the balance and the gap, in words.
- *
- * The page can afford a rule and two lines, and it can be tapped. This cannot, so the direction of
- * the gap is spelled out rather than signed -- `+$10.50` beside a balance reads as a credit, which
- * is the opposite of what it means. Same honesty as the page: a ledger that was not read says so
- * instead of leaving a figure out and letting the sentence imply one.
- *
- * Carries a host and two amounts, never an identity: `provider` is a constant and nothing from the
- * key's own answer (its label, its limits) is on the payload to begin with.
- */
-function reconciliationSegment(r: MyClawAppUsageReconciliation): string {
-  if (r.providerUnread || r.providerUsd === undefined || r.deltaUsd === undefined) return `${r.provider} not reached`;
-  const gap =
-    Math.abs(r.deltaUsd) < 0.01
-      ? "billed within $0.01 of recorded"
-      : `billed ${money(Math.abs(r.deltaUsd))} ${r.deltaUsd > 0 ? "more" : "less"} than recorded`;
-  return `${r.provider}: ${r.balanceUsd === undefined ? "" : `${money(r.balanceUsd)} left, `}${gap}`;
-}
-
-/**
  * The one line a chat surface shows for a `/status` the page has already drawn: the command
  * result carries text by contract, and the page carries the report.
  */
@@ -426,7 +319,6 @@ function statusLine(status: MyClawAppStatusPayload): string {
   } else {
     parts.push("no session yet");
   }
-  if (status.reconciliation) parts.push(reconciliationSegment(status.reconciliation));
   if (status.runtime.runs.length > 0) parts.push(`running: ${status.runtime.runs.map((r) => r.label).join(", ")}`);
   if (status.runtime.compacting) parts.push("compacting");
   return parts.join(" · ");

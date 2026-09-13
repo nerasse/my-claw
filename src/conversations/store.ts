@@ -509,6 +509,67 @@ export function searchConversationArchive(options: ConversationSearchOptions): C
   }));
 }
 
+/**
+ * The first thing the owner said in each of these sessions, for sessions that no longer exist.
+ *
+ * The analytics keep a deleted conversation's calls long after its transcript is gone from disk,
+ * and a spend ranking that labelled those rows with a session id alone would be unreadable. The
+ * archive still holds their messages, so the opening line is the label.
+ *
+ * Bare `content` beside a single `MIN()`: SQLite answers it with the row that produced the
+ * minimum, which is the opening message and not an arbitrary one. Sessions with nothing archived
+ * are simply absent from the map -- the caller falls back to the id rather than inventing a title.
+ *
+ * Two keys, because the archive has two writers. A turn written back from a session log carries
+ * `session_id`; a message written as it arrived on a channel carries the chat and the thread and no
+ * session at all, which is where most of an app conversation's opening lines are. Measured on the
+ * live archive: of 189 sessions the analytics still hold and the disk no longer does, the session
+ * key alone labels 22 and the two together label 51 -- and of the 30 that are app conversations,
+ * 29. The rest are sub-agent runs whose transcripts were never archived under a user role.
+ */
+export function firstUserTextBySession(sessionIds: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (sessionIds.length === 0) return out;
+  try {
+    const d = getDb();
+    // Bound: a placeholder list is the only way to pass a set, and SQLite caps them near 32k.
+    const CHUNK = 400;
+    for (let i = 0; i < sessionIds.length; i += CHUNK) {
+      const slice = sessionIds.slice(i, i + CHUNK);
+      const rows = d
+        .prepare(
+          `SELECT session_id AS sessionId, content, MIN(occurred_at)
+           FROM messages
+           WHERE role = 'user' AND session_id IN (${slice.map(() => "?").join(",")})
+           GROUP BY session_id`,
+        )
+        .all(...slice) as Array<{ sessionId: string; content: string }>;
+      for (const row of rows) out.set(row.sessionId, row.content);
+    }
+    const byThread = d.prepare(
+      `SELECT content, MIN(occurred_at)
+       FROM messages
+       WHERE role = 'user' AND platform = ? AND chat_id = ? AND thread_id = ?`,
+    );
+    for (const sessionId of sessionIds) {
+      if (out.has(sessionId)) continue;
+      const thread = appThreadKeyOf(sessionId);
+      if (!thread) continue;
+      const row = byThread.get(thread.platform, thread.chatId, thread.threadId) as { content: string | null } | null;
+      if (row?.content) out.set(sessionId, row.content);
+    }
+  } catch (err) {
+    void log("warn", "conversations firstUserTextBySession failed", { error: String(err) });
+  }
+  return out;
+}
+
+/** `<platform>/thread/<chatId>/<threadId>`, which is how a channel conversation is filed here. */
+function appThreadKeyOf(sessionId: string): { platform: string; chatId: string; threadId: string } | null {
+  const match = /^([^/]+)\/thread\/([^/]+)\/(.+)$/.exec(sessionId);
+  return match ? { platform: match[1]!, chatId: match[2]!, threadId: match[3]! } : null;
+}
+
 function readRow(id: number): MessageRow | null {
   return (getDb().prepare(
     `SELECT id, platform, chat_id, chat_type, thread_id, session_id, agent_type,

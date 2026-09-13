@@ -1030,6 +1030,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelRemove
   | MyClawAppStatusWatch
   | MyClawAppStatusUnwatch
+  | MyClawAppStatsGet
   | MyClawAppSessionInstructionsGet
   | MyClawAppSessionInstructionsSet
   | MyClawAppJobsList
@@ -1748,6 +1749,7 @@ export type MyClawAppErrorScope =
   | "config"
   | "workspaces"
   | "status"
+  | "stats"
   | "jobs"
   | "subagents"
   | "notifications"
@@ -2475,41 +2477,6 @@ export interface MyClawAppUsageAgent extends MyClawAppUsageTotals {
 }
 
 /**
- * Two figures for the same money, and the gap between them.
- *
- * `recordedUsd` is what this install deduced, priced exactly as the rest of the page prices it.
- * `providerUsd` is what the provider's own ledger says the key spent. The gap is not a pricing
- * error to be fixed: it is the distance between what a provider debited and what we inferred, and
- * it has honest reasons -- the analytics keep 90 days while a key's counter runs from the day it
- * was made, and a BYOK route is billed by the upstream provider that OpenRouter never charged for.
- *
- * Account-wide on both sides, deliberately: a provider bills the key, not the conversation, so
- * scoping our half to one chat would put two numbers side by side that were never comparable.
- */
-export interface MyClawAppUsageReconciliation {
-  /** The host the two figures are about, as the page should name it (`openrouter.ai`). */
-  provider: string;
-  /** Our own rows for that provider, added up over every conversation the analytics still hold. */
-  recordedUsd: number;
-  /** How many recorded calls that sum covers. Zero is a real answer: nothing went there yet. */
-  calls: number;
-  /** How far back `recordedUsd` reaches, in days. The provider's figure has no such bound. */
-  windowDays: number;
-  /** What the provider says the key has spent since it was created. Absent when it was not read. */
-  providerUsd?: number;
-  /** `providerUsd - recordedUsd`, sent rather than subtracted on the page. Absent with it. */
-  deltaUsd?: number;
-  /** Credits bought minus credits spent. Absent when the provider does not publish a balance. */
-  balanceUsd?: number;
-  /**
-   * The provider's ledger was not read, so the line carries the recorded sum alone. True for an
-   * API that is down and for a cache nothing has warmed yet alike: the report never waits on the
-   * network, so both are the same statement -- we do not have their number right now.
-   */
-  providerUnread: boolean;
-}
-
-/**
  * Structured `/status` report, the only rendering: the app draws it as a page, pushed to every
  * page open on the conversation each time something in it moves (docs/status-command.md).
  */
@@ -2592,11 +2559,6 @@ export interface MyClawAppStatusPayload {
     /** Analytics keep 90 days. Set when the conversation is older: the figures start here, not at its creation. */
     since?: string;
   } | null;
-  /**
-   * What a provider says it charged the key, beside what we deduced. Absent when no provider that
-   * publishes its own ledger is configured -- see `MyClawAppUsageReconciliation`.
-   */
-  reconciliation?: MyClawAppUsageReconciliation;
   runtime: {
     /** The live run tree of this conversation: `main` at depth 0, each sub-agent below it. */
     runs: Array<{ label: string; depth: number; startedAt: string }>;
@@ -2620,6 +2582,185 @@ export interface MyClawAppStatusWatch {
 /** The app closed its status page. */
 export interface MyClawAppStatusUnwatch {
   type: "status.unwatch";
+}
+
+/**
+ * The windows the statistics page offers. `all` is the only one that reaches past the 90-day
+ * retention wall, through the permanent monthly rollup -- see docs/stats-page.md.
+ */
+export type MyClawAppStatsPeriod = "7d" | "30d" | "90d" | "all";
+
+/**
+ * The app asks for the install-wide statistics over one period. Answered once with `stats.result`
+ * and never pushed: this page is about everything, so no session event can say it moved.
+ */
+export interface MyClawAppStatsGet {
+  type: "stats.get";
+  period: MyClawAppStatsPeriod;
+}
+
+/** Calls, tokens, money and API time over one set of rows. */
+export interface MyClawAppStatsTotals {
+  calls: number;
+  errors: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** Subsets of `promptTokens`, billed at their own rate. */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** What was charged: pay-as-you-go endpoints. */
+  billedUsd: number;
+  /** What it would have cost at list price: flat plans, subscriptions, self-hosted. Not a charge. */
+  referenceUsd: number;
+  /** Calls no rung of the pricing ladder could price: counted here, absent from the money. */
+  unpriced: number;
+  /** Wall time spent inside the API. */
+  durationMs: number;
+}
+
+/** One model on one route. `provider` is the endpoint pin when there is one, else the host. */
+export interface MyClawAppStatsModelRow extends MyClawAppStatsTotals {
+  model: string;
+  provider: string;
+  /** How OpenRouter spells the provider tag. Decoration: `provider` is the key. */
+  providerName?: string;
+  /** The rest of the endpoint pin: a quantization or a service tier, never part of the model. */
+  variant?: string;
+}
+
+/** One endpoint, every model it served folded together. */
+export interface MyClawAppStatsProviderRow extends MyClawAppStatsTotals {
+  provider: string;
+  providerName?: string;
+}
+
+/** Where a session's label came from, so the page can render an id as an id. */
+export type MyClawAppStatsLabelSource = "title" | "first-message" | "id";
+
+/**
+ * One conversation's spend, including the conversations that no longer exist on disk: their calls
+ * outlive them, and a ranking that dropped them would not add up to the total above it.
+ */
+export interface MyClawAppStatsSessionRow extends MyClawAppStatsTotals {
+  sessionId: string;
+  /** The title if the session is alive, its opening message if the archive still has it, else the id. */
+  label: string;
+  labelSource: MyClawAppStatsLabelSource;
+  /** The session is gone from disk. Its rows are not, and this is what says so. */
+  deleted: boolean;
+  firstAt: string;
+  lastAt: string;
+}
+
+/** One day of the window. Bounded by `detailSince`: the rollup is monthly and cannot fill a day. */
+export interface MyClawAppStatsDayRow extends MyClawAppStatsTotals {
+  /** `YYYY-MM-DD`. */
+  date: string;
+}
+
+/**
+ * How often one model, or one host, failed and how long it took.
+ *
+ * `avgDurationMs` and nothing finer: the rollup keeps sums, not distributions, so a percentile
+ * would be available for the live window and silently missing for everything older.
+ */
+export interface MyClawAppStatsReliabilityRow {
+  /** A model id when `kind` is `model`, a host when it is `provider`. */
+  key: string;
+  kind: "model" | "provider";
+  calls: number;
+  errors: number;
+  errorRatePct: number;
+  avgDurationMs: number;
+}
+
+/** How much of the input was served from cache, and how much was written into it. */
+export interface MyClawAppStatsCache {
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** `cacheReadTokens / promptTokens`, already a percentage. 0 when nothing was read. */
+  readSharePct: number;
+  /** `cacheWriteTokens / promptTokens`, already a percentage. */
+  writeSharePct: number;
+}
+
+/** One caller: the orchestrator, the sub-agents it spawned, the browser, the compactions. */
+export interface MyClawAppStatsCallerRow extends MyClawAppStatsTotals {
+  caller: string;
+}
+
+/**
+ * What a provider's own ledger says the key spent, beside what we recorded for it.
+ *
+ * One entry per provider that publishes a ledger, and only those: a host we can only compare with
+ * itself is a row of the provider ranking, not a reconciliation. The gap is not an error to fix --
+ * a key's counter runs from the day it was made, and a BYOK route is charged by the upstream
+ * provider that the aggregator never billed for.
+ *
+ * Never a key, a key label, or anything else that identifies the credential: only the host and the
+ * amounts are read from the provider's answer.
+ */
+export interface MyClawAppStatsReconciliation {
+  /** The host the figures are about, as the page should name it (`openrouter.ai`). */
+  provider: string;
+  /** Our own rows for that host over the period, priced like every other figure on the page. */
+  recordedUsd: number;
+  /** How many recorded calls that sum covers. Zero is a reading: nothing went there. */
+  calls: number;
+  /** What the provider says the key spent since it was created. Absent when it was not read. */
+  providerUsd?: number;
+  /** `providerUsd - recordedUsd`, sent rather than subtracted on the page. Absent with it. */
+  deltaUsd?: number;
+  /** Credits bought minus credits spent. Absent when the provider publishes no balance. */
+  balanceUsd?: number;
+  /**
+   * The ledger was not read, so the entry carries our sum alone. True for an API that is down and
+   * for a cache nothing has warmed yet alike: the page never waits on a third party, so both are
+   * the same statement -- we do not have their number right now.
+   */
+  providerUnread: boolean;
+}
+
+/**
+ * Everything this install has spent, over one period.
+ *
+ * Two horizons, and the page must show both or it lies about one of them. `totals`, `models`,
+ * `providers`, `reliability`, `cache` and `callers` reach back to `totalsSince` when the period is
+ * `all`, because the purge folds every row it deletes into a permanent monthly rollup before
+ * deleting it. `sessions` and `daily` stop at `detailSince`: the rollup has no session on its key
+ * and no day in it, so nothing older can be broken down that way.
+ */
+export interface MyClawAppStatsPayload {
+  period: MyClawAppStatsPeriod;
+  /** Oldest per-call row still on disk. Everything below `sessions` and `daily` starts here. */
+  detailSince?: string;
+  /** First month (`YYYY-MM`) the rollup holds. Absent until a purge has run. */
+  totalsSince?: string;
+  /** The totals on this payload include rolled-up months. Only ever true for `all`. */
+  rollupIncluded: boolean;
+  totals: MyClawAppStatsTotals;
+  /** Ranked by spend, billed first then reference. */
+  models: MyClawAppStatsModelRow[];
+  /** Ranked by spend. */
+  providers: MyClawAppStatsProviderRow[];
+  /** Ranked by spend. Bounded by `detailSince`. */
+  sessions: MyClawAppStatsSessionRow[];
+  /** Oldest day first. Bounded by `detailSince`. */
+  daily: MyClawAppStatsDayRow[];
+  /** Models first, then hosts; each half ranked by error rate. */
+  reliability: MyClawAppStatsReliabilityRow[];
+  cache: MyClawAppStatsCache;
+  /** Ranked by calls. */
+  callers: MyClawAppStatsCallerRow[];
+  /** Empty when no provider with a readable ledger is configured. */
+  reconciliation: MyClawAppStatsReconciliation[];
+}
+
+/** The answer to one `stats.get`. */
+export interface MyClawAppStatsResult {
+  type: "stats.result";
+  stats: MyClawAppStatsPayload;
 }
 
 /**
@@ -3178,6 +3319,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatSendReceived
   | MyClawAppChatAcked
   | MyClawAppStatusResult
+  | MyClawAppStatsResult
   | MyClawAppSessionInstructionsResult
   | MyClawAppChatCleared
   | MyClawAppChatTranscript

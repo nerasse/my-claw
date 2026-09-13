@@ -70,6 +70,13 @@ delete process.env["MY_CLAW_MATRIX_ACCESS_TOKEN"];
 delete process.env["MY_CLAW_MATRIX_PASSWORD"];
 delete process.env["MY_CLAW_WEB_SEARCH_TOKEN"];
 
+// The forge credential the web-bundle installer reads. Same hazard, one layer up: with it in the
+// shell, `authHeaders` returns a real header and "no token configured means no header" fails --
+// but only when the randomized order puts it before the test that sets and then deletes one.
+// Green on CI, red on the maintainer's machine, and only on some seeds.
+delete process.env["FORGEJO_TOKEN"];
+delete process.env["FORGEJO_URL"];
+
 // Wipe persisted sessions between every test. Files share one MY_CLAW_DIR and reuse ids
 // ("u1", "session-1", ...), so a session left on disk by one test could be read cold by
 // the next and create an order-dependent pass/fail. Clearing here makes each test start
