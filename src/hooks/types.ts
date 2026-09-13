@@ -279,6 +279,16 @@ export interface HookEventMap {
   "session:context:measured": { sessionId: string };
   /** A row landed in analytics: the spend of `sessionId`, billed to `parentSessionId` (itself for a root). */
   "analytics:call:recorded": { sessionId: string; parentSessionId: string };
+  /**
+   * A provider's own ledger was read and the figures moved: what it says it charged the key is on
+   * every status report, and belongs to no conversation, so this is the one spend event with no
+   * session on it.
+   *
+   * Emitted on a **successful network read only**, never when the cache answered: a five-minute
+   * cache answering an idle page twelve times an hour would push twelve reports at a phone for
+   * figures that did not move. See docs/status-command.md.
+   */
+  "llm:account:refreshed": { provider: string };
 
   // === MEMORY LIFECYCLE ===
   "memory:store": { id: number; category: string; decision: string };

@@ -12,6 +12,7 @@
  */
 
 import type { LlmProviderConfig } from "../core/config.ts";
+import { hooks } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
 import { isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
 
@@ -102,6 +103,10 @@ function numberOf(raw: unknown): number | undefined {
  * `/key` is the reading that matters and `/credits` only decorates it, so the two are asked
  * together and judged apart: no usage is a failure, no balance is a line with one less number on
  * it. Exported for the tests, which drive it directly rather than racing a background warm.
+ *
+ * A reading that lands announces itself, and only then. That event is what turns an idle page from
+ * "provider not reached" into the figures, so it has to fire on the read and not on the cache that
+ * serves it -- a warm that answered from memory moved nothing and must push nothing.
  */
 export async function refreshOpenRouterAccount(apiKey: string): Promise<void> {
   const run = (async (): Promise<void> => {
@@ -124,6 +129,7 @@ export async function refreshOpenRouterAccount(apiKey: string): Promise<void> {
       at: Date.now(),
       value: { usageUsd, ...(total === undefined || spent === undefined ? {} : { balanceUsd: total - spent }) },
     };
+    hooks.emit("llm:account:refreshed", { provider: "openrouter.ai" });
   })();
   inFlight = run.finally(() => {
     inFlight = undefined;

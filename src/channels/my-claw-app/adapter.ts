@@ -2310,6 +2310,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
     void this.statusWatch.changed(sessionId, payer);
   }
 
+  /**
+   * A provider's ledger was read: the reconciliation line is on every report and names no session,
+   * so every open page is refreshed. This is the moment a page stops saying "provider not reached".
+   */
+  statusRefreshed(): void {
+    this.statusWatch.refreshed();
+  }
+
   private sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string } {
     const clean = threadId ? sanitizeThreadId(threadId) : null;
     return clean ? { sessionId: this.store.resolveSessionId(ws.data.owner, clean) } : {};

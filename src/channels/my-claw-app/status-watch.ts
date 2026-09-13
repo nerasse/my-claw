@@ -72,6 +72,18 @@ export class StatusWatch {
     }
   }
 
+  /**
+   * Something on every report moved, and it belongs to no conversation: the provider ledger the
+   * money line is reconciled against. Every open page is scheduled through the same burst as
+   * `changed`, so two events landing together are still one report each.
+   *
+   * No session chain to walk, and nothing at all to do when no page is open -- which is the common
+   * case, and the reason this is safe to fire from a background refresh.
+   */
+  refreshed(): void {
+    for (const page of this.pages.values()) this.schedule(page);
+  }
+
   /** For tests: pages registered right now. */
   size(): number {
     return this.pages.size;

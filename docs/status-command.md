@@ -436,9 +436,57 @@ because somebody else's API is down is worse than a page missing one number.
 
 A consequence worth stating plainly: **a cold cache reads exactly like an unreachable provider**,
 and the line says the same thing for both -- we do not have their number right now. The first draw
-after a boot carries the recorded sum alone, and the figures appear on the next redraw. Pushing a
-fresh report when the refresh lands would fix that; it needs a hook event and a `StatusWatch`
-method, and it is not built.
+of a page therefore carries the recorded sum alone, always: it is drawn before the read it started
+can land.
+
+#### The page fills itself in
+
+A reading that lands announces itself, `llm:account:refreshed`, and every open status page is handed
+a fresh report. Without it an **idle** conversation would sit on "provider not reached" forever:
+nothing else moves its report, and the page has no way to ask.
+
+The event fires on a **successful network read and nothing else**:
+
+| Moment | Event |
+| --- | --- |
+| `refreshOpenRouterAccount` reads `/key` and gets a usage figure | **yes** |
+| a cached failure becomes a real figure | **yes** -- this is the moment that matters |
+| `warmOpenRouterAccount` finds the cache fresh and does not read | no |
+| the read fails, or answers without a usage figure | no |
+
+That rule is the whole design. A five-minute cache answering a page redrawn on every recorded call
+would otherwise push twelve reports an hour at a phone for figures that did not move, which is a
+battery drain dressed up as liveness. A failure is not a reading either: the page already says
+"not reached" and being woken to be told again is worse than silence.
+
+It reuses the push that already exists rather than opening a second one. `StatusWatch.refreshed()`
+schedules every open page through the same 250 ms burst as `changed()`, so two readings landing
+together are still one report per page, and a page that closed meanwhile gets nothing. There is no
+session chain to walk -- a provider's ledger belongs to no conversation -- and with no page open the
+event walks an empty map and stops. `src/index.ts` wires it beside the six `statusChanged` hooks;
+the adapter method is `statusRefreshed()`.
+
+#### The chat line
+
+`/status` typed in a chat answers with one line by contract, the page carries the report, and that
+line now carries the balance and the gap:
+
+```
+Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai: $7.50 left, billed $10.50 more than recorded
+Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai: $18.50 left, billed $0.50 less than recorded
+Status: glm-5.2 · context 12.4% · 84 calls · $2.00 · openrouter.ai not reached
+```
+
+The direction is **spelled out, not signed**. On the page a `+$10.50` sits under a rule with a
+legend and can be tapped; in a chat line it sits next to a balance, where a leading `+` reads as a
+credit -- the opposite of what it means. A gap under a cent is named as agreement (`billed within
+$0.01 of recorded`) rather than printed as `$0.00`, and a provider that was not read says so instead
+of leaving a figure out of a sentence built around one. No balance published, no `left,` clause.
+
+Nothing identifying can reach it. The segment is built from `provider` -- a constant, not config --
+and two amounts. The key's own answer carries a `label` (`sk-or-v1-...`), a limit and a remaining
+balance, and **none of them is read**: `refreshOpenRouterAccount` takes `data.usage` and nothing
+else, so there is no path from the credential to a chat message or to a log line quoting one.
 
 #### Credential and cost
 

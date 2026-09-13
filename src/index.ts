@@ -2302,6 +2302,10 @@ async function main() {
     hooks.on("agent:run:error", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("session:compact:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("session:compact:finished", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    // The one report event with no session on it: a provider's ledger is the same figure on every
+    // page. It fires on a successful read alone, so an idle page fills in once rather than being
+    // woken every five minutes by a cache that answered.
+    hooks.on("llm:account:refreshed", () => myClawApp.statusRefreshed());
     // One to two minutes of silence, and until now the only surface that showed them was the
     // placeholder bubble on the device that typed `/compact`: every other window, and that same
     // window after a reload, saw a thread doing nothing. The state is raised by the summarizer

@@ -1,5 +1,6 @@
 import { test, expect, setSystemTime } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import {
   cachedOpenRouterAccount,
   openRouterApiKey,
@@ -146,5 +147,53 @@ test("one refresh at a time: a second warm joins the first instead of doubling t
     expect(cachedOpenRouterAccount()?.usageUsd).toBe(12.5);
   } finally {
     mock.restore();
+  }
+});
+
+/**
+ * The event that fills an idle status page in. It has to fire on the read and only on the read:
+ * a cache answering a page redrawn on every call would push a phone twelve reports an hour for
+ * figures that never moved.
+ */
+test("a reading announces itself, and a cache hit and a failure announce nothing", async () => {
+  resetOpenRouterAccount();
+  const seen: string[] = [];
+  const listener = ({ provider }: { provider: string }): void => void seen.push(provider);
+  hooks.on("llm:account:refreshed", listener);
+  const ok = accountMock();
+  try {
+    await refreshOpenRouterAccount("sk-or-test");
+    expect(seen).toEqual(["openrouter.ai"]);
+
+    // What a report calls, and what a fresh cache answers: no read, so nothing moved and nothing
+    // is announced. This is the guard against an idle page being woken every five minutes.
+    warmOpenRouterAccount("sk-or-test");
+    expect(ok.calls).toHaveLength(2);
+    expect(seen).toEqual(["openrouter.ai"]);
+  } finally {
+    ok.restore();
+  }
+
+  setSystemTime(new Date(Date.now() + 5 * 60_000 + 1));
+  const down = accountMock({ keyStatus: 403 });
+  try {
+    await refreshOpenRouterAccount("sk-or-test");
+    // A failure is not a reading: the page keeps the line it already has rather than being woken
+    // to be told the same thing.
+    expect(seen).toEqual(["openrouter.ai"]);
+  } finally {
+    setSystemTime();
+    down.restore();
+  }
+
+  // The moment that matters: a cached "not reached" becoming a real figure.
+  resetOpenRouterAccount();
+  const back = accountMock();
+  try {
+    await refreshOpenRouterAccount("sk-or-test");
+    expect(seen).toEqual(["openrouter.ai", "openrouter.ai"]);
+  } finally {
+    back.restore();
+    hooks.off("llm:account:refreshed", listener);
   }
 });

@@ -394,6 +394,26 @@ function money(usd: number): string {
 }
 
 /**
+ * The reconciliation, as one segment of the chat line: the balance and the gap, in words.
+ *
+ * The page can afford a rule and two lines, and it can be tapped. This cannot, so the direction of
+ * the gap is spelled out rather than signed -- `+$10.50` beside a balance reads as a credit, which
+ * is the opposite of what it means. Same honesty as the page: a ledger that was not read says so
+ * instead of leaving a figure out and letting the sentence imply one.
+ *
+ * Carries a host and two amounts, never an identity: `provider` is a constant and nothing from the
+ * key's own answer (its label, its limits) is on the payload to begin with.
+ */
+function reconciliationSegment(r: MyClawAppUsageReconciliation): string {
+  if (r.providerUnread || r.providerUsd === undefined || r.deltaUsd === undefined) return `${r.provider} not reached`;
+  const gap =
+    Math.abs(r.deltaUsd) < 0.01
+      ? "billed within $0.01 of recorded"
+      : `billed ${money(Math.abs(r.deltaUsd))} ${r.deltaUsd > 0 ? "more" : "less"} than recorded`;
+  return `${r.provider}: ${r.balanceUsd === undefined ? "" : `${money(r.balanceUsd)} left, `}${gap}`;
+}
+
+/**
  * The one line a chat surface shows for a `/status` the page has already drawn: the command
  * result carries text by contract, and the page carries the report.
  */
@@ -406,6 +426,7 @@ function statusLine(status: MyClawAppStatusPayload): string {
   } else {
     parts.push("no session yet");
   }
+  if (status.reconciliation) parts.push(reconciliationSegment(status.reconciliation));
   if (status.runtime.runs.length > 0) parts.push(`running: ${status.runtime.runs.map((r) => r.label).join(", ")}`);
   if (status.runtime.compacting) parts.push("compacting");
   return parts.join(" · ");

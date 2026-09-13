@@ -10,6 +10,9 @@ import { ModelPricing, CACHE_VERSION, setSharedPricing } from "../../src/llm/pri
 import { statusReport } from "../../src/channels/status-command.ts";
 import { refreshOpenRouterAccount } from "../../src/llm/openrouter-account.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { hooks } from "../../src/hooks/index.ts";
+import { StatusWatch } from "../../src/channels/my-claw-app/status-watch.ts";
+import type { MyClawAppUsageReconciliation } from "../../src/channels/my-claw-app/types.ts";
 
 /**
  * The one line on the page that compares what we deduced with what a provider says it charged.
@@ -240,6 +243,165 @@ test("the report never waits on the provider: a call still in flight leaves the 
     expect(r.recordedUsd).toBeCloseTo(1, 6);
     release?.();
     await pending;
+  } finally {
+    delete process.env[KEY_ENV];
+    mock.restore();
+  }
+});
+
+/**
+ * The whole point of the event, end to end: a page open on an idle conversation is told
+ * "provider not reached", the background read lands, and the page is handed a report carrying
+ * the figures without anybody touching the thread.
+ *
+ * `hooks.on` here is the line `src/index.ts` wires at boot, and `StatusWatch` is the real one.
+ */
+test("a ledger reading refills a page that was told the provider could not be reached", async () => {
+  const sessionId = "my-claw-app/thread/o/refill";
+  call(sessionId);
+  const sent: MyClawAppUsageReconciliation[] = [];
+  const watch = new StatusWatch({
+    report: async (_owner, threadId) => (await statusReport({ config, sessionId: threadId, session: session(threadId), liveRuns: [], pricing: pricing() })).status,
+    send: (_ws, frame) => {
+      if (frame.status.reconciliation) sent.push(frame.status.reconciliation);
+    },
+    sessionOf: (_owner, threadId) => threadId,
+    parentOf: async () => undefined,
+    settleMs: 10,
+  });
+  const listener = (): void => watch.refreshed();
+  hooks.on("llm:account:refreshed", listener);
+  const mock = accountMock(12.5);
+  try {
+    process.env[KEY_ENV] = "sk-or-test";
+    await watch.watch({ id: "ws" } as never, "o", sessionId);
+    // Nothing has read the ledger yet, and the page was not made to wait for it.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.providerUnread).toBe(true);
+
+    await refreshOpenRouterAccount("sk-or-test");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.providerUnread).toBe(false);
+    expect(sent[1]!.providerUsd).toBe(12.5);
+    expect(sent[1]!.deltaUsd).toBeCloseTo(11.5, 6);
+  } finally {
+    delete process.env[KEY_ENV];
+    hooks.off("llm:account:refreshed", listener);
+    mock.restore();
+  }
+});
+
+/**
+ * The chat surface gets one line and cannot be tapped, so the direction of the gap is spelled out
+ * rather than signed: `+$10.50` next to a balance reads as a credit, which is its opposite.
+ */
+async function line(sessionId: string, over: { config?: MyClawConfig } = {}): Promise<string> {
+  return (await statusReport({ config: over.config ?? config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() })).text;
+}
+
+test("the chat line carries the balance and the gap, in words, on the line that already exists", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-line";
+  call(sessionId);
+  call(sessionId);
+  try {
+    await warmed(12.5);
+    const text = await line(sessionId);
+    expect(text).toContain("openrouter.ai: $7.50 left, billed $10.50 more than recorded");
+    // One line, in the register of the ones beside it, and no second line hiding in it.
+    expect(text.split(" \u00b7 ").length).toBeGreaterThan(2);
+    expect(text).not.toContain("\n");
+  } finally {
+    delete process.env[KEY_ENV];
+  }
+});
+
+test("a provider that billed less than we recorded is said to have billed less, not shown a minus", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-under";
+  call(sessionId);
+  call(sessionId);
+  try {
+    // A BYOK route: we record the upstream charge, OpenRouter never billed for it.
+    await warmed(1.5, { total: 20, used: 1.5 });
+    expect(await line(sessionId)).toContain("openrouter.ai: $18.50 left, billed $0.50 less than recorded");
+  } finally {
+    delete process.env[KEY_ENV];
+  }
+});
+
+test("a gap too small to print is named as agreement rather than rounded to zero", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-tiny";
+  call(sessionId);
+  try {
+    await warmed(1.001, { total: 20, used: 1.001 });
+    expect(await line(sessionId)).toContain("openrouter.ai: $19.00 left, billed within $0.01 of recorded");
+  } finally {
+    delete process.env[KEY_ENV];
+  }
+});
+
+test("no balance published leaves the gap standing alone, with no empty phrase before it", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-nobalance";
+  call(sessionId);
+  call(sessionId);
+  try {
+    await warmed(12.5, null);
+    const text = await line(sessionId);
+    expect(text).toContain("openrouter.ai: billed $10.50 more than recorded");
+    expect(text).not.toContain("left,");
+  } finally {
+    delete process.env[KEY_ENV];
+  }
+});
+
+test("a ledger that was not read says so, instead of a sentence built around a missing figure", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-unread";
+  call(sessionId);
+  const mock = mockFetch(async () => new Response("{}", { status: 403 }));
+  try {
+    process.env[KEY_ENV] = "sk-or-test";
+    await refreshOpenRouterAccount("sk-or-test");
+    const text = await line(sessionId);
+    expect(text).toContain("openrouter.ai not reached");
+    expect(text).not.toContain("left");
+    expect(text).not.toContain("billed");
+    expect(text).not.toContain("NaN");
+    expect(text).not.toContain("undefined");
+  } finally {
+    delete process.env[KEY_ENV];
+    mock.restore();
+  }
+});
+
+test("no key, no segment: the chat line is exactly what it was before any of this", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-keyless";
+  call(sessionId);
+  const text = await line(sessionId, { config: keyless });
+  expect(text).not.toContain("openrouter.ai");
+  expect(text).toContain("Status: claude-opus-5");
+});
+
+test("nothing that identifies the key can reach the line or the payload", async () => {
+  const sessionId = "my-claw-app/thread/o/chat-secret";
+  call(sessionId);
+  // The live `/key` answer carries a label and the key's limits. None of it is read, so none of it
+  // can be echoed into a chat message or a log line that quotes one.
+  const mock = mockFetch(async (input) =>
+    String(input).endsWith("/key")
+      ? new Response(JSON.stringify({ data: { label: "sk-or-v1-0123456789abcdef", limit: 50, limit_remaining: 37.5, usage: 12.5, is_free_tier: false } }), { status: 200 })
+      : new Response(JSON.stringify({ data: { total_credits: 20, total_usage: 12.5 } }), { status: 200 }),
+  );
+  try {
+    process.env[KEY_ENV] = "sk-or-test";
+    await refreshOpenRouterAccount("sk-or-test");
+    const { text, status } = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
+    const serialised = JSON.stringify(status);
+    for (const secret of ["sk-or", "0123456789abcdef", "limit_remaining", "is_free_tier"]) {
+      expect(text).not.toContain(secret);
+      expect(serialised).not.toContain(secret);
+    }
+    // The figures that are on purpose are still there.
+    expect(text).toContain("$7.50 left");
   } finally {
     delete process.env[KEY_ENV];
     mock.restore();
