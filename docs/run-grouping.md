@@ -89,14 +89,25 @@ La FlatList porte des **rows**, pas des items bruts :
 - un run terminal : ses items non hoistés deviennent un groupe par segment ;
 - **hoistés** (toujours des rows, le groupe se découpe autour) : les messages `user`
   (réponses aux questions, injections), les résultats de commandes, les notices, les
-  bornes de compaction ;
+  bornes de compaction, et **tout item `text` portant une `error`**. Les quatre premiers parce
+  que l'agent ne les a pas écrits ; le dernier pour une autre raison : c'est pourquoi le run
+  s'est arrêté, et un groupe fermé par défaut le cacherait. Un run mort après
+  `chat.stream.start` mais avant son premier token porte ce message sur la phase elle-même
+  (`abortStream`), donc **dans** le run. Hoisté et non élu comme réponse : la row garde sa place
+  et coupe le groupe autour d'elle, là où une réponse serait déplacée après tout le groupe. Une
+  **carte d'outil** en échec n'est pas concernée (`isHoisted` filtre sur le `kind` avant tout) :
+  une commande sortie non-zéro est du travail, pas un verdict ;
 - la **réponse** du run (la dernière prose que l'agent a écrite) sort du groupe : c'est elle que
-  le lecteur doit lire, le reste est replié. Trouvée par **nature**, pas par position : une carte
-  restée `running` quand le run s'est terminé est recollée après elle par le store (2026-09-10), et
+  le lecteur doit lire, le reste est replié. Trouvée par **contenu**, pas par position : un item
+  agent sans prose (une phase qui n'a fait que réfléchir) n'est pas une réponse, et une carte
+  restée `running` quand le run s'est terminé est recollée après elle par le store (2026-09-10) —
   « le dernier item » lisait alors cette carte comme la réponse, la vraie restant dans le groupe
   sous un en-tête descendu plus bas qu'elle ;
-- un run dont les entrées sont **toutes** des cartes n'a jamais répondu : tout reste dans le
-  groupe, et la bulle d'erreur (`failure`, hors run par construction) reste visible ;
+- un run qui n'a écrit **aucune prose** — que des cartes, ou des phases qui n'ont fait que
+  réfléchir — n'a jamais répondu : tout reste dans le groupe, et la bulle d'erreur (`failure`,
+  hors run par construction) reste visible. Mesuré le 2026-09-13 sur un run mort avec quatre
+  phases de réflexion et pas une ligne de prose : la dernière était élue réponse et dessinée
+  après tous les tool calls qu'elle précédait, juste au-dessus de l'erreur ;
 - un groupe ne s'affiche que s'il contient au moins un item : une réponse seule ne
   produit jamais un header vide.
 
