@@ -145,13 +145,31 @@ connect, the whole list for that owner, read from the pending promises rather th
 journals so it does not depend on a run being open. Authoritative like `question.pending`: the
 client replaces its queue, and the empty list is what clears a sheet left behind by a restart.
 
-A compaction in flight (`chat.compacting`) is held **outside** the journals, in a slot of its own.
-It is the same kind of hole -- minutes of silence a reloading window cannot reconstruct from the
-store -- but it is not part of a turn: `/compact` is a command, so there is no journal open for it
-and nothing to open one from. A fake run would have been the alternative, and it would have had to
-lie about a lifecycle. It is replayed after the turn's frames and before the pending sheets, and
-cleared when the operation settles, so a window that arrives late is never shown an operation that
-has already stopped.
+A compaction in flight (`chat.compacting`) is not replayed like a turn at all, and that is the
+point.
+
+Everything above is an **event** a window missed: a stream chunk, a tool card, a parked send, a
+sheet. A compaction is a **state**, and a state cannot be caught up on by replaying the events that
+built it. The start is broadcast once and the end is broadcast once, to whoever is connected at
+that second, and a window that was down for either is left holding whatever it last heard.
+
+That is not theoretical. On 2026-09-13 a `/compact` that had succeeded at 18:57 was still drawn on
+the owner's phone at 19:13 -- nineteen minutes on a counter still climbing from the instant the
+operation began, next to the boundary it had written. The socket on that device drops every ten to
+forty minutes, and a lost end had nothing at all to correct it: the boundary is in the history, the
+end of a run arrives with the run, and a fresh page predates what was in flight, but a compaction
+that ends while the thread is quiet is an event no later frame mentions. `/stop` then answered
+"Nothing running", truthfully, and read as the server losing the plot.
+
+So the state is said by the resynchronisation itself: `session.sync.result` carries `compacting`,
+the operation when one runs and **nothing when none does**. The absence is the half that matters,
+and it is said on every sync rather than once, so a window that reconnects later converges exactly
+the same. It rides beside `activeRun`, which exists for the same reason.
+
+The slot itself stays outside the journals. `/compact` is a command: no run is open for it, and
+nothing could open one without lying about a lifecycle. `live.compactionState` is the one reader of
+that slot, and `replay` deliberately leaves it out -- an event list is the wrong shape for a state,
+and a frame that says "not compacting" is not a replay of anything.
 
 ## Bounds
 
