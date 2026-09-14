@@ -1,18 +1,8 @@
-import { test, beforeAll, afterAll } from "bun:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { fetchTool, htmlToText, processFetchBody, isJsRenderedShell } from "../../src/tools/fetch.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { mockDns } from "../helpers/mock-dns.ts";
 
-// Every hostname here answers with one public address. The SSRF guard resolves names itself and
-// refuses the ones it cannot resolve, so without this the file would need working DNS to pass and
-// would fail on any offline runner. What the guard does with an address is tested in
-// tests/security/ssrf-guard.test.ts, where the resolver is the subject rather than a dependency.
-let dns: { restore(): void };
-beforeAll(() => {
-  dns = mockDns();
-});
-afterAll(() => dns.restore());
 
 /**
  * Every call here is mocked, so the work is microseconds. The budget is not about this file: it

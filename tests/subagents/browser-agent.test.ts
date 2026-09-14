@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { mockDns } from "../helpers/mock-dns.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { HookEventMap } from "../../src/hooks/index.ts";
 import { AgentRegistry } from "../../src/agents/registry.ts";
@@ -109,8 +108,6 @@ function world(script: Array<(call: LlmCall) => object>, opts: { navigateError?:
   const sidecar: string[] = [];
   const llm: LlmCall[] = [];
   let turn = 0;
-  // The SSRF guard resolves the URL before the sidecar sees it: answered here, never by the network.
-  const dns = mockDns();
   const mock = mockFetch(async (input?: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
@@ -137,7 +134,6 @@ function world(script: Array<(call: LlmCall) => object>, opts: { navigateError?:
     llm,
     restore: () => {
       mock.restore();
-      dns.restore();
     },
   };
 }

@@ -12,7 +12,6 @@ import { SubAgentRegistry } from "../../src/subagents/registry.ts";
 import { AgentRegistry } from "../../src/agents/registry.ts";
 import { loadAllAgents } from "../../src/agents/loader.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
-import { mockDns } from "../helpers/mock-dns.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -56,7 +55,6 @@ type FetchImpl = (input?: string | URL | Request, init?: RequestInit) => Promise
 // The browser subagent queries the sidecar (session/tabs/cleanup) around its LLM
 // loop. Route those to sidecar-shaped responses so the LLM mock only sees LLM calls.
 function withSidecar(impl: FetchImpl): { restore(): void } {
-  const dns = mockDns();
   const mock = mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
@@ -69,7 +67,6 @@ function withSidecar(impl: FetchImpl): { restore(): void } {
   return {
     restore() {
       mock.restore();
-      dns.restore();
     },
   };
 }

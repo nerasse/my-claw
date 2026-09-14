@@ -31,3 +31,14 @@ ask.
   outside before it enters the prompt. That protects the model from an injected instruction, not
   the machine from an action.
 - **`command-log`** masks secrets in the arguments it writes to the log.
+
+## The SSRF guard went with it
+
+`resolveAndCheckUrl` refused private, loopback, link-local and cloud-metadata addresses for both
+`fetch` and the browser, with a fail-closed DNS lookup. It was removed the same day, on the same
+argument: `bash` plus `curl` reach the LAN in one line, so it refused nothing the service could not
+already do.
+
+What it did buy was the difference between an automatic and an explicit request: a page, an email
+or a tool result could no longer make `fetch` touch an internal address by itself. That
+distinction is knowingly gone. Nothing on this path validates an address any more.

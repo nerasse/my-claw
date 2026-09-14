@@ -1,5 +1,4 @@
 import type { BrowserSnapshot } from "../../browser/types.ts";
-import { resolveAndCheckUrl } from "../fetch.ts";
 
 // Tracks the current page id across tool calls of ONE subagent run. This used to be a
 // module-level global: concurrent browser subagents clobbered each other's page id and
@@ -27,10 +26,7 @@ export async function guardUrl(url: string): Promise<void> {
     throw new Error(`Invalid URL: "${url}"`);
   }
   if (parsed.protocol === "file:") {
-    throw new Error("file:// protocol is blocked for security.");
-  }
-  if (await resolveAndCheckUrl(url)) {
-    throw new Error(`Navigation to ${parsed.hostname} is blocked: private/internal network address.`);
+    throw new Error("file:// is not a page: the browser tool navigates the web.");
   }
 }
 

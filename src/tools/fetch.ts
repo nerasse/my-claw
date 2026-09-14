@@ -1,10 +1,7 @@
-import { lookup } from "node:dns/promises";
 import { type Tool, type ToolResult, num, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
-
-const BLOCKED_HOSTS = new Set(["metadata.google.internal", "metadata.goog"]);
 
 // A raw HTML page (scripts, styles, inline CSS) can be hundreds of KB of noise that the
 // model never needs and that poisons the whole session context once stored. We convert
@@ -123,11 +120,8 @@ export function processFetchBody(
   return `${header}${slice}${footer}`;
 }
 
-// The only two schemes this tool speaks. Everything else -- file:, data:, ftp:, gopher: -- is a
-// different capability wearing the same argument: `fetch("file:///home/neras/.my-claw/config.json")`
-// read the disk from outside the workspace, with no approval, for a research agent that has no
-// filesystem tool at all. A hostile page can also reach it through a 302, so the check runs on
-// every hop and not just on what the model typed.
+// The only two schemes this tool speaks, and a redirect is checked like a typed URL: a page that
+// 302s to file: is not a different outcome, it is the same one the model did not type.
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
 export function isAllowedScheme(raw: string): boolean {
@@ -136,99 +130,6 @@ export function isAllowedScheme(raw: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function isPrivateIp(ip: string): boolean {
-  if (ip.includes(":")) {
-    const lower = ip.toLowerCase().replace(/^\[|\]$/g, "");
-    if (lower === "::1" || lower === "::") return true;
-    if (lower.startsWith("fe80")) return true;
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-    // NAT64: 64:ff9b::7f00:1 is 127.0.0.1 behind a translator.
-    if (lower.startsWith("64:ff9b:")) return true;
-    if (lower.startsWith("::ffff:")) {
-      const mapped = lower.slice(7);
-      if (mapped.includes(".")) return isPrivateIp(mapped);
-      // Hex form: ::ffff:7f00:1 -> 127.0.0.1
-      const hexParts = mapped.split(":");
-      if (hexParts.length === 2) {
-        const hi = parseInt(hexParts[0]!, 16);
-        const lo = parseInt(hexParts[1]!, 16);
-        if (!isNaN(hi) && !isNaN(lo)) {
-          const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-          return isPrivateIp(v4);
-        }
-      }
-    }
-    return false;
-  }
-  const parts = ip.split(".");
-  if (parts.length !== 4) return false;
-  const first = Number(parts[0]);
-  const second = Number(parts[1]);
-  if (!Number.isInteger(first) || !Number.isInteger(second)) return false;
-  if (first === 10) return true;
-  if (first === 127) return true;
-  if (first === 172 && second >= 16 && second <= 31) return true;
-  if (first === 192 && second === 168) return true;
-  // Carrier-grade NAT, and what Tailscale hands every node: the homelab's own mesh lives here.
-  if (first === 100 && second >= 64 && second <= 127) return true;
-  // Benchmarking range, routed on some networks.
-  if (first === 198 && (second === 18 || second === 19)) return true;
-  // Multicast and reserved: nothing a fetch should ever reach.
-  if (first >= 224) return true;
-  if (ip.startsWith("169.254.")) return true;
-  if (ip.startsWith("0.") || ip === "0.0.0.0") return true;
-  return false;
-}
-
-export function isPrivateUrl(raw: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return true;
-  }
-  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) return true;
-  const hostname = parsed.hostname.toLowerCase();
-  if (BLOCKED_HOSTS.has(hostname)) return true;
-  if (hostname === "localhost") return true;
-  if (isPrivateIp(hostname)) return true;
-  return false;
-}
-
-type HostResolver = (hostname: string, options: { all: true }) => Promise<Array<{ address: string }>>;
-
-// The guard resolves the name itself, which would make every unit test that fetches a hostname
-// depend on a working resolver now that a lookup failure blocks (AGENTS.md: the default suite
-// never touches the network). Tests swap this through tests/helpers/mock-dns.ts.
-let hostResolver: HostResolver = lookup as unknown as HostResolver;
-
-export function setHostResolver(fn: HostResolver | null): void {
-  hostResolver = fn ?? (lookup as unknown as HostResolver);
-}
-
-export async function resolveAndCheckUrl(raw: string): Promise<boolean> {
-  if (isPrivateUrl(raw)) return true;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return true;
-  }
-  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  try {
-    const results = await hostResolver(hostname, { all: true });
-    for (const { address } of results) {
-      if (isPrivateIp(address)) return true;
-    }
-  } catch {
-    // Fail closed. A name that does not resolve here can still resolve inside fetch's own
-    // stack (different resolver, cache, /etc/hosts), and letting it through is exactly the
-    // window a rebinding attack asks for.
-    return true;
-  }
-  return false;
 }
 
 export const fetchTool: Tool = {
@@ -257,9 +158,6 @@ export const fetchTool: Tool = {
     }
     if (!isAllowedScheme(url)) {
       return { success: false, output: "", error: "Blocked: fetch only follows http and https URLs." };
-    }
-    if (await resolveAndCheckUrl(url)) {
-      return { success: false, output: "", error: "Blocked: URL points to a private/internal network address." };
     }
     const signal = args["__signal"] as AbortSignal | undefined;
     rethrowIfAborted(undefined, signal);
@@ -291,9 +189,6 @@ export const fetchTool: Tool = {
           const resolved = new URL(location, currentUrl).href;
           if (!isAllowedScheme(resolved)) {
             return { success: false, output: "", error: "Blocked: redirect target is not an http or https URL." };
-          }
-          if (await resolveAndCheckUrl(resolved)) {
-            return { success: false, output: "", error: "Blocked: redirect target points to a private/internal network address." };
           }
           if (response.status !== 307 && response.status !== 308) {
             currentMethod = "GET";
