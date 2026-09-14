@@ -1,4 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
@@ -27,6 +28,8 @@ import {
   MY_CLAW_DIR,
   parseConfig,
   resolveContextCap,
+  resolveWorkspaceDir,
+  resolveWorkspaceKey,
   tagNameOf,
   type AgentToolType,
   type EffortLevel,
@@ -1870,6 +1873,26 @@ async function main() {
         platform: "my-claw-app",
       }),
     );
+
+    // The files page (docs/files-page.md): where a conversation's tree starts, and the roots
+    // fs.remove must never touch. Both live in the live config, which the channel does not hold.
+    myClawApp.onFsProvider({
+      sessionRoot: async (owner, threadId) => {
+        const sessionId = myClawAppSessions.resolveSessionId(owner, threadId);
+        const session = await sessionManager.peek(sessionId);
+        // A sub-agent's own directory first: an agent pinned to a project runs there, and the
+        // page has to open where its tools work. Everyone else resolves by workspace key, the
+        // same resolution the run uses.
+        if (session?.meta?.workspaceDir) return session.meta.workspaceDir;
+        return resolveWorkspaceKey(config, session?.workspace);
+      },
+      protectedRoots: () => ({
+        home: homedir(),
+        myClawDir: MY_CLAW_DIR,
+        defaultWorkspace: resolveWorkspaceDir(config.workspace),
+        cwd: process.cwd(),
+      }),
+    });
 
     // The one surface without a structured editor: the raw config.json, read from disk exactly as
     // the watcher sees it. Every write goes through parseConfig first, so a structurally broken

@@ -1,13 +1,15 @@
-import { test, afterEach, beforeEach, describe } from "bun:test";
+import { test, afterEach, beforeEach, describe, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { filesRootForOwner } from "../src/channels/my-claw-app/files.ts";
 import { mkdir, writeFile, unlink, readdir, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
+import { FsWatchRegistry } from "../src/channels/my-claw-app/fs-ops.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppSessionInstructionPatch, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
@@ -5194,5 +5196,132 @@ describe("question frames", () => {
     assert.equal(stopped, false, "a question cancel must not abort the run");
     const outcome = await ask;
     assert.deepEqual(outcome, { kind: "canceled" });
+  });
+});
+
+describe("files page", () => {
+  let adapter: MyClawAppAdapter;
+  let client: WsClient;
+  let store: FakeSessionStore;
+  let root: string;
+  const guards = () => ({
+    home: join(root, "home"),
+    myClawDir: join(root, "data"),
+    defaultWorkspace: join(root, "workspace"),
+    cwd: join(root, "proj"),
+  });
+
+  beforeEach(async () => {
+    store = new FakeSessionStore();
+    adapter = new MyClawAppAdapter(createConfig(), store as never);
+    await adapter.start();
+    client = await connectClient(adapter.port);
+    root = mkdtempSync(join(tmpdir(), "adapter-fs-"));
+    mkdirSync(join(root, "data"), { recursive: true });
+    writeFileSync(join(root, "data", "keep.txt"), "keep");
+  });
+
+  afterEach(async () => {
+    client.ws.close();
+    await adapter.stop();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("list, read, write and session.root answer over the socket, and a guarded remove names its reason", async () => {
+    const dir = join(root, "project");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "notes.txt"), "hello\n");
+    adapter.onFsProvider({ sessionRoot: async () => dir, protectedRoots: guards });
+
+    client.ws.send(JSON.stringify({ type: "fs.session.root", threadId: "default" }));
+    const opened = await nextFrame(client);
+    assert.equal(opened["type"], "fs.session.root.result");
+    assert.equal(opened["path"], dir);
+
+    client.ws.send(JSON.stringify({ type: "fs.list", path: dir }));
+    const listing = await nextFrame(client);
+    assert.equal(listing["type"], "fs.list.result");
+    assert.equal(listing["path"], dir);
+    assert.deepEqual((listing["entries"] as Array<Record<string, unknown>>).map((entry) => entry["name"]), ["notes.txt"]);
+
+    client.ws.send(JSON.stringify({ type: "fs.read", path: join(dir, "notes.txt") }));
+    const read = await nextFrame(client);
+    assert.equal(read["type"], "fs.read.result");
+    assert.equal(read["text"], "hello\n");
+    assert.equal(read["encoding"], "utf8");
+    assert.equal(read["eol"], "lf");
+
+    client.ws.send(JSON.stringify({ type: "fs.write", path: join(dir, "notes.txt"), text: "changed\n", etag: read["etag"] }));
+    const saved = await nextFrame(client);
+    assert.equal(saved["type"], "fs.write.result");
+    assert.equal(typeof saved["etag"], "string");
+    assert.equal(saved["etag"] === read["etag"], false);
+    assert.equal(await readFile(join(dir, "notes.txt"), "utf8"), "changed\n");
+
+    client.ws.send(JSON.stringify({ type: "fs.remove", path: join(root, "data"), recursive: true }));
+    const refused = await nextFrame(client);
+    assert.equal(refused["type"], "error");
+    assert.equal(refused["scope"], "fs");
+    assert.match(String(refused["message"]), /my-claw data directory/);
+    assert.equal(existsSync(join(root, "data", "keep.txt")), true);
+  });
+
+  test("a watched file pushes fs.changed, and the socket's watchers die with the socket", async () => {
+    const file = join(root, "tail.log");
+    writeFileSync(file, "a\n");
+    adapter.onFsProvider({ sessionRoot: async () => root, protectedRoots: guards });
+
+    client.ws.send(JSON.stringify({ type: "fs.watch", path: file }));
+    const watching = await nextFrame(client);
+    assert.equal(watching["type"], "fs.watch.result");
+    assert.equal(watching["watching"], true);
+
+    let changed: Record<string, unknown> | undefined;
+    const deadline = Date.now() + 10_000;
+    while (!changed) {
+      if (Date.now() > deadline) throw new Error("no fs.changed over the wire");
+      appendFileSync(file, "b\n");
+      await new Promise((r) => setTimeout(r, 80));
+      const index = client.frames.findIndex((frame) => (frame as { type?: string }).type === "fs.changed");
+      if (index >= 0) changed = client.frames.splice(index, 1)[0] as Record<string, unknown>;
+    }
+    assert.equal(changed["path"], file);
+    assert.equal(changed["kind"], "changed");
+
+    // The watcher set belongs to the socket: a disconnect drops it, which is the one owner that
+    // can outlive the page the owner just closed.
+    const dropSpy = spyOn(FsWatchRegistry.prototype, "drop");
+    try {
+      client.ws.close();
+      await waitUntil(() => dropSpy.mock.calls.length > 0);
+    } finally {
+      dropSpy.mockRestore();
+    }
+  });
+
+  test("the transfer routes take the same credential as the APK relay", async () => {
+    const file = join(root, "download.txt");
+    writeFileSync(file, "bytes\n");
+    const base = `http://127.0.0.1:${adapter.port}`;
+    const auth = `device=${DEVICE_ID}&token=${TOKEN}`;
+
+    const unauth = await fetch(`${base}/fs/download?path=${encodeURIComponent(file)}`);
+    assert.equal(unauth.status, 401);
+
+    const download = await fetch(`${base}/fs/download?path=${encodeURIComponent(file)}&${auth}`);
+    assert.equal(download.status, 200);
+    assert.equal(await download.text(), "bytes\n");
+    assert.match(download.headers.get("content-disposition") ?? "", /attachment/);
+
+    const withoutAuth = new FormData();
+    withoutAuth.append("f", new File(["uploaded\n"], "up.txt"));
+    const noAuth = await fetch(`${base}/fs/upload?path=${encodeURIComponent(root)}`, { method: "POST", body: withoutAuth });
+    assert.equal(noAuth.status, 401);
+
+    const withAuth = new FormData();
+    withAuth.append("f", new File(["uploaded\n"], "up.txt"));
+    const upload = await fetch(`${base}/fs/upload?path=${encodeURIComponent(root)}&${auth}`, { method: "POST", body: withAuth });
+    assert.equal(upload.status, 200);
+    assert.equal(await readFile(join(root, "up.txt"), "utf8"), "uploaded\n");
   });
 });

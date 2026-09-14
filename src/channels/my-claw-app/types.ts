@@ -954,6 +954,15 @@ export type MyClawAppClientFrame =
   | MyClawAppCommandsList
   | MyClawAppFilesList
   | MyClawAppFileDelete
+  | MyClawAppFsList
+  | MyClawAppFsRead
+  | MyClawAppFsWrite
+  | MyClawAppFsMkdir
+  | MyClawAppFsMove
+  | MyClawAppFsRemove
+  | MyClawAppFsWatch
+  | MyClawAppFsUnwatch
+  | MyClawAppFsSessionRoot
   | MyClawAppSessionHistory
   | MyClawAppSessionSync
   | MyClawAppToolFull
@@ -1735,6 +1744,7 @@ export type MyClawAppErrorScope =
   | "chat"
   | "location"
   | "files"
+  | "fs"
   | "session"
   | "diag"
   | "logs"
@@ -2909,6 +2919,192 @@ export interface MyClawAppStatusResult {
   status: MyClawAppStatusPayload;
 }
 
+/**
+ * The files page -- docs/files-page.md. One page over the whole machine: the owner reads and
+ * edits any file the service user can reach, from the phone. The etag round trip is the conflict
+ * contract of every write; text detection decides the metadata card; the encoding and eol a read
+ * reports are what the write re-encodes with, so a latin1 file with accents and a CRLF file both
+ * survive a save byte for byte.
+ */
+
+/** How the server read one file, and how `fs.write` must put it back. */
+export type MyClawAppFsEncoding = "utf8" | "utf8-bom" | "latin1" | "utf16le" | "utf16be";
+
+/** The file's dominant line ending, detected on the returned window. */
+export type MyClawAppFsEol = "lf" | "crlf" | "mixed";
+
+/** One row of a directory listing. */
+export interface MyClawAppFsEntry {
+  name: string;
+  path: string;
+  kind: "file" | "dir" | "symlink" | "other";
+  /** Resolved kind when `kind` is "symlink" and it resolves; absent otherwise. */
+  targetKind?: "file" | "dir" | "other";
+  size: number;
+  mtimeMs: number;
+  mode: number;
+  /** Cheap extension-based guess, for the icon only. The truth comes from fs.read. */
+  textHint: boolean;
+}
+
+export interface MyClawAppFsList {
+  type: "fs.list";
+  path: string;
+}
+
+/**
+ * The listing, echoing the server's normalised path so the app can trust the breadcrumb it builds
+ * from it. Entries are in readdir order: the app sorts, and sorting in two places is how a column
+ * ends up disagreeing with itself. `truncated` is true past FS_LIST_LIMIT entries.
+ */
+export interface MyClawAppFsListResult {
+  type: "fs.list.result";
+  path: string;
+  parent: string | null;
+  entries: MyClawAppFsEntry[];
+  truncated: boolean;
+  /** The directory could not be read (gone, not a directory, unreadable): entries is empty. */
+  error?: string;
+}
+
+export interface MyClawAppFsRead {
+  type: "fs.read";
+  path: string;
+  /** Byte offset to continue a window at, as a previous answer's nextFrom. */
+  from?: number;
+  /** Window size; defaults to FS_READ_MAX. */
+  maxBytes?: number;
+}
+
+/**
+ * One window of one file.
+ *
+ * The stat fields (`etag`, `size`, `mtimeMs`) are absent only when the read failed outright;
+ * `encoding`, `eol`, `text` and `lines` are absent for a binary file, where `binary` replaces
+ * them and no text ever crosses the wire. `etag` is `${mtimeMs}-${size}` -- the conflict contract
+ * of every write, deliberately cheap: a hash of a 200 MB log is not worth a save.
+ */
+export interface MyClawAppFsReadResult {
+  type: "fs.read.result";
+  path: string;
+  etag?: string;
+  size?: number;
+  mtimeMs?: number;
+  encoding?: MyClawAppFsEncoding;
+  eol?: MyClawAppFsEol;
+  text?: string;
+  lines?: number;
+  /** The offset this window starts at, and where a continuation starts, aligned to a line. */
+  from: number;
+  nextFrom: number | null;
+  truncated: boolean;
+  binary?: { reason: "nul" | "control" };
+  error?: string;
+}
+
+/**
+ * Writes one file back. `etag` must equal the file's current etag, else the write is refused with
+ * `conflict` carrying the current state, and the app offers reload or `force: true`. The text is
+ * re-encoded with `encoding` and `eol`, both defaulting to what a fresh read of the file reports.
+ */
+export interface MyClawAppFsWrite {
+  type: "fs.write";
+  path: string;
+  text: string;
+  etag: string;
+  force?: boolean;
+  encoding?: MyClawAppFsEncoding;
+  eol?: MyClawAppFsEol;
+}
+
+export interface MyClawAppFsWriteResult {
+  type: "fs.write.result";
+  path: string;
+  /** The file's state after the write; on a conflict, the state it has now. Absent on a hard failure. */
+  etag?: string;
+  size?: number;
+  mtimeMs?: number;
+  error?: string;
+  conflict?: { etag: string; size: number; mtimeMs: number };
+}
+
+export interface MyClawAppFsMkdir {
+  type: "fs.mkdir";
+  path: string;
+}
+
+export interface MyClawAppFsMkdirResult {
+  type: "fs.mkdir.result";
+  path: string;
+}
+
+export interface MyClawAppFsMove {
+  type: "fs.move";
+  from: string;
+  to: string;
+}
+
+export interface MyClawAppFsMoveResult {
+  type: "fs.move.result";
+  from: string;
+  to: string;
+}
+
+export interface MyClawAppFsRemove {
+  type: "fs.remove";
+  path: string;
+  recursive?: boolean;
+}
+
+export interface MyClawAppFsRemoveResult {
+  type: "fs.remove.result";
+  path: string;
+}
+
+export interface MyClawAppFsWatch {
+  type: "fs.watch";
+  path: string;
+}
+
+export interface MyClawAppFsUnwatch {
+  type: "fs.unwatch";
+  path: string;
+}
+
+/** Answer to fs.watch and fs.unwatch. `watching: false` also covers a watch that could not attach. */
+export interface MyClawAppFsWatchResult {
+  type: "fs.watch.result";
+  path: string;
+  watching: boolean;
+}
+
+/**
+ * Push: the watched path moved. Coalesced server-side into one event per 250 ms window.
+ *
+ * `size`/`mtimeMs` are the state the stat found at emit time (0, 0 for a removed path), and they
+ * are what lets a page tell its own save apart from a foreign write: the writer knows the state
+ * its fs.write.result carried.
+ */
+export interface MyClawAppFsChanged {
+  type: "fs.changed";
+  path: string;
+  kind: "changed" | "removed";
+  size: number;
+  mtimeMs: number;
+}
+
+/** The page opens from a conversation or a sub-agent: where does that session's tree start? */
+export interface MyClawAppFsSessionRoot {
+  type: "fs.session.root";
+  threadId: string;
+}
+
+export interface MyClawAppFsSessionRootResult {
+  type: "fs.session.root.result";
+  threadId: string;
+  path: string;
+}
+
 /** A job's scope override in the app's editing vocabulary, mirroring agents.scope.set. */
 export interface MyClawAppJobScope {
   /** "inherit" removes the field (the cron agent's list applies), "all" is the "*" wildcard,
@@ -3343,6 +3539,15 @@ export type MyClawAppServerFrame =
   | MyClawAppDraftChanged
   | MyClawAppCommandsResult
   | MyClawAppFilesListResult
+  | MyClawAppFsListResult
+  | MyClawAppFsReadResult
+  | MyClawAppFsWriteResult
+  | MyClawAppFsMkdirResult
+  | MyClawAppFsMoveResult
+  | MyClawAppFsRemoveResult
+  | MyClawAppFsWatchResult
+  | MyClawAppFsChanged
+  | MyClawAppFsSessionRootResult
   | MyClawAppDiagSnapshotResult
   | MyClawAppLogsTailResult
   | MyClawAppChatHistory

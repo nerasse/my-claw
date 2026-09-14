@@ -150,6 +150,7 @@ import type {
   MyClawAppCommandHandler,
   MyClawAppConfigController,
   MyClawAppDiagnosticsProvider,
+  MyClawAppFsProvider,
   MyClawAppInstructionsController,
   MyClawAppJobsController,
   MyClawAppMcpController,
@@ -226,6 +227,20 @@ import {
   handleWorkspacesSetPath,
 } from "./settings-handlers.ts";
 import type { MyClawAppSettingsDeps } from "./settings-handlers.ts";
+import {
+  handleFsList,
+  handleFsMkdir,
+  handleFsMove,
+  handleFsRead,
+  handleFsRemove,
+  handleFsSessionRoot,
+  handleFsUnwatch,
+  handleFsWatch,
+  handleFsWrite,
+  type MyClawAppFsDeps,
+} from "./fs-handlers.ts";
+import { FsWatchRegistry } from "./fs-ops.ts";
+import { fsDownload, fsUpload } from "./fs-http.ts";
 import {
   dropDisabledSockets,
   handleDeviceList,
@@ -347,6 +362,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * has to hold for a reloading window; small, since a send is parked or routed within seconds.
    */
   private recentSends = new LruMap<string, MyClawAppServerFrame>(64);
+  /** The files page's config-side answers, injected by the entry point -- docs/files-page.md. */
+  private fs?: MyClawAppFsProvider;
+  /** The watched paths of the files page, one set per socket, closed with the socket. */
+  private fsWatches = new FsWatchRegistry();
 
   constructor(
     private config: MyClawAppChannelConfig,
@@ -428,6 +447,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.sockets.clear();
     this.media.clear();
     this.mediaOrder = [];
+    this.fsWatches.clear();
     for (const [id, pending] of this.pendingApprovals) {
       clearTimeout(pending.timer);
       // A shutdown is not a refusal by the owner: journal it as such, or a restart during a
@@ -677,6 +697,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onSessionInstructions(provider: MyClawAppSessionInstructionsProvider): void {
     this.sessionInstructions = provider;
+  }
+
+  /** Where the files page opens and what it may never remove, from the entry point: the live
+   *  config (workspace keys -> directories) is not the channel's to read. */
+  onFsProvider(provider: MyClawAppFsProvider): void {
+    this.fs = provider;
   }
 
   onJobsController(controller: MyClawAppJobsController): void {
@@ -1068,6 +1094,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return streamAppApk(info);
     }
 
+    // The files page's transfer halves -- docs/files-page.md. Same credential as the APK route:
+    // the query pair a native client presents, or the browser's session cookie.
+    if (url.pathname === "/fs/upload" && req.method === "POST") {
+      const deviceId = this.authenticate(req, url);
+      if (!deviceId) return new Response("Unauthorized", { status: 401 });
+      return fsUpload(req, deviceId);
+    }
+
+    if (url.pathname === "/fs/download" && req.method === "GET") {
+      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
+      return fsDownload(url.searchParams.get("path"));
+    }
+
     const secure = requestIsSecure(this.config, url, req.headers, server.requestIP(req)?.address);
     const host = requestHost(this.config, url, req.headers, server.requestIP(req)?.address);
 
@@ -1269,6 +1308,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     this.sockets.remove(ws);
     this.statusWatch.unwatch(ws);
+    this.fsWatches.drop(ws);
     void myClawAppLog("info", "device disconnected", {
       deviceId: ws.data.deviceId,
       surfaces: this.sockets.countFor(ws.data.deviceId),
@@ -1322,6 +1362,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
       refuse: (ws, scope, message, data) => this.refuse(ws, scope, message, data),
       sessionIdOf: (ws, threadId) => this.sessionIdOf(ws, threadId),
       statusChanged: (owner, threadId) => this.statusChanged(this.store.resolveSessionId(owner, threadId)),
+    };
+  }
+
+  private fsDeps(): MyClawAppFsDeps {
+    return {
+      fs: this.fs,
+      watches: this.fsWatches,
+      sendFrame: (ws, frame) => this.sendFrame(ws, frame),
+      refuse: (ws, scope, message, data) => this.refuse(ws, scope, message, data),
     };
   }
 
@@ -1663,6 +1712,33 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
       case "files.delete":
         this.detach(this.handleFileDelete(ws, frame), "handleFileDelete");
+        break;
+      case "fs.list":
+        this.detach(handleFsList(this.fsDeps(), ws, frame), "handleFsList");
+        break;
+      case "fs.read":
+        this.detach(handleFsRead(this.fsDeps(), ws, frame), "handleFsRead");
+        break;
+      case "fs.write":
+        this.detach(handleFsWrite(this.fsDeps(), ws, frame), "handleFsWrite");
+        break;
+      case "fs.mkdir":
+        this.detach(handleFsMkdir(this.fsDeps(), ws, frame), "handleFsMkdir");
+        break;
+      case "fs.move":
+        this.detach(handleFsMove(this.fsDeps(), ws, frame), "handleFsMove");
+        break;
+      case "fs.remove":
+        this.detach(handleFsRemove(this.fsDeps(), ws, frame), "handleFsRemove");
+        break;
+      case "fs.watch":
+        this.detach(handleFsWatch(this.fsDeps(), ws, frame), "handleFsWatch");
+        break;
+      case "fs.unwatch":
+        this.detach(handleFsUnwatch(this.fsDeps(), ws, frame), "handleFsUnwatch");
+        break;
+      case "fs.session.root":
+        this.detach(handleFsSessionRoot(this.fsDeps(), ws, frame), "handleFsSessionRoot");
         break;
       case "session.history":
         this.detach(this.handleSessionHistory(ws, frame), "handleSessionHistory");

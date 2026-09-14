@@ -36,6 +36,7 @@ import type {
   MyClawAppToolEntry,
   MyClawAppWorkspacesListResult,
 } from "./types.ts";
+import type { FsRemoveGuards } from "./fs-ops.ts";
 
 export interface MyClawAppSessionData {
   deviceId: string;
@@ -79,6 +80,19 @@ export interface MyClawAppUiPrefsController {
 export interface MyClawAppDiagnosticsProvider {
   snapshot(owner: string, threadId: string): Promise<string>;
   logs(query: { scope?: string; level?: string; run?: string; contains?: string; limit: number }): Promise<{ text: string; lines: number }>;
+}
+
+/**
+ * The files page's config-side answers, injected by the entry point because the channel holds
+ * neither the live config nor the session metas: the mapping from a workspace key to a directory,
+ * and the roots `fs.remove` must protect. See docs/files-page.md.
+ */
+export interface MyClawAppFsProvider {
+  /** The directory one conversation's page opens on: a sub-agent's own `workspaceDir` when it has
+   *  one, else its workspace key resolved exactly as the run resolves it. */
+  sessionRoot(owner: string, threadId: string): Promise<string>;
+  /** The paths `fs.remove` must never touch; rebuilt per call so a hot-reloaded workspace counts. */
+  protectedRoots(): FsRemoveGuards;
 }
 
 /**
