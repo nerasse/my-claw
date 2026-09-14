@@ -51,6 +51,39 @@ const APP_COMMANDS = commandsFor("my-claw-app");
 
 /** The only windows `stats.get` accepts. Anything else is refused rather than coerced. */
 const STATS_PERIODS: readonly MyClawAppStatsPeriod[] = ["7d", "30d", "90d", "all"];
+
+/**
+ * The filter a `stats.get` asked for, or null when it asked for something else.
+ *
+ * Refused rather than coerced, like the period. A filter that reaches the analytics with the wrong
+ * type is a report narrowed by something else, and `model = 42` in SQLite matches nothing -- which
+ * reads on the page as an empty window rather than as a mistake. An unknown key is refused for the
+ * same reason: a misspelt dimension, silently ignored, is a filter that appears to do nothing.
+ */
+function statsFilterOf(raw: unknown): MyClawAppStatsFilter | null {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const out: MyClawAppStatsFilter = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    switch (key) {
+      case "model":
+      case "provider":
+      case "caller":
+      case "sessionId":
+        if (typeof value !== "string" || value.length === 0) return null;
+        out[key] = value;
+        break;
+      case "errorsOnly":
+      case "unpricedOnly":
+        if (typeof value !== "boolean") return null;
+        out[key] = value;
+        break;
+      default:
+        return null;
+    }
+  }
+  return out;
+}
 import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
@@ -77,6 +110,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppServerFrame,
   MyClawAppAgentsConfigResult,
   MyClawAppStatsGet,
+  MyClawAppStatsFilter,
   MyClawAppStatsPeriod,
   MyClawAppStatusPayload,
   MyClawAppSessionArchive,
@@ -2341,8 +2375,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.refuse(ws, "stats", "invalid period", { period: String(frame.period) });
       return;
     }
+    const filter = statsFilterOf(frame.filter);
+    if (filter === null) {
+      await this.refuse(ws, "stats", "invalid filter");
+      return;
+    }
     try {
-      this.sendFrame(ws, { type: "stats.result", stats: await this.stats.report(frame.period) });
+      this.sendFrame(ws, { type: "stats.result", stats: await this.stats.report(frame.period, filter) });
     } catch (err) {
       await this.refuse(ws, "stats", "stats.get failed", { error: String(err) });
     }

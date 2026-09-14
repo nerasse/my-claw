@@ -28,6 +28,7 @@ import type {
   MyClawAppSkillEntry,
   MyClawAppStatsPayload,
   MyClawAppStatsPeriod,
+  MyClawAppStatsFilter,
   MyClawAppStatusPayload,
   MyClawAppSubAgentEntry,
   MyClawAppTagsResult,
@@ -332,7 +333,7 @@ export interface MyClawAppSubAgentsController {
  * one of his threads would answer a different question than the one the page asks.
  */
 export interface MyClawAppStatsController {
-  report(period: MyClawAppStatsPeriod): Promise<MyClawAppStatsPayload>;
+  report(period: MyClawAppStatsPeriod, filter: MyClawAppStatsFilter): Promise<MyClawAppStatsPayload>;
 }
 
 /**

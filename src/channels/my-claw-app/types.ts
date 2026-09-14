@@ -2597,6 +2597,50 @@ export type MyClawAppStatsPeriod = "7d" | "30d" | "90d" | "all";
 export interface MyClawAppStatsGet {
   type: "stats.get";
   period: MyClawAppStatsPeriod;
+  /** Absent or empty is the whole window: the page opens unfiltered. */
+  filter?: MyClawAppStatsFilter;
+}
+
+/**
+ * What the report is narrowed to, each field a column of `api_calls`.
+ *
+ * Applied in SQL before the aggregation, so every figure on the page describes the same smaller
+ * population: the totals are recomputed, never scaled down from pre-folded groups. `errorsOnly`
+ * and `unpricedOnly` are row predicates too -- only the calls that failed, not the routes that
+ * failed once.
+ *
+ * `provider` is a `base_url`. The page draws an endpoint pin where the model carries one
+ * (`streamlake/fp8`), and that pin is part of the model id, so the `model` field narrows to it.
+ */
+export interface MyClawAppStatsFilter {
+  model?: string;
+  provider?: string;
+  caller?: string;
+  sessionId?: string;
+  errorsOnly?: boolean;
+  unpricedOnly?: boolean;
+}
+
+/**
+ * The values a filter may be set to, over the window, ignoring the filter already on screen.
+ *
+ * Sent because the rows narrow when the report does: an option list built from the current answer
+ * would shrink to the choice already made, and leave no way back to the others.
+ */
+export interface MyClawAppStatsFacets {
+  models: string[];
+  /** The hosts, as `base_url`: what the filter matches, not the pin the page draws. */
+  providers: string[];
+  callers: string[];
+  sessions: MyClawAppStatsFacetSession[];
+}
+
+/** A conversation as the filter sheet offers it: the same label the ranking uses. */
+export interface MyClawAppStatsFacetSession {
+  sessionId: string;
+  label: string;
+  labelSource: MyClawAppStatsLabelSource;
+  deleted: boolean;
 }
 
 /** Calls, tokens, money and API time over one set of rows. */
@@ -2755,6 +2799,10 @@ export interface MyClawAppStatsPayload {
   callers: MyClawAppStatsCallerRow[];
   /** Empty when no provider with a readable ledger is configured. */
   reconciliation: MyClawAppStatsReconciliation[];
+  /** What the report was narrowed to, echoed back so the page cannot claim a filter it did not get. */
+  filter: MyClawAppStatsFilter;
+  /** The values the filter may be set to, computed without it. */
+  facets: MyClawAppStatsFacets;
 }
 
 /** The answer to one `stats.get`. */

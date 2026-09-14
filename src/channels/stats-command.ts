@@ -1,11 +1,15 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { usageHorizon } from "../analytics/usage-db.ts";
 import {
+  filterNarrows,
+  filterReachesRollup,
   reachesRollup,
   usageByCaller,
   usageByDay,
   usageByModel,
   usageBySession,
+  usageFacets,
+  type StatsFilter,
   type UsageGroup,
 } from "../analytics/usage-stats.ts";
 import { firstUserTextBySession } from "../conversations/store.ts";
@@ -19,6 +23,10 @@ import type {
   MyClawAppStatsCache,
   MyClawAppStatsCallerRow,
   MyClawAppStatsDayRow,
+  MyClawAppStatsFacets,
+  MyClawAppStatsFacetSession,
+  MyClawAppStatsFilter,
+  MyClawAppStatsLabelSource,
   MyClawAppStatsModelRow,
   MyClawAppStatsPayload,
   MyClawAppStatsPeriod,
@@ -43,6 +51,8 @@ import type {
 export interface StatsParams {
   config: MyClawConfig;
   period: MyClawAppStatsPeriod;
+  /** What to narrow the report to. Absent is the whole window. */
+  filter?: StatsFilter;
   pricing?: ModelPricing;
   /**
    * What the session store still holds for a session, or `undefined` when it holds nothing: the
@@ -237,6 +247,39 @@ function labelFromMessage(raw: string): string {
   return stripLocationBlock(splitAttachmentBlock(raw).text).trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
 }
 
+/** One conversation's name, and where it came from. */
+interface SessionLabel {
+  label: string;
+  labelSource: MyClawAppStatsLabelSource;
+  deleted: boolean;
+}
+/**
+ * What each conversation is called, and where the name came from: the title the owner gave it, the
+ * opening message the archive still holds, or -- when both are gone -- the bare session id.
+ *
+ * Split out of the ranking so the filter sheet can name a conversation without pricing a report it
+ * is never going to show. One read per session either way, and the archive is asked once for all
+ * the unnamed ones together.
+ */
+async function labelsOf(sessionIds: string[], infoOf: StatsParams["sessionInfo"]): Promise<Map<string, SessionLabel>> {
+  const info = new Map<string, { title?: string } | undefined>();
+  for (const sessionId of sessionIds) info.set(sessionId, await infoOf(sessionId));
+  const unnamed = [...info].filter(([, held]) => !held?.title).map(([sessionId]) => sessionId);
+  const archived = firstUserTextBySession(unnamed);
+
+  const out = new Map<string, SessionLabel>();
+  for (const [sessionId, stored] of info) {
+    const title = stored?.title?.trim() ?? "";
+    const opening = title ? "" : labelFromMessage(archived.get(sessionId) ?? "");
+    out.set(sessionId, {
+      label: title || opening || sessionId,
+      labelSource: title ? "title" : opening ? "first-message" : "id",
+      deleted: stored === undefined,
+    });
+  }
+  return out;
+}
+
 /**
  * Every conversation that spent something, the ones that no longer exist included.
  *
@@ -259,25 +302,12 @@ async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; 
     if (row.group.lastAt > held.lastAt) held.lastAt = row.group.lastAt;
   }
 
-  const info = new Map<string, { title?: string } | undefined>();
-  for (const sessionId of folded.keys()) info.set(sessionId, await infoOf(sessionId));
-  const unnamed = [...info].filter(([, held]) => !held?.title).map(([sessionId]) => sessionId);
-  const archived = firstUserTextBySession(unnamed);
-
+  const labels = await labelsOf([...folded.keys()], infoOf);
   const out: MyClawAppStatsSessionRow[] = [];
   for (const [sessionId, held] of folded) {
-    const stored = info.get(sessionId);
-    const title = stored?.title?.trim() ?? "";
-    const opening = title ? "" : labelFromMessage(archived.get(sessionId) ?? "");
-    out.push({
-      sessionId,
-      label: title || opening || sessionId,
-      labelSource: title ? "title" : opening ? "first-message" : "id",
-      deleted: stored === undefined,
-      firstAt: held.firstAt,
-      lastAt: held.lastAt,
-      ...held.totals,
-    });
+    const named = labels.get(sessionId);
+    if (named === undefined) continue;
+    out.push({ sessionId, ...named, firstAt: held.firstAt, lastAt: held.lastAt, ...held.totals });
   }
   return out.sort(bySpend);
 }
@@ -318,25 +348,75 @@ function reconciliationRows(config: MyClawConfig, rows: Array<Priced<UsageGroup>
 }
 
 export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload> {
-  const models = price(usageByModel(p.period), p.pricing);
+  const filter: MyClawAppStatsFilter = p.filter ?? {};
+  const models = price(usageByModel(p.period, filter), p.pricing);
   const totals = emptyTotals();
   for (const row of models) add(totals, row.totals);
 
-  const sessions = await sessionRows(price(usageBySession(p.period), p.pricing), p.sessionInfo);
+  const sessions = await sessionRows(price(usageBySession(p.period, filter), p.pricing), p.sessionInfo);
+  const callers = callerRows(price(usageByCaller(p.period, filter), p.pricing));
   const horizon = usageHorizon();
 
   return {
     period: p.period,
+    filter,
     ...horizon,
-    rollupIncluded: reachesRollup(p.period) && horizon.totalsSince !== undefined,
+    // A filter that cannot be asked of a monthly fold drops it (see filterReachesRollup), and the
+    // flag goes false with it: the page's horizon note must not promise months this answer left out.
+    rollupIncluded: reachesRollup(p.period) && filterReachesRollup(filter) && horizon.totalsSince !== undefined,
     totals,
     models: modelRows(models),
     providers: providerRows(models),
     sessions,
-    daily: dayRows(price(usageByDay(p.period), p.pricing)),
+    daily: dayRows(price(usageByDay(p.period, filter), p.pricing)),
     reliability: reliabilityRows(models),
     cache: cacheOf(totals),
-    callers: callerRows(price(usageByCaller(p.period), p.pricing)),
+    callers,
     reconciliation: reconciliationRows(p.config, models),
+    facets: await facetsOf(p, filter, models, sessions, callers),
+  };
+}
+
+function sortedKeys(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function facetSession(row: MyClawAppStatsSessionRow): MyClawAppStatsFacetSession {
+  return { sessionId: row.sessionId, label: row.label, labelSource: row.labelSource, deleted: row.deleted };
+}
+
+/**
+ * The values the filter sheet offers, taken from a pass that ignores the filter on screen.
+ *
+ * With nothing narrowed they come from the rows the report is already made of, at no extra cost.
+ * With something narrowed they come from `usageFacets`, four `DISTINCT`s over the window: an option
+ * list that had shrunk to the one value already chosen would leave no way back to the others, and
+ * that is the price of a filter that can be undone -- about a fifth of one unfiltered aggregate.
+ */
+async function facetsOf(
+  p: StatsParams,
+  filter: StatsFilter,
+  models: Array<Priced<UsageGroup>>,
+  sessions: MyClawAppStatsSessionRow[],
+  callers: MyClawAppStatsCallerRow[],
+): Promise<MyClawAppStatsFacets> {
+  if (!filterNarrows(filter)) {
+    return {
+      models: sortedKeys(models.map((row) => row.group.model)),
+      providers: sortedKeys(models.map((row) => row.group.baseUrl)),
+      callers: sortedKeys(callers.map((row) => row.caller)),
+      sessions: sessions.map(facetSession).sort((a, b) => a.label.localeCompare(b.label)),
+    };
+  }
+  const all = usageFacets(p.period);
+  const labels = await labelsOf(all.sessionIds, p.sessionInfo);
+  return {
+    models: all.models,
+    providers: all.providers,
+    callers: all.callers,
+    sessions: all.sessionIds.flatMap((sessionId) => {
+      const named = labels.get(sessionId);
+      return named === undefined ? [] : [{ sessionId, ...named }];
+    }),
   };
 }

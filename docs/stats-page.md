@@ -199,6 +199,59 @@ the same call. `all` adds the rollup.
 The first two, and 5, 6, 7 are all folded in TypeScript from **one** query (`usageByModel`), which
 is why the page costs four round trips to SQLite and not eight.
 
+## Filtering
+
+One filter, six dimensions, applied **in SQL before the aggregation**. That is the whole design: a
+filtered report is a smaller population, not a smaller answer to the same question, so the totals
+are recomputed over the rows that survive and every view describes the same rows.
+
+The alternative -- filtering the folded groups in the app -- cannot work, and not because it would
+be slower. A model ranking carries no caller on it, and no amount of summing the rows it has can
+answer "which models did the sub-agents use". The predicate runs where the rows are, and each view
+is folded from what is left.
+
+| Dimension | Column | Notes |
+| --- | --- | --- |
+| `model` | `model` | exact, endpoint pin included: `z-ai/glm-5.2@streamlake/fp8` is one bill |
+| `provider` | `base_url` | the host. The page draws a pin where the model carries one, and a pin is not a column -- the `model` filter already narrows to it |
+| `caller` | `caller` | orchestrator, subagent, browser, compaction |
+| `sessionId` | `session_id` | one conversation |
+| `errorsOnly` | `error IS NOT NULL` | the calls that failed, not the routes that failed once |
+| `unpricedOnly` | `cost_usd IS NULL` | the calls no rung could price |
+
+`errorsOnly` and `unpricedOnly` are row predicates for a reason worth stating: the group-level
+version of the same filter would report the whole spend of a route with one error on it, which is a
+different number wearing the same name.
+
+### A filter the rollup cannot answer drops it
+
+`usage_monthly` is keyed by `(month, model, base_url, platform, caller)`. Three of the dimensions
+above are columns of it; three are not -- no session on that key, and `errors`/`unpriced_calls` are
+counters rather than rows, so "only the failures" is not a question a monthly fold can answer.
+
+Those three drop the rollup (`filterReachesRollup`), and `rollupIncluded` goes false with them. The
+alternative -- adding months no filter ever touched -- would make a filtered page report history it
+had excluded, which is worse than reporting less.
+
+### The option lists ignore the filter
+
+The payload carries `facets`: the values that exist over the window, computed **without** the filter
+on screen. A list built from the current answer would keep the one choice already made and drop
+every alternative, which is a filter nobody can undo.
+
+With nothing narrowed the lists come from the rows the report is already made of, at no extra cost.
+With something narrowed they come from `usageFacets` -- four `DISTINCT`s, measured below -- plus the
+same label lookup the ranking uses, which `labelsOf` now shares with it.
+
+### A filter that is not one is refused
+
+The frame's filter is validated field by field in the adapter (`statsFilterOf`): a wrong type, an
+empty string or an unknown key is refused with an `error` frame rather than coerced. `model = 42`
+in SQLite matches nothing, and a report narrowed by a mistake reads on the page as an empty window;
+a misspelt dimension, silently ignored, is a filter that appears to do nothing. An absent filter
+and an empty one are the same thing -- the whole window -- and the payload echoes back what was
+applied, so the page can never claim a filter the server did not get.
+
 ## Labelling a session that is gone
 
 Two databases, and the join is done in TypeScript. Never in SQL: `analytics.db` and
@@ -251,6 +304,29 @@ disk): 21 ms. Whole `statsReport`, end to end: **64 ms (7d), 297 ms (30d), 332 m
 `all` is not the slowest, because the rollup is empty on this install and the live table is the same
 table a 90-day window scans.
 
+### What a filter costs
+
+Same database, median of five runs. The unfiltered column is the row above; the other three are the
+same query with one dimension narrowed:
+
+| Query | 30d, no filter | `model` | `provider` | `errorsOnly` |
+| --- | --- | --- | --- | --- |
+| `usageByModel` | 47 ms | 0.7 ms | 17 ms | 11 ms |
+| `usageByCaller` | 56 ms | 0.6 ms | -- | -- |
+| `usageBySession` | 66 ms | 0.6 ms | -- | -- |
+| `usageByDay` | 55 ms | -- | -- | -- |
+| `usageFacets` (four `DISTINCT`s) | -- | 43 ms | 43 ms | 43 ms |
+
+A model filter is nearly free: `idx_api_calls_model` turns the window scan into a lookup of one
+value's rows. A host filter cannot be -- there is no index on `base_url`, and none is worth adding
+(see below) -- so it scans the window with the predicate and drops most of it, which is still three
+times cheaper than the aggregate it replaces.
+
+`usageFacets` is four `DISTINCT`s at 10-12 ms each: the model, caller and session columns are
+indexed, so each is a walk of the index that never touches a row. It replaces the three unfiltered
+aggregates (~170 ms) that an earlier version ran for the same lists, and it removed the need to
+price rows nothing was going to show.
+
 ### There is no index on `base_url`, and there should not be
 
 Every view here is a full aggregate over a window, which SQLite answers by scanning that window and
@@ -277,13 +353,14 @@ allow-list, so these are the exact shapes.
 ```ts
 export type MyClawAppStatsPeriod = "7d" | "30d" | "90d" | "all";
 
-export interface MyClawAppStatsGet { type: "stats.get"; period: MyClawAppStatsPeriod }
+export interface MyClawAppStatsGet { type: "stats.get"; period: MyClawAppStatsPeriod; filter?: MyClawAppStatsFilter }
 export interface MyClawAppStatsResult { type: "stats.result"; stats: MyClawAppStatsPayload }
 ```
 
 An unknown period is **refused** (`error`, scope `stats`), never coerced to one the server does
-offer: a page that asked for six months and was quietly shown seven days would be believed.
-`stats.result` carries no `threadId`, because the answer is about the install.
+offer: a page that asked for six months and was quietly shown seven days would be believed. A
+filter that is not one is refused the same way. `stats.result` carries no `threadId`, because the
+answer is about the install.
 
 The payload and its rows are listed in full in `types.ts`; the fields that are not self-evident:
 
@@ -292,6 +369,9 @@ The payload and its rows are listed in full in `types.ts`; the fields that are n
 - `detailSince` / `totalsSince` / `rollupIncluded`, above.
 - `providerUnread` on a reconciliation entry: the ledger was not read. A cold cache and a dead API
   are the same statement, because the page never waits on a third party.
+- `filter` -- what was applied, echoed back. Never inferred from the request on the app side: a
+  page that drew its own filter could show a chip the server never honoured.
+- `facets` -- the values a filter may be set to over the window, computed without it.
 
 ### Nothing identifying travels
 

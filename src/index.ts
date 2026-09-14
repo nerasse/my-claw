@@ -2168,10 +2168,11 @@ async function main() {
     // The install-wide statistics page. Its money is the same money `/status` shows, priced by the
     // same table, so the two screens cannot disagree about a call they both cover.
     myClawApp.onStatsController({
-      report: (period) =>
+      report: (period, filter) =>
         statsReport({
           config,
           period,
+          filter,
           pricing,
           // `read`, not `peek`: this walks every conversation that ever spent something, and most
           // of them no longer exist. `peek` caches its misses and would evict the live ones.

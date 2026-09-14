@@ -3851,6 +3851,8 @@ describe("command frames", () => {
     cache: { promptTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, readSharePct: 0, writeSharePct: 0 },
     callers: [],
     reconciliation: [],
+    filter: {},
+    facets: { models: [], providers: [], callers: [], sessions: [] },
   };
 
   test("stats.get answers the install-wide report for the period it names, and nothing per thread", async () => {
@@ -3890,6 +3892,66 @@ describe("command frames", () => {
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "stats");
     assert.equal(called, 0, "a window that asked for six months must not be handed another period and believe it");
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("the filter of a stats.get reaches the report, and comes back echoed", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    const seen: unknown[] = [];
+    agent.onStatsController({
+      report: async (period, filter) => {
+        seen.push(filter);
+        return { ...STATS_PAYLOAD, period, filter };
+      },
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "stats.get", period: "30d", filter: { model: "glm-5.2", errorsOnly: true } }));
+    const frame = await nextFrame(client2);
+    assert.equal(frame["type"], "stats.result");
+    assert.deepEqual(seen, [{ model: "glm-5.2", errorsOnly: true }]);
+    assert.deepEqual((frame["stats"] as { filter: unknown }).filter, { model: "glm-5.2", errorsOnly: true });
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("a stats.get with no filter asks the report for the whole window, not for nothing", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    const seen: unknown[] = [];
+    agent.onStatsController({
+      report: async (period, filter) => {
+        seen.push(filter);
+        return { ...STATS_PAYLOAD, period, filter };
+      },
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    client2.ws.send(JSON.stringify({ type: "stats.get", period: "7d" }));
+    await nextFrame(client2);
+    assert.deepEqual(seen, [{}]);
+    client2.ws.close();
+    await agent.stop();
+  });
+
+  test("a filter that is not one is refused, never coerced into a report of something else", async () => {
+    const agent = new MyClawAppAdapter(createConfig(), store as never);
+    let called = 0;
+    agent.onStatsController({
+      report: async (period) => {
+        called += 1;
+        return { ...STATS_PAYLOAD, period };
+      },
+    });
+    await agent.start();
+    const client2 = await connectClient(agent.port);
+    for (const filter of [{ model: 42 }, { nosuchthing: "x" }, { errorsOnly: "yes" }, [], "model"]) {
+      client2.ws.send(JSON.stringify({ type: "stats.get", period: "30d", filter }));
+      const frame = await nextFrame(client2);
+      assert.equal(frame["type"], "error", `filter ${JSON.stringify(filter)} must be refused`);
+      assert.equal(frame["scope"], "stats");
+    }
+    assert.equal(called, 0, "an unreadable filter must not be answered with an unfiltered report");
     client2.ws.close();
     await agent.stop();
   });

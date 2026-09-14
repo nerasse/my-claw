@@ -8,6 +8,7 @@ import { analyticsDb, pruneOldRecords, recordApiCall } from "../../src/analytics
 import { archiveChannelMessage } from "../../src/conversations/store.ts";
 import { ModelPricing, CACHE_VERSION, setSharedPricing } from "../../src/llm/pricing.ts";
 import { statsReport } from "../../src/channels/stats-command.ts";
+import type { StatsFilter } from "../../src/analytics/usage-stats.ts";
 import { refreshOpenRouterAccount } from "../../src/llm/openrouter-account.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import type { MyClawAppStatsPayload, MyClawAppStatsPeriod } from "../../src/channels/my-claw-app/types.ts";
@@ -109,11 +110,12 @@ function call(over: CallOver = {}): void {
 /** Sessions the store still holds, by id: everything else reads as deleted, which is the point. */
 function report(
   live: Record<string, { title?: string }> = {},
-  over: { period?: MyClawAppStatsPeriod; config?: MyClawConfig; kimi?: number } = {},
+  over: { period?: MyClawAppStatsPeriod; config?: MyClawConfig; kimi?: number; filter?: StatsFilter } = {},
 ): Promise<MyClawAppStatsPayload> {
   return statsReport({
     config: over.config ?? config,
     period: over.period ?? "all",
+    filter: over.filter ?? {},
     pricing: pricing(over.kimi),
     sessionInfo: async (sessionId) => live[sessionId],
   });
@@ -549,4 +551,86 @@ test("nothing that identifies the key, and no path of this machine, reaches the 
     delete process.env[KEY_ENV];
     mock.restore();
   }
+});
+
+/**
+ * A filter is applied where the rows are, so it narrows every view at once and the totals are
+ * recomputed over what is left rather than scaled down from what was folded. That is the whole
+ * promise: a filtered page whose hero did not match the rows under it would be worse than no
+ * filter at all.
+ */
+test("a filter narrows every view at once, and the totals are of the smaller population", async () => {
+  call({ sessionId: "a", model: "glm-5.2", promptTokens: 1_000_000, caller: "orchestrator" });
+  call({ sessionId: "b", model: "glm-5.2", promptTokens: 1_000_000, caller: "subagent" });
+  call({ sessionId: "b", model: "kimi-k3", promptTokens: 2_000_000, caller: "subagent" });
+
+  const all = await report();
+  expect(all.totals.calls).toBe(3);
+
+  const sub = await report({}, { filter: { caller: "subagent" } });
+  expect(sub.totals.calls).toBe(2);
+  expect(sub.totals.promptTokens).toBe(3_000_000);
+  expect(sub.callers.map((c) => c.caller)).toEqual(["subagent"]);
+
+  const sum = (rows: Array<{ calls: number }>): number => rows.reduce((n, r) => n + r.calls, 0);
+  expect(sum(sub.models)).toBe(2);
+  expect(sum(sub.providers)).toBe(2);
+  expect(sum(sub.sessions)).toBe(2);
+  expect(sum(sub.daily)).toBe(2);
+  expect(sum(sub.callers)).toBe(2);
+});
+
+/**
+ * The facets are the window's values, not the answer's. An option list built from a filtered
+ * report would keep the choice already made and drop every alternative, which is a filter nobody
+ * can undo -- so the list is computed by a pass that ignores the filter on screen.
+ */
+test("the filter is echoed, and the facets ignore it so the choice can be undone", async () => {
+  call({ sessionId: "one", model: "glm-5.2", baseUrl: "https://openrouter.ai/api/v1" });
+  call({ sessionId: "two", model: "kimi-k3", baseUrl: "https://api.anthropic.com", caller: "subagent" });
+
+  const narrowed = await report({}, { filter: { model: "glm-5.2" } });
+  expect(narrowed.filter).toEqual({ model: "glm-5.2" });
+  expect(narrowed.models.map((m) => m.model)).toEqual(["glm-5.2"]);
+  expect(narrowed.totals.calls).toBe(1);
+
+  expect(narrowed.facets.models).toEqual(["glm-5.2", "kimi-k3"]);
+  expect(narrowed.facets.providers).toEqual(["https://api.anthropic.com", "https://openrouter.ai/api/v1"]);
+  expect(narrowed.facets.callers).toEqual(["orchestrator", "subagent"]);
+  expect(narrowed.facets.sessions.map((s) => s.sessionId).sort()).toEqual(["one", "two"]);
+  expect(narrowed.facets.sessions.every((s) => s.deleted)).toBe(true);
+});
+
+/** Unfiltered, the option lists come from the rows the report is already made of: no extra pass. */
+test("an unfiltered report carries the facets of its own rows", async () => {
+  call({ sessionId: "one", model: "glm-5.2" });
+  const stats = await report();
+  expect(stats.filter).toEqual({});
+  expect(stats.facets.models).toEqual(["glm-5.2"]);
+  expect(stats.facets.sessions.map((s) => s.sessionId)).toEqual(["one"]);
+});
+
+/**
+ * The rollup key has no session on it and no per-call row behind it, so a session filter cannot be
+ * asked of the swept months. The flag goes false rather than the months being added untouched: the
+ * page's horizon note reads off it, and a note promising history the answer left out is the lie
+ * this page was built to stop telling.
+ */
+test("a filter a month cannot answer turns the horizon off rather than claiming it", async () => {
+  call({ at: "2026-01-05T10:00:00.000Z", sessionId: "old" });
+  call({ sessionId: "new" });
+  pruneOldRecords("2026-04-01T00:00:00.000Z");
+
+  const all = await report();
+  expect(all.rollupIncluded).toBe(true);
+
+  // A model is a column of the rollup, so the months come with the window.
+  const byModel = await report({}, { filter: { model: "glm-5.2" } });
+  expect(byModel.rollupIncluded).toBe(true);
+  expect(byModel.totals.calls).toBe(2);
+
+  // A session is not, so the months are dropped and the page stops claiming them.
+  const bySession = await report({}, { filter: { sessionId: "new" } });
+  expect(bySession.rollupIncluded).toBe(false);
+  expect(bySession.totals.calls).toBe(1);
 });

@@ -82,6 +82,86 @@ export interface UsageCallerGroup extends UsageGroup {
   caller: string;
 }
 
+/** The distinct values a filter can be set to over a window. */
+export interface UsageFacets {
+  models: string[];
+  providers: string[];
+  callers: string[];
+  sessionIds: string[];
+}
+
+/**
+ * The distinct values a filter can be set to over the window: the option list of the filter sheet.
+ *
+ * Four `DISTINCT`s rather than the aggregates the report is made of, because this answers what
+ * exists and not what it cost. The model, caller and session columns are indexed, so each of them
+ * is a walk of the index that never touches a row, and the whole list costs about a fifth of one
+ * unfiltered aggregate (measured in docs/stats-page.md).
+ *
+ * Deliberately unfiltered by whatever the caller is narrowing: an option list that shrank to the
+ * choice already made would leave no way back to the others.
+ */
+export function usageFacets(period: UsagePeriod): UsageFacets {
+  try {
+    const cutoff = periodCutoff(period);
+    const values = (column: string): string[] =>
+      (db()
+        .prepare(`SELECT DISTINCT ${column} AS value FROM api_calls ${where(cutoff, {})}`)
+        .all(bind(cutoff, {})) as Array<{ value: string }>)
+        .map((row) => row.value)
+        .sort((a, b) => a.localeCompare(b));
+    return { models: values("model"), providers: values("base_url"), callers: values("caller"), sessionIds: values("session_id") };
+  } catch (err) {
+    void log("warn", "analytics usageFacets failed", { error: String(err) });
+    return { models: [], providers: [], callers: [], sessionIds: [] };
+  }
+}
+
+/**
+ * The dimensions a report can be narrowed by, each one a column of `api_calls`.
+ *
+ * The narrowing happens in SQL, before the aggregation, and that is the whole point: a filtered
+ * report is a smaller population, not a smaller answer to the same question. The totals are
+ * recomputed over the rows that survive, so a filtered page cannot show a sum that disagrees with
+ * the rows under it -- which is what filtering pre-folded groups would do the moment a dimension a
+ * group does not carry (a caller on a model ranking) is asked for.
+ *
+ * `errorsOnly` and `unpricedOnly` are row predicates for the same reason. "Only the failures" is
+ * the calls that failed, not the routes that happened to fail once: a group-level version of that
+ * filter would report the whole spend of a model with a single error on it.
+ *
+ * `provider` is a `base_url`, not the route the page draws. The page names an endpoint pin
+ * (`streamlake/fp8`) where the model carries one, and a pin is not a column -- but nothing is lost:
+ * the pin lives in the model id, so the `model` dimension narrows to it exactly.
+ */
+export interface StatsFilter {
+  model?: string;
+  provider?: string;
+  caller?: string;
+  sessionId?: string;
+  errorsOnly?: boolean;
+  unpricedOnly?: boolean;
+}
+
+/** True when the filter narrows anything: the one thing that makes the extra passes worth it. */
+export function filterNarrows(filter: StatsFilter): boolean {
+  return Object.values(filter).some((value) => value !== undefined && value !== false);
+}
+
+/**
+ * Whether a filter can be asked of a month the purge already swept.
+ *
+ * The rollup key is `(month, model, base_url, platform, caller)`: three of the dimensions above
+ * are columns of it, three are not. A session is not on that key, and `errors` and `unpriced_calls`
+ * are counters rather than rows -- "only the failures" is not a question a monthly fold can
+ * answer. Those three drop the rollup instead of adding months no filter ever touched, and the
+ * payload's `rollupIncluded` goes false with them so the page stops claiming a horizon it is not
+ * showing.
+ */
+export function filterReachesRollup(filter: StatsFilter): boolean {
+  return filter.sessionId === undefined && filter.errorsOnly !== true && filter.unpricedOnly !== true;
+}
+
 /**
  * The live columns, in the order every query below needs them.
  *
@@ -155,12 +235,67 @@ function tag(rows: RawGroup[], origin: UsageOrigin): UsageGroup[] {
   return rows.map((row) => ({ ...row, origin }));
 }
 
-function where(cutoff: string | null): string {
-  return cutoff === null ? "" : "WHERE timestamp >= $cutoff";
+/**
+ * The row predicate a window and a filter make, and the parameters it binds.
+ *
+ * One list, used by the string and by the bind, so a clause can never be added to the SQL without
+ * its parameter following it. The four column filters are named rather than interpolated: a model
+ * id or a session id goes into the statement as a value, whatever it contains.
+ */
+function predicate(cutoff: string | null, filter: StatsFilter): { sql: string[]; params: Record<string, string> } {
+  const sql: string[] = [];
+  const params: Record<string, string> = {};
+  if (cutoff !== null) {
+    sql.push("timestamp >= $cutoff");
+    params.$cutoff = cutoff;
+  }
+  if (filter.model !== undefined) {
+    sql.push("model = $model");
+    params.$model = filter.model;
+  }
+  if (filter.provider !== undefined) {
+    sql.push("base_url = $provider");
+    params.$provider = filter.provider;
+  }
+  if (filter.caller !== undefined) {
+    sql.push("caller = $caller");
+    params.$caller = filter.caller;
+  }
+  if (filter.sessionId !== undefined) {
+    sql.push("session_id = $sessionId");
+    params.$sessionId = filter.sessionId;
+  }
+  if (filter.errorsOnly === true) sql.push("error IS NOT NULL");
+  if (filter.unpricedOnly === true) sql.push("cost_usd IS NULL");
+  return { sql, params };
 }
 
-function bind(cutoff: string | null): Record<string, string> {
-  return cutoff === null ? {} : { $cutoff: cutoff };
+function where(cutoff: string | null, filter: StatsFilter): string {
+  const parts = predicate(cutoff, filter).sql;
+  return parts.length === 0 ? "" : `WHERE ${parts.join(" AND ")}`;
+}
+
+function bind(cutoff: string | null, filter: StatsFilter): Record<string, string> {
+  return predicate(cutoff, filter).params;
+}
+
+/** The same three dimensions on the rollup, whose columns are the only ones it shares. */
+function rolledPredicate(filter: StatsFilter): { sql: string; params: Record<string, string> } {
+  const parts: string[] = [];
+  const params: Record<string, string> = {};
+  if (filter.model !== undefined) {
+    parts.push("model = $model");
+    params.$model = filter.model;
+  }
+  if (filter.provider !== undefined) {
+    parts.push("base_url = $provider");
+    params.$provider = filter.provider;
+  }
+  if (filter.caller !== undefined) {
+    parts.push("caller = $caller");
+    params.$caller = filter.caller;
+  }
+  return { sql: parts.length === 0 ? "" : `WHERE ${parts.join(" AND ")}`, params };
 }
 
 /**
@@ -170,14 +305,17 @@ function bind(cutoff: string | null): Record<string, string> {
  * There is no index on `base_url` and none would help: this is a full aggregate over the window,
  * which SQLite answers by scanning it whatever indexes exist. Measured in docs/stats-page.md.
  */
-export function usageByModel(period: UsagePeriod): UsageGroup[] {
+export function usageByModel(period: UsagePeriod, filter: StatsFilter): UsageGroup[] {
   try {
     const cutoff = periodCutoff(period);
     const live = db()
-      .prepare(`SELECT ${LIVE_COLUMNS} FROM api_calls ${where(cutoff)} GROUP BY model, base_url`)
-      .all(bind(cutoff)) as RawGroup[];
-    if (!reachesRollup(period)) return tag(live, "live");
-    const rolled = db().prepare(`SELECT ${ROLLUP_COLUMNS} FROM usage_monthly GROUP BY model, base_url`).all() as RawGroup[];
+      .prepare(`SELECT ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY model, base_url`)
+      .all(bind(cutoff, filter)) as RawGroup[];
+    if (!reachesRollup(period) || !filterReachesRollup(filter)) return tag(live, "live");
+    const months = rolledPredicate(filter);
+    const rolled = db()
+      .prepare(`SELECT ${ROLLUP_COLUMNS} FROM usage_monthly ${months.sql} GROUP BY model, base_url`)
+      .all(months.params) as RawGroup[];
     return [...tag(live, "live"), ...tag(rolled, "rollup")];
   } catch (err) {
     void log("warn", "analytics usageByModel failed", { error: String(err) });
@@ -189,17 +327,18 @@ export function usageByModel(period: UsagePeriod): UsageGroup[] {
  * Every caller over the period, split by model so each slice can be priced: the orchestrator, the
  * sub-agents it spawned, the browser, the compactions.
  */
-export function usageByCaller(period: UsagePeriod): UsageCallerGroup[] {
+export function usageByCaller(period: UsagePeriod, filter: StatsFilter): UsageCallerGroup[] {
   try {
     const cutoff = periodCutoff(period);
     const live = db()
-      .prepare(`SELECT caller, ${LIVE_COLUMNS} FROM api_calls ${where(cutoff)} GROUP BY caller, model, base_url`)
-      .all(bind(cutoff)) as Array<RawGroup & { caller: string }>;
+      .prepare(`SELECT caller, ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY caller, model, base_url`)
+      .all(bind(cutoff, filter)) as Array<RawGroup & { caller: string }>;
     const out: UsageCallerGroup[] = live.map((row) => ({ ...row, origin: "live" as const }));
-    if (!reachesRollup(period)) return out;
+    if (!reachesRollup(period) || !filterReachesRollup(filter)) return out;
+    const months = rolledPredicate(filter);
     const rolled = db()
-      .prepare(`SELECT caller, ${ROLLUP_COLUMNS} FROM usage_monthly GROUP BY caller, model, base_url`)
-      .all() as Array<RawGroup & { caller: string }>;
+      .prepare(`SELECT caller, ${ROLLUP_COLUMNS} FROM usage_monthly ${months.sql} GROUP BY caller, model, base_url`)
+      .all(months.params) as Array<RawGroup & { caller: string }>;
     return [...out, ...rolled.map((row) => ({ ...row, origin: "rollup" as const }))];
   } catch (err) {
     void log("warn", "analytics usageByCaller failed", { error: String(err) });
@@ -215,16 +354,16 @@ export function usageByCaller(period: UsagePeriod): UsageCallerGroup[] {
  * Live rows only, whatever the period. The rollup key has no session on it, so the ranking stops
  * where the per-call detail stops -- `usageHorizon().detailSince` is the date to say that with.
  */
-export function usageBySession(period: UsagePeriod): UsageSessionGroup[] {
+export function usageBySession(period: UsagePeriod, filter: StatsFilter): UsageSessionGroup[] {
   try {
     const cutoff = periodCutoff(period);
     const rows = db()
       .prepare(
         `SELECT session_id AS sessionId, MIN(timestamp) AS firstAt, MAX(timestamp) AS lastAt, ${LIVE_COLUMNS}
-         FROM api_calls ${where(cutoff)}
+         FROM api_calls ${where(cutoff, filter)}
          GROUP BY session_id, model, base_url`,
       )
-      .all(bind(cutoff)) as Array<RawGroup & { sessionId: string; firstAt: string; lastAt: string }>;
+      .all(bind(cutoff, filter)) as Array<RawGroup & { sessionId: string; firstAt: string; lastAt: string }>;
     return rows.map((row) => ({ ...row, origin: "live" as const }));
   } catch (err) {
     void log("warn", "analytics usageBySession failed", { error: String(err) });
@@ -238,16 +377,16 @@ export function usageBySession(period: UsagePeriod): UsageSessionGroup[] {
  * Live rows only, like the sessions and for the same reason: the rollup is monthly, so a daily
  * chart cannot reach behind the retention wall and must not pretend to.
  */
-export function usageByDay(period: UsagePeriod): UsageDayGroup[] {
+export function usageByDay(period: UsagePeriod, filter: StatsFilter): UsageDayGroup[] {
   try {
     const cutoff = periodCutoff(period);
     const rows = db()
       .prepare(
         `SELECT substr(timestamp, 1, 10) AS date, ${LIVE_COLUMNS}
-         FROM api_calls ${where(cutoff)}
+         FROM api_calls ${where(cutoff, filter)}
          GROUP BY substr(timestamp, 1, 10), model, base_url`,
       )
-      .all(bind(cutoff)) as Array<RawGroup & { date: string }>;
+      .all(bind(cutoff, filter)) as Array<RawGroup & { date: string }>;
     return rows.map((row) => ({ ...row, origin: "live" as const }));
   } catch (err) {
     void log("warn", "analytics usageByDay failed", { error: String(err) });
