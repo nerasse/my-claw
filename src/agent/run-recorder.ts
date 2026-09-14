@@ -137,9 +137,19 @@ export class RunRecorder {
     return this.entries.append({ type: "run_start", prompt: false, runId: currentRunId() ?? newRunId() });
   }
 
-  /** Marks the closing of this run and why it ended. */
-  runEnd(reason: "done" | "aborted" | "error"): Entry {
-    return this.entries.append({ type: "run_end", prompt: false, reason });
+  /**
+   * Marks the closing of this run, why it ended, and what its tools produced.
+   *
+   * The media is written here rather than on the phase because the phase exists before the tools
+   * run: this is the first entry that can name what they attached to the answer.
+   */
+  runEnd(reason: "done" | "aborted" | "error", media?: string[]): Entry {
+    return this.entries.append({
+      type: "run_end",
+      prompt: false,
+      reason,
+      ...(media && media.length > 0 ? { media } : {}),
+    });
   }
 
   /**

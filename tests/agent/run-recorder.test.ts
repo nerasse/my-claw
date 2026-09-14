@@ -25,6 +25,29 @@ const call = (callId: string, over: Partial<Parameters<RunRecorder["tool"]>[0]> 
   callId, name: "bash", arguments: '{"command":"ls"}', output: "ok", ok: true, ...over,
 });
 
+describe("RunRecorder: what a run produced", () => {
+  test("a run_end keeps the media a tool produced", async () => {
+    // The browser's screenshots reach the owner as attachments on the answer, and nothing in the
+    // text names them. Without this line on the marker, a reopened thread showed the prose and
+    // dropped the picture (2026-09-14).
+    const recorder = new RunRecorder(entries);
+    recorder.runEnd("done", ["/tmp/shots/screenshot.png"]);
+    await entries.flush();
+
+    const written = (await openSessionLog(SESSION)).entries().at(-1);
+    expect(written).toMatchObject({ type: "run_end", reason: "done", media: ["/tmp/shots/screenshot.png"] });
+  });
+
+  test("a run that produced nothing leaves the field off the marker", async () => {
+    // Absent, not empty: every run before this one keeps reading exactly as it did.
+    const recorder = new RunRecorder(entries);
+    recorder.runEnd("done");
+    await entries.flush();
+
+    expect((await openSessionLog(SESSION)).entries().at(-1)).not.toHaveProperty("media");
+  });
+});
+
 describe("newTurnId", () => {
   test("two ids are never the same", () => {
     expect(new Set(Array.from({ length: 100 }, () => newTurnId())).size).toBe(100);

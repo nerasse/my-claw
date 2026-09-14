@@ -146,6 +146,14 @@ export class MessagePreprocessor {
     return attachments;
   }
 
+  /**
+   * The same attachments, without taking them: the run writes its media onto the end marker
+   * before the router consumes them for the outgoing message, so both need to read the bucket.
+   */
+  peekResponseAttachments(messageId: string): OutgoingMessage["attachments"] {
+    return [...(this.runs.get(messageId)?.responseAttachments ?? [])];
+  }
+
   addResponseAttachment(messageId: string, att: Attachment): void {
     this.stateFor(messageId).responseAttachments.push(att);
   }

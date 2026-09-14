@@ -485,6 +485,24 @@ export function displayOf(
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
 
+  /**
+   * What each run's tools produced, keyed by the phase that answers with it.
+   *
+   * The end marker is written after the phase it belongs to, so this reads the entries once to
+   * pair them: the last phase of a run is the answer the live bubble hung its pictures on, and a
+   * reload that lost them showed the prose alone (2026-09-14).
+   */
+  const mediaByPhase = new Map<string, string[]>();
+  {
+    let lastPhase: string | undefined;
+    for (const entry of entries) {
+      if (entry.type === "phase") lastPhase = entry.id;
+      else if (entry.type === "run_end" && entry.media?.length && lastPhase) {
+        mediaByPhase.set(lastPhase, [...(mediaByPhase.get(lastPhase) ?? []), ...entry.media]);
+      }
+    }
+  }
+
   let previous: Entry | undefined;
   for (const entry of entries) {
     const prior = previous;
@@ -538,8 +556,10 @@ export function displayOf(
 
     if (entry.type === "phase") {
       // The agent names its files with `MEDIA:` refs; a replayed turn must show real attachments.
-      const refs = extractMediaRefs(entry.text);
+      const refs: Array<{ path: string }> = extractMediaRefs(entry.text);
       const text = stripMediaRefs(entry.text).trim();
+      // Its own refs first, then what its tools attached: the order the live frame is built in.
+      for (const path of mediaByPhase.get(entry.id) ?? []) refs.push({ path });
       const media = refs.length > 0 ? resolvers.mediaOf(refs) : [];
       // A phase that only thought before calling a tool wrote no prose, and the bubble the reader
       // saw was that thought: dropping it is what made a reopened thread jump from the question

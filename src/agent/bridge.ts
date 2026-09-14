@@ -211,6 +211,18 @@ export class AgentBridge implements AgentBackend {
     return this.preprocessor.consumeResponseAttachments(messageId);
   }
 
+  /**
+   * The same files, without taking them.
+   *
+   * The run writes what its tools produced onto the end marker before the router consumes the
+   * attachments for the outgoing message: a peek is what lets the log and the live frame both
+   * name the same pictures (2026-09-14).
+   */
+  private mediaPathsOf(messageId: string): string[] {
+    const attachments = this.preprocessor.peekResponseAttachments(messageId) ?? [];
+    return attachments.flatMap((att) => (att.path ? [att.path] : []));
+  }
+
   hadAudioInbound(messageId: string): boolean {
     return this.preprocessor.inboundHadAudio(messageId);
   }
@@ -721,7 +733,7 @@ export class AgentBridge implements AgentBackend {
             sessionTokenUsage: session.tokenUsage,
             stagnation: stagnation.report(),
           });
-          recorder.runEnd("done");
+          recorder.runEnd("done", this.mediaPathsOf(message.id));
           return transformedResponse;
         }
 
@@ -942,7 +954,7 @@ export class AgentBridge implements AgentBackend {
           toolExecutions,
           durationMs: Date.now() - startedAt,
         });
-        recorder.runEnd("aborted");
+        recorder.runEnd("aborted", this.mediaPathsOf(message.id));
         throw new AbortedError();
       }
       // The same ending as the abort above, and for the same reason: the cursor stays where the
@@ -952,7 +964,7 @@ export class AgentBridge implements AgentBackend {
       // therefore lands after the run's last entry instead of on the question, and the next turn
       // reads the work rather than doing it again. What that costs is the dead attempt's tokens in
       // the next prompt -- docs/session-log.md 2.6.
-      recorder.runEnd("error");
+      recorder.runEnd("error", this.mediaPathsOf(message.id));
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -1139,7 +1151,7 @@ export class AgentBridge implements AgentBackend {
       durationMs,
     });
 
-    recorder.runEnd("done");
+    recorder.runEnd("done", this.mediaPathsOf(message.id));
     return finalText;
   }
 

@@ -36,7 +36,8 @@ const show = (entries: readonly Entry[], limit = 1000, files: SessionFile[] = []
   displayOf(entries, resolvers, limit, undefined, files, runs);
 
 const runStart = (extra: Record<string, unknown> = {}) => ({ type: "run_start", prompt: false, ...extra }) as Provisioned<Entry>;
-const runEnd = (reason: "done" | "aborted" | "error" = "done") => ({ type: "run_end", prompt: false, reason }) as Provisioned<Entry>;
+const runEnd = (reason: "done" | "aborted" | "error" = "done", media?: string[]) =>
+  ({ type: "run_end", prompt: false, reason, ...(media ? { media } : {}) }) as Provisioned<Entry>;
 
 describe("displayOf: one entry, one bubble", () => {
   test("an exchange draws in the order it happened", () => {
@@ -100,6 +101,53 @@ describe("displayOf: what the model said", () => {
 
   test("a counted-but-hidden thought still earns its bubble", () => {
     expect(show(chain([phase("", { reasoningTokens: 120 })])).at(0)).toMatchObject({ reasoningTokens: 120 });
+  });
+
+  /**
+   * Added 2026-09-14: the browser tool attaches its screenshots to the answer and the text never
+   * names them, so the live bubble was the only place they existed. A reload brought the prose
+   * back and dropped the picture, with the bytes still sitting in the thread's file store.
+   */
+  test("the media a tool produced lands on the turn it belongs to", () => {
+    const entries = chain([
+      user("trouve une serie"),
+      runStart(),
+      phase("voila"),
+      runEnd("done", ["/tmp/shots/screenshot.png"]),
+    ]);
+    const drawn = show(entries);
+    const answer = drawn.find((e) => e.role === "assistant") as { attachments?: Array<{ name: string }> };
+    expect(answer.attachments?.map((a) => a.name)).toEqual(["/tmp/shots/screenshot.png"]);
+  });
+
+  test("a turn's own refs come before the media a tool produced", () => {
+    // The live frame is built that way -- docs 505/509 of the adapter -- and a replay that turned
+    // the order around would show the same answer with its pictures swapped.
+    const entries = chain([
+      user("q"),
+      runStart(),
+      phase("voici\nMEDIA:/tmp/a.png"),
+      runEnd("done", ["/tmp/shots/b.png"]),
+    ]);
+    const answer = show(entries).find((e) => e.role === "assistant") as {
+      text: string;
+      attachments?: Array<{ name: string }>;
+    };
+    expect(answer.text).toBe("voici");
+    expect(answer.attachments?.map((a) => a.name)).toEqual(["/tmp/a.png", "/tmp/shots/b.png"]);
+  });
+
+  test("the media of a run does not leak onto the next turn", () => {
+    const entries = chain([
+      user("q"),
+      runStart(),
+      phase("reponse"),
+      runEnd("done", ["/tmp/b.png"]),
+      user("et ensuite ?"),
+    ]);
+    const last = show(entries).at(-1) as { role: string; attachments?: unknown };
+    expect(last.role).toBe("user");
+    expect(last.attachments).toBeUndefined();
   });
 
   test("a MEDIA ref becomes an attachment and leaves the text", () => {

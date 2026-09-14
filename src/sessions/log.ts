@@ -217,6 +217,14 @@ export interface RunEndEntry extends EntryBase {
   type: "run_end";
   prompt: false;
   reason: "done" | "aborted" | "error";
+  /**
+   * What the run's tools produced, as the paths they were written to.
+   *
+   * A tool attaches its files to the answer and the prose never names them, so this marker is the
+   * only entry that can carry them to a reopened thread -- the phase was already on disk when the
+   * tool ran. Resolved by filename, exactly like a `MEDIA:` ref (2026-09-14).
+   */
+  media?: string[];
 }
 
 export type Entry =

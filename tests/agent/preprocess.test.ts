@@ -237,6 +237,16 @@ describe("MessagePreprocessor", () => {
       expect(second).toEqual([]);
     });
 
+    test("peeking returns them without consuming", () => {
+      // The run writes its media to the log just before it ends, and the router consumes the
+      // attachments right after: a peek that emptied the bucket would drop the picture.
+      const pp = new MessagePreprocessor();
+      pp.addResponseAttachment("m1", { type: "image", path: "/tmp/result.png", mimeType: "image/png" });
+
+      expect(pp.peekResponseAttachments("m1")).toHaveLength(1);
+      expect(pp.consumeResponseAttachments("m1")).toHaveLength(1);
+    });
+
     test("attachments are isolated per message id (no cross-run leakage)", () => {
       const pp = new MessagePreprocessor();
       pp.addResponseAttachment("run-a", { type: "image", path: "/tmp/a.png", mimeType: "image/png" });
