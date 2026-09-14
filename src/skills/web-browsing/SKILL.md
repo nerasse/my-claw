@@ -76,8 +76,8 @@ and return nothing useful.
 Screenshots the subagent captures are **automatically attached to your response** and
 delivered to the user. You do NOT need to (and must NOT):
 
-- run `find`/`read`/`ls` to locate the screenshot files (they live in a temp dir outside
-  your workspace, so those tools will fail with an "escapes workspace" error), or
+- run `find`/`read`/`ls` to locate the screenshot files (they live in a temp dir, and there is
+  no need: they are attached for you), or
 - reference them with `MEDIA:` (they are already attached).
 
 Just use the summary returned by `delegate_browser_task` to describe the result in your reply.
@@ -137,7 +137,6 @@ In that case `delegate_browser_task` returns a paused message with the live-brow
 | ALSA audio warnings | Headless Chromium without a sound card | Benign. Ignore — does not block rendering or navigation. |
 | "Browser infrastructure is unavailable" | The sidecar or Chromium is unreachable (CDP/websocket) | Report it to the user. Never improvise with raw `bash` chromium — the managed browser self-heals. |
 | Paused for a *mechanical* reason (upload, untargetable element) | The subagent has tools for all of these, so this is a bug or a genuinely missing capability | Retry once with a clearer, more explicit goal. If it blocks again, report it as a gap — do not work around it with `bash`. |
-| "escapes workspace directory" after a browse | You tried to `find`/`read` the screenshot in `/tmp` | Don't. Browser screenshots are auto-attached (see "Results & screenshots"). |
 
 ## Example flow
 

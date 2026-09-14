@@ -297,11 +297,13 @@ src/
 
 ### Workspace
 
-- The agent operates inside `~/.my-claw/workspace/` (configurable via `config.workspace`).
+- The agent's working directory is `~/.my-claw/workspace/` (configurable via `config.workspace`).
 - The workspace is created on boot if it does not exist.
 - Default prompt templates (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`) are copied from `docs/prompt/` into the workspace on first start.
 - All filesystem tools (`bash`, `read`, `write`, `apply_patch`, `ls`, `search`) resolve relative paths against the workspace.
 - `bash` spawns with `cwd` set to the workspace.
+- The workspace is a working directory, not a boundary: an absolute path is used as it is, wherever
+  it points. No tool contains the agent to that directory -- `docs/filesystem-access.md`.
 
 ### Imports
 

@@ -62,18 +62,17 @@ function createMockClient(): BrowserClient {
 }
 
 describe("browser tools", () => {
-  test("navigate rejects localhost", async () => {
+  test("navigate takes localhost, like any other host", async () => {
     const tool = createBrowserNavigateTool(createMockClient(), createBrowserPageState());
     const result = await tool.execute({ url: "http://localhost:8080" });
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("blocked"));
+    assert.strictEqual(result.success, true);
   });
 
   test("navigate rejects file protocol", async () => {
     const tool = createBrowserNavigateTool(createMockClient(), createBrowserPageState());
     const result = await tool.execute({ url: "file:///etc/passwd" });
     assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("blocked"));
+    assert.ok(result.error?.includes("file://"));
   });
 
   test("navigate succeeds with valid url and sets the current page", async () => {
@@ -213,14 +212,16 @@ describe("browser action tools", () => {
     }
   }
 
-  test("upload_file refuses a path outside the workspace", async () => {
+  test("upload_file takes a path outside the workspace", async () => {
     await withWorkspace(async (ws) => {
       const state = createBrowserPageState();
       state.currentPageId = "p1";
-      const tool = createBrowserUploadFileTool(createMockClient(), state, ws);
+      const client = createMockClient();
+      const tool = createBrowserUploadFileTool(client, state, ws);
       const result = await tool.execute({ path: "/etc/passwd" });
-      assert.strictEqual(result.success, false);
-      assert.ok(result.error?.includes("escapes workspace"));
+      assert.strictEqual(result.success, true);
+      const call = (client.uploadFile as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+      assert.deepStrictEqual(call?.arguments[1], ["/etc/passwd"]);
     });
   });
 
@@ -452,13 +453,12 @@ describe("browser low-level tools", () => {
     assert.strictEqual(call?.arguments[1], "/data/dl");
   });
 
-  test("pdf refuses a destination outside the workspace", async () => {
+  test("pdf takes a destination outside the workspace", async () => {
     const client = createMockClient();
     const tool = createBrowserPdfTool(client, activeState(), { workspaceDir: "/ws" });
     const result = await tool.execute({ path: "/etc/evil.pdf" });
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("escapes workspace"));
-    assert.strictEqual((client.pdf as unknown as { calls: unknown[] }).calls.length, 0);
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("/etc/evil.pdf"));
   });
 
   test("pdf defaults into the download directory", async () => {

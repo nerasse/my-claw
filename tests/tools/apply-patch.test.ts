@@ -144,12 +144,18 @@ test("apply_patch: malformed edits are named rather than silently skipped", asyn
   }
 });
 
-test("apply_patch: a path outside the workspace is refused", async () => {
-  const result = await applyPatchTool.execute({
-    path: "/etc/hosts",
-    edits: [{ old: "localhost", new: "nope" }],
-    __workspaceDir: TMP,
-  });
-  assert.equal(result.success, false);
-  assert.match(result.error ?? "", /escapes workspace/);
+test("apply_patch: a path outside the workspace is edited as asked", async () => {
+  const outside = join(TMP, "..", `outside-${Date.now()}.txt`);
+  await writeFile(outside, "localhost\n");
+  try {
+    const result = await applyPatchTool.execute({
+      path: outside,
+      edits: [{ old: "localhost", new: "nope" }],
+      __workspaceDir: join(TMP, "workspace"),
+    });
+    assert.equal(result.success, true);
+    assert.equal(await readFile(outside, "utf-8"), "nope\n");
+  } finally {
+    await rm(outside, { force: true });
+  }
 });

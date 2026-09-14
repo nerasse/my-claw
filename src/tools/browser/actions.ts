@@ -73,12 +73,7 @@ export function createBrowserUploadFileTool(
       required: ["path"],
     },
     async execute(args): Promise<ToolResult> {
-      let resolved: string;
-      try {
-        resolved = resolveWorkspacePath(str(args, "path"), workspaceOf(args, workspaceDir));
-      } catch (e) {
-        return { success: false, output: "", error: String((e as Error).message) };
-      }
+      const resolved = resolveWorkspacePath(str(args, "path"), workspaceOf(args, workspaceDir));
       try {
         await access(resolved);
       } catch {

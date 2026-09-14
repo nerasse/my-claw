@@ -18,12 +18,7 @@ export const lsTool: Tool = {
     if (!path.trim()) {
       return { success: false, output: "path is required and cannot be empty." };
     }
-    let resolved: string;
-    try {
-      resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
-    } catch (e) {
-      return { success: false, output: "", error: String((e as Error).message) };
-    }
+    const resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
     try {
       await access(resolved);
     } catch {

@@ -90,12 +90,7 @@ export const applyPatchTool: Tool = {
     const parsed = parseEdits(args["edits"]);
     if (parsed.error) return { success: false, output: parsed.error };
 
-    let resolved: string;
-    try {
-      resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
-    } catch (e) {
-      return { success: false, output: "", error: String((e as Error).message) };
-    }
+    const resolved = resolveWorkspacePath(path, strOpt(args, "__workspaceDir"));
 
     let original: string;
     try {

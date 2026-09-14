@@ -190,14 +190,9 @@ export function createBrowserPdfTool(
     },
     async execute(args): Promise<ToolResult> {
       const requested = strOpt(args, "path");
-      let destination: string;
-      try {
-        destination = requested
-          ? resolveWorkspacePath(requested, workspaceOf(args, opts.workspaceDir))
-          : join(downloadDirFor(opts, args), `page-${Date.now()}.pdf`);
-      } catch (e) {
-        return { success: false, output: "", error: String((e as Error).message) };
-      }
+      const destination = requested
+        ? resolveWorkspacePath(requested, workspaceOf(args, opts.workspaceDir))
+        : join(downloadDirFor(opts, args), `page-${Date.now()}.pdf`);
       try {
         const result = await client.pdf(getPageId(state), destination);
         return { success: true, output: `Saved PDF to ${result.path}` };
