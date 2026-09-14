@@ -69,17 +69,81 @@ export function mediaTypeForPath(path: string): "image" | "audio" | "video" | "f
   return MEDIA_TYPE_BY_EXT[path.slice(dot + 1).toLowerCase()] ?? "file";
 }
 
-export function extractMediaRefs(text: string): MediaRef[] {
-  const refs: MediaRef[] = [];
+/**
+ * The ranges of `text` markdown renders as code: fenced blocks and inline spans.
+ *
+ * A `MEDIA:` ref inside one is the agent talking *about* the format -- the system prompt teaches it,
+ * so every message that explains it quotes it -- and never a file it means to send. Read as an
+ * intent, each quoted example became an attachment whose file does not exist: drawn as an empty
+ * thumbnail when it looked like an image, as "<name> (deleted)" otherwise, with the example cut out
+ * of the sentence around it (2026-09-14).
+ */
+function codeRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const fenceAt = /^ {0,3}(`{3,}|~{3,})/;
+  let openFrom = -1;
+  let marker = "";
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const fence = fenceAt.exec(line)?.[1];
+    if (openFrom < 0 && fence) {
+      openFrom = offset;
+      marker = fence;
+    } else if (openFrom >= 0 && fence && fence[0] === marker[0] && fence.length >= marker.length) {
+      ranges.push({ start: openFrom, end: offset + line.length });
+      openFrom = -1;
+    } else if (openFrom < 0) {
+      // Line by line: an unmatched run is prose, not an opening quote. Treating it as one would
+      // hide the rest of the message behind it, and lose a real file with it.
+      for (let i = 0; i < line.length; ) {
+        if (line[i] !== "`") {
+          i += 1;
+          continue;
+        }
+        const run = /^`+/.exec(line.slice(i))![0].length;
+        const close = line.indexOf("`".repeat(run), i + run);
+        if (close < 0) break;
+        ranges.push({ start: offset + i, end: offset + close + run });
+        i = close + run;
+      }
+    }
+    offset += line.length + 1;
+  }
+  if (openFrom >= 0) ranges.push({ start: openFrom, end: text.length });
+  return ranges;
+}
+
+/** Every `MEDIA:` ref of the prose, with the bounds of the text it occupies. */
+function proseRefs(text: string): Array<{ path: string; from: number; to: number }> {
+  const code = codeRanges(text);
+  const refs: Array<{ path: string; from: number; to: number }> = [];
+  MEDIA_PATTERN.lastIndex = 0;
   let match;
   while ((match = MEDIA_PATTERN.exec(text)) !== null) {
-    refs.push({ path: match[1]!, match: match[0]! });
+    const from = match.index;
+    if (code.some((range) => from >= range.start && from < range.end)) continue;
+    refs.push({ path: match[1]!, from, to: from + match[0]!.length });
   }
   return refs;
 }
 
+/** The text with the prose refs taken out; a ref inside code is prose and stays where it is. */
+function removeProseRefs(text: string): string {
+  let out = "";
+  let at = 0;
+  for (const ref of proseRefs(text)) {
+    out += text.slice(at, ref.from);
+    at = ref.to;
+  }
+  return out + text.slice(at);
+}
+
+export function extractMediaRefs(text: string): MediaRef[] {
+  return proseRefs(text).map((ref) => ({ path: ref.path, match: text.slice(ref.from, ref.to) }));
+}
+
 export function stripMediaRefs(text: string): string {
-  return text.replace(MEDIA_PATTERN, "").trim();
+  return removeProseRefs(text).trim();
 }
 
 /**
@@ -95,7 +159,7 @@ const PARTIAL_REF_TAIL = /(?<![A-Za-z0-9_])(?:MED|MEDI|MEDIA|MEDIA:|MEDIA:\/)$/;
  * fragment is released whole as soon as the following token proves it was not a ref.
  */
 export function stripMediaRefsStreaming(raw: string): string {
-  const stripped = raw.replace(MEDIA_PATTERN, "");
+  const stripped = removeProseRefs(raw);
   const tail = PARTIAL_REF_TAIL.exec(stripped)?.[0] ?? "";
   return stripped.slice(0, stripped.length - tail.length);
 }
