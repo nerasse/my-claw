@@ -14,7 +14,7 @@ import type {
 } from "../types.ts";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { readAppVersion } from "../../core/diagnostics.ts";
-import { runRegistry } from "../../core/run-registry.ts";
+import { runRegistry, type StopOutcome } from "../../core/run-registry.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
@@ -332,7 +332,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** Serializes roster snapshots per parent so a slower lifecycle read cannot publish stale state. */
   private rosterPushes = new Map<string, Promise<void>>();
   private locationResolver?: MyClawAppLocationResolver;
-  private stopRun?: (sessionId: string) => boolean;
+  private stopRun?: (sessionId: string) => StopOutcome;
   private runActive?: (sessionId: string) => boolean;
   private sweeper?: ReturnType<typeof setInterval>;
   /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
@@ -788,8 +788,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
-  /** Stops the run of a session id (resolved here), so the adapter never reaches into core. */
-  onStop(stop: (sessionId: string) => boolean): void {
+  /** Stops the run of a session id (resolved here), so the adapter never reaches into core. The
+   *  outcome is named, not a boolean: the second stop of a cycle must not be answered at all. */
+  onStop(stop: (sessionId: string) => StopOutcome): void {
     this.stopRun = stop;
   }
 
@@ -2518,13 +2519,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await this.refuse(ws, "chat", "stop unavailable");
       return;
     }
-    const stopped = this.stopRun(sessionId);
-    // Same words as the /stop command, so the app and the chat agree on what happened.
-    this.sendFrame(ws, {
-      type: "chat.command.result",
-      threadId,
-      text: stopped ? "Stopped." : "Nothing running.",
-    });
+    // One stop per cycle: while the abort is in flight a second press answers nothing at all --
+    // another "Stopped." would be a second bubble for the one stop. "stopped" and "idle" keep
+    // the same words as the /stop command, so the app and the chat agree on what happened.
+    switch (this.stopRun(sessionId)) {
+      case "stopped":
+        this.sendFrame(ws, { type: "chat.command.result", threadId, text: "Stopped." });
+        return;
+      case "idle":
+        this.sendFrame(ws, { type: "chat.command.result", threadId, text: "Nothing running." });
+        return;
+      case "stopping":
+        return;
+    }
   }
 
   /**

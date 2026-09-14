@@ -63,11 +63,30 @@ was marked stopped, and the process sat in a timer nothing could reach while the
 button do nothing. The check runs before the wait too, so a stop that landed a moment earlier does
 not buy one more delay.
 
+### One stop per cycle
+
+The stop is not a boolean. `runRegistry.stop(sessionId)` answers one of three named cases:
+
+- `stopped`: this call issued the abort of the current cycle (a run, or a compaction hold);
+- `stopping`: the abort of the same cycle is already in flight -- nothing left to abort;
+- `idle`: no cycle to stop.
+
+The second stop of a cycle stops nothing more than the first: the abort is already travelling,
+and the only thing another answer can add is another bubble -- three `/stop` used to draw three.
+So the two surfaces that report a stop, the app's Stop button and a typed `/stop`, stay
+completely silent on `stopping`: no frame, no text, no journal line.
+
+The state is lifted exactly where the cycle ends, and nowhere earlier: a run's `end()` (the
+closure `startRoot` returns) and a compaction hold's `release()`. This is the trap the shape of
+the flag invites: a `stopping` that outlived its cycle would swallow the next cycle's first stop
+-- one failed compaction would make every later stop answer `stopping` forever.
+
 ### Reply
 
-`/stop` replies `Stopped.` if a run was cancelled, `Nothing running.` otherwise. The cancelled run
-delivers no message (the router returns nothing on abort). `/status` shows the live run tree
-(`Active run: main, researcher[1]`).
+`/stop` replies `Stopped.` for the first stop of a cycle, `Nothing running.` when there is
+nothing to stop, and nothing at all when a stop is already in flight (see "One stop per cycle").
+The cancelled run delivers no message (the router returns nothing on abort). `/status` shows the
+live run tree (`Active run: main, researcher[1]`).
 
 ## Hooks
 

@@ -43,6 +43,27 @@ test("/stop stops the current session and distinguishes idle", async () => {
   runRegistry.clear();
 });
 
+/**
+ * One stop per cycle (docs/stop.md): while the first stop's abort is still in flight, a second
+ * `/stop` must answer nothing at all -- a second "Stopped." is a second bubble for the one stop.
+ * The adapter turns the `undefined` into the same silence on the wire: no frame, no journal line.
+ */
+test("/stop answers nothing while the abort of the same cycle is in flight", async () => {
+  runRegistry.clear();
+  const run = handler();
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "u1", "u1", { threadId: "t1" });
+  const { end } = runRegistry.startRoot(sessionId);
+
+  assert.equal(await run("u1", "t1", "stop", ""), "Stopped.");
+  assert.equal(await run("u1", "t1", "stop", ""), undefined);
+  assert.equal(await run("u1", "t1", "stop", ""), undefined);
+
+  // The cycle over, the next /stop finds an idle session -- and says so, once.
+  end();
+  assert.equal(await run("u1", "t1", "stop", ""), "Nothing running.");
+  runRegistry.clear();
+});
+
 test("/status shows the live run tree (main + sub-agents)", async () => {
   runRegistry.clear();
   const run = handler();

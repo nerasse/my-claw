@@ -92,8 +92,11 @@ export class MessageRouter {
     this.agent.setApprovalHandler(handler);
   }
 
+  /** True when the stop found something to stop -- an abort just issued, or one already in
+   *  flight. "idle" is the only false; the callers (a cron timeout, the tests) only ask whether
+   *  a stop happened, and the response surfaces read the three cases from the registry directly. */
   stop(sessionId: string): boolean {
-    return runRegistry.stop(sessionId);
+    return runRegistry.stop(sessionId) !== "idle";
   }
 
   // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated

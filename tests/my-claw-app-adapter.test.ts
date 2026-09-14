@@ -3647,11 +3647,10 @@ describe("command frames", () => {
       handled.push({ command, args });
       return `${command} done`;
     });
-    let stopped: string | null = null;
-    adapter.onStop((sessionId) => {
-      stopped = sessionId;
-      return stopped !== null;
-    });
+    // The mock stands in for the registry: its answer is the cycle's first stop, which is the
+    // only outcome these command-frame tests need. The silence of a second stop is proven
+    // against the real registry, in its own test below.
+    adapter.onStop(() => "stopped");
     await adapter.start();
     client = await connectClient(adapter.port);
   });
@@ -4080,6 +4079,38 @@ describe("command frames", () => {
     client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t9" }));
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "chat.command.result");
+  });
+
+  /**
+   * One stop per cycle, at the surface the owner actually presses: while the abort is in flight,
+   * a second chat.stop must draw nothing -- no frame, no text. Three presses used to draw three
+   * "Stopped." bubbles for one abort. Wired to the real registry, so the silence proven here is
+   * the production one, not a mock's.
+   */
+  test("a second chat.stop while the abort is in flight draws no frame at all", async () => {
+    adapter.onStop((sessionId) => runRegistry.stop(sessionId));
+    const sessionId = store.resolveSessionId(DEVICE_ID, "t-one-stop");
+    const { end } = runRegistry.startRoot(sessionId);
+    try {
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
+      const first = await nextFrame(client);
+      assert.equal(first["type"], "chat.command.result");
+      assert.equal(first["text"], "Stopped.");
+
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(client.frames.length, 0, "the second stop must not produce a frame");
+
+      // The cycle over, the next press finds nothing -- and says so, once, in its own words.
+      end();
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
+      const idle = await nextFrame(client);
+      assert.equal(idle["type"], "chat.command.result");
+      assert.equal(idle["text"], "Nothing running.");
+    } finally {
+      end();
+      runRegistry.clear();
+    }
   });
 
   test("session.clear is gone: emptying a conversation is not offered anymore", async () => {
@@ -5178,7 +5209,7 @@ describe("question frames", () => {
     let stopped = false;
     adapter.onStop(() => {
       stopped = true;
-      return true;
+      return "stopped";
     });
     const ask = questionManager.ask({
       sessionId: sessionIdOf("t-stop"),

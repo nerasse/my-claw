@@ -2146,7 +2146,13 @@ async function main() {
     // A run is either a root the registry holds a controller for, or a child the runner tracks: a
     // sub-agent spawned by the spawn tool has a mailbox in the registry and nothing else, so asking
     // the registry alone read its thread as idle -- and the app sealed and folded a run in flight.
-    myClawApp.onStop((sessionId) => runRegistry.stop(sessionId) || subAgentRunner.stopSession(sessionId));
+    myClawApp.onStop((sessionId) => {
+      // The registry answers the three named cases; only "idle" lets the sub-agent runner have
+      // its turn (a spawned child has a mailbox in the registry and a run in the runner).
+      const outcome = runRegistry.stop(sessionId);
+      if (outcome !== "idle") return outcome;
+      return subAgentRunner.stopSession(sessionId) ? "stopped" : "idle";
+    });
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId) || subAgentRunner.isRunningSession(sessionId));
 
     // A message the app sends inside a sub-agent goes through the runner, never through a normal

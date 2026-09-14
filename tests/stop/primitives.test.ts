@@ -31,12 +31,12 @@ test("run-registry: startRoot tracks a controller, stop aborts it once", () => {
   assert.equal(signal.aborted, false);
   assert.equal(runRegistry.isRunning("sess-A"), true);
 
-  assert.equal(runRegistry.stop("sess-A"), true);
+  assert.equal(runRegistry.stop("sess-A"), "stopped");
   assert.equal(signal.aborted, true);
 
   end();
   assert.equal(runRegistry.isRunning("sess-A"), false);
-  assert.equal(runRegistry.stop("sess-A"), false);
+  assert.equal(runRegistry.stop("sess-A"), "idle");
   runRegistry.clear();
 });
 
@@ -45,7 +45,7 @@ test("run-registry: stop targets only the requested session", () => {
   const a = runRegistry.startRoot("sess-A");
   const b = runRegistry.startRoot("sess-B");
 
-  assert.equal(runRegistry.stop("sess-A"), true);
+  assert.equal(runRegistry.stop("sess-A"), "stopped");
   assert.equal(a.signal.aborted, true);
   assert.equal(b.signal.aborted, false);
 

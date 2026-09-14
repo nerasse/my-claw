@@ -170,7 +170,7 @@ test("/stop reaches a compaction and aborts the signal its hold carries", async 
   assert.notEqual(held, null);
   assert.equal(held!.signal.aborted, false);
 
-  assert.equal(runRegistry.stop("s5"), true, "/stop must report that it stopped something");
+  assert.equal(runRegistry.stop("s5"), "stopped", "/stop must report that it stopped something");
   assert.equal(held!.signal.aborted, true);
 
   held!.release();
@@ -200,7 +200,7 @@ test("/stop during a /compact stops the summarizer, and the command answers that
     while (requestSignal === undefined) await new Promise((r) => setTimeout(r, 1));
     assert.equal(requestSignal.aborted, false);
 
-    assert.equal(runRegistry.stop("s5b"), true);
+    assert.equal(runRegistry.stop("s5b"), "stopped");
     const outcome = await pending;
     assert.equal(outcome.ok, false);
     assert.equal(outcome.text, "Compaction stopped.");

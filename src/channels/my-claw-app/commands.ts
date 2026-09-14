@@ -280,8 +280,18 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           .join("\n");
       }
 
-      case "stop":
-        return runRegistry.stop(sessionId) ? "Stopped." : "Nothing running.";
+      case "stop": {
+        switch (runRegistry.stop(sessionId)) {
+          case "stopped":
+            return "Stopped.";
+          case "idle":
+            return "Nothing running.";
+          case "stopping":
+            // The abort of this cycle is already in flight: a second answer would be a second
+            // bubble for the one stop, so the command answers nothing at all.
+            return undefined;
+        }
+      }
 
       case "status":
         return await statusReport({
