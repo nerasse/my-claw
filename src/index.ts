@@ -2359,6 +2359,7 @@ async function main() {
     // The summary being written, live. Batched at the source: one frame per token would be a wall
     // of them for text the owner may not be reading.
     hooks.on("session:compact:progress", ({ sessionId, text }) => myClawApp.notifyCompactionProgress(sessionId, text));
+    hooks.on("session:compact:reasoning", ({ sessionId, text }) => myClawApp.notifyCompactionReasoning(sessionId, text));
     hooks.on("session:compact:settled", ({ sessionId }) => myClawApp.notifyCompacting(sessionId, undefined));
 
     // The roster is pull-only by default; a lifecycle event pushes a fresh `subagents.list.result`

@@ -255,10 +255,14 @@ export class LiveTurnJournal {
    * something unrelated takes it down. Carried by the sync, the state is a fact of the thread
    * rather than a memory of one socket.
    */
-  compactionState(owner: string, threadId: string): { since: string; text?: string } | undefined {
+  compactionState(owner: string, threadId: string): { since: string; text?: string; reasoning?: string } | undefined {
     const frame = this.compactions.get(this.key(owner, threadId));
     if (!frame || frame.type !== "chat.compacting" || !frame.since) return undefined;
-    return { since: frame.since, ...(frame.text ? { text: frame.text } : {}) };
+    return {
+      since: frame.since,
+      ...(frame.text ? { text: frame.text } : {}),
+      ...(frame.reasoning ? { reasoning: frame.reasoning } : {}),
+    };
   }
 
   /**
@@ -273,6 +277,14 @@ export class LiveTurnJournal {
     const frame = this.compactions.get(key);
     if (!frame || frame.type !== "chat.compacting") return;
     this.compactions.set(key, { ...frame, text: (frame.text ?? "") + text });
+  }
+
+  /** The same, for the thinking that precedes the summary. */
+  appendCompactingReasoning(owner: string, threadId: string, reasoning: string): void {
+    const key = this.key(owner, threadId);
+    const frame = this.compactions.get(key);
+    if (!frame || frame.type !== "chat.compacting") return;
+    this.compactions.set(key, { ...frame, reasoning: (frame.reasoning ?? "") + reasoning });
   }
 
   /** Settled, whatever the outcome: a replay of it would show an operation that is over. */

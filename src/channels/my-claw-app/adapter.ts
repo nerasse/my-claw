@@ -859,6 +859,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.broadcast(owner, { type: "chat.compacting.delta", threadId, text });
   }
 
+  /** The same road, for what the summarizer is thinking before it writes a word. */
+  notifyCompactionReasoning(sessionId: string, reasoning: string): void {
+    const match = APP_THREAD_SESSION.exec(sessionId);
+    if (!match) return;
+    const owner = match[1]!;
+    const threadId = match[2]!;
+    this.live.appendCompactingReasoning(owner, threadId, reasoning);
+    this.broadcast(owner, { type: "chat.compacting.delta", threadId, reasoning });
+  }
+
   async notifyModelState(owner: string, threadId: string): Promise<void> {
     if (!this.models) return;
     try {

@@ -451,6 +451,34 @@ porte aussi **le résumé en train de s'écrire** : `chat.compacting.delta` en d
 accumulé sur la trame rejouée, replié sous la règle comme tout aside. Détail côté app :
 `docs/compaction-indicator.md` du dépôt my-claw-app.
 
+## 7bis. Ce que la compaction montre pendant qu'elle travaille
+
+Deux phases sortent en direct, par deux événements distincts, et l'app les dessine comme deux
+encarts repliables sous la règle :
+
+| phase | hook | frame | encart |
+| --- | --- | --- | --- |
+| réflexion | `session:compact:reasoning` | `chat.compacting.delta { reasoning }` | « Thinking… » |
+| rédaction | `session:compact:progress` | `chat.compacting.delta { text }` | « Writing the summary… » |
+
+Les deux sont **batchés à la source** (`PROGRESS_BATCH_CHARS`, `PROGRESS_BATCH_MS`) : une frame par
+token serait un mur de frames pour un texte que le propriétaire ne lit peut-être pas. Les deux sont
+aussi **repliés sur la frame retenue** (`LiveTurns.compactions`) et **portés par la resynchronisation**
+(`session.sync.result.compacting`), donc une fenêtre qui s'ouvre au milieu reçoit tout ce qui a été
+produit jusque-là, dans les deux phases.
+
+Pourquoi deux événements plutôt qu'un drapeau sur `:progress` : ce sont deux choses différentes à
+l'écran, et surtout la réflexion précède le premier mot du résumé. **C'est là qu'est l'attente.**
+Avec `reasoning_effort` hérité de la session (`max` sur le tag `Cheap`), le résumeur pense une
+minute avant d'écrire. Jusqu'au 2026-09-14 ce raisonnement était reçu, accumulé, **jeté** et
+facturé : `llmCompleteStream` était appelé sans sink de raisonnement. À l'écran il ne restait
+qu'une règle et un compteur, et **un modèle qui réfléchit se lisait exactement comme un
+fournisseur mort** -- ce qui est précisément la confusion dans laquelle le propriétaire s'est
+trouvé le soir où `deepseek-flash` ne répondait plus rien (voir `docs/llm-timeout.md`).
+
+L'héritage de l'effort n'est pas retiré : c'est une décision assumée (le résumé est meilleur), et
+la lenteur qu'elle cause est désormais **visible** au lieu d'être muette.
+
 ## 7. Ce qu'on ne fait pas, et pourquoi
 
 - **Élaguer les vieux résultats d'outils** (le consensus n°1 de la communauté : 68 % des tokens

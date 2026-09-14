@@ -487,3 +487,64 @@ test("a zero span is written as a zero, not dropped", async () => {
     fetchMock.restore();
   }
 });
+
+/**
+ * The compaction thinks before it writes, and that thinking is the wait.
+ *
+ * 2026-09-14: with `reasoning_effort: max` inherited from the session, a summarizer can spend a
+ * minute reasoning before the first word of the summary. That reasoning was received and dropped
+ * on the floor -- no sink was passed -- so the only thing on screen was a rule with a counter, and
+ * a thinking model looked exactly like a dead one. It streams now, like any other turn.
+ */
+function sseWithReasoning(reasoning: string[], content: string): Response {
+  const frames = [
+    ...reasoning.map((piece) => `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: piece } }] })}\n\n`),
+    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  return new Response(frames.join(""), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+test("a compaction streams what it is thinking, not only what it writes", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const thoughts: string[] = [];
+  const onReasoning = ({ text }: { text: string }): void => void thoughts.push(text);
+  hooks.on("session:compact:reasoning", onReasoning);
+
+  const fetchMock = mockFetch(async () =>
+    sseWithReasoning(
+      ["Looking at what the user ", "was doing across these turns"],
+      "Summary of earlier context. The user was working on a multi-step task involving code changes.",
+    ) as never,
+  );
+  try {
+    await compactSession(makeConfig(), session);
+    assert.equal(thoughts.join(""), "Looking at what the user was doing across these turns");
+  } finally {
+    fetchMock.restore();
+    hooks.off("session:compact:reasoning", onReasoning);
+  }
+});
+
+test("a compaction that thinks nothing says nothing", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  let fired = 0;
+  const onReasoning = (): void => void (fired += 1);
+  hooks.on("session:compact:reasoning", onReasoning);
+
+  const fetchMock = mockFetch(async () =>
+    sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }) as never,
+  );
+  try {
+    await compactSession(makeConfig(), session);
+    assert.equal(fired, 0);
+  } finally {
+    fetchMock.restore();
+    hooks.off("session:compact:reasoning", onReasoning);
+  }
+});

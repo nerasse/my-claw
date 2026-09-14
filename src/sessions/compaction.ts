@@ -287,12 +287,15 @@ export function planCompaction(log: SessionLog, tailBudget: number = TAIL_BUDGET
 const PROGRESS_BATCH_CHARS = 240;
 const PROGRESS_BATCH_MS = 400;
 
-function compactionProgress(sessionId: string): { push: (chunk: string) => void; flush: () => void } {
+function compactionProgress(
+  sessionId: string,
+  event: "session:compact:progress" | "session:compact:reasoning" = "session:compact:progress",
+): { push: (chunk: string) => void; flush: () => void } {
   let pending = "";
   let lastAt = Date.now();
   const send = (): void => {
     if (!pending) return;
-    hooks.emit("session:compact:progress", { sessionId, text: pending });
+    hooks.emit(event, { sessionId, text: pending });
     pending = "";
     lastAt = Date.now();
   };
@@ -372,6 +375,10 @@ export async function summarizeForCompaction(
   // transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
   // they arrive, so a window can watch it being written -- docs/compaction.md.
   const progress = compactionProgress(session.id);
+  // The thinking goes out too, batched the same way. A summarizer inheriting the session's effort
+  // spends that time before its first word, and the rule with a counter was the only thing on
+  // screen for it -- docs/compaction.md.
+  const thinking = compactionProgress(session.id, "session:compact:reasoning");
   const response = await llmCompleteStream(
     llmConfig,
     [
@@ -381,8 +388,10 @@ export async function summarizeForCompaction(
     (chunk: string) => progress.push(chunk),
     undefined,
     signal,
+    { onText: async (delta: string) => void thinking.push(delta) },
   );
   progress.flush();
+  thinking.flush();
   recordApiCall({
     sessionId: session.id,
     // Compaction is maintenance on a session, not work delegated by another one, so it bills

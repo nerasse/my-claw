@@ -1404,13 +1404,24 @@ export interface MyClawAppChatCompacting {
    * point; the live fragments come as `chat.compacting.delta` and the client appends them.
    */
   text?: string;
+  /**
+   * What the summarizer has thought so far, on a replayed frame only.
+   *
+   * Same contract as `text`, for the phase that comes before it: a compaction that inherited the
+   * session's effort thinks for a while with nothing to show, and a window opening into that must
+   * be told the wait is progress rather than a stall.
+   */
+  reasoning?: string;
 }
 
-/** A fragment of the summary a compaction is writing, live. */
+/** A fragment of what a compaction is writing or thinking, live. */
 export interface MyClawAppChatCompactingDelta {
   type: "chat.compacting.delta";
   threadId: string;
-  text: string;
+  /** A piece of the summary. */
+  text?: string;
+  /** A piece of the thinking that precedes it. */
+  reasoning?: string;
 }
 
 export interface MyClawAppLocationCapabilities {
@@ -1678,7 +1689,7 @@ export interface MyClawAppSessionSyncResult {
    * down would otherwise keep drawing the rule -- counter still climbing -- until something
    * unrelated took it down. A client applies this state in both directions.
    */
-  compacting?: { since: string; text?: string };
+  compacting?: { since: string; text?: string; reasoning?: string };
   /** Why the delta was replaced by a full page. */
   reset?: "unknown-cursor" | "branch-switch";
   /** Whether entries were truncated by the limit. */

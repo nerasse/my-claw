@@ -215,6 +215,14 @@ export interface HookEventMap {
    * Batched at the source -- one hook per token would be one frame per token.
    */
   "session:compact:progress": { sessionId: string; text: string };
+  /**
+   * What the summarizer is thinking, as it thinks it.
+   *
+   * Its own event rather than a flag on `:progress`: the two are different things on screen, and
+   * a compaction inheriting `reasoning_effort: max` can think for a minute before its first word.
+   * Dropped on the floor until 2026-09-14, which made a thinking model look like a dead one.
+   */
+  "session:compact:reasoning": { sessionId: string; text: string };
   "session:compact:end": {
     sessionId: string;
     beforeCount: number;
