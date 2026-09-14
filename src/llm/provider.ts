@@ -912,7 +912,6 @@ export async function chatCompletionStream(
       };
 
       for await (const chunk of readStream(response.body)) {
-        keepAlive();
         buffer += decoder.decode(chunk, { stream: true });
 
         let newlineIndex = buffer.indexOf("\n");
@@ -929,6 +928,12 @@ export async function chatCompletionStream(
             if (data) {
               const parsed = safeJsonParse(data, "SSE chunk");
               if (Object.keys(parsed).length > 0) {
+                // Here, and not once per chunk read: the budget measures how long the provider has
+                // produced nothing, so only a frame that parses counts. A `: keep-alive` comment
+                // keeps a socket warm and says nothing about the model -- opencode zen sends one
+                // every twelve seconds behind a dead model, which re-armed a 120 s wall five times
+                // a minute and hung a run until the gateway gave up (docs/llm-timeout.md).
+                keepAlive();
                 await handleChunk(parsed as ChatCompletionStreamChunk);
               }
             }

@@ -201,6 +201,36 @@ branch for it reads no model row at all (not `vision`, not `limit`, not this). A
 there is ignored; `llm.timeoutMs` still applies. Not worth a special case: a `models` array is a
 new-format notion in the first place.
 
+## A keep-alive is not progress
+
+The budget is "time with nothing received", and that wording hid an assumption: that anything
+received is the model working. Measured on the wire on 2026-09-14, it is not.
+
+A dead `deepseek-flash` behind `opencode.ai/zen/go/v1` answers `HTTP 200`, opens a
+`text/event-stream`, and then sends this, forever:
+
+```
+22:29:38.788  <= Recv data, 14 bytes   : keep-alive
+22:29:50.793  <= Recv data, 14 bytes   : keep-alive
+22:30:02.794  <= Recv data, 14 bytes   : keep-alive
+```
+
+Fourteen bytes every twelve seconds. The wall re-armed on every chunk read, so those fourteen bytes
+reset a 120 s budget five times a minute and it could never fire. The stream never closed either,
+so the guard below ("Silence is not an answer") was never reached: it runs at the end of a stream
+there was no end to. A `/compact` sat for sixteen minutes with nothing in the log after
+`command received`, and the ~905 s calls in the analytics are the gateway's own limit giving up
+first -- our wall never did.
+
+So the budget re-arms on a **frame that parses**, not on bytes. A comment keeps a socket warm and
+says nothing about the model. What this buys, in order: the wall fires at the budget, the error says
+`stalled`, `isOutageClass` matches it, and the route falls through to its next model.
+
+One consequence, deliberate: a model that produces nothing at all for longer than its budget is now
+cut where keep-alives used to carry it. That is what the budget is for, and raising `timeoutMs` is
+the answer for a genuinely slow endpoint -- an engine that streams its thinking (reasoning deltas
+are frames) re-arms normally and is unaffected.
+
 ## Silence is not an answer
 
 The budget above answers "how long may a stream say nothing before we cut it". It does **not**
