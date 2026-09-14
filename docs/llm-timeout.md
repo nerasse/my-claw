@@ -201,6 +201,41 @@ branch for it reads no model row at all (not `vision`, not `limit`, not this). A
 there is ignored; `llm.timeoutMs` still applies. Not worth a special case: a `models` array is a
 new-format notion in the first place.
 
+## Silence is not an answer
+
+The budget above answers "how long may a stream say nothing before we cut it". It does **not**
+answer what a stream that said nothing *and closed on its own* means. Those are two questions, and
+reading the second as "an empty answer" cost half an hour of frozen conversations on 2026-09-14.
+
+What happened: `deepseek-flash` behind `opencode.ai/zen/go/v1` began answering `HTTP 200` with a
+`text/event-stream` it never wrote one byte to. Reproduced live on a prompt that said `dis OK`, so
+it was neither the 280k-token context nor any ceiling of ours. The gateway then closed the stream
+cleanly, which is the part that hurt:
+
+- nothing threw, so the transport returned a turn with no content and `incomplete: true`;
+- the bridge read an empty turn and retried the same model (`LLM ended an empty turn; retrying`), a
+  `warn` that reaches no screen;
+- the `Cheap` route never fell through to its second model, because a route falls through on an
+  **error** and an empty turn is not one;
+- the owner watched a spinner, with `error = null` in the analytics and ~905 s per call.
+
+So a stream that delivered **nothing at all** -- no content, no tool call, no reasoning, no finish
+reason, no usage -- now throws `LLM stream closed without sending anything`. A provider that never
+said why it stopped did not answer.
+
+The wording is a contract: `isOutageClass` in the dispatcher matches `/stream.*closed/`, which is
+what turns this throw into a fallback onto the next model of the route instead of a retry against
+the same silence.
+
+The test is deliberately narrower than "the answer was empty", and three cases stay valid turns:
+
+| What came back | Verdict | Why |
+|---|---|---|
+| reasoning, then cut | valid turn, `incomplete` | something arrived; the answer was cut, the provider answered |
+| `finish_reason: stop`, no text | valid turn | the model chose to say nothing, and said so |
+| usage only | valid turn | a turn billed for its tokens was served |
+| nothing | **throws** | no answer, and no claim of one |
+
 ## Refused
 
 - **A retry budget of its own for timeouts.** See above: one rule.

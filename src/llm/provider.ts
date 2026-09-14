@@ -960,6 +960,16 @@ export async function chatCompletionStream(
       const segments = segmenter.list();
       const reasoningMs = segmenter.thinkingMs();
       const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning);
+      // A provider that never said why it stopped did not answer, and silence read as a valid
+      // empty turn is how a dead endpoint froze a conversation for half an hour without one error
+      // (2026-09-14, deepseek-flash behind opencode zen: HTTP 200, event-stream, zero bytes). The
+      // wording matters: `isOutageClass` matches it, which is what makes the route fall through to
+      // its next model instead of retrying the same silence -- docs/llm-timeout.md.
+      if (!content && streamedToolCalls.length === 0 && !reasoning && finishReason === undefined && streamUsage === undefined) {
+        const err = new Error("LLM stream closed without sending anything") as Error & { status?: number };
+        recordCircuitFailure(config.baseUrl);
+        throw err;
+      }
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
