@@ -56,7 +56,8 @@ import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
+import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
 import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
@@ -212,15 +213,19 @@ export class AgentBridge implements AgentBackend {
   }
 
   /**
-   * The same files, without taking them.
+   * What this run's tools produced, stored where a device can fetch it, for the end marker.
    *
-   * The run writes what its tools produced onto the end marker before the router consumes the
-   * attachments for the outgoing message: a peek is what lets the log and the live frame both
-   * name the same pictures (2026-09-14).
+   * The bytes have to be stored before the marker is written -- the log never rewrites an entry --
+   * and only a channel owns a store, so the store is injected. Storing here is also what lets the
+   * outgoing frame name the same copy: the id rides back onto the registry's own attachment, and
+   * the router's send then fetches instead of copying again (2026-09-15).
+   *
+   * A run with no store records the paths alone, which is what every marker did before this
+   * existed, and what a channel without files (cron, a plugin) still gets.
    */
-  private mediaPathsOf(messageId: string): string[] {
-    const attachments = this.preprocessor.peekResponseAttachments(messageId) ?? [];
-    return attachments.flatMap((att) => (att.path ? [att.path] : []));
+  private async mediaForMarker(message: UnifiedMessage, session: SessionData): Promise<StoredRunMedia> {
+    const attachments = this.preprocessor.attachmentsOf(message.id) ?? [];
+    return await storeRunMedia(attachments, session.id, this.mediaStore);
   }
 
   hadAudioInbound(messageId: string): boolean {
@@ -234,6 +239,16 @@ export class AgentBridge implements AgentBackend {
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.approvalManager.setHandler(handler);
   }
+
+  /**
+   * Where a run's produced files are stored, so both the marker and the frame can name the copy.
+   * Injected like the approval handler: the agent side owns no bytes.
+   */
+  setMediaStore(store: MediaStoreHook | undefined): void {
+    this.mediaStore = store;
+  }
+
+  private mediaStore?: MediaStoreHook;
 
   async handleMessage(
     message: UnifiedMessage,
@@ -733,7 +748,8 @@ export class AgentBridge implements AgentBackend {
             sessionTokenUsage: session.tokenUsage,
             stagnation: stagnation.report(),
           });
-          recorder.runEnd("done", this.mediaPathsOf(message.id));
+          const media = await this.mediaForMarker(message, session);
+          recorder.runEnd("done", media.paths, media.ids);
           return transformedResponse;
         }
 
@@ -954,7 +970,8 @@ export class AgentBridge implements AgentBackend {
           toolExecutions,
           durationMs: Date.now() - startedAt,
         });
-        recorder.runEnd("aborted", this.mediaPathsOf(message.id));
+        const media = await this.mediaForMarker(message, session);
+        recorder.runEnd("aborted", media.paths, media.ids);
         throw new AbortedError();
       }
       // The same ending as the abort above, and for the same reason: the cursor stays where the
@@ -964,7 +981,8 @@ export class AgentBridge implements AgentBackend {
       // therefore lands after the run's last entry instead of on the question, and the next turn
       // reads the work rather than doing it again. What that costs is the dead attempt's tokens in
       // the next prompt -- docs/session-log.md 2.6.
-      recorder.runEnd("error", this.mediaPathsOf(message.id));
+      const media = await this.mediaForMarker(message, session);
+      recorder.runEnd("error", media.paths, media.ids);
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,
@@ -1151,7 +1169,8 @@ export class AgentBridge implements AgentBackend {
       durationMs,
     });
 
-    recorder.runEnd("done", this.mediaPathsOf(message.id));
+    const media = await this.mediaForMarker(message, session);
+    recorder.runEnd("done", media.paths, media.ids);
     return finalText;
   }
 

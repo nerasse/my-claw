@@ -1,7 +1,7 @@
 import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "./backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveLlmConfigForAgentMessage } from "../llm/resolver.ts";
@@ -155,6 +155,10 @@ export class BackendDispatcher implements AgentBackend {
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.home.setApprovalHandler(handler);
+  }
+
+  setMediaStore(store: MediaStoreHook | undefined): void {
+    this.home.setMediaStore(store);
   }
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {

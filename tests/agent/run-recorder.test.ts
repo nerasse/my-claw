@@ -38,6 +38,21 @@ describe("RunRecorder: what a run produced", () => {
     expect(written).toMatchObject({ type: "run_end", reason: "done", media: ["/tmp/shots/screenshot.png"] });
   });
 
+  test("a run that stored its pictures names the copy on the marker", async () => {
+    // The id is what a device fetches, and the store finds it from any thread of the owner -- a
+    // filename match in one thread directory cannot see a sub-agent's copy at all (2026-09-15).
+    const recorder = new RunRecorder(entries);
+    recorder.runEnd("done", ["/tmp/shots/screenshot.png"], ["f9929fee-16d2"]);
+    await entries.flush();
+
+    const written = (await openSessionLog(SESSION)).entries().at(-1);
+    expect(written).toMatchObject({
+      type: "run_end",
+      media: ["/tmp/shots/screenshot.png"],
+      mediaIds: ["f9929fee-16d2"],
+    });
+  });
+
   test("a run that produced nothing leaves the field off the marker", async () => {
     // Absent, not empty: every run before this one keeps reading exactly as it did.
     const recorder = new RunRecorder(entries);

@@ -114,3 +114,22 @@ pass, because re-reading 211 MB of logs at every boot to find nothing is not a p
 A marker written *after* the sweep still names its pictures by path and still resolves through the
 filename match, which is what the writer half of this change -- markers born with their ids --
 comes to retire.
+
+## Where the copy is made (2026-09-15)
+
+A marker is written by the run, and the log never rewrites an entry -- so a marker that does not
+name its pictures the moment it lands can never name them. The copy therefore happens **before**
+the marker: at the end of the run, `src/agent/media-store.ts` stores every attachment the tools
+produced through a hook the channel injects (`setMediaStore`, wired for the home loop and for every
+sub-agent's bridge). A run with no hook -- cron, a plugin -- records the paths alone, exactly as
+every run did before this existed.
+
+Storing there is also what keeps the live frame and the log in agreement: the id is pinned back
+onto the attachment the registry holds, and the router consumes those very objects, so the frame
+the device receives names the same copy the marker does, and the picture is stored once. A channel
+that finds an id on an attachment fetches it (`files.readById`) instead of copying again.
+
+The conversation a copy belongs to is the one that shows it: a sub-agent's run stores into the
+thread that asked for it (`MyClawAppSessionStore.ownerThreadOf`, which follows the session's
+`invokedBy` -- recorded by the runner, and the reason this works while a run is alive). Nothing
+about the store changes for the reader: an id is found from any thread of its owner either way.

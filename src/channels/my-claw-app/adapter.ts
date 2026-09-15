@@ -516,7 +516,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
         await myClawAppLog("debug", "attachment without local path skipped", { type: att.type });
         continue;
       }
-      const meta = await this.mediaForPath(owner, threadId, att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
+      // A run that stored its bytes when it ended named the copy here: registering it is all that
+      // is left. The device then fetches exactly what the run's end marker names, and the picture
+      // is not stored twice (2026-09-15).
+      const stored = att.id ? await this.files.readById(owner, att.id) : null;
+      const meta = stored
+        ? registerMedia(this.filesDeps(), stored.path, {
+            type: stored.file.type,
+            mimeType: stored.file.mimeType,
+            filename: stored.file.filename,
+            sizeBytes: stored.file.sizeBytes,
+            width: att.width,
+            height: att.height,
+            durationMs: att.durationMs,
+            audioAsVoice: att.audioAsVoice,
+          }, stored.file.id)
+        : await this.mediaForPath(owner, threadId, att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
       if (meta) attachments.push(meta);
     }
 
@@ -560,6 +575,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
       await myClawAppLog("warn", "attachment skipped: not copied", { owner, threadId, path, reason });
       return undefined;
     }
+  }
+
+  /**
+   * Stores one file a run produced, in the conversation that owns it, and answers its id.
+   *
+   * Called by the run before it writes its end marker -- the log never rewrites an entry, so the
+   * marker has to be born able to name the copy a device will fetch. A run with no conversation of
+   * its own (a sub-agent's) stores into its parent's thread: that is where its pictures are shown.
+   */
+  async storeRunMedia(sessionId: string, path: string): Promise<string | undefined> {
+    const target = await this.store.ownerThreadOf(sessionId);
+    if (!target) return undefined;
+    const meta = await this.mediaForPath(target.owner, target.threadId, path, {
+      type: mediaTypeForPath(path),
+    });
+    return meta?.id;
   }
 
   async confirmTool(request: ToolApprovalRequest): Promise<ApprovalDecision> {

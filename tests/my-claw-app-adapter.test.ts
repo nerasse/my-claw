@@ -190,6 +190,12 @@ class FakeSessionStore {
     return this.payers.get(sessionId);
   }
 
+  async ownerThreadOf(sessionId: string): Promise<{ owner: string; threadId: string } | undefined> {
+    const segments = sessionId.split("/");
+    if (segments[0] !== "my-claw-app" || segments.length < 4) return undefined;
+    return { owner: segments[segments.length - 2]!, threadId: segments[segments.length - 1]! };
+  }
+
   async list(deviceId: string): Promise<typeof this.summaries> {
     return this.summaries;
   }

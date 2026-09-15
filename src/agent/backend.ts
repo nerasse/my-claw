@@ -56,6 +56,9 @@ export interface AgentBackend {
   /** Speech-to-text output per recording, for channels that render it beside its own bubble. */
   transcriptsOf(messageId: string): Array<{ path: string; text: string }>;
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void;
+
+  /** Where a run stores what its tools produced -- the channel owns the bytes, never the agent. */
+  setMediaStore(store: MediaStoreHook | undefined): void;
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string, modelOverride?: RunModelOverride, userEntryWritten?: boolean): Promise<string>;
   handleMessageStreaming(
     message: UnifiedMessage,
@@ -73,3 +76,10 @@ export interface AgentBackend {
     userEntryWritten?: boolean,
   ): Promise<string>;
 }
+
+/**
+ * Stores one file a run produced, where a device can fetch it, and answers the id it is stored
+ * under. Injected by the channel; the session id is what tells it which conversation owns the copy
+ * (a sub-agent's run stores into its parent's thread, which is where its pictures are shown).
+ */
+export type MediaStoreHook = (sessionId: string, path: string) => Promise<string | undefined>;

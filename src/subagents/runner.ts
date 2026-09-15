@@ -9,7 +9,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { enqueueBrowserTask, type BrowserSession } from "../tools/browser/session.ts";
 import { AgentBridge } from "../agent/bridge.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "../agent/backend.ts";
 
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionAttachment, SessionData } from "../sessions/store.ts";
@@ -108,6 +108,8 @@ export class SubAgentRunner {
 
   private sessionManager?: SessionManager;
 
+  private mediaStore?: MediaStoreHook;
+
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
@@ -138,6 +140,11 @@ export class SubAgentRunner {
    * (history/peek) while in flight. Constructed before the SessionManager in index.ts,
    * hence the setter instead of a constructor argument.
    */
+  /** Where a run's produced files are stored -- injected by the entry point, never owned here. */
+  setMediaStore(store: MediaStoreHook | undefined): void {
+    this.mediaStore = store;
+  }
+
   setSessionManager(manager: SessionManager): void {
     this.sessionManager = manager;
   }
@@ -771,6 +778,9 @@ export class SubAgentRunner {
       undefined,
       this.agentRegistry,
     );
+    // A sub-agent's pictures belong to the conversation that asked for it, and the hook is how it
+    // stores them before its own end marker names them (2026-09-15).
+    bridge.setMediaStore(this.mediaStore);
 
     const subMessage: UnifiedMessage = {
       id: messageId ?? `subagent-${session.id}`,

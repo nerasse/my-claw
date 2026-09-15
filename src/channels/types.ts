@@ -80,6 +80,12 @@ export interface Attachment {
   type: "image" | "audio" | "video" | "file";
   url?: string;
   path?: string;
+  /**
+   * The store id of the copy, when the run already stored the bytes. A channel that finds one
+   * fetches instead of copying again, and the run's log records it so a reopened thread names the
+   * same copy the live frame did (2026-09-15).
+   */
+  id?: string;
   mimeType?: string;
   summaryText?: string;
   filename?: string;

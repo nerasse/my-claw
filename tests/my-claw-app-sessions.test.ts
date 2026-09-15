@@ -1818,6 +1818,38 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
 });
 
 describe("MyClawAppSessionStoreImpl.sync", () => {
+  test("an app thread owns its own files", async () => {
+    assert.deepEqual(await store.ownerThreadOf(`my-claw-app/thread/${DEVICE}/${THREAD}`), {
+      owner: DEVICE,
+      threadId: THREAD,
+    });
+  });
+
+  test("a sub-agent's files belong to the thread that asked for it", async () => {
+    // Where its pictures are shown, so where its copies go: the app opens no conversation of its
+    // own for a sub-agent, and a filename match inside the sub-agent's thread finds nothing.
+    const manager = new SessionManager();
+    const local = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    const parent = local.resolveSessionId(DEVICE, THREAD);
+    const sub = "subagent/run-abc";
+    sessionId = sub;
+    logSetup = await saveSessionWithLog(sub, session(sub, [
+      { role: "user", content: "va chercher", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    // The parent is run state: the runner records it on the session it drives, which is the same
+    // object the manager hands back while the run is alive -- exactly when the store is asked.
+    // Adopted, then driven: `read` alone hands back a fresh object, while a run works on the one
+    // the manager keeps -- which is the object the store reads when it is asked.
+    const driven = await manager.setWorkspace(sub, undefined);
+    driven.invokedBy = parent;
+
+    assert.deepEqual(await local.ownerThreadOf(sub), { owner: DEVICE, threadId: THREAD });
+  });
+
+  test("a session with no conversation of its own owns nothing", async () => {
+    assert.equal(await store.ownerThreadOf("cron/job-1/run-1"), undefined);
+  });
+
   let store: MyClawAppSessionStoreImpl;
   let sessionId: string;
   let logSetup: SessionLogSetup | null = null;

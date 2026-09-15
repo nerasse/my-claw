@@ -2,7 +2,7 @@ import type { ToolApprovalHandler, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "./config.ts";
 import { injectionEnabled, resolveAgentWorkspace } from "./config.ts";
 import { SessionManager } from "../sessions/manager.ts";
-import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback } from "../agent/backend.ts";
+import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "../agent/backend.ts";
 import { log } from "../utils/logger.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
@@ -91,6 +91,10 @@ export class MessageRouter {
 
   setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
     this.agent.setApprovalHandler(handler);
+  }
+
+  setMediaStore(store: MediaStoreHook | undefined): void {
+    this.agent.setMediaStore(store);
   }
 
   /** What the stop found, passed through rather than flattened: the registry names the three

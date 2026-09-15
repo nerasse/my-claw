@@ -47,6 +47,11 @@ export interface MyClawAppSessionStore {
    * creator. Undefined for a conversation of its own, or a session that no longer exists.
    */
   payerOf(sessionId: string): Promise<string | undefined>;
+  /**
+   * The conversation that owns a session's files: itself, or its parent's when the session is a
+   * sub-agent's -- the thread a device shows its pictures in, and therefore where its copies go.
+   */
+  ownerThreadOf(sessionId: string): Promise<{ owner: string; threadId: string } | undefined>;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
   history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string, fold?: boolean): Promise<MyClawAppHistoryPage>;
   /**
@@ -292,6 +297,28 @@ function makeResolvers(files: SessionFile[]): DisplayResolvers {
 }
 
 export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
+  /**
+   * The conversation that owns a session's files: itself, or its parent's when the session is a
+   * sub-agent's. A sub-agent's pictures are shown in the thread that asked for it -- the app opens
+   * no conversation of its own -- so that is where its copies belong; the fetch by id finds them
+   * from any thread of the owner either way (2026-09-15).
+   */
+  async ownerThreadOf(sessionId: string): Promise<{ owner: string; threadId: string } | undefined> {
+    let current = sessionId;
+    for (let hop = 0; hop < 3; hop++) {
+      const segments = current.split("/");
+      if (segments[0] === "my-claw-app" && segments.length >= 4) {
+        return { owner: segments[segments.length - 2]!, threadId: segments[segments.length - 1]! };
+      }
+      const session = await this.sessionManager.read(current).catch(() => null);
+      if (!session) return undefined;
+      const parent = attributionParent(session);
+      if (parent === current) return undefined;
+      current = parent;
+    }
+    return undefined;
+  }
+
   constructor(
     private sessionManager: SessionManager,
     private files: SessionFileStore,

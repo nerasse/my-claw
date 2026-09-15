@@ -154,6 +154,15 @@ export class MessagePreprocessor {
     return [...(this.runs.get(messageId)?.responseAttachments ?? [])];
   }
 
+  /**
+   * The registry's own objects, not copies: setting an id on one is what lets the marker and the
+   * outgoing frame name the same stored bytes, and the run is the only thing that knows both
+   * (2026-09-15).
+   */
+  attachmentsOf(messageId: string): OutgoingMessage["attachments"] {
+    return this.runs.get(messageId)?.responseAttachments ?? [];
+  }
+
   addResponseAttachment(messageId: string, att: Attachment): void {
     this.stateFor(messageId).responseAttachments.push(att);
   }

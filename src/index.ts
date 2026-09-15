@@ -2633,6 +2633,13 @@ async function main() {
       }
     }));
 
+    // A run stores what its tools produced *before* it writes its end marker: the log never
+    // rewrites an entry, so the marker is only useful if it is born naming the copy a device will
+    // fetch. The channel owns the bytes, so it is the channel that stores them -- and a sub-agent's
+    // run stores into the thread of the conversation that asked for it (2026-09-15).
+    router.setMediaStore(async (sessionId, path) => await myClawApp.storeRunMedia(sessionId, path));
+    subAgentRunner.setMediaStore(async (sessionId, path) => await myClawApp.storeRunMedia(sessionId, path));
+
     // The only surface left that can answer an approval prompt. Without this the gate has no
     // handler at all and every approval-required tool is denied on sight.
     router.setApprovalHandler(async (request) => {
