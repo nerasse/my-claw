@@ -161,13 +161,13 @@ describe("migrateSessions", () => {
     // scopeOverride, scopeEffort and invokedBy are set from the job before each run, and a cron
     // session outlives its run: a persisted copy would outlive the settings it was taken from.
     await writeLegacy(data("t1", [userMsg("q", 1)], {
-      title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true, pinRank: 0,
+      title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true,
       scopeOverride: { tools: ["bash"] }, scopeEffort: "high", invokedBy: "other",
     } as Partial<LegacySessionData>));
     await migrateSessions(readLegacy);
 
     const meta = await readMeta("t1");
-    expect(meta).toMatchObject({ title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true, pinRank: 0 });
+    expect(meta).toMatchObject({ title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true });
     const raw = JSON.parse(await readFile(metaPath("t1"), "utf-8")) as Record<string, unknown>;
     expect(raw["scopeOverride"]).toBeUndefined();
     expect(raw["scopeEffort"]).toBeUndefined();
@@ -269,12 +269,12 @@ describe("metaOf keeps what the session does not own", () => {
 
   test("a settings field the owner cleared is really cleared, not resurrected from the old file", () => {
     const session = data("my-claw-app/thread/eve/conv", []);
-    const previous = metaOf({ ...session, title: "ancien", pinRank: 3 }, "e1");
+    const previous = metaOf({ ...session, title: "ancien", modelOverride: "opus-5" }, "e1");
 
     const rewritten = metaOf(session, "e1", previous);
 
     expect(rewritten.title).toBeUndefined();
-    expect(rewritten.pinRank).toBeUndefined();
+    expect(rewritten.modelOverride).toBeUndefined();
   });
 });
 

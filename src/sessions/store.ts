@@ -304,14 +304,6 @@ export interface SessionData {
    * and clearing the flag brings it back untouched. Only the my-claw-app channel sets this.
    */
   archivedAt?: string;
-  /**
-   * Position of this conversation in the owner's pinned list, absent when it is not pinned.
-   * Server-side because a pin is about finding a conversation again, and the owner reaches the
-   * same conversations from the phone and from the browser: kept per device, each client had its
-   * own private idea of what was pinned and in what order. Dense ranks starting at 0, rewritten
-   * as a block on every reorder, so the field alone carries both facts (pinned, and where).
-   */
-  pinRank?: number;
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**

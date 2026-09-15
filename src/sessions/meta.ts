@@ -82,7 +82,6 @@ export interface SessionMeta {
   promptCount?: number;
   firstUserText?: string;
   archivedAt?: string;
-  pinRank?: number;
   modelOverride?: string;
   effortOverride?: SessionData["effortOverride"];
   contextOverride?: SessionData["contextOverride"];
@@ -139,7 +138,6 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   leafId: "session",
   title: "session",
   archivedAt: "session",
-  pinRank: "session",
   modelOverride: "session",
   effortOverride: "session",
   contextOverride: "session",
@@ -204,7 +202,6 @@ export function metaOf(
     leafId,
     title: session.title,
     archivedAt: session.archivedAt,
-    pinRank: session.pinRank,
     modelOverride: session.modelOverride,
     effortOverride: session.effortOverride,
     contextOverride: session.contextOverride,

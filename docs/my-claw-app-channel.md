@@ -332,8 +332,6 @@ the first answer wins.
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
-{ "type": "session.pin", "threadId": "projet", "pinned": true }
-{ "type": "session.pin.order", "threadIds": ["projet", "courses"] }
 { "type": "draft.set", "threadId": "projet", "text": "ce qui est tape et pas envoye" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "session.workspace.set", "threadId": "projet", "workspace": "default|sofa" }
